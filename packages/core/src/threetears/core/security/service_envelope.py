@@ -30,23 +30,29 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Protocol
 
 import jwt
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+from threetears.nats.errors import KvError
 from threetears.observe import get_logger
+from threetears.observe.metrics import counter
 
+from threetears.core.security.door_proof import ProofOutcome
 from threetears.core.security.freshness import ISSUE_TIME_FUTURE_TOLERANCE
 
 if TYPE_CHECKING:
     from threetears.core.coordination.replay_guard import ReplayGuard
+    from threetears.core.security.door_proof import DoorProofSwitch
 
 __all__ = [
     "SERVICE_ENVELOPE_FIELD",
     "SERVICE_ENVELOPE_LEEWAY",
     "SERVICE_ENVELOPE_MAX_LIFETIME",
     "SERVICE_ENVELOPE_REPLAY_TTL",
+    "EnvelopeJwksSource",
     "ServiceEnvelopeClaims",
+    "ServiceEnvelopeDoor",
     "ServiceEnvelopeError",
     "body_hash",
     "mint_service_envelope",
@@ -72,6 +78,9 @@ SERVICE_ENVELOPE_REPLAY_TTL: Final[timedelta] = SERVICE_ENVELOPE_MAX_LIFETIME + 
 
 #: the field of a message that carries its envelope; :func:`body_hash` leaves it out of the hash.
 SERVICE_ENVELOPE_FIELD: Final[str] = "service_envelope"
+
+#: the prometheus counter of envelopes a door refused (labels ``door``, ``cause``).
+_REFUSED_COUNTER: Final[str] = "service_envelope_refused"
 
 _ALG: Final[str] = "EdDSA"
 _REQUIRED: Final[tuple[str, ...]] = ("iss", "aud", "op", "bh", "jti", "iat", "exp")
@@ -313,3 +322,149 @@ def _public_key(jwks: Mapping[str, Any], kid: str) -> Ed25519PublicKey:
     if not isinstance(found, Ed25519PublicKey):
         raise ServiceEnvelopeError("no Ed25519 key in the JWKS carries the envelope's kid")
     return found
+
+
+class EnvelopeJwksSource(Protocol):
+    """where a door reads its sender's JWKS from: a trusted, cached fetch, or a key set it holds."""
+
+    async def get_jwks(self, *, refresh: bool = False) -> Mapping[str, Any]:
+        """the sender's trusted JWKS.
+
+        :param refresh: ask for a fresh fetch, because an envelope named a kid the set lacks
+        :ptype refresh: bool
+        :return: the JWKS
+        :rtype: Mapping[str, Any]
+        :raises ServiceEnvelopeError: when no trusted key set is available
+        """
+        ...
+
+
+class ServiceEnvelopeDoor:
+    """one door's acceptance of messages from one sending service, inside its dated window.
+
+    A message carrying an envelope is acted on only when it verifies against the sender's JWKS and
+    its single-use id is spent. A message without one is the door switch's to judge: accepted while
+    the window is open, so a sender that predates the envelope keeps working until its release, and
+    refused from the window's date. Every refusal is logged and counted; the door never raises, so a
+    receiver's single answer is "act" or "do not act".
+    """
+
+    def __init__(
+        self,
+        *,
+        switch: DoorProofSwitch,
+        issuer: str,
+        audience: str,
+        jwks: EnvelopeJwksSource,
+        replay_guard: ReplayGuard,
+    ) -> None:
+        """
+        build a door for messages from ``issuer``.
+
+        :param switch: the door's window, from the process's door registry
+        :ptype switch: DoorProofSwitch
+        :param issuer: the one service this door takes messages from
+        :ptype issuer: str
+        :param audience: this door's name in the envelope, so an envelope for another door is refused
+        :ptype audience: str
+        :param jwks: the sender's trusted JWKS
+        :ptype jwks: EnvelopeJwksSource
+        :param replay_guard: the door's single-use ledger
+        :ptype replay_guard: ReplayGuard
+        :raises ValueError: when ``replay_guard`` was not sized for :data:`SERVICE_ENVELOPE_LEEWAY`,
+            so a mis-sized ledger fails the boot rather than a replay
+        """
+        replay_guard.require_covers(SERVICE_ENVELOPE_LEEWAY)
+        self._switch = switch
+        self._issuer = issuer
+        self._audience = audience
+        self._jwks = jwks
+        self._replay_guard = replay_guard
+
+    @property
+    def door(self) -> str:
+        """
+        answer the door's name.
+
+        :return: the switch's door name
+        :rtype: str
+        """
+        return self._switch.door
+
+    async def admit(self, body: Mapping[str, Any], *, op: str) -> bool:
+        """whether the receiver may act on ``body`` for ``op``.
+
+        :param body: the message as received, parsed from its JSON; its envelope field included
+        :ptype body: Mapping[str, Any]
+        :param op: the operation the receiver is about to perform
+        :ptype op: str
+        :return: ``True`` to act, ``False`` to refuse
+        :rtype: bool
+        """
+        envelope = body.get(SERVICE_ENVELOPE_FIELD)
+        if isinstance(envelope, str) and envelope:
+            admitted = await self._verified(envelope, body=body, op=op)
+        else:
+            admitted = (
+                self._switch.judge(presented=False, claimed_sender=self._issuer) is ProofOutcome.ACCEPTED_WITHOUT_PROOF
+            )
+        return admitted
+
+    async def _verified(self, envelope: str, *, body: Mapping[str, Any], op: str) -> bool:
+        """verify and spend ``envelope``, logging and counting a refusal.
+
+        :param envelope: the compact JWS
+        :ptype envelope: str
+        :param body: the message as received
+        :ptype body: Mapping[str, Any]
+        :param op: the operation
+        :ptype op: str
+        :return: whether it verified and was not used before
+        :rtype: bool
+        """
+        cause = ""
+        try:
+            jwks = await self._jwks_naming(envelope)
+            await verify_and_record(
+                envelope,
+                jwks=jwks,
+                issuer=self._issuer,
+                audience=self._audience,
+                op=op,
+                body=body,
+                replay_guard=self._replay_guard,
+            )
+        except ServiceEnvelopeError as exc:
+            cause, reason = "unverified", str(exc)
+        except KvError as exc:
+            # the ledger cannot say whether the id was used: refuse rather than admit a replay
+            cause, reason = "ledger_unavailable", type(exc).__name__
+        if cause:
+            counter(
+                _REFUSED_COUNTER,
+                description="service envelopes a door refused",
+                label_names=("door", "cause"),
+            ).labels(door=self.door, cause=cause).inc()
+            log.warning(
+                "service envelope refused",
+                extra={"extra_data": {"door": self.door, "op": op, "cause": cause, "reason": reason}},
+            )
+        return not cause
+
+    async def _jwks_naming(self, envelope: str) -> Mapping[str, Any]:
+        """the sender's JWKS, fetched afresh once when it lacks the envelope's kid (a rotated key).
+
+        :param envelope: the compact JWS
+        :ptype envelope: str
+        :return: the JWKS
+        :rtype: Mapping[str, Any]
+        :raises ServiceEnvelopeError: when the header is malformed or no key set is available
+        """
+        try:
+            kid = jwt.get_unverified_header(envelope).get("kid")
+        except jwt.PyJWTError as exc:
+            raise ServiceEnvelopeError(f"malformed envelope header ({type(exc).__name__})") from exc
+        jwks = await self._jwks.get_jwks()
+        if not any(isinstance(key, Mapping) and key.get("kid") == kid for key in jwks.get("keys", ())):
+            jwks = await self._jwks.get_jwks(refresh=True)
+        return jwks

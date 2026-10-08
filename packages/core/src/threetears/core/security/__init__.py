@@ -32,7 +32,8 @@ public surface:
   :func:`issue_time_is_fresh` (the check, each direction on its own bound).
 - service envelopes (``service_envelope``): :func:`mint_service_envelope` /
   :func:`verify_service_envelope` / :func:`verify_and_record` / :func:`body_hash` /
-  :class:`ServiceEnvelopeError` -- a service with no caller token to forward signs "from me, for
+  :class:`ServiceEnvelopeError` / :class:`ServiceEnvelopeDoor` (one door's acceptance inside its dated
+  window) -- a service with no caller token to forward signs "from me, for
   this door and operation, over this body, now, once" with its own JWKS key.
 """
 
@@ -87,7 +88,9 @@ from threetears.core.security.service_envelope import (
     SERVICE_ENVELOPE_LEEWAY,
     SERVICE_ENVELOPE_MAX_LIFETIME,
     SERVICE_ENVELOPE_REPLAY_TTL,
+    EnvelopeJwksSource,
     ServiceEnvelopeClaims,
+    ServiceEnvelopeDoor,
     ServiceEnvelopeError,
     body_hash,
     mint_service_envelope,
@@ -130,7 +133,9 @@ __all__ = [
     "SERVICE_ENVELOPE_LEEWAY",
     "SERVICE_ENVELOPE_MAX_LIFETIME",
     "SERVICE_ENVELOPE_REPLAY_TTL",
+    "EnvelopeJwksSource",
     "ServiceEnvelopeClaims",
+    "ServiceEnvelopeDoor",
     "ServiceEnvelopeError",
     "body_hash",
     "mint_service_envelope",

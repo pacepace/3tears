@@ -223,3 +223,105 @@ class TestVerifyAndRecord:
 
     def test_the_replay_memory_covers_the_whole_accept_window(self) -> None:
         assert SERVICE_ENVELOPE_REPLAY_TTL >= SERVICE_ENVELOPE_MAX_LIFETIME + SERVICE_ENVELOPE_LEEWAY
+
+
+class _Jwks:
+    """a sender's key set, counting fetches, rotating to ``after_refresh`` on a forced one."""
+
+    def __init__(self, jwks, *, after_refresh=None) -> None:
+        self.jwks = jwks
+        self.after_refresh = after_refresh
+        self.refreshes = 0
+
+    async def get_jwks(self, *, refresh: bool = False):
+        if refresh:
+            self.refreshes += 1
+            if self.after_refresh is not None:
+                self.jwks = self.after_refresh
+        return self.jwks
+
+
+def _door(jwks_source, *, guard=None, today=None):
+    from datetime import date
+
+    from threetears.core.security import ServiceEnvelopeDoor
+    from threetears.core.security.door_proof import DoorProofSwitch, DoorWindow
+
+    window = DoorWindow(door="claim_grant", opened=date(2026, 10, 7), required_from=date(2027, 1, 5))
+    switch = DoorProofSwitch(window, today=(lambda: today) if today else (lambda: date(2026, 10, 8)))
+    return ServiceEnvelopeDoor(
+        switch=switch,
+        issuer="identity-core",
+        audience="hub.claim_grant",
+        jwks=jwks_source,
+        replay_guard=guard if guard is not None else FakeReplayGuard(),
+    )
+
+
+def _with_envelope(envelope):
+    return {**_BODY, SERVICE_ENVELOPE_FIELD: envelope}
+
+
+class TestServiceEnvelopeDoor:
+    async def test_a_verified_envelope_is_admitted_once(self) -> None:
+        priv, jwks = _keys()
+        door = _door(_Jwks(jwks))
+        body = _with_envelope(_mint(priv))
+        assert await door.admit(body, op="ensure") is True
+        assert await door.admit(body, op="ensure") is False
+
+    async def test_a_forged_envelope_is_refused(self) -> None:
+        forger, _ = _keys()
+        _, jwks = _keys()
+        door = _door(_Jwks(jwks))
+        assert await door.admit(_with_envelope(_mint(forger)), op="ensure") is False
+
+    async def test_an_envelope_for_another_op_is_refused(self) -> None:
+        priv, jwks = _keys()
+        door = _door(_Jwks(jwks))
+        assert await door.admit(_with_envelope(_mint(priv, op="revoke")), op="ensure") is False
+
+    async def test_a_rotated_key_is_fetched_afresh_once(self) -> None:
+        old_priv, old_jwks = _keys("idc-old")
+        new_priv, new_jwks = _keys("idc-new")
+        source = _Jwks(old_jwks, after_refresh=new_jwks)
+        door = _door(source)
+        assert await door.admit(_with_envelope(_mint(new_priv, kid="idc-new")), op="ensure") is True
+        assert source.refreshes == 1
+
+    async def test_a_known_kid_is_not_refetched(self) -> None:
+        priv, jwks = _keys()
+        source = _Jwks(jwks)
+        await _door(source).admit(_with_envelope(_mint(priv)), op="ensure")
+        assert source.refreshes == 0
+
+    async def test_no_envelope_is_admitted_while_the_window_is_open(self) -> None:
+        _, jwks = _keys()
+        assert await _door(_Jwks(jwks)).admit(_BODY, op="ensure") is True
+
+    async def test_no_envelope_is_refused_from_the_windows_date(self) -> None:
+        from datetime import date
+
+        _, jwks = _keys()
+        door = _door(_Jwks(jwks), today=date(2027, 1, 5))
+        assert await door.admit(_BODY, op="ensure") is False
+
+    async def test_an_unreachable_ledger_refuses_rather_than_admits(self) -> None:
+        from threetears.nats.errors import KvError
+
+        priv, jwks = _keys()
+        door = _door(_Jwks(jwks), guard=FakeReplayGuard(record_error=KvError("down")))
+        assert await door.admit(_with_envelope(_mint(priv)), op="ensure") is False
+
+    async def test_no_key_set_available_refuses(self) -> None:
+        class _Unavailable:
+            async def get_jwks(self, *, refresh: bool = False):
+                raise ServiceEnvelopeError("no trusted key set")
+
+        priv, _ = _keys()
+        assert await _door(_Unavailable()).admit(_with_envelope(_mint(priv)), op="ensure") is False
+
+    def test_a_ledger_not_sized_for_the_leeway_fails_construction(self) -> None:
+        _, jwks = _keys()
+        with pytest.raises(ValueError, match="sized for"):
+            _door(_Jwks(jwks), guard=FakeReplayGuard(verifier_future_tolerance=timedelta(0)))

@@ -23,6 +23,10 @@ packages (bumped in lock-step).
   checks each, EdDSA-pinned, and `verify_and_record` also spends the `jti` in the door's
   `ReplayGuard`, which must remember ids for `SERVICE_ENVELOPE_REPLAY_TTL` and be sized for
   `SERVICE_ENVELOPE_LEEWAY`. Additive: nothing calls it until a door adopts it.
+- `ServiceEnvelopeDoor` is one door's acceptance of one sender's messages: an envelope is acted on
+  only when it verifies and its id is unspent (the sender's JWKS fetched afresh once for an unknown
+  kid; an unreachable ledger refuses); a message without one is the door's `DoorProofSwitch`'s to
+  judge, accepted until the window's date. Refusals are counted in `service_envelope_refused{door,cause}`.
 
 ### Knowledge: a draft carries the agent's token and the turn's user assertion
 
