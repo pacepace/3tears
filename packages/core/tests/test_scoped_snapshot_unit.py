@@ -100,6 +100,8 @@ class _Pointers:
         if entry is None or (revision is not None and entry[1] != revision):
             return False
         del self.entries[key]
+        self._revision += 1
+        self._queue.put_nowait(KvKeyUpdate(key=key, value=None, revision=self._revision))
         return True
 
     async def watch_prefix(self, *, prefix: str, heartbeat: timedelta) -> AsyncIterator[KvKeyUpdate | None]:
@@ -482,4 +484,28 @@ async def test_a_stuck_scope_whose_l3_epoch_is_below_its_pointer_stays_behind_on
     assert all("TX" in look.behind and "TX" in look.detail for look in looks), [
         (look.phase, sorted(look.behind)) for look in looks if "TX" not in look.behind
     ][:3]
+    await snapshot.stop()
+
+
+async def test_a_scope_removed_before_it_was_ever_applied_leaves_nothing_behind() -> None:
+    snapshot, pointers, _, l3 = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    # a new scope NV is published with a chunk this replica cannot read
+    tx = json.loads(pointers.entries["enr.s.TX"][0])
+    nv = {**tx, "scope": "NV", "epoch": 3, "tables": {"results": {"object": "enr/NV/3/results.gone", "rows": 1}}}
+    index = json.loads(pointers.entries["enr.index"][0])
+    pointers.put_now("enr.s.NV", json.dumps(nv).encode())
+    pointers.put_now("enr.index", json.dumps({**index, "scopes": [*index["scopes"], "NV"]}).encode())
+    await _until(lambda: "NV" in snapshot.status().behind, what="NV shown behind")
+
+    # and removed: its pointer goes, then it leaves the index
+    await pointers.delete(key="enr.s.NV")
+    pointers.put_now("enr.index", json.dumps(index).encode())
+
+    await _until(lambda: "NV" not in snapshot.status().behind, what="NV to leave behind")
+    reads = l3.statements
+    await asyncio.sleep(0.3)  # several rechecks
+    assert snapshot.status().behind == {} and "behind" not in snapshot.status().detail
+    assert l3.statements == reads, "a removed scope kept being rebuilt from L3"
     await snapshot.stop()

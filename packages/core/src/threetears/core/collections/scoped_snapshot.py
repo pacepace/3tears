@@ -1209,6 +1209,9 @@ class ScopedSnapshot:
             if scope in self._seen and self._foreign_ahead(self._seen[scope], self._applied.get(scope)):
                 self._mark_foreign(scope)
         failed = await self._apply_pointers(moved)
+        # a scope removed before it was ever applied leaves no `behind` entry to report, or to rebuild
+        for scope in [scope for scope in self._behind if scope not in index and scope not in self._seen]:
+            del self._behind[scope]
         for scope, why in failed.items():
             self._behind[scope] = (self._behind.get(scope, (0, ""))[0] + 1, why)
         # a scope that failed is tried again at the next recheck, not at once; one that keeps failing
