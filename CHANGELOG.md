@@ -46,11 +46,13 @@ then accepts.
   from that date; a provider built without one, and a reply carrying a statement it cannot check,
   each log a warning saying so. Inventory, by a search of every `CachedHubJwksProvider(` in 3tears,
   the hub and the SDK on 2026-10-08: the registry (`threetears.registry`, and the hub's registry
-  factories in the same process) and the hub's gateway. Tool pods and agents build none. The one
-  publisher is the hub's JWKS responder, which signs once its root key is set. All of them ship in
-  the hub image, so the window opened when the change was decided (2026-10-07) rather than at a
-  release: no deployment outside that one release has to act. A host running `threetears.registry`
-  on its own must set the key too.
+  factories in the same process), the hub's gateway, and every `ToolServer` that builds its own
+  provider -- each self-provisioning tool pod, and each agent whose tools run in-process
+  (the SDK's `tool_strategies`, `tool_server_bootstrap`, `provider_tool_pod`). Those last run in
+  consumer repos' deployments, outside the hub image, so each of them must carry the key before
+  the date; the window opened when the change was decided (2026-10-07), so a release that ships
+  late shortens what they get, and the date moves if that inventory cannot be met. The one
+  publisher is the hub's JWKS responder, which signs once its root key is set.
 - **Added, `door_proof.process_door_proofs`** and `DOOR_PROOF_REQUIRED_EARLY_ENV`: one door registry
   per process, from `THREETEARS_DOOR_PROOF_REQUIRED_EARLY`, so every door's absent senders are read
   in one place.
