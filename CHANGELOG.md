@@ -37,8 +37,8 @@ later, unprompted.
 
 - **Added, underscore-access shape I (`shape_i_violations`, walker `"shape_i"`, in `"all"`):** a
   class a `tests/` tree defines that reads or writes `self._x` / `cls._x` where `_x` is private
-  STATE of a production base (assigned on `self` in its methods, or a class-body value) is
-  reported. A base's private methods stay callable, as protected hooks. SLF001 exempts every
+  STATE of any production ancestor (assigned on `self` in its methods, or a class-body value;
+  followed through generic bases and test-defined classes in between) is reported. A base's private methods stay callable, as protected hooks. SLF001 exempts every
   `self` access, so a test borrowing its base's lock passed every gate and would go on passing,
   testing nothing, once the base kept that state another way. Two members here were fixed: an
   epoch test that wrote its listener's last-seen map, and a fake NATS client that replaced its
