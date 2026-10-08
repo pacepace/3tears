@@ -40,6 +40,8 @@ from threetears.core.security.jwks_trust import (
     STATEMENT_ORDER_LEEWAY,
     JwksKeyring,
     JwksStatementError,
+    JwksTrust,
+    ReplyTrust,
     RefreshGate,
     hub_jwks_root_public_key_from_env,
     root_public_key_from_text,
@@ -542,6 +544,48 @@ class TestNoReplay:
         )
         with pytest.raises(JwksStatementError, match="longer life"):
             verify_jwks_statement(statement, keys, root_public_key=_ROOT.public_key(), issuer=HUB_JWKS_ISSUER)
+
+
+def _signed_document(keys: list[dict[str, Any]], at: int) -> dict[str, Any]:
+    statement = sign_jwks_statement(keys, signing_key=_ROOT, issuer=HUB_JWKS_ISSUER, now=at, ttl=timedelta(minutes=5))
+    return {"keys": keys, JWKS_STATEMENT_FIELD: statement}
+
+
+def _trust(keyring: JwksKeyring | None = None) -> JwksTrust:
+    return JwksTrust(
+        door="hub.jwks",
+        issuer=HUB_JWKS_ISSUER,
+        root_public_key=_ROOT.public_key(),
+        statement_switch=_switch(required=True),
+        thumbprint_switch=_switch(required=True, window=THUMBPRINT_WINDOW),
+        keyring=keyring,
+    )
+
+
+class TestTheOrderFloorNeverWalksBack:
+    """replies inside the leeway never lower the floor a later replay is judged against."""
+
+    def test_a_chain_of_in_leeway_replays_cannot_step_back_to_a_rotated_out_key(self) -> None:
+        now = int(time.time())
+        trust = _trust()
+        _, rotated_out = generate_signing_keypair()
+
+        trust.take(_signed_document(_keys(_HUB_PUBLIC), now))
+        trust.take(_signed_document(_keys(_HUB_PUBLIC), now - 20))  # in the leeway: taken
+        judgement, _ = trust.take(_signed_document(_keys(_HUB_PUBLIC, rotated_out), now - 45))
+
+        assert judgement.trust is ReplyTrust.REFUSED
+        assert jwk_thumbprint(rotated_out) not in trust.keyring
+
+    @pytest.mark.parametrize(("behind", "taken"), [(30, True), (31, False)])
+    def test_the_leeway_is_thirty_seconds(self, behind: int, taken: bool) -> None:
+        now = int(time.time())
+        trust = _trust()
+        trust.take(_signed_document(_keys(_HUB_PUBLIC), now))
+
+        judgement, _ = trust.take(_signed_document(_keys(_HUB_PUBLIC), now - behind))
+
+        assert (judgement.trust is ReplyTrust.VERIFIED) is taken
 
 
 class TestTheMissingRootIsSaid:
