@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -540,8 +541,6 @@ async def test_a_versioned_read_never_pairs_a_scopes_rows_with_another_epoch() -
 
 async def test_a_versioned_read_opened_during_a_long_swap_waits_for_it_and_reads_its_result() -> None:
     """deterministic: a swap held open (as a large load is) never makes the read fail; it waits, then reads it."""
-    import threading
-
     snapshot, _, _, _ = _snapshot()
     await snapshot.start()
     await snapshot.wait_ready(timeout=5)
@@ -576,10 +575,14 @@ async def test_a_versioned_read_opened_during_a_long_swap_waits_for_it_and_reads
 
 
 async def test_a_dropped_scope_leaves_the_versioned_reads_epochs() -> None:
-    snapshot, _, _, _ = _snapshot()
+    """a scope L3 no longer holds is dropped by the catch-up, in the same step as its epoch."""
+    snapshot, pointers, _, l3 = _snapshot()
     await snapshot.start()
     await snapshot.wait_ready(timeout=5)
-    await snapshot._drop_locally(["TX"])  # noqa: SLF001 -- the one swap that removes a scope
+    await _until(lambda: "enr.rebuild" not in pointers.entries, what="the start's rebuild claim released")
+    l3.rows = [r for r in l3.rows if r["state"] != "TX"]
+    del l3.epochs["TX"]
+    await snapshot.catch_up_from_l3()
     with snapshot.read_versioned() as read:
         assert read.epochs == {"DE": 1}
         assert read.cursor.execute("SELECT count(*) FROM results WHERE state = 'TX'").fetchone() == (0,)
