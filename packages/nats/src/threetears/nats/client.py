@@ -1957,6 +1957,29 @@ async def _round_trip(connection: Any, *, timeout: float = _NATS_FLUSH_TIMEOUT_S
         raise _NatsFlushTimeoutError from None
 
 
+async def round_trip(connection: Any, *, timeout: float = _NATS_FLUSH_TIMEOUT_SECONDS) -> None:
+    """the barrier nats-py's ``flush`` is not: proof the server processed everything sent before now.
+
+    For a raw nats-py connection a caller holds on purpose (a callout responder logging in as the
+    auth user, a test standing in for another service). nats-py's ``Client.flush`` writes its
+    ``PING`` ahead of a ``SUB`` still in the pending buffer, so subscribe-then-flush can return
+    before the server knows the subscription, and a message published at once from another
+    connection is answered "no responders" or dropped. Await this after ``subscribe`` instead.
+    :class:`NatsClient` does it already in its own ``subscribe`` and ``flush``.
+
+    :param connection: the nats-py connection
+    :ptype connection: Any
+    :param timeout: seconds to wait for the ``PONG``
+    :ptype timeout: float
+    :return: nothing
+    :rtype: None
+    :raises nats.errors.ConnectionClosedError: when the connection is closed
+    :raises NatsClientError: when the connection is not currently connected
+    :raises nats.errors.FlushTimeoutError: when no ``PONG`` arrives within ``timeout``
+    """
+    await _round_trip(connection, timeout=timeout)
+
+
 async def _stop_routing_then_drain(raw_subscription: Any, connection: Any) -> None:
     """end a subscription the server may still be routing to, without dropping what it routed.
 

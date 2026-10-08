@@ -6,6 +6,14 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### NATS: `round_trip`, the barrier nats-py's `flush` is not, for a raw connection
+
+- `threetears.nats.round_trip(connection, *, timeout)` proves the server processed everything a raw
+  nats-py connection sent before it. nats-py's `flush` writes its `PING` ahead of a `SUB` still in
+  the pending buffer, so subscribe-then-flush could return before the server knew the subscription
+  and a message published at once from another connection was answered "no responders" or dropped.
+  `NatsClient.subscribe` and `NatsClient.flush` already use it.
+
 ### Core: a signed service envelope for a service that has no caller token to forward
 
 - `threetears.core.security.service_envelope`: `mint_service_envelope` signs, with the sending

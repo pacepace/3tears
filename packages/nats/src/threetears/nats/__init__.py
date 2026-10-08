@@ -42,6 +42,7 @@ if TYPE_CHECKING:  # the lazy names, re-imported so type checkers resolve them
         PublishPin,
         Subscription,
         TokenCallback,
+        round_trip,
     )
     from threetears.nats.cross_worker_cancel import (
         CrossWorkerCanceller,
@@ -274,6 +275,7 @@ _LAZY_SUBMOD_ATTRS: Final[dict[str, tuple[str, ...]]] = {
         "PublishPin",
         "Subscription",
         "TokenCallback",
+        "round_trip",
     ),
     "cross_worker_cancel": ("CrossWorkerCanceller", "TaskCancelEnvelope"),
     "distributed_lock": ("LockHeld", "LockHold", "LockLossReason", "LockLost", "nats_distributed_lock"),
@@ -415,6 +417,7 @@ __all__ = [
     "PublishPin",
     "Subscription",
     "TokenCallback",
+    "round_trip",
     # renewing a connection whose credential expires (NatsClient.renew_credential's arithmetic)
     "NATS_USER_JWT_TTL_ENV",
     "PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS",
