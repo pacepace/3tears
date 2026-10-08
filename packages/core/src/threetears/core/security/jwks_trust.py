@@ -311,7 +311,10 @@ class JwksKeyring:
     def adopt(self, keys: list[dict[str, Any]], *, verified: bool) -> KeyringMerge:
         """fold one taken reply's keys in.
 
-        A verified reply's keys are marked verified. A key missing from a reply is held until it has
+        A verified reply is authoritative for every kid it names: its material replaces whatever
+        that kid held, and the kid is marked verified. An unverified reply sets the material of a kid
+        only an unverified reply vouched for, and never touches a kid holding verified material, so
+        it cannot bind a known kid to a forger's key. A key missing from a reply is held until it has
         been missing for the overlap only if a verified reply brought it in; any other missing key
         -- one only an unverified reply vouched for -- is dropped at once.
 
@@ -326,7 +329,10 @@ class JwksKeyring:
         seen = {entry["kid"]: entry for entry in keys if isinstance(entry, dict) and isinstance(entry.get("kid"), str)}
         added = tuple(sorted(kid for kid in seen if kid not in self._keys))
         for kid, entry in seen.items():
-            self._keys.setdefault(kid, dict(entry))
+            if verified or kid not in self._verified:
+                # the one place a kid is bound to material: a verified reply always, an unverified
+                # reply only for a kid no verified reply has vouched for
+                self._keys[kid] = dict(entry)
             self._missing_since.pop(kid, None)
             if verified:
                 self._verified.add(kid)

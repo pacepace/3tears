@@ -519,3 +519,48 @@ class TestTheMissingRootIsSaid:
         with caplog.at_level("WARNING"):
             CachedHubJwksProvider(_client(), request_timeout_seconds=1.0, statement_switch=_switch(required=False))
         assert any("no pinned root key" in r.getMessage() and "2027-01-05" in r.getMessage() for r in caplog.records)
+
+
+class TestAKidIsBoundOnlyToGenuineMaterial:
+    """an unverified reply binding the hub's own kid to a forger's key never survives a genuine reply."""
+
+    @staticmethod
+    def _rebound() -> list[dict[str, Any]]:
+        """the forger's key, presented under the hub's kid: a misnamed entry the window still takes."""
+        return [_keys(_ATTACKER_PUBLIC)[0] | {"kid": _HUB_KID}]
+
+    @pytest.mark.parametrize("genuine_signed", [False, True], ids=["unsigned-genuine", "signed-genuine"])
+    async def test_the_forgers_material_under_the_hubs_kid_is_replaced_by_the_genuine_reply(
+        self, genuine_signed: bool
+    ) -> None:
+        provider = CachedHubJwksProvider(
+            _client(_reply(self._rebound()), _reply(_keys(_HUB_PUBLIC), signed_by=_ROOT if genuine_signed else None)),
+            request_timeout_seconds=1.0,
+            root_public_key=_ROOT.public_key(),
+            statement_switch=_switch(required=False),
+            thumbprint_switch=_switch(required=False, window=THUMBPRINT_WINDOW),
+        )
+        await provider.refresh()  # the forgery, taken while both windows are open
+        with pytest.raises(Exception, match="verification failed|did not verify|Signature"):
+            verify_identity_token(_token(_HUB_SIGNING, _HUB_KID), jwks=provider(), issuer="aibots-hub")
+        await provider.refresh()  # the hub's genuine reply
+
+        verify_identity_token(_token(_HUB_SIGNING, _HUB_KID), jwks=provider(), issuer="aibots-hub")
+        with pytest.raises(Exception):
+            verify_identity_token(_token(_ATTACKER_SIGNING, _HUB_KID), jwks=provider(), issuer="aibots-hub")
+
+    def test_an_unverified_reply_never_rebinds_a_kid_holding_verified_material(self) -> None:
+        ring = JwksKeyring()
+        ring.adopt(_keys(_HUB_PUBLIC), verified=True)
+
+        ring.adopt(self._rebound(), verified=False)
+
+        assert ring.document()["keys"] == _keys(_HUB_PUBLIC)
+
+    def test_a_verified_reply_is_authoritative_for_every_kid_it_names(self) -> None:
+        ring = JwksKeyring()
+        ring.adopt(self._rebound(), verified=False)
+
+        ring.adopt(_keys(_HUB_PUBLIC), verified=True)
+
+        assert ring.document()["keys"] == _keys(_HUB_PUBLIC)
