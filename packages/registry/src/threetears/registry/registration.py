@@ -761,6 +761,7 @@ class RegistrationHandler:
                     verified=True,
                     platform_shared=pod_auth.platform_shared,
                     owned_nodes=owned_nodes,
+                    holder_jkt=pod_auth.holder_jkt,
                 ),
                 self_identity=owned_nodes,
                 name=pod_auth.name,
@@ -983,6 +984,7 @@ class RegistrationHandler:
                 status=endpoint_status,
                 date_last_heartbeat=now,
                 verified_publisher=standing.verified,
+                holder_jkt=standing.holder_jkt,
             )
             # output_schema is not carried on the manifest today, so every copy announces none.
             endpoint.announce(

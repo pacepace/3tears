@@ -109,11 +109,13 @@ from threetears.core.security.service_envelope import (
     verify_service_envelope,
 )
 from threetears.core.security.delegated_token import (
+    DEFAULT_DELEGATED_DOORS,
     DELEGATED_TOKEN_ISSUER,
     DELEGATED_TOKEN_MAX_LIFETIME,
     DELEGATED_TOKEN_TYPE,
     DelegatedClaims,
     DelegatedTokenError,
+    DelegatedTokenSigner,
     DoorCaller,
     ProofAbsentError,
     is_delegated_token,
@@ -162,11 +164,13 @@ __all__ = [
     "ISSUE_TIME_FUTURE_TOLERANCE",
     "issue_time_is_fresh",
     # delegated tokens
+    "DEFAULT_DELEGATED_DOORS",
     "DELEGATED_TOKEN_ISSUER",
     "DELEGATED_TOKEN_MAX_LIFETIME",
     "DELEGATED_TOKEN_TYPE",
     "DelegatedClaims",
     "DelegatedTokenError",
+    "DelegatedTokenSigner",
     "DoorCaller",
     "ProofAbsentError",
     "is_delegated_token",

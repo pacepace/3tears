@@ -15,6 +15,14 @@ packages (bumped in lock-step).
   token proven with the pod's key, or an agent's identity token proven with its own `cnf` key; the
   proof binds the token and the request body; `ProofAbsentError` leaves a bearer request to the
   door's dated window). Additive: nothing mints or verifies them yet.
+- The registry mints one per forwarded call (`CallProxy(delegated_signer=)`; the server reads the
+  seed through `THREETEARS_REGISTRY_DELEGATED_TOKEN_SIGNING_KEY_REF`, default
+  `env://THREETEARS_DELEGATED_TOKEN_SIGNING_KEY`: a key of its own, not the proxy-assertion key) into
+  `CallContext.delegated_token`, bound to the key the pod's verified registration was signed with
+  (`ToolPodAuth.holder_jkt` -> `PublisherStanding.holder_jkt` -> `ToolEndpoint.holder_jkt`) and
+  living the call's effective timeout. Unprovisioned, or for a pod whose key the host did not name,
+  none is minted and the pod keeps the caller's own tokens. `DelegatedTokenSigner`,
+  `DEFAULT_DELEGATED_DOORS` and the door names (`L3_DOOR`, ...) are new.
 
 ### Channels: a channel answer carries its turn's id and the hub's turn assertion
 

@@ -17,6 +17,7 @@ way round. EdDSA-pinned.
 
 from __future__ import annotations
 
+import base64
 import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -26,17 +27,28 @@ from typing import Any, Final
 import jwt
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
+from threetears.observe import get_logger
+
 from threetears.core.security.freshness import ISSUE_TIME_FUTURE_TOLERANCE
-from threetears.core.security.identity_token import IdentityTokenError, verify_identity_token
+from threetears.core.security.identity_token import IdentityTokenError, jwk_thumbprint, verify_identity_token
 from threetears.core.security.pop import VerifiedPopProof, access_token_hash, verify_pop_proof
+from threetears.core.security.secret_refs import SecretResolutionError, resolve_secret
 
 __all__ = [
+    "AUDIT_ANONYMIZE_DOOR",
+    "DATASOURCE_DOOR",
+    "DEFAULT_DELEGATED_DOORS",
     "DELEGATED_TOKEN_ISSUER",
     "DELEGATED_TOKEN_MAX_LIFETIME",
     "DELEGATED_TOKEN_TYPE",
     "DelegatedClaims",
     "DelegatedTokenError",
+    "DelegatedTokenSigner",
     "DoorCaller",
+    "ENGAGEMENT_DOOR",
+    "L3_DOOR",
+    "NAMESPACE_DISCOVER_DOOR",
+    "OBJECT_RESOLVE_DOOR",
     "ProofAbsentError",
     "is_delegated_token",
     "mint_delegated_token",
@@ -52,6 +64,21 @@ DELEGATED_TOKEN_ISSUER: Final[str] = "registry"
 
 #: the longest a delegated token may claim: a tool call's own deadline never exceeds this.
 DELEGATED_TOKEN_MAX_LIFETIME: Final[timedelta] = timedelta(hours=1)
+
+#: the doors a tool pod reaches as its caller, each named as a delegated token's ``aud`` names it.
+L3_DOOR: Final[str] = "l3"
+DATASOURCE_DOOR: Final[str] = "datasource"
+OBJECT_RESOLVE_DOOR: Final[str] = "hub.object.resolve"
+NAMESPACE_DISCOVER_DOOR: Final[str] = "namespace.discover"
+ENGAGEMENT_DOOR: Final[str] = "hub.engagement"
+AUDIT_ANONYMIZE_DOOR: Final[str] = "hub.audit.anonymize"
+
+#: the doors a forwarded tool call may reach, until a tool declares narrower ones.
+DEFAULT_DELEGATED_DOORS: Final[frozenset[str]] = frozenset(
+    {L3_DOOR, DATASOURCE_DOOR, OBJECT_RESOLVE_DOOR, NAMESPACE_DISCOVER_DOOR, ENGAGEMENT_DOOR, AUDIT_ANONYMIZE_DOOR}
+)
+
+log = get_logger(__name__)
 
 _ALG: Final[str] = "EdDSA"
 _REQUIRED: Final[tuple[str, ...]] = ("iss", "aud", "sub", "act", "customer_id", "cnf", "corr", "iat", "exp")
@@ -179,6 +206,100 @@ def mint_delegated_token(
         "exp": deadline,
     }
     return jwt.encode(payload, key=signing_key, algorithm=_ALG, headers={"kid": kid, "typ": DELEGATED_TOKEN_TYPE})
+
+
+@dataclass(frozen=True, slots=True)
+class DelegatedTokenSigner:
+    """the registry's delegated-token key: one key, one purpose, published in the hub JWKS.
+
+    Separate from the proxy-assertion key, so a compromise or rotation of either moves only its
+    own tokens.
+
+    :ivar signing_key: the Ed25519 key
+    :ivar kid: its JWKS id, the public key's thumbprint
+    """
+
+    signing_key: Ed25519PrivateKey
+    kid: str
+
+    @classmethod
+    def from_secret_ref(cls, ref: str) -> DelegatedTokenSigner | None:
+        """the signer from its seed's secret reference, or ``None`` while it is not provisioned.
+
+        Unprovisioned, the registry mints no delegated token and a tool pod acts with the caller's
+        own tokens, as before; the doors accept that until their windows close.
+
+        :param ref: the secret reference (``scheme://locator``) to the base64 seed
+        :ptype ref: str
+        :return: the signer, or ``None``
+        :rtype: DelegatedTokenSigner | None
+        :raises ValueError: when the referenced secret is not a 32-byte seed
+        """
+        signer: DelegatedTokenSigner | None = None
+        try:
+            secret = resolve_secret(ref)
+        except SecretResolutionError:
+            log.warning(
+                "the delegated-token signing key is not provisioned: tool pods keep acting with their "
+                "caller's own tokens until the doors' windows close"
+            )
+        else:
+            text = secret.get_secret_value().strip().replace("+", "-").replace("/", "_")
+            try:
+                key = Ed25519PrivateKey.from_private_bytes(base64.urlsafe_b64decode(text + "=" * (-len(text) % 4)))
+            except ValueError:
+                raise ValueError("the delegated-token signing key is not a base64 32-byte Ed25519 seed") from None
+            signer = cls(signing_key=key, kid=jwk_thumbprint(key.public_key()))
+        return signer
+
+    def mint(
+        self,
+        *,
+        agent_id: str,
+        pod_id: str,
+        customer_id: str,
+        user_id: str | None,
+        holder_jkt: str,
+        correlation_id: str,
+        lifetime: timedelta,
+        doors: Iterable[str] = DEFAULT_DELEGATED_DOORS,
+    ) -> str:
+        """a delegated token for one forwarded call, living ``lifetime`` (capped at the maximum).
+
+        :param agent_id: the verified calling agent
+        :ptype agent_id: str
+        :param pod_id: the tool pod the call goes to
+        :ptype pod_id: str
+        :param customer_id: the verified customer
+        :ptype customer_id: str
+        :param user_id: the verified user, if any
+        :ptype user_id: str | None
+        :param holder_jkt: the pod's key thumbprint
+        :ptype holder_jkt: str
+        :param correlation_id: the call's correlation id
+        :ptype correlation_id: str
+        :param lifetime: how long the call may run
+        :ptype lifetime: timedelta
+        :param doors: the doors the call may reach
+        :ptype doors: Iterable[str]
+        :return: the compact JWS
+        :rtype: str
+        """
+        now = int(time.time())
+        seconds = max(1, min(int(lifetime.total_seconds()), int(DELEGATED_TOKEN_MAX_LIFETIME.total_seconds())))
+        return mint_delegated_token(
+            signing_key=self.signing_key,
+            kid=self.kid,
+            agent_id=agent_id,
+            pod_id=pod_id,
+            customer_id=customer_id,
+            user_id=user_id,
+            doors=doors,
+            holder_jkt=holder_jkt,
+            correlation_id=correlation_id,
+            deadline=now + seconds,
+            now=now,
+        )
 
 
 def verify_delegated_token(token: str, *, jwks: Mapping[str, Any], door: str) -> DelegatedClaims:

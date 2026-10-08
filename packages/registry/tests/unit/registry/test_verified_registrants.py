@@ -535,3 +535,22 @@ class TestATransientRefusalWithdrawsNothing:
 
         assert reply.error_code == "OWNERSHIP_GRAPH_UNAVAILABLE"
         assert _descriptions(catalog, "pentest.sqlmap@1.0.0", _PENTEST_POD) == ["sqlmap"]
+
+
+class TestTheVerifiedPodsKeyIsRemembered:
+    """Chunk 10b: a delegated token for a call to a pod binds the key its verified registration was signed with."""
+
+    @pytest.mark.asyncio
+    async def test_the_copy_records_the_key_the_verifier_named(self) -> None:
+        directory = _default_directory()
+        directory.set_pod(
+            "pentest-token",
+            ToolPodAuth(
+                pod_entity_id=_PENTEST_POD, name="pentest-tool-server", owned_namespaces=["pentest"], holder_jkt="jkt-1"
+            ),
+        )
+        handler, catalog, nc = await _started(directory)
+        await _register(handler, nc, _manifest(_PENTEST_POD, ("pentest.sqlmap", "sqlmap"), token="pentest-token"))
+        entry = catalog.get("pentest.sqlmap@1.0.0")
+        copy = entry.get_endpoint(_PENTEST_POD) if entry is not None else None
+        assert copy is not None and copy.holder_jkt == "jkt-1"

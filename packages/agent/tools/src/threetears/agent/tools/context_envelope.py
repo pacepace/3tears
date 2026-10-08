@@ -88,6 +88,13 @@ class CallContext(BaseModel):
         :class:`~threetears.registry.proxy.ProxyCallRequest` and
         :class:`~threetears.agent.tools.server.CallRequest`
     :ptype user_identity_token: str | None
+    :param delegated_token: the registry's call-scoped token for the tool pod this call is forwarded
+        to (:mod:`threetears.core.security.delegated_token`): the agent as subject, this pod as
+        actor, the doors the call may reach, the pod's own key bound in, the call's deadline as
+        expiry. The pod presents it, with a proof made with its own key, at the doors it reaches as
+        its caller; useless to anyone else, after the call, or at another door. ``None`` from a
+        registry that predates it, or one with no delegated-token key
+    :ptype delegated_token: str | None
     :param engagement_id: the authorized engagement this call belongs to,
         when it originates inside one. promoted from the ``trace`` escape
         hatch to a first-class field (v0.13.9): a tool pod reads it (NEVER
@@ -128,6 +135,7 @@ class CallContext(BaseModel):
     agent_id: UUID | None = None
     identity_token: str | None = None
     user_identity_token: str | None = None
+    delegated_token: str | None = None
     engagement_id: UUID | None = None
     trace: dict[str, str] = Field(default_factory=dict)
     user_timezone: str | None = None

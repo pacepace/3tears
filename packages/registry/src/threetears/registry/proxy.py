@@ -76,7 +76,7 @@ _RESULT_DELIVERY_RETRY_SECONDS = 2.0
 if TYPE_CHECKING:
     from threetears.agent.tools.server import CallAccepted
     from threetears.core.coordination.replay_guard import ReplayGuard
-    from threetears.core.security import ProxyAssertionSigner
+    from threetears.core.security import DelegatedTokenSigner, ProxyAssertionSigner
     from threetears.nats import NatsClient, Subscription
 
 __all__ = [
@@ -317,6 +317,7 @@ class CallProxy:
         proxy_signer: "ProxyAssertionSigner | None" = None,
         usage_emitter: EndpointUsageEmitter | None = None,
         inflight_gauge: InflightRequestsGauge | None = None,
+        delegated_signer: DelegatedTokenSigner | None = None,
     ) -> None:
         """initialize call proxy.
 
@@ -378,6 +379,10 @@ class CallProxy:
             verify the call came from the proxy, for this body, once; ``None`` leaves the call
             unsigned (the binding is inert until the proxy key is provisioned)
         :ptype proxy_signer: ProxyAssertionSigner | None
+        :param delegated_signer: mints each forwarded call a delegated token for its pod, bound to
+            the pod's key, the call's deadline and the doors a call may reach; ``None`` mints none,
+            and the pod keeps acting with the caller's own tokens until the doors' windows close
+        :ptype delegated_signer: DelegatedTokenSigner | None
         :param usage_emitter: post-call usage-emit seam; ``None`` (the safe default)
             emits nothing. when present, the proxy calls
             :meth:`EndpointUsageEmitter.emit` fire-and-forget after the tool pod
@@ -409,6 +414,7 @@ class CallProxy:
         self._jwks_provider = jwks_provider
         self._jwks_refresh = jwks_refresh
         self._proxy_signer = proxy_signer
+        self._delegated_signer = delegated_signer
         # a guard sized for a smaller future tolerance than this proxy accepts would let a replayed
         # proof stamped at the edge through its wipe check; refuse it here, at startup.
         pop_replay_guard.require_covers(ISSUE_TIME_FUTURE_TOLERANCE)
@@ -1486,7 +1492,7 @@ class CallProxy:
             return await self._forward_call_durable(request, pod_id, effective_timeout, principal)
         internal_subject = Subjects.tools_internal(pod_id)
         internal_payload = _build_internal_payload(
-            request,
+            self._with_delegation(request, pod_id, principal, effective_timeout),
             self._mint_proxy_assertion(request, pod_id, principal),
             effective_timeout=effective_timeout,
         )
@@ -1646,7 +1652,7 @@ class CallProxy:
         correlation_id_log = _correlation_id_str(request)
         result_subject = Subjects.tools_result(pod_id, uuid7())
         internal_payload = _build_internal_payload(
-            request,
+            self._with_delegation(request, pod_id, principal, effective_timeout),
             self._mint_proxy_assertion(request, pod_id, principal),
             result_subject=result_subject.path,
             effective_timeout=effective_timeout,
@@ -1852,6 +1858,45 @@ class CallProxy:
                 now=int(datetime.now(UTC).timestamp()),
                 user_id=str(context.user_id) if context.user_id is not None else None,
             )
+        return result
+
+    def _with_delegation(
+        self, request: ProxyCallRequest, pod_id: str, principal: VerifiedPrincipal, effective_timeout: float
+    ) -> ProxyCallRequest:
+        """``request`` with a delegated token for ``pod_id`` on its context, when one can be minted.
+
+        Minted only for a call with a context, a signer, and a pod whose key the registry learned
+        from its verified registration; otherwise the request goes as it came. The proxy assertion
+        is minted over the call body, which the context does not enter, so adding the token changes
+        nothing it signs.
+
+        :param request: the verified call request
+        :ptype request: ProxyCallRequest
+        :param pod_id: the pod the call goes to
+        :ptype pod_id: str
+        :param principal: the principal the caller's verified token named
+        :ptype principal: VerifiedPrincipal
+        :param effective_timeout: how long the call may run, the token's life
+        :ptype effective_timeout: float
+        :return: the request to forward
+        :rtype: ProxyCallRequest
+        """
+        context = request.context
+        entry = self._catalog.get(f"{request.tool_name}@{request.tool_version}") if self._delegated_signer else None
+        endpoint = entry.get_endpoint(pod_id) if entry is not None else None
+        holder = endpoint.holder_jkt if endpoint is not None else None
+        result = request
+        if context is not None and self._delegated_signer is not None and holder:
+            token = self._delegated_signer.mint(
+                agent_id=str(principal.principal_id),
+                pod_id=pod_id,
+                customer_id=principal.customer_claim,
+                user_id=str(context.user_id) if context.user_id is not None else None,
+                holder_jkt=holder,
+                correlation_id=str(context.correlation_id) if context.correlation_id is not None else "",
+                lifetime=timedelta(seconds=effective_timeout),
+            )
+            result = request.model_copy(update={"context": context.model_copy(update={"delegated_token": token})})
         return result
 
 

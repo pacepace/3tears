@@ -29,6 +29,7 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.core.security import (
     ISSUE_TIME_FUTURE_TOLERANCE,
     CachedHubJwksProvider,
+    DelegatedTokenSigner,
     ProxyAssertionSigner,
     resolve_secret,
 )
@@ -60,6 +61,7 @@ from threetears.registry.auth import (
 )
 from threetears.registry.config import (
     get_jwks_request_timeout,
+    get_delegated_token_signing_key_ref,
     get_proxy_assertion_signing_key_ref,
 )
 from threetears.registry.registration import RegistrationHandler
@@ -813,6 +815,8 @@ class RegistryServer:
         # or malformed key must fail startup loudly (the exception propagates out of serve) rather
         # than boot the registry into a silently-broken state.
         proxy_signer = ProxyAssertionSigner.from_secret(resolve_secret(get_proxy_assertion_signing_key_ref()))
+        # the delegated-token key: one key for one purpose, optional until the doors' windows close
+        delegated_signer = DelegatedTokenSigner.from_secret_ref(get_delegated_token_signing_key_ref())
 
         # the pop replay guard records each per-call proof nonce for single-use enforcement;
         # always provisioned under enforce-only so a captured pop can never be replayed verbatim
@@ -870,6 +874,7 @@ class RegistryServer:
             # rotated Hub key heals on the first failed-but-valid call rather than after the steady tick.
             jwks_refresh=jwks_provider.refresh_now,
             proxy_signer=proxy_signer,
+            delegated_signer=delegated_signer,
             pop_replay_guard=pop_replay_guard,
         )
         self._call_proxy = call_proxy

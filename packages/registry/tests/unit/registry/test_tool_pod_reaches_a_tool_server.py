@@ -326,3 +326,111 @@ class TestAToolsOwnRefusalCode:
 
         # the client's own placeholder for a failure the answer did not name
         assert excinfo.value.error_code == "UNKNOWN"
+
+
+class TestTheForwardedCallCarriesADelegatedToken:
+    """Chunk 10b: the tool pod gets a call-scoped token bound to its own key, not just the caller's."""
+
+    @staticmethod
+    async def _forward(*, pod_key: Ed25519PrivateKey | None) -> tuple[_ProxyNats, Any, Any]:
+        from threetears.core.security import DelegatedTokenSigner  # noqa: PLC0415
+
+        hub_priv, hub_pub = generate_signing_keypair()
+        seed = base64.urlsafe_b64encode(Ed25519PrivateKey.generate().private_bytes_raw()).decode("ascii")
+        proxy_signer = ProxyAssertionSigner.from_secret(SecretStr(seed))
+        delegated_key = Ed25519PrivateKey.generate()
+        delegated = DelegatedTokenSigner(signing_key=delegated_key, kid=jwk_thumbprint(delegated_key.public_key()))
+        jwks = {
+            "keys": [
+                *build_jwks({"kid-1": hub_pub})["keys"],
+                *proxy_signer.public_jwks()["keys"],
+                *build_jwks({delegated.kid: delegated_key.public_key()})["keys"],
+            ]
+        }
+        catalog = ToolCatalog()
+        await catalog.register(
+            uniform_entry(
+                tool_name=_TOOL,
+                tool_version=_VERSION,
+                full_name=f"{_TOOL}@{_VERSION}",
+                description="echo",
+                input_schema={"type": "object", "properties": {}},
+                endpoints=[
+                    ToolEndpoint(
+                        pod_id=_SERVING_POD,
+                        status="available",
+                        holder_jkt=jwk_thumbprint(pod_key.public_key()) if pod_key is not None else None,
+                    )
+                ],
+                timeout_seconds=5.0,
+            )
+        )
+        pod_nats = _PodNats()
+        tool = _ScopeRecordingTool()
+        server = ToolServer(
+            nats_client=pod_nats,  # type: ignore[arg-type]
+            pod_id=_SERVING_POD,
+            jwks_provider=lambda: jwks,
+            assertion_replay_guard=FakeReplayGuard(),
+        )
+        server.register(tool)
+        proxy = CallProxy(
+            catalog,
+            AllowAllAuthorizer(),
+            FakeReplayGuard(),
+            limit_guard=AllowAllLimitGuard(),
+            namespace=_NS,
+            jwks_provider=lambda: {"keys": build_jwks({"kid-1": hub_pub})["keys"]},
+            proxy_signer=proxy_signer,
+            delegated_signer=delegated,
+        )
+        hop = _ProxyNats(server, pod_nats)
+        await proxy.start(hop)  # type: ignore[arg-type]
+        caller_key = Ed25519PrivateKey.generate()
+        caller = uuid7()
+        token = _pod_token(hub_priv, pod_id=caller, holder_key=caller_key, customer_claim=PLATFORM_CUSTOMER_SENTINEL)
+        client = ToolCallClient(
+            _CallerNats(proxy, hop),  # type: ignore[arg-type]
+            principal_id=caller,
+            identity_token=lambda: token,
+            pop_signer=_Signer(caller_key),
+        )
+        await client.call(_TOOL, _VERSION, {"text": "hi"})
+        return hop, jwks, caller
+
+    @pytest.mark.asyncio
+    async def test_the_pod_can_act_as_its_caller_only_with_its_own_key(self) -> None:
+        from threetears.core.security import (  # noqa: PLC0415
+            DelegatedTokenError,
+            canonical_call_hash,
+            make_pop_proof,
+            verify_door_caller,
+        )
+        from threetears.core.security.pop import access_token_hash  # noqa: PLC0415
+
+        pod_key = Ed25519PrivateKey.generate()
+        hop, jwks, caller = await self._forward(pod_key=pod_key)
+        delegated = hop.forwarded[0].context.delegated_token  # type: ignore[union-attr]
+        assert delegated
+        body = canonical_call_hash("l3.query", {"sql": "select 1"}, None)
+
+        def _proof(key: Ed25519PrivateKey) -> str:
+            return make_pop_proof(
+                holder_key=key,
+                access_token_hash=access_token_hash(delegated),
+                body_hash=body,
+                nonce="n",
+                iat=int(time.time()),
+            )
+
+        door = verify_door_caller(delegated, _proof(pod_key), jwks=jwks, hub_issuer="hub", door="l3", body_hash=body)
+        assert (door.agent_id, door.pod_id) == (f"{caller}", _SERVING_POD)
+        with pytest.raises(DelegatedTokenError):
+            verify_door_caller(
+                delegated, _proof(Ed25519PrivateKey.generate()), jwks=jwks, hub_issuer="hub", door="l3", body_hash=body
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_pod_whose_key_the_registry_does_not_know_gets_no_delegated_token(self) -> None:
+        hop, _jwks, _caller = await self._forward(pod_key=None)
+        assert hop.forwarded[0].context.delegated_token is None  # type: ignore[union-attr]
