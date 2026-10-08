@@ -103,9 +103,9 @@ from threetears.evals.analysis.reporting import (
 from threetears.evals.analysis.stats import (
     MULTIPLE_COMPARISON_CORRECTION,
     SIGNIFICANCE_ALPHA,
-    ci_half_width,
     composite_significance,
     holm_adjust,
+    observed_mean_interval,
     standard_error_of_mean,
     wilson_interval,
 )
@@ -2760,7 +2760,7 @@ def _measure_summary(
         numeric = sorted(float(value) for value in values)
         mean = sum(numeric) / len(numeric)
         sem = standard_error_of_mean(numeric)
-        half_width = None if sem is None else ci_half_width(sem, len(numeric))
+        interval = observed_mean_interval(numeric, value_range=descriptor.value_range)
         shape = {
             "mean": mean,
             "p05": _percentile(numeric, 0.05),
@@ -2778,9 +2778,11 @@ def _measure_summary(
             # silently came back with no visualization at all. Interval of the mean,
             # not of the observations: it
             # answers "where does this arm's average sit", which is the question a
-            # null result asks. None below n=2, where `sem` itself is unestimable.
-            "ci_low": None if half_width is None else mean - half_width,
-            "ci_high": None if half_width is None else mean + half_width,
+            # null result asks. None below n=2, where `sem` itself is unestimable. Inside the measure's
+            # declared scale, and a 0/1 measure's is its proportion's Wilson interval — one rule,
+            # `stats.observed_mean_interval`, so `accuracy` and the `match` it is derived from agree.
+            "ci_low": None if interval is None else interval[0],
+            "ci_high": None if interval is None else interval[1],
         }
     return MeasureSummary(
         name=descriptor.name,

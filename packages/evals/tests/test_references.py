@@ -107,6 +107,19 @@ def test_a_judged_reading_takes_a_t_interval_and_the_quality_axis():
     assert (reading.merit_axis, reading.higher_is_better, reading.unit) == ("quality", True, None)
 
 
+def test_a_judged_interval_stays_inside_the_dimensions_scale():
+    """A mean near the top of a 1-5 scale: the t interval's upper half would overrun 5, and is clipped to it."""
+    surface = _surface()
+    near_the_top = surface.cells[0].judged[0].model_copy(update={"mean": 4.8, "sem": 0.2})
+    surface.cells[0].judged[0] = near_the_top
+    reading = resolve_reading(surface, _REF, "reply.grounding", "judged")
+
+    half = t_critical_two_sided(INTERVAL_LEVEL, 3) * 0.2
+    assert 4.8 + half > 5.0
+    assert reading.ci_low == pytest.approx(4.8 - half)
+    assert reading.ci_high == 5.0
+
+
 def test_an_unresolvable_reference_is_a_repairable_refusal():
     assert issubclass(UnresolvableReference, SoundnessRefusal)
 
