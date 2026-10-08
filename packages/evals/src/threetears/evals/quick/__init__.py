@@ -35,6 +35,9 @@ from threetears.evals.quick.one_call import (
     CALLABLE_KIND,
     CALLABLE_KIND_CONTRACT,
     CALLABLE_UNSEATED,
+    JUDGED_CALLABLE_KIND,
+    JUDGED_CALLABLE_KIND_CONTRACT,
+    JUDGED_CALLABLE_UNSEATED,
     UNUSABLE_ANSWER,
     Candidate,
     ExpectedLabel,
@@ -42,7 +45,8 @@ from threetears.evals.quick.one_call import (
     callable_host,
     run_eval,
 )
-from threetears.evals.ops.summary import EvalSummary, MeasureSummary, summarize_run
+from threetears.evals.quick.judged import CaseMaterial, Judge
+from threetears.evals.ops.summary import DimensionSummary, EvalSummary, MeasureSummary, summarize_run
 
 __all__ = [
     "CALLABLE_KIND",
@@ -54,13 +58,19 @@ __all__ = [
     "EXIT_OK",
     "EXIT_REFUSED",
     "EXIT_RUN_DID_NOT_COMPLETE",
+    "JUDGED_CALLABLE_KIND",
+    "JUDGED_CALLABLE_KIND_CONTRACT",
+    "JUDGED_CALLABLE_UNSEATED",
     "UNUSABLE_ANSWER",
     "Candidate",
+    "CaseMaterial",
     "ConfusionCount",
+    "DimensionSummary",
     "EvalSummary",
     "ExpectedLabel",
     "HostCommand",
     "HostFactory",
+    "Judge",
     "LabelStatistics",
     "MeasureSummary",
     "Scorer",

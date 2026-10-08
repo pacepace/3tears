@@ -419,9 +419,11 @@ async def test_a_classifiers_labels_are_part_of_its_case_set() -> None:
 # --- a classifier's refusals: each made before anything is stored ---------------------------------
 
 
-async def test_a_run_with_neither_scorers_nor_expected_labels_is_refused() -> None:
+async def test_a_run_with_no_scorer_expected_label_or_judge_is_refused() -> None:
     host = callable_host()
-    with pytest.raises(ValueError, match="at least one scorer, or a classifier's expected labels"):
+    with pytest.raises(
+        ValueError, match=r"at least one scorer, a classifier's expected labels \(expected=\) or a judge"
+    ):
         await run_eval(LABELLED, classify, scope_id=SCOPE, host=host)
     assert list_templates(host.storage, SCOPE) == []
 
