@@ -51,12 +51,15 @@ import weakref
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Final, Generic, Protocol, TypeVar, runtime_checkable
+from typing import TYPE_CHECKING, Any, Final, Generic, Protocol, TypeVar, runtime_checkable
 
 from threetears.observe import get_logger
 
 from threetears.core.cache.base import quote_identifier
 from threetears.core.fingerprint import KeyFingerprint, key_fingerprint, postgres_fingerprint_sql
+
+if TYPE_CHECKING:
+    from threetears.core.backends.protocol import L3Reader
 
 __all__ = [
     "DEFAULT_PAGE_SIZE",
@@ -261,12 +264,12 @@ def _filtered(where: Mapping[str, Any] | None, first: int) -> tuple[str, list[An
 
 
 async def l3_fingerprint(
-    l3: Any, table: str, columns: Sequence[str], *, where: Mapping[str, Any] | None = None
+    l3: L3Reader, table: str, columns: Sequence[str], *, where: Mapping[str, Any] | None = None
 ) -> KeyFingerprint:
     """count an L3 table (or the part ``where`` names) and fingerprint ``columns`` of every row, in one statement.
 
     :param l3: the L3 backend
-    :ptype l3: L3Backend
+    :ptype l3: L3Reader
     :param table: the table, a TRUSTED identifier
     :ptype table: str
     :param columns: the columns the digest covers, TRUSTED identifiers
@@ -285,7 +288,7 @@ async def l3_fingerprint(
 
 
 async def read_l3_rows(
-    l3: Any,
+    l3: L3Reader,
     table: str,
     columns: Sequence[str],
     key: Sequence[str],
@@ -300,7 +303,7 @@ async def read_l3_rows(
     the key until a page comes back without it.
 
     :param l3: the L3 backend
-    :ptype l3: L3Backend
+    :ptype l3: L3Reader
     :param table: the table, a TRUSTED identifier
     :ptype table: str
     :param columns: the columns to read, TRUSTED identifiers
@@ -369,7 +372,7 @@ def _held_differs(
 
 
 async def copy_table(
-    l3: Any, table: str, key: Sequence[str], target: WholeTableL1, *, page_size: int = DEFAULT_PAGE_SIZE
+    l3: L3Reader, table: str, key: Sequence[str], target: WholeTableL1, *, page_size: int = DEFAULT_PAGE_SIZE
 ) -> CopyProof:
     """read an L3 table whole into ``target`` and prove the copy, or raise.
 
@@ -378,7 +381,7 @@ async def copy_table(
     ``target`` then holds exactly those keys.
 
     :param l3: the L3 backend
-    :ptype l3: L3Backend
+    :ptype l3: L3Reader
     :param table: the table
     :ptype table: str
     :param key: its key

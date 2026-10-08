@@ -204,7 +204,7 @@ copies swapped in whole.
   tables kept apart from the collections' own L1. `build()` copies every table into a fresh backend
   beside the live set, proves each, and swaps the new set in with one assignment only when every
   table is proven and the writer's record (`settled`: a stamp naming the last committed write, or
-  None while one is in progress) was the same before the first table and after the last; otherwise
+  `Unsettled(reason)` while one is in progress; `None` is a stamp like any other) was the same before the first table and after the last; otherwise
   it raises `IncompleteCopyError`, closes the half-filled backend and the live set stays. `require()`
   answers the live `CopyGeneration` (`backend`, `proofs`, `stamp`, `built_at`), which a reader holds
   for its whole read: a swap never changes a generation a reader holds. `build_if_behind()` builds

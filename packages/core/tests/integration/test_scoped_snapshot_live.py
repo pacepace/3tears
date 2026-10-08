@@ -268,7 +268,7 @@ async def test_a_published_scope_reaches_the_other_replica_alone_and_whole(platf
         rows = {table.name: await _rows(platform.pool, table.name, "TX") for table in _TABLES}
         started = asyncio.get_running_loop().time()
         await writer.publish("TX", 2, rows)
-        while reader.status().last_change is None or reader.status().last_change.epoch != 2:
+        while (change := reader.status().last_change) is None or change.epoch != 2:
             assert asyncio.get_running_loop().time() - started < 10, "the reader never applied TX"
             await asyncio.sleep(0.02)
     finally:
@@ -279,7 +279,8 @@ async def test_a_published_scope_reaches_the_other_replica_alone_and_whole(platf
     with reader.read() as cursor:
         assert cursor.execute("SELECT DISTINCT votes FROM results WHERE state = 'TX'").fetchall() == [(7,)]
     assert _count(reader, "results", "CA") == 40, "another scope was touched"
-    assert reader.status().last_change is not None and reader.status().last_change.scope == "TX"
+    change = reader.status().last_change
+    assert change is not None and change.scope == "TX"
     assert any("/TX/1/" in name for name in platform.retired), "the superseded epoch was not retired"
     assert not any("/TX/2/" in name or "/CA/" in name for name in platform.retired)
     await writer.stop()
@@ -370,9 +371,7 @@ async def test_a_pointer_never_moves_to_a_lower_epoch(platform: _Platform) -> No
     await reader.wait_ready(timeout=_WAIT)
     fresh = {t.name: await _rows(platform.pool, t.name, "DE") for t in _TABLES}
     await writer.publish("DE", 3, fresh)
-    await _until(
-        lambda: reader.status().last_change is not None and reader.status().last_change.epoch == 3, what="DE@3"
-    )
+    await _until(lambda: (change := reader.status().last_change) is not None and change.epoch == 3, what="DE@3")
     # a stale writer, still holding epoch 2, publishes rows that are not the scope's any more
     stale = {name: [dict(r, votes=-1) if name == "results" else r for r in rows] for name, rows in fresh.items()}
     stale_writer, _ = await platform.replica()
@@ -482,7 +481,8 @@ class _HeldStore:
         if self._hold in name and not self.release.is_set():
             self.held.set()
             await self.release.wait()
-        return await self._inner.get(name)
+        data: bytes = await self._inner.get(name)
+        return data
 
 
 async def test_a_chunk_retired_under_a_read_is_read_at_the_current_pointer(platform: _Platform) -> None:
@@ -1105,7 +1105,8 @@ async def test_two_code_versions_with_other_columns_never_load_or_repoint_each_o
 
     def new_has_de() -> bool:
         with new.read() as cursor:
-            return cursor.execute("SELECT DISTINCT votes FROM results WHERE state = 'DE'").fetchall() == [(11,)]
+            votes: list[Any] = cursor.execute("SELECT DISTINCT votes FROM results WHERE state = 'DE'").fetchall()
+        return votes == [(11,)]
 
     await _until(new_has_de, what="the new version to rebuild DE from L3")
     with new.read() as cursor:

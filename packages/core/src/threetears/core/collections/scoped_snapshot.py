@@ -81,6 +81,7 @@ from threetears.core.cache.duckdb import DuckDBBackend, PartitionReplacement
 from threetears.core.collections.complete_copy import Unsettled, read_l3_rows
 
 if TYPE_CHECKING:
+    from threetears.core.backends.protocol import L3Reader
     from threetears.nats.client import NatsClient
     from threetears.nats.kv import NatsKvBucket
     from threetears.nats.object_store import NatsObjectStore, ObjectInfo
@@ -722,7 +723,7 @@ class ScopedSnapshot:
     :param pointers: the pod's pointer bucket (``NatsClient.kv_bucket``), allowing per-entry TTLs
     :ptype pointers: NatsKvBucket
     :param l3: the L3 backend the tables live in (``fetch``, ``fetchrow``)
-    :ptype l3: Any
+    :ptype l3: L3Reader
     :param epochs: each scope's current epoch as L3 records it; a scope it does not name is epoch 0
     :ptype epochs: Callable[[], Awaitable[Mapping[str, int]]]
     :param settled: the writer's seqlock (``ScopeEpochs.settled``): a stamp naming the last committed
@@ -758,7 +759,7 @@ class ScopedSnapshot:
         backend: DuckDBBackend,
         store: NatsObjectStore,
         pointers: NatsKvBucket,
-        l3: Any,
+        l3: L3Reader,
         epochs: Callable[[], Awaitable[Mapping[str, int]]],
         settled: Callable[[], Awaitable[Any]] | None = None,
         ensure_buckets: Callable[[], Awaitable[None]] | None = None,
@@ -2339,7 +2340,7 @@ async def open_tool_pod_snapshot(
     name: str,
     tables: Sequence[SnapshotTable],
     backend: DuckDBBackend,
-    l3: Any,
+    l3: L3Reader,
     epochs: Callable[[], Awaitable[Mapping[str, int]]],
     settled: Callable[[], Awaitable[Any]] | None = None,
     **options: Any,
@@ -2362,7 +2363,7 @@ async def open_tool_pod_snapshot(
     :param backend: the DuckDB L1 holding every table, initialized
     :ptype backend: DuckDBBackend
     :param l3: the L3 backend the tables live in
-    :ptype l3: Any
+    :ptype l3: L3Reader
     :param epochs: each scope's epoch as L3 records it
     :ptype epochs: Callable[[], Awaitable[Mapping[str, int]]]
     :param settled: the writer's seqlock
