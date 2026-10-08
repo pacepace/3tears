@@ -26,11 +26,17 @@ no L1 bound it holds nothing: every read is one loader call.
 the R-Tree needs integer keys and features are keyed by
 ``(layer, source_version, feature_id)``, so a companion map table assigns a
 surrogate rowid per feature key. that indirection is the price of the built-in
-module; it is one extra table, not a second cache.
+module; it is one extra table, not a second cache. each key also carries a
+token minted per instance: several caches of one scope share the L1's tables
+(the hub builds one per layer), and each keeps its rows in memory, so each
+indexes and evicts only its own entries. an instance's entries are deleted
+when it is garbage-collected.
 """
 
 from __future__ import annotations
 
+import secrets
+import weakref
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any, ClassVar
@@ -78,8 +84,9 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         row in two chunks counts twice, an empty chunk once); ``None`` takes
         :attr:`max_cached_rows` from the class. past it the least recently read chunk is evicted,
         rows and spatial index together, and is loaded again when next asked for. one read may
-        claim at most half of it: a read whose own entries would exceed that is answered and not
-        held, so a dense chunk or a wide rectangle never flushes the working set
+        newly hold at most half of it, counted across all the chunks it loads: the chunks past
+        that are answered from the read's own rows and not held, so no read -- a dense chunk, many
+        small ones, or a wide rectangle -- flushes the working set
     :ptype max_cached_rows: int | None
     :raises ValueError: for a cache scope that is not a lowercase identifier, or a
         ``max_cached_rows`` below 1
@@ -138,6 +145,9 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         self._holders: dict[str, int] = {}
         # chunks a read in progress depends on, which eviction skips until that read has answered
         self._pins: dict[_ChunkMarker, int] = {}
+        # leads every R-Tree key this instance writes, so instances sharing the tables never read
+        # or evict each other's entries
+        self._instance_key = secrets.token_hex(6)
 
     @property
     def table_name(self) -> str:
@@ -186,10 +196,12 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         )
         conn.commit()
         self._rtree_ready = True
+        weakref.finalize(
+            self, _drop_index_entries, backend, self._rtree_table, self._map_table, f"{self._instance_key}\x1f"
+        )
 
-    @staticmethod
-    def _feature_key(layer: str, source_version: int, feature_id: Any) -> str:
-        return f"{layer}\x1f{source_version}\x1f{feature_id}"
+    def _feature_key(self, layer: str, source_version: int, feature_id: Any) -> str:
+        return f"{self._instance_key}\x1f{layer}\x1f{source_version}\x1f{feature_id}"
 
     def index_feature(self, layer: str, source_version: int, feature_id: Any, bounds: BoundingBox) -> None:
         """record one feature's bounds in the R-Tree.
@@ -222,7 +234,7 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         :return: feature ids present in this pod's cache and inside the rectangle
         :rtype: list[str]
         """
-        return [key.split("\x1f", 2)[2] for key in self._keys_in_bbox(layer, source_version, bounds)]
+        return [key.split("\x1f", 3)[3] for key in self._keys_in_bbox(layer, source_version, bounds)]
 
     def _keys_in_bbox(self, layer: str, source_version: int, bounds: BoundingBox) -> list[str]:
         """the R-Tree feature keys of one layer and generation whose bounds overlap ``bounds``."""
@@ -230,7 +242,7 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         backend = self._l1
         if backend is None or not self._rtree_ready:
             return []
-        prefix = f"{layer}\x1f{source_version}\x1f"
+        prefix = self._feature_key(layer, source_version, "")
         rows = backend.execute_query(
             f"SELECT m.feature_key AS feature_key FROM {self._rtree_table} r "
             f"JOIN {self._map_table} m ON m.id = r.id "
@@ -279,9 +291,9 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         edge) is not, since the rows outside the rectangle were never read.
 
         what is held is bounded (``max_cached_rows``) and evicted least recently read first, never
-        while a read still depends on it. a read whose own entries would claim more than half
-        the bound -- one dense chunk, or a wide rectangle -- is answered from its own rows and not
-        held.
+        while a read still depends on it. one read newly holds at most half the bound, summed over
+        every chunk it loads: the chunks past that, and a wide rectangle whose entries would pass
+        it, are answered from the read's own rows and not held.
 
         :param layer: geo layer name
         :ptype layer: str
@@ -303,8 +315,10 @@ class FeatureCache(BaseCollection[FeatureEntity]):
             self._evict()
             return self._within(rows.values(), bounds)
         pinned: list[_ChunkMarker] = []
-        # rows of a chunk too dense to hold, answered from here instead of from the index
+        # rows of chunks this read cannot hold, answered from here instead of from the index
         transient: dict[str, dict[str, Any]] = {}
+        # entries this read has newly held: together they may not pass half the bound
+        claimed = 0
         try:
             for chunk in chunks:
                 marker = (layer, source_version, chunk.key)
@@ -319,9 +333,11 @@ class FeatureCache(BaseCollection[FeatureEntity]):
                         chunk,
                         len(loaded),
                     )
-                    if max(1, len(loaded)) > self._read_cap:
+                    weight = max(1, len(loaded))
+                    if claimed + weight > self._read_cap:
                         log.debug(
-                            "chunk not held: layer=%s version=%s chunk=%s rows=%d exceed half the bound of %d",
+                            "chunk not held: layer=%s version=%s chunk=%s rows=%d would take this read's "
+                            "entries past half the bound of %d",
                             layer,
                             source_version,
                             chunk,
@@ -331,6 +347,7 @@ class FeatureCache(BaseCollection[FeatureEntity]):
                         for feature_id, row in loaded.items():
                             transient[self._feature_key(layer, source_version, feature_id)] = row
                         continue
+                    claimed += weight
                     self._index_many(layer, source_version, self._hold(marker, loaded))
                 self._pins[marker] = self._pins.get(marker, 0) + 1
                 pinned.append(marker)
@@ -584,3 +601,24 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         # attributes are already coerced to MVT scalars downstream.
         result: dict[str, Any] = deserialize_from_json(data, {})
         return result
+
+
+def _drop_index_entries(backend: Any, rtree_table: str, map_table: str, prefix: str) -> None:
+    """delete a collected :class:`FeatureCache`'s R-Tree entries; best effort, never raises.
+
+    run by :func:`weakref.finalize`, so it may run during interpreter shutdown or after the L1 has
+    closed; an entry left behind is only an unread row in an in-memory table.
+    """
+    try:
+        conn = backend.get_connection()
+        params = (len(prefix), prefix)
+        conn.execute(
+            f"DELETE FROM {rtree_table} WHERE id IN (SELECT id FROM {map_table} WHERE substr(feature_key, 1, ?) = ?)",
+            params,
+        )
+        conn.execute(f"DELETE FROM {map_table} WHERE substr(feature_key, 1, ?) = ?", params)
+        conn.commit()
+    # prawduct:allow prawduct/broad-except -- a finalizer must not raise; whatever the L1 says on
+    # the way down, the entries are unread and the table is in memory
+    except Exception:  # noqa: BLE001
+        log.debug("could not drop a collected feature cache's index entries", exc_info=True)

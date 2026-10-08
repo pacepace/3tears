@@ -95,8 +95,9 @@ Once a rectangle's chunks are covered, the R-Tree answers which held features
 overlap it, and an exact rectangle test follows (the R-Tree stores 32-bit
 floats rounded outward, so it can over-answer but never under-answer). What a
 pod holds is bounded by `max_cached_rows` and evicted least recently read
-first, rows and index entries together. One read may claim at most half the
-bound, so a dense chunk or a wide low-zoom rectangle is answered and not held.
+first, rows and index entries together. One read newly holds at most half the
+bound, summed over every chunk it loads; the chunks past that, or a wide
+low-zoom rectangle whose entries would pass it, are answered and not held.
 A rectangle over more than `max_chunk_reads` uncovered chunks is one loader
 call, and with no L1 bound every read is one loader call.
 

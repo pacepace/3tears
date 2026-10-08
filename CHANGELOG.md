@@ -74,8 +74,12 @@ maps, with or without an L1.
   counts twice, an empty chunk once). Past it the least recently read chunk is evicted, its rows
   and R-Tree entries leaving once no held chunk carries them, and it is loaded again when next asked
   for. Eviction never takes a chunk a read in progress depends on, and is logged at DEBUG. One read
-  may claim at most half the bound, counted the same way: a denser chunk or a wider rectangle is
-  answered from its own rows and not held, so it cannot flush the working set.
+  newly holds at most half the bound, counted the same way and summed over every chunk it loads:
+  the chunks past that, or a wide rectangle whose entries would pass it, are answered from the
+  read's own rows and not held, so no read can flush the working set.
+- **Fixed, caches sharing an L1**: every R-Tree key carries a token minted per `FeatureCache`
+  instance, so several caches of one scope on one L1 (the hub builds one per layer) never read or
+  evict each other's index entries. A collected instance's entries are deleted, best effort.
 - **Changed, the R-Tree answers the read**: once a rectangle's chunks are covered, the held features
   overlapping it come from an R-Tree query, then an exact rectangle test. Before, the index was
   written and never read. `index_feature` and the read path share one insert. The layer prefix is

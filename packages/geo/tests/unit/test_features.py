@@ -9,6 +9,8 @@ about SQLite rather than SQLite's behaviour.
 
 from __future__ import annotations
 
+import asyncio
+import gc
 from typing import Any
 
 import pytest
@@ -619,3 +621,101 @@ class TestOneRuleForEveryReadPath:
 
         found = await cache.features_in_bbox("tracts", 1, bounds)
         assert [row["feature_id"] for row in found] == ["good"]
+
+
+class TestAReadInProgressKeepsWhatItDependsOn:
+    async def test_a_chunk_a_read_holds_survives_eviction_while_it_waits(self, request: pytest.FixtureRequest) -> None:
+        # read A covers chunk a, then waits on chunk b's load; other reads push the cache past its
+        # bound meanwhile. a is the least recently read chunk, but A still depends on it
+        a_tile, b_tile, c_tile, d_tile = _chunk_tile(0), _chunk_tile(1), _chunk_tile(2), _chunk_tile(3)
+        rows = [_point_row(name, tile) for name, tile in (("a", a_tile), ("b", b_tile), ("c", c_tile), ("d", d_tile))]
+        b_chunk = tile_bounds(TileId(z=FeatureCache.chunk_zoom, x=b_tile.x // 16, y=b_tile.y // 16))
+        b_released = asyncio.Event()
+        b_requested = asyncio.Event()
+
+        async def _loader(layer: str, source_version: int, bounds: BoundingBox) -> list[dict[str, Any]]:
+            if bounds == b_chunk:
+                b_requested.set()
+                await b_released.wait()
+            return [row for row in rows if row["bounds"].intersects(bounds)]
+
+        cache = _cache_over(request, _loader, max_cached_rows=2)
+        a_bounds, b_bounds = tile_bounds(a_tile), tile_bounds(b_tile)
+        spanning = BoundingBox(a_bounds.min_lon, a_bounds.min_lat, b_bounds.max_lon, b_bounds.max_lat)
+
+        read_a = asyncio.create_task(cache.features_in_bbox("tracts", 1, spanning))
+        await b_requested.wait()
+        await cache.features_in_bbox("tracts", 1, tile_bounds(c_tile))
+        await cache.features_in_bbox("tracts", 1, tile_bounds(d_tile))
+        b_released.set()
+
+        found = await read_a
+        assert sorted(row["feature_id"] for row in found) == ["a", "b"], "a chunk the read held was evicted under it"
+
+
+class TestLayersAndInstancesDoNotLeak:
+    def test_a_layer_name_with_like_wildcards_matches_only_itself(self, request: pytest.FixtureRequest) -> None:
+        cache = _cache_over(request, _empty_loader)
+        box = BoundingBox(-1, -1, 1, 1)
+        cache.index_feature("axb", 1, "x-feature", box)
+        cache.index_feature("a_b", 1, "underscore-feature", box)
+
+        assert cache.indexed_keys_in_bbox("a_b", 1, box) == ["underscore-feature"]
+        assert cache.indexed_keys_in_bbox("axb", 1, box) == ["x-feature"]
+        assert cache.indexed_keys_in_bbox("a%b", 1, box) == []
+
+    async def test_two_caches_of_one_scope_on_one_l1_do_not_evict_each_others_index(
+        self, request: pytest.FixtureRequest
+    ) -> None:
+        # both caches open the same named SQLite database, so they share its tables
+        a_tile, b_tile = _chunk_tile(0), _chunk_tile(1)
+        loader, calls = _recording_loader([_point_row("f", a_tile), _point_row("g", b_tile)])
+        first = _cache_over(request, loader)
+        second = _cache_over(request, loader, max_cached_rows=1)
+
+        await first.features_in_bbox("tracts", 1, tile_bounds(a_tile))
+        await second.features_in_bbox("tracts", 1, tile_bounds(a_tile))
+        await second.features_in_bbox("tracts", 1, tile_bounds(b_tile))  # evicts its own copy of "f"
+
+        found = await first.features_in_bbox("tracts", 1, tile_bounds(a_tile))
+        assert len(calls) == 3, "the first cache's chunk should still be covered"
+        assert [row["feature_id"] for row in found] == ["f"], "one cache's eviction removed the other's index entry"
+
+
+class TestOneReadClaimsAtMostHalfTheBound:
+    async def test_a_read_over_several_small_chunks_is_counted_whole(self, request: pytest.FixtureRequest) -> None:
+        # four one-row chunks in one read, against a bound of 4: each fits half the bound alone,
+        # together they would claim all of it and flush the chunk held before
+        held = _chunk_tile(8)
+        tiles = [_chunk_tile(i) for i in range(4)]
+        rows = [_point_row("held", held)] + [_point_row(f"r{i}", tile) for i, tile in enumerate(tiles)]
+        loader, calls = _recording_loader(rows)
+        cache = _cache_over(request, loader, max_cached_rows=4)
+        first, last = tile_bounds(tiles[0]), tile_bounds(tiles[-1])
+        spanning = BoundingBox(first.min_lon, first.min_lat, last.max_lon, last.max_lat)
+
+        await cache.features_in_bbox("tracts", 1, tile_bounds(held))
+        found = await cache.features_in_bbox("tracts", 1, spanning)
+        assert sorted(row["feature_id"] for row in found) == ["r0", "r1", "r2", "r3"]
+
+        loads = len(calls)
+        await cache.features_in_bbox("tracts", 1, tile_bounds(held))
+        assert len(calls) == loads, "one read's chunks together flushed the chunk held before it"
+
+
+class TestACollectedCache:
+    async def test_leaves_no_index_entries(self, request: pytest.FixtureRequest) -> None:
+        # caches of one scope share the L1's tables, so one that is dropped must take its entries
+        tile = _chunk_tile(0)
+        loader, _ = _recording_loader([_point_row("f", tile)])
+        cache = _cache_over(request, loader)
+        backend = SQLiteBackend(f"geo_wide_{abs(hash(request.node.nodeid))}")
+        backend.initialize(MetaData())
+        await cache.features_in_bbox("tracts", 1, tile_bounds(tile))
+        count_sql = f"SELECT count(*) AS n FROM geo_features_{SCOPE}_rtree_map"
+        assert backend.execute_query(count_sql)[0]["n"] == 1
+
+        del cache
+        gc.collect()
+
+        assert backend.execute_query(count_sql)[0]["n"] == 0
