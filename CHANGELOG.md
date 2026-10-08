@@ -17,8 +17,12 @@ packages (bumped in lock-step).
   another, every sweep). The catalog now follows the grants by construction: a revoked table
   leaves at the next change-driven introspection, a new grant comes in. On Redshift the check sits
   behind a `CASE` on `SVV_TABLES.table_type`, since `has_table_privilege` raises on a Spectrum
-  external table (which passes, its access being the external schema's USAGE), and the column
-  queries join `SVV_TABLES` for that type, binding the allow-list twice. The column-hash formula is
+  external table (which passes, its access being the external schema's USAGE). `list_columns` and
+  `table_hashes` take the readable set from that check as a statement of its own and drop the rest
+  in Python: `has_table_privilege` is leader-node-only and the hash query's `LISTAGG` runs on the
+  compute nodes, and Redshift refuses a statement mixing the two (`0A000 Specified types or
+  functions ... not supported on Redshift tables`, which the first version, joining the check into
+  the hash query, hit on the warehouse). The column-hash formula and both column queries are
   unchanged, so no stored hash moves.
 
 ### Datasources: a Redshift keepalive no longer gives up before the statement ceiling

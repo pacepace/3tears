@@ -256,21 +256,29 @@ ORDER BY table_schema, table_name
 ).strip()
 
 
-#: the relations in the allow-list the user can read, joined into the column queries:
-#: ``SVV_COLUMNS`` carries no ``table_type`` to guard the privilege test with, ``SVV_TABLES`` does.
-#: a local table or view is read only with its SELECT grant; an external table passes, its access
-#: being the external schema's USAGE (see :data:`_SELECTABLE`). the derived table renames its
-#: columns so the outer query's unqualified ``table_schema`` / ``table_name`` stay SVV_COLUMNS'.
-_REDSHIFT_SELECTABLE_RELATIONS_JOIN = (
-    """JOIN (
-    SELECT table_schema AS selectable_schema, table_name AS selectable_table
-    FROM SVV_TABLES
-    WHERE table_schema IN ({placeholders})
-    AND CASE WHEN table_type IN ('BASE TABLE', 'VIEW') THEN """
+#: the relations in the allow-list the user can read, as their OWN statement.
+#:
+#: ``has_table_privilege`` is a leader-node-only function and the column-hash query's ``LISTAGG``
+#: runs on the compute nodes; Redshift refuses one statement mixing the two (``0A000 Specified
+#: types or functions (one per INFO message) not supported on Redshift tables`` -- seen on the
+#: warehouse when the check was joined into the hash query, 2026-10-07). so the check runs
+#: here, over ``SVV_TABLES`` alone (the shape :data:`_REDSHIFT_TABLES_SQL_TEMPLATE` proves
+#: runs), and ``list_columns`` / ``table_hashes`` keep their unchanged queries and drop, in
+#: python, every row outside the set this returns -- on the same connection, one statement
+#: after the other. ``SVV_COLUMNS`` carries no ``table_type`` to guard the check with, which
+#: is the other reason it cannot ride the column queries. a local table or view is kept only
+#: with its SELECT grant; an external table passes, its access being the external schema's
+#: USAGE (see :data:`_SELECTABLE`).
+_REDSHIFT_SELECTABLE_RELATIONS_SQL_TEMPLATE = (
+    """
+SELECT table_schema, table_name
+FROM SVV_TABLES
+WHERE table_schema IN ({placeholders})
+AND CASE WHEN table_type IN ('BASE TABLE', 'VIEW') THEN """
     + _SELECTABLE
     + """ ELSE TRUE END
-) AS selectable ON selectable.selectable_schema = table_schema AND selectable.selectable_table = table_name"""
-)
+"""
+).strip()
 
 
 #: the boolean columns of one relation, for the fingerprint: Redshift refuses to cast a boolean to
@@ -301,17 +309,12 @@ _REDSHIFT_UNQUALIFIED_BOOLEAN_COLUMNS_SQL = (
 #: as long as both sides observe SVV_COLUMNS, byte-equivalence holds.
 #: cross-driver hash equivalence (asyncpg vs redshift) is NOT
 #: guaranteed; same-driver python-vs-SQL IS guaranteed.
-_REDSHIFT_COLUMNS_SQL_TEMPLATE = (
-    """
+_REDSHIFT_COLUMNS_SQL_TEMPLATE = """
 SELECT table_schema, table_name, column_name, data_type, is_nullable, ordinal_position
 FROM SVV_COLUMNS
-"""
-    + _REDSHIFT_SELECTABLE_RELATIONS_JOIN
-    + """
 WHERE table_schema IN ({placeholders})
 ORDER BY table_schema, table_name, ordinal_position
-"""
-).strip()
+""".strip()
 
 
 #: per-table MD5 over the column shape (Tier-2 change-probe). same
@@ -336,19 +339,32 @@ ORDER BY table_schema, table_name, ordinal_position
 #: in ``threetears.datasources.introspection.column_hash_payload`` must
 #: change identically in the same commit or the two stop agreeing and
 #: every sweep reports spurious changes forever.
-_REDSHIFT_TABLE_HASHES_SQL_TEMPLATE = (
-    """
+_REDSHIFT_TABLE_HASHES_SQL_TEMPLATE = """
 SELECT table_schema, table_name,
        MD5(LISTAGG(MD5(column_name || ':' || data_type || ':' || COALESCE(is_nullable, '')), ',') WITHIN GROUP (ORDER BY ordinal_position)) AS column_hash
 FROM SVV_COLUMNS
-"""
-    + _REDSHIFT_SELECTABLE_RELATIONS_JOIN
-    + """
 WHERE table_schema IN ({placeholders})
 GROUP BY table_schema, table_name
 ORDER BY table_schema, table_name
-"""
-).strip()
+""".strip()
+
+
+def _selectable_relations(cursor: Any, selectable_sql: str, params: tuple[str, ...]) -> set[tuple[str, str]]:
+    """the ``(schema, table)`` pairs in the allow-list the connected user can read.
+
+    run as a statement of its own: see :data:`_REDSHIFT_SELECTABLE_RELATIONS_SQL_TEMPLATE`.
+
+    :param cursor: open cursor on the connection the column query will use next
+    :ptype cursor: Any
+    :param selectable_sql: the rendered selectable-relations statement
+    :ptype selectable_sql: str
+    :param params: the schema allow-list, bound once per placeholder
+    :ptype params: tuple[str, ...]
+    :return: the readable relations
+    :rtype: set[tuple[str, str]]
+    """
+    cursor.execute(selectable_sql, params)
+    return {(row[0], row[1]) for row in cursor.fetchall()}
 
 
 def _build_in_clause(n: int) -> str:
@@ -2255,8 +2271,8 @@ class RedshiftDriver(Driver):
             raise RuntimeError("RedshiftDriver is closed")
 
         sql = _REDSHIFT_COLUMNS_SQL_TEMPLATE.format(placeholders=_build_in_clause(len(schemas)))
-        # the allow-list appears twice: SVV_COLUMNS' filter and the selectable-relations join
-        params = tuple(schemas) * 2
+        selectable_sql = _REDSHIFT_SELECTABLE_RELATIONS_SQL_TEMPLATE.format(placeholders=_build_in_clause(len(schemas)))
+        params = tuple(schemas)
 
         def _do_sync(
             conn: RedshiftConnection,
@@ -2265,6 +2281,7 @@ class RedshiftDriver(Driver):
             try:
                 if not params:
                     return []
+                selectable = _selectable_relations(cursor, selectable_sql, params)
                 cursor.execute(sql, params)
                 rows = cursor.fetchall()
                 cols = [c[0] for c in cursor.description]
@@ -2279,6 +2296,7 @@ class RedshiftDriver(Driver):
                         ordinal_position=r["ordinal_position"],
                     )
                     for r in dicts
+                    if (r["table_schema"], r["table_name"]) in selectable
                 ]
             finally:
                 cursor.close()
@@ -2394,8 +2412,8 @@ class RedshiftDriver(Driver):
             raise RuntimeError("RedshiftDriver is closed")
 
         sql = _REDSHIFT_TABLE_HASHES_SQL_TEMPLATE.format(placeholders=_build_in_clause(len(schemas)))
-        # the allow-list appears twice: SVV_COLUMNS' filter and the selectable-relations join
-        params = tuple(schemas) * 2
+        selectable_sql = _REDSHIFT_SELECTABLE_RELATIONS_SQL_TEMPLATE.format(placeholders=_build_in_clause(len(schemas)))
+        params = tuple(schemas)
 
         def _do_sync(
             conn: RedshiftConnection,
@@ -2404,11 +2422,16 @@ class RedshiftDriver(Driver):
             try:
                 if not params:
                     return {}
+                selectable = _selectable_relations(cursor, selectable_sql, params)
                 cursor.execute(sql, params)
                 rows = cursor.fetchall()
                 cols = [c[0] for c in cursor.description]
                 dicts = [dict(zip(cols, row)) for row in rows]
-                return {(r["table_schema"], r["table_name"]): r["column_hash"] for r in dicts}
+                return {
+                    (r["table_schema"], r["table_name"]): r["column_hash"]
+                    for r in dicts
+                    if (r["table_schema"], r["table_name"]) in selectable
+                }
             finally:
                 cursor.close()
 

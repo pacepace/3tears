@@ -185,6 +185,81 @@ class TestSmokingGun:
 
 
 # ---------------------------------------------------------------------------
+# least-privilege users: the catalog is what the user can SELECT
+# ---------------------------------------------------------------------------
+
+
+#: schemas the catalog proof reads: a reporting schema and the shapes schema the
+#: least-privilege reports and geography users are granted a single table of
+_PRIVILEGE_PROOF_SCHEMAS = ["reporting_prod", "geospatial_data"]
+
+#: how many returned relations the proof reads back with a real SELECT; each is one round trip
+_PRIVILEGE_PROOF_SAMPLE = 8
+
+
+def _quoted(schema: str, table: str) -> str:
+    """``schema.table`` as quoted identifiers, for a probe statement."""
+    return ".".join('"' + part.replace('"', '""') + '"' for part in (schema, table))
+
+
+async def assert_catalog_is_only_selectable(driver: Driver, schemas: list[str]) -> None:
+    """run all three catalog methods on the real warehouse and prove each lists only readable tables.
+
+    the regression this pins: the privilege check joined into the hash query made Redshift
+    refuse ``table_hashes`` outright (``0A000``: ``has_table_privilege`` is leader-node-only,
+    ``LISTAGG`` runs on the compute nodes), which no mock can show. so the three methods must
+    complete; their answers must agree on which tables exist; a sample of what they return must
+    really be SELECT-able; and a table the user can see in ``SVV_TABLES`` but not read, when the
+    warehouse has one for this user, must be absent and must really refuse a SELECT.
+
+    a module-level helper rather than a test body so the same proof can be run as another
+    least-privilege user from outside pytest.
+
+    :param driver: a live Redshift driver
+    :ptype driver: Driver
+    :param schemas: the allow-list to catalog
+    :ptype schemas: list[str]
+    """
+    tables = {(t["table_schema"], t["table_name"]) for t in await driver.list_tables(schemas)}
+    column_tables = {(c["table_schema"], c["table_name"]) for c in await driver.list_columns(schemas)}
+    hashed = set(await driver.table_hashes(schemas))
+    assert tables, f"the user can SELECT no base table in {schemas}; the proof needs one"
+    # one rule, three methods: the hash probe and the column list agree on what exists
+    assert hashed == column_tables
+    assert tables <= hashed
+    # LIMIT 1, never LIMIT 0: Redshift answers a LIMIT 0 without checking the grant at all
+    # (seen on the warehouse: an ungranted table returns no rows at LIMIT 0, 42501 at LIMIT 1)
+    for schema, table in sorted(hashed)[:_PRIVILEGE_PROOF_SAMPLE]:
+        await driver.fetch(f"SELECT 1 FROM {_quoted(schema, table)} LIMIT 1")  # noqa: S608 - names from the catalog
+    placeholders = ", ".join(f"${i}" for i in range(1, len(schemas) + 1))
+    visible = await driver.fetch(
+        f"SELECT table_schema, table_name FROM SVV_TABLES WHERE table_schema IN ({placeholders}) "  # noqa: S608
+        "AND table_type = 'BASE TABLE'",
+        *schemas,
+    )
+    unreadable = sorted({(r["table_schema"], r["table_name"]) for r in visible} - tables)
+    if unreadable:
+        schema, table = unreadable[0]
+        assert (schema, table) not in hashed
+        with pytest.raises(Exception, match="permission denied"):
+            await driver.fetch(f"SELECT 1 FROM {_quoted(schema, table)} LIMIT 1")  # noqa: S608
+
+
+class TestCatalogIsOnlySelectable:
+    """``list_tables`` / ``list_columns`` / ``table_hashes`` on the real warehouse list only readable tables."""
+
+    @pytest.mark.asyncio
+    async def test_all_three_methods_list_only_selectable_tables(
+        self, redshift_config: RedshiftConnectionConfig
+    ) -> None:
+        driver = RedshiftDriver(_make_config(redshift_config), datasource_name="central-reporting")
+        try:
+            await asyncio.wait_for(assert_catalog_is_only_selectable(driver, _PRIVILEGE_PROOF_SCHEMAS), timeout=300.0)
+        finally:
+            await driver.close()
+
+
+# ---------------------------------------------------------------------------
 # Cross-language hash byte-equivalence (Tier-2 invariant)
 # ---------------------------------------------------------------------------
 

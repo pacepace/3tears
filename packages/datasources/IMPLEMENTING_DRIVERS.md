@@ -186,7 +186,11 @@ them. All three methods must apply the same filter, or the hash probe
 and the column list disagree about which tables exist. Mind relations
 the privilege check cannot see: Redshift's `has_table_privilege` raises
 on a Spectrum external table, so the Redshift driver guards it with a
-`CASE` on `SVV_TABLES.table_type`.
+`CASE` on `SVV_TABLES.table_type`. And mind where the check can run:
+Redshift's `has_table_privilege` is leader-node-only, so it cannot share
+a statement with compute-node work such as the hash query's `LISTAGG`
+(`0A000`). The Redshift driver runs the check as its own statement over
+`SVV_TABLES` and filters the column and hash rows in Python.
 
 `data_type` is also the raw warehouse-reported type string. Don't
 normalize it.
