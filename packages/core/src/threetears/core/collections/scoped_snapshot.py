@@ -1188,7 +1188,11 @@ class ScopedSnapshot:
         finally:
             await claim.release()
         for scope in rebuilt or ():
-            self._behind.pop(scope, None)
+            # current only when this L1 now holds what the scope's pointer names (a rebuild below the
+            # pointer's epoch publishes nothing, and the scope stays behind)
+            seen, applied = self._seen.get(scope), self._applied.get(scope)
+            if seen is not None and applied is not None and not seen.supersedes(applied):
+                self._behind.pop(scope, None)
 
     async def _apply_pointers(self, pointers: Mapping[str, _Pointer]) -> dict[str, str]:
         """fetch each scope's chunks and replace it in this L1, unless the L1 already holds as new.
@@ -1683,14 +1687,15 @@ class ScopedSnapshot:
            still, finds it below and retires it);
         3. a chunk at an epoch BELOW the pointer, and not named by it, is superseded: deleted;
         4. a chunk at the pointer's own epoch it does not name (a rebuild of that epoch under other
-           columns), or of a scope with no pointer at all (a stage for a new scope, or a scope
-           removed), is deleted only once it is older than the stray age.
+           columns), or of a scope with no pointer at all (a stage for a new scope), is deleted only
+           once it is older than the stray age. (A removal empties its scope itself, in
+           :meth:`_retire_older`: what the deleted pointer served is no keep-reference.)
 
         :param info: the chunk, as the store lists it
         :ptype info: ObjectInfo
         :param epoch: its epoch, from its name; ``None`` when the name is not a chunk's
         :ptype epoch: int | None
-        :param reference: its scope's pointer, read from KV (or the pointer a removal just deleted)
+        :param reference: its scope's pointer, read from KV
         :ptype reference: _Pointer | None
         :param now: the time the ages are judged at
         :ptype now: datetime
@@ -1722,13 +1727,19 @@ class ScopedSnapshot:
         return None if raw is None else _Pointer.decode(raw)
 
     async def _retire_older(self, scope: str, epoch: int, *, removed: _Pointer | None = None) -> None:
-        """retire the scope's chunks of epochs before ``epoch`` that :meth:`_deletable` allows; never raises.
+        """retire the scope's chunks of epochs before ``epoch`` that may go; never raises.
+
+        Judged by :meth:`_deletable` against the scope's pointer in KV. After a removal
+        (``removed``, the pointer it deleted) with no pointer standing again, the scope serves
+        nothing: every chunk at or below the deleted pointer's epoch goes, the ones it named
+        included, since a writer recreating the scope writes at a later epoch. If a recreating
+        writer's pointer already stands, it is the judge, as for any scope.
 
         :param scope: the scope
         :ptype scope: str
         :param epoch: retire only chunks below this epoch
         :ptype epoch: int
-        :param removed: the pointer a removal of the scope just deleted, judged by in place of KV's
+        :param removed: the pointer a removal of the scope just deleted
         :ptype removed: _Pointer | None
         :return: nothing
         :rtype: None
@@ -1737,15 +1748,19 @@ class ScopedSnapshot:
             return
         try:
             infos = await self._store.list_objects(prefix=self._object_prefix(scope))
-            reference = removed if removed is not None else await self._pointer_now(self._pointer_key(scope))
+            reference = await self._pointer_now(self._pointer_key(scope))
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- housekeeping, as in _retire_names
             log.warning("scoped snapshot %s: listing scope %r's chunks failed: %s", self._name, scope, exc)
             return
+        # a removed scope with no pointer standing again serves nothing up to the removed epoch
+        emptied = removed.epoch if removed is not None and reference is None else None
         now = datetime.now(UTC)
         stale = []
         for info in infos:
             chunk_epoch = self._epoch_of(scope, info.name)
-            if chunk_epoch is not None and chunk_epoch < epoch and self._deletable(info, chunk_epoch, reference, now):
+            if chunk_epoch is None or chunk_epoch >= epoch:
+                continue
+            if (emptied is not None and chunk_epoch <= emptied) or self._deletable(info, chunk_epoch, reference, now):
                 stale.append(info.name)
         await self._retire_names(stale)
 
@@ -1948,7 +1963,10 @@ class ScopedSnapshot:
         """bring the snapshot to L3: republish scopes whose epoch in L3 is ahead of their pointer, drop scopes L3 left.
 
         For a writer that committed and died before it published, for scopes L3 holds that the
-        snapshot does not, and for scopes L3 no longer holds. Runs under the rebuild claim.
+        snapshot does not, and for scopes L3 no longer holds. Runs under the rebuild claim. A
+        catch-up that has to wait on a write in progress leaves the status
+        WAITING until a later call does not; nothing here calls it again, so its caller schedules
+        the next (the ENR pod's refresh calls it after every publish).
 
         :return: the scopes republished
         :rtype: list[str]
@@ -2056,9 +2074,10 @@ class ScopedSnapshot:
             self._seen.pop(scope, None)
         await self._drop_locally(sorted(gone))
         for scope, pointer in gone.items():
-            # only the epochs the deleted pointer covered: epochs only move forward, so chunks a
-            # writer recreating the scope wrote meanwhile are at a later epoch and stay. a scope that
-            # had no pointer judged nothing; its strays go with the next rebuild's unreferenced sweep
+            # every chunk up to the deleted pointer's epoch, the ones it served included: epochs only
+            # move forward, so chunks a writer recreating the scope wrote meanwhile are at a later
+            # epoch and stay. a scope that had no pointer judged nothing; its strays age out of the
+            # next rebuild's unreferenced sweep
             if pointer is not None:
                 await self._retire_older(scope, pointer.epoch + 1, removed=pointer)
 

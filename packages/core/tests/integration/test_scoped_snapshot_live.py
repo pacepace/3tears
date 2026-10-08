@@ -18,7 +18,6 @@ skips cleanly.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import threading
 import uuid
@@ -517,10 +516,13 @@ async def test_a_scope_gone_from_l3_leaves_every_replica(platform: _Platform) ->
     reader, _ = await platform.replica()
     await reader.start()
     await reader.wait_ready(timeout=_WAIT)
+    served = await _de_chunks(platform)
     await platform.pool.execute("DELETE FROM results WHERE state = 'DE'")
     await platform.pool.execute("DELETE FROM counties WHERE state = 'DE'")
     await writer.catch_up_from_l3()
     await _until(lambda: _count(reader, "results", "DE") == 0, what="DE to leave the reader")
+    assert served and served <= set(platform.retired), "the removal left the chunks its pointer served"
+    assert not await _de_chunks(platform), "a removed scope's chunks stayed in the bounded store"
     assert _count(reader, "results", "CA") == 40
     # a removal is a change the reader applies, not a lost snapshot: it stays READY and reads no L3
     await _until(lambda: reader.status().phase is SnapshotPhase.READY, what="the reader to be READY", timeout=5)
@@ -548,15 +550,6 @@ async def test_a_watch_that_ends_says_so(platform: _Platform) -> None:
     await _until(lambda: replica.status().phase is SnapshotPhase.FAILED, what="the watch's end")
     assert "watch" in replica.status().detail
 
-    # a catch-up on a replica whose watch has ended must not make it look ready again
-    await platform.pool.execute("UPDATE results SET votes = 3 WHERE state = 'DE'")
-    platform.epochs["DE"] = 4
-    with contextlib.suppress(
-        Exception
-    ):  # NOSILENT: this replica's bus is closed; the call may fail, the status must not lie
-        await replica.catch_up_from_l3()
-    assert replica.status().phase is SnapshotPhase.FAILED, "a catch-up hid a replica that no longer applies changes"
-    assert "watch" in replica.status().detail
     await replica.stop()
 
 
@@ -827,6 +820,9 @@ async def test_a_removal_retires_only_the_epochs_its_deleted_pointer_named(platf
     stores[0].release.set()
     await publish
     await _assert_de_stands_at(platform, 5, [remover, reader])
+    left = await _de_chunks(platform)
+    assert left and all("/DE/5/" in name for name in left), f"the removal left epoch 1, or took epoch 5: {left}"
+    assert any("/DE/1/" in name for name in platform.retired), "the removal retired nothing it served"
     for replica in (remover, reader):
         await replica.stop()
 
@@ -1038,3 +1034,9 @@ async def test_a_writers_staged_chunks_survive_a_rebuilds_sweep_and_apply_everyw
             assert cursor.execute("SELECT DISTINCT votes FROM results WHERE state = 'DE'").fetchall() == [(9,)]
     await writer.stop()
     await reader.stop()
+
+
+async def _de_chunks(platform: _Platform) -> set[str]:
+    """every chunk of DE in the store."""
+    store = await platform.hub.object_store(name="pod-objects")
+    return {info.name for info in await store.list_objects(prefix="enr/DE/")}

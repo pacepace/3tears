@@ -22,6 +22,7 @@ pytest.importorskip("pyarrow")
 from sqlalchemy import MetaData  # noqa: E402
 
 from threetears.core.cache.duckdb import DuckDBBackend  # noqa: E402
+from threetears.core.collections.complete_copy import Unsettled  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, TableSchema  # noqa: E402
 from threetears.core.collections.scoped_snapshot import (  # noqa: E402
     ScopedSnapshot,
@@ -61,8 +62,12 @@ class _Pointers:
     def __init__(self) -> None:
         self.entries: dict[str, tuple[bytes, int]] = {}
         self._revision = 0
-        self._queue: asyncio.Queue[KvKeyUpdate | None] = asyncio.Queue()
+        self._queue: asyncio.Queue[KvKeyUpdate | None | Exception] = asyncio.Queue()
         self.update_fails: Exception | None = None
+
+    def end_watch(self) -> None:
+        """end the pointer watch, as a lost connection does, while the bucket's reads and writes still answer."""
+        self._queue.put_nowait(ConnectionError("the watch's consumer is gone"))
 
     def put_now(self, key: str, value: bytes) -> int:
         """write a key outright, as another replica's publish would."""
@@ -103,6 +108,8 @@ class _Pointers:
         yield None
         while True:
             update = await self._queue.get()
+            if isinstance(update, Exception):
+                raise update
             if update is not None and update.key.startswith(prefix):
                 yield update
 
@@ -139,6 +146,7 @@ class _L3:
         self.rows = rows
         self.statements = 0
         self.epochs: dict[str, int] = {}
+        self.writing = False
 
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
         self.statements += 1
@@ -160,6 +168,11 @@ def _snapshot(**options: Any) -> tuple[ScopedSnapshot, _Pointers, _Store, _L3]:
     async def epochs() -> dict[str, int]:
         return dict(l3.epochs)
 
+    l3.writing = False
+
+    async def settled() -> Any:
+        return Unsettled("a write is in progress") if l3.writing else dict(l3.epochs)
+
     snapshot = ScopedSnapshot(
         name="enr",
         tables=_TABLES,
@@ -168,6 +181,7 @@ def _snapshot(**options: Any) -> tuple[ScopedSnapshot, _Pointers, _Store, _L3]:
         pointers=pointers,  # type: ignore[arg-type]
         l3=l3,
         epochs=epochs,
+        settled=settled,
         recheck=timedelta(seconds=0.05),
         **options,
     )
@@ -353,3 +367,86 @@ async def test_a_tool_pods_snapshot_refuses_an_option_it_wires_itself(option: st
             **{option: object()},
         )
     assert client.sent == [], "the hub was asked before the options were checked"
+
+
+async def test_a_catch_up_on_a_replica_whose_watch_ended_leaves_it_failed() -> None:
+    """the watch ends while the buckets still answer (a consumer lost, the client fine): a catch-up
+    that really rebuilds a scope must not make the replica, which no longer applies changes, look ready."""
+    snapshot, pointers, _, l3 = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    # the first rebuild declares the copy ready before it lets go of its claim
+    await _until(lambda: "enr.rebuild" not in pointers.entries, what="the first rebuild's claim released")
+    pointers.end_watch()
+    await _until(lambda: snapshot.status().phase is SnapshotPhase.FAILED, what="the watch's end")
+    l3.rows[0]["votes"] = 7
+    l3.epochs["TX"] = 2
+
+    caught = await snapshot.catch_up_from_l3()
+
+    assert caught == ["TX"], "the catch-up did not rebuild the scope L3 moved"
+    assert snapshot.status().phase is SnapshotPhase.FAILED, "a catch-up hid a replica that no longer applies changes"
+    assert "watch" in snapshot.status().detail
+    await snapshot.stop()
+
+
+async def test_a_catch_up_that_waits_on_a_write_leaves_the_replica_waiting_not_ready() -> None:
+    snapshot, pointers, _, l3 = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    # the first rebuild declares the copy ready before it lets go of its claim
+    await _until(lambda: "enr.rebuild" not in pointers.entries, what="the first rebuild's claim released")
+    l3.epochs["TX"] = 2
+    l3.writing = True
+
+    caught = await snapshot.catch_up_from_l3()
+
+    assert caught == []
+    assert snapshot.status().phase is SnapshotPhase.WAITING, snapshot.status()
+    assert "write in progress" in snapshot.status().detail
+    l3.writing = False
+    assert await snapshot.catch_up_from_l3() == ["TX"]
+    assert snapshot.status().phase is SnapshotPhase.READY
+    await snapshot.stop()
+
+
+async def _staged_carry(snapshot: ScopedSnapshot) -> Any:
+    """a stage of TX that names no table, so publishing it carries every chunk from epoch 1."""
+    return await snapshot.stage("TX", 2, {})
+
+
+async def test_a_carry_whose_pointer_moved_after_it_was_judged_is_left_for_the_catch_up() -> None:
+    snapshot, pointers, _, _ = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    staged = await _staged_carry(snapshot)
+    real_update = pointers.update
+    raced = [False]
+
+    async def racing_update(*, key: str, value: bytes, revision: int, ttl: timedelta | None = None) -> int | None:
+        if key == "enr.s.TX" and not raced[0]:
+            # another writer moves TX between the carry's judgement and its compare-and-set
+            raced[0] = True
+            pointers.put_now(key, pointers.entries[key][0])
+        return await real_update(key=key, value=value, revision=revision, ttl=ttl)
+
+    pointers.update = racing_update  # type: ignore[method-assign]
+
+    moved, skipped = await snapshot.publish_staged([staged], carry_at={"TX": 1})
+
+    assert (moved, skipped) == ([], ["TX"]), "a carry judged against a moved pointer was published"
+    await snapshot.stop()
+
+
+async def test_a_carry_whose_chunk_is_gone_is_left_for_the_catch_up() -> None:
+    snapshot, pointers, store, _ = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    staged = await _staged_carry(snapshot)
+    carried = json.loads(pointers.entries["enr.s.TX"][0])["tables"]["results"]["object"]
+    del store.objects[carried]
+
+    moved, skipped = await snapshot.publish_staged([staged], carry_at={"TX": 1})
+
+    assert (moved, skipped) == ([], ["TX"]), "a pointer was moved onto a carried chunk that is gone"
+    await snapshot.stop()
