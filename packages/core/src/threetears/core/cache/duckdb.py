@@ -21,7 +21,8 @@ from types import MappingProxyType
 from typing import Any
 
 from threetears.core.backends.schema_sql import json_default
-from threetears.core.cache.base import build_select_clause, bulk_columns, quote_identifier
+from threetears.core.cache.base import build_select_clause, bulk_columns
+from threetears.core.sql_fragments import quote_identifier
 from threetears.observe import get_logger
 
 __all__ = [

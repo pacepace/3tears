@@ -76,7 +76,7 @@ from typing import TYPE_CHECKING, Any, Final
 from threetears.nats.object_store_requests import MAX_RETIRED_OBJECTS
 from threetears.observe import get_logger
 
-from threetears.core.cache.base import quote_identifier
+from threetears.core.sql_fragments import quote_identifier
 from threetears.core.cache.duckdb import DuckDBBackend, PartitionReplacement
 from threetears.core.collections.complete_copy import Unsettled, read_l3_rows
 

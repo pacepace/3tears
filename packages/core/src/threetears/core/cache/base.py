@@ -15,6 +15,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, Protocol, runtime_checkable
 
+from threetears.core.sql_fragments import quote_identifier
+
 __all__ = [
     "CACHED_AT_COLUMN",
     "L1Backend",
@@ -23,7 +25,6 @@ __all__ = [
     "build_select_clause",
     "bulk_columns",
     "entry_is_fresh",
-    "quote_identifier",
 ]
 
 MISSING = object()
@@ -119,22 +120,6 @@ def entry_is_fresh(
     if stored_at_monotonic is None:
         return True
     return now_monotonic - stored_at_monotonic <= max_age_seconds
-
-
-def quote_identifier(identifier: str) -> str:
-    """an identifier quoted for SQL, so a name with spaces, capitals or a keyword survives.
-
-    Every L1 backend quotes every table and column name it interpolates through this one
-    function: SQLite and DuckDB quote alike, and a backend that quoted some statements and not
-    others would create a table it could then not read. A converted extract's column names
-    (``% of Exp. In``) are the case that needs it.
-
-    :param identifier: a table or column name
-    :ptype identifier: str
-    :return: the quoted identifier, any double quote in it doubled
-    :rtype: str
-    """
-    return '"' + identifier.replace('"', '""') + '"'
 
 
 def build_select_clause(

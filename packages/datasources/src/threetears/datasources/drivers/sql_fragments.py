@@ -23,6 +23,7 @@ from collections.abc import Mapping
 from typing import Literal
 
 from threetears.core.fingerprint import relation_key_expression
+from threetears.core.sql_fragments import as_written, equality_conditions, quote_identifier
 
 __all__ = [
     "PlaceholderStyle",
@@ -137,25 +138,6 @@ def build_reset_statement_timeout_sql() -> str:
     return _RESET_STATEMENT_TIMEOUT_SQL
 
 
-def _quote_pg_identifier(name: str) -> str:
-    """quote a single Postgres / Redshift identifier safely.
-
-    wraps the name in double quotes and escapes any internal double
-    quote by doubling it, matching the SQL standard identifier-quoting
-    rules accepted by Postgres, Yugabyte, and Redshift. callers MUST
-    use this when interpolating user-controllable identifiers into a
-    SQL fragment (e.g. schema names threaded from an agent's
-    ``allowed_schemas`` config); parameter placeholders are not
-    accepted for identifiers in any of these backends.
-
-    :param name: identifier to quote
-    :ptype name: str
-    :return: quoted identifier (with the wrapping double quotes)
-    :rtype: str
-    """
-    return '"' + name.replace('"', '""') + '"'
-
-
 def build_search_path_value(schemas: list[str]) -> str | None:
     """build the VALUE portion of a ``search_path`` setting for ``schemas``.
 
@@ -174,7 +156,7 @@ def build_search_path_value(schemas: list[str]) -> str | None:
     - any caller that wants to interpolate the value clause without
       the ``SET search_path TO`` SQL prefix
 
-    each schema name is identifier-quoted via :func:`_quote_pg_identifier`
+    each schema name is identifier-quoted via :func:`threetears.core.sql_fragments.quote_identifier`
     so callers can pass arbitrary names without SQL-injection risk.
     order is preserved: leftmost-wins semantics for unqualified-name
     resolution, which matches both Postgres' documented behaviour and
@@ -189,7 +171,7 @@ def build_search_path_value(schemas: list[str]) -> str | None:
     """
     if not schemas:
         return None
-    return ", ".join(_quote_pg_identifier(s) for s in schemas)
+    return ", ".join(quote_identifier(s) for s in schemas)
 
 
 def build_set_search_path_sql(schemas: list[str]) -> str | None:
@@ -351,9 +333,9 @@ def build_equality_filter(where: Mapping[str, str] | None) -> tuple[str, list[st
     :return: the fragment (empty when there are no filters) and its values in order
     :rtype: tuple[str, list[str]]
     """
-    filters = dict(where or {})
-    clause = " AND ".join(f"{column} = ${index + 1}" for index, column in enumerate(filters))
-    return (f" WHERE {clause}" if clause else ""), list(filters.values())
+    # unquoted, as the statement's relation and key columns are: every name in it folds case alike
+    clause, values = equality_conditions(where, quote=as_written)
+    return (f" WHERE {clause}" if clause else ""), values
 
 
 #: render the ordering key of one row as a single text value, NULLs distinguished: the

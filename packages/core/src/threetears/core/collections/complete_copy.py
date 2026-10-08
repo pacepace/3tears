@@ -55,7 +55,7 @@ from typing import TYPE_CHECKING, Any, Final, Generic, Protocol, TypeVar, runtim
 
 from threetears.observe import get_logger
 
-from threetears.core.cache.base import quote_identifier
+from threetears.core.sql_fragments import equality_conditions, quote_identifier
 from threetears.core.fingerprint import KeyFingerprint, key_fingerprint, postgres_fingerprint_sql
 
 if TYPE_CHECKING:
@@ -258,9 +258,7 @@ def _filtered(where: Mapping[str, Any] | None, first: int) -> tuple[str, list[An
     :return: the conditions joined by ``AND`` (empty without filters), and their values
     :rtype: tuple[str, list[Any]]
     """
-    filters = dict(where or {})
-    conditions = " AND ".join(f"{quote_identifier(column)} = ${first + index}" for index, column in enumerate(filters))
-    return conditions, list(filters.values())
+    return equality_conditions(where, first=first)
 
 
 async def l3_fingerprint(
