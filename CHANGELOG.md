@@ -6,6 +6,31 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Datasources: closing a dead Redshift connection no longer breaks the process's other TLS connections
+
+- **Fixed, `RedshiftDriver`**: a cached connection that had died while idle (a scheduled query every
+  five minutes, a network that drops idle connections sooner) was closed on reuse, and in the same
+  millisecond unrelated TLS connections on the event loop failed: asyncpg raised `connection was
+  closed in the middle of operation` out of `BrokenPipeError: [Errno 32] Broken pipe` from
+  `ssl.SSLObject.read`, mid-transaction, and the database logged `Connection reset by peer`. No file
+  descriptor is shared or closed twice. OpenSSL keeps one error queue per thread and reads it to
+  classify the next TLS call that returns no data; a write to a dead TLS socket records its
+  `EPIPE` / `ECONNRESET` there, and CPython (seen on 3.14.3 and 3.14.8 with OpenSSL 3.5) raises the
+  `OSError` and leaves the record behind. `redshift_connector`'s `Connection.close()` writes a
+  Terminate message and swallows the failure, so closing a dead connection is such a write, and
+  every TLS connection its thread serves then reads "nothing yet" as that broken pipe until
+  something empties the queue.
+- **Changed:** every close of a Redshift connection goes through one routine, which empties the
+  calling thread's OpenSSL error queue after `close()` returns or raises. That covers the bridge
+  workers, the default executor the cancel path closes on, the event loop thread a statement's
+  cancel callback runs on, and whichever thread the driver's finalizer fires on.
+- **Changed:** a cached connection found dead on reuse is closed on a bridge worker, as the module
+  already said every cached connection was. It was the one close made directly on the event loop.
+- **Not changed:** a statement that fails on a dead connection still leaves its own bridge worker's
+  queue as it was. Nothing but Redshift statements run on those threads, on blocking sockets that
+  are not affected, and a new login's handshake empties the queue itself.
+- **Wire:** none. No public API change.
+
 ### Core and agent tools: answers an edge may cache, labelled with exactly the data they read
 
 - **Added:** `ScopedSnapshot.read_versioned()` yields a `VersionedRead(cursor, epochs, behind)`: a
