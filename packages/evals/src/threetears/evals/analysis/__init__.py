@@ -77,6 +77,7 @@ from threetears.evals.analysis.campaigns import (
     set_campaign_control,
     update_campaign,
 )
+from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics
 from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
 from threetears.evals.analysis.generator import (
     CallAdmission,
@@ -336,6 +337,7 @@ __all__ = [
     "ComparisonSetsResult",
     "ComparisonVerdict",
     "Confound",
+    "ConfusionCount",
     "ControlsReading",
     "CriterionDrift",
     "DeclarableAxes",
@@ -359,6 +361,7 @@ __all__ = [
     "LabelCriterion",
     "LabelDirection",
     "LabelReading",
+    "LabelStatistics",
     "LensStore",
     "LeverCoverageInput",
     "MeasureMovement",

@@ -78,6 +78,7 @@ from threetears.evals.analysis.cells import (
     pool_observations,
     subject_key_instabilities,
 )
+from threetears.evals.analysis.confusion import confusion_matrix, label_statistics
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.reporting import (
     METRIC_COMPOSITE,
@@ -2667,7 +2668,9 @@ def _classifier_label_summaries(confusion: MeasureSummary) -> list[MeasureSummar
 
     The matrix is the ``confusion_cell`` measure's category counts — one count per
     ``expected → predicted`` pair — so the per-label statistics are counted from what the walk already
-    pooled, over the same population, never re-read from the results. Precision and recall are
+    pooled, over the same population, never re-read from the results, and counted by
+    :func:`~threetears.evals.analysis.confusion.label_statistics`, the one count the run summary reads
+    too. Precision and recall are
     proportions, so each is a boolean-shaped summary: its rate, the count behind it, and the Wilson
     interval. F1 is not a proportion of anything, so it is a numeric summary with a mean and no
     spread — it has none by construction, at any n. It is the harmonic mean of precision and recall, so a
@@ -2682,41 +2685,36 @@ def _classifier_label_summaries(confusion: MeasureSummary) -> list[MeasureSummar
         The derived summaries, named by :func:`~threetears.evals.contracts.metrics.classifier_label_measure`.
         A label never predicted has no precision; one never expected has no recall; either has no F1.
     """
-    pairs: dict[tuple[str, str], int] = {}
-    for cell, count in confusion.categories.items():
-        if (labels := confusion_of(cell)) is not None:
-            pairs[labels] = pairs.get(labels, 0) + count
     derived: list[MeasureSummary] = []
-    for label in sorted({label for pair in pairs for label in pair}):
-        hits = pairs.get((label, label), 0)
-        predicted = sum(count for (_, given), count in pairs.items() if given == label)
-        expected = sum(count for (wanted, _), count in pairs.items() if wanted == label)
-        rates: tuple[tuple[ClassifierStatistic, int], ...] = (("precision", predicted), ("recall", expected))
-        for statistic, n in rates:
-            if n:
-                interval = wilson_interval(hits, n)
+    for statistics in label_statistics(confusion_matrix(confusion.categories)):
+        rates: tuple[tuple[ClassifierStatistic, int, float | None, tuple[float, float] | None], ...] = (
+            ("precision", statistics.predicted, statistics.precision, statistics.precision_interval),
+            ("recall", statistics.expected, statistics.recall, statistics.recall_interval),
+        )
+        for statistic, n, rate, interval in rates:
+            if rate is not None:
                 derived.append(
                     MeasureSummary(
-                        name=classifier_label_measure(statistic, label),
+                        name=classifier_label_measure(statistic, statistics.label),
                         attribution_scope=confusion.attribution_scope,
                         higher_is_better=True,
                         population=confusion.population,
                         n=n,
-                        rate=hits / n,
-                        n_true=hits,
+                        rate=rate,
+                        n_true=statistics.correct,
                         ci_low=None if interval is None else interval[0],
                         ci_high=None if interval is None else interval[1],
                     )
                 )
-        if predicted and expected:
+        if statistics.f1 is not None:
             derived.append(
                 MeasureSummary(
-                    name=classifier_label_measure("f1", label),
+                    name=classifier_label_measure("f1", statistics.label),
                     attribution_scope=confusion.attribution_scope,
                     higher_is_better=True,
                     population=confusion.population,
-                    n=predicted + expected - hits,
-                    mean=2 * hits / (predicted + expected),
+                    n=statistics.predicted + statistics.expected - statistics.correct,
+                    mean=statistics.f1,
                 )
             )
     return derived

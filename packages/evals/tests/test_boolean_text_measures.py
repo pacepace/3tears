@@ -155,6 +155,32 @@ def test_a_confusion_cell_round_trips_labels_carrying_the_arrow() -> None:
         confusion_cell("", "attack")
 
 
+def test_a_label_keeps_the_whitespace_at_its_ends_through_a_stored_result() -> None:
+    """Every eval model strips its strings, so a bare ``"move "`` would come back as ``"move"`` and count as a hit."""
+    for expected, predicted in [("move", "move "), (" move", "\tmove\n"), ("move", "\u3000move")]:
+        stored = _result("c1", confusion_cell=confusion_cell(expected, predicted))
+        assert confusion_of(stored.host_measures["confusion_cell"]) == (expected, predicted)
+    # The escapes are percent-encodings, so a label carrying what looks like one is still read back as written.
+    assert confusion_of(confusion_cell("50% off", "%20")) == ("50% off", "%20")
+    assert confusion_cell("go left", "attack") == "go left → attack", "a label with no edge whitespace is unchanged"
+
+
+def test_a_label_with_whitespace_at_its_ends_is_counted_as_its_own_label() -> None:
+    """``"move "`` given for ``"move"`` is a miss in the matrix and in each label's statistics, as ``match`` says."""
+    results = [
+        _result("c1", match=False, confusion_cell=confusion_cell("move", "move ")),
+        _result("c2", match=True, confusion_cell=confusion_cell("move", "move")),
+    ]
+
+    summaries = _summaries(results)
+
+    assert classifier_label_of(classifier_label_measure("precision", "move ")) == ("precision", "move ")
+    precision_move = summaries[classifier_label_measure("precision", "move")]
+    assert (precision_move.rate, precision_move.n) == (1.0, 1)
+    assert summaries[classifier_label_measure("precision", "move ")].rate == 0.0
+    assert summaries[classifier_label_measure("recall", "move")].rate == 0.5
+
+
 def test_per_label_precision_recall_and_f1_come_from_the_confusion_counts() -> None:
     """Four cases: attack→attack twice, attack→move once, move→move once."""
     cells = [("attack", "attack"), ("attack", "attack"), ("attack", "move"), ("move", "move")]

@@ -46,24 +46,46 @@ A function to test, cases to test it on, and code that grades an answer are enou
 ```python
 from threetears.evals.quick import run_eval
 
-async def classify(case: dict) -> str: ...
+async def extract_total(case: dict) -> float: ...
 
-def correct(case: dict, label: str) -> bool:
-    return label == case["expected"]
+def exact(case: dict, total: float) -> bool:
+    return total == case["total"]
 
-summary = await run_eval(cases, classify, [correct], scope_id="dev", k=2)
+summary = await run_eval(cases, extract_total, [exact], scope_id="dev", k=2)
 print(summary.render())
 ```
 
 `run_eval` builds the rest — a kind over the function, a host with one measure per scorer, the
 in-memory store — launches one run through the engine's own launch path, and returns its
-`EvalSummary`. A candidate that raises fails its cell; a scorer that raises excludes it. Pass
-`host=callable_host(scorers)` to keep the store and compare several candidates' runs, or your own host:
+`EvalSummary`. A candidate that raises fails its cell; a scorer that raises excludes it.
+
+**A classifier** is graded by each case's expected label rather than by a scorer. Pass `expected=`, a
+function from a case to the label a correct answer gives, and `classify` returns a label:
+
+```python
+summary = await run_eval(cases, classify, scope_id="dev", expected=lambda case: case["expected"], k=2)
+```
+
+Each cell then lands the core `match` and `confusion_cell` measures a classifier kind lands, so the
+summary carries the confusion matrix (`summary.confusion`, one `ConfusionCount` per expected and predicted
+label) and each label's counts, precision and recall with their Wilson intervals, and F1 (`summary.labels`,
+one `LabelStatistics` per label), and `render()` prints both. `match`'s mean is the share of answers that
+matched; the analysis derives `accuracy` from it. An answer that is not a non-blank string (`None`, `""`, a
+number) is counted under a predicted label of its own, `UNUSABLE_ANSWER`, and never matches; any other
+string is a label exactly as written, so `"positive "` is not `"positive"`. `run_eval` refuses an
+`expected=` that raises or gives a case a blank, non-string or `UNUSABLE_ANSWER` label. Scorers may run
+beside `expected=`, except one named `match`, `confusion_cell` or `accuracy`. A classifier's expected labels
+are part of its case set: two calls share a template only when they expect the same labels.
+
+Pass `host=callable_host(scorers)` (`callable_host()` for a classifier with no scorers) to keep the store and
+compare several candidates' runs, or your own host:
 it must declare a measure per scorer and a contract for the callable kind — `CALLABLE_KIND_CONTRACT`, or
 a `KindContract(CALLABLE_KIND, seats=...)` seating only apparatus of your own that the runs read, never the
 judge, the simulator or the spend ceiling (`CALLABLE_UNSEATED`) — or `run_eval` refuses it, since without
 one every such run's blank judge and simulator read as unrecoverable and no two of them compare.
-`examples/rung_zero.py` is the whole thing in one file.
+A classifier's `match` and `confusion_cell` are core measures, so a host declares neither.
+`examples/rung_zero.py` is the whole thing in one file: a sentiment classifier graded by its expected
+labels, beside one scorer.
 
 **The command line** works in a host you name as `module:factory` — a zero-argument callable
 returning an `EvalHost`, or a `LaunchHost` for `run`:

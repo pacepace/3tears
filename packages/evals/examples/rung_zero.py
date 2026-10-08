@@ -1,7 +1,9 @@
 """Rung zero: evaluate one async function against a list of cases, in one file.
 
-Everything a product needs to bring is below: its cases, the function under test, and the code
-that grades an answer. ``run_eval`` builds the rest — a host, a store, a kind over the function —
+Everything a product needs to bring is below: its cases, the function under test, and what a right
+answer is. The function is a classifier, so ``run_eval`` is handed each case's expected label and
+reports the confusion matrix and each label's precision, recall and F1; ``decisive`` is a scorer, the
+other way to grade an answer. ``run_eval`` builds the rest — a host, a store, a kind over the function —
 launches one run through the engine, and returns its summary. Run it with
 ``python packages/evals/examples/rung_zero.py``.
 """
@@ -32,11 +34,6 @@ async def classify(case: dict) -> str:
     return "neutral"
 
 
-def correct(case: dict, label: str) -> bool:
-    """Whether the label is the expected one."""
-    return label == case["expected"]
-
-
 def decisive(case: dict, label: str) -> bool:
     """Whether the classifier committed to a polarity rather than answering neutral."""
     return label != "neutral"
@@ -44,7 +41,9 @@ def decisive(case: dict, label: str) -> bool:
 
 async def main() -> EvalSummary:
     """Run the classifier over every case twice and print what the run measured."""
-    summary = await run_eval(CASES, classify, [correct, decisive], scope_id="rung-zero", k=2)
+    summary = await run_eval(
+        CASES, classify, [decisive], expected=lambda case: case["expected"], scope_id="rung-zero", k=2
+    )
     print(summary.render())
     return summary
 
