@@ -30,16 +30,30 @@ forms itself; they are the collection's now.
   conn=None)`**: the rows whose leading key column is one of `values` (each read once), the key
   columns and any `columns` named beside them, read from L3 around the caches. Every statement
   is led by the key: `LED_READ_MAX_VALUES` (250) values a statement as
-  `WHERE <lead> = ANY($1::<type>[])`; an answer that reaches the L3 rail's row cap
-  (`L3_ROW_CAP`, 1,000, which cuts without saying so) is read again in halves; and a single value
-  that alone reaches it is paged by the rest of its key
+  `WHERE <lead> = ANY($1::<type>[])`; an answer that reaches the transport's row cap is read again
+  in halves; and a single value that alone reaches it is paged by the rest of its key
   (`WHERE <lead> = $1 AND (<rest>) > (...) ORDER BY <rest> LIMIT <cap>`), which is the key's own
-  order inside one hash bucket. Through `KeyLedReadingStore.fetch_led_by` (new protocol, which
-  `SqlL3Backend` implements), or an equality `scan` a value at a time on a store without it.
-  `schema_sql` gains `build_led_by_select_sql`, `build_led_page_sql`, `build_key_led_delete_sql`
-  and `key_array_type`.
-- **Changed, `SchemaBackedCollection.delete_rows`** (unreleased): its statements are key-led, as
-  above, in place of a row-constructor `IN` list, which YugabyteDB need not look up by key.
+  order inside one hash bucket. A read that had to split or page logs it once at INFO with its
+  statement, split and paged-value counts. Through `KeyLedReadingStore.fetch_led_by` (new
+  protocol, which `SqlL3Backend` implements), or an equality `scan` a value at a time on a store
+  without it, which refuses a `conn` (`scan` takes none) rather than read outside the caller's
+  transaction. A `max_values` under one is refused. `schema_sql` gains `build_led_by_select_sql`,
+  `build_key_led_delete_sql`, `build_whole_key_delete_sql` and `key_array_type`;
+  `build_select_column_list` takes the columns to project.
+- **Added, `threetears.core.backends.protocol.L3_RAIL_ROW_CAP`** (1,000): the one owner of the L3
+  rail's row cap. `NatsProxyL3Backend.rows_per_statement` states it, `SqlL3Backend.rows_per_statement`
+  reads its transport's (`None` for one that never cuts; one that says nothing is taken to be the
+  rail), and `complete_copy.DEFAULT_PAGE_SIZE` is derived from it.
+- **Added, `threetears.core.keyset.read_keyset_pages`**: the one keyset pager. `read_l3_rows` and
+  the key-led read's paging of one value both page through it, each spelling names in its own
+  policy (`quote`, as `sql_fragments.equality_conditions` takes it).
+- **Changed, `SchemaBackedCollection.delete_rows`** (unreleased): its statements are key-led, in
+  place of a row-constructor `IN` list, which YugabyteDB need not look up by key. Whichever of two
+  forms needs fewer statements: keys grouped by all but one key column
+  (`<k> = ANY($1::<type>[]) AND <rest of the key> = $2 ...`, each fixed column with its write cast,
+  so a jsonb key column binds `$n::jsonb`), or whole keys
+  (`<k1> = ANY($1) AND (<key>) IN (SELECT * FROM unnest($1, $2, ...))`) for keys that share no
+  value. At most `ceil(keys / max_rows)` statements; a `max_rows` under one is refused.
   `schema_sql.build_bulk_delete_sql` is gone.
 - Not changed: `complete_copy.read_l3_rows` still pages `ORDER BY` the whole key. It reads a table
   whole by design, and on a hash-sharded key each page sorts every row its filters leave; its
@@ -52,7 +66,9 @@ forms itself; they are the collection's now.
   the first instance's class on every record after: every layer table's missing-L2 warning read
   `LayerShapeCollection[us_state_census2022]`, whichever table it was about. The class is now read
   from the logging frame for each record. The shortened path is no longer cached either, so a
-  prefix added to `path_strip_prefixes` after a file first logged applies to its later records.
+  prefix added to `path_strip_prefixes` after a file first logged applies to its later records. The cost: a
+  stack walk per enabled record, measured at 6.47 us a record against 5.82 us with the cache (a
+  method logging to a no-op handler, best of five runs of 100,000).
 
 ### NATS: a KV bucket whose stream is briefly offline is no longer blamed on a missing grant
 

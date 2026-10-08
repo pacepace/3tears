@@ -25,10 +25,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Final, Protocol, runtime_checkable
 from uuid import UUID
 
 __all__ = [
+    "L3_RAIL_ROW_CAP",
     "BulkDeletingStore",
     "BulkDurableStore",
     "DurableStore",
@@ -55,6 +56,14 @@ class L3Reader(Protocol):
     async def fetchrow(self, query: str, /, *params: Any) -> Any:
         """Run a SELECT and return the first row dict, or ``None``."""
         ...
+
+
+#: the most rows the L3 rail (the hub's broker, behind ``NatsProxyL3Backend``) answers one
+#: statement. It cuts there and does not say so, so every reader that might pass it pages or reads
+#: in halves against this number: the one owner of it. A transport states its own cap as
+#: ``rows_per_statement`` (``None`` for one that never cuts, a direct asyncpg pool); one that
+#: states nothing is taken to be the rail, which costs a needless split at worst and never a row.
+L3_RAIL_ROW_CAP: Final = 1000
 
 
 @runtime_checkable
@@ -271,15 +280,14 @@ class KeyLedReadingStore(Protocol):
         *,
         columns: Sequence[str],
         max_values: int,
-        row_cap: int,
         conn: Any = None,
     ) -> list[dict[str, Any]]:
         """Read ``columns`` of every row of ``table`` whose leading key column is one of ``values``.
 
-        Each statement is led by the key and names at most ``max_values`` values. A transport that
-        answers at most ``row_cap`` rows a statement without saying it cut is read so that no row
-        is lost: an answer that reaches the cap is read again in halves, and one value holding that
-        many rows is paged by the rest of its key.
+        Each statement is led by the key and names at most ``max_values`` values. The store knows
+        how many rows its transport answers a statement (:data:`L3_RAIL_ROW_CAP` on the rail) and
+        reads so that a cut loses no row: an answer that reaches the cap is read again in halves,
+        and one value holding that many rows is paged by the rest of its key.
 
         :param table: the table
         :ptype table: str
@@ -287,10 +295,8 @@ class KeyLedReadingStore(Protocol):
         :ptype values: Sequence[Any]
         :param columns: the columns to read, the key's among them
         :ptype columns: Sequence[str]
-        :param max_values: the most values one statement names
+        :param max_values: the most values one statement names; at least one
         :ptype max_values: int
-        :param row_cap: the most rows the transport answers a statement; at least two
-        :ptype row_cap: int
         :param conn: the caller's connection the reads run on; ``None`` uses the backend's own
         :ptype conn: Any
         :return: the rows

@@ -10,6 +10,7 @@ with the rest of the key fixed.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -17,7 +18,10 @@ from typing import Any
 
 import pytest
 
+from threetears.core.backends.protocol import L3_RAIL_ROW_CAP
 from threetears.core.backends.schema_sql import build_key_led_delete_sql
+from threetears.core.backends.sql import SqlL3Backend
+from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
@@ -95,14 +99,18 @@ class _Table:
 
 
 class _Pool:
-    """a raw transport the collection wraps as its SQL store; statements go to the connection given."""
+    """a raw transport the collection wraps as its SQL store; statements go to the connection given.
+
+    It says how many rows it answers a statement, as the L3 rail's client does.
+    """
+
+    def __init__(self, cap: int | None = L3_RAIL_ROW_CAP) -> None:
+        self.rows_per_statement = cap
 
 
-def _layer(cap: int = 1000, **kwargs: Any) -> Any:
-    cls = collection_for_schema(LAYER, entity_class=_Shape)
-    cls.L3_ROW_CAP = cap
-    collection = cls(CollectionRegistry(), DefaultCoreConfig(), None)
-    collection.l3_pool = _Pool()
+def _layer(cap: int | None = L3_RAIL_ROW_CAP, schema: TableSchema = LAYER) -> Any:
+    collection = collection_for_schema(schema, entity_class=_Shape)(CollectionRegistry(), DefaultCoreConfig(), None)
+    collection.l3_pool = _Pool(cap)
     return collection
 
 
@@ -122,7 +130,7 @@ def _keys(rows: list[dict[str, Any]]) -> list[tuple[str, int]]:
 
 
 async def test_the_keys_held_for_many_values_are_read_by_the_leading_key() -> None:
-    table = _Table(_rows(5, 2), cap=1000)
+    table = _Table(_rows(5, 2), cap=L3_RAIL_ROW_CAP)
     held = await _layer().read_rows_led_by(["f0001", "f0003", "nope"], conn=table)
 
     assert _keys(held) == [("f0001", 0), ("f0001", 1), ("f0003", 0), ("f0003", 1)]
@@ -132,7 +140,7 @@ async def test_the_keys_held_for_many_values_are_read_by_the_leading_key() -> No
 
 
 async def test_values_go_a_batch_a_statement_each_named_once() -> None:
-    table = _Table(_rows(10, 1), cap=1000)
+    table = _Table(_rows(10, 1), cap=L3_RAIL_ROW_CAP)
     values = [f"f{i:04d}" for i in range(10)] + ["f0000"]
 
     held = await _layer().read_rows_led_by(values, max_values=4, conn=table)
@@ -164,7 +172,7 @@ async def test_one_value_holding_more_rows_than_the_cap_is_paged_by_the_rest_of_
 
 
 async def test_named_columns_are_read_beside_the_key() -> None:
-    table = _Table(_rows(2, 1), cap=1000)
+    table = _Table(_rows(2, 1), cap=L3_RAIL_ROW_CAP)
 
     held = await _layer().read_rows_led_by(["f0001"], columns=["name"], conn=table)
 
@@ -174,11 +182,11 @@ async def test_named_columns_are_read_beside_the_key() -> None:
 
 async def test_a_column_the_table_does_not_have_is_refused_naming_the_table() -> None:
     with pytest.raises(ValueError, match="layer"):
-        await _layer().read_rows_led_by(["f0001"], columns=["nope"], conn=_Table([], cap=1000))
+        await _layer().read_rows_led_by(["f0001"], columns=["nope"], conn=_Table([], cap=L3_RAIL_ROW_CAP))
 
 
 async def test_no_values_reads_nothing() -> None:
-    table = _Table(_rows(2, 1), cap=1000)
+    table = _Table(_rows(2, 1), cap=L3_RAIL_ROW_CAP)
     assert await _layer().read_rows_led_by([], conn=table) == []
     assert table.fetched == []
 
@@ -274,14 +282,156 @@ async def test_keys_sharing_their_lead_vary_the_rest_of_the_key() -> None:
     assert conn.executed == [(build_key_led_delete_sql(LAYER, varying="source_version"), ([1, 2, 3], "f0001"))]
 
 
-async def test_mixed_keys_go_one_group_of_the_fixed_columns_at_a_time() -> None:
+async def test_mixed_keys_take_whichever_key_led_form_needs_fewer_statements() -> None:
     collection, conn = _layer(), _Conn()
     keys = [("a", 1), ("b", 1), ("c", 2), ("a", 2)]
 
     async with CallerTransaction(conn):
-        assert await collection.delete_rows(keys, conn=conn) == 4
+        assert await collection.delete_rows(keys, conn=conn, max_rows=2) == 4
 
-    deleted = sorted((value, params[1]) for _, params in conn.executed for value in params[0])
-    assert deleted == sorted(keys)
-    assert all(sql == build_key_led_delete_sql(LAYER, varying="feature_id") for sql, _ in conn.executed)
-    assert len(conn.executed) == 2
+    # grouped by generation: two groups of two, two statements; whole keys: two statements too
+    assert [sql for sql, _ in conn.executed] == [build_key_led_delete_sql(LAYER, varying="feature_id")] * 2
+
+    conn = _Conn()
+    async with CallerTransaction(conn):
+        await collection.delete_rows(keys, conn=conn)
+    # one statement of whole keys beats a statement per generation
+    [(sql, params)] = conn.executed
+    assert "IN (SELECT * FROM unnest(" in sql
+    assert sorted(zip(*params, strict=True)) == sorted(keys)
+
+
+DOCS = TableSchema(
+    name="docs",
+    primary_key=("doc_id", "shape"),
+    columns=[
+        Column("doc_id", STRING_TYPE),
+        Column("shape", JSONB_TYPE),
+        Column("date_created", DATETIMETZ_TYPE, immutable=True),
+        Column("date_updated", DATETIMETZ_TYPE),
+    ],
+)
+
+
+async def test_a_jsonb_key_column_held_fixed_is_bound_with_its_cast() -> None:
+    collection, conn = _layer(schema=DOCS), _Conn()
+
+    async with CallerTransaction(conn):
+        assert await collection.delete_rows([("d1", {"k": 1}), ("d2", {"k": 1})], conn=conn) == 2
+
+    [(sql, params)] = conn.executed
+    assert sql == "DELETE FROM docs WHERE doc_id = ANY($1::text[]) AND shape = $2::jsonb"
+    assert params[0] == ["d1", "d2"]
+
+
+async def test_keys_sharing_no_value_go_max_rows_a_statement_led_by_the_key() -> None:
+    collection, conn = _layer(), _Conn()
+    keys = [(f"f{i:04d}", i) for i in range(5)]
+
+    async with CallerTransaction(conn):
+        assert await collection.delete_rows(keys, conn=conn, max_rows=2) == 5
+
+    assert [sql for sql, _ in conn.executed] == [
+        "DELETE FROM layer WHERE feature_id = ANY($1::text[]) "
+        "AND (feature_id, source_version) IN (SELECT * FROM unnest($1::text[], $2::bigint[]))"
+    ] * 3
+    assert [params for _, params in conn.executed] == [
+        (["f0000", "f0001"], [0, 1]),
+        (["f0002", "f0003"], [2, 3]),
+        (["f0004"], [4]),
+    ]
+
+
+async def test_a_batch_size_under_one_is_refused() -> None:
+    collection = _layer()
+    with pytest.raises(ValueError, match="max_values"):
+        await collection.read_rows_led_by(["f0001"], max_values=-1, conn=_Table([], cap=L3_RAIL_ROW_CAP))
+    with pytest.raises(ValueError, match="max_values"):
+        await collection.read_rows_led_by(["f0001"], max_values=0, conn=_Table([], cap=L3_RAIL_ROW_CAP))
+    conn = _Conn()
+    with pytest.raises(ValueError, match="max_rows"):
+        async with CallerTransaction(conn):
+            await collection.delete_rows([("f0001", 1)], conn=conn, max_rows=-1)
+    assert conn.executed == []
+
+
+async def test_a_transport_with_a_cap_under_two_is_refused() -> None:
+    with pytest.raises(ValueError, match="row cap"):
+        await _layer(cap=1).read_rows_led_by(["f0001"], conn=_Table([], cap=1))
+
+
+async def test_the_rail_s_cap_has_one_owner_the_copies_page_under() -> None:
+    assert DEFAULT_PAGE_SIZE == L3_RAIL_ROW_CAP - 1
+
+
+async def test_a_transport_that_cuts_nothing_is_never_read_again() -> None:
+    table = _Table(_rows(8, 3), cap=10_000)
+
+    held = await _layer(cap=None).read_rows_led_by([f"f{i:04d}" for i in range(8)], conn=table)
+
+    assert len(held) == 24
+    assert len(table.fetched) == 1
+
+
+async def test_a_transport_that_says_nothing_is_taken_to_cut_at_the_rail_s_cap() -> None:
+    collection = collection_for_schema(LAYER, entity_class=_Shape)(CollectionRegistry(), DefaultCoreConfig(), None)
+
+    class _Silent:
+        """a raw transport that does not say how many rows it answers."""
+
+    collection.l3_pool = _Silent()
+    table = _Table(_rows(400, 3), cap=L3_RAIL_ROW_CAP)
+
+    held = await collection.read_rows_led_by([f"f{i:04d}" for i in range(400)], max_values=400, conn=table)
+
+    assert len(held) == 1200
+    assert len(table.fetched) > 1
+
+
+async def test_a_read_that_had_to_split_or_page_says_so_once(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.DEBUG, logger="threetears.core.backends.sql")
+    table = _Table(_rows(2, 12), cap=5)
+
+    await _layer(cap=5).read_rows_led_by(["f0000", "f0001"], conn=table)
+
+    [line] = [r for r in caplog.records if r.name == "threetears.core.backends.sql" and r.levelno == logging.INFO]
+    detail = line.extra_data  # type: ignore[attr-defined]
+    assert detail["table"] == "layer"
+    assert detail["statements"] == len(table.fetched)
+    assert detail["splits"] == 1
+    assert detail["paged_values"] == 2
+
+
+async def test_a_read_that_did_not_split_logs_nothing_at_info(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.DEBUG, logger="threetears.core.backends.sql")
+    await _layer().read_rows_led_by(["f0000"], conn=_Table(_rows(2, 2), cap=L3_RAIL_ROW_CAP))
+    assert not [r for r in caplog.records if r.name == "threetears.core.backends.sql" and r.levelno >= logging.INFO]
+
+
+async def test_a_store_without_the_key_led_read_refuses_a_connection_it_cannot_read_on() -> None:
+    class _ScanOnly:
+        """a non-SQL store whose scan takes no connection."""
+
+        async def fetch_one(self, table: str, pk: Any, *, conn: Any = None) -> None:
+            return None
+
+        async def upsert(self, table: str, row: Any, **kwargs: Any) -> int:
+            return 1
+
+        async def delete(self, table: str, pk: Any, *, conn: Any = None) -> None:
+            return None
+
+        async def scan(self, table: str, filters: Any = None) -> list[dict[str, Any]]:
+            raise AssertionError("a read that cannot honour the caller's connection is not made")
+
+    collection = _layer()
+    collection.l3_pool = _ScanOnly()
+    with pytest.raises(ValueError, match="conn"):
+        await collection.read_rows_led_by(["f0001"], conn=_Conn())
+
+
+async def test_a_table_whose_schema_the_store_does_not_hold_is_refused() -> None:
+    with pytest.raises(ValueError, match="registered"):
+        await SqlL3Backend(_Pool()).fetch_led_by("layer", ["f0001"], columns=["feature_id"], max_values=1)
+    with pytest.raises(ValueError, match="registered"):
+        await SqlL3Backend(_Pool()).delete_many("layer", [("f0001", 1)], max_rows=1)

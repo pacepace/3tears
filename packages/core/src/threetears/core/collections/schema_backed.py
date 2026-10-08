@@ -1875,12 +1875,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
     #: default 1 MiB message, with room for the request around them
     BULK_MAX_BYTES: ClassVar[int] = 768 * 1024
 
-    #: the most rows the L3 rail answers one statement; it cuts there without saying so, so a
-    #: read that may reach it is read so that the cut loses nothing (:meth:`read_rows_led_by`)
-    L3_ROW_CAP: ClassVar[int] = 1000
-
     #: the most leading-key values one key-led read names: a value usually holds a few rows, so a
-    #: batch's answer stays under :attr:`L3_ROW_CAP` and is rarely read again in halves
+    #: batch's answer stays under the L3 rail's row cap
+    #: (:data:`~threetears.core.backends.protocol.L3_RAIL_ROW_CAP`) and is rarely read again in halves
     LED_READ_MAX_VALUES: ClassVar[int] = 250
 
     async def save_rows(
@@ -2002,13 +1999,13 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :ptype keys: Sequence[Sequence[Any]]
         :param conn: the caller's connection, its transaction opened by :class:`CallerTransaction`
         :ptype conn: Any
-        :param max_rows: the most keys one statement names; :attr:`BULK_MAX_ROWS` when None
+        :param max_rows: the most keys one statement names, at least one; :attr:`BULK_MAX_ROWS` when None
         :ptype max_rows: int | None
         :return: how many keys were named (a key no row holds is not an error)
         :rtype: int
         :raises ValueError: when no :class:`CallerTransaction` is open on ``conn``; when the collection
-            has no durable store, caches absences or defers its L3 writes; when a key is not as wide
-            as the table's key
+            has no durable store, caches absences or defers its L3 writes; when ``max_rows`` is under
+            one; when a key is not as wide as the table's key
         """
         transaction = CallerTransaction.join(conn, writer=f"{type(self).__name__}.delete_rows")
         store = self._durable_store()
@@ -2021,6 +2018,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 f"{type(self).__name__}.delete_rows: a bulk delete cannot keep this collection's write "
                 f"contract (it caches absences or defers its L3 writes)"
             )
+        if max_rows is not None and max_rows < 1:
+            raise ValueError(f"{self.table_name}.delete_rows: max_rows must be at least 1, got {max_rows}")
         width = len(self.schema.pk_columns)
         named = [tuple(key) for key in keys]
         wrong = [key for key in named if len(key) != width]
@@ -2064,25 +2063,32 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         lead reads every row of the table -- ``SELECT DISTINCT``, ``ORDER BY`` the key, a filter on
         a later key column -- and runs into the statement timeout on a big table. Here each
         statement names a batch of values, ``WHERE <lead> = ANY($1)``; an answer that reaches the
-        L3 rail's row cap (:attr:`L3_ROW_CAP`), which cuts without saying so, is read again in
-        halves; and a value that alone holds that many rows is paged by the rest of its key.
+        transport's row cap (on the L3 rail
+        :data:`~threetears.core.backends.protocol.L3_RAIL_ROW_CAP`), which cuts without saying so,
+        is read again in halves; and a value that alone holds that many rows is paged by the rest
+        of its key.
 
         Reads L3 only, around the caches: nothing is read from or written to L1 or L2. The
         store's :meth:`~threetears.core.backends.protocol.KeyLedReadingStore.fetch_led_by` reads
-        them when it has one, and a store without it is scanned a value at a time.
+        them when it has one. A store without it is scanned a value at a time through
+        ``DurableStore.scan``, which takes no connection, so there a ``conn`` is refused rather
+        than read around.
 
         :param values: the leading key column's values; each is read once, however often named
         :ptype values: Sequence[Any]
         :param columns: columns to read beside the key; the key alone when None. Every row carries
             the key columns either way
         :ptype columns: Sequence[str] | None
-        :param max_values: the most values one statement names; :attr:`LED_READ_MAX_VALUES` when None
+        :param max_values: the most values one statement names, at least one;
+            :attr:`LED_READ_MAX_VALUES` when None
         :ptype max_values: int | None
-        :param conn: a connection to read on (the caller's transaction); the store's own when None
+        :param conn: a connection to read on (the caller's transaction); the store's own when None.
+            Only a :class:`~threetears.core.backends.protocol.KeyLedReadingStore` can read on one
         :ptype conn: Any
         :return: the rows, each keyed by column, in no promised order
         :rtype: list[dict[str, Any]]
-        :raises ValueError: when the collection has no durable store, or a column is not the table's
+        :raises ValueError: when the collection has no durable store, a column is not the table's,
+            ``max_values`` is under one, or ``conn`` is given to a store that cannot read on it
         """
         store = self._durable_store()
         if store is None:
@@ -2092,17 +2098,21 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         unknown = [name for name in wanted if self.schema.get_column(name) is None]
         if unknown:
             raise ValueError(f"{self.table_name}.read_rows_led_by: the table has no column {unknown[0]!r}")
+        per_statement = self.LED_READ_MAX_VALUES if max_values is None else max_values
+        if per_statement < 1:
+            raise ValueError(f"{self.table_name}.read_rows_led_by: max_values must be at least 1, got {max_values}")
+        reads_on_conn = isinstance(store, KeyLedReadingStore)
+        if conn is not None and not reads_on_conn:
+            raise ValueError(
+                f"{self.table_name}.read_rows_led_by: its store has no key-led read and scans without a "
+                f"connection, so it cannot read on the conn given; call it without conn"
+            )
         unique = list(dict.fromkeys(values))
         if not unique:
             return []
         if isinstance(store, KeyLedReadingStore):
             rows = await store.fetch_led_by(
-                self.table_name,
-                unique,
-                columns=wanted,
-                max_values=max_values or self.LED_READ_MAX_VALUES,
-                row_cap=self.L3_ROW_CAP,
-                conn=conn,
+                self.table_name, unique, columns=wanted, max_values=per_statement, conn=conn
             )
         else:
             rows = []
