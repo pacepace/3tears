@@ -6,6 +6,14 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Core: a turn assertion, the hub's signed statement of whose turn an agent runs
+
+- `threetears.core.security.turn_assertion`: `mint_turn_assertion` / `verify_turn_assertion` /
+  `new_turn_id`. A hub-signed EdDSA JWS (`aud` `agents.turn`, `sub` the agent, `user_id`,
+  `customer_id`, `conversation_id`, a CSPRNG `turn_id`, life one hour so a durable turn can wait
+  out a router restart). The router and the agent take whose turn it is from it, never the body;
+  it never enters `CallContext`, so no tool pod holds it. Additive.
+
 ### NATS: a runner's refusal and renewal doors can require the hub's envelope (S1, S2)
 
 - `CredentialRefusal` and `CredentialRenewalRequest` gain an optional `service_envelope` (audiences

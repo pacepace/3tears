@@ -35,6 +35,9 @@ public surface:
   :class:`ServiceEnvelopeError` / :class:`ServiceEnvelopeDoor` (one door's acceptance inside its dated
   window) -- a service with no caller token to forward signs "from me, for
   this door and operation, over this body, now, once" with its own JWKS key.
+- turn assertions (``turn_assertion``): :func:`mint_turn_assertion` / :func:`verify_turn_assertion` /
+  :func:`new_turn_id` -- the hub's signed statement of whose turn an agent runs, kept out of
+  ``CallContext``.
 """
 
 from threetears.core.security.encryption import DecryptionError, open_secret, seal
@@ -102,6 +105,15 @@ from threetears.core.security.service_envelope import (
     verify_and_record,
     verify_service_envelope,
 )
+from threetears.core.security.turn_assertion import (
+    TURN_ASSERTION_AUDIENCE,
+    TURN_ASSERTION_LIFETIME,
+    TurnAssertionClaims,
+    TurnAssertionError,
+    mint_turn_assertion,
+    new_turn_id,
+    verify_turn_assertion,
+)
 from threetears.core.security.secret_refs import (
     Resolver,
     SecretResolutionError,
@@ -133,6 +145,14 @@ __all__ = [
     "DEFAULT_PROOF_MAX_AGE",
     "ISSUE_TIME_FUTURE_TOLERANCE",
     "issue_time_is_fresh",
+    # turn assertions
+    "TURN_ASSERTION_AUDIENCE",
+    "TURN_ASSERTION_LIFETIME",
+    "TurnAssertionClaims",
+    "TurnAssertionError",
+    "mint_turn_assertion",
+    "new_turn_id",
+    "verify_turn_assertion",
     # service envelopes
     "SERVICE_ENVELOPE_FIELD",
     "SERVICE_ENVELOPE_LEEWAY",
