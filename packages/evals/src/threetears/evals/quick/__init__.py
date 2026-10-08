@@ -5,7 +5,9 @@ functions, builds what a host would — a kind over the callable, a profile with
 scorer, the in-memory reference store — launches through the engine's own launch path, and returns
 an :class:`EvalSummary`. Handed each case's expected label (``expected=``), it grades the candidate as a
 classifier, and the summary carries its confusion matrix (:class:`ConfusionCount`) and each label's
-precision, recall and F1 (:class:`LabelStatistics`). :func:`run_cli` is ``python -m threetears.evals``: ``run``, ``ls`` and
+precision, recall and F1 (:class:`LabelStatistics`). :func:`compare` runs two or more candidates over
+one case list the same way, each as one arm, and returns a :class:`Comparison` whose campaign report
+tests every arm against the one named the control. :func:`run_cli` is ``python -m threetears.evals``: ``run``, ``ls`` and
 ``report`` over a host named ``module:factory``, or mounted under a product's own CLI with its host
 factory and any subcommands of its own (:class:`HostCommand`).
 
@@ -31,6 +33,7 @@ from threetears.evals.quick.cli import (
     build_parser,
     run_cli,
 )
+from threetears.evals.quick.compare import Comparison, compare
 from threetears.evals.quick.one_call import (
     CALLABLE_KIND,
     CALLABLE_KIND_CONTRACT,
@@ -56,6 +59,7 @@ __all__ = [
     "EXIT_RUN_DID_NOT_COMPLETE",
     "UNUSABLE_ANSWER",
     "Candidate",
+    "Comparison",
     "ConfusionCount",
     "EvalSummary",
     "ExpectedLabel",
@@ -66,6 +70,7 @@ __all__ = [
     "Scorer",
     "build_parser",
     "callable_host",
+    "compare",
     "run_cli",
     "run_eval",
     "summarize_run",
