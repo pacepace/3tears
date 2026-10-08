@@ -16,7 +16,7 @@ import inspect
 import os
 import signal
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.bucket import (
@@ -79,6 +79,16 @@ __all__ = [
 #: holds, or ``None`` when no host identity is configured. A provider rather than a value because
 #: the host re-mints the token in place, and a captured value is expired within the hour.
 IdentityTokenProvider = Callable[[], str | None]
+
+#: the usage emitter factory: the connection and the registry's own identity-token provider, so
+#: each usage event can prove the registry published it.
+UsageEmitterFactory = Callable[["NatsClient", IdentityTokenProvider | None], Awaitable[EndpointUsageEmitter | None]]
+
+#: the usage emitter factory as hosts wrote it before the identity was handed over: the connection
+#: alone. Still called, with a warning, so a host need not release in step with this 3tears; its
+#: events carry no registry identity, and the hub refuses them from its publisher door's date
+#: (2027-01-05). Dropped in the first 3tears release after that date.
+LegacyUsageEmitterFactory = Callable[["NatsClient"], Awaitable[EndpointUsageEmitter | None]]
 
 _logger = get_logger(__name__)
 
@@ -227,9 +237,7 @@ class RegistryServer:
             "Callable[[NatsClient, IdentityTokenProvider | None], Awaitable[LimitGuard | None]] | None"
         ) = None,
         usage_emitter: "EndpointUsageEmitter | None" = None,
-        usage_emitter_factory: (
-            "Callable[[NatsClient, IdentityTokenProvider | None], Awaitable[EndpointUsageEmitter | None]] | None"
-        ) = None,
+        usage_emitter_factory: ("UsageEmitterFactory | LegacyUsageEmitterFactory | None") = None,
         on_shutdown: "Callable[[], Awaitable[None]] | None" = None,
         version: str | None = None,
     ) -> None:
@@ -339,7 +347,7 @@ class RegistryServer:
             from :meth:`serve` after NATS connects (alongside ``limit_guard_factory``) so an emitter
             whose publish path needs the live connection can build against it. takes precedence over
             ``usage_emitter`` when both are set. ``None`` keeps the constructor-supplied ``usage_emitter``.
-        :ptype usage_emitter_factory: Callable[[NatsClient, IdentityTokenProvider | None], Awaitable[EndpointUsageEmitter | None]] | None
+        :ptype usage_emitter_factory: UsageEmitterFactory | LegacyUsageEmitterFactory | None
         :param version: release version the health server echoes on its JSON body and startup
             log. ``python -m threetears.registry`` passes the installed ``3tears-registry``
             distribution's version; ``None`` (an embedding caller that passes none) leaves the
@@ -589,9 +597,15 @@ class RegistryServer:
             # host factory written before the identity was handed over takes the client alone, and
             # keeps working: a 3tears upgrade never requires the host to release in lockstep
             if _takes_a_second_argument(factory):
-                self._usage_emitter = await factory(nc, self._identity_token_provider())
+                self._usage_emitter = await cast("UsageEmitterFactory", factory)(nc, self._identity_token_provider())
             else:
-                self._usage_emitter = await factory(nc)  # type: ignore[call-arg]
+                _logger.warning(
+                    "usage emitter factory %r takes the connection alone: its usage events carry no registry "
+                    "identity, which the hub refuses from its publisher door's date; give it a second "
+                    "parameter for the identity-token provider",
+                    getattr(factory, "__qualname__", factory),
+                )
+                self._usage_emitter = await cast("LegacyUsageEmitterFactory", factory)(nc)
         return self._usage_emitter
 
     async def serve(self) -> None:
@@ -1302,9 +1316,7 @@ def _takes_a_second_argument(factory: Callable[..., object]) -> bool:
     return len(positional) >= 2 or any(p.kind is p.VAR_POSITIONAL for p in parameters)
 
 
-def _resolve_usage_emitter_factory() -> (
-    "Callable[[NatsClient, IdentityTokenProvider | None], Awaitable[EndpointUsageEmitter | None]] | None"
-):
+def _resolve_usage_emitter_factory() -> "UsageEmitterFactory | LegacyUsageEmitterFactory | None":
     """resolve the post-call endpoint-usage emitter factory from a configurable plugin path.
 
     3tears stays host-agnostic: the standalone registry has no metering bus, so the usage emitter is
@@ -1317,7 +1329,7 @@ def _resolve_usage_emitter_factory() -> (
     pure-3tears / dev default; no metering pipeline to publish to).
 
     :return: the resolved factory, or ``None`` when the env var is unset
-    :rtype: Callable[[NatsClient, IdentityTokenProvider | None], Awaitable[EndpointUsageEmitter | None]] | None
+    :rtype: UsageEmitterFactory | LegacyUsageEmitterFactory | None
     :raises ValueError: when the env var is set but not a ``module:callable`` dotted path
     :raises ImportError / AttributeError: when the path does not resolve (fail loud -- a
         misconfigured emitter plugin must crash startup, never silently drop usage events)
@@ -1325,7 +1337,7 @@ def _resolve_usage_emitter_factory() -> (
     import importlib
 
     spec = os.environ.get("THREETEARS_REGISTRY_USAGE_EMITTER_FACTORY", "").strip()
-    result: "Callable[[NatsClient, IdentityTokenProvider | None], Awaitable[EndpointUsageEmitter | None]] | None" = None
+    result: "UsageEmitterFactory | LegacyUsageEmitterFactory | None" = None
     if spec:
         module_name, sep, attr = spec.partition(":")
         if not module_name or not sep or not attr:

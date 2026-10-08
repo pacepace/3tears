@@ -11,8 +11,11 @@ packages (bumped in lock-step).
 - `THREETEARS_REGISTRY_USAGE_EMITTER_FACTORY`'s factory is called with the connected client and
   the registry's identity-token provider (`None` when the registry holds no identity), as the
   limit-guard and authenticator factories already are, so each endpoint-usage event can prove the
-  registry published it. A factory taking the client alone is still called with it alone, so a
-  host need not release in step with this 3tears.
+  registry published it. A factory taking the client alone is still called with it alone, with a
+  warning naming it, so a host need not release in step with this 3tears; its events carry no
+  registry identity, which the hub refuses from 2027-01-05. The client-alone form is dropped in the
+  first 3tears release after that date. A factory whose signature cannot be read is called with the
+  client alone.
 
 ### Core: a fetched JWKS is never trusted blind
 
