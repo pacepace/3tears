@@ -536,3 +536,63 @@ async def test_a_versioned_read_never_pairs_a_scopes_rows_with_another_epoch() -
 
     assert mismatches == []
     assert len(seen) > 5, f"the reader saw only epochs {sorted(seen)}; the test raced nothing"
+
+
+async def test_a_versioned_read_opened_during_a_long_swap_waits_for_it_and_reads_its_result() -> None:
+    """deterministic: a swap held open (as a large load is) never makes the read fail; it waits, then reads it."""
+    import threading
+
+    snapshot, _, _, _ = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    inside, release = threading.Event(), threading.Event()
+    backend = snapshot.backend
+    replace = backend.replace_partitions
+
+    def slow_replace(replacements: Any) -> int:
+        inside.set()
+        release.wait(5)  # a swap far longer than any spin budget
+        return replace(replacements)
+
+    backend.replace_partitions = slow_replace  # type: ignore[method-assign]
+    publishing = asyncio.ensure_future(
+        snapshot.publish("TX", 2, {"results": [{"county": "c1", "state": "TX", "votes": 20}]})
+    )
+    await asyncio.to_thread(inside.wait, 5)
+
+    def read() -> tuple[dict[str, int], Any]:
+        with snapshot.read_versioned() as versioned:
+            rows = versioned.cursor.execute("SELECT votes FROM results WHERE state = 'TX'").fetchall()
+            return dict(versioned.epochs), rows
+
+    reading = asyncio.ensure_future(asyncio.to_thread(read))
+    await asyncio.sleep(0.5)  # longer than the old 200-attempt budget
+    assert not reading.done(), "the read did not wait for the swap in progress"
+    release.set()
+    epochs, rows = await reading
+    await publishing
+    assert (epochs["TX"], rows) == (2, [(20,)])
+    await snapshot.stop()
+
+
+async def test_a_dropped_scope_leaves_the_versioned_reads_epochs() -> None:
+    snapshot, _, _, _ = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    await snapshot._drop_locally(["TX"])  # noqa: SLF001 -- the one swap that removes a scope
+    with snapshot.read_versioned() as read:
+        assert read.epochs == {"DE": 1}
+        assert read.cursor.execute("SELECT count(*) FROM results WHERE state = 'TX'").fetchone() == (0,)
+    await snapshot.stop()
+
+
+async def test_a_versioned_read_keeps_the_state_its_epochs_name_through_a_later_swap() -> None:
+    """deterministic: a swap committed after the read opened, before its first query, is not seen."""
+    snapshot, _, _, _ = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    with snapshot.read_versioned() as read:
+        await snapshot.publish("TX", 2, {"results": [{"county": "c1", "state": "TX", "votes": 20}]})
+        votes = read.cursor.execute("SELECT votes FROM results WHERE state = 'TX'").fetchall()
+        assert (read.epochs["TX"], votes) == (1, [(1,)])
+    await snapshot.stop()

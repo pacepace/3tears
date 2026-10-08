@@ -63,10 +63,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
-from contextlib import aclosing, asynccontextmanager, contextmanager, nullcontext, suppress
+from contextlib import ExitStack, aclosing, asynccontextmanager, contextmanager, nullcontext, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -228,10 +229,6 @@ class VersionedRead:
 
     cursor: Any
     epochs: Mapping[str, int]
-
-
-#: how many times a versioned read opens again when a swap committed while it opened
-_VERSIONED_READ_ATTEMPTS: Final = 200
 
 
 @dataclass(frozen=True)
@@ -564,11 +561,12 @@ class ScopedSnapshot:
         self._watch_ended: str | None = None
         # what the L1 holds
         self._applied: dict[str, _Pointer] = {}
-        # the epoch of every scope's rows in the L1, moved in the same step as the rows themselves,
-        # behind a sequence counter (odd while a swap is in progress) so a reader on any thread can
-        # pair a read with exactly the epochs it reads (read_versioned)
+        # the epoch of every scope's rows in the L1, moved in the same step as the rows themselves:
+        # a swap holds this lock across its commit and the epochs' move, and a versioned read across
+        # taking the epochs and pinning its state, so a reader on any thread pairs a read with
+        # exactly the epochs it reads (read_versioned)
         self._held: Mapping[str, int] = MappingProxyType({})
-        self._swaps = 0
+        self._swap_lock = threading.Lock()
         self._local = asyncio.Lock()
         self._changed = asyncio.Event()
         self._ready = asyncio.Event()
@@ -777,28 +775,22 @@ class ScopedSnapshot:
 
         For an answer published under the version of the data it was computed from: the epochs are
         those of the rows the cursor sees, never one swap before or after, so an answer labelled
-        with them is the answer at those epochs. A swap that commits while the read opens makes it
-        open again (a swap takes milliseconds; the read is retried, never waited on).
+        with them is the answer at those epochs. A read opened while a swap is in progress waits
+        for it (as any DuckDB read does: the swap holds the database's lock) and reads its result;
+        it never fails for a swap however long. Blocking: call it from a worker thread.
 
         :return: the read and its epochs
         :rtype: Iterator[VersionedRead]
-        :raises RuntimeError: when swaps never left the read a moment to open between them
         """
         table = quote_identifier(self._tables[0].name)
-        for _ in range(_VERSIONED_READ_ATTEMPTS):
-            before = self._swaps
-            if before % 2:
-                time.sleep(0.001)
-                continue
-            epochs = self._held
-            with self._backend.read_snapshot() as cursor:
-                # DuckDB fixes a read's state at its first statement, not at BEGIN: pin it here,
-                # before the counter is checked, so the state read is the one the epochs name
+        with ExitStack() as stack:
+            with self._swap_lock:
+                epochs = self._held
+                cursor = stack.enter_context(self._backend.read_snapshot())
+                # DuckDB fixes a read's state at its first statement, not at BEGIN: pin it while no
+                # swap can commit, so the state read is the one the epochs name
                 cursor.execute(f"SELECT 1 FROM {table} LIMIT 0").fetchall()
-                if self._swaps == before:
-                    yield VersionedRead(cursor=cursor, epochs=epochs)
-                    return
-        raise RuntimeError(f"scoped snapshot {self._name}: no versioned read could open between swaps")
+            yield VersionedRead(cursor=cursor, epochs=epochs)
 
     def _swap(self, replacements: Sequence[PartitionReplacement], epochs: Mapping[str, int | None]) -> None:
         """replace scopes in the L1 and move their held epochs as one step; on a worker thread.
@@ -810,8 +802,7 @@ class ScopedSnapshot:
         :return: nothing
         :rtype: None
         """
-        self._swaps += 1
-        try:
+        with self._swap_lock:
             self._backend.replace_partitions(replacements)
             held = dict(self._held)
             for scope, epoch in epochs.items():
@@ -820,8 +811,6 @@ class ScopedSnapshot:
                 else:
                     held[scope] = epoch
             self._held = MappingProxyType(held)
-        finally:
-            self._swaps += 1
 
     async def wait_ready(self, *, timeout: float) -> None:
         """wait until every scope has been loaded.
