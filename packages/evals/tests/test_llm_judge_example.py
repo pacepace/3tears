@@ -56,12 +56,15 @@ def test_the_example_reaches_the_engine_only_through_public_roots() -> None:
 
 async def test_the_claude_adapter_prices_a_reply_from_its_usage(monkeypatch: pytest.MonkeyPatch) -> None:
     anthropic = pytest.importorskip("anthropic")
+    module = _load()
+    # The id is the example's own, read from it, so a model rev in the example is the only edit.
+    model, served = module.MODEL, f"{module.MODEL}-served"
     reply = anthropic.types.Message.model_validate(
         {
             "id": "msg_1",
             "type": "message",
             "role": "assistant",
-            "model": "claude-haiku-5-5-served",
+            "model": served,
             "content": [{"type": "text", "text": '{"ok": true}'}],
             "stop_reason": "max_tokens",
             "stop_sequence": None,
@@ -85,16 +88,15 @@ async def test_the_claude_adapter_prices_a_reply_from_its_usage(monkeypatch: pyt
     monkeypatch.setattr(
         anthropic, "AsyncAnthropic", lambda: SimpleNamespace(messages=SimpleNamespace(create=create), close=close)
     )
-    module = _load()
-    client = module.ClaudeClient("claude-haiku-5-5")
+    client = module.ClaudeClient(model)
     completion = await client.generate(system="be brief", user="hello", response_format={"type": "json_object"})
 
-    assert sent[0]["model"] == "claude-haiku-5-5" and sent[0]["system"] == "be brief"
+    assert sent[0]["model"] == model and sent[0]["system"] == "be brief"
     assert "response_format" not in sent[0]
     # 1,000 uncached input tokens and 1,000 cache reads at a tenth of the rate, then 200 output tokens.
     assert completion.cost_usd == pytest.approx((1_000 + 100) * 0.10 / 1e6 + 200 * 0.50 / 1e6)
     assert (completion.input_tokens, completion.output_tokens, completion.reasoning_tokens) == (2_000, 200, 50)
     assert (completion.content, completion.stop_reason) == ('{"ok": true}', "max_tokens")
-    assert (completion.model, completion.served_model) == ("claude-haiku-5-5", "claude-haiku-5-5-served")
+    assert (completion.model, completion.served_model) == (model, served)
     assert client.spent_usd == pytest.approx(completion.cost_usd)
     await client.aclose()
