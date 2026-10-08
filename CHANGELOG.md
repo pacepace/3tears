@@ -27,6 +27,8 @@ packages (bumped in lock-step).
   only when it verifies and its id is unspent (the sender's JWKS fetched afresh once for an unknown
   kid; an unreachable ledger refuses); a message without one is the door's `DoorProofSwitch`'s to
   judge, accepted until the window's date. Refusals are counted in `service_envelope_refused{door,cause}`.
+- `ServiceEnvelopeSigner` holds one sending service's key, kid and issuer; `seal` returns a body with
+  its envelope added, ready to send.
 
 ### Knowledge: a draft carries the agent's token and the turn's user assertion
 

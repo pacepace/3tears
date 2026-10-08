@@ -325,3 +325,14 @@ class TestServiceEnvelopeDoor:
         _, jwks = _keys()
         with pytest.raises(ValueError, match="sized for"):
             _door(_Jwks(jwks), guard=FakeReplayGuard(verifier_future_tolerance=timedelta(0)))
+
+
+class TestServiceEnvelopeSigner:
+    def test_a_sealed_body_verifies_at_its_door(self) -> None:
+        from threetears.core.security import ServiceEnvelopeSigner
+
+        priv, jwks = _keys()
+        signer = ServiceEnvelopeSigner(signing_key=priv, kid="idc-1", issuer="identity-core")
+        sealed = signer.seal(audience="hub.claim_grant", op="ensure", body=_BODY)
+        assert set(sealed) == {*_BODY, SERVICE_ENVELOPE_FIELD}
+        _verify(sealed[SERVICE_ENVELOPE_FIELD], jwks, body=sealed)

@@ -54,6 +54,7 @@ __all__ = [
     "ServiceEnvelopeClaims",
     "ServiceEnvelopeDoor",
     "ServiceEnvelopeError",
+    "ServiceEnvelopeSigner",
     "body_hash",
     "mint_service_envelope",
     "verify_and_record",
@@ -182,6 +183,50 @@ def mint_service_envelope(
         "exp": issued + int(ttl.total_seconds()),
     }
     return jwt.encode(payload, key=signing_key, algorithm=_ALG, headers={"kid": kid})
+
+
+@dataclass(frozen=True, slots=True)
+class ServiceEnvelopeSigner:
+    """one sending service's key, for every door it writes to.
+
+    :ivar signing_key: the service's Ed25519 key, published in its JWKS under ``kid``
+    :ivar kid: the key's JWKS id
+    :ivar issuer: the service principal the doors expect
+    """
+
+    signing_key: Ed25519PrivateKey
+    kid: str
+    issuer: str
+
+    def sign(self, *, audience: str, op: str, body: Mapping[str, Any]) -> str:
+        """an envelope over ``body`` for ``audience``'s ``op``.
+
+        :param audience: the receiving door
+        :ptype audience: str
+        :param op: the operation within the door
+        :ptype op: str
+        :param body: the message body as it goes on the wire, as JSON values
+        :ptype body: Mapping[str, Any]
+        :return: the compact JWS
+        :rtype: str
+        """
+        return mint_service_envelope(
+            signing_key=self.signing_key, kid=self.kid, issuer=self.issuer, audience=audience, op=op, body=body
+        )
+
+    def seal(self, *, audience: str, op: str, body: Mapping[str, Any]) -> dict[str, Any]:
+        """``body`` with its envelope added under :data:`SERVICE_ENVELOPE_FIELD`, ready to send.
+
+        :param audience: the receiving door
+        :ptype audience: str
+        :param op: the operation within the door
+        :ptype op: str
+        :param body: the message body, as JSON values
+        :ptype body: Mapping[str, Any]
+        :return: the body with its envelope
+        :rtype: dict[str, Any]
+        """
+        return {**body, SERVICE_ENVELOPE_FIELD: self.sign(audience=audience, op=op, body=body)}
 
 
 def verify_service_envelope(
