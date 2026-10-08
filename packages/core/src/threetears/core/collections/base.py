@@ -62,7 +62,7 @@ if TYPE_CHECKING:
     # local `_NatsClientFromRegistry` sentinel, not `NatsClient`.
     from threetears.nats import NatsClient, NatsKvBucket
 
-__all__ = ["NATS_CLIENT_FROM_REGISTRY", "BaseCollection", "CasMutation", "EntityT"]
+__all__ = ["NATS_CLIENT_FROM_REGISTRY", "NO_L2", "BaseCollection", "CasMutation", "EntityT", "NoL2"]
 
 log = get_logger(__name__)
 
@@ -315,6 +315,25 @@ class _NatsClientFromRegistry:
 NATS_CLIENT_FROM_REGISTRY: Final = _NatsClientFromRegistry()
 
 
+class NoL2:
+    """the type of :data:`NO_L2`: a collection declared to run without L2 by design."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "NO_L2"
+
+
+#: pass as ``nats_client`` to build a collection that has no L2 on purpose: L1 + L3 only, no KV
+#: copy and no invalidation broadcast, whatever L2 client the registry offers. It differs from an
+#: explicit ``None`` only in what it says: ``None`` reads as a client that should have been there,
+#: and logs a one-shot WARNING on the first write that cannot broadcast; ``NO_L2`` is a decision,
+#: logged once at INFO when the first collection of the table is built, and never warned about.
+#: For tables nothing reads by key through a collection on another replica (a loader's layer
+#: tables, a pod's report tables), where a KV copy of every row would cost a write and never be read.
+NO_L2: Final = NoL2()
+
+
 class BaseCollection(ABC, Generic[EntityT]):
     """abstract base collection with three-tier caching (L1 -> L2 -> L3).
 
@@ -457,6 +476,8 @@ class BaseCollection(ABC, Generic[EntityT]):
     # :meth:`_warn_missing_nats_client_once`; declared here so the
     # attribute is typed + present on the base.
     _missing_nats_warned_tables: ClassVar[set[str]] = set()
+    #: tables whose "runs without L2 by design" INFO line has been logged, once per process
+    _no_l2_announced_tables: ClassVar[set[str]] = set()
 
     #: this process's L1 for the table, as the registry bound it; ``None`` when it caches nowhere
     _l1: Any
@@ -467,7 +488,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         self,
         registry: CollectionRegistry,
         config: CoreConfig,
-        nats_client: NatsClient | _NatsClientFromRegistry | None = NATS_CLIENT_FROM_REGISTRY,
+        nats_client: NatsClient | _NatsClientFromRegistry | NoL2 | None = NATS_CLIENT_FROM_REGISTRY,
         write_buffer: WriteBuffer | None = None,
     ) -> None:
         self._registry = registry
@@ -475,9 +496,14 @@ class BaseCollection(ABC, Generic[EntityT]):
         # L2 resolution mirrors L1/L3: when the argument is omitted, the
         # registry is the wiring path (``configure(l2_client=...)`` /
         # ``bind_table``). an explicit client always wins; an explicit
-        # ``None`` disables L2 for this collection.
+        # ``None`` disables L2 for this collection, and ``NO_L2`` disables it
+        # as a declared decision rather than a client that went missing.
+        self._no_l2_by_design = isinstance(nats_client, NoL2)
         if isinstance(nats_client, _NatsClientFromRegistry):
             self._nats_client: NatsClient | None = registry.get_l2_client(self.table_name)
+        elif isinstance(nats_client, NoL2):
+            self._nats_client = None
+            self._announce_no_l2_once()
         else:
             self._nats_client = nats_client
         self._kv: NatsKvBucket | None = None
@@ -2512,6 +2538,22 @@ class BaseCollection(ABC, Generic[EntityT]):
             l2_key_current=l2_key_current,
         )
 
+    def _announce_no_l2_once(self) -> None:
+        """log once per table, at INFO, that this collection runs without L2 by design.
+
+        :return: nothing
+        :rtype: None
+        """
+        announced = BaseCollection._no_l2_announced_tables
+        if self.table_name in announced:
+            return
+        announced.add(self.table_name)
+        log.info(
+            "collection runs without L2 by design: table=%s -- L1 + L3 only, no KV copy and no "
+            "invalidation broadcast (built with nats_client=NO_L2)",
+            self.table_name,
+        )
+
     def _warn_missing_nats_client_once(self) -> None:
         """emit a one-shot WARNING when invalidation cannot publish.
 
@@ -2519,11 +2561,14 @@ class BaseCollection(ABC, Generic[EntityT]):
         writes per second -- the wiring gap is process-wide and
         worth surfacing once. uses a class-level set keyed on
         table_name so collections of distinct types each get one
-        warning.
+        warning. a collection built with :data:`NO_L2` has no gap
+        to report and is never warned about.
 
         :return: nothing
         :rtype: None
         """
+        if getattr(self, "_no_l2_by_design", False):
+            return
         cls = type(self)
         warned: set[str] = getattr(cls, "_missing_nats_warned_tables", None) or set()
         if self.table_name in warned:
@@ -2534,7 +2579,8 @@ class BaseCollection(ABC, Generic[EntityT]):
             "collection invalidation is silently disabled: table=%s -- "
             "consumer pods will serve stale L1 entries until the "
             "collection is reconstructed with a non-None nats_client. "
-            "wiring gap: datasource-task-06 DS-06-04.",
+            "wiring gap: datasource-task-06 DS-06-04. a collection with no L2 "
+            "by design is built with nats_client=NO_L2 instead.",
             self.table_name,
         )
 

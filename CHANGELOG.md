@@ -6,6 +6,28 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Core: a collection can declare it has no L2 by design
+
+The geography pod's layer tables and the ENR pod's report tables are built L1+L3 only on purpose,
+as the integration guide documents, and every one of them logged `collection invalidation is
+silently disabled ... wiring gap: datasource-task-06 DS-06-04` on its first write.
+
+- **Added, `threetears.core.collections.NO_L2`** (and its type, `NoL2`): pass it as a collection's
+  `nats_client` to run it without L2 by design. It has no L2 client whatever the registry offers,
+  never logs the wiring-gap WARNING, and logs `collection runs without L2 by design: table=<t>`
+  once per table at INFO when the first such collection is built. An explicit `nats_client=None`
+  keeps its meaning and its WARNING, which now names `NO_L2` as the declaration for a deliberate
+  opt-out. Integration guide §8.2 says which to use.
+
+### Observe: a log line names the class of the instance that logged it
+
+- **Fixed, `ThreeTearsLogger`**: the call-site class a record carries (`call_site_class`, the
+  `Class` in `path/Class.func.line`) was cached by file and line, so a line in a base class named
+  the first instance's class on every record after: every layer table's missing-L2 warning read
+  `LayerShapeCollection[us_state_census2022]`, whichever table it was about. The class is now read
+  from the logging frame for each record. The shortened path is no longer cached either, so a
+  prefix added to `path_strip_prefixes` after a file first logged applies to its later records.
+
 ### NATS: a KV bucket whose stream is briefly offline is no longer blamed on a missing grant
 
 During a NATS restart a catalog write failed with `stream is offline`, and the error told the
