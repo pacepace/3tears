@@ -107,7 +107,8 @@ one every such run's blank judge and simulator read as unrecoverable and no two 
 classifier's `match` and `confusion_cell` are core measures, so a host declares neither.
 
 [`examples/rung_zero.py`](examples/rung_zero.py) is the whole thing in one file: a sentiment classifier
-graded by its expected labels, beside one scorer.
+graded by its expected labels, beside one scorer. It is the first of a ladder of short examples, one
+capability each: [`examples/README.md`](examples/README.md) lists them in order.
 
 ## Comparing two variants
 
@@ -134,6 +135,55 @@ add cases (above all hard ones) before you read it as a tie. `result.arms["candi
 `EvalSummary`, and `result.campaign_id` names the campaign holding every run.
 `examples/compare_two_prompts.py` compares two prompts through Claude, or runs offline with no API key.
 
+## Comparing two models: accuracy against cost
+
+Asking whether a cheaper model is good enough means weighing what each gets right against what it
+costs. The engine cannot see what a plain candidate spends, so have the candidate return an `Answer`:
+the label plus the call's tokens and dollars. Each arm's summary then prints its `candidate spend`, and
+the report tests the arms' `cost_usd` against the control the same way it tests their accuracy.
+
+```python
+from threetears.evals.quick import Answer, compare
+
+async def classify_cheaper(case: dict) -> Answer:
+    label, tokens_in, tokens_out = await call_model(case)   # your call
+    return Answer(label, model="cheap-model", input_tokens=tokens_in, output_tokens=tokens_out,
+                  cost_usd=(tokens_in * 0.10 + tokens_out * 0.50) / 1e6)
+
+result = await compare(CASES, {"current": classify_current, "cheaper": classify_cheaper},
+                       expected=lambda case: case["label"], control="current", scope_id="dev", k=2)
+print(result.render())  # verdicts on accuracy and on cost_usd
+```
+
+A field left `None` is unreported, not zero. A candidate that returns a plain value still works and
+reports no spend. `examples/compare_two_models.py` runs one prompt on Claude Haiku 4.5 and Haiku 5.5, or
+runs offline with no API key.
+
+## Two factors at once
+
+When two things vary, say two prompts on two models, key each arm by its level of each factor
+(`factors=`). Each factor becomes a lever of its own, so the report names every arm by both
+(`callable.prompt=v2, model=...`). Arms are still tested against one control; to read the prompt's effect
+at the other model, read the same runs against a second control with `against`. Nothing runs again.
+
+```python
+result = await compare(
+    CASES,
+    {(model, prompt): make(model, prompt) for model in (OLD, NEW) for prompt in ("v1", "v2")},
+    factors=("model", "prompt"),          # each key is (model level, prompt level)
+    control=(OLD, "v1"),
+    expected=lambda case: case["queue"],
+    scope_id="dev",
+    k=2,
+)
+on_old = result.contrasts("accuracy")                       # v2 against v1 on OLD is in here
+on_new = result.against((NEW, "v1")).contrasts("accuracy")  # v2 against v1 on NEW
+```
+
+Each campaign corrects its own contrasts, so the two readings are two families. The report does not test
+main effects or an interaction. `examples/prompt_x_model.py` runs the 2×2 through Claude, or offline with
+no API key.
+
 ## Grading with an LLM judge
 
 When no code can grade an answer (is it helpful? does it stick to its source?), give `run_eval` a
@@ -155,10 +205,95 @@ print(summary.render())   # adds "answer.helpful (judged 1-5): mean ..." and "ju
 ```
 
 A bare rubric name is placed under the judge's `context` (`answer` by default), so `helpful` is reported
-as `answer.helpful`. Only the judge's spend reaches the summary: the candidate is your code, so the engine
-never sees what it spent. `examples/llm_judge.py` is the whole thing in one file, including a small
-adapter from the `anthropic` SDK; it calls Claude when `ANTHROPIC_API_KEY` is set and runs labelled
-offline stand-ins otherwise.
+as `answer.helpful`. The judge's spend reaches the summary as its client prices it; a candidate that calls
+a model reports its own by returning an `Answer`, as above. `examples/llm_judge.py` is the whole thing in
+one file, including a small adapter from the `anthropic` SDK; it calls Claude when `ANTHROPIC_API_KEY` is
+set and runs labelled offline stand-ins otherwise.
+
+## Tools, recorded once and replayed
+
+A candidate that calls tools (a search, a price lookup) is compared fairly only when every arm got the
+same tool answers. Declare the tools as plain functions (`tools=`) and the candidate is called as
+`candidate(case, tools)`. Capture one run with the tools live, then replay that recording to every arm:
+the tools are not called, and every arm faces identical answers. A cassette records the tools only; a model
+behind the candidate still runs live. A replay that asks something the capture never recorded excludes
+that cell as the rig's failure, and the tool is not called live.
+
+```python
+host = callable_host([correct])
+capture = await run_eval(cases, reader, [correct], scope_id="s", host=host, k=1,
+                         tools={"search": search}, cassette_mode="capture")
+comparison = await compare(cases, {"a": reader_a, "b": reader_b}, [correct], control="a",
+                           scope_id="s", host=host, tools={"search": search},
+                           cassette_mode="replay", cassette_corpus_id=capture.run_id)
+```
+
+The replay reads the capture from the same host and scope. `examples/cassettes.py` does it end to end,
+offline; [Adopting the engine](docs/adopting-a-host.md) (Cassettes) says how a replay matches each ask.
+
+## Grading what a model does to a world
+
+When the candidate acts rather than answers, declare the state it acts on (a `World` of `Dimension`s and
+the `WorldTool`s that change it), seed it per case, and grade the state it leaves with goal-state checks:
+code over `state.<dimension>` and the calls it made, with no judge. Each cell gets a fresh world, seeded
+before the candidate's first turn and read back after its last. `compare` takes the same `world=`,
+`seed=` and `goal_checks=`. A world run takes no `tools=` and no cassette: its tools are the world's own.
+
+```python
+def switch_light(room: dict, to: str) -> str:
+    """Turn the room's light on or off."""
+    room["light"] = to
+    return f"The light is now {to}."
+
+ROOM = World("room", [Dimension("light", {"enum": ["on", "off"]}, "The lamp."),
+                      Dimension("daylight", {"enum": ["dark", "bright"]}, "Whether the lamp is needed.")],
+             tools=[WorldTool(switch_light, to={"enum": ["on", "off"]})])
+
+summary = await run_eval(cases, assistant,   # assistant(case, room) calls await room["switch_light"](to="on")
+                         world=ROOM, seed=lambda c: {"light": c["light"], "daylight": c["daylight"]},
+                         goal_checks=['(state.light == "on") == (state.daylight == "dark")'], scope_id="world")
+```
+
+`examples/world.py` runs it through a Claude tool-use loop, or offline with no API key.
+
+## From a campaign to files people read
+
+A campaign's report is a typed document, not just text: read its verdicts as data, and write it out for
+each reader: Markdown for a pull request, script-free HTML for a person, the evidence bundle its numbers
+came from, and each chart as a Vega-Lite spec (SVG too, with the `[vega]` extra).
+
+```python
+from threetears.evals.analysis import report_html, report_markdown
+
+verdicts = {(row["contrast"], row["reading"]): row["verdict"] for row in comparison.contrasts()}
+Path("report.md").write_text(report_markdown(comparison.report))
+Path("report.html").write_text(report_html(comparison.report))
+```
+
+`examples/reports.py` does all of it in one file, offline, into `./eval-report/`;
+[Reading reports](docs/reading-reports.md) says what each part of a report means.
+
+## A model writes the analysis, over frozen evidence
+
+An analysis is written from one input only, the campaign's **analysis bundle**: every number code
+computed, with a sha256 fingerprint. The model never types a figure. It names a reading, code fills in the
+number from the bundle, and a reading the bundle lacks is refused. Save the bundle and you can regenerate
+over the same evidence with another prompt; each analysis records the fingerprint it read, so two prompts
+are compared fairly. Figures typed straight into a sentence are not checked; only cited readings are.
+
+```python
+bundle = inspect_campaign_bundle(comparison.host, comparison.campaign_id, comparison.scope_id).bundle
+Path("bundle.json").write_text(bundle.to_json(indent=2))          # freeze
+frozen = AnalysisContextBundle.from_json(Path("bundle.json").read_text())
+assert frozen.fingerprint() == bundle.fingerprint()
+analysis, _ = await generate_analysis(frozen, prompt=my_prompt, model=MODEL, client=writer,
+                                      prompt_id="eval_analysis_gen", bundle_assembled_at=assembled_at,
+                                      profile=comparison.host.profile)
+analysis.generation.bundle_fingerprint  # == frozen.fingerprint()
+```
+
+`examples/llm_analysis.py` writes two analyses over one saved bundle, through Claude or a scripted
+stand-in.
 
 ## What's in the package
 
@@ -190,4 +325,5 @@ receive, an exception you catch, a literal you annotate with — is exported fro
 | know what a launch will cost, and what stops it | [Cost and budgets](docs/cost-and-budgets.md) |
 | read a campaign's report, strata and evidence tiers, or draw its charts | [Reading reports](docs/reading-reports.md) |
 | let an agent launch and read evals over MCP | [Driving it from an agent](docs/agents-and-mcp.md) |
+| see each capability in one short file, in order | [Examples](examples/README.md) |
 | see a complete host in code | [`tests/fixtures/courierhost/`](tests/fixtures/courierhost/__init__.py) (minimal), then [`tests/fixtures/toyhost/`](tests/fixtures/toyhost/README.md) (every shape) |
