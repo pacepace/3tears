@@ -597,3 +597,43 @@ class TestOutboundToolUnaffected:
             description="webdav",
         )
         assert descriptor.method == "PROPFIND"
+
+
+class TestScopeNode:
+    """the namespace node whose child tool nodes name the scopes a reader may read at the edge."""
+
+    def test_none_by_default(self) -> None:
+        assert RestAffordance(method="GET", path_template="/x").scope_node is None
+
+    @pytest.mark.parametrize("node", ["", ".", "tools..enr", "tools.enr.", " tools.enr", "tools. enr"])
+    def test_a_node_that_is_not_a_namespace_name_is_refused(self, node: str) -> None:
+        with pytest.raises(RestAffordanceError, match="scope_node"):
+            RestAffordance(method="GET", path_template="/x/{customer}/{scope}/index", cache_max_age=5, scope_node=node)
+
+    async def test_the_scope_node_round_trips_through_the_manifest(self) -> None:
+        """the wire carries it to the hub unchanged."""
+
+        class _ScopedTool(_StubTool):
+            """a short-lived read whose scopes are named under a node."""
+
+            face_rest = RestAffordance(
+                method="GET",
+                path_template="/surveys/{survey_id}",
+                cache=CacheClass.AUTHENTICATED,
+                cache_max_age=5,
+                scope_node="tools.enr.state",
+            )
+
+            def __init__(self) -> None:
+                super().__init__(name="test.rest_scoped", properties=_SURVEY_PROPERTIES)
+
+        mock_nc = AsyncMock()
+        server = _server(mock_nc)
+        server.register(_ScopedTool())
+        await server.publish_registration()
+        manifest = mock_nc.publish.await_args.kwargs["message"]
+        wire = manifest.model_dump_json()
+        restored = RegistrationManifest.model_validate_json(wire)
+        declaration = restored.tools[0].face_rest
+        assert declaration is not None
+        assert declaration.scope_node == "tools.enr.state"

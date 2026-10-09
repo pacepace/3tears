@@ -6,6 +6,28 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Agent acl and agent tools: a tool pod's per-caller answer, followed through the access tables
+
+- **Added, `threetears.agent.acl.CallerAccessCache`**: one answer per caller (`CallerKey`: the
+  verified agent and person), in the process, with no age. Bound to the access tables
+  (`bind_caller_cache_to_access_tables`): a `group_members` row naming a user or an agent drops
+  those callers' answers; any other access-table row, a row that does not say what it names, and a
+  dropped table drop every answer. A read fence keeps an answer asked before an eviction from being
+  stored after it. It serves and keeps answers only while it is followed and every watch is running
+  (`trusted`); otherwise every question goes to the hub, and losing trust empties it.
+- **Added, `threetears.agent.acl.generation_follow.follow_caller_access_cache`**: binds the cache and
+  follows the access tables in one call, as `follow_access_tables` does for `AclCache`, and tells the
+  cache whether its watches are running (`AccessTableFollower.watching`: running, none failing; a key
+  never written is watched though never pushed).
+- **Added, `threetears.agent.acl.CallerNamespaces`**: the namespaces the hub's `namespace.discover`
+  lists for a caller, asked with the caller's own tokens, kept in a `CallerAccessCache`, and failing
+  closed (`CallerNamespacesUnavailable`) when the answer cannot be had.
+- **Added, `ToolResult` codes `PERMISSION_DENIED` (a part of the tool's data the caller's grants do
+  not reach; the hub answers 403) and `TOOL_AUTHORIZATION_UNAVAILABLE` (the tool could not confirm
+  what the caller may have; 503)**, both already mapped by the hub.
+- **Added, `RestAffordance.scope_node`**: the namespace node whose child tool nodes name the scopes a
+  reader may read at the edge; the hub issues edge tokens naming those scopes. An older hub ignores
+  the field.
 ### Datasources: a warehouse export, read from S3 and proven whole
 
 A relation too large to page over the bus quickly can be exported by the warehouse itself and read

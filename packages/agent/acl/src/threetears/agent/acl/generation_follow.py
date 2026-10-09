@@ -28,12 +28,13 @@ import asyncio
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from threetears.epoch import DEFAULT_BROADCAST_GRACE, GenerationWatcher, follow_generation_key
 from threetears.observe import get_logger
 
 from threetears.agent.acl.access_tables import ACCESS_TABLES, DegradedEvictions, bind_acl_cache_to_access_tables
+from threetears.agent.acl.caller_cache import CallerAccessCache, bind_caller_cache_to_access_tables
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -49,6 +50,7 @@ __all__ = [
     "AccessTableFollowing",
     "WatchHealth",
     "follow_access_tables",
+    "follow_caller_access_cache",
 ]
 
 log = get_logger(__name__)
@@ -170,6 +172,19 @@ class AccessTableFollower:
         :rtype: dict[str, WatchHealth]
         """
         return {table: WatchHealth(h.consecutive_failures, h.pushes, h.last_error) for table, h in self._health.items()}
+
+    @property
+    def watching(self) -> bool:
+        """whether the watches are running and none is failing now.
+
+        Weaker than :attr:`healthy`: a watch on a key never written is pushed nothing, and is still
+        watching. What a cache that may serve held answers needs: a watch that is running judges every
+        advance it is pushed, its first push included, which is the key's latest.
+
+        :return: ``True`` when every table's watch is running with no failure since its last push
+        :rtype: bool
+        """
+        return self.running and all(h.consecutive_failures == 0 for h in self._health.values())
 
     @property
     def healthy(self) -> bool:
@@ -328,13 +343,116 @@ def follow_access_tables(
     :rtype: AccessTableFollowing
     :raises RuntimeError: when the registry's invalidation listener is not running
     """
+    return _bind_and_follow(
+        registry,
+        lambda degraded: bind_acl_cache_to_access_tables(registry, cache, degraded=degraded),
+        reader,
+        grace=grace,
+        restart_delay=restart_delay,
+        max_restart_delay=max_restart_delay,
+    )
+
+
+def follow_caller_access_cache(
+    registry: CollectionRegistry,
+    cache: CallerAccessCache[Any],
+    reader: GenerationWatcher,
+    *,
+    grace: timedelta = DEFAULT_BROADCAST_GRACE,
+    restart_delay: timedelta = DEFAULT_WATCH_RESTART_DELAY,
+    max_restart_delay: timedelta = MAX_WATCH_RESTART_DELAY,
+) -> AccessTableFollowing:
+    """bind a per-caller cache to the access tables' row broadcasts on ``registry`` and follow the tables.
+
+    What a tool pod calls for an answer it keeps per caller (``threetears.agent.acl.caller_cache``),
+    once its registry's invalidation listener is running. Stop the returned handle before the listener.
+
+    :param registry: the registry whose listener hears the rows, and which follows the tables
+    :ptype registry: CollectionRegistry
+    :param cache: the per-caller cache to drop from
+    :ptype cache: CallerAccessCache
+    :param reader: reads and watches the epoch bucket
+    :ptype reader: GenerationWatcher
+    :param grace: how long a watch waits for an advance's rows before judging them missed
+    :ptype grace: timedelta
+    :param restart_delay: a failing watch's first wait before it starts again
+    :ptype restart_delay: timedelta
+    :param max_restart_delay: the longest wait between a failing watch's attempts
+    :ptype max_restart_delay: timedelta
+    :return: the handle that stops both
+    :rtype: AccessTableFollowing
+    :raises RuntimeError: when the registry's invalidation listener is not running
+    """
+    following = _bind_and_follow(
+        registry,
+        lambda degraded: _bound_and_followed(registry, cache, degraded),
+        reader,
+        grace=grace,
+        restart_delay=restart_delay,
+        max_restart_delay=max_restart_delay,
+    )
+    cache.followed_by(lambda: following.follower.watching)
+    return following
+
+
+def _bound_and_followed(
+    registry: CollectionRegistry, cache: CallerAccessCache[Any], degraded: DegradedEvictions
+) -> Callable[[], None]:
+    """bind the per-caller cache; the remover also tells it nobody follows it any more.
+
+    :param registry: the registry
+    :ptype registry: CollectionRegistry
+    :param cache: the per-caller cache
+    :ptype cache: CallerAccessCache
+    :param degraded: where unknown-reach rows are counted
+    :ptype degraded: DegradedEvictions
+    :return: the call that unbinds it and marks it unfollowed
+    :rtype: Callable[[], None]
+    """
+    unbind = bind_caller_cache_to_access_tables(registry, cache, degraded=degraded)
+
+    def remove() -> None:
+        cache.followed_by(None)
+        unbind()
+
+    return remove
+
+
+def _bind_and_follow(
+    registry: CollectionRegistry,
+    bind: Callable[[DegradedEvictions], Callable[[], None]],
+    reader: GenerationWatcher,
+    *,
+    grace: timedelta,
+    restart_delay: timedelta,
+    max_restart_delay: timedelta,
+) -> AccessTableFollowing:
+    """bind a derived cache through ``bind`` and follow the access tables; see :func:`follow_access_tables`.
+
+    :param registry: the registry
+    :ptype registry: CollectionRegistry
+    :param bind: registers the cache on the registry, counting into the record it is given, and
+        returns the call that removes the registrations
+    :ptype bind: Callable[[DegradedEvictions], Callable[[], None]]
+    :param reader: reads and watches the epoch bucket
+    :ptype reader: GenerationWatcher
+    :param grace: how long a watch waits for an advance's rows
+    :ptype grace: timedelta
+    :param restart_delay: a failing watch's first wait
+    :ptype restart_delay: timedelta
+    :param max_restart_delay: the longest wait between attempts
+    :ptype max_restart_delay: timedelta
+    :return: the handle that stops both
+    :rtype: AccessTableFollowing
+    :raises RuntimeError: when the registry's invalidation listener is not running
+    """
     if not registry.invalidation_listener_running:
         raise RuntimeError(
-            "follow_access_tables needs the registry's invalidation listener running first: it hears "
+            "following the access tables needs the registry's invalidation listener running first: it hears "
             "the rows each watch judges against, and an advance judged without them reads as missed"
         )
     degraded = DegradedEvictions()
-    unbind = bind_acl_cache_to_access_tables(registry, cache, degraded=degraded)
+    unbind = bind(degraded)
     follower = AccessTableFollower(
         registry, reader, grace=grace, restart_delay=restart_delay, max_restart_delay=max_restart_delay
     )

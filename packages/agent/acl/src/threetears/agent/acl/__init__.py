@@ -140,6 +140,13 @@ from threetears.agent.acl.builtin_roles import (
     ensure_platform_builtin_tool_user_role,
 )
 from threetears.agent.acl.access_tables import ACCESS_TABLES, bind_acl_cache_to_access_tables
+from threetears.agent.acl.caller_cache import (
+    CallerAccessCache,
+    CallerKey,
+    CallerNamespaces,
+    CallerNamespacesUnavailable,
+    bind_caller_cache_to_access_tables,
+)
 from threetears.agent.acl.cache import (
     AclCache,
     ActorMembershipEntry,
@@ -281,6 +288,11 @@ __all__ = [
     "publish_membership_invalidation",
     "publish_role_invalidation",
     "bind_acl_cache_to_access_tables",
+    "bind_caller_cache_to_access_tables",
+    "CallerAccessCache",
+    "CallerKey",
+    "CallerNamespaces",
+    "CallerNamespacesUnavailable",
     "subscribe_acl_invalidation",
     "unsubscribe_acl_invalidation",
     "AssignmentInvalidatePayload",

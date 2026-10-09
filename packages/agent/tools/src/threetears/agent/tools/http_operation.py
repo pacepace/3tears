@@ -259,11 +259,17 @@ class RestAffordance(PathTemplateBinding):
         to :data:`MAX_POINTER_AGE_SECONDS`; never with ``cache_version_param`` (a versioned address
         is immutable, not short-lived), never on a ``PRIVATE`` declaration, and only for a method a
         shared cache may hold. ``None``: an unversioned read stays origin-only
+    :ivar scope_node: for an address a shared cache may hold, the namespace node whose child tool
+        nodes name the scopes a reader may read (``tools.enr.state``: a reader who can see
+        ``tools.enr.state.va.1-0`` may read scope ``va``). The hub issues each reader an edge token
+        naming the scopes discovery lists under it, every scope (``*``) when the reader sees every
+        node there; ``None`` keeps a token at every scope. A dotted namespace name, no empty segment
     """
 
     cache: CacheClass = CacheClass.INHERIT
     cache_version_param: str | None = None
     cache_max_age: int | None = None
+    scope_node: str | None = None
 
     def __post_init__(self) -> None:
         """normalize the method, then check everything knowable without a schema.
@@ -302,6 +308,12 @@ class RestAffordance(PathTemplateBinding):
             )
             raise RestAffordanceError(msg)
         self._check_max_age()
+        node = self.scope_node
+        if node is not None and (not node or any(not part or part != part.strip() for part in node.split("."))):
+            raise RestAffordanceError(
+                f"REST affordance on {self.path_template!r}: scope_node {node!r} is not a namespace name "
+                "(dotted segments, none empty or padded)"
+            )
 
     def _check_max_age(self) -> None:
         """refuse a short-lived declaration that contradicts the rest of the declaration.
