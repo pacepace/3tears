@@ -40,7 +40,7 @@ Tracked in [#592](https://github.com/pacepace/3tears/issues/592).
 
 Campaign contrasts say `not_separated`, never "no difference". The history read does not:
 `paired_change` (`analysis/stats.py`) labels any move that misses significance or the magnitude gate
-`flat — real noise, not a finding`. At two to six cases almost nothing is significant, so `flat` becomes
+`flat`, which its docstring glosses as "real noise, not a finding". At two to six cases almost nothing is significant, so `flat` becomes
 the default claim. Fix: say `not_separated`; for a "no meaningful change" claim, an
 equivalence test (TOST, Lakens 2017) against a declared margin.
 

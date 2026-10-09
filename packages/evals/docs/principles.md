@@ -40,9 +40,12 @@ prompt never coaches toward a grader's words, which measures obedience.
 
 **Criteria come from observed failures, and judges follow standard practice.**
 Write criteria from failures seen in real transcripts, test each behaviour in both directions, and prefer
-pass/fail, since ordinal judging is the more fragile. The engine asks one criterion per call, takes the judge's reasoning before its score, and treats "can't tell" as an answer that
-excludes the trial from that criterion. Pairwise judging and several judges per criterion are deliberately
-not adopted; [design rationale](design-rationale.md) says why.
+pass/fail where a behaviour allows it: a binary criterion is easier for people to label and to agree on.
+The engine asks one criterion per call, takes the judge's reasoning before its score, and treats "can't
+tell" as an answer that excludes the trial from that criterion. Pairwise judging is not adopted for now
+([open problems](open-problems.md#pairwise-judging-declined-for-now)). Several judges per criterion is not
+adopted either: the error reduction claimed for it rests on a single study, and it would multiply judge
+spend and change how a trial's identity is computed.
 
 ## Numbers
 
@@ -86,7 +89,9 @@ total over several roles says which.
 ## Reports
 
 **Code states the facts, the model interprets, and an eval grades the interpretation.**
-Every number in a written analysis is a reference that code resolves against the frozen bundle. The schema
+The writer cites figures as references that code resolves against the frozen bundle, and confidence is a
+closed tier, so no field can hold a model's probability. No check reads the prose itself, so a figure typed
+into a sentence still passes: this rule is kept for references, not for every number. The schema
 checks structure and nothing else ([what the schema checks](reading-reports.md#what-the-schema-checks-and-what-only-the-model-does)).
 Whether the prose is accurate and useful is measured by evaluating the analysis writer as a subject. "We
 could not answer this, because X, and fixing X costs Y" is a legitimate bottom line.

@@ -117,7 +117,8 @@ forbidden in capitals and done anyway), so each rule below is computed into the 
 
   *Evidence:* agent with tools, reasoning-effort sweep, setting confirmed sent, 0 reasoning tokens in every arm, 2026-09, single campaign.
 - **Significance has three states:** separated, `not_separated`, and `untested` (fewer than two cases a
-  side). Collapsing the last two retires a lever nobody tested.
+  side, a gap with zero spread, or an arm that took no turn). Collapsing the last two retires a lever nobody
+  tested.
 - **Subtract a part from a whole only under declared containment** (`MetricDescriptor.contained_by`) and
   when the declared parts exhaust it. One remainder of about 95 seconds described no wall-clock at all,
   because the part ran as detached background work.
@@ -132,7 +133,7 @@ forbidden in capitals and done anyway), so each rule below is computed into the 
 
 ## A failure is charged to whoever caused it
 
-Four steps, each fixing the last:
+Five steps, each fixing the last:
 
 1. An errored trial scored 0, so a candidate could not hide failures by erroring; excluding it was
    rejected because it diverges denominators.
@@ -182,10 +183,11 @@ grew to 4,099 lines in 33 days and was deleted, because every real generation fo
 could not parse. The writer's prompt grew 12× in 23 days, roughly 95% of it defence against past
 incidents, and one of 44 tests asserting prompt text passed while the writer did what the text forbade.
 
-**Code renders the numbers.** The writer never types a figure: it writes a reference,
+**Code renders the numbers.** The writer is asked to cite every figure as a reference,
 `{{c1|<measure>|<reading>|<stat>}}`, and code substitutes the value from the decision surface
 (`analysis/prose_refs.py`). A reference is structure: one that does not resolve is refused, with one
-repair round naming what exists, and the words around it are never read. The grammar is appended from the
+repair round naming what exists, and the words around it are never read, so a figure typed into a sentence
+instead of cited passes unchecked. The grammar is appended from the
 parser's constants, because a copy in a stored prompt went stale and every generation was refused at full
 cost.
 

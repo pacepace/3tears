@@ -65,7 +65,7 @@ observation ([how a result's cost is counted](cost-and-budgets.md#how-a-results-
 **Rank on the measure at the lever's scope.** An end-to-end measure moves with everything, not only the lever.
 Each measure carries an `attribution_scope` (`end_to_end` or `subsystem`). Report both and rank on the
 subsystem's.
-*Evidence:* agent with tools, 2026-08, a written analysis credited a sub-agent setting with halving end-to-end p95 (98.3 → 48.5 s) while the sub-agent's own p95 was flat (36.6 → 37.6 s), and recommended an arm failing 13% against 0%, single campaign.
+*Evidence:* agent with tools, 2026-07, a written analysis credited a sub-agent setting with halving end-to-end p95 (98.3 → 48.5 s) while the sub-agent's own p95 was flat (36.6 → 37.6 s), and recommended an arm failing 13% against 0%, single campaign.
 
 ## Did the lever move
 
@@ -120,8 +120,9 @@ candidate for a turn truncated at its output cap, and never excludes a trial a f
 *Evidence:* agent with tools and its classifier, 2026-05 to 2026-10, eight separate defects, each reproduced live.
 
 **Prove a check can fail before trusting it passing.** A goal check giving the same verdict whether the
-candidate acted or did nothing grades nothing; declare `goal_check_controls` and the engine refuses such a
-check at authoring. Calibrate any script that reads verdicts on a known pass and a known fail, and classify on
+candidate acted or did nothing grades nothing. Authoring requires a control end state for every goal check
+(`goal_check_controls`) and refuses a check that gives the same verdict on it and on the untouched seed; a
+template saved straight to the store can lack controls, and its checks then read as unproven. Calibrate any script that reads verdicts on a known pass and a known fail, and classify on
 reported counts, not exit codes: a run that never happened and a run that failed both exit non-zero.
 *Evidence:* agent with tools, 2026-10, an audit found a hold check reading a parameter rather than its effect, and goal checks reading the static seed rather than the end state, single audit.
 
