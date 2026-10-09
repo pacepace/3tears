@@ -174,6 +174,19 @@ class AccessTableFollower:
         return {table: WatchHealth(h.consecutive_failures, h.pushes, h.last_error) for table, h in self._health.items()}
 
     @property
+    def watching(self) -> bool:
+        """whether the watches are running and none is failing now.
+
+        Weaker than :attr:`healthy`: a watch on a key never written is pushed nothing, and is still
+        watching. What a cache that may serve held answers needs: a watch that is running judges every
+        advance it is pushed, its first push included, which is the key's latest.
+
+        :return: ``True`` when every table's watch is running with no failure since its last push
+        :rtype: bool
+        """
+        return self.running and all(h.consecutive_failures == 0 for h in self._health.values())
+
+    @property
     def healthy(self) -> bool:
         """whether every table's watch is running and has been pushed a value since it last failed.
 
@@ -365,14 +378,39 @@ def follow_caller_access_cache(
     :rtype: AccessTableFollowing
     :raises RuntimeError: when the registry's invalidation listener is not running
     """
-    return _bind_and_follow(
+    following = _bind_and_follow(
         registry,
-        lambda degraded: bind_caller_cache_to_access_tables(registry, cache, degraded=degraded),
+        lambda degraded: _bound_and_followed(registry, cache, degraded),
         reader,
         grace=grace,
         restart_delay=restart_delay,
         max_restart_delay=max_restart_delay,
     )
+    cache.followed_by(lambda: following.follower.watching)
+    return following
+
+
+def _bound_and_followed(
+    registry: CollectionRegistry, cache: CallerAccessCache[Any], degraded: DegradedEvictions
+) -> Callable[[], None]:
+    """bind the per-caller cache; the remover also tells it nobody follows it any more.
+
+    :param registry: the registry
+    :ptype registry: CollectionRegistry
+    :param cache: the per-caller cache
+    :ptype cache: CallerAccessCache
+    :param degraded: where unknown-reach rows are counted
+    :ptype degraded: DegradedEvictions
+    :return: the call that unbinds it and marks it unfollowed
+    :rtype: Callable[[], None]
+    """
+    unbind = bind_caller_cache_to_access_tables(registry, cache, degraded=degraded)
+
+    def remove() -> None:
+        cache.followed_by(None)
+        unbind()
+
+    return remove
 
 
 def _bind_and_follow(

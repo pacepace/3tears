@@ -15,6 +15,20 @@ one answer per caller, with no age of any kind, and is dropped by the tables it 
 - a row whose broadcast does not say what it names drops every entry, and is counted as degraded;
 - a table dropped in this process (a missed broadcast, a replaced bucket) drops every entry.
 
+**Trusted only while followed.** A held answer is only as good as the follower that would drop it
+when a broadcast is missed. So the cache holds and serves answers only while it is followed and every
+watch is running (:attr:`CallerAccessCache.trusted`): bound and followed by
+:func:`threetears.agent.acl.generation_follow.follow_caller_access_cache`, no watch failing. A cache
+nobody follows, one whose following was stopped, or one whose watches are failing (the epoch bucket
+unreachable, a grant missing) serves nothing it holds and stores nothing: every question goes to the
+hub, which is never stale, and losing trust empties the cache, so nothing held from before can be
+served when trust returns (the watches' first push judges anything missed meanwhile).
+
+**Why an answer asked after an eviction is fresh.** The hub answers ``namespace.discover`` with one
+query of the access tables in the database, never from a cache, and a write's row broadcast goes out
+after its commit; so an eviction heard here means the database already holds the change, and any
+question asked after it sees the change.
+
 **The read fence.** An answer whose question was asked before an eviction is not stored: take
 :meth:`CallerAccessCache.read_fence` before asking, and pass it to :meth:`CallerAccessCache.put`.
 Otherwise a change landing while the hub answers would be evicted from an empty cache and its stale
@@ -33,7 +47,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, Generic, Protocol, TypeVar
-from uuid import UUID, uuid4
+from uuid import UUID, uuid7
 
 from threetears.observe import get_logger
 
@@ -95,6 +109,41 @@ class CallerAccessCache(Generic[V]):
         # moved by every eviction; see read_fence
         self._evictions = 0
         self._fence_skipped_stores = 0
+        # whether whoever follows the access tables for this cache can judge them now; None: nobody does
+        self._followed: Callable[[], bool] | None = None
+
+    def followed_by(self, watching: Callable[[], bool] | None) -> None:
+        """record who follows the access tables for this cache: how to ask whether every watch is running.
+
+        Set by :func:`threetears.agent.acl.generation_follow.follow_caller_access_cache`, cleared when
+        its handle stops. Until it is set, and whenever it answers ``False``, the cache is not
+        :attr:`trusted`.
+
+        :param watching: answers whether every table's watch is running now; ``None`` when nobody follows
+        :ptype watching: Callable[[], bool] | None
+        :return: nothing
+        :rtype: None
+        """
+        self._followed = watching
+        if watching is None:
+            self.invalidate_all()
+
+    @property
+    def trusted(self) -> bool:
+        """whether held answers may be served and new ones stored: followed, and every watch running.
+
+        Losing trust empties the cache, so an answer held while a broadcast could go unjudged is never
+        served after.
+
+        :return: ``True`` when the cache is followed and no watch is failing
+        :rtype: bool
+        """
+        followed = self._followed
+        trusted = followed is not None and followed()
+        if not trusted and self.size:
+            log.warning("the per-caller cache is not followed now; its answers are dropped and none are kept")
+            self.invalidate_all()
+        return trusted
 
     def read_fence(self) -> int:
         """the fence to take before asking the question whose answer :meth:`put` will store.
@@ -106,15 +155,18 @@ class CallerAccessCache(Generic[V]):
             return self._evictions
 
     def get(self, caller: CallerKey) -> V | None:
-        """the caller's answer, when one is held.
+        """the caller's answer, when one is held and the cache is :attr:`trusted`.
 
         :param caller: the caller
         :ptype caller: CallerKey
         :return: the answer, or ``None``
         :rtype: V | None
         """
-        with self._lock:
-            return self._entries.get(caller)
+        held: V | None = None
+        if self.trusted:
+            with self._lock:
+                held = self._entries.get(caller)
+        return held
 
     def put(self, caller: CallerKey, value: V, *, fence: int) -> bool:
         """hold ``value`` as the caller's answer, unless an eviction landed since ``fence`` was taken.
@@ -125,11 +177,12 @@ class CallerAccessCache(Generic[V]):
         :ptype value: V
         :param fence: :meth:`read_fence` as taken before the question was asked
         :ptype fence: int
-        :return: whether it was stored
+        :return: whether it was stored; never while the cache is not :attr:`trusted`
         :rtype: bool
         """
+        trusted = self.trusted
         with self._lock:
-            stored = fence == self._evictions
+            stored = trusted and fence == self._evictions
             if stored:
                 self._entries[caller] = value
             else:
@@ -300,7 +353,8 @@ class CallerNamespaces:
 
     :param discovery: returns the pod's discovery client once it is connected, ``None`` before
     :ptype discovery: Callable[[], NamespaceDiscovery | None]
-    :param cache: where answers are kept; the pod's followed cache
+    :param cache: where answers are kept; the pod's followed cache, which serves and keeps nothing
+        while it is not followed (:attr:`CallerAccessCache.trusted`)
     :ptype cache: CallerAccessCache[frozenset[str]]
     :param namespace_type: the namespace type asked for (``tool``); ``None`` asks for every type
     :ptype namespace_type: str | None
@@ -356,7 +410,7 @@ class CallerNamespaces:
         fence = self._cache.read_fence()
         try:
             items = await client.discover(
-                correlation_id=correlation_id if correlation_id is not None else uuid4(),
+                correlation_id=correlation_id if correlation_id is not None else uuid7(),
                 identity_token=identity_token,
                 user_identity_token=user_identity_token,
                 namespace_type=self._namespace_type,

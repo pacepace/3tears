@@ -112,6 +112,7 @@ async def test_a_watch_that_keeps_failing_backs_off_to_a_cap_and_reports_unhealt
     assert health.consecutive_failures >= 5
     assert health.last_error is not None and "no grant" in health.last_error
     assert not follower.healthy
+    assert not follower.watching
 
 
 class _Pushing:
@@ -149,3 +150,24 @@ async def test_a_watch_that_is_pushed_a_value_is_healthy() -> None:
         await following.stop()
     assert not registry.has_derived_caches("group_members")
     assert not following.healthy
+
+
+class _Silent:
+    """a watcher on keys never written: running, pushed nothing."""
+
+    async def watch(self, table_name: str) -> Any:
+        await asyncio.Event().wait()
+        yield "never"
+
+
+async def test_a_watch_on_a_key_never_written_is_watching_but_not_yet_healthy() -> None:
+    follower = AccessTableFollower(await _listening_registry(), _Silent())  # type: ignore[arg-type]
+    assert not follower.watching
+    follower.start()
+    try:
+        await asyncio.sleep(0.02)
+        assert follower.watching
+        assert not follower.healthy
+    finally:
+        await follower.stop()
+    assert not follower.watching

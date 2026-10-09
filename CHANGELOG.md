@@ -13,9 +13,12 @@ packages (bumped in lock-step).
   (`bind_caller_cache_to_access_tables`): a `group_members` row naming a user or an agent drops
   those callers' answers; any other access-table row, a row that does not say what it names, and a
   dropped table drop every answer. A read fence keeps an answer asked before an eviction from being
-  stored after it.
+  stored after it. It serves and keeps answers only while it is followed and every watch is running
+  (`trusted`); otherwise every question goes to the hub, and losing trust empties it.
 - **Added, `threetears.agent.acl.generation_follow.follow_caller_access_cache`**: binds the cache and
-  follows the access tables in one call, as `follow_access_tables` does for `AclCache`.
+  follows the access tables in one call, as `follow_access_tables` does for `AclCache`, and tells the
+  cache whether its watches are running (`AccessTableFollower.watching`: running, none failing; a key
+  never written is watched though never pushed).
 - **Added, `threetears.agent.acl.CallerNamespaces`**: the namespaces the hub's `namespace.discover`
   lists for a caller, asked with the caller's own tokens, kept in a `CallerAccessCache`, and failing
   closed (`CallerNamespacesUnavailable`) when the answer cannot be had.

@@ -1177,7 +1177,14 @@ Built for the reports product's state limit (its wave 2 chunk 10), 2026-10-09, i
     discovery answer does not say which groups it passed through;
   - a row that does not say what it names drops every answer and is counted (`DegradedEvictions`);
   - a dropped table (a missed broadcast, a replaced bucket) drops every answer.
-  - The read fence: an answer asked before an eviction is not stored after it.
+  - The read fence: an answer asked before an eviction is not stored after it. An answer asked
+    after one is fresh: the hub answers discovery with one query of the access tables in the
+    database, never a cache, and a write's broadcast goes out after its commit.
+  - **Trusted only while followed.** It serves and keeps answers only while
+    `follow_caller_access_cache` follows it and every watch is running
+    (`AccessTableFollower.watching`); a cache nobody follows, a stopped one, or one whose watches
+    are failing (the bucket unreachable, the read grant missing) asks the hub every time, and losing
+    trust empties it, so nothing held across the failure is served after.
 - **`follow_caller_access_cache(registry, cache, reader)`** binds and follows in one call, the same
   follower `follow_access_tables` runs for `AclCache`; both now share one private binder.
 - **`CallerNamespaces`** asks the hub's `namespace.discover` with the caller's own tokens, keeps the

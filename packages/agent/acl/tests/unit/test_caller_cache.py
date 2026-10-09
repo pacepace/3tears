@@ -2,7 +2,8 @@
 
 The rules: a membership row naming a person or an agent drops those callers' answers only; any other
 access-table row (a nested group's membership among them), a row that does not say what it names, and
-a dropped table drop every answer; an answer asked before an eviction is never stored.
+a dropped table drop every answer; an answer asked before an eviction is never stored; and nothing
+is served or kept while nobody follows the tables or a watch is failing.
 """
 
 from __future__ import annotations
@@ -27,9 +28,15 @@ def _member_row(member_type: str, member_id: Any) -> CacheInvalidationMessage:
     )
 
 
+def _followed(cache: CallerAccessCache[Any]) -> CallerAccessCache[Any]:
+    """a cache whose follower's watches are all running."""
+    cache.followed_by(lambda: True)
+    return cache
+
+
 def _filled() -> tuple[CollectionRegistry, CallerAccessCache[Any], CallerKey, CallerKey, CallerKey]:
     registry = CollectionRegistry()
-    cache: CallerAccessCache[Any] = CallerAccessCache()
+    cache: CallerAccessCache[Any] = _followed(CallerAccessCache())
     bind_caller_cache_to_access_tables(registry, cache)
     ingress = uuid4()
     reader, other = CallerKey(ingress, uuid4()), CallerKey(ingress, uuid4())
@@ -70,7 +77,7 @@ def test_a_group_role_assignment_or_namespace_row_drops_every_answer(table: str)
 
 def test_a_membership_row_that_does_not_name_its_member_drops_all_and_is_counted() -> None:
     registry = CollectionRegistry()
-    cache: CallerAccessCache[Any] = CallerAccessCache()
+    cache: CallerAccessCache[Any] = _followed(CallerAccessCache())
     degraded = DegradedEvictions()
     bind_caller_cache_to_access_tables(registry, cache, degraded=degraded)
     cache.put(CallerKey(uuid4(), uuid4()), 1, fence=cache.read_fence())
@@ -105,7 +112,7 @@ def test_an_answer_asked_before_an_eviction_is_not_stored() -> None:
 
 def test_unbinding_stops_the_drops() -> None:
     registry = CollectionRegistry()
-    cache: CallerAccessCache[Any] = CallerAccessCache()
+    cache: CallerAccessCache[Any] = _followed(CallerAccessCache())
     remove = bind_caller_cache_to_access_tables(registry, cache)
     remove()
     cache.put(CallerKey(uuid4(), uuid4()), 1, fence=cache.read_fence())
@@ -142,12 +149,18 @@ async def test_following_binds_and_follows_every_access_table_and_stop_undoes_bo
         assert following.healthy
         assert all(registry.generation_marks.follows(table) for table in ACCESS_TABLES)
         assert all(registry.has_derived_caches(table) for table in ACCESS_TABLES)
-        cache.put(CallerKey(uuid4(), uuid4()), 1, fence=cache.read_fence())
+        assert cache.trusted
+        caller = CallerKey(uuid4(), uuid4())
+        assert cache.put(caller, 1, fence=cache.read_fence())
         registry.drop_table("roles", reason="a broadcast was missed")
         assert cache.size == 0
+        assert cache.put(caller, 1, fence=cache.read_fence())
     finally:
         await following.stop()
     assert not any(registry.has_derived_caches(table) for table in ACCESS_TABLES)
+    # stopped: nothing held is served, and nothing is kept
+    assert (cache.trusted, cache.size, cache.get(caller)) == (False, 0, None)
+    assert not cache.put(caller, 1, fence=cache.read_fence())
 
 
 class _Item:
@@ -174,7 +187,7 @@ def _asking(discovery: Any) -> tuple[Any, CallerAccessCache[frozenset[str]], Col
     from threetears.agent.acl import CallerNamespaces
 
     registry = CollectionRegistry()
-    cache: CallerAccessCache[frozenset[str]] = CallerAccessCache()
+    cache: CallerAccessCache[frozenset[str]] = _followed(CallerAccessCache())
     bind_caller_cache_to_access_tables(registry, cache)
     return CallerNamespaces(lambda: discovery, cache), cache, registry
 
@@ -232,3 +245,70 @@ async def test_an_answer_that_cannot_be_had_refuses_and_is_never_cached(
     with pytest.raises(CallerNamespacesUnavailable, match=why):
         await names.names_for(**asked)
     assert cache.size == 0
+
+
+def test_a_cache_nobody_follows_serves_and_keeps_nothing() -> None:
+    cache: CallerAccessCache[Any] = CallerAccessCache()
+    caller = CallerKey(uuid4(), uuid4())
+    assert not cache.trusted
+    assert not cache.put(caller, 1, fence=cache.read_fence())
+    assert cache.get(caller) is None
+
+
+def test_a_failing_watch_empties_the_cache_and_it_refills_only_once_the_watches_run_again() -> None:
+    watching = [True]
+    cache: CallerAccessCache[Any] = CallerAccessCache()
+    cache.followed_by(lambda: watching[0])
+    caller = CallerKey(uuid4(), uuid4())
+    assert cache.put(caller, "held", fence=cache.read_fence())
+    watching[0] = False  # the epoch bucket cannot be watched: a missed broadcast would go unjudged
+    assert cache.get(caller) is None
+    assert cache.size == 0
+    assert not cache.put(caller, "asked while failing", fence=cache.read_fence())
+    watching[0] = True
+    assert cache.get(caller) is None, "nothing held from before the failure comes back"
+    assert cache.put(caller, "asked again", fence=cache.read_fence())
+    assert cache.get(caller) == "asked again"
+
+
+async def test_an_unfollowed_cache_asks_the_hub_every_time() -> None:
+    from threetears.agent.acl import CallerNamespaces
+
+    discovery = _Discovery(["a"])
+    cache: CallerAccessCache[frozenset[str]] = CallerAccessCache()
+    names = CallerNamespaces(lambda: discovery, cache)
+    caller = {"agent_id": uuid4(), "user_id": uuid4(), "identity_token": "t", "user_identity_token": "u"}
+    await names.names_for(**caller)
+    await names.names_for(**caller)
+    assert len(discovery.asked) == 2
+
+
+class _RevokedWhileAsked(_Discovery):
+    """discovery answering while the caller's membership row is broadcast: the answer may predate it."""
+
+    def __init__(self, registry: CollectionRegistry, user: Any) -> None:
+        super().__init__(["tools.enr.state.va.1-0"])
+        self.registry = registry
+        self.user = user
+
+    async def discover(self, **kwargs: Any) -> list[_Item]:
+        answer = await super().discover(**kwargs)
+        self.registry.tell_derived_caches(_member_row("user", self.user))
+        return answer
+
+
+async def test_an_answer_whose_caller_changed_while_it_was_asked_is_returned_but_not_kept() -> None:
+    from threetears.agent.acl import CallerNamespaces
+
+    registry = CollectionRegistry()
+    cache: CallerAccessCache[frozenset[str]] = _followed(CallerAccessCache())
+    bind_caller_cache_to_access_tables(registry, cache)
+    agent, user = uuid4(), uuid4()
+    discovery = _RevokedWhileAsked(registry, user)
+    names = CallerNamespaces(lambda: discovery, cache)
+    caller = {"agent_id": agent, "user_id": user, "identity_token": "t", "user_identity_token": "u"}
+    assert await names.names_for(**caller) == frozenset({"tools.enr.state.va.1-0"})
+    assert cache.get(CallerKey(agent, user)) is None
+    assert cache.fence_skipped_stores == 1
+    await names.names_for(**caller)
+    assert len(discovery.asked) == 2
