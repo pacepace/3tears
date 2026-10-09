@@ -16,10 +16,10 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 import pytest
-from sqlalchemy import Column, DateTime, MetaData, String, Table
+from sqlalchemy import BigInteger, Column, DateTime, MetaData, String, Table
 
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections import (
@@ -28,6 +28,7 @@ from threetears.core.collections import (
     CacheInvalidationMessage,
     CollectionRegistry,
     GenerationVerdict,
+    WriteBuffer,
 )
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
@@ -51,6 +52,9 @@ def _metadata() -> MetaData:
         Column("member_id", String(255)),
         Column("date_created", DateTime(timezone=True)),
         Column("date_updated", DateTime(timezone=True)),
+        # the order a compare-and-swap's row carries, for the collection whose rows one orders
+        Column("l2_epoch", DateTime(timezone=True)),
+        Column("l2_revision", BigInteger),
     )
     return metadata
 
@@ -80,10 +84,12 @@ class _Members(BaseCollection[_Member]):
     write_generation = WRITE_GENERATION
     invalidation_columns: ClassVar[tuple[str, ...]] = ("member_id",)
 
-    def __init__(self, registry: CollectionRegistry, rows: dict[str, dict[str, Any]]) -> None:
+    def __init__(
+        self, registry: CollectionRegistry, rows: dict[str, dict[str, Any]], *, write_buffer: WriteBuffer | None = None
+    ) -> None:
         self._rows = rows
         self.fetches = 0
-        super().__init__(registry, DefaultCoreConfig())
+        super().__init__(registry, DefaultCoreConfig(), write_buffer=write_buffer)
 
     @property
     def table_name(self) -> str:
@@ -115,6 +121,45 @@ class _Members(BaseCollection[_Member]):
         return row
 
 
+class _WriteBehindMembers(_Members):
+    """L2 is ahead of L3 by design: a save reaches L3 only at the next flush."""
+
+    l3_write_policy: ClassVar[Literal["synchronous", "write_behind"] | None] = "write_behind"
+
+
+class _OrderedMembers(_Members):
+    """rows a compare-and-swap orders: L2 holds the newest swap, L3 catches up behind it."""
+
+    datetime_columns: ClassVar[frozenset[str]] = frozenset({"date_created", "date_updated", "l2_epoch"})
+
+    @property
+    def persists_l2_order(self) -> bool:
+        return True
+
+    async def save_ordered_to_store(self, data: dict[str, Any], *, conn: Any = None) -> int:
+        self._rows[str(data["id"])] = dict(data)
+        return 1
+
+
+class _L2OnlyMembers(_Members):
+    """no durable tier: L2 is the source of truth, and nothing behind it holds a row."""
+
+    async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
+        self.fetches += 1
+        return None
+
+    async def save_to_store(
+        self, data: dict[str, Any], original_timestamp: datetime | None = None, *, conn: Any = None
+    ) -> int:
+        return 1
+
+
+class _ForgetfulMembers(_Members):
+    """remembers only two keys read through since a drop, so the third pushes the first out."""
+
+    L2_READ_THROUGH_LIMIT: ClassVar[int] = 2
+
+
 class _PersonCache:
     """a cache derived from the membership table, keyed by the person, not by the row."""
 
@@ -139,14 +184,29 @@ class _PersonCache:
 class _Pod:
     """one registry with its own L1 and listener, on the shared bus, L3 and generation source."""
 
-    def __init__(self, bus: FakeNatsClient, rows: dict[str, dict[str, Any]], source: _Source, *, scope: str) -> None:
+    def __init__(
+        self,
+        bus: FakeNatsClient,
+        rows: dict[str, dict[str, Any]],
+        source: _Source,
+        *,
+        scope: str,
+        cls: type[_Members] = _Members,
+        l3: bool = True,
+        write_buffer: WriteBuffer | None = None,
+    ) -> None:
         l1 = SQLiteBackend(db_name=f"table_drop_{uuid.uuid4().hex[:8]}")
         l1.initialize(_metadata())
         self.bus = bus
         self.registry = CollectionRegistry()
-        self.registry.configure(l1_backend=l1, l2_client=bus, l3_pool=object(), kv_key_scope=scope)  # type: ignore[arg-type]
+        self.registry.configure(
+            l1_backend=l1,
+            l2_client=bus,
+            l3_pool=object() if l3 else None,  # type: ignore[arg-type]
+            kv_key_scope=scope,
+        )
         self.registry.set_generation_source(source)
-        self.members = _Members(self.registry, rows)
+        self.members = cls(self.registry, rows, write_buffer=write_buffer)
 
     async def listen(self) -> None:
         await self.registry.start_invalidation_listener(self.bus)  # type: ignore[arg-type]
@@ -426,6 +486,113 @@ class TestDroppingATable:
         reader.members.add_l1_change_listener(gone.append)
         reader.registry.drop_table(_TABLE, reason="test")
         assert sorted(gone) == ["m1", "m2"]
+
+
+class TestADropDoesNotPutAnOlderL3RowOverANewerL2Row:
+    """where L2 is ahead of L3 by design, a drop leaves L2 trusted: reading L3 would move readers back."""
+
+    async def _l2_member_id(self, pod: _Pod, entity_id: str) -> str:
+        l2 = await pod.bus.kv_bucket(name="collections")
+        raw = await l2.get(key=pod.members.l2_key(entity_id))
+        assert raw is not None
+        return str(json.loads(raw)["member_id"])
+
+    async def test_a_write_behind_table(self, bus: _Lossy, source: _Source) -> None:
+        rows: dict[str, dict[str, Any]] = {"m1": {"id": "m1", "member_id": "older"}}
+        pod = _Pod(bus, rows, source, scope="reader", cls=_WriteBehindMembers, write_buffer=WriteBuffer())
+        await _save(pod, "m1", "newer")
+        assert rows["m1"]["member_id"] == "older", "not flushed yet: L3 is behind L2"
+
+        pod.registry.drop_table(_TABLE, reason="test")
+
+        assert await _member_id(pod, "m1") == "newer"
+        assert await self._l2_member_id(pod, "m1") == "newer"
+        assert rows["m1"]["member_id"] == "older"
+
+    async def test_a_table_whose_rows_a_compare_and_swap_orders(self, bus: _Lossy, source: _Source) -> None:
+        rows: dict[str, dict[str, Any]] = {}
+        pod = _Pod(bus, rows, source, scope="reader", cls=_OrderedMembers)
+
+        def newer(row: dict[str, Any] | None) -> tuple[Literal["upsert"], dict[str, Any]]:
+            del row
+            return "upsert", {"id": "m1", "member_id": "newer"}
+
+        await pod.members.l2_cas_mutate("m1", newer)
+        # an earlier winner's persist landing late, so L3 is behind the swap L2 holds
+        rows["m1"] = {**rows["m1"], "member_id": "older"}
+
+        pod.registry.drop_table(_TABLE, reason="test")
+
+        assert await _member_id(pod, "m1") == "newer"
+        assert await self._l2_member_id(pod, "m1") == "newer"
+
+    async def test_a_table_with_no_l3(self, bus: _Lossy, source: _Source) -> None:
+        pod = _Pod(bus, {}, source, scope="reader", cls=_L2OnlyMembers, l3=False)
+        await _save(pod, "m1", "ada")
+        pod.members.evict_from_cache_sync("m1")
+
+        pod.registry.drop_table(_TABLE, reason="test")
+
+        # L2 is the only tier there is; distrusting it would answer that the row does not exist
+        assert await _member_id(pod, "m1") == "ada"
+
+
+class TestWhenAKeyIsTrustedAgainAfterADrop:
+    async def test_a_key_read_through_once_is_answered_by_l2_again(self, bus: _Lossy, source: _Source) -> None:
+        rows: dict[str, dict[str, Any]] = {"m1": {"id": "m1", "member_id": "ada"}}
+        pod = _Pod(bus, rows, source, scope="reader")
+        assert await _member_id(pod, "m1") == "ada"
+        pod.registry.drop_table(_TABLE, reason="test")
+        fetches = pod.members.fetches
+        assert await _member_id(pod, "m1") == "ada"
+        assert pod.members.fetches == fetches + 1
+        pod.members.evict_from_cache_sync("m1")
+        assert await _member_id(pod, "m1") == "ada"
+        assert pod.members.fetches == fetches + 1, "read through once, the key is trusted again"
+
+    async def test_a_drop_during_the_read_through_leaves_the_key_distrusted(self, bus: _Lossy, source: _Source) -> None:
+        rows: dict[str, dict[str, Any]] = {"m1": {"id": "m1", "member_id": "ada"}}
+        pod = _Pod(bus, rows, source, scope="reader")
+        assert await _member_id(pod, "m1") == "ada"
+        pod.registry.drop_table(_TABLE, reason="test")
+        inner = pod.members.fetch_from_store
+        dropped_again = False
+
+        async def fetch_then_drop(entity_id: Any) -> dict[str, Any] | None:
+            nonlocal dropped_again
+            row = await inner(entity_id)
+            if not dropped_again:
+                # a second drop lands while this read is between L3 and re-trusting the key: what
+                # it read predates the second drop, so it cannot vouch for the key after it
+                dropped_again = True
+                pod.registry.drop_table(_TABLE, reason="test")
+            return row
+
+        pod.members.fetch_from_store = fetch_then_drop  # type: ignore[method-assign]
+        assert await _member_id(pod, "m1") == "ada"
+        pod.members.evict_from_cache_sync("m1")
+        fetches = pod.members.fetches
+        assert await _member_id(pod, "m1") == "ada"
+        assert pod.members.fetches == fetches + 1, "the key is still distrusted, so the read went to L3"
+
+    async def test_the_keys_remembered_since_a_drop_are_bounded(self, bus: _Lossy, source: _Source) -> None:
+        rows: dict[str, dict[str, Any]] = {f"m{i}": {"id": f"m{i}", "member_id": f"p{i}"} for i in range(3)}
+        pod = _Pod(bus, rows, source, scope="reader", cls=_ForgetfulMembers)
+        for i in range(3):
+            assert await _member_id(pod, f"m{i}") == f"p{i}"
+        pod.registry.drop_table(_TABLE, reason="test")
+        for i in range(3):
+            assert await _member_id(pod, f"m{i}") == f"p{i}"
+            pod.members.evict_from_cache_sync(f"m{i}")
+        fetches = pod.members.fetches
+
+        # the newest two are remembered and answered by L2; the oldest was forgotten, which only
+        # costs it one more read through L3 -- the safe direction
+        assert await _member_id(pod, "m2") == "p2"
+        assert await _member_id(pod, "m1") == "p1"
+        assert pod.members.fetches == fetches
+        assert await _member_id(pod, "m0") == "p0"
+        assert pod.members.fetches == fetches + 1
 
 
 class TestADerivedCacheThatFails:

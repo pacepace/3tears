@@ -2351,7 +2351,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             # writer's since.
             replaced = not lookup.untrusted_row or await self._l2_moved_since(entity_id, lookup.revision)
             if replaced and drops_before == self._table_drops:
-                self._l2_read_through.add(self._fence_key(entity_id))
+                self._remember_read_through(self._fence_key(entity_id))
         return pg_data
 
     async def _l2_moved_since(self, entity_id: Any, revision: int) -> bool:
@@ -2389,17 +2389,35 @@ class BaseCollection(ABC, Generic[EntityT]):
         return count
 
     @property
-    def _l2_read_through(self) -> set[tuple[str, ...]]:
-        """the keys read through from L3 since this table was last dropped in this process.
+    def _l2_read_through(self) -> dict[tuple[str, ...], None]:
+        """the keys read through from L3 since this table was last dropped in this process, oldest first.
 
-        Made on first use, as :attr:`_l1_fence` is, for an instance a harness assembled without
-        running ``__init__``.
+        An insertion-ordered set, bounded by :attr:`L2_READ_THROUGH_LIMIT`
+        (:meth:`_remember_read_through`). Made on first use, as :attr:`_l1_fence` is, for an
+        instance a harness assembled without running ``__init__``.
 
         :return: the keys, as the pk values' string forms
-        :rtype: set[tuple[str, ...]]
+        :rtype: dict[tuple[str, ...], None]
         """
-        keys: set[tuple[str, ...]] = self.__dict__.setdefault("_l2_read_through_keys", set())
+        keys: dict[tuple[str, ...], None] = self.__dict__.setdefault("_l2_read_through_keys", {})
         return keys
+
+    def _remember_read_through(self, key: tuple[str, ...]) -> None:
+        """trust ``key``'s L2 entry again, forgetting the oldest such key once the limit is reached.
+
+        A forgotten key is distrusted again, which costs it one more read through L3 and nothing
+        else: the safe direction, so a bound costs no correctness.
+
+        :param key: the key, as the pk values' string forms
+        :ptype key: tuple[str, ...]
+        :return: nothing
+        :rtype: None
+        """
+        remembered = self._l2_read_through
+        remembered.pop(key, None)
+        remembered[key] = None
+        while len(remembered) > self.L2_READ_THROUGH_LIMIT:
+            del remembered[next(iter(remembered))]
 
     def _distrusts_l2(self, entity_id: Any) -> bool:
         """whether a live L2 row for ``entity_id`` may be older than L3 because the table was dropped here.
@@ -4250,6 +4268,11 @@ class BaseCollection(ABC, Generic[EntityT]):
 
     #: how many keys :meth:`invalidate_cache_many` settles at once on L2 and the bus
     INVALIDATE_CONCURRENCY: ClassVar[int] = 32
+
+    #: after a table drop, how many keys read through from L3 since are remembered as trusted
+    #: again (:meth:`drop_cached_table`). Past it the oldest is forgotten and distrusted once more,
+    #: which costs that key one more L3 read and nothing else.
+    L2_READ_THROUGH_LIMIT: ClassVar[int] = 10_000
 
     async def invalidate_cache_many(
         self, entity_ids: Sequence[Any], *, rows: Sequence[dict[str, Any] | None] | None = None
