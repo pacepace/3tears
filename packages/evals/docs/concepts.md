@@ -267,7 +267,9 @@ In `run_eval`, a plain function `(case, answer) -> bool | number` that becomes o
 A code check over a cell's end state (`state.<dimension>`), the calls the candidate made (`calls(...)`) and
 what fired in the world (`fired(...)`), written in the goal-state language. Objective, so no judge. Its pass
 rate measures the behaviour only when a control proves the check beats doing nothing; otherwise every surface
-marks it `unproven` or `refuted`.
+marks it `unproven` or `refuted`. A case parameter (`variation.<name>`) is one string, as the case stores it:
+compare it or look for it (`contains(state.tags, variation.category)`), and write a set of values as a list
+literal (`intersects(state.tags, ["toys", "games"])`). Reading a parameter as a collection is refused.
 
 #### Judge
 A model the engine asks to score a result against a rubric, reading only the evidence the kind rendered
