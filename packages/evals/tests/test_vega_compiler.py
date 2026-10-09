@@ -4085,22 +4085,7 @@ class TestEveryArmLaysOutInTheFontItIsGiven:
     must lay out differently from the packaged face.
     """
 
-    @pytest.mark.parametrize(
-        "viz_type",
-        [
-            pytest.param(
-                viz_type,
-                marks=pytest.mark.xfail(
-                    strict=True,
-                    raises=AssertionError,
-                    reason="the frontier arm does not take a font yet: its title wraps in the packaged face",
-                ),
-            )
-            if viz_type == "frontier"
-            else viz_type
-            for viz_type in sorted(EVERY_TYPE)
-        ],
-    )
+    @pytest.mark.parametrize("viz_type", sorted(EVERY_TYPE))
     def test_the_layout_follows_the_font(self, viz_type):
         packaged = compile_chart(viz_type, EVERY_TYPE[viz_type]).spec
         huge = compile_chart(viz_type, EVERY_TYPE[viz_type], font=_HUGE).spec
