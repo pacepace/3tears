@@ -194,6 +194,16 @@ Ten cases cannot tell a 90% model from a 65% one, which shapes how you size the 
 - **Do not copy your traffic's label mix.** If 90% of real messages are `NONE`, a set that is 90% `NONE` lets
   a model that always answers `NONE` score 90%. Weight the set toward the labels and kinds of case you need
   to measure, and read per-label figures rather than overall accuracy.
+- **If you also need a production-predictive number, keep two tiers and never pool them.** A slice weighted
+  like real traffic predicts production accuracy; a diagnostic slice over-sampling the rare labels, the
+  boundaries and every contrast pair gives per-label recall. One mixed figure is neither: it predicts no
+  traffic and still under-measures the rare labels. Keep the tiers as separate case sets, run and read apart
+  (a case's [stratum](concepts.md#stratum) stays free for its kind of case). When the set must shrink, cut the proportional tier evenly; never cut half a
+  contrast pair, or the question it asks goes unanswered at any size.
+- **Repeats do not add cases.** Three runs of six cases are six pieces of evidence, not eighteen: `k` measures
+  how consistent the model is on those inputs, and only more cases widen what the rate covers. Below about six
+  cases a label's figure is a smoke test. An eight-case set once read 0.875 where twenty cases read 0.750 for
+  the same model.
 - **Start with at least ten hand-written cases per label**, most of them boundary cases, lookalikes and
   contrast pairs, then grow the set from production mistakes ([section 8](#8-maintaining-the-set)).
 

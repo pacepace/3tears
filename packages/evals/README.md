@@ -438,5 +438,11 @@ receive, an exception you catch, a literal you annotate with — is exported fro
 | know what a launch will cost, and what stops it | [Cost and budgets](docs/cost-and-budgets.md) |
 | read a campaign's report, strata and evidence tiers, or draw its charts | [Reading reports](docs/reading-reports.md) |
 | let an agent launch and read evals over MCP | [Driving it from an agent](docs/agents-and-mcp.md) |
+| know the rules the engine keeps, and why | [Principles](docs/principles.md) |
+| understand why arms, levers, confounds, identity and the analysis are shaped as they are | [Design rationale](docs/design-rationale.md) |
+| understand why a subject runs in a seeded world, and what the world contract enforces | [The world model](docs/world-model.md) |
+| see what the field recommends for evals and what this engine took from it | [Prior art](docs/prior-art.md) |
+| avoid the measurement traps campaigns have hit: variance, misleading metrics, rigs, judges | [Measuring soundly](docs/measuring-soundly.md) |
+| find known gaps worth building next | [Open problems](docs/open-problems.md) |
 | see each capability in one short file, in order | [The examples](examples/README.md) |
 | see a complete host in code | [`tests/fixtures/courierhost/`](tests/fixtures/courierhost/__init__.py) (minimal), then [`tests/fixtures/toyhost/`](tests/fixtures/toyhost/README.md) (every shape) |
