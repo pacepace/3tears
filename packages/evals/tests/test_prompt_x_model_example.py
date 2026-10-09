@@ -61,9 +61,13 @@ async def test_offline_the_example_runs_four_arms_keyed_by_both_factors(
     assert on_new[f"callable.prompt=v2, model={new}"]["verdict"] == "not separated from the control"
 
     out = capsys.readouterr().out
-    assert out.startswith("No ANTHROPIC_API_KEY: OFFLINE stand-ins, saying nothing about Claude.")
-    assert f"on {old}: accuracy +0.50" in out and "improved on the control" in out
-    assert f"on {new}: accuracy +0.07" in out and "not separated from the control" in out
+    assert out.startswith("ANTHROPIC_API_KEY is not set: running OFFLINE, with keyword stand-ins")
+    assert "say nothing about Claude" in out
+    assert comparison.render() in out
+    assert out.rstrip().endswith(
+        f"Does v2 beat v1?\n  on {old}: accuracy +0.50, improved on the control\n"
+        f"  on {new}: accuracy +0.07, not separated from the control"
+    )
 
 
 def test_the_example_reaches_the_engine_only_through_public_roots() -> None:
