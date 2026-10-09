@@ -121,15 +121,14 @@ def export_select(
     :raises ValueError: when a name is not a plain identifier
     :raises ExportRefusedError: when a value cannot be written as a literal
     """
-    checked = RelationFingerprintRequest(
-        relation=relation,
-        key_columns=list(columns),
-        where=dict(where or {}),
-        where_in={column: list(values) for column, values in (where_in or {}).items()},
-    )
+    checked = RelationFingerprintRequest(relation=relation, key_columns=list(columns), where=dict(where or {}))
+    sets = {column: list(values) for column, values in (where_in or {}).items()}
+    if sets:
+        # the set filters' columns, checked by the same grammar as the key's
+        RelationFingerprintRequest(relation=relation, key_columns=list(sets))
     statement = f"SELECT {', '.join(checked.key_columns)} FROM {checked.relation}"  # noqa: S608 - identifiers checked
     conditions = [f"{column} = {sql_string_literal(value)}" for column, value in checked.where.items()]
-    for column, values in checked.where_in.items():
+    for column, values in sets.items():
         members = ", ".join(sql_string_literal(value) for value in values)
         conditions.append(f"{column} IN ({members})" if values else "1 = 0")
     if conditions:
