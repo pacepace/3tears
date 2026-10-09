@@ -16,6 +16,7 @@ nobody wrote any.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from itertools import chain
 
 from threetears.evals.analysis.agreement import tier_sentence
 from threetears.evals.analysis.arms import ArmTable, arm_table, arm_table_of, short_digest
@@ -1103,6 +1104,23 @@ def _evidence_disclosures(bundle: AnalysisContextBundle) -> list[ReportBlock]:
             + "; ".join(f"{confound.dimension} ({confound.status})" for confound in bundle.apparatus_confounds)
             + ".",
         )
+    # A resolved surface folded into its knob without a check is a caveat on every comparison that folded it.
+    # The bundle carries it on each such row; a code-only report has no rows of confounds, so it is said once
+    # here, in the catalog's own words, so the report never reads an untested fold as a checked one.
+    unverified = sorted(
+        {
+            confound.dimension
+            for confounds in chain(
+                (row.confounded_by for row in bundle.coverage),
+                (divergence.confounded_by for divergence in bundle.scope_divergences),
+            )
+            for confound in confounds
+            if confound.kind == "unverified_fold"
+        }
+    )
+    for dimension in unverified:
+        reason = bundle.confound_catalog[dimension]
+        say("comparisons", reason[:1].upper() + reason[1:] + ".")
     for merge in bundle.refused_merges:
         dimensions = f" on {_listed(merge.dimensions)}" if merge.dimensions else ""
         say(

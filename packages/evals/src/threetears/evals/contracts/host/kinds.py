@@ -39,6 +39,11 @@ its own lever (``gm.house_rules.flanking``), and the whole map is one more lever
 (``gm.house_rules``) that carries the variant coordinate, so two runs with different rules are two
 variants however many rules each named.
 
+Two more markers say what a knob does rather than how its levels sit: ``ActsOn`` names the measure it
+is supposed to move, and ``ResolvesInto`` names the host lever it is written into — the resolved
+surface the host records as well — so one turn of the knob reads as one lever rather than two that
+always move together.
+
 **What is frozen is the resolved model, defaults included** (:func:`freeze`). A launch naming
 ``difficulty="medium"`` and one naming nothing ran the same knob at the same level, so they record
 the same overlays and share a variant — identity is computed over what ran, never over the request.
@@ -122,6 +127,43 @@ class ActsOn:
     measure: str
 
 
+@dataclass(frozen=True)
+class ResolvesInto:
+    """Name the fixed host lever this overlay knob is WRITTEN INTO — its lever's ``resolves_into``.
+
+    A host that both lets a launch turn a knob and records what the knob resolved into registers one
+    change twice: ``reasoning_effort`` as the overlay a launch named, and the resolved model parameters
+    it was merged into (``llm_parameters``, levelled by content hash) as a lever of the host's own. Both
+    are honest levers — the knob is what a campaign swept, the surface is what would ship — and both
+    move whenever the knob does, so read as two levers every effort sweep reports two changes and each
+    as confounded by the other, and no sweep of the knob can ever be read on its own.
+
+    The marker names the surface, and the engine folds it into this knob wherever the runs show the
+    surface moved ONLY where the knob did: across the runs being compared, every level of the knob
+    carries one level of the surface. Where the surface differs between runs that held the knob at one
+    level, something else wrote into it, and it stays a lever and a confound of its own. A surface a run
+    did not record (its reader returned ``None``) folds nothing — that run cannot show agreement. The
+    surface is in the variant key, so only two ARMS at one level of the knob can show it moving on its
+    own; where no level has two, the fold still applies and every comparison it applies to is marked
+    ``unverified_fold``, because a check that could not run is not a pass.
+
+    Written beside the other markers, and combinable with them:
+    ``Annotated[Literal["low", "high"], Ordinal(), ResolvesInto("llm_parameters")]``. The name
+    must be a ``lever`` the host itself declares, not an open family, and not one another knob or
+    family already claims — refused when the profile is built, because a surface two knobs write into
+    cannot say which of them moved it. Refused twice on one field: a knob is written into one surface.
+
+    **On a map field** the marker rides on the map's own lever (``gm.tool_configs``), whose level is
+    the whole map — exactly the members a launch set and the values it set them to — so the surface
+    folds into the map wherever the members alone account for its movement, and the map in turn folds
+    into its members by the family's own residual
+    (:attr:`~threetears.evals.contracts.host.sweepables.Sweepable.resolves_into`). Like :class:`ActsOn`,
+    it is declaration metadata, not a level: it moves no variant key.
+    """
+
+    lever: str
+
+
 class KindContractError(TypeError):
     """A kind's model cannot be read the way the engine promises to read it — raised where it is declared."""
 
@@ -138,6 +180,7 @@ class _Knob:
     interval_unit: str | None
     numeric: bool
     acts_on: str | None
+    resolves_into: str | None
 
 
 @dataclass(frozen=True)
@@ -310,6 +353,7 @@ class KindContract:
                     read=self._reader(knob.field_name),
                     reader_prose=knob.prose,
                     acts_on=knob.acts_on,
+                    resolves_into=knob.resolves_into,
                 )
             )
             if knob.family:
@@ -488,6 +532,7 @@ def _read_knob(prefix: str, name: str, info: FieldInfo) -> tuple[_Knob | None, l
     ordinal = any(isinstance(marker, Ordinal) for marker in info.metadata)
     interval = next((marker for marker in info.metadata if isinstance(marker, Interval)), None)
     acts_on = [marker.measure for marker in info.metadata if isinstance(marker, ActsOn)]
+    resolves_into = [marker.lever for marker in info.metadata if isinstance(marker, ResolvesInto)]
     numeric = annotation in (int, float)
     family = typing.get_origin(annotation) in (dict, Mapping)
     levels: tuple[Any, ...] | None = None
@@ -503,6 +548,11 @@ def _read_knob(prefix: str, name: str, info: FieldInfo) -> tuple[_Knob | None, l
         problems.append("is a map marked ActsOn, and its entries are distinct knobs one mechanism cannot speak for")
     if len(acts_on) > 1:
         problems.append("is marked ActsOn more than once, and a lever names one mechanism")
+    if len(resolves_into) > 1:
+        problems.append(
+            "is marked ResolvesInto more than once, and a knob written into two surfaces could not be folded "
+            "into either — each would also carry whatever the other did"
+        )
     if problems:
         return None, problems
     return (
@@ -515,6 +565,7 @@ def _read_knob(prefix: str, name: str, info: FieldInfo) -> tuple[_Knob | None, l
             interval_unit=interval.unit if interval is not None else None,
             numeric=numeric,
             acts_on=acts_on[0] if acts_on else None,
+            resolves_into=resolves_into[0] if resolves_into else None,
         ),
         [],
     )

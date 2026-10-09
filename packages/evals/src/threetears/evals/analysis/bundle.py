@@ -44,6 +44,7 @@ from fractions import Fraction
 from datetime import UTC, datetime
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from functools import partial
 from itertools import chain
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
 
@@ -312,6 +313,29 @@ _UNEXPLAINED_SURFACE_CONFOUNDS = (
     "part of the movement may belong to whatever that was. What this dimension is: {prose}"
 )
 
+# Why a surface folded into a FIXED knob without a check still qualifies the comparison. The surface is
+# in the variant key, so every run of an arm resolves one surface; with one arm per level of the knob the
+# fold holds by construction, and a second change made exactly where the knob changed would fold with it.
+# Named on every comparison that folds it that way, so a memo cannot present it as a checked non-confound.
+_UNVERIFIED_FOLD_CONFOUNDS = (
+    "folded, unverified: {surface} is the resolved surface {knob} is written into, and it moved with {knob} "
+    "here — but every level of {knob} in these runs was run by one arm only, so nothing in them could have "
+    "shown {surface} moving apart from {knob}. It is reported as the same change as {knob} without having been "
+    "checked, and part of the movement may belong to anything else written into it; two arms at one level of "
+    "{knob} would test it. What {surface} is: {prose}"
+)
+
+# The same, for a surface a FIXED lever is written into (a kind's overlay marked ``ResolvesInto``).
+# It has no members to take out, so the sentence states the fold rule's own two ways of failing:
+# runs that held the knob at one level carried different surfaces, which the knob cannot have done,
+# or a run did not record the surface at all (the confound's ``undecided`` status says which).
+_UNEXPLAINED_WRITTEN_SURFACE_CONFOUNDS = (
+    "the resolved surface that {family} is written into, and across these runs it was not shown to have "
+    "moved only where {family} did — it differed between runs that held {family} at one level, or some run "
+    "did not record it — so part of the movement may belong to something besides that knob. What this "
+    "dimension is: {prose}"
+)
+
 
 #: How a world dimension is named where it sits beside the sweepable apparatus dimensions.
 #:
@@ -476,17 +500,22 @@ class Confound(EvalDocumentModel):
     dimension: str = Field(
         min_length=1,
         description=(
-            "What varied — a lever name, a run attribute, or an observed mechanism (`observed:<covariate>`); "
-            "key into confound_catalog."
+            "What varied — a lever name, a run attribute, an observed mechanism (`observed:<covariate>`), or a "
+            "resolved surface folded into its knob without a check (`unverified_fold:<surface>`); key into "
+            "confound_catalog."
         ),
     )
-    kind: Literal["swept_lever", "apparatus", "observed_mechanism"] = Field(
+    kind: Literal["swept_lever", "apparatus", "observed_mechanism", "unverified_fold"] = Field(
         description=(
             "swept_lever = another knob this campaign deliberately tuned. apparatus = the measuring rig moved "
             "under the comparison, which is the more serious of the two because nothing intended it. "
             "observed_mechanism = the comparison is across candidate models, and what the models were measured "
             "doing diverged with no setting to say so: their means of the named covariate are at least "
-            "`threshold` apart, so part of the movement may belong to that difference rather than to the model."
+            "`threshold` apart, so part of the movement may belong to that difference rather than to the model. "
+            "unverified_fold = a resolved surface the host records beside the knob written into it moved with "
+            "that knob and is reported as the same change, but every level of the knob here was run by one arm "
+            "only, so nothing in these runs could have shown the surface moving apart from the knob: the fold is "
+            "an assumption these runs did not test, never a checked non-confound."
         )
     )
     status: Literal["varied", "undecided"] = Field(
@@ -495,7 +524,8 @@ class Confound(EvalDocumentModel):
             "varied = observed at more than one value across these runs. undecided = some run never recorded it, "
             "so whether it varied cannot be established — NOT the same as holding still, which is absence from "
             "the list. Treat undecided as present until a run says otherwise. An observed_mechanism confound is "
-            "always varied: one is named only where two levels' measured means diverged."
+            "always varied: one is named only where two levels' measured means diverged. An unverified_fold "
+            "confound is always varied: the surface did take more than one value; what is untested is why."
         ),
     )
     level_values: dict[str, float] = Field(
@@ -530,6 +560,13 @@ class Confound(EvalDocumentModel):
                 )
         elif self.level_values or self.threshold is not None:
             raise ValueError(f"a {self.kind} confound carries no level_values or threshold")
+        if self.kind == "unverified_fold" and (
+            self.status != "varied" or not self.dimension.startswith(UNVERIFIED_FOLD_PREFIX)
+        ):
+            raise ValueError(
+                f"an unverified_fold confound names its surface as {UNVERIFIED_FOLD_PREFIX}<surface>, and is always "
+                "varied"
+            )
         return self
 
 
@@ -537,6 +574,11 @@ class Confound(EvalDocumentModel):
 #: Prefixed for the reason world dimensions are: a covariate name and a lever name share
 #: ``confound_catalog``, and a bare name meeting a lever's would let one reason overwrite the other.
 OBSERVED_MECHANISM_PREFIX = "observed:"
+
+#: The prefix an unverified fold's confound dimension carries — the resolved surface it names follows it.
+#: Prefixed for the same reason: the surface is a lever name too, and where some other cohort does not fold
+#: it, it is named there as a confound of its own with its own reason, which a bare name would overwrite.
+UNVERIFIED_FOLD_PREFIX = "unverified_fold:"
 
 #: How far apart two levels' mean reasoning share (``reasoning_ratio``, absolute) must be before a
 #: comparison between them is disclosed as confounded by it. A reasoning effort is sent to a provider
@@ -1574,7 +1616,7 @@ class AnalysisContextBundle(EvalDocumentModel):
     # A/B set spanning a bump must be read as spanning it. Why each earlier version moved is in
     # this file's history.
     schema_version: int = Field(
-        default=42, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=43, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -3065,29 +3107,70 @@ def _measure_summary(
     )
 
 
-#: What taking a family's swept members back out of its resolved surface showed, over one cohort.
+#: What the runs showed about a resolved surface's movement, over one cohort.
 #:
-#: ``explained`` — every run's residual agrees, so the surface moved only because its members did
-#: and it is the same change seen twice. ``unexplained`` — the residuals disagree, so something
-#: besides the swept knobs changed. ``undetermined`` — some run's residual could not be read, so
-#: neither can be shown; the surface is kept, because folding it would be an inference.
-SurfaceFold = Literal["explained", "unexplained", "undetermined"]
+#: ``explained`` — the surface moved only because the knob written into it did, so it is the same
+#: change seen twice: for an open family, every run's residual (the surface with the swept members
+#: taken back out) agrees; for a fixed lever, the surface held one level within each of the lever's
+#: levels, and some level was held by two or more arms, so the runs could have shown otherwise.
+#: ``unverified`` — a fixed lever's fold that the runs could NOT have refuted: the surface held one
+#: level within each of the lever's, but every level was held by one arm only, and every run of an
+#: arm resolves the arm's one surface (the surface is in the variant key), so the dependency holds by
+#: construction. The surface is still folded — the knob names the arm — and every lens that folds it
+#: marks the comparison with an ``unverified_fold`` confound, because a check that could not run is
+#: not a pass. ``unexplained`` — something besides the knob changed it: the residuals disagree, two
+#: runs that held the lever at one level carried different surfaces, or a run the lever does not apply
+#: to (another kind's) carried a surface no run of the lever's own kind in the cohort carries. ``undetermined`` — some run's
+#: residual or surface could not be read, so neither can be shown; the surface is kept, because
+#: folding it would be an inference.
+SurfaceFold = Literal["explained", "unverified", "unexplained", "undetermined"]
+
+#: The verdicts under which a surface is folded into its knob: one checked, one that could not be.
+_FOLDED: frozenset[SurfaceFold] = frozenset({"explained", "unverified"})
 
 
 class _SurfaceFolds:
     """The ONE answer to "did this resolved surface move on its own, across these runs".
 
-    A host may register an open family's members AND the surface they are merged into as levers
-    (:attr:`~threetears.evals.contracts.host.sweepables.Sweepable.resolves_into`). One override then reaches
-    every lens twice — as the member and as the surface's content hash — and a lens that counted
-    both reported a one-key arm as ``multi_factor`` and each lever as confounded by the other.
-    Every lens that decides what a comparison moved or what confounds it asks this object, over
-    the cohort it is comparing, so two lenses cannot come to different answers about one surface.
+    A host may register a knob AND the surface it is merged into as levers
+    (:attr:`~threetears.evals.contracts.host.sweepables.Sweepable.resolves_into`): an open family's
+    members and the tool configuration they are written into, or a kind's ``reasoning_effort``
+    overlay and the resolved model parameters it is written into
+    (:class:`~threetears.evals.contracts.host.kinds.ResolvesInto`). One turn of the knob then reaches
+    every lens twice — as the knob and as the surface's content hash — and a lens that counted both
+    reported a one-knob arm as ``multi_factor`` and each lever as confounded by the other. Every lens
+    that decides what a comparison moved or what confounds it asks this object, over the cohort it is
+    comparing, so two lenses over one cohort cannot come to different answers about one surface. Lenses
+    over different cohorts can: a knob's coverage row pools every arm that moved the knob, while a design
+    contrast reads only the arms its own departures cover, so each answer is about the runs it names.
 
-    **Per cohort, never campaign-wide**, because the answer depends on which members the cohort
-    swept. A surface can be explained across the whole campaign — every member any run named taken
-    out — and unexplained inside a contrast that swept only one of them, where a second key moved
-    with nothing naming it. That second key is exactly what the rule exists to surface.
+    **Two rules, one per kind of knob, because only one of them has anything to take out.** An open
+    family's members are names a host can remove from its surface, so the family's own residual
+    reader answers. A fixed lever is one value with nothing to remove, and the surface without it is
+    not something the engine could ask for — so the runs answer instead, by functional dependency:
+    the surface folds where every level of the lever carries one level of the surface across the
+    cohort, which is what "it moved only where the knob did" means when nothing else can be read.
+    **What that cannot see:** the surface is in the variant key, so every run of one arm resolves
+    one surface, and repeats of an arm can never disagree with it. A cohort with one ARM per level of
+    the lever therefore satisfies the rule by construction, and a second change that rode in exactly
+    where the knob changed folds with it. Only a level of the lever held by two or more arms can show
+    anything else wrote into the surface — which is exactly the shape a sweep that changed something
+    besides the knob produces, and the shape the rule keeps as a confound. A fold no such level
+    tested is ``unverified``: still folded, so the knob names the arm, and marked on every comparison
+    that folds it (:data:`UNVERIFIED_FOLD_PREFIX`), so it is never read as a checked non-confound.
+
+    **A fixed lever's level is the level its variant coordinate carries**
+    (:meth:`~threetears.evals.contracts.host.profile.HostProfile.engine_levels` and the host's
+    variant-lever reader), so the fold and the variant key cannot disagree about whether two runs sat
+    at one level — in particular, a run of another kind sits at that kind's "not this kind" level,
+    never at a ``None`` a run of the lever's own kind can also hold. The lever does not apply to such
+    a run and cannot have written its surface, so where such a run carries a surface no run of the
+    lever's own kind in the cohort carries, the kind's change moved it and nothing is folded.
+
+    **Per cohort, never campaign-wide**, because the answer depends on which runs are compared. A
+    surface can be explained across the whole campaign — every member any run named taken out — and
+    unexplained inside a contrast that swept only one of them, where a second key moved with nothing
+    naming it. That second key is exactly what the rule exists to surface.
 
     Built once per assembly and memoised per ``(run, removed members)``, because a residual read
     is host code over the run's own payload and every lever × cohort asks.
@@ -3096,7 +3179,7 @@ class _SurfaceFolds:
     def __init__(
         self, runs: list[EvalRun], results_by_run: dict[str, list[EvalResult]], *, profile: HostProfile
     ) -> None:
-        """Capture the campaign's runs and which members each family resolved on each.
+        """Capture the campaign's runs, which members each family resolved on each, and each fixed knob's level.
 
         Args:
             runs: The campaign's resolved runs.
@@ -3119,11 +3202,46 @@ class _SurfaceFolds:
             run_id: {member: resolution.values.get(member) for member in resolution.overlaid}
             for run_id, resolution in resolutions.items()
         }
+        # A fixed knob's level, as the variant key carries it, and its surface's raw value, both as
+        # comparable keys. The knob is read off the variant coordinate so a run of another kind sits at
+        # that kind's own level, apart from any value a run of the knob's kind holds. The surface is read
+        # off the resolution, because its ``None`` is a run that did not record it, and that must stay
+        # ``None`` so it can only ever read as "cannot say".
+        claimants = {
+            surface: claimant.name for surface, claimant in self._surfaces.items() if claimant.open_family is None
+        }
+        self._fixed_levels: dict[str, dict[str, str | None]] = {}
+        self._inapplicable: dict[str, frozenset[str]] = {}
+        for run in runs if claimants else ():
+            coordinates = {
+                **profile.engine_levels(run),
+                **(profile.variant_levers(run) if profile.variant_levers is not None else {}),
+            }
+            values = resolutions[run.id].values
+            levels: dict[str, str | None] = {}
+            inapplicable: set[str] = set()
+            for surface, knob in claimants.items():
+                raw = values.get(surface)
+                levels[surface] = None if raw is None else canonical_json(raw)
+                coordinate = coordinates.get(knob)
+                if coordinate is None:
+                    levels[knob] = canonical_json(values.get(knob))
+                else:
+                    levels[knob] = coordinate.content_hash
+                    if coordinate.not_of_kind is not None:
+                        inapplicable.add(knob)
+            self._fixed_levels[run.id] = levels
+            self._inapplicable[run.id] = frozenset(inapplicable)
+        # Which arm each run measured: a fixed knob's fold is testable only where one of its levels
+        # was held by two or more arms. A run no observation keys stands for an arm of its own.
+        self._arm_of: dict[str, str] = {
+            run.id: variant_key_of_run(results_by_run.get(run.id, [])) or f"run:{run.id}" for run in runs
+        }
         self._residuals: dict[tuple[str, str, frozenset[str]], str | None] = {}
 
     @property
     def surfaces(self) -> frozenset[str]:
-        """Every lever name a family resolves into — the only names this object ever folds."""
+        """Every lever name a knob resolves into — the only names this object ever folds."""
         return frozenset(self._surfaces)
 
     def fold(self, surface: str, cohort_run_ids: Collection[str]) -> SurfaceFold:
@@ -3136,28 +3254,58 @@ class _SurfaceFolds:
         Returns:
             The verdict — see :data:`SurfaceFold`.
         """
-        family = self._surfaces[surface].name
+        claimant = self._surfaces[surface]
         cohort = [run_id for run_id in dict.fromkeys(cohort_run_ids) if run_id in self._runs]
-        swept = frozenset().union(*(self._members.get(run_id, {}).get(family, frozenset()) for run_id in cohort))
+        if claimant.open_family is None:
+            return self._fold_by_level(surface, claimant.name, cohort)
+        swept = frozenset().union(*(self._members.get(run_id, {}).get(claimant.name, frozenset()) for run_id in cohort))
         residuals = [self._residual(surface, run_id, swept) for run_id in cohort]
         if any(residual is None for residual in residuals):
             return "undetermined"
         return "explained" if len(set(residuals)) <= 1 else "unexplained"
 
     def folds_away(self, lever: str, cohort_run_ids: Collection[str]) -> bool:
-        """True when ``lever`` is a resolved surface whose movement across the cohort is its members'.
+        """True when ``lever`` is a resolved surface folded into its knob across the cohort.
 
         The question every call site actually asks, so none of them re-derives it from
-        :meth:`fold` with a comparison that could drift.
+        :meth:`fold` with a comparison that could drift. ``unverified`` folds as well as
+        ``explained``; the comparison is then marked by :func:`_uncontrolled_dimensions`.
 
         Args:
             lever: Any lever name.
             cohort_run_ids: The runs under comparison.
 
         Returns:
-            True only for a surface whose residuals agree; every other lever is False.
+            True only for a surface the cohort shows moved with its knob alone, checked or not; every
+            other lever is False.
         """
-        return lever in self._surfaces and self.fold(lever, cohort_run_ids) == "explained"
+        return lever in self._surfaces and self.fold(lever, cohort_run_ids) in _FOLDED
+
+    def folds_away_in_contrast(
+        self, lever: str, pair: Collection[str], contrast_cohort: Callable[[str], Collection[str]]
+    ) -> bool:
+        """:meth:`folds_away` for one contrast against the control, over the cohort that can decide it.
+
+        An open family's residual is a check two runs can make, so a contrast asks it over its own
+        pair. A fixed knob's fold is not: over two runs it reduces to "did the knob also move", which
+        can never come out ``unexplained``, so the design would fold a surface every other lens calls a
+        varying confound. It is decided over the contrast's cohort instead — the control and every
+        contrast whose departures, the surface aside, fall within this one's — where a second arm at
+        one of the knob's levels can show the surface moving on its own, and an arm that moved
+        something else cannot make this contrast's knob answer for it.
+
+        Args:
+            lever: Any lever name.
+            pair: The control's run and the contrast's.
+            contrast_cohort: The contrast's cohort for a surface, asked only for a fixed knob's.
+
+        Returns:
+            Whether the contrast's movement of ``lever`` is its knob's, seen a second time.
+        """
+        if lever not in self._surfaces:
+            return False
+        fixed = self._surfaces[lever].open_family is None
+        return self.folds_away(lever, contrast_cohort(lever) if fixed else pair)
 
     def swept_members(self, surface: str, run_ids: Collection[str]) -> dict[str, Any]:
         """The members of ``surface``'s family these runs overlaid, with the value each named.
@@ -3167,20 +3315,66 @@ class _SurfaceFolds:
         inherits it resolved to the same value in both — which is why the union is the arm's, and
         why two of them cannot name one member at two values.
 
+        A surface a FIXED lever is written into has no members: the lever names the arm under its
+        own name, as the coordinate it carries in the arm's ``levers`` (registration refuses one
+        that carries none), so nothing is added beside it.
+
         Args:
             surface: A name in :attr:`surfaces`.
             run_ids: The runs that carried one arm.
 
         Returns:
-            Member name → the value named, sorted by name; empty when none of them overlaid a member.
+            Member name → the value named, sorted by name; empty when none of them overlaid a member,
+            and for a surface a fixed lever is written into.
         """
-        family = self._surfaces[surface].name
+        claimant = self._surfaces[surface]
+        if claimant.open_family is None:
+            return {}
         named: dict[str, Any] = {}
         for run_id in dict.fromkeys(run_ids):
             values = self._member_values.get(run_id, {})
-            for member in self._members.get(run_id, {}).get(family, frozenset()):
+            for member in self._members.get(run_id, {}).get(claimant.name, frozenset()):
                 named[member] = values.get(member)
         return dict(sorted(named.items()))
+
+    def _fold_by_level(self, surface: str, lever: str, cohort: list[str]) -> SurfaceFold:
+        """Whether ``surface`` held one level within each of ``lever``'s levels across the cohort.
+
+        Args:
+            surface: The surface a fixed lever is written into.
+            lever: That lever.
+            cohort: The runs under comparison, deduplicated, each one this object holds.
+
+        Returns:
+            ``undetermined`` when some run did not record the surface; ``unexplained`` when two runs at
+            one of the lever's levels carried different surfaces, or a run the lever does not apply to
+            carried a surface no run of its own kind here carries; otherwise ``explained`` when some level of the
+            lever was held by two or more arms, and ``unverified`` when none was.
+        """
+        levels = [self._fixed_levels.get(run_id, {}) for run_id in cohort]
+        if any(level.get(surface) is None for level in levels):
+            return "undetermined"
+        own_kind = {
+            level.get(surface)
+            for run_id, level in zip(cohort, levels, strict=True)
+            if lever not in self._inapplicable.get(run_id, frozenset())
+        }
+        if any(
+            level.get(surface) not in own_kind
+            for run_id, level in zip(cohort, levels, strict=True)
+            if lever in self._inapplicable.get(run_id, frozenset())
+        ):
+            # A run of another kind carries the knob's "not this kind" level, so the knob did not write its
+            # surface. Where that surface is one no run of the knob's own kind carries here, the kind's
+            # change moved it, and the knob cannot answer for it.
+            return "unexplained"
+        surface_at: dict[str | None, str | None] = {}
+        arms_at: dict[str | None, set[str]] = defaultdict(set)
+        for run_id, level in zip(cohort, levels, strict=True):
+            if surface_at.setdefault(level.get(lever), level.get(surface)) != level.get(surface):
+                return "unexplained"
+            arms_at[level.get(lever)].add(self._arm_of.get(run_id, f"run:{run_id}"))
+        return "explained" if any(len(arms) > 1 for arms in arms_at.values()) else "unverified"
 
     def _residual(self, surface: str, run_id: str, removed: frozenset[str]) -> str | None:
         """One run's residual, as a comparable key, memoised.
@@ -3353,40 +3547,69 @@ def _campaign_design(
     control = arms_by_key[control_variant][0]
     control_overlays = _effective_values(control, results_by_run.get(control.id, []), profile=profile)
     control_model = control.candidate_model
-    contrasts: list[DesignArm] = []
+    # Every contrast's departures from the control BEFORE any surface is folded: a fixed knob's fold is
+    # decided over the contrasts whose departures fall within this one's, so they are needed for all of
+    # them first. One run stands for each arm: its runs share a variant key, so they share a configuration.
+    #
+    # KNOWN LIMIT: this maps both "the lever did not apply" and "it applied but resolved
+    # ambiguously" to the inherited-default level, so an ambiguous control reads as a
+    # moved lever. That surfaces as a claim a reader can check against
+    # `RunSummary.config_provenance`, rather than as a silently dropped comparison, which
+    # is why it is accepted here. `_lever_levels` keeps the two apart because a cohort a
+    # run cannot support is worse than a contrast it cannot make.
+    #
+    # The candidate model is read off the run's declared model rather than the effective
+    # resolution, which reports a run whose candidate role left no usage row as carrying no
+    # model at all — and that absence would read as the arm having moved its model to the
+    # inherited default.
+    departures: dict[str, dict[str, str]] = {}
     for key, members in arms_by_key.items():
         if key == control_variant:
             continue
-        # One run stands for the arm: its runs share a variant key, so they share a configuration.
         first = members[0]
         overlays = _effective_values(first, results_by_run.get(first.id, []), profile=profile)
-        # KNOWN LIMIT: this maps both "the lever did not apply" and "it applied but resolved
-        # ambiguously" to the inherited-default level, so an ambiguous control reads as a
-        # moved lever. That surfaces as a claim a reader can check against
-        # `RunSummary.config_provenance`, rather than as a silently dropped comparison, which
-        # is why it is accepted here. `_lever_levels` keeps the two apart because a cohort a
-        # run cannot support is worse than a contrast it cannot make.
-        #
-        # The candidate model is read off the run's declared model rather than the effective
-        # resolution, which reports a run whose candidate role left no usage row as carrying no
-        # model at all — and that absence would read as the arm having moved its model to the
-        # inherited default.
-        #
-        # A resolved surface is left out of `moved` only where the pair's residuals agree: then its
-        # new hash is the member it was written from, counted a second time, and keeping it would
-        # make every one-key arm `multi_factor`. Where they disagree it stays, because the arm
-        # really did move something no swept member names.
-        pair = (control.id, first.id)
-        moved = {
+        departed = {
             lever: overlays.get(lever) or _INHERITED_DEFAULT_LEVEL
             for lever in sorted((set(overlays) | set(control_overlays)) - {_CANDIDATE_MODEL_LEVER})
             if (overlays.get(lever) or _INHERITED_DEFAULT_LEVEL)
             != (control_overlays.get(lever) or _INHERITED_DEFAULT_LEVEL)
-            and not folds.folds_away(lever, pair)
         }
-        model = first.candidate_model
-        if model != control_model:
-            moved[_CANDIDATE_MODEL_LEVER] = model
+        if first.candidate_model != control_model:
+            departed[_CANDIDATE_MODEL_LEVER] = first.candidate_model
+        departures[key] = departed
+    control_runs = [run.id for run in arms_by_key[control_variant]]
+
+    def contrast_cohort(surface: str, key: str) -> list[str]:
+        """The runs a fixed knob's fold on ``surface`` is decided over for the contrast ``key``.
+
+        The control and every contrast whose departures, ``surface`` aside, fall within this one's —
+        this contrast itself, a second arm at one of its knob's levels, an arm that moved less. Those
+        are the arms that can show the surface moving apart from the knob WITHIN this comparison. An
+        arm that moved something this contrast did not (another lever, another kind) is a different
+        comparison, and its surface moving would be blamed on this contrast's knob otherwise.
+        """
+        own = set(departures[key]) - {surface}
+        return control_runs + [
+            run.id
+            for other, departed in departures.items()
+            if set(departed) - {surface} <= own
+            for run in arms_by_key[other]
+        ]
+
+    contrasts: list[DesignArm] = []
+    for key, departed in departures.items():
+        # A resolved surface is left out of `moved` only where it moved with its knob alone — the
+        # pair's residuals agree, or, for a fixed knob, the contrasts that moved nothing beyond this
+        # one show the surface held one level within each of the knob's (a pair alone cannot show
+        # that: see `folds_away_in_contrast`). Then its new hash is the knob it was written from,
+        # counted a second time, and keeping it would make every one-knob arm `multi_factor`. Where
+        # it moved otherwise it stays, because the arm really did move something no swept knob names.
+        pair = (control.id, arms_by_key[key][0].id)
+        moved = {
+            lever: level
+            for lever, level in departed.items()
+            if not folds.folds_away_in_contrast(lever, pair, partial(contrast_cohort, key=key))
+        }
         contrasts.append(arm(key, moved))
 
     shape: Literal["one_factor_at_a_time", "multi_factor"] = (
@@ -3645,9 +3868,10 @@ def _uncontrolled_dimensions(
         apparatus_levels: Dimension → run id → level key, from :func:`_apparatus_levels`.
         folds: The campaign's :class:`_SurfaceFolds`. A resolved surface that varied only because
             its swept members did is the lever under comparison (or its sibling members) seen a
-            second time, so it is not named; one whose residual could not be read is named as
-            ``undecided``, because whether anything besides the swept members moved is exactly
-            what no run recorded.
+            second time, so it is not named — and likewise a surface a fixed knob is written into,
+            where it held one level within each of the knob's. One whose residual or surface could
+            not be read is named as ``undecided``, because whether anything besides the swept knob
+            moved is exactly what no run recorded.
         profile: The host whose vocabulary this reads.
 
     Returns:
@@ -3662,6 +3886,11 @@ def _uncontrolled_dimensions(
         if other in folds.surfaces:
             verdict = folds.fold(other, cohort_run_ids)
             if verdict == "explained":
+                continue
+            if verdict == "unverified":
+                # Folded — the knob names the comparison — but marked, because these runs could not
+                # have shown the surface moving apart from its knob, and an untested fold is no pass.
+                confounds.append(Confound(dimension=f"{UNVERIFIED_FOLD_PREFIX}{other}", kind="unverified_fold"))
                 continue
             if verdict == "undetermined":
                 confounds.append(Confound(dimension=other, kind="swept_lever", status="undecided"))
@@ -4146,13 +4375,24 @@ def _confound_catalog(bundle: AnalysisContextBundle, *, profile: HostProfile) ->
     catalog: dict[str, str] = {}
     apparatus_reasons = _apparatus_confound_reasons(profile=profile)
     sweepables = profile.sweepables
-    # A resolved surface reaches a confound list only once its swept members are taken back out
+    # A resolved surface reaches a confound list only once the knob written into it is accounted for
     # and something is still left over, so its reason says that rather than the generic sentence
     # about another knob: "another lever this campaign swept" would be false of a surface nobody
-    # swept, and silent about the one thing a reader needs — that a change no member names rode in.
+    # swept, and silent about the one thing a reader needs — that a change no knob names rode in.
     surface_reasons = {
-        surface: _UNEXPLAINED_SURFACE_CONFOUNDS.format(family=family.name, prose=sweepables.reader_prose(surface))
-        for surface, family in sweepables.resolution_surfaces.items()
+        surface: (
+            _UNEXPLAINED_SURFACE_CONFOUNDS
+            if claimant.open_family is not None
+            else _UNEXPLAINED_WRITTEN_SURFACE_CONFOUNDS
+        ).format(family=claimant.name, prose=sweepables.reader_prose(surface))
+        for surface, claimant in sweepables.resolution_surfaces.items()
+    }
+    unverified_reasons = {
+        f"{UNVERIFIED_FOLD_PREFIX}{surface}": _UNVERIFIED_FOLD_CONFOUNDS.format(
+            knob=claimant.name, surface=surface, prose=sweepables.reader_prose(surface)
+        )
+        for surface, claimant in sweepables.resolution_surfaces.items()
+        if claimant.open_family is None
     }
     emitted = [confound for entry in bundle.coverage for confound in entry.confounded_by]
     emitted += [confound for divergence in bundle.scope_divergences for confound in divergence.confounded_by]
@@ -4173,6 +4413,8 @@ def _confound_catalog(bundle: AnalysisContextBundle, *, profile: HostProfile) ->
         # invisible if they became so.
         if confound.kind == "apparatus":
             reason = apparatus_reasons[confound.dimension]
+        elif confound.kind == "unverified_fold":
+            reason = unverified_reasons[confound.dimension]
         elif confound.kind == "observed_mechanism":
             reason = _OBSERVED_MECHANISMS[confound.dimension.removeprefix(OBSERVED_MECHANISM_PREFIX)].reason
         else:
@@ -4863,8 +5105,10 @@ def _coverage_map(
         folds: The campaign's :class:`_SurfaceFolds`. A resolved surface earns no row of its own
             where its movement across its cohort is its swept members' movement — the member rows
             already report that change, and a second row levelled by content hash would count one
-            override as two swept levers. It keeps its row where the residuals disagree or cannot
-            be read, because then it carries something no member row does. A declared axis is never
+            override as two swept levers (and the same for a fixed knob's surface that moved only
+            where the knob did). It keeps its row where the residuals disagree or cannot be read, or a
+            fixed knob held at one level saw it differ, because then it carries something no knob's
+            row does. A declared axis is never
             dropped this way: the completeness check needs its row whatever it resolved to.
         observations: The campaign's mechanism observations, which each row's ``mechanism`` check and its
             observed-mechanism confounds compare across the row's levels.
@@ -5073,7 +5317,9 @@ def _name_arms(
     memo's swept-knob coordinates. The same fold every other lens asks decides it here: where the
     surface's residual agrees across the campaign, the members name the arm and the surface is
     recorded as ``folded``; where it does not, the surface moved on its own and stays the arm's
-    name, exactly as it stays a moved lever and a confound elsewhere.
+    name, exactly as it stays a moved lever and a confound elsewhere. A surface a fixed knob is
+    written into folds the same way and adds nothing to ``swept``: the knob is already one of the
+    arm's ``levers``, and names it once the surface is set aside.
 
     **Campaign-wide, because an arm's name is read against every other arm.** A surface explained
     only within some contrasts would name some arms by their members and others by an opaque hash,
@@ -5090,7 +5336,7 @@ def _name_arms(
         The index, each entry carrying ``swept`` and ``folded`` where a surface folds. Entries whose
         levels are unavailable, and every entry when nothing folds, are returned as they were.
     """
-    explained = sorted(surface for surface in folds.surfaces if folds.fold(surface, run_ids) == "explained")
+    explained = sorted(surface for surface in folds.surfaces if folds.folds_away(surface, run_ids))
     if not explained:
         return index
     runs_of: dict[str, dict[str, None]] = {}

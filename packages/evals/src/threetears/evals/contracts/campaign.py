@@ -632,18 +632,21 @@ class VariantIndexEntry(EvalDocumentModel):
             "that surface's movement says, and they are what the arm is NAMED by. Not part of the key's "
             "pre-image, which is `levers` alone. Empty for an arm that swept no member — the control of a "
             "one-knob sweep, whose surface is then the campaign's shared residual and names nothing — and "
-            "for every arm of a campaign whose surface moved on its own."
+            "for every arm of a campaign whose surface moved on its own. A surface a fixed knob is written "
+            "into adds nothing here: that knob is already one of `levers`, and names the arm itself."
         ),
     )
     folded: list[str] = Field(
         default_factory=list,
         description=(
             "Levers in `levers` that are a RESOLVED SURFACE whose movement across this campaign is "
-            "explained by the swept members alone — the residual left after taking every member back out "
-            "agreed on every run. Such a surface is the member's change seen a second time: never a second "
-            "moved lever, never a confound, and not how the arm is named. It stays in `levers` because the "
-            "key is digested from it. Absent from this list wherever the residual disagreed, or could not be "
-            "read — then the surface moved on its own and names the arm like any other lever. Sorted."
+            "explained by the knob written into it alone — for an open family, the residual left after taking "
+            "every swept member back out agreed on every run; for a fixed knob (a kind overlay marked "
+            "`ResolvesInto`), the surface held one level within each of the knob's levels. Such a surface is "
+            "the knob's change seen a second time: never a second moved lever, never a confound, and not how "
+            "the arm is named. It stays in `levers` because the key is digested from it. Absent from this list "
+            "wherever that failed, or could not be read — then the surface moved on its own and names the arm "
+            "like any other lever. Sorted."
         ),
     )
 

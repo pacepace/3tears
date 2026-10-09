@@ -6,6 +6,44 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: an overlay knob and the host lever it is written into read as one lever
+
+- **`ResolvesInto(lever)`** (`threetears.evals.contracts.host`), a marker for a kind contract's overlay field beside
+  `Ordinal`, `Interval` and `ActsOn`: the fixed host lever the knob is written into. A `reasoning_effort` overlay
+  and the host's `llm_parameters` lever (a hash of the resolved model parameters) moved in lockstep, so every effort
+  sweep reported two moved levers, each confounding the other. With the marker, the surface folds into the knob
+  wherever the compared runs show it constant within each of the knob's levels. It then gets no coverage row, no
+  confound, no scope divergence and no `moved` entry of its own, and is listed in the arm's `folded` (the knob names
+  the arm, `swept` stays empty). Where runs holding the knob at one level carried different surfaces, it stays a
+  lever and a confound, with a catalog reason saying so; a run whose surface reads `None` makes it an `undecided`
+  confound. The knob's level is the one its variant coordinate carries, so a run of another kind sits at that
+  kind's "not this kind" level; where such a run carries a surface no run of the knob's own kind in the cohort
+  carries, the kind's change moved it and nothing folds. Each design contrast decides a fixed knob's fold over the
+  control plus every contrast whose departures from the control, the surface aside, fall within its own, not over
+  its two-run pair, which can never refute it, and not over arms that moved something it did not. On a map field the marker rides on the map's own lever, whose level
+  is the members a launch set; the map still folds into its members by the family's residual, as before.
+- **An untested fold is marked, never passed.** The surface is in the variant key, so every run of an arm resolves
+  one surface and only two or more ARMS at one knob level can refute the fold; repeats cannot. Where no level in the
+  deciding cohort is held by two arms, the fold still applies (the knob names the arm) and every comparison that
+  folds it names a `Confound(kind="unverified_fold", dimension="unverified_fold:<surface>")`, always `varied`, with
+  its reason in `confound_catalog` (`UNVERIFIED_FOLD_PREFIX` in `threetears.evals.analysis.bundle`). The generator
+  prompt (rule 7) says to present it as untested, and the code-only report states it as a `comparisons`
+  disclosure. A fold some second arm could have broken and did not carries no mark. A future residual reader for a
+  fixed knob (the surface with the knob's own contribution taken out) would make a two-arm fold testable; it is not
+  part of this change.
+- **One surface takes one knob**: a second knob naming the same surface is refused, so a second knob the host hashes
+  into it stays unfolded; give each knob its own resolved lever.
+- Bundle `schema_version` 42 -> 43 (a new `Confound.kind`; pins in `test_calibration_ratings`, `test_viz_timeseries`
+  and the `CORE_PINNED` row moved with it).
+- **`Sweepable.resolves_into` is now valid on a fixed `lever`** (folded by the rule above) as well as on an open
+  family (folded by its `read_residual`, still required there). Refused (`RegistrationError`): a surface that is not
+  declared, not a fixed lever, or already named by another knob or family; `resolves_into` on an apparatus or label,
+  or on a lever with `no_own_coordinate`; `read_residual` on a fixed lever; and a fixed lever naming a surface that
+  itself names one (a chain or cycle). `ResolvesInto` twice on one field is refused where the kind is declared
+  (`KindContractError`). The marker enters no variant key.
+- **`SweepableRegistry.resolution_surfaces`** maps each surface to the declaration written into it, a fixed lever
+  or an open family; `read_residual` still answers only for a family's surface.
+
 ### 3tears-evals: one stored result is readable through the action catalogue
 
 - **New `results_list` read action and operation**, which takes a `run_id`, an optional `condition_filter`,

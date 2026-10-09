@@ -111,6 +111,41 @@ What a kind adds to the engine's own fields is two Pydantic models you name once
 - Its **spec** is what a template of that kind declares (`kind_spec`), such as a label set or a table
   setup: refused by field at authoring, then validated again and frozen onto each run.
 
+An overlay field takes markers beside its type, in `Annotated[...]`: `Ordinal()` ranks a `Literal` or `Enum`
+in declaration order, `Interval(unit=...)` names a number's unit, `ActsOn(measure)` names the measure the knob
+is supposed to move, and `ResolvesInto(lever)` names the host lever the knob is written into.
+
+`ResolvesInto` is for a knob whose effect your host also records, resolved, as a lever of its own: a
+`reasoning_effort` overlay and an `llm_parameters` lever that hashes the model parameters it resolved into, say,
+or a `tool_configs` map and the resolved tool configuration. Without it the two move together, so every sweep of
+the knob reports two moved levers, each confounded by the other. With
+`Annotated[Literal["low", "high"], ResolvesInto("llm_parameters")]`, the surface folds into the knob wherever the
+compared runs show it moved only where the knob did: every level of the knob carries one level of the surface.
+Then it gets no coverage row or confound of its own, the contrast moved one lever, and the arm is named by the
+knob (the surface is listed in the variant index's `folded` and stays in the key). Where runs that held the knob
+at one level carried different surfaces, something else wrote into it, and it stays a lever and a confound. A run
+whose surface reader returned `None` folds nothing. On a map field the marker rides on the map's own lever, whose
+level is the members a launch set.
+
+The fold can only be tested across arms. The surface is in the variant key, so every run of one arm resolves the
+same surface, and repeating an arm (more runs, or a higher `k`) can never show it moving on its own. Only a level
+of the knob held by two or more arms can: two `low` arms that differ in something else, such as the model or
+another setting you suspect writes into the surface. Where no level of the knob is held by two arms, as in a plain
+two-arm `low` / `high` sweep, the surface is still folded and the knob still names the arm, but every comparison
+that folds it carries an `unverified_fold` confound (`unverified_fold:llm_parameters`). The confound reaches the
+analysis generator and the code-only report, so a memo cannot present the fold as a checked non-confound. A fold
+that a second arm at some level could have broken, and did not, carries no mark.
+
+The lever named must be a fixed `lever` your host declares, not an open family, and not one another knob or
+family already names. The profile refuses anything else (`RegistrationError`), and a field marked twice is
+refused where the kind is declared (`KindContractError`). The marker moves no variant key. A host's own fixed
+lever declares the same thing as `Sweepable(resolves_into=...)`.
+
+One surface takes one knob. If your host hashes several knobs into one surface (`reasoning_effort` and
+`max_output_tokens` both into `llm_parameters`), mark only one of them; the surface stays unfolded against every
+other knob, and a sweep of a second knob reads as moving two levers. The remedy is one resolved lever per knob:
+record each resolved parameter as its own lever, and mark each knob with its own.
+
 You register neither anywhere else: the profile adds the contract's levers to its `sweepables`, and the
 engine resolves every run's level of them — with its `candidate_model` and its `candidate_kind` — into the
 variant key. Your profile's `host_sweepables` (the shared core extended with your own levers) and its
