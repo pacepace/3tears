@@ -67,6 +67,7 @@ def test_on_normal_costs_the_band_covers_the_sweep_at_its_level() -> None:
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason=(
         "#601 finding: the cost band assumes normal per-observation costs. With right-skewed costs (lognormal, "
         "log-SD 1.0: the 95th percentile ~5x the median, as a few long conversations make it) and five "

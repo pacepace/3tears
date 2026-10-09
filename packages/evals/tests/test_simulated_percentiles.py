@@ -83,6 +83,7 @@ class TestTheRunSummaryP95:
     @pytest.mark.parametrize("n", [3, 5])
     @pytest.mark.xfail(
         strict=True,
+        raises=AssertionError,
         reason=(
             "#601 finding: p95_total_ms is nearest-rank, which for n <= 19 is the sample MAXIMUM, labelled the 95th "
             "percentile. At the run sizes a run of 3-5 observations has, it falls below the true p95 0.86 (n=3) and "
@@ -117,6 +118,7 @@ class TestTheBundlePercentileIsLinear:
 @pytest.mark.parametrize("n", [5, 15, 30])
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason=(
         "#601 finding: a measure's bundle p95 is linearly interpolated, which at the engine's sample sizes sits "
         "below the true 95th percentile 0.84 (n=5), 0.73 (n=15) and 0.68 (n=30) of the time (mean bias -0.61, "

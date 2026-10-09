@@ -55,6 +55,7 @@ def _identical_contestants(rng: random.Random, n_cases: int, repeats: int) -> tu
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason=(
         "#601 finding: the frontier decides dominance on point estimates, so of two IDENTICAL contestants "
         "(5 cases x k=3) one is flagged dominated in 0.32 of replicates against the 0.05 any between-arm claim "

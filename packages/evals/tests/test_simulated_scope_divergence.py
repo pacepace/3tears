@@ -165,6 +165,7 @@ class TestNoMovementIsReadAsFlat:
     )
     @pytest.mark.xfail(
         strict=True,
+        raises=AssertionError,
         reason=(
             "#601 finding: the movement rule reads a fixed 2 SE where the difference of two small samples needs "
             "Student's t (about 2.78 at 3 observations a level, 2.31 at 5, 2.10 at 10). With independent "
@@ -219,6 +220,7 @@ class TestTheLensSaysTheWholeAndThePartDisagree:
     @pytest.mark.parametrize(("n_per_level", "part_shift"), [(5, 0.0), (5, 1.5), (10, 1.0)])
     @pytest.mark.xfail(
         strict=True,
+        raises=AssertionError,
         reason=(
             "#601 finding: the scope-divergence lens publishes a divergence whenever the whole's and the part's "
             "separately graded directions differ. With the part carrying all of the whole's movement (no divergence "

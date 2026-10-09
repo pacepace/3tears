@@ -29,8 +29,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from statistics import NormalDist
 
-from threetears.evals.analysis.confusion import ConfusionCount
 from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA, composite_significance, holm_adjust
+from threetears.evals.contracts.metrics import confusion_cell
 
 __all__ = [
     "TOLERANCE_Z",
@@ -203,8 +203,8 @@ def draw_confusion(
     repeats: int,
     accuracy: float,
     intra_case_correlation: float,
-) -> list[ConfusionCount]:
-    """A classifier's confusion matrix over a balanced bank, every repeat of every case counted.
+) -> list[tuple[str, str]]:
+    """A classifier's observations over a balanced bank, every repeat of every case, each tagged with its case.
 
     Each case expects one label (``cases_per_label`` cases per label). A case has its own probability of
     being classified correctly, drawn from a Beta with mean ``accuracy`` and intra-case correlation
@@ -215,23 +215,23 @@ def draw_confusion(
     missed share).
 
     Returns:
-        The matrix, one count per ``(expected, predicted)`` pair that occurred.
+        One ``(confusion_cell value, test case id)`` per observation, the shape
+        :func:`~threetears.evals.analysis.confusion.label_statistics` reads: the case is what lets its
+        intervals count cases rather than repeats.
     """
     if intra_case_correlation > 0.0:
         concentration = 1.0 / intra_case_correlation - 1.0
         alpha, beta = accuracy * concentration, (1.0 - accuracy) * concentration
-    counts: dict[tuple[str, str], int] = {}
+    observations: list[tuple[str, str]] = []
     for expected in labels:
         others = [label for label in labels if label != expected]
-        for _ in range(cases_per_label):
+        for index in range(cases_per_label):
+            case = f"{expected}-{index}"
             right = rng.betavariate(alpha, beta) if intra_case_correlation > 0.0 else accuracy
             for _ in range(repeats):
                 predicted = expected if rng.random() < right else rng.choice(others)
-                counts[(expected, predicted)] = counts.get((expected, predicted), 0) + 1
-    return [
-        ConfusionCount(expected=expected, predicted=predicted, count=count)
-        for (expected, predicted), count in sorted(counts.items())
-    ]
+                observations.append((confusion_cell(expected, predicted), case))
+    return observations
 
 
 def draw_rater_pairs(

@@ -27,6 +27,7 @@ def test_on_a_ratio_scale_relative_change_is_the_ratio() -> None:
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason=(
         "#601 finding: the delta table states a 1-5 judged score's movement as relative change, which an interval "
         "scale does not support: the same one-point rise reads +50% from 2 to 3 and +25% from 4 to 5, and "

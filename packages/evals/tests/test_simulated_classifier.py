@@ -1,9 +1,10 @@
 """A classifier's per-label precision, recall and F1, and their intervals, checked against a known truth (#601).
 
-:func:`~threetears.evals.analysis.confusion.label_statistics` counts each label's precision and recall off
-the confusion matrix and bounds each with a Wilson interval labelled 95%; the analysis bundle and the run
-summary both read them from there. The matrix counts EVERY observation — each repeat of each case — so
-the interval treats ``cases × k`` answers as that many independent trials.
+:func:`~threetears.evals.analysis.confusion.label_statistics` counts each label's precision and recall from
+a classifier's observations, each tagged with its case, and bounds each with an interval labelled 95%; the
+analysis bundle and the run summary both read them from there. With one answer per case that is the Wilson
+interval; where repeats of a case recur, it is the cluster-aware one
+(:func:`~threetears.evals.analysis.stats.proportion_interval`, #590), which counts cases rather than repeats.
 
 Checked here:
 
@@ -22,15 +23,16 @@ import random
 
 import pytest
 
-from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics, label_statistics
+from threetears.evals.analysis.confusion import LabelStatistics, label_statistics
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
+from threetears.evals.contracts.metrics import confusion_cell
 from packages.evals.tests.simulation_support import at_least, draw_confusion
 
 _LABELS = ("negative", "neutral", "positive")
 
 
-def _one_label(matrix: list[ConfusionCount], label: str = "negative") -> LabelStatistics:
-    (statistics,) = [entry for entry in label_statistics(matrix) if entry.label == label]
+def _one_label(observations: list[tuple[str, str]], label: str = "negative") -> LabelStatistics:
+    (statistics,) = [entry for entry in label_statistics(observations) if entry.label == label]
     return statistics
 
 
@@ -44,18 +46,14 @@ class TestOneAnswerPerCase:
         coverage oscillates with ``p``, so the criterion is the mean over ``p`` in 0.01..0.99 (Brown, Cai &
         DasGupta 2001), held to within one point of 95%.
 
-        One matrix serves both statistics: ``x`` answers right and ``n - x`` swapped each way, so the label's
-        recall and its precision are both ``x / n``.
+        One set of observations serves both statistics: ``x`` answers right and ``n - x`` swapped each way,
+        so the label's recall and its precision are both ``x / n``. Every answer is its own case.
         """
         intervals = {}
         for x in range(n + 1):
-            matrix = [ConfusionCount(expected="negative", predicted="negative", count=x)] if x else []
-            if n - x:
-                matrix += [
-                    ConfusionCount(expected="negative", predicted="positive", count=n - x),
-                    ConfusionCount(expected="positive", predicted="negative", count=n - x),
-                ]
-            statistics = _one_label(matrix)
+            pairs = [("negative", "negative")] * x + [("negative", "positive"), ("positive", "negative")] * (n - x)
+            observations = [(confusion_cell(*pair), f"case-{index}") for index, pair in enumerate(pairs)]
+            statistics = _one_label(observations)
             assert statistics.recall_interval == statistics.precision_interval
             assert statistics.recall_interval is not None
             intervals[x] = statistics.recall_interval
@@ -142,17 +140,11 @@ class TestRepeatsOfACase:
         ("cases_per_label", "repeats", "correlation"),
         [(3, 3, 0.5), (5, 3, 0.5), (5, 5, 0.5), (5, 3, 0.2)],
     )
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "#601 finding: a label's recall interval counts every repeat as an independent trial. With repeats "
-            "of a case correlated 0.5, measured coverage of the true recall: 0.85 (3 cases a label, k=3), 0.86 "
-            "(5, k=3), 0.76 (5, k=5); at correlation 0.2, 0.91 (5, k=3); nominal 0.95."
-        ),
-    )
     def test_recall_over_repeats_covers_at_nominal(
         self, cases_per_label: int, repeats: int, correlation: float
     ) -> None:
+        """Recall's answers all come from the label's own few cases, so clustering bites hardest here. Counting
+        every repeat as a trial covered 0.76-0.91 (#601); the cluster-aware interval (#590) covers 0.99."""
         recall, _ = _coverage(
             f"classifier-recall-{cases_per_label}-{repeats}-{correlation}",
             cases_per_label=cases_per_label,
@@ -162,14 +154,8 @@ class TestRepeatsOfACase:
         )
         assert recall >= at_least(INTERVAL_LEVEL, _REPLICATES), f"recall coverage {recall:.4f}"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "#601 finding: a label's precision interval counts every repeat as an independent trial. With 5 "
-            "cases a label, k=5 and repeats correlated 0.5, measured coverage of the true precision 0.90; nominal 0.95."
-        ),
-    )
     def test_precision_over_many_repeats_covers_at_nominal(self) -> None:
+        """At k = 5 counting repeats as trials covered 0.90 (#601); the cluster-aware interval covers 0.996."""
         _, precision = _coverage(
             "classifier-precision-5-5",
             cases_per_label=5,
@@ -183,8 +169,10 @@ class TestRepeatsOfACase:
 def test_precision_recall_and_f1_converge_on_the_truth() -> None:
     """Over 4,000 cases a label the three statistics sit on the true 0.8 (each SE about 0.006: 4 SE is 0.025)."""
     rng = random.Random("classifier-consistent")
-    matrix = draw_confusion(rng, _LABELS, cases_per_label=4000, repeats=1, accuracy=0.8, intra_case_correlation=0.3)
-    for statistics in label_statistics(matrix):
+    observations = draw_confusion(
+        rng, _LABELS, cases_per_label=4000, repeats=1, accuracy=0.8, intra_case_correlation=0.3
+    )
+    for statistics in label_statistics(observations):
         assert statistics.precision is not None and statistics.recall is not None and statistics.f1 is not None
         for value in (statistics.precision, statistics.recall, statistics.f1):
             assert abs(value - 0.8) <= 0.025, f"{statistics.label}: {value:.4f} against 0.8"

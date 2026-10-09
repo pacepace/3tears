@@ -141,6 +141,7 @@ class TestNoDifferenceIsCalledAtAlpha:
     )
     @pytest.mark.xfail(
         strict=True,
+        raises=AssertionError,
         reason=(
             "#601 finding: Welch's test (the unpaired fallback when arms share < 2 cases) runs above alpha when one "
             "side has 2-3 cases and the other many: false-positive rate 0.097 (2 vs 10 cases, equal SD), 0.117 (2 vs 10, small "
@@ -271,6 +272,7 @@ class TestTheEffectSize:
     @pytest.mark.parametrize(("label", "n_a", "n_b", "paired"), _BIASED_DESIGNS, ids=[d[0] for d in _BIASED_DESIGNS])
     @pytest.mark.xfail(
         strict=True,
+        raises=AssertionError,
         reason=(
             "#601 finding: the reported Cohen's d is the uncorrected sample estimator, biased upward at the engine's "
             "sample sizes. Measured mean d for a true 0.5: paired 3 cases 0.88 (+77%), 5 cases 0.65 (+30%), "

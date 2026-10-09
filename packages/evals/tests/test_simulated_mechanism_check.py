@@ -122,6 +122,7 @@ def test_three_cases_a_level_read_moved_at_most_alpha() -> None:
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason=(
         "#601 finding: the mechanism check counts a zero-spread gap as separated at any case count. With 2 cases a "
         "level and a 0/1 mechanism under an inert lever, both cases shifting by the same ±1 is 2 of 16 equally "
