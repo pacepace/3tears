@@ -34,6 +34,7 @@ a provider the engine assumed.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
@@ -411,7 +412,7 @@ class RoleUsageLedger:
                     prompt_tokens=totals.prompt_tokens,
                     completion_tokens=totals.completion_tokens,
                     reasoning_tokens=totals.reasoning_tokens,
-                    cost_usd=round(totals.cost_usd, 6) if totals.cost_observed and not totals.cost_unpriced else None,
+                    cost_usd=totals.cost_usd if totals.cost_observed and not totals.cost_unpriced else None,
                     price_source=price_source if totals.cost_observed and not totals.cost_unpriced else None,
                     call_count=totals.call_count,
                     provider=provider,
@@ -504,12 +505,12 @@ def blended_cost(usage: list[RoleUsage], cost_roles: Collection[UsageRole]) -> f
         cost_roles: The roles the total sums (``EvalResult.cost_roles``).
 
     Returns:
-        The total, rounded to six places, or ``None`` when a model call in those roles went unpriced.
+        The total at full float precision, or ``None`` when a model call in those roles went unpriced.
     """
     rows = [row for row in usage if row.role in cost_roles]
     if any(row.cost_usd is None and row.role != "external" for row in rows):
         return None
-    return round(sum(row.cost_usd for row in rows if row.cost_usd is not None), 6)
+    return math.fsum(row.cost_usd for row in rows if row.cost_usd is not None)
 
 
 def cell_cost(
@@ -551,7 +552,7 @@ def cell_cost(
 def _sum_costs(rows: list[RoleUsage]) -> float | None:
     """Total the observed costs, or ``None`` when no row observed one."""
     observed = [row.cost_usd for row in rows if row.cost_usd is not None]
-    return round(sum(observed), 6) if observed else None
+    return math.fsum(observed) if observed else None
 
 
 def production_replicating_cost(usage: list[RoleUsage], *, substituted_deliveries: int) -> float | None:
