@@ -229,7 +229,7 @@ def _bundle(
                 )
             ],
             control=resolve_variant_identity(run=control, profile=profile).variant_key,
-            controls=ControlDeclaration(stimulus="controlled", apparatus="witnessed"),
+            held_fixed=ControlDeclaration(stimulus="controlled", apparatus="witnessed"),
             declared_at="2026-03-14T09:30:00+00:00",
         )
     campaign = EvalCampaign(

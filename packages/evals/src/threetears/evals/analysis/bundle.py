@@ -46,7 +46,7 @@ from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, S
 from dataclasses import dataclass
 from functools import partial
 from itertools import chain
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple, Protocol
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -1345,15 +1345,15 @@ class RunSummary(EvalDocumentModel):
 
 
 class LeverCoverageInput(EvalDocumentModel):
-    """Structural coverage of one lever — the raw material the generator grades.
+    """Structural coverage of one lever, as the bundle computes it.
 
-    This is *input* to generation, not the final graded
+    The generator copies it, field for field, into the stored
     :class:`~threetears.evals.contracts.campaign.LeverCoverage`: it reports how finely a
     lever was swept (``cells`` = distinct observed levels), how many samples inform
     it (``n`` = distinct results), the repeat floor (``k``), a scored-signal spread
     (``dispersion``, the composite SEM read via the core ``stats`` helper — never a
-    new statistic), and a coarse ``status``. The generator refines confidence from
-    these facts; carrying them is what makes coverage the analysis's spine.
+    new statistic), and a coarse ``status``. Nothing grades these into a confidence:
+    carrying them is what makes coverage the analysis's spine.
     """
 
     name: str = Field(description="Lever name — a dotted factor key or 'model'.")
@@ -1428,7 +1428,7 @@ class TelemetryRollup(EvalDocumentModel):
     )
 
 
-class ControlsReading(EvalDocumentModel):
+class HeldFixedReading(EvalDocumentModel):
     """What the campaign declared held still, beside what its runs say about the apparatus.
 
     The declaration (:class:`~threetears.evals.contracts.declaration.ControlDeclaration`) is a claim
@@ -1843,7 +1843,12 @@ class AnalysisContextBundle(EvalDocumentModel):
     completeness record has not finished, or had its record's write refused, rather than having
     delivered everything — absence is not zero, and reporting unknown as complete re-commits the
     error one layer down.
+
+    ``held_fixed_reading`` was ``controls_reading`` until the declaration's ``controls`` was renamed
+    ``held_fixed``; a frozen bundle (a reporter case's) carrying the old key reads it under the new one.
     """
+
+    __retired_fields__: ClassVar[dict[str, str | None]] = {"controls_reading": "held_fixed_reading"}
 
     # The bundle's shape version. It reaches `fingerprint()`, so bump it whenever a fingerprinted
     # field is added, renamed or removed — and whenever a change moves a fingerprinted VALUE over
@@ -2040,10 +2045,10 @@ class AnalysisContextBundle(EvalDocumentModel):
             "or latency to read. None when every cell delivered a result."
         ),
     )
-    controls_reading: ControlsReading = Field(
-        default_factory=ControlsReading,
+    held_fixed_reading: HeldFixedReading = Field(
+        default_factory=HeldFixedReading,
         description=(
-            "The declared controls beside the provenance every resolved run recorded, compared value for value, "
+            "What the campaign declared held fixed beside the provenance every resolved run recorded, compared value for value, "
             "with the sentence to quote when they disagree, when runs mix commissioned and witnessed apparatus "
             "with nothing declared, or when the stimulus was declared uncontrolled. Commissioned and witnessed "
             "observations never share a cell, so a mixed campaign has separate cells for them."
@@ -2164,7 +2169,7 @@ class AnalysisContextBundle(EvalDocumentModel):
             "disjoint, and otherwise counts the disjoint pairs against the total and names the "
             "overlapping remainder. It also names each disjoint pair's gap magnitude, widest first. "
             "None when every pair overlaps or too few runs resolved a span. Built by the same helper "
-            "compare_runs banners from, on the same predicate, and listing every span rather than "
+            "runs_compare discloses from, on the same predicate, and listing every span rather than "
             "collapsing above the inline cap: the reader here cannot go and fetch the omitted ones. "
             "The PAIR list can still truncate — pairs grow quadratically where spans grow linearly — "
             "and says how many it did not name."
@@ -6265,7 +6270,7 @@ def assemble_context_bundle(
         observations, {c.apparatus_class_id: c for c in apparatus_classes.values()}
     )
 
-    # Only the runs that RESOLVED a span contribute, exactly as compare_runs does: a run
+    # Only the runs that RESOLVED a span contribute, exactly as runs_compare's do: a run
     # that produced nothing cannot say when it was measured, and letting that absence count
     # would report a difference on the strength of what one run could not say.
     # Sorted once, here, so the bundle's structured spans and the sentence rendered from them
@@ -6325,7 +6330,7 @@ def assemble_context_bundle(
         # one layer down.
         completeness_unknown_run_ids=[run.id for run in runs if run.completeness is None],
         short_cells=_short_cells(cells, campaign.declared_design),
-        controls_reading=_controls_reading(runs, campaign.declared_design),
+        held_fixed_reading=_held_fixed_reading(runs, campaign.declared_design),
         # ``full`` because this bundle's reader is a model that cannot go and look:
         # above the inline cap the collapsed form names two spans and says where to
         # get the rest, which is an instruction only a human at a terminal can follow.
@@ -7060,8 +7065,8 @@ def _all_failed(cells: list[CellFacts]) -> tuple[list[CellCoordinate], str | Non
     return failed, all_failed_sentence(len(failed), len(cells))
 
 
-def _controls_reading(runs: list[EvalRun], design: CampaignDesign | None) -> ControlsReading:
-    """Compare the declared controls with the provenance every resolved run recorded.
+def _held_fixed_reading(runs: list[EvalRun], design: CampaignDesign | None) -> HeldFixedReading:
+    """Compare what the campaign declared held fixed with the provenance every resolved run recorded.
 
     Args:
         runs: The resolved member runs.
@@ -7073,8 +7078,8 @@ def _controls_reading(runs: list[EvalRun], design: CampaignDesign | None) -> Con
         add their own sentence, and none of them adds one that did not happen.
     """
     provenance = {run.id: run.apparatus_provenance for run in sorted(runs, key=lambda r: r.id)}
-    controls = design.controls if design is not None else None
-    declared = controls.apparatus if controls is not None else None
+    held_fixed = design.held_fixed if design is not None else None
+    declared = held_fixed.apparatus if held_fixed is not None else None
     contradicting = sorted(run_id for run_id, found in provenance.items() if declared is not None and found != declared)
     sentences = []
     if contradicting:
@@ -7086,14 +7091,14 @@ def _controls_reading(runs: list[EvalRun], design: CampaignDesign | None) -> Con
         )
     elif declared is None and len(set(provenance.values())) > 1:
         sentences.append(
-            "This campaign declares no controls, and its runs mix commissioned and witnessed apparatus; the two "
+            "This campaign declares nothing held fixed, and its runs mix commissioned and witnessed apparatus; the two "
             "never share a cell, so an arm measured both ways is reported as two cells."
         )
-    if controls is not None and controls.stimulus == "uncontrolled":
-        sentences.append(f"The stimulus was not held fixed: {controls.stimulus_reason.strip()}")
-    return ControlsReading(
-        declared_stimulus=controls.stimulus if controls is not None else None,
-        stimulus_reason=controls.stimulus_reason if controls is not None else "",
+    if held_fixed is not None and held_fixed.stimulus == "uncontrolled":
+        sentences.append(f"The stimulus was not held fixed: {held_fixed.stimulus_reason.strip()}")
+    return HeldFixedReading(
+        declared_stimulus=held_fixed.stimulus if held_fixed is not None else None,
+        stimulus_reason=held_fixed.stimulus_reason if held_fixed is not None else "",
         declared_apparatus=declared,
         run_provenance=provenance,
         contradicting_run_ids=contradicting,

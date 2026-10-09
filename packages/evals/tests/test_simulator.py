@@ -610,3 +610,12 @@ def test_the_simulator_asks_for_its_reasoning_by_effort_under_a_derived_cap() ->
     assert SIMULATOR_REQUEST_SETTINGS.reasoning_max_tokens is None
     assert SIMULATOR_REQUEST_SETTINGS.max_tokens == SIMULATOR_MAX_TOKENS
     assert SIMULATOR_MAX_TOKENS == SIMULATOR_REASONING_ALLOWANCE_TOKENS + SIMULATOR_ANSWER_BUDGET_TOKENS
+
+
+def test_a_candidate_turn_carries_only_what_the_simulator_reads():
+    """The reply's words are all the driver reads; a field it never read invited tool calls nobody would see."""
+    from dataclasses import fields
+
+    assert [field.name for field in fields(CandidateTurn)] == ["content"]
+    with pytest.raises(TypeError, match="actions"):
+        CandidateTurn(content="done", actions=[{"tool": "search"}])  # type: ignore[call-arg]

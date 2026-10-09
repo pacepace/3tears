@@ -306,7 +306,7 @@ def degraded_run_disclosures(runs: Iterable[EvalRun]) -> dict[str, str]:
 
     The seam the *pooling* surfaces read. :func:`completeness_disclosure` answers
     about one run, and the run-scoped surfaces (``get_run``, ``run_summary``,
-    ``compare_runs``) each call it for the run they are about. An aggregator has
+    ``runs_compare``) each call it for the run they are about. An aggregator has
     no such run: it pools dozens into a rate, and every one of them was silently
     admitted because nothing had asked the question over a *set*. This asks it
     once, so ``frontier``, ``results_pivot`` and ``history`` cannot come to
@@ -2976,7 +2976,7 @@ class PivotTable(EvalBaseModel):
     #: so a cheaper cell may only have priced fewer things; each cell's ``cost_compositions`` says which.
     cost_compositions_differ: bool = False
     #: The sentence a comparison carries when its runs recorded different cassette modes
-    #: (:func:`cassette_mode_disclosure`, the words ``compare_runs`` and ``comparison_sets`` use), over the
+    #: (:func:`cassette_mode_disclosure`, the words ``runs_compare`` and ``comparison_sets`` use), over the
     #: runs behind this table's observations, or ``None`` when they all recorded one (#658). It qualifies
     #: every metric, not only cost: a replayed arm was also measured on the questions its capture asked.
     cassette_mode_disclosure: str | None = None

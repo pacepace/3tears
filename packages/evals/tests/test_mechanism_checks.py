@@ -680,7 +680,7 @@ def _three_model_design() -> CampaignDesign:
             )
         ],
         control=control,
-        controls=ControlDeclaration(stimulus="controlled", apparatus="witnessed"),
+        held_fixed=ControlDeclaration(stimulus="controlled", apparatus="witnessed"),
         declared_at="2026-03-14T09:30:00+00:00",
     )
 

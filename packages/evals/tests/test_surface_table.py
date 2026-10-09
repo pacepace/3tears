@@ -204,7 +204,7 @@ def analysis(surface: DecisionSurface, **overrides) -> EvalAnalysis:
         "design_snapshot": CampaignDesign(
             axes=[SweptAxis(axis_id=AXIS, values=[level(CANDIDATE), level(INCUMBENT)])],
             control=key(INCUMBENT),
-            controls=ControlDeclaration(stimulus="controlled", apparatus="commissioned"),
+            held_fixed=ControlDeclaration(stimulus="controlled", apparatus="commissioned"),
         ),
         "variant_index": [entry(CANDIDATE), entry(INCUMBENT)],
         "decision_surface": surface,
@@ -282,7 +282,7 @@ def _four_arm_analysis(*, control: str | None = "model-z-incumbent") -> EvalAnal
     design = CampaignDesign(
         axes=[SweptAxis(axis_id=AXIS, values=[level(model) for model in models])],
         control=key(control) if control else None,
-        controls=ControlDeclaration(stimulus="controlled", apparatus="commissioned"),
+        held_fixed=ControlDeclaration(stimulus="controlled", apparatus="commissioned"),
     )
     return analysis(surface, design_snapshot=design, variant_index=[entry(model) for model in models])
 

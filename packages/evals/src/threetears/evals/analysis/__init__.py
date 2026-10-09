@@ -27,7 +27,7 @@ not here. The pipeline:
   inspecting bundles, reading an analysis as its report, the insight ledger, and the reporter cases.
 - ``reads`` — the read lenses over runs that already exist: comparison sets, pivot, frontier,
   history, the program budget, orphaned runs, export, the cost estimate, the run summary and the
-  run comparisons.
+  two-run comparison (``compare_two_runs``, which ``ops.runs_compare`` exposes).
 
 **This module is the package's public root.** A host imports from here and from no module below
 it, and only the names in ``__all__``; ``tests/test_package_matrix.py`` holds that, and
@@ -90,8 +90,6 @@ from threetears.evals.analysis.generator import (
 )
 from threetears.evals.analysis.numbers import ABSENT, format_number, format_signed
 from threetears.evals.analysis.reads import (
-    bisect_runs,
-    compare_runs,
     compare_two_runs,
     comparison_sets,
     export_results,
@@ -199,7 +197,7 @@ from threetears.evals.analysis.bundle import (
     ComparisonFamily,
     ComparisonVerdict,
     Confound,
-    ControlsReading,
+    HeldFixedReading,
     DesignArm,
     FamilyComparison,
     JudgedArm,
@@ -224,7 +222,7 @@ from threetears.evals.analysis.campaigns import CampaignStore, OpenAxisFamily
 from threetears.evals.analysis.cells import Cell, NextExperiment, RefusedMerge, SubjectKeyInstability
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal
 from threetears.evals.analysis.generator import GenerationTally
-from threetears.evals.analysis.reads import ComparisonColumns, LensStore, RowColumns, RunLister
+from threetears.evals.analysis.reads import LensStore, RowColumns, RunLister
 from threetears.evals.analysis.reporter_bank import (
     CalibrationCase,
     CalibrationCell,
@@ -346,14 +344,13 @@ __all__ = [
     "CellCoordinate",
     "ChangeLabel",
     "ComparedCell",
-    "ComparisonColumns",
     "ComparisonFamily",
     "ComparisonSet",
     "ComparisonSetsResult",
     "ComparisonVerdict",
     "Confound",
     "ConfusionCount",
-    "ControlsReading",
+    "HeldFixedReading",
     "CriterionDrift",
     "DeclarableAxes",
     "DesignArm",
@@ -452,9 +449,7 @@ __all__ = [
     "campaign_report",
     "analysis_gen_request_settings_for",
     "assemble_context_bundle",
-    "bisect_runs",
     "cell_label",
-    "compare_runs",
     "compare_two_runs",
     "comparison_sets",
     "completeness_disclosure",  # debt: retires when the English moves to one renderer

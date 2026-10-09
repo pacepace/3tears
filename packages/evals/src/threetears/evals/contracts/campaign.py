@@ -23,11 +23,11 @@ so it can never drift from the runs it summarises.
 from __future__ import annotations
 
 import uuid
-from typing import Annotated, Any, Literal, Self, TypeVar
+from typing import Annotated, Any, ClassVar, Literal, Self, TypeVar, get_args
 
 from pydantic import BeforeValidator, Field, ValidationInfo, computed_field, field_validator, model_validator
 
-from threetears.evals.contracts.authored import AuthoredAnalysis
+from threetears.evals.contracts.authored import AuthoredAnalysis, Confidence
 from threetears.evals.contracts.declaration import CampaignDesign
 from threetears.evals.contracts.evidence_tiers import JudgedEvidenceTier, JudgedTierRule, weakest_judged_tier
 from threetears.evals.contracts.host.values import SweepableValue
@@ -82,7 +82,8 @@ def _coerce_null_list(value: Any, info: ValidationInfo) -> Any:
 
 _LLMList = Annotated[list[_T], BeforeValidator(_coerce_null_list)]
 
-#: How firmly the evidence settles a claim, as a qualitative tier.
+#: How firmly the evidence settles a claim, as a qualitative tier — the tier a stored finding or
+#: decision carries.
 #:
 #: A tier, not a probability: the reporter is a language model with no calibration behind a
 #: number, and a "0.72" typed by one reads with the authority of a computed figure while nothing
@@ -90,10 +91,14 @@ _LLMList = Annotated[list[_T], BeforeValidator(_coerce_null_list)]
 #: direction the evidence supports, never asserted at a sub-coin-toss confidence. The tiers
 #: name four affirmative bands (``very_high`` ≈ firm, ``high`` ≈ leaning, ``medium`` ≈ tentative,
 #: ``low`` ≈ doubtful).
-ConfidenceTier = Literal["very_high", "high", "medium", "low"]
+#:
+#: The SAME declaration the writer authors against (:data:`~threetears.evals.contracts.authored.Confidence`),
+#: not a second one: what the writer may author and what a stored analysis may hold are one set, so a
+#: tier added to one is a tier of the other.
+ConfidenceTier = Confidence
 
 #: The tiers, strongest first — the order a surface ranks by.
-CONFIDENCE_TIERS: tuple[ConfidenceTier, ...] = ("very_high", "high", "medium", "low")
+CONFIDENCE_TIERS: tuple[ConfidenceTier, ...] = get_args(Confidence)
 
 
 _CONFIDENCE_TIER_DESCRIPTION = "How firmly the evidence settles the claim: very_high | high | medium | low."
@@ -156,6 +161,12 @@ class CampaignWindow(EvalDocumentModel):
 class EvalCampaign(EvalDocumentModel):
     """A curated set of eval runs under one subject×behavior — the analysis hub.
 
+    A campaign has no open/closed status. ``status`` was retired within schema v8: nothing could
+    change it after creation and nothing enforced it — runs were added to, and analyses generated
+    over, a ``closed`` campaign alike — so it was a label that read as frozen membership while
+    freezing nothing. A stored campaign carrying it loads with it discarded. ``archived`` is the
+    lifecycle a campaign has.
+
     Lives in one ``scope_id``, and so do its member runs: a run in another scope is
     refused at attachment (:mod:`threetears.evals.analysis.campaigns`), because every
     read of a campaign's members is a read within one scope. Membership (``run_ids``)
@@ -186,6 +197,8 @@ class EvalCampaign(EvalDocumentModel):
     resolves through whichever observation carries it — and nothing on this model is
     a pointer at a run whose deletion could dangle it.
     """
+
+    __retired_fields__: ClassVar[dict[str, str | None]] = {"status": None}
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["eval_campaign"] = "eval_campaign"
@@ -226,7 +239,6 @@ class EvalCampaign(EvalDocumentModel):
             "that declared nothing are still analysable."
         ),
     )
-    status: Literal["open", "closed"] = Field(default="open")
     archived: bool = Field(default=False)
     created_at: str = Field(default_factory=utc_now_iso)
     created_by: str = Field(
@@ -403,7 +415,15 @@ class LeverCoverage(EvalDocumentModel):
     ``n`` and ``dispersion`` are REQUIRED (no default): a point estimate rendered
     without its sample size and spread is a rendering bug, so the model
     refuses to construct one that omits them.
+
+    It carries no confidence. ``confidence`` was retired within schema v8: it was a fixed lookup on
+    ``status`` (measured → high, thin → medium, unswept → low), so it said nothing ``status`` does not,
+    while reading as a confidence in the lever's estimate — an unswept lever, which nothing measured, read
+    as "low confidence" in a measurement that does not exist. How firmly a reading stands is the evidence
+    tier on the reading itself. A stored analysis carrying the key reads with it discarded.
     """
+
+    __retired_fields__: ClassVar[dict[str, str | None]] = {"confidence": None}
 
     name: str = Field(min_length=1, description="Lever name, as its host declares it, e.g. 'search.model'.")
     cells: int = Field(ge=0, description="Number of matrix cells measured for this lever.")
@@ -419,7 +439,6 @@ class LeverCoverage(EvalDocumentModel):
     n: int = Field(ge=0, description="Total samples behind the estimate (REQUIRED — no point estimate without it).")
     dispersion: str = Field(description="Spread of the estimate (REQUIRED — no point estimate without it).")
     status: Literal["measured", "thin", "unswept"] = Field(description="Coverage status for this lever.")
-    confidence: ConfidenceTier = Field(description=_CONFIDENCE_TIER_DESCRIPTION)
 
 
 class CoverageLens(EvalDocumentModel):

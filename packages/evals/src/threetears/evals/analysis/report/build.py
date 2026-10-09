@@ -1410,7 +1410,7 @@ def _evidence_disclosures(bundle: AnalysisContextBundle) -> list[ReportBlock]:
     for proof in bundle.goal_check_proofs:
         if proof.proof != "proven":
             say("measurement", _unproven_check_sentence(proof))
-    say("apparatus", bundle.controls_reading.disclosure)
+    say("apparatus", bundle.held_fixed_reading.disclosure)
     if bundle.apparatus_confounds:
         say(
             "apparatus",

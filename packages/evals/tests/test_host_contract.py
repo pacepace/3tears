@@ -23,7 +23,7 @@ Profiles and observations are really constructed; nothing here is mocked.
 from __future__ import annotations
 
 import ast
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 from typing import Any, get_args
 
@@ -373,7 +373,7 @@ def test_the_only_style_text_reaching_a_prompt_is_an_engine_owned_fragment():
     one fails when the seam grows a second door, that one would fail when something comes through it.
 
     This repo has proven prose becomes instruction. The toy host's style differs from the default
-    on every axis — register, locale and palette — so if any of
+    on every axis — register and palette — so if any of
     it could leak, this profile is what would show it.
 
     ``tone_register`` is the one field that reaches a prompt, and it reaches it as an
@@ -385,10 +385,10 @@ def test_the_only_style_text_reaching_a_prompt_is_an_engine_owned_fragment():
     fragment = style_module.prompt_fragment(toy.style)
 
     # The engine-owned fragments, read through the one public door: a default profile per register.
-    # A fragment that folded in anything the toy host wrote (its locale, its palette) would match none.
+    # A fragment that folded in anything the toy host wrote (its palette) would match none.
     owned = {style_module.prompt_fragment(StyleProfile(tone_register=register)) for register in get_args(ToneRegister)}
     assert fragment in owned
-    # Walks whatever the host actually supplied — its locale and every colour of its palette — rather
+    # Walks whatever the host actually supplied — every colour of its palette — rather
     # than the few values a hand-written assertion happens to know about.
     style_module.assert_no_style_text(fragment, toy.style)
 
@@ -403,8 +403,9 @@ def test_style_has_no_free_text_field_a_prompt_could_read():
     toy = toyhost_profile()
 
     assert toy.style.tone_register in get_args(ToneRegister)
-    # `locale` is the only bare string, and it is a BCP47 tag the renderer parses — never prompt text.
-    assert toy.style.locale not in style_module.prompt_fragment(toy.style)
+    # The enum, the palette and the font are the whole contract: no bare string a host could fill (a font's family
+    # is held to a bounded CSS family shape when it is built), and no slot nothing reads.
+    assert {field.name for field in fields(StyleProfile)} == {"tone_register", "chart_palette", "chart_font"}
 
 
 def test_a_campaign_bar_looser_than_the_registered_one_is_refused_quoting_the_incumbent():
@@ -709,19 +710,14 @@ def test_a_proposal_with_no_rationale_is_refused_like_a_registered_bar_with_none
         )
 
 
-def test_a_locale_that_is_a_sentence_is_refused():
-    """The one non-enum field in a contract whose headline promise is that it carries no free text.
+def test_style_declares_no_locale_because_nothing_formats_by_one():
+    """A field that claims to change formatting and changes nothing is worse than no field.
 
-    ``locale`` is a ``str``, so without a shape check it is the hole a tone instruction fits
-    through — and a promise with one untyped hole is the shape a reviewer stops checking.
+    No renderer and no number formatter reads a locale, so a host that declared ``de-DE`` got reports
+    formatted as ``en-US`` with nothing telling it so. The slot comes back with the code that honours it.
     """
-    with pytest.raises(StyleError):
-        StyleProfile(locale="Write this in a breezy, upbeat tone")
-
-    # The shape it does accept stays accepted — a check that refuses valid tags is a check that
-    # gets deleted.
-    assert StyleProfile(locale="en-GB").locale == "en-GB"
-    assert StyleProfile(locale="zh-Hant-TW").locale == "zh-Hant-TW"
+    with pytest.raises(TypeError, match="locale"):
+        StyleProfile(locale="de-DE")  # type: ignore[call-arg]
 
 
 def test_the_purity_check_walks_every_colour_the_host_declared():

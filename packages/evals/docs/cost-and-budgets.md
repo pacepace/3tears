@@ -160,9 +160,9 @@ each cell names the role sets its dollars were summed over (`cost_compositions`)
 `cost_compositions_differ` when they are not all one set: a cheaper cell may only have priced fewer things.
 A cell that pools results from a run that replayed its third party with results from a live run is
 `withheld` with the reason, because the mean of the two is neither one's spend; put `cassette_mode` on an
-axis to read each alone. The table carries the same cassette-mode sentence `compare_runs` does, and the export
-carries `cassette_mode`, `substituted_deliveries` and `cost_roles` as columns. `compare_runs` names each
-row's compositions the same way.
+axis to read each alone. The table carries the same cassette-mode sentence `runs_compare` does, and the export
+carries `cassette_mode`, `substituted_deliveries` and `cost_roles` as columns. `runs_compare` states no
+dollars, so it has no compositions to name.
 
 **Unpriced is a state, never zero.** A call your client could not price (a local model, say), or
 background work's paid calls that report no `money` and that a run with declared rates has no rate

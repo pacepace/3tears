@@ -107,7 +107,6 @@ from threetears.evals.contracts.authored import Chart as AuthoredChart
 from threetears.evals.contracts.authored import Finding as AuthoredFinding
 from threetears.evals.contracts.campaign import (
     ENGINE_CAVEAT_KINDS,
-    ConfidenceTier,
     CoverageLens,
     EvalAnalysis,
     EvalInsight,
@@ -201,16 +200,6 @@ def generation_ceiling_s(*, request_s: RequestCeiling, generator_max_tokens: int
     """
     return MAX_GENERATION_CALLS * request_s(generator_max_tokens)
 
-
-# A lever's coverage status maps to a starting confidence for its point estimate.
-# Coarse and deliberately conservative (this is a measurement-trust prior, refined
-# by the prompt-tunable findings, not a claim about the world): a well-swept,
-# replicated lever earns more trust than a single-level or thin one. Kept here (not
-# LLM-produced) so the coverage spine's confidence tracks the bundle's actual n/k,
-# never the model's optimism. A tier like every other confidence on new output, and
-# never `very_high`: a coverage status says how finely a lever was swept, which bounds
-# what can be known about it without establishing that anything was.
-_STATUS_CONFIDENCE: dict[str, ConfidenceTier] = {"measured": "high", "thin": "medium", "unswept": "low"}
 
 # How many measure columns the run-index table may carry. The measure name space is open
 # by construction — phase timings are `<tool>_<phase>_ms`, one per tool per phase — so
@@ -1398,9 +1387,9 @@ def _resolve(surface: DecisionSurface, ref: str, reading: ReadingRef, *, where: 
 def _lever_from_bundle(lever: LeverCoverageInput) -> LeverCoverage:
     """Promote a bundle coverage lever to an analysis lever — facts from the bundle.
 
-    n / dispersion / cells / k / status come verbatim from the bundle (never the
-    LLM), so a point estimate always carries its sample size and spread;
-    ``confidence`` is the status-derived measurement-trust prior.
+    Every field comes verbatim from the bundle (never the LLM), so a point estimate always carries its
+    sample size and spread. Nothing is added: a lever's coverage is how finely it was swept, and a
+    tier looked up from ``status`` would restate ``status`` while reading as a confidence.
     """
     return LeverCoverage(
         name=lever.name,
@@ -1409,7 +1398,6 @@ def _lever_from_bundle(lever: LeverCoverageInput) -> LeverCoverage:
         n=lever.n,
         dispersion=lever.dispersion,
         status=lever.status,
-        confidence=_STATUS_CONFIDENCE[lever.status],
     )
 
 

@@ -34,7 +34,7 @@ import uuid
 from collections.abc import Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
-from typing import TYPE_CHECKING, Any, Literal, get_args, get_origin
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
 
 from pydantic import BaseModel, Field, TypeAdapter, field_validator, model_validator
 
@@ -347,7 +347,7 @@ class ControlDeclaration(EvalDocumentModel):
             "commissioned = these observations were gathered deliberately under a declared rig. "
             "witnessed = they were found. The difference between an experiment and a log, and cells "
             "never pool across it. The same words every run records (`EvalRun.apparatus_provenance`), so the "
-            "bundle compares this declaration with what the runs say value for value (`controls_reading`)."
+            "bundle compares this declaration with what the runs say value for value (`held_fixed_reading`)."
         )
     )
 
@@ -380,7 +380,13 @@ class CampaignDesign(EvalDocumentModel):
     ``control`` is a **variant key**, not a run id. Curating the control *run* out of a campaign
     no longer destroys the design if another observation carries the same variant — a state that
     previously needed its own field because it was a live failure.
+
+    ``held_fixed`` says what held still while the campaign ran. It was named ``controls`` until it
+    was renamed within schema v8, because one letter apart from ``control`` it named a different
+    thing; a stored campaign or analysis carrying ``controls`` reads it as ``held_fixed``.
     """
+
+    __retired_fields__: ClassVar[dict[str, str | None]] = {"controls": "held_fixed"}
 
     axes: list[SweptAxis] = Field(
         min_length=1,
@@ -416,9 +422,8 @@ class CampaignDesign(EvalDocumentModel):
             "where the run carries more than one) and resolves the key here, the same shape a swept "
             "level is authored in. None = no control declared, and the analysis says so rather than "
             "electing one. NOT 'baseline', which is temporal: a control is contemporaneous, same "
-            "apparatus and same campaign. **Not the singular of `controls` below**, which is a "
-            "different concept sharing a root noun: this is WHICH CELL is the reference; that is "
-            "WHAT HELD STILL while the campaign ran."
+            "apparatus and same campaign. Not `held_fixed` below: this is WHICH CELL is the "
+            "reference; that is WHAT HELD STILL while the campaign ran."
         ),
     )
     intended_repetitions: int | None = Field(
@@ -433,14 +438,13 @@ class CampaignDesign(EvalDocumentModel):
             "which makes a shortfall undetectable rather than zero."
         ),
     )
-    controls: ControlDeclaration = Field(
+    held_fixed: ControlDeclaration = Field(
         description=(
             "What held still while the campaign ran — the stimulus, stated `controlled` or "
             "`uncontrolled`, and the apparatus, stated `commissioned` or `witnessed`; the two take "
             "different words and neither takes all four. Declared because an absent control is a fact "
-            "rather than a null. **Not the plural of `control` above**, which is a different concept sharing a root "
-            "noun: that names WHICH CELL is the reference point; this names WHAT WAS HELD STILL. A "
-            "campaign can declare either without the other."
+            "rather than a null. Not `control` above, which names WHICH CELL is the reference point; "
+            "this names WHAT WAS HELD STILL. A campaign can declare either without the other."
         )
     )
     merit_priority: list[MeritAxis] = Field(

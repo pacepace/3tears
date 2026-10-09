@@ -162,7 +162,7 @@ TOYHOST_BARS: tuple[Bar, ...] = (
 )
 
 #: A style deliberately unlike the default on every axis, so the prompt-purity test is asserting
-#: something: a different register, a different locale, a palette and a font of its own. If host style
+#: something: a different register, a palette and a font of its own. If host style
 #: could leak into the prompt, this profile is what would show it — and the palette is what a renderer
 #: built for this host draws in, so it is a palette no packaged one shares a colour with.
 TOYHOST_PALETTE = ChartPalette(
@@ -188,9 +188,7 @@ TOYHOST_FONT = ChartFont(
     fallback_advance=0.7,
 )
 
-TOYHOST_STYLE = StyleProfile(
-    tone_register="executive", locale="en-GB", chart_palette=TOYHOST_PALETTE, chart_font=TOYHOST_FONT
-)
+TOYHOST_STYLE = StyleProfile(tone_register="executive", chart_palette=TOYHOST_PALETTE, chart_font=TOYHOST_FONT)
 
 #: A caveat kind the ENGINE does not own, registered for the reason the two opposite-direction
 #: bars are registered: the four engine kinds were derived from one product's caveats, and a

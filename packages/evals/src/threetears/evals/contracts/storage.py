@@ -54,6 +54,7 @@ from threetears.evals.contracts.models import (
     EvalTestCase,
     EvalTrace,
     JudgeConfig,
+    RubricDimTombstone,
     eval_trace_doc_id,
 )
 from threetears.evals.contracts.out_of_run import OutOfRunPurpose, OutOfRunSpend, OutOfRunSpendStore
@@ -103,6 +104,7 @@ EVAL_DOC_TYPES = (
     "eval_template",
     "judge_config",
     "rubric_dim",
+    "rubric_dim_tombstone",
     "eval_campaign",
     "eval_analysis",
     "eval_analysis_attempt",
@@ -364,6 +366,14 @@ class DefinitionStore(Protocol):
 
     def delete_rubric_dim(self, dim_id: str, scope_id: str, /) -> bool:
         """See :meth:`EvalStorage.delete_rubric_dim`."""
+        ...
+
+    def save_rubric_dim_tombstone(self, tombstone: RubricDimTombstone, /) -> None:
+        """See :meth:`EvalStorage.save_rubric_dim_tombstone`."""
+        ...
+
+    def query_rubric_dim_tombstones(self, scope_id: str, /) -> list[RubricDimTombstone]:
+        """See :meth:`EvalStorage.query_rubric_dim_tombstones`."""
         ...
 
     def save_judge_config(self, config: JudgeConfig, /) -> None:
@@ -665,6 +675,17 @@ class EvalStorage:
         """Delete a catalog rubric dim by id within a scope."""
         return self._store.delete(dim_id, scope_id)
 
+    def save_rubric_dim_tombstone(self, tombstone: RubricDimTombstone) -> None:
+        """Persist the record that a rubric dim key was deleted, in the scope it names."""
+        self._save(tombstone.to_dict())
+
+    def query_rubric_dim_tombstones(self, scope_id: str) -> list[RubricDimTombstone]:
+        """Every rubric dim tombstone in a scope, newest first — the keys a seed must not write back."""
+        return self._hydrate_all(
+            RubricDimTombstone,
+            self._store.by_doc_type("rubric_dim_tombstone", scope_id, order_by="deleted_at", descending=True),
+        )
+
     # =========================================================================
     # EvalCampaign — the analysis hub
     # =========================================================================
@@ -683,12 +704,11 @@ class EvalStorage:
         *,
         subject_id: str | None = None,
         behavior: str | None = None,
-        status: str | None = None,
         archived: bool | None = None,
     ) -> list[EvalCampaign]:
         """Query campaigns in a scope, newest first.
 
-        ``subject_id`` / ``behavior`` / ``status`` / ``archived`` are optional
+        ``subject_id`` / ``behavior`` / ``archived`` are optional
         equality filters; all ``None`` returns every campaign in the scope.
         """
         field_eq: dict[str, Any] = {}
@@ -696,8 +716,6 @@ class EvalStorage:
             field_eq["subject_id"] = subject_id
         if behavior is not None:
             field_eq["behavior"] = behavior
-        if status is not None:
-            field_eq["status"] = status
         if archived is not None:
             field_eq["archived"] = archived
         items = self._store.by_doc_type("eval_campaign", scope_id, order_by="created_at", descending=True, **field_eq)

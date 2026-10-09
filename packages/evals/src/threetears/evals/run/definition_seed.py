@@ -47,6 +47,12 @@ Archiving is a decision; a seed must not overturn it. This module therefore prob
 archived-inclusive ``query_*`` methods and treats any record carrying the natural key,
 active or archived, as an occupied slot.
 
+**A deleted rubric dim stays deleted.** Deleting is a decision too, and a delete empties the slot,
+so on its own it would hand a seeded dim back to the next boot. ``delete_rubric_dim`` therefore
+leaves a :class:`~threetears.evals.contracts.models.RubricDimTombstone` for the key, and a
+tombstoned key is not written: it is reported under ``deleted``, by key, on every boot. (Templates
+and judge configs carry no tombstone yet; deleting a seeded one of those still empties its slot.)
+
 The seeder creates. It never updates and never deletes.
 
 Corpus files are the same create-ready shape the authoring paths accept — server-owned
@@ -180,6 +186,9 @@ class SeedOutcome:
     #: contradict, per doc type — today only a non-archived judge config for a dim the store has an
     #: active config for. Keys rather than a count, because the operator resolves each one.
     conflicted: dict[str, list[str]] = field(default_factory=dict)
+    #: Natural keys NOT written because an operator deleted them (a tombstone), per doc type — today
+    #: only rubric dims. Reported rather than counted as present: the slot is empty by decision.
+    deleted: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def total_created(self) -> int:
@@ -202,15 +211,22 @@ class SeedOutcome:
         return sum(len(keys) for keys in self.conflicted.values())
 
     @property
+    def total_deleted(self) -> int:
+        """Definitions withheld because an operator deleted their key."""
+        return sum(len(keys) for keys in self.deleted.values())
+
+    @property
     def nothing_to_do(self) -> bool:
         """True when the pass neither wrote, skipped, failed nor withheld anything.
 
         That is not the reassuring case it resembles: with a corpus present, every
-        definition is created, skipped, failed or withheld, so all-zero means the corpus itself was
+        definition is created, skipped, failed, withheld or deleted, so all-zero means the corpus itself was
         empty or unreachable — the state seeding exists to prevent, reported by the caller
         as a warning rather than the routine "already present" line.
         """
-        return not (self.total_created or self.total_skipped or self.total_failed or self.total_conflicted)
+        return not (
+            self.total_created or self.total_skipped or self.total_failed or self.total_conflicted or self.total_deleted
+        )
 
     def summary(self) -> str:
         """One operator-readable line naming every type, including the zeroes.
@@ -224,7 +240,9 @@ class SeedOutcome:
         if self.nothing_to_do:
             return "no definitions in the seed corpus"
         parts = []
-        for doc_type in sorted(set(self.created) | set(self.skipped) | set(self.failed) | set(self.conflicted)):
+        for doc_type in sorted(
+            set(self.created) | set(self.skipped) | set(self.failed) | set(self.conflicted) | set(self.deleted)
+        ):
             part = f"{doc_type}: {self.created.get(doc_type, 0)} created"
             if keys := self.created_keys.get(doc_type):
                 part += f" ({', '.join(keys)})"
@@ -233,6 +251,8 @@ class SeedOutcome:
                 part += f", {failed} REFUSED BY STORAGE"
             if conflicted := self.conflicted.get(doc_type):
                 part += f", {len(conflicted)} NOT WRITTEN, CONFLICTING WITH THE STORE ({', '.join(conflicted)})"
+            if deleted := self.deleted.get(doc_type):
+                part += f", {len(deleted)} not written, deleted by an operator ({', '.join(deleted)})"
             parts.append(part)
         return "; ".join(parts)
 
@@ -304,7 +324,8 @@ def seed_eval_definitions(
 
     Seeding semantics: empty slots only, the store is master once seeded. Occupancy is decided
     against the archived-inclusive queries, so a definition an operator archived stays
-    archived rather than being resurrected at the next boot.
+    archived rather than being resurrected at the next boot; and a rubric dim key an operator
+    deleted carries a tombstone, so it stays deleted and is reported under ``deleted``.
 
     Every template is first admitted through the gates ``create_template`` applies
     (:func:`~threetears.evals.run.authoring.admit_template`), all of them before any write, and is
@@ -330,8 +351,8 @@ def seed_eval_definitions(
         refuse_undeliverable_template: The host's kind-capability check, as ``create_template`` takes it.
 
     Returns:
-        Per-doc-type created, skipped and failed counts, the natural keys written, and the keys
-        withheld as conflicting with the store.
+        Per-doc-type created, skipped and failed counts, the natural keys written, the keys
+        withheld as conflicting with the store, and the keys withheld as deleted.
 
     Raises:
         ValidationFailedError: A corpus template fails a gate ``create_template`` applies. Raised
@@ -382,6 +403,7 @@ def seed_eval_definitions(
         {(d.key,) for d in storage.query_rubric_dims(corpus.scope_id)},
         lambda d: (d.key,),
         storage.save_rubric_dim,
+        deleted={(t.key,) for t in storage.query_rubric_dim_tombstones(corpus.scope_id)},
     )
     _seed_doc_type(
         outcome,
@@ -407,6 +429,7 @@ def _seed_doc_type[D](
     save: Callable[[D], None],
     *,
     conflicts: Callable[[D], bool] = lambda _definition: False,
+    deleted: set[tuple[str, ...]] | None = None,
 ) -> None:
     """Write one doc type's definitions into their empty slots, recording the counts on ``outcome``.
 
@@ -419,15 +442,21 @@ def _seed_doc_type[D](
         save: The storage write for this type.
         conflicts: Whether writing an unoccupied definition would contradict a live record; such a
             definition is not written and is recorded under ``conflicted``.
+        deleted: Natural keys an operator deleted (tombstoned); an unoccupied definition under one
+            is not written and is recorded under ``deleted``.
     """
     created_keys: list[str] = []
     conflicted: list[str] = []
+    withheld_deleted: list[str] = []
     skipped = failed = 0
     for definition in definitions:
         key = natural_key(definition)
         # SeedCorpus refuses two definitions under one key, so `occupied` is only ever the store's.
         if key in occupied:
             skipped += 1
+            continue
+        if deleted and key in deleted:
+            withheld_deleted.append("/".join(key))
             continue
         if conflicts(definition):
             conflicted.append("/".join(key))
@@ -447,6 +476,8 @@ def _seed_doc_type[D](
     outcome.failed[doc_type] = failed
     if conflicted:
         outcome.conflicted[doc_type] = conflicted
+    if withheld_deleted:
+        outcome.deleted[doc_type] = withheld_deleted
 
 
 __all__ = [

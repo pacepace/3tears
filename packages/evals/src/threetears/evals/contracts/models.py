@@ -112,6 +112,20 @@ were decided by, None on an analysis stored before tiers were decided on the agr
 were the point estimate against the bar, and are rendered as that, never as the interval rule's claim. And
 ``EvalRun.goal_check_proofs``: whether each goal check was shown, at launch, to beat doing nothing; None on a run
 launched before it, read as unproven.
+
+**Within v8, not a bump: fields retired** (``__retired_fields__``, read only by a stored read — see
+:mod:`threetears.evals.contracts.base`). ``LeverCoverage.confidence`` is removed: it was a fixed lookup on the
+lever's ``status``, so a stored analysis loses nothing when the key is discarded on read. ``EvalCampaign.status``
+(open / closed) is removed: nothing could change it after creation and nothing enforced it, so a stored
+campaign's ``closed`` froze nothing and discarding it changes no membership and no analysis; the one thing it
+fed, ``list_campaigns``'s ``status`` filter, is gone with it. ``CampaignDesign.controls`` is renamed ``held_fixed``
+(one letter from ``control``, it named a different thing), and the bundle's ``controls_reading`` with it
+(``held_fixed_reading``): a stored campaign, an analysis's ``design_snapshot`` and a reporter case's frozen bundle
+read the old key under the new name, value unchanged.
+
+**Within v8, not a bump**: ``RubricDimTombstone`` joined as a new stored type — the record a rubric dim delete
+leaves so the definition seed does not write the key back. A store written before it holds none, which reads as
+"no key was deleted since": a dim deleted before then is still written back at the next seed, as it was then.
 """
 
 
@@ -1507,6 +1521,38 @@ def stored_variation(params: Mapping[str, Any]) -> dict[str, str]:
     return {
         name: value if isinstance(value, str) else json.dumps(value, sort_keys=True) for name, value in params.items()
     }
+
+
+class RubricDimTombstone(EvalDocumentModel):
+    """The record that a rubric dim key was deleted, so a seed never writes it back.
+
+    Seeding fills empty slots only (:func:`~threetears.evals.run.definition_seed.seed_eval_definitions`),
+    and a delete empties a slot. Without this, deleting a seeded dim undid itself at the next boot while
+    archiving one was permanent — the opposite of what an operator choosing the destructive path meant.
+    :func:`~threetears.evals.run.authoring.delete_rubric_dim` writes one for the key it deletes, and the
+    seeder treats a tombstoned key as decided: it is not written, and is reported as deleted.
+
+    It holds no prose: the dim's definition and scoring guide are what the delete destroys. Authoring a dim
+    under the key again is unaffected (``create_rubric_dim`` does not read tombstones); the key is then
+    occupied, which the seed respects in any case.
+    """
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid7()))
+    doc_type: Literal["rubric_dim_tombstone"] = "rubric_dim_tombstone"
+    schema_version: SchemaVersion = EVAL_SCHEMA_VERSION
+    scope_id: str = Field(min_length=1)
+
+    key: str = Field(min_length=1, description="The deleted dim's version-group key — the seed's slot.")
+    deleted_dim_id: str = Field(min_length=1, description="The id of the record whose delete wrote this.")
+    deleted_at: str = Field(default_factory=utc_now_iso)
+
+    @field_validator("doc_type")
+    @classmethod
+    def check_doc_type(cls, v: str) -> str:
+        """Reject documents loaded into the wrong model class."""
+        if v != "rubric_dim_tombstone":
+            raise ValueError(f"doc_type must be 'rubric_dim_tombstone', got '{v}'")
+        return v
 
 
 # =============================================================================
@@ -4316,6 +4362,7 @@ __all__ = [
     "ProposedDimSuggestion",
     "ProposedTemplate",
     "RubricDim",
+    "RubricDimTombstone",
     "RubricProposal",
     "RepeatedScore",
     "RubricScore",

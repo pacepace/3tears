@@ -10,13 +10,20 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from pydantic import ValidationError
 
 from threetears.evals.contracts.base import EvalBaseModel, EvalDocumentModel
-from threetears.evals.contracts.models import EVAL_SCHEMA_VERSION, CassetteKey, EvalCassette, EvalResult, EvalRun
+from threetears.evals.contracts.models import (
+    EVAL_SCHEMA_VERSION,
+    CassetteKey,
+    EvalCassette,
+    EvalResult,
+    EvalRun,
+    RubricDimTombstone,
+)
 from threetears.evals.contracts.out_of_run import OutOfRunSpend
 from threetears.evals.contracts.storage import EvalStorage
 from threetears.evals.contracts.identity import IDENTITY_VERSION
@@ -356,6 +363,7 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
     "EvalTrace": make_eval_trace,
     "JudgeConfig": make_judge_config,
     "OutOfRunSpend": _out_of_run_spend,
+    "RubricDimTombstone": lambda: RubricDimTombstone(scope_id="uni-1", key="conversation.tone", deleted_dim_id="d-1"),
 }
 
 
@@ -396,3 +404,53 @@ def test_every_stored_model_refuses_a_document_from_another_schema_version(
 
     with pytest.raises(ValidationError, match=f"eval schema v{version}"):
         model.from_dict({**document, "schema_version": version})
+
+
+# --- a field retired within a schema version -------------------------------------------------------
+
+
+class _Retiring(EvalDocumentModel):
+    """A document that renamed one field and removed another within its schema version."""
+
+    __retired_fields__: ClassVar[dict[str, str | None]] = {"old_name": "new_name", "dropped": None}
+
+    new_name: str
+
+
+class _Holding(EvalDocumentModel):
+    """A document holding one, so the retirement is shown to apply wherever the model is nested."""
+
+    held: _Retiring
+
+
+def test_a_stored_read_reads_a_retired_field_under_what_replaced_it() -> None:
+    read = _Holding.from_dict({"held": {"old_name": "kept", "dropped": "anything"}})
+
+    assert read == _Holding(held=_Retiring(new_name="kept"))
+    assert read.to_dict() == {"held": {"new_name": "kept"}}, "a retired key is never written back"
+
+
+@pytest.mark.parametrize(
+    ("payload", "says"),
+    [
+        pytest.param(
+            {"old_name": "x"}, "`old_name` is not a field of _Retiring: it was renamed `new_name`", id="renamed"
+        ),
+        pytest.param(
+            {"new_name": "x", "dropped": 1}, "`dropped` is not a field of _Retiring: it was removed", id="removed"
+        ),
+    ],
+)
+def test_anything_but_a_stored_read_refuses_a_retired_field_naming_what_became_of_it(
+    payload: dict[str, Any], says: str
+) -> None:
+    """A caller writing today's document has no reason to spell yesterday's: construction and payloads refuse it."""
+    with pytest.raises(ValidationError, match=says):
+        _Retiring(**payload)
+    with pytest.raises(ValidationError, match=says):
+        _Holding.model_validate({"held": payload})
+
+
+def test_a_stored_document_carrying_both_names_is_refused() -> None:
+    with pytest.raises(ValidationError, match="carries both `old_name` and `new_name`"):
+        _Holding.from_dict({"held": {"old_name": "a", "new_name": "b"}})

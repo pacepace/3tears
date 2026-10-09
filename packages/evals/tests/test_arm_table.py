@@ -136,7 +136,7 @@ def _design(control: str | None) -> CampaignDesign:
     return CampaignDesign(
         axes=[SweptAxis(axis_id=_AXIS, values=[_level(model) for model in (_WINNER, _DEARER, _FASTER, _INCUMBENT)])],
         control=control,
-        controls=ControlDeclaration(stimulus="controlled", apparatus="commissioned"),
+        held_fixed=ControlDeclaration(stimulus="controlled", apparatus="commissioned"),
     )
 
 

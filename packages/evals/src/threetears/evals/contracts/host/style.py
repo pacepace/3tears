@@ -8,9 +8,8 @@ That is enforced structurally rather than promised:
 
 1. :attr:`StyleProfile.tone_register` is an **enum**, and the words it maps to are engine-owned
    prompt fragments. The host picks from a list; it never writes the instruction.
-2. **Neither non-enum field can carry an instruction to a model.** ``locale`` is a ``str``, so it
-   is validated against a BCP47 pattern at construction. ``chart_palette`` holds colours and
-   nothing else: every value is checked to be resolved sRGB hex (:func:`require_resolved_colour`)
+2. **Neither non-enum field can carry an instruction to a model.** ``chart_palette`` holds colours
+   and nothing else: every value is checked to be resolved sRGB hex (:func:`require_resolved_colour`)
    when the palette is built, so it has no room for a word. ``chart_font`` names a typeface, so its
    family list is shape-checked (:data:`_FONT_FAMILY_RE`) and bounded in length; the rest of it is
    numbers. And it is structural besides:
@@ -25,8 +24,14 @@ That is enforced structurally rather than promised:
    holds the narrow half (the one function turning style into prompt text reads an engine-owned
    table); no test in this repository yet runs it over an assembled generator prompt. It is a
    TEST and not a production gate on purpose: point 3 is what production actually rests on, and a
-   substring scan gating a billed generation would discard a real analysis for a locale tag that
+   substring scan gating a billed generation would discard a real analysis for a colour that
    happens to appear in a case's own text.
+
+**Every field changes what a report shows, and nothing else is declared.** A locale, units, a date
+format and a length budget are not slots here: no renderer and no number formatter reads one, and a
+field that claims to change formatting while changing nothing is worse than no field — a host that
+declared ``de-DE`` would get reports formatted exactly as ``en-US`` with nothing telling it so. Each
+comes back only with the code that honours it.
 
 **The palette is renderer-neutral.** The core names chart INTENT — which colour slot a series takes
 (:data:`VALIDATED_SLOTS`, :data:`SERIES_SLOTS`), which ink a label is drawn in — and a renderer is an
@@ -50,13 +55,6 @@ from typing import Literal
 #: The registers a host may pick from. Engine-owned and closed — the point of the enum is that a
 #: host cannot write its own.
 ToneRegister = Literal["neutral", "executive", "technical"]
-
-#: A BCP47 language tag, shape-checked. ``locale`` is the module's one non-enum field, so without
-#: this it is a bare ``str`` in a module whose headline promise is that it has no free text — and
-#: a promise with one untyped hole is the shape a reviewer stops checking. The pattern is
-#: deliberately narrow: two or three letters, an optional script, an optional region. It rejects
-#: a sentence, which is the threat, and it is not a registry lookup, which would be a dependency.
-_BCP47_RE = re.compile(r"^[a-z]{2,3}(-[A-Z][a-z]{3})?(-([A-Z]{2}|\d{3}))?$")
 
 
 class StyleError(ValueError):
@@ -309,14 +307,11 @@ class StyleProfile:
     """One host's bounded presentation contract.
 
     Every field is either an engine-owned enum or a value the renderer consumes. There is
-    deliberately **no** string field a host can fill with instructions.
+    deliberately **no** string field a host can fill with instructions, and no field that nothing reads.
     """
 
     tone_register: ToneRegister = "neutral"
     """Which engine-owned register to write in. The host picks; the engine supplies the words."""
-
-    locale: str = "en-US"
-    """BCP47 tag driving number, date and list formatting in the renderer. Shape-checked."""
 
     chart_palette: ChartPalette | None = None
     """The host's chart colours, which every renderer it builds draws with; never serialised into a prompt.
@@ -333,16 +328,6 @@ class StyleProfile:
     font is always the one drawn and laid out against — a :class:`ChartFont` cannot exist without its
     advance table, so a font with no metrics is refused when it is built, not discovered in a picture.
     """
-
-    def __post_init__(self) -> None:
-        """Refuse a locale that is not a language tag.
-
-        Raises:
-            StyleError: ``locale`` does not have the shape of a BCP47 tag — which is how a
-                sentence would get into the one field here that is not an enum.
-        """
-        if not _BCP47_RE.match(self.locale):
-            raise StyleError(f"locale {self.locale!r} is not a BCP47 tag — this contract carries no free text")
 
 
 def prompt_fragment(style: StyleProfile) -> str:
@@ -367,9 +352,9 @@ def assert_no_style_text(prompt: str, style: StyleProfile) -> None:
     walks whatever the host actually supplied and proves none of it is there.
 
     **Scoped to the values a host writes**, which is what makes it safe to point at a whole assembled
-    prompt rather than only at :func:`prompt_fragment`'s output: ``locale``, which is shape-checked,
-    every colour of ``chart_palette``, each held to ``#rrggbb``, and ``chart_font``'s family list, held
-    to a bounded CSS family shape. The closed enums are out — see
+    prompt rather than only at :func:`prompt_fragment`'s output: every colour of ``chart_palette``, each
+    held to ``#rrggbb``, and ``chart_font``'s family list, held to a bounded CSS family shape. The closed
+    enums are out — see
     :func:`_host_supplied_strings` for why matching them reports the engine's own words as a leak.
 
     Args:
@@ -391,8 +376,8 @@ def _host_supplied_strings(style: StyleProfile) -> list[str]:
         style: The profile to walk.
 
     Returns:
-        ``locale``, every colour of ``chart_palette`` (none when it declares no palette), and
-        ``chart_font``'s family list (none when it declares no font).
+        Every colour of ``chart_palette`` (none when it declares no palette), and ``chart_font``'s family
+        list (none when it declares no font).
 
         ``tone_register`` is deliberately absent: it is a CLOSED engine-owned enum, so a host picks
         a key from a list and cannot hold a sentence in it, and a value that cannot carry an
@@ -400,7 +385,6 @@ def _host_supplied_strings(style: StyleProfile) -> list[str]:
         the opposite reason — it is the one thing that is *supposed* to reach a prompt.
     """
     return [
-        style.locale,
         *(style.chart_palette.colours() if style.chart_palette is not None else []),
         *([style.chart_font.family] if style.chart_font is not None else []),
     ]

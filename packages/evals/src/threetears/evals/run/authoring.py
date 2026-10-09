@@ -56,6 +56,7 @@ from threetears.evals.contracts.models import (
     CatalogRubricDim,
     EvalTemplate,
     JudgeConfig,
+    RubricDimTombstone,
     utc_now_iso,
 )
 from threetears.evals.run.check_controls import refuse_non_discriminating_checks
@@ -669,15 +670,24 @@ def update_rubric_dim(storage: DefinitionStore, dim_id: str, scope_id: str, fiel
 
 
 def delete_rubric_dim(storage: DefinitionStore, dim_id: str, scope_id: str, *, confirm: str | None = None) -> None:
-    """Delete a catalog rubric dim by id, after an id-echo confirmation.
+    """Delete a catalog rubric dim by id, after an id-echo confirmation, and retire its key from the seed.
 
     **Gated on an id echo, like every other destructive eval delete** — see
     :func:`threetears.evals.run.curation.require_delete_confirmation`. The gate is
     here so both surfaces (REST ``DELETE /rubric-dims/{dim_id}``
     and MCP ``rubric_dim_delete``) inherit one contract.
 
+    **A delete sticks, seeded dim or not.** Seeding writes any corpus dim whose key no record in the
+    scope carries (:func:`~threetears.evals.run.definition_seed.seed_eval_definitions`), so a delete
+    alone would hand a seeded dim's key back to the next boot, which would write the dim again —
+    while archiving it, the reversible choice, kept it retired. So the delete first writes a
+    :class:`~threetears.evals.contracts.models.RubricDimTombstone` for the dim's key, and the seeder
+    never writes a tombstoned key back. Archive and delete now both retire a seeded dim; what differs
+    is that archive keeps the record and can be undone, and delete destroys it. To have a deleted key
+    back, author it again (``create_rubric_dim``), which the tombstone does not block.
+
     **Nothing else goes with it, and nothing is orphaned.** Storage removes
-    exactly one document (:meth:`~threetears.evals.contracts.storage.EvalStorage.delete_rubric_dim`
+    exactly one dim document (:meth:`~threetears.evals.contracts.storage.EvalStorage.delete_rubric_dim`
     is a single ``delete`` by id), and no stored record points at a catalog
     dim's ``id``: :attr:`~threetears.evals.contracts.models.JudgeConfig.rubric_dim_id`
     binds **by name**, ``EvalTemplate.rubric`` embeds name-keyed
@@ -687,14 +697,14 @@ def delete_rubric_dim(storage: DefinitionStore, dim_id: str, scope_id: str, *, c
     proposer's catalog feed, non-archived only), which copies definitions into a draft
     rather than pointing at them.
 
-    What the delete destroys is therefore the record itself: the
-    hand-authored ``dim.description`` and ``dim.scoring_guide`` prose a judge
-    is meant to score against, which nothing regenerates and no import path
-    restores. The gate is unconditional because a dim nothing has drawn from
-    yet is the freshly authored one least likely to have a second copy.
+    What the delete destroys is therefore the record itself: the ``dim.description`` and
+    ``dim.scoring_guide`` prose a judge is meant to score against. For a hand-authored dim nothing
+    restores it. For a seeded dim the host's corpus still holds the seeded version, but the operator's
+    edits to it are gone, and the seed will not write it back. The gate is unconditional because a dim
+    nothing has drawn from yet is the freshly authored one least likely to have a second copy.
 
     Args:
-        storage: Where catalog rubric dims are read and deleted.
+        storage: Where catalog rubric dims are read, deleted and tombstoned.
         dim_id: Catalog rubric dim to destroy.
         scope_id: The scope it lives in.
         confirm: Must echo ``dim_id``; see
@@ -703,24 +713,28 @@ def delete_rubric_dim(storage: DefinitionStore, dim_id: str, scope_id: str, *, c
     Raises:
         NotFoundError: No rubric dim with that id in the scope.
         ValidationFailedError: ``confirm`` does not echo ``dim_id``.
-        StorageError: The rubric dim failed to delete.
+        StorageError: The tombstone or the delete failed to write. A failed tombstone leaves the dim
+            in place, so no delete happens that a seed could undo.
     """
-    if storage.load_rubric_dim(dim_id, scope_id) is None:
+    dim = storage.load_rubric_dim(dim_id, scope_id)
+    if dim is None:
         raise NotFoundError("rubric dim", dim_id)
     require_delete_confirmation(
         "rubric dim",
         dim_id,
         confirm,
-        # No `cascade`: the delete genuinely takes nothing else, and naming a
+        # No `cascade`: the delete takes no other definition, and naming a
         # phantom one would misstate the weight of the call.
         alternative=(
             'archive it instead (`rubric_dim_update` with `{"archived": true}`) to drop it from the '
             "proposer's catalog feed without destroying the definition and scoring guide it carries"
         ),
     )
+    # The tombstone first: a delete whose tombstone failed would be one the next seed undoes.
+    storage.save_rubric_dim_tombstone(RubricDimTombstone(scope_id=scope_id, key=dim.key, deleted_dim_id=dim_id))
     if not storage.delete_rubric_dim(dim_id, scope_id):
         raise StorageError(f"failed to delete rubric dim '{dim_id}'")
-    log.warning("eval.delete_rubric_dim dim=%s", dim_id)
+    log.warning("eval.delete_rubric_dim dim=%s key=%s", dim_id, dim.key)
 
 
 #: Identity/lifecycle fields the judge-config family owns — never taken from caller input.
