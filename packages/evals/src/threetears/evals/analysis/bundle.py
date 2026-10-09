@@ -44,6 +44,7 @@ from fractions import Fraction
 from datetime import UTC, datetime
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from functools import partial
 from itertools import chain
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
 
@@ -3118,8 +3119,8 @@ def _measure_summary(
 #: construction. The surface is still folded — the knob names the arm — and every lens that folds it
 #: marks the comparison with an ``unverified_fold`` confound, because a check that could not run is
 #: not a pass. ``unexplained`` — something besides the knob changed it: the residuals disagree, two
-#: runs that held the lever at one level carried different surfaces, or the cohort crosses runs the
-#: lever does not apply to (another kind's) while the surface moved. ``undetermined`` — some run's
+#: runs that held the lever at one level carried different surfaces, or a run the lever does not apply
+#: to (another kind's) carried a surface no run of the lever's own kind in the cohort carries. ``undetermined`` — some run's
 #: residual or surface could not be read, so neither can be shown; the surface is kept, because
 #: folding it would be an inference.
 SurfaceFold = Literal["explained", "unverified", "unexplained", "undetermined"]
@@ -3161,8 +3162,8 @@ class _SurfaceFolds:
     variant-lever reader), so the fold and the variant key cannot disagree about whether two runs sat
     at one level — in particular, a run of another kind sits at that kind's "not this kind" level,
     never at a ``None`` a run of the lever's own kind can also hold. The lever does not apply to such
-    a run and cannot have written its surface, so a cohort crossing kinds folds nothing on the
-    lever's word unless the surface held still across it.
+    a run and cannot have written its surface, so where such a run carries a surface no run of the
+    lever's own kind in the cohort carries, the kind's change moved it and nothing is folded.
 
     **Per cohort, never campaign-wide**, because the answer depends on which runs are compared. A
     surface can be explained across the whole campaign — every member any run named taken out — and
@@ -3278,20 +3279,23 @@ class _SurfaceFolds:
         """
         return lever in self._surfaces and self.fold(lever, cohort_run_ids) in _FOLDED
 
-    def folds_away_in_contrast(self, lever: str, pair: Collection[str], design_cohort: Collection[str]) -> bool:
+    def folds_away_in_contrast(
+        self, lever: str, pair: Collection[str], contrast_cohort: Callable[[str], Collection[str]]
+    ) -> bool:
         """:meth:`folds_away` for one contrast against the control, over the cohort that can decide it.
 
         An open family's residual is a check two runs can make, so a contrast asks it over its own
         pair. A fixed knob's fold is not: over two runs it reduces to "did the knob also move", which
         can never come out ``unexplained``, so the design would fold a surface every other lens calls a
-        varying confound. It is decided over the design's whole cohort instead — the control's runs and
-        every contrast arm's — where a second arm at one of the knob's levels can show the surface
-        moving on its own.
+        varying confound. It is decided over the contrast's cohort instead — the control and every
+        contrast whose departures, the surface aside, fall within this one's — where a second arm at
+        one of the knob's levels can show the surface moving on its own, and an arm that moved
+        something else cannot make this contrast's knob answer for it.
 
         Args:
             lever: Any lever name.
             pair: The control's run and the contrast's.
-            design_cohort: Every run of the control and the contrast arms.
+            contrast_cohort: The contrast's cohort for a surface, asked only for a fixed knob's.
 
         Returns:
             Whether the contrast's movement of ``lever`` is its knob's, seen a second time.
@@ -3299,7 +3303,7 @@ class _SurfaceFolds:
         if lever not in self._surfaces:
             return False
         fixed = self._surfaces[lever].open_family is None
-        return self.folds_away(lever, design_cohort if fixed else pair)
+        return self.folds_away(lever, contrast_cohort(lever) if fixed else pair)
 
     def swept_members(self, surface: str, run_ids: Collection[str]) -> dict[str, Any]:
         """The members of ``surface``'s family these runs overlaid, with the value each named.
@@ -3341,18 +3345,26 @@ class _SurfaceFolds:
 
         Returns:
             ``undetermined`` when some run did not record the surface; ``unexplained`` when two runs at
-            one of the lever's levels carried different surfaces, or the cohort crosses runs the lever
-            does not apply to while the surface moved; otherwise ``explained`` when some level of the
+            one of the lever's levels carried different surfaces, or a run the lever does not apply to
+            carried a surface no run of its own kind here carries; otherwise ``explained`` when some level of the
             lever was held by two or more arms, and ``unverified`` when none was.
         """
         levels = [self._fixed_levels.get(run_id, {}) for run_id in cohort]
         if any(level.get(surface) is None for level in levels):
             return "undetermined"
-        if len({level.get(surface) for level in levels}) > 1 and any(
-            lever in self._inapplicable.get(run_id, frozenset()) for run_id in cohort
+        own_kind = {
+            level.get(surface)
+            for run_id, level in zip(cohort, levels, strict=True)
+            if lever not in self._inapplicable.get(run_id, frozenset())
+        }
+        if any(
+            level.get(surface) not in own_kind
+            for run_id, level in zip(cohort, levels, strict=True)
+            if lever in self._inapplicable.get(run_id, frozenset())
         ):
-            # A run of another kind carries the knob's "not this kind" level, so its surface was written
-            # by something else; the kind moved, and the knob cannot be what moved the surface with it.
+            # A run of another kind carries the knob's "not this kind" level, so the knob did not write its
+            # surface. Where that surface is one no run of the knob's own kind carries here, the kind's
+            # change moved it, and the knob cannot answer for it.
             return "unexplained"
         surface_at: dict[str | None, str | None] = {}
         arms_at: dict[str | None, set[str]] = defaultdict(set)
@@ -3533,44 +3545,69 @@ def _campaign_design(
     control = arms_by_key[control_variant][0]
     control_overlays = _effective_values(control, results_by_run.get(control.id, []), profile=profile)
     control_model = control.candidate_model
-    # The cohort a fixed knob's fold is decided over for every contrast — see `folds_away_in_contrast`.
-    design_cohort = [run.id for members in arms_by_key.values() for run in members]
-    contrasts: list[DesignArm] = []
+    # Every contrast's departures from the control BEFORE any surface is folded: a fixed knob's fold is
+    # decided over the contrasts whose departures fall within this one's, so they are needed for all of
+    # them first. One run stands for each arm: its runs share a variant key, so they share a configuration.
+    #
+    # KNOWN LIMIT: this maps both "the lever did not apply" and "it applied but resolved
+    # ambiguously" to the inherited-default level, so an ambiguous control reads as a
+    # moved lever. That surfaces as a claim a reader can check against
+    # `RunSummary.config_provenance`, rather than as a silently dropped comparison, which
+    # is why it is accepted here. `_lever_levels` keeps the two apart because a cohort a
+    # run cannot support is worse than a contrast it cannot make.
+    #
+    # The candidate model is read off the run's declared model rather than the effective
+    # resolution, which reports a run whose candidate role left no usage row as carrying no
+    # model at all — and that absence would read as the arm having moved its model to the
+    # inherited default.
+    departures: dict[str, dict[str, str]] = {}
     for key, members in arms_by_key.items():
         if key == control_variant:
             continue
-        # One run stands for the arm: its runs share a variant key, so they share a configuration.
         first = members[0]
         overlays = _effective_values(first, results_by_run.get(first.id, []), profile=profile)
-        # KNOWN LIMIT: this maps both "the lever did not apply" and "it applied but resolved
-        # ambiguously" to the inherited-default level, so an ambiguous control reads as a
-        # moved lever. That surfaces as a claim a reader can check against
-        # `RunSummary.config_provenance`, rather than as a silently dropped comparison, which
-        # is why it is accepted here. `_lever_levels` keeps the two apart because a cohort a
-        # run cannot support is worse than a contrast it cannot make.
-        #
-        # The candidate model is read off the run's declared model rather than the effective
-        # resolution, which reports a run whose candidate role left no usage row as carrying no
-        # model at all — and that absence would read as the arm having moved its model to the
-        # inherited default.
-        #
-        # A resolved surface is left out of `moved` only where it moved with its knob alone — the
-        # pair's residuals agree, or, for a fixed knob, the design's whole cohort shows the surface
-        # held one level within each of the knob's (a pair cannot show that: see
-        # `folds_away_in_contrast`). Then its new hash is the knob it was written from, counted a
-        # second time, and keeping it would make every one-knob arm `multi_factor`. Where it moved
-        # otherwise it stays, because the arm really did move something no swept knob names.
-        pair = (control.id, first.id)
-        moved = {
+        departed = {
             lever: overlays.get(lever) or _INHERITED_DEFAULT_LEVEL
             for lever in sorted((set(overlays) | set(control_overlays)) - {_CANDIDATE_MODEL_LEVER})
             if (overlays.get(lever) or _INHERITED_DEFAULT_LEVEL)
             != (control_overlays.get(lever) or _INHERITED_DEFAULT_LEVEL)
-            and not folds.folds_away_in_contrast(lever, pair, design_cohort)
         }
-        model = first.candidate_model
-        if model != control_model:
-            moved[_CANDIDATE_MODEL_LEVER] = model
+        if first.candidate_model != control_model:
+            departed[_CANDIDATE_MODEL_LEVER] = first.candidate_model
+        departures[key] = departed
+    control_runs = [run.id for run in arms_by_key[control_variant]]
+
+    def contrast_cohort(surface: str, key: str) -> list[str]:
+        """The runs a fixed knob's fold on ``surface`` is decided over for the contrast ``key``.
+
+        The control and every contrast whose departures, ``surface`` aside, fall within this one's —
+        this contrast itself, a second arm at one of its knob's levels, an arm that moved less. Those
+        are the arms that can show the surface moving apart from the knob WITHIN this comparison. An
+        arm that moved something this contrast did not (another lever, another kind) is a different
+        comparison, and its surface moving would be blamed on this contrast's knob otherwise.
+        """
+        own = set(departures[key]) - {surface}
+        return control_runs + [
+            run.id
+            for other, departed in departures.items()
+            if set(departed) - {surface} <= own
+            for run in arms_by_key[other]
+        ]
+
+    contrasts: list[DesignArm] = []
+    for key, departed in departures.items():
+        # A resolved surface is left out of `moved` only where it moved with its knob alone — the
+        # pair's residuals agree, or, for a fixed knob, the contrasts that moved nothing beyond this
+        # one show the surface held one level within each of the knob's (a pair alone cannot show
+        # that: see `folds_away_in_contrast`). Then its new hash is the knob it was written from,
+        # counted a second time, and keeping it would make every one-knob arm `multi_factor`. Where
+        # it moved otherwise it stays, because the arm really did move something no swept knob names.
+        pair = (control.id, arms_by_key[key][0].id)
+        moved = {
+            lever: level
+            for lever, level in departed.items()
+            if not folds.folds_away_in_contrast(lever, pair, partial(contrast_cohort, key=key))
+        }
         contrasts.append(arm(key, moved))
 
     shape: Literal["one_factor_at_a_time", "multi_factor"] = (

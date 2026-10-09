@@ -33,6 +33,7 @@ from pydantic import BaseModel, Field
 from threetears.evals.analysis import (
     AnalysisContextBundle,
     Confound,
+    DesignArm,
     DisclosureBlock,
     LeverCoverageInput,
     assemble_context_bundle,
@@ -255,6 +256,22 @@ def _confound(row: LeverCoverageInput, dimension: str) -> Confound | None:
     return next((confound for confound in row.confounded_by if confound.dimension == dimension), None)
 
 
+def _contrast(bundle: AnalysisContextBundle, batch: EvalRun, profile: HostProfile | None = None) -> DesignArm:
+    key = resolve_variant_identity(run=batch, profile=profile if profile is not None else _profile()).variant_key
+    (arm,) = [contrast for contrast in bundle.design.contrasts if contrast.variant_key == key]
+    return arm
+
+
+def _design_agrees_with_the_knob_s_row(bundle: AnalysisContextBundle, arm: DesignArm) -> None:
+    """The design moved the surface exactly where the knob's coverage row names it a confound.
+
+    Both lenses ask one fold, so a surface the row folds (checked or not) is no second moved lever in the
+    contrast, and one the row names as a confound is.
+    """
+    named = _confound(_row(bundle, _EFFORT), _PARAMS) is not None
+    assert (_PARAMS in arm.moved) == named
+
+
 _LOW = {"max_output_tokens": 4096, "reasoning_effort": "low"}
 _HIGH = {"max_output_tokens": 4096, "reasoning_effort": "high"}
 #: The high setting resolved with a different token cap — something besides the effort knob wrote into it.
@@ -379,12 +396,12 @@ class TestASurfaceThatMovedWithoutItsKnobStaysAConfound:
         assert _PARAMS in {row.name for row in self._sweep().coverage}
 
     def test_the_design_agrees_with_the_coverage_map(self) -> None:
-        """A pair of runs cannot show a fixed knob's surface moving on its own; the design's whole cohort can."""
+        """A pair of runs cannot show a fixed knob's surface moving on its own; the other high arm can."""
         bundle = self._sweep()
-        recapped = resolve_variant_identity(run=_batch("high", _HIGH_RECAPPED), profile=_profile()).variant_key
-        (arm,) = [contrast for contrast in bundle.design.contrasts if contrast.variant_key == recapped]
+        arm = _contrast(bundle, _batch("high", _HIGH_RECAPPED))
         assert _PARAMS in arm.moved
         assert bundle.design.shape == "multi_factor"
+        _design_agrees_with_the_knob_s_row(bundle, arm)
 
     def test_no_arm_is_named_as_if_the_surface_had_folded(self) -> None:
         assert all(_PARAMS not in entry.folded for entry in self._sweep().variant_index)
@@ -430,8 +447,38 @@ class TestARunOfAnotherKindFoldsNothingIntoTheKnob:
         assert _confound(row, _UNVERIFIED_PARAMS) is None
 
     def test_the_contrast_moved_the_surface(self) -> None:
-        (arm,) = self._sweep().design.contrasts
+        bundle = self._sweep()
+        (arm,) = bundle.design.contrasts
         assert _PARAMS in arm.moved
+        _design_agrees_with_the_knob_s_row(bundle, arm)
+
+
+class TestAContrastIsNotAnsweredForByAnArmThatMovedSomethingElse:
+    """A contrast's fold is decided over the contrasts that moved nothing beyond it, never the whole design."""
+
+    def test_an_arm_that_moved_the_surface_through_another_lever_leaves_the_knob_s_contrast_folded(self) -> None:
+        """The 1024-token arm resolved other parameters at the control's effort; that is its change, not the knob's."""
+        control = _batch("low", _LOW)
+        high = _batch("high", _HIGH)
+        widened = _batch("low", _HIGH_RECAPPED, chunk_tokens=1024)
+        bundle = _bundle([control, high, widened], control=control)
+
+        arm = _contrast(bundle, high)
+        assert set(arm.moved) == {_EFFORT}
+        _design_agrees_with_the_knob_s_row(bundle, arm)
+        # The other contrast really did move the surface with the knob held, and says so.
+        assert set(_contrast(bundle, widened).moved) == {"chunk_tokens", _PARAMS}
+
+    def test_an_arm_of_another_kind_leaves_the_knob_s_contrast_folded(self) -> None:
+        """The other kind's arm moved the kind; the extractor's contrast moved only its knob."""
+        profile = _profile(other_kind=True)
+        control = _batch("low", _LOW)
+        high = _batch("high", _HIGH)
+        bundle = _bundle([control, high, _batch(None, _LOW)], control=control, profile=profile)
+
+        arm = _contrast(bundle, high, profile)
+        assert set(arm.moved) == {_EFFORT}
+        _design_agrees_with_the_knob_s_row(bundle, arm)
 
 
 class TestAMapKnobFoldsItsSurfaceThroughItsMembers:

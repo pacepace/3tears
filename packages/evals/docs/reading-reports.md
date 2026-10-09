@@ -150,7 +150,7 @@ Only two arms at one level of the knob can show the resolved lever moving on its
 because every run of an arm resolves the same value. A fold nothing could have refuted is still applied, but it
 carries an `unverified_fold` confound (`unverified_fold:<lever>`, explained in `confound_catalog`), and a code-only
 report states it among its disclosures. Read it as an assumption these runs did not test: the knob's effect is not
-separated from anything else written into that lever. A fold without the mark was tested and held.
+separated from anything else written into that lever. A fold without the mark was tested at the levels two or more arms held, and held there; levels only one arm ran were not tested.
 
 A comparison across candidate models can also differ in what the models did while no setting differed. A
 reasoning effort is a word each vendor maps to its own budget, so two models at one effort setting can reason very

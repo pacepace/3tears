@@ -17,9 +17,10 @@ packages (bumped in lock-step).
   the arm, `swept` stays empty). Where runs holding the knob at one level carried different surfaces, it stays a
   lever and a confound, with a catalog reason saying so; a run whose surface reads `None` makes it an `undecided`
   confound. The knob's level is the one its variant coordinate carries, so a run of another kind sits at that
-  kind's "not this kind" level, and a cohort crossing kinds folds nothing while the surface moved. The design's
-  contrasts decide a fixed knob's fold over the design's whole cohort (control plus every contrast arm), not over
-  each two-run pair, which can never refute it. On a map field the marker rides on the map's own lever, whose level
+  kind's "not this kind" level; where such a run carries a surface no run of the knob's own kind in the cohort
+  carries, the kind's change moved it and nothing folds. Each design contrast decides a fixed knob's fold over the
+  control plus every contrast whose departures from the control, the surface aside, fall within its own, not over
+  its two-run pair, which can never refute it, and not over arms that moved something it did not. On a map field the marker rides on the map's own lever, whose level
   is the members a launch set; the map still folds into its members by the family's residual, as before.
 - **An untested fold is marked, never passed.** The surface is in the variant key, so every run of an arm resolves
   one surface and only two or more ARMS at one knob level can refute the fold; repeats cannot. Where no level in the
