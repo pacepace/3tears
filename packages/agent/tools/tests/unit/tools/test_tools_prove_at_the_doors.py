@@ -388,14 +388,32 @@ class TestADeclaringPodTakesItsCallerFromTheDelegation:
             pod_id="door-pod",
         )
         assert rec.last_reply[1].success is True, rec.last_reply[1].error
-        for minted in (UUID("06ac4016-baf3-7422-8000-000000000c02"), None):
+        refused: list[tuple[UUID | None, UUID | None]] = [
+            (conversation, UUID("06ac4016-baf3-7422-8000-000000000c02")),
+            (None, conversation),
+        ]
+        for call_conversation, minted in refused:
             server, rec, tool = self._server(declares=True)
             payload = self._payload(
-                pod_id="door-pod", act="door-pod", conversation=conversation, minted_conversation=minted
+                pod_id="door-pod", act="door-pod", conversation=call_conversation, minted_conversation=minted
             )
             await deliver_call(server, payload, pod_id="door-pod")
             assert rec.last_reply[1].success is False
             assert tool.scopes == []
+
+    async def test_a_delegation_from_a_registry_that_signs_no_conversation_is_taken(self) -> None:
+        """a pod may upgrade before its registry: a delegation with no conversation claim still runs.
+
+        Requiring the claim is the contract step, taken once every registry signs it; until then
+        only a claim that names another conversation is refused.
+        """
+        conversation = UUID("06ac4016-baf3-7422-8000-000000000c01")
+        server, rec, tool = self._server(declares=True)
+        payload = self._payload(pod_id="door-pod", act="door-pod", conversation=conversation, minted_conversation=None)
+        await deliver_call(server, payload, pod_id="door-pod")
+        assert rec.last_reply[1].success is True, rec.last_reply[1].error
+        (scope,) = tool.scopes
+        assert scope.context.conversation_id == conversation
 
     @pytest.mark.parametrize(("act", "corr"), [("another-pod", None), ("door-pod", "another-call")])
     async def test_a_delegation_for_another_pod_or_call_is_refused(self, act: str, corr: str | None) -> None:

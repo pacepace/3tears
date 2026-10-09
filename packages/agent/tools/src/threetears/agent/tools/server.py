@@ -2886,9 +2886,13 @@ class ToolServer:
                 claims = verify_delegation_at_pod(
                     token, jwks=self._load_pod_jwks(request.tool_name), pod_id=self._pod_id, correlation_id=correlation
                 )
-            # the conversation the agent's user assertion used to bind: the registry signs it in
+            # the conversation the agent's user assertion used to bind: the registry signs it in. A
+            # registry that predates the claim signs none, and its delegation is still taken (the
+            # expand phase: pods may upgrade before their registry); a claim that is present must
+            # name this call's conversation. Requiring the claim is the contract step, once every
+            # registry signs it.
             conversation = str(context.conversation_id) if context.conversation_id is not None else None
-            if claims.conversation_id != conversation:
+            if claims.conversation_id is not None and claims.conversation_id != conversation:
                 raise DelegatedTokenError("the delegation was minted for another conversation than the call's")
             # the one reading a token's principal gets, so a tool pod's call keeps its mark
             principal = principal_from(claims.agent_id, claims.customer_id)
