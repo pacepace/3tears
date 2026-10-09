@@ -19,7 +19,12 @@ from threetears.evals.analysis.bundle import goal_check_proofs_of
 from threetears.evals.analysis.report import DisclosureBlock, build_code_only_report
 from threetears.evals.contracts import ControlEndState, EvalRun, EvalTestCase, GoalCheckControls, GoalStateOutcome
 from threetears.evals.contracts.errors import ValidationFailedError
-from threetears.evals.contracts.models import stored_variation
+from threetears.evals.contracts.models import (
+    GOAL_CHECK_PROOF_RULES,
+    goal_check_proofs_as_read,
+    stale_goal_check_proofs,
+    stored_variation,
+)
 from threetears.evals.contracts.storage import EvalStorage
 from threetears.evals.ops.summary import GoalCheckSummary, summarize_run
 from threetears.evals.run import start_run
@@ -142,14 +147,17 @@ def _graded(run_id: str, check: str) -> Any:
 class TestTheBundleFoldsEachCheckAcrossItsRuns:
     def test_proven_only_when_every_run_that_graded_it_proved_it(self) -> None:
         runs = [
-            make_eval_run(id="a", goal_check_proofs={"c": "proven"}),
-            make_eval_run(id="b", goal_check_proofs={"c": "proven"}),
+            make_eval_run(id="a", goal_check_proofs={"c": "proven"}, goal_check_proof_rules=GOAL_CHECK_PROOF_RULES),
+            make_eval_run(id="b", goal_check_proofs={"c": "proven"}, goal_check_proof_rules=GOAL_CHECK_PROOF_RULES),
         ]
         (reading,) = goal_check_proofs_of(runs, [_graded("a", "c"), _graded("b", "c")])
         assert (reading.check, reading.measure_id, reading.proof, reading.runs) == ("c", "goal_state:c", "proven", 2)
 
     def test_a_run_that_recorded_no_proof_leaves_it_unproven(self) -> None:
-        runs = [make_eval_run(id="a", goal_check_proofs={"c": "proven"}), make_eval_run(id="b")]
+        runs = [
+            make_eval_run(id="a", goal_check_proofs={"c": "proven"}, goal_check_proof_rules=GOAL_CHECK_PROOF_RULES),
+            make_eval_run(id="b"),
+        ]
         (reading,) = goal_check_proofs_of(runs, [_graded("a", "c"), _graded("b", "c")])
         assert (reading.proof, reading.unrecorded) == ("unproven", 1)
 
@@ -261,3 +269,87 @@ class TestAControlCannotProveACheckOnATypeNoCaseHolds:
         assert goal_check_proofs(template, profile=toyhost_profile()) == {check: "refuted"}
         with pytest.raises(ValidationFailedError, match=r"intersects\(\) over variation.p"):
             refuse_non_discriminating_checks(template, profile=toyhost_profile())
+
+
+# --- a proof earned under an earlier rule is not read as one ------------------------------------------
+
+
+class TestAProofRecordedUnderAnEarlierRuleNeedsReProof:
+    """A run stamped before #665 may hold a ``proven`` its control earned on a type no case carries.
+
+    The controls are editable and were not frozen with the run, so the proof cannot be re-derived for the
+    template the run graded; it is read as unproven, counted, and every surface says it needs re-proof.
+    """
+
+    def test_an_old_proven_reads_unproven_and_an_old_refuted_stands(self) -> None:
+        run = make_eval_run(goal_check_proofs={"c": "proven", "d": "refuted", "e": "unproven"})
+        assert goal_check_proofs_as_read(run) == {"c": "unproven", "d": "refuted", "e": "unproven"}
+        assert stale_goal_check_proofs(run) == ["c"]
+
+    def test_a_proof_under_the_current_rules_reads_as_recorded(self) -> None:
+        run = make_eval_run(goal_check_proofs={"c": "proven"}, goal_check_proof_rules=GOAL_CHECK_PROOF_RULES)
+        assert goal_check_proofs_as_read(run) == {"c": "proven"}
+        assert stale_goal_check_proofs(run) == []
+
+    def test_the_bundle_counts_the_stale_run_and_reads_the_check_unproven(self) -> None:
+        runs = [
+            make_eval_run(id="a", goal_check_proofs={"c": "proven"}, goal_check_proof_rules=GOAL_CHECK_PROOF_RULES),
+            make_eval_run(id="b", goal_check_proofs={"c": "proven"}),
+        ]
+        (reading,) = goal_check_proofs_of(runs, [_graded("a", "c"), _graded("b", "c")])
+        assert (reading.proof, reading.stale, reading.unrecorded) == ("unproven", 1, 0)
+
+    def test_the_summary_line_says_it_needs_re_proving(self) -> None:
+        line = GoalCheckSummary(check="c", passed=8, n=8, proof="unproven", stale_proof=True).line()
+        assert "recorded under an earlier proof rule and needs re-proving by a new launch" in line
+
+    async def test_a_launch_stamps_the_current_rules(self) -> None:
+        storage = EvalStorage(InMemoryDocumentStore())
+        storage.save_template(toyhost_template())
+        host, _client = toyhost_launch_host(storage=storage)
+        (run,) = await _launch(host)
+        stored = storage.load_eval_run(run.id, TOYHOST_SCOPE)
+        assert stored is not None
+        assert stored.goal_check_proof_rules == GOAL_CHECK_PROOF_RULES
+        assert set((goal_check_proofs_as_read(stored) or {}).values()) == {"proven"}
+        assert stored.refused_goal_checks == {}
+
+
+# --- a check the grammar now refuses is a counted exclusion, not a rig fault per cell ------------------
+
+_REFUSED = 'intersects(["eu"], variation.p)'
+
+
+class TestACheckTheCurrentGrammarRefusesIsExcludedAndNamed:
+    """A template stored before a grammar rule keeps the check the rule now refuses (here, #665's variation read).
+
+    Grading it raised in every cell, so each cell was a rig fault with the reason buried in a generic apparatus
+    error. The launch now freezes the refused check with its reason, the cells grade the rest, and the summary,
+    the bundle and the report name it.
+    """
+
+    async def test_the_cells_grade_the_other_checks_and_every_surface_names_the_refused_one(self) -> None:
+        template = _uncontrolled()
+        template = template.model_copy(update={"goal_state_checks": [*template.goal_state_checks, _REFUSED]})
+        storage = EvalStorage(InMemoryDocumentStore())
+        storage.save_template(template)
+        host, _client = toyhost_launch_host(storage=storage)
+
+        (run,) = await _launch(host)
+
+        stored = storage.load_eval_run(run.id, TOYHOST_SCOPE)
+        assert stored is not None and stored.refused_goal_checks is not None
+        assert list(stored.refused_goal_checks) == [_REFUSED]
+        assert "intersects() over variation.p" in stored.refused_goal_checks[_REFUSED]
+        results = storage.query_eval_results_by_run(run.id, TOYHOST_SCOPE)
+        assert results and all(result.infra_error is None for result in results), "no cell is a rig fault"
+        graded = {outcome.expression for result in results for outcome in result.goal_state_outcomes}
+        assert _REFUSED not in graded and set(toyhost_template().goal_state_checks) <= graded
+
+        summary = summarize_run(host.eval_host, run.id, TOYHOST_SCOPE)
+        (refused,) = [goal for goal in summary.goal_checks if goal.refused is not None]
+        assert (refused.check, refused.excluded) == (_REFUSED, len(results))
+        assert "refused under the current grammar" in refused.line()
+
+        (reading,) = [r for r in goal_check_proofs_of([stored], results) if r.refused is not None]
+        assert (reading.check, reading.proof, reading.runs) == (_REFUSED, "refuted", 1)

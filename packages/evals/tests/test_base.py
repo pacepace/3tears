@@ -23,6 +23,7 @@ from threetears.evals.contracts.models import (
     EvalResult,
     EvalRun,
     RubricDimTombstone,
+    JudgeConfigTombstone,
 )
 from threetears.evals.contracts.out_of_run import OutOfRunSpend
 from threetears.evals.contracts.storage import EvalStorage
@@ -364,6 +365,9 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
     "JudgeConfig": make_judge_config,
     "OutOfRunSpend": _out_of_run_spend,
     "RubricDimTombstone": lambda: RubricDimTombstone(scope_id="uni-1", key="conversation.tone", deleted_dim_id="d-1"),
+    "JudgeConfigTombstone": lambda: JudgeConfigTombstone(
+        scope_id="uni-1", rubric_dim_id="conversation.tone", name="tone-strict", deleted_config_id="c-1"
+    ),
 }
 
 

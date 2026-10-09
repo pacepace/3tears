@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import math
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -138,6 +138,11 @@ the one requested.
 ``RepeatedScore.first_judge_temperature``. A document stored before them carries None and reads as not recorded:
 its unconfigured dimensions were requested at the provider's default, which is not today's 0, so such a run's
 roles component is not composable, its scores' judge reads unknown, and nothing pools it with a run judged at 0.
+
+``JudgeConfigTombstone`` joined the same way, for a judge config's slot; a config deleted before it is written
+back at the next seed. ``EvalRun`` gained ``goal_check_proof_rules`` (None on a run stored before it, read as rules
+1, so its ``proven`` checks read unproven) and ``refused_goal_checks`` (None, not recorded), and ``EvalResult``
+gained ``judge_cannot_tell_boundary`` (empty, its can't-tells read as capability) — all optional within v8.
 """
 
 
@@ -490,6 +495,19 @@ GoalCheckIntent = Literal["act", "hold"]
 #: check does not tell it from doing nothing, or cannot be evaluated against it. Only ``proven`` reads as a
 #: measurement of the behaviour; the other two are marked wherever the check's pass rate is shown.
 GoalCheckProof = Literal["proven", "unproven", "refuted"]
+
+#: The rules a run's goal-check proofs are derived under, stamped on the run beside them
+#: (``EvalRun.goal_check_proof_rules``). ``1``: a control's case parameters were read under the types it stated,
+#: so a check reading a parameter as a list could pass its control and be stamped proven, then fail every case
+#: (#665). ``2``: a control's parameters are read as a case stores them, one string each, and a control stating
+#: another type is refuted. A ``proven`` recorded under an older rule is read as ``unproven``
+#: (:func:`goal_check_proofs_as_read`): the controls are editable and were not frozen with the run, so the proof
+#: cannot be re-derived for the template the run actually graded, and a proof earned under a rule since found
+#: wrong is not one.
+GOAL_CHECK_PROOF_RULES = 2
+
+#: The words every surface uses for a goal check the current grammar refuses, frozen on the run that excluded it.
+CHECK_REFUSED_UNDER_CURRENT_GRAMMAR = "refused under the current grammar"
 
 
 class ControlEndState(EvalDocumentModel):
@@ -1534,13 +1552,50 @@ class CatalogRubricDim(EvalDocumentModel):
 
     axis: RubricAxis = Field(
         default="capability",
-        description="Which rubric axis this dim belongs to ('boundary' is the boundary proposer's).",
+        description=(
+            "Which rubric axis this dim belongs to ('boundary' is the boundary proposer's). Always equal to "
+            "dim.axis, so copying dim into a template keeps a guardrail a guardrail: where the two disagree, "
+            "both read 'boundary'."
+        ),
     )
     universal: bool = Field(default=False, description="True → applies to every subject.")
 
     archived: bool = Field(default=False)
     created_at: str = Field(default_factory=utc_now_iso)
     updated_at: str = Field(default_factory=utc_now_iso)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _one_axis_on_the_record_and_its_dim(cls, data: Any) -> Any:
+        """Make the record's axis and the embedded dim's one axis, ``boundary`` when either says so.
+
+        The embedded :attr:`dim` is what a template copies, and the judge stamps ITS axis onto each score.
+        A record declaring ``axis="boundary"`` over a dim left at its ``capability`` default was copied into
+        a template as capability, and its scores then entered the composite and pass^k: a guardrail leaking
+        into the capability pillar. So the two are made one here, on every construction and every read of a
+        stored record. A disagreement resolves to ``boundary`` rather than being refused: a stored record
+        carries both fields (serialization emits defaults), so refusing would make every such record
+        unreadable, and the direction that never lets a guardrail be averaged with capability is the safe one.
+
+        Args:
+            data: The raw input.
+
+        Returns:
+            The input with both axes set alike.
+        """
+        if not isinstance(data, dict) or "dim" not in data:
+            return data
+        dim = data["dim"]
+        dim_axis = dim.get("axis") if isinstance(dim, dict) else getattr(dim, "axis", None)
+        axes = {data.get("axis"), dim_axis} - {None}
+        if len(axes) < 2 and data.get("axis") == dim_axis:
+            return data
+        axis = "boundary" if "boundary" in axes else (axes.pop() if axes else "capability")
+        if isinstance(dim, RubricDim):
+            dim = dim.model_copy(update={"axis": axis})
+        elif isinstance(dim, dict):
+            dim = {**dim, "axis": axis}
+        return {**data, "axis": axis, "dim": dim}
 
     @field_validator("doc_type")
     @classmethod
@@ -1598,6 +1653,36 @@ class RubricDimTombstone(EvalDocumentModel):
         """Reject documents loaded into the wrong model class."""
         if v != "rubric_dim_tombstone":
             raise ValueError(f"doc_type must be 'rubric_dim_tombstone', got '{v}'")
+        return v
+
+
+class JudgeConfigTombstone(EvalDocumentModel):
+    """The record that a judge config slot was deleted, so a seed never writes it back.
+
+    :class:`RubricDimTombstone`'s mechanism for the seed's judge-config slot, ``(rubric_dim_id, name)``: a
+    delete empties the slot when it takes the last record under it, and without this the next boot wrote the
+    seeded config again while archiving one kept it retired.
+    :func:`~threetears.evals.run.authoring.delete_judge_config` writes one for the slot it deletes from, and
+    the seeder treats a tombstoned slot as decided: it is not written, and is reported as deleted. Authoring a
+    config into the slot again is unaffected (``create_judge_config`` does not read tombstones).
+    """
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid7()))
+    doc_type: Literal["judge_config_tombstone"] = "judge_config_tombstone"
+    schema_version: SchemaVersion = EVAL_SCHEMA_VERSION
+    scope_id: str = Field(min_length=1)
+
+    rubric_dim_id: str = Field(min_length=1, description="The dim the deleted config scored — half the seed's slot.")
+    name: str = Field(min_length=1, description="The deleted config's name — the other half of the seed's slot.")
+    deleted_config_id: str = Field(min_length=1, description="The id of the record whose delete wrote this.")
+    deleted_at: str = Field(default_factory=utc_now_iso)
+
+    @field_validator("doc_type")
+    @classmethod
+    def check_doc_type(cls, v: str) -> str:
+        """Reject documents loaded into the wrong model class."""
+        if v != "judge_config_tombstone":
+            raise ValueError(f"doc_type must be 'judge_config_tombstone', got '{v}'")
         return v
 
 
@@ -2545,6 +2630,23 @@ class EvalRun(EvalDocumentModel):
             "or assembled without a launch — read as unproven, never as proven. Optional within v8 for that reason."
         ),
     )
+    goal_check_proof_rules: int | None = Field(
+        default=None,
+        description=(
+            "The proof rules `goal_check_proofs` were derived under (`GOAL_CHECK_PROOF_RULES`). None on a run "
+            "launched before the rules were stamped, which are rules 1. A `proven` recorded under rules older than "
+            "the current ones reads as unproven (`goal_check_proofs_as_read`), and is counted as needing re-proof."
+        ),
+    )
+    refused_goal_checks: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Each of the template's goal checks the grammar refused when the run launched -> the refusal's reason. "
+            "A template stored before a grammar rule can carry a check the rule now refuses; the run grades none "
+            "of its cells on it, so the cells are not rig faults, and every surface names the check as refused "
+            "under the current grammar. None = not recorded (a run launched before this was frozen); {} = none."
+        ),
+    )
 
     resolved_tools_allowed: list[str] | None = Field(
         default=None,
@@ -2877,6 +2979,64 @@ class EvalRun(EvalDocumentModel):
                 "capture writes the corpus its own id names, and a run with cassettes off reads none"
             )
         return self
+
+
+def goal_check_proofs_as_read(run: EvalRun) -> dict[str, GoalCheckProof] | None:
+    """A run's goal-check proofs as every surface reads them: a ``proven`` from an older proof rule is ``unproven``.
+
+    ``proven`` is the one proof that reads as measuring the behaviour, so it must have been earned under the rules
+    in force (:data:`GOAL_CHECK_PROOF_RULES`). A run stamped before them may hold a ``proven`` its control earned
+    under a parameter type no case can carry (#665). It cannot be re-derived when read — the controls are editable
+    and were not frozen with the run, so a re-derivation would prove the template as it is now, not the one the
+    run graded — so it is read as ``unproven`` until the template is launched again.
+    ``refuted`` and ``unproven`` stand: an older rule never made a check look worse than it is.
+
+    Args:
+        run: The run.
+
+    Returns:
+        The proofs as read, or None when the run recorded none.
+    """
+    if run.goal_check_proofs is None:
+        return None
+    if (run.goal_check_proof_rules or 1) >= GOAL_CHECK_PROOF_RULES:
+        return dict(run.goal_check_proofs)
+    return {check: "unproven" if proof == "proven" else proof for check, proof in run.goal_check_proofs.items()}
+
+
+def stale_goal_check_proofs(run: EvalRun) -> list[str]:
+    """The checks whose ``proven`` the run recorded under an older proof rule — read as unproven, needing re-proof.
+
+    Args:
+        run: The run.
+
+    Returns:
+        The checks, sorted; empty when the run's proofs are current or it recorded none.
+    """
+    if run.goal_check_proofs is None or (run.goal_check_proof_rules or 1) >= GOAL_CHECK_PROOF_RULES:
+        return []
+    return sorted(check for check, proof in run.goal_check_proofs.items() if proof == "proven")
+
+
+def refused_goal_checks(checks: Sequence[str]) -> dict[str, str]:
+    """The goal checks the current grammar refuses, each with the refusal's reason.
+
+    The grammar refuses at authoring, but a template stored before a rule keeps the check it now refuses, and
+    grading it raises in every cell. Read at launch, so the run grades its cells without the check and names it.
+
+    Args:
+        checks: The template's goal checks.
+
+    Returns:
+        Each refused check -> why; empty when the grammar reads every one.
+    """
+    refused: dict[str, str] = {}
+    for check in checks:
+        try:
+            parse(check)
+        except DSLError as refusal:
+            refused[check] = str(refusal)
+    return refused
 
 
 class EvalRunStamp(EvalDocumentModel):
@@ -4144,6 +4304,16 @@ class EvalResult(EvalDocumentModel):
             "the judge scored or failed on every dim it was asked."
         ),
     )
+    judge_cannot_tell_boundary: list[DimName] = Field(
+        default_factory=list,
+        description=(
+            "The dims in judge_cannot_tell that are boundary (guardrail) dims, stamped from each dim's "
+            "definition when it was judged, as a score's axis is. A boundary dim is in neither pass^k nor the "
+            "composite, so a can't-tell on one leaves the trial in both; it is out of that guardrail's own "
+            "reading only. Empty on a result stored before the field existed: its can't-tells are read as "
+            "capability, which is how a score with no recorded axis is read."
+        ),
+    )
 
     # Error taxonomy. A result's error is one of two kinds,
     # and scoring treats them oppositely (an infra failure
@@ -4399,6 +4569,11 @@ class EvalCassette(EvalDocumentModel):
 
 __all__ = [
     "stored_variation",
+    "CHECK_REFUSED_UNDER_CURRENT_GRAMMAR",
+    "GOAL_CHECK_PROOF_RULES",
+    "goal_check_proofs_as_read",
+    "refused_goal_checks",
+    "stale_goal_check_proofs",
     "ApparatusSettingValue",
     "MeteredCallOrigin",
     "CANDIDATE_SPEAKER",
@@ -4450,6 +4625,7 @@ __all__ = [
     "ProposedTemplate",
     "RubricDim",
     "RubricDimTombstone",
+    "JudgeConfigTombstone",
     "RubricProposal",
     "RepeatedScore",
     "RubricScore",

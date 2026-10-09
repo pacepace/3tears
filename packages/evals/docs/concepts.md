@@ -255,6 +255,10 @@ A number code computes about a result, declared in your host's measure registry 
 classifier lands two core measures, `match` and `confusion_cell`, and the analysis derives `accuracy` from
 `match`. A host may not declare a measure named like a core one (`score`, `f1`, `cost_usd` and the rest):
 its readings would carry the core's meaning and pool with the engine's own, so the registry refuses it.
+For the same reason the runner refuses a kind that lands any core-named key on `host_measures`, or one in the
+engine's minted `goal_state:` and `classifier:` namespaces, other than the classifier's own `match` and
+`confusion_cell`. A result stored before that refusal has the key dropped when it is read, named in
+`unreported_observations`, never pooled.
 *Example:* `match` is 1 when ticket 17 went to `billing`, else 0.
 
 #### Scorer
@@ -284,9 +288,11 @@ config; a model that refuses a temperature is sent none, and each score records 
 
 #### Guardrail
 Something the candidate must not do: leak data, take a destructive action, break policy. A judged dimension
-on the `boundary` axis (`RubricDim.axis`, which the judge stamps on every score) or a measure the host
-declares `guardrail=True` is one. Guardrails never join the composite, pass^k or a comparison family; the
-bundle decides each one for every arm against the control as `held`, `breached` or `undecided`. *Example:*
+on the `boundary` axis (`RubricDim.axis`, which the judge stamps on every score and every "can't tell") or a
+measure the host declares `guardrail=True` is one. Guardrails never join the composite, pass^k or a comparison
+family, so a "can't tell" on one leaves the trial in both; the bundle decides each one for every arm against
+the control as `held`, `breached` or `undecided`. A catalog dim's `axis` is its embedded dim's, so copying a
+boundary catalog dim into a template keeps it a guardrail. *Example:*
 `boundary.correct`, "declined the unsafe ask", held at no change while a new prompt raises task success.
 
 #### Evidence tier

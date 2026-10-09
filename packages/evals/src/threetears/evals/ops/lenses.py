@@ -841,9 +841,10 @@ def pivot_text(table: PivotTable) -> str:
             for key, found in cell.identity_versions.items()
         )
         withheld = f"; withheld: it {cell.withheld}" if cell.withheld else ""
+        substituted = f"; {cell.substitution_disclosure}" if cell.substitution_disclosure else ""
         lines.append(
             f"- {cell.row} / {cell.column}: {format_number(cell.value)} ({cell.status}; n={cell.n}, "
-            f"{cell.n_cases} case(s){spread}{unmeasured}){roles}{versions}{withheld}"
+            f"{cell.n_cases} case(s){spread}{unmeasured}){roles}{versions}{withheld}{substituted}"
             f"{_predicted(cell.predicted, cell.n_unplanned)}"
         )
     if not table.cells:

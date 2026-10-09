@@ -75,7 +75,6 @@ from threetears.evals.contracts.result_condition import (
     counted_rubric_scores,
     counted_score,
     delivered_a_turn,
-    harness_faulted,
     trial_exclusion,
 )
 from threetears.evals.contracts.scoring import (
@@ -2915,6 +2914,17 @@ class PivotCell(EvalBaseModel):
     #: entries differ are not comparable on cost, which :attr:`PivotTable.cost_compositions_differ`
     #: flags at the table. Empty on any other metric.
     cost_compositions: list[list[str]] = []
+    #: Of the ``n`` valued observations, how many carried a background delivery a harness supplied — seeded
+    #: or replayed (:func:`~threetears.evals.contracts.usage_capture.count_substituted_deliveries`). Counted on
+    #: every metric, because a substituted delivery is what the candidate read as well as what it did not pay
+    #: for. ``0`` on a cell whose observations ran every delivery live.
+    n_substituted: int = 0
+    #: On a cost pivot, the sentence a cell carries when ``n_substituted`` is above zero: a substituted delivery
+    #: spent none of its dollars, so the cell's spend leaves them out, and a cell built ONLY from such
+    #: observations is no live run's spend at all. ``None`` on any other metric and on a cell with none.
+    #: Stated on the cell rather than left to the export's ``substituted_deliveries`` column, because the cell
+    #: is what is read.
+    substitution_disclosure: str | None = None
     #: Identity key -> the predicate versions its observations here were stamped at, for each identity
     #: key (``variant_key``, ``context_key``) the table groups or filters on, and only where the cell
     #: pools more than one (#672). Two keys stamped at different versions cannot be shown FROM THE STAMP
@@ -3313,6 +3323,31 @@ def _identity_pooling_disclosure(cells: Sequence[PivotCell]) -> str | None:
     )
 
 
+def _substitution_disclosure(n_substituted: int, n_valued: int) -> str | None:
+    """The sentence a cost cell carries when some of its observations had a delivery a harness supplied.
+
+    Disclosed rather than withheld, for the reason :func:`_cost_withheld` gives: two arms over a seeded
+    template carry the same substitutions, so the comparison between their cells is honest. But a reader of
+    one cell's dollars needs to know they leave the substituted deliveries' spend out — and when every
+    observation substituted, that the figure describes no live run.
+
+    Args:
+        n_substituted: Valued observations carrying at least one substituted delivery.
+        n_valued: Valued observations in the cell.
+
+    Returns:
+        The sentence, or ``None`` when nothing was substituted.
+    """
+    if n_substituted == 0:
+        return None
+    share = "every one" if n_substituted == n_valued else f"{n_substituted}"
+    return (
+        f"{share} of the {n_valued} observation(s) behind this spend carried a background delivery a harness "
+        "supplied (seeded or replayed), which spent none of its dollars, so they are not in this figure"
+        + (": it is no live run's spend." if n_substituted == n_valued else ".")
+    )
+
+
 def _cost_withheld(records: Sequence[ScoreRecord]) -> str | None:
     """Why a cost mean over these valued observations is withheld, or ``None`` when it is reported (#658).
 
@@ -3330,8 +3365,9 @@ def _cost_withheld(records: Sequence[ScoreRecord]) -> str | None:
     **A substituted delivery within one mode is not a reason to withhold.** A seeded finding substitutes in
     a run that recorded ``off``, but it does so on the template's own cases, so two arms over those cases
     carry the same substitutions and the comparison between their cells is honest; the dollars it did not
-    spend were never measuring spend either. Each row's ``substituted_deliveries`` is an export column for a
-    reader who needs it. Withholding on it would blank the cost of every arm over a seeded template.
+    spend were never measuring spend either. The cell says so (:attr:`PivotCell.substitution_disclosure`), and
+    each row's ``substituted_deliveries`` is an export column. Withholding on it would blank the cost of every
+    arm over a seeded template.
 
     Args:
         records: The observations a cost mean would be taken over.
@@ -3579,10 +3615,15 @@ def compute_pivot(
 
             # What the value is drawn over is the valued observations, so the qualifiers below read those.
             valued = [record for record in at_cell if record.value is not None]
+            n_substituted = sum(1 for record in valued if record.substituted_deliveries > 0)
             qualifiers: dict[str, Any] = {
                 "cassette_modes": sorted({r.cassette_mode for r in valued if r.cassette_mode is not None}),
                 "cost_compositions": pooled_cost_compositions(valued) if metric == METRIC_COST_USD else [],
                 "identity_versions": identity_versions,
+                "n_substituted": n_substituted,
+                "substitution_disclosure": (
+                    _substitution_disclosure(n_substituted, len(valued)) if metric == METRIC_COST_USD else None
+                ),
             }
             withheld = _cost_withheld(valued) if metric == METRIC_COST_USD else None
             if withheld is not None:
@@ -5325,7 +5366,7 @@ class RegressionFlag(EvalBaseModel):
     thresholds it applied, so the label can never be read as a calibrated
     judgement — automated alerting stays gated behind judge calibration. ``label``
     is one of ``regressed`` / ``improved`` / ``equivalent`` / ``below_threshold`` /
-    ``not_separated`` / ``inconclusive`` (:class:`~threetears.evals.analysis.stats.ChangeVerdict`
+    ``not_separated`` / ``untested`` (:class:`~threetears.evals.analysis.stats.ChangeVerdict`
     defines each). A move earns a directional label only when it is both
     statistically significant and over a magnitude threshold (a joint gate). A move
     that misses significance reads ``not_separated``, never "no change": the one label
@@ -5362,10 +5403,10 @@ class RegressionFlag(EvalBaseModel):
     exceeds_threshold: bool | None = None
     #: Hedges' g_z of the paired move — bias-corrected, so not comparable with a Cohen's d.
     hedges_g: float | None = None
-    #: The p ``significant`` was thresholded against; ``None`` wherever no t-test
-    #: was evaluated. Carried for the same reason ``hedges_g`` is: a verdict
-    #: whose statistic is absent cannot be checked, and a reader must be able to
-    #: tell a label a test produced from one reasoned around an undefined test.
+    #: The p ``significant`` was thresholded against — the paired t's, or the exact
+    #: sign-flip p where every case moved by one amount — and ``None`` on an
+    #: ``untested`` step. Carried for the same reason ``hedges_g`` is: a verdict
+    #: whose statistic is absent cannot be checked.
     p: float | None = None
     #: The TOST p an ``equivalent`` label was thresholded against — the larger of the
     #: two one-sided p's — or ``None`` wherever no equivalence t-test ran: no margin
@@ -5543,9 +5584,13 @@ def _history_value_of(metric: str) -> Callable[[EvalResult], float | None]:
     if metric == METRIC_COMPOSITE:
         return result_composite
     if metric == METRIC_COST_USD:
-        # Whole but for a call the model refused or errored on, which took no turn and spent no turn's
-        # dollars — the frontier's cost rule, so the two surfaces read one spend.
-        return lambda result: result.cost_usd if delivered_a_turn(result) or harness_faulted(result) else None
+        # Measuring spend, so every dollar the program spent: the population program spend keeps on every
+        # surface that reads it — the cost pivot, a run summary's `mean_cost_usd`
+        # (:func:`~threetears.evals.contracts.scoring.compute_cost_summary`) and the budget view. A call the
+        # model refused before any turn was still billed, and a cell the harness faulted spent what it spent.
+        # Leaving the refusal out while the pivot kept it gave one corpus two figures for one quantity. What an
+        # arm COSTS reads only the turns taken, and is `production_replicating_cost`, which no series offers.
+        return lambda result: result.cost_usd
     if metric == METRIC_TOTAL_MS:
         # Infra-excluded cells are withheld here for the reason they are on the frontier's
         # latency: an apparatus fault produces a REAL but truncated `LatencyMetrics`, and this
@@ -5553,8 +5598,8 @@ def _history_value_of(metric: str) -> Callable[[EvalResult], float | None]:
         # returning None), so leaving latency in made the two metrics on one surface answer
         # different questions — and a cassette miss could post a "faster" step that describes the
         # harness. A call the model refused or errored on took no turn, and is withheld for the frontier's
-        # reason: `delivered_a_turn`, the one predicate every latency reading uses. Cost keeps a faulted
-        # cell's dollars, which were spent (see METRIC_COST_USD above).
+        # reason: `delivered_a_turn`, the one predicate every latency reading uses. Measuring spend keeps
+        # both, because those dollars were spent (see METRIC_COST_USD above).
         return lambda result: (
             result.latency.total_ms
             if result.latency is not None and result.latency.total_ms is not None and delivered_a_turn(result)

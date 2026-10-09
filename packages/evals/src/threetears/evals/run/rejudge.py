@@ -21,6 +21,7 @@ from collections.abc import Collection
 from typing import TYPE_CHECKING, Literal, NamedTuple, Protocol
 
 from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
+from threetears.evals.contracts.scoring import boundary_dim_names
 from threetears.evals.contracts.models import (
     DEFAULT_JUDGE_TEMPERATURE,
     NON_TERMINAL_RUN_STATUSES,
@@ -423,6 +424,12 @@ def apply_rejudge(
             # A recorded can't-tell is never re-asked (``failed_judge_dims``), so it stands; a dim
             # that failed before and is now answered "can't tell" leaves the errors and joins it.
             "judge_cannot_tell": {**result.judge_cannot_tell, **folded.cannot_tell},
+            # Stamped from the template's definitions, as the phase stamps them, so a guardrail's can't-tell
+            # never drops the trial from the capability measures.
+            "judge_cannot_tell_boundary": sorted(
+                set(result.judge_cannot_tell_boundary)
+                | {dim for dim in folded.cannot_tell if dim in boundary_dim_names(template.rubric)}
+            ),
             "judge_rescores": [*result.judge_rescores, rescore],
         }
     )

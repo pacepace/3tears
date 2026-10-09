@@ -507,10 +507,16 @@ def judged_on_every_dim(result: EvalResult) -> bool:
     Args:
         result: The result.
 
+    **A boundary dim is not one of them.** pass^k and the composite read capability dims alone
+    (:func:`~threetears.evals.contracts.scoring.capability_scores`), so a can't-tell on a guardrail
+    (``judge_cannot_tell_boundary``) leaves the trial in both: dropping it would let a guardrail reading
+    move the capability pillar.
+
     Returns:
-        ``False`` when the judge answered it could not tell on at least one rubric dim.
+        ``False`` when the judge answered it could not tell on at least one capability rubric dim.
     """
-    return not any(dim not in RESERVED_DIM_IDS for dim in result.judge_cannot_tell)
+    boundary = set(result.judge_cannot_tell_boundary)
+    return not any(dim not in RESERVED_DIM_IDS and dim not in boundary for dim in result.judge_cannot_tell)
 
 
 def _cannot_tell_disclosure(result: EvalResult) -> str | None:

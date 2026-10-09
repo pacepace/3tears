@@ -6,10 +6,19 @@ categorical palette cannot survive — thirty-six cells against four validated h
 So the configuration goes on the row, and the ranked measure takes position.
 
 The configuration is drawn as a **fused barcode**: one cell per swept lever, cells
-touching rather than spaced, so a lever that drives the ranking shows up as a
-contiguous block in its column and the reader finds it by scanning for the column
+touching rather than spaced down each column, so a lever that drives the ranking shows up
+as a contiguous block in its column and the reader finds it by scanning for the column
 that sorted itself. That is the whole reason the cells are fused — a gap between
 them turns a block into a list of separate marks.
+
+**Columns are separated, never fused.** A block is a column's, so a gap between columns
+costs it nothing, and without one two neighbouring cells of different levers read as one
+wider block wherever their inks are close. They can be identical: the packaged ordered
+ramp is a blue path whose middle stop IS categorical slot 1 in the light theme, and any
+continuous ramp crosses near some categorical hue (measured, every candidate family came
+within OKLab dE 3 of a slot under simulated colour-vision deficiency). So the boundary is
+structural, :data:`_COLUMN_GAP` px of the chart surface between every two columns, rather
+than a hue choice no palette can guarantee.
 
 **Two ink vocabularies, and they never share a scale.** An ordered lever's levels
 run low to high, so they take the ordered ramp by rank, which Vega samples at
@@ -66,9 +75,13 @@ _LEVEL_FIELD = "level"
 #: gap between levels, which the sweep never measured, instead of the order.
 _RANK_FIELD = "rank"
 
-#: The gap between the barcode and the ranking, in px. Zero inside the barcode is
+#: The gap between the barcode and the ranking, in px. Zero down a column is
 #: what fuses it; this is the separation between the glyph and the measurement.
 _PANEL_GAP = 16
+
+#: The gap between two barcode columns, in px: enough chart surface that cells of two
+#: levers never read as one block, whatever their inks (see the module header).
+_COLUMN_GAP = 4
 
 #: A configuration's mark area in px², which is ~12px across. Smaller than a
 #: frontier contestant's, which has to carry a shape distinction this one does not.
@@ -197,10 +210,16 @@ def _barcode_panel(
         The barcode view.
     """
     sizes = geometry()
+    # The band step is the panel width over the columns less the inner padding a fraction of a step buys, so the
+    # fraction that leaves `_COLUMN_GAP` px between columns is solved from the width rather than guessed.
+    columns = max(len(order), 1)
+    step = (sizes["gutter_left"] + _COLUMN_GAP) / columns
     column = {
         "field": _DIMENSION_FIELD,
         "type": "nominal",
         "sort": order,
+        # Columns separated, cells within a column fused: see the module header.
+        "scale": {"paddingInner": min(_COLUMN_GAP / step, 0.5) if columns > 1 else 0, "paddingOuter": 0},
         # No labels: a lever's name does not fit a cell's width and the label rules forbid
         # both truncating it and shrinking it, so the columns are named in a
         # disclosure line and spelled in full in the values table instead.

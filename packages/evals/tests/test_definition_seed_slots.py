@@ -36,6 +36,7 @@ from threetears.evals.run import (
     SeedCorpus,
     SeedOutcome,
     create_rubric_dim,
+    delete_judge_config,
     delete_rubric_dim,
     seed_eval_definitions,
     update_rubric_dim,
@@ -108,6 +109,33 @@ def test_a_config_the_operator_archived_is_not_resurrected() -> None:
 
     assert (again.created["judge_config"], again.skipped["judge_config"]) == (0, 2)
     assert storage.load_active_judge_config(DIM, SCOPE) is None
+
+
+def test_a_seeded_judge_config_the_operator_deleted_stays_deleted_and_is_named() -> None:
+    """#620's tombstone, carried to judge configs: a delete is a decision the next boot must not undo."""
+    storage, _ = memory_storage()
+    _seed(storage, corpus=_two_pacing_judges())
+    strict = next(c for c in storage.query_judge_configs(SCOPE) if c.name == "pacing-strict")
+
+    delete_judge_config(storage, strict.id, SCOPE, confirm=strict.id)
+    again = _seed(storage, corpus=_two_pacing_judges())
+
+    assert {c.name for c in storage.query_judge_configs(SCOPE)} == {"pacing-lenient"}, "written back"
+    assert again.created["judge_config"] == 0
+    assert again.deleted == {"judge_config": [f"{DIM}/pacing-strict"]}
+    (tombstone,) = storage.query_judge_config_tombstones(SCOPE)
+    assert (tombstone.rubric_dim_id, tombstone.name, tombstone.deleted_config_id) == (DIM, "pacing-strict", strict.id)
+
+
+def test_a_refused_judge_config_delete_writes_no_tombstone() -> None:
+    storage, _ = memory_storage()
+    _seed(storage, corpus=_two_pacing_judges())
+    strict = next(c for c in storage.query_judge_configs(SCOPE) if c.name == "pacing-strict")
+
+    with pytest.raises(ValidationFailedError):
+        delete_judge_config(storage, strict.id, SCOPE, confirm="not-the-id")
+
+    assert storage.query_judge_config_tombstones(SCOPE) == []
 
 
 # =============================================================================

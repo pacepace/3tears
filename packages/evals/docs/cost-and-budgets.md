@@ -152,16 +152,19 @@ candidate's own spend, `production_replicating_cost`, and every mean of it (`mea
 summary, a frontier point's cost, an analysis cell's) — reads only the turns the candidate took. It leaves
 out a result the harness faulted, since a cell an apparatus fault cut short spent less than a whole one and
 would let the rig make an arm look cheaper. It also leaves out a call the candidate's model refused straight
-away, which took no turn. Program spend (`cost_usd`, `total_cost_usd`, `mean_cost_usd`, the budget view)
-keeps both, because those dollars were spent. `n_prod_cost_usd` counts what the comparison figure rests on.
+away, which took no turn. Program spend (`cost_usd`, `total_cost_usd`, `mean_cost_usd`, a `cost_usd` pivot,
+the `cost_usd` history series, the budget view) keeps both, because those dollars were spent. `n_prod_cost_usd` counts what the comparison figure rests on.
 
 **A cost pivot says what its cells pool.** `scope_pivot(metric="cost_usd")` averages measuring spend, so
 each cell names the role sets its dollars were summed over (`cost_compositions`), and the table sets
 `cost_compositions_differ` when they are not all one set: a cheaper cell may only have priced fewer things.
 A cell that pools results from a run that replayed its third party with results from a live run is
 `withheld` with the reason, because the mean of the two is neither one's spend; put `cassette_mode` on an
-axis to read each alone. The table carries the same cassette-mode sentence `runs_compare` does, and the export
-carries `cassette_mode`, `substituted_deliveries` and `cost_roles` as columns. `runs_compare` states no
+axis to read each alone. A cell whose observations carried a seeded or replayed background delivery counts
+them (`n_substituted`) and says its dollars leave that delivery's spend out (`substitution_disclosure`); a cell
+built only from such observations says it is no live run's spend. The table carries the same cassette-mode
+sentence `runs_compare` does, and the export carries `cassette_mode`, `substituted_deliveries` and `cost_roles`
+as columns. `runs_compare` states no
 dollars, so it has no compositions to name.
 
 **Unpriced is a state, never zero.** A call your client could not price (a local model, say), or

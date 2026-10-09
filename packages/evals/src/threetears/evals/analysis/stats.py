@@ -76,7 +76,10 @@ _MIN_PAIRS_FOR_DETERMINISTIC_GAP = _min_pairs_for_sign_flip(SIGNIFICANCE_ALPHA)
 
 #: The paired test the change classifier discloses, so a regression flag names the
 #: statistics it rests on rather than presenting a bare verdict.
-PAIRED_TEST_NAME = f"paired two-sided t-test on shared per-case values, α={SIGNIFICANCE_ALPHA}"
+PAIRED_TEST_NAME = (
+    "paired two-sided t-test on shared per-case values (the exact sign-flip test where every difference is one "
+    f"amount), α={SIGNIFICANCE_ALPHA}"
+)
 
 # The test that runs when the two samples cannot be paired — no shared frozen
 # case set, so the cases on each side are different questions. Named beside the
@@ -1181,7 +1184,7 @@ def separation_p(
 
 
 #: What a change between two paired samples reads as — see :class:`ChangeVerdict`.
-ChangeLabel = Literal["improved", "regressed", "equivalent", "below_threshold", "not_separated", "inconclusive"]
+ChangeLabel = Literal["improved", "regressed", "equivalent", "below_threshold", "not_separated", "untested"]
 
 
 class ChangeVerdict(NamedTuple):
@@ -1212,7 +1215,10 @@ class ChangeVerdict(NamedTuple):
       shown equivalent: a real move too small to flag, never a claim of no change.
     - ``"not_separated"`` — not significant and not shown equivalent: the data cannot tell
       this move from noise, in either direction. Says nothing about whether it changed.
-    - ``"inconclusive"`` — too few paired observations to run the test (< 2 pairs).
+    - ``"untested"`` — no test could decide: fewer than two pairs, every case moved by the same
+      nonzero amount over too few pairs for the exact sign-flip p to reach α, or a spread that
+      vanishes in floating point. The engine-wide word for an undecidable reading, the one
+      :func:`level_difference` and the pivot use; it says nothing about whether the measure changed.
     """
 
     label: ChangeLabel
@@ -1223,9 +1229,10 @@ class ChangeVerdict(NamedTuple):
     hedges_g: float | None
     n_pairs: int
     #: The p the verdict was thresholded against, carried for the same reason the
-    #: effect size is: a label a reader cannot check is an assertion. ``None``
-    #: when no t-test was evaluated — including the deterministic-gap case below,
-    #: where the label is reasoned from the zero variance rather than from a t.
+    #: effect size is: a label a reader cannot check is an assertion. The t-test's p,
+    #: or where the paired differences have no spread the exact sign-flip p
+    #: (:func:`separation_p`'s reading of the same pattern). ``None`` when the verdict
+    #: is ``untested``.
     p_value: float | None = None
     #: The margin the equivalence test ran against, in the measure's units — the
     #: measure's declared materiality threshold. ``None`` when none was declared, and
@@ -1287,8 +1294,10 @@ def paired_change(
     reads ``"equivalent"`` only when the equivalence test shows it inside ± the
     declared margin; otherwise ``"below_threshold"`` when it was significant but
     under the gate, and ``"not_separated"`` when it was not — which claims nothing
-    about whether the measure changed. Fewer than two pairs is ``"inconclusive"``
-    because the test is undefined.
+    about whether the measure changed. A move no test can decide — fewer than two
+    pairs, or a uniform move over too few pairs for the exact p to reach α — is
+    ``"untested"``. Values are read exactly (:func:`exact_decimal`), so a float
+    residue never passes for a spread.
 
     The magnitude gate passes when any *active* threshold is cleared: the absolute
     change clearing ``min_absolute_change`` OR the relative change (against the
@@ -1335,16 +1344,21 @@ def paired_change(
     if len(baseline) != len(current):
         raise ValueError(f"paired_change requires samples aligned one-to-one; got {len(baseline)} vs {len(current)}")
 
-    a = [float(x) for x in baseline]
-    b = [float(x) for x in current]
+    # Read exactly (:func:`exact_decimal`), as :func:`separation_p` and :func:`level_difference` read: a
+    # constant per-case shift such as ``i/10`` against ``i/10 + 0.5`` carries a float residue in its
+    # differences that a t-test reads as a tiny, perfectly consistent spread (p near 1e-113), where the
+    # exact sign-flip p is ``2 ** (1 - n)`` — and that residue also decided whether the deterministic-gap
+    # branch ran at all.
+    a = [exact_decimal(x) for x in baseline]
+    b = [exact_decimal(x) for x in current]
     n_pairs = len(a)
     if n_pairs == 0:
-        return ChangeVerdict("inconclusive", None, None, None, None, None, 0, None, equivalence_margin)
+        return ChangeVerdict("untested", None, None, None, None, None, 0, None, equivalence_margin)
 
-    mean_a = sum(a) / n_pairs
-    mean_b = sum(b) / n_pairs
-    delta = mean_b - mean_a
-    relative = (delta / abs(mean_a)) if mean_a != 0 else None
+    mean_a = sum(a, Fraction(0)) / n_pairs
+    exact_delta = sum(b, Fraction(0)) / n_pairs - mean_a
+    delta = float(exact_delta)
+    relative = float(exact_delta / abs(mean_a)) if mean_a != 0 else None
 
     # Each gate at 0.0 is OFF (not a criterion), never a gate that passes
     # everything — otherwise OR-ing an active gate with an off one at 0.0 would
@@ -1356,38 +1370,37 @@ def paired_change(
     if min_relative_change <= 0.0:
         relative_gate: bool | None = None
     elif relative is None:
-        relative_gate = delta != 0.0
+        relative_gate = exact_delta != 0
     else:
         relative_gate = abs(relative) >= min_relative_change
     active_gates = [gate for gate in (absolute_gate, relative_gate) if gate is not None]
     exceeds = any(active_gates) if active_gates else True
 
-    diffs = [y - x for x, y in zip(a, b)]
-    tested = composite_significance(a, b, paired=True)
-    hedges_g, significant, p_value = tested
-    if (
-        significant is None
-        and n_pairs >= _MIN_PAIRS_FOR_DETERMINISTIC_GAP
-        and _sample_std(diffs) == 0.0
-        and delta != 0.0
-    ):
-        # A deterministic gap: every case moved by the same amount. The paired
-        # t-test is undefined (the difference SD is zero, so its t-statistic
-        # divides by zero) and `composite_significance` reports no finite effect
-        # size — but a perfectly consistent change is strong evidence of a real
-        # move, so a regression flag calls it significant rather than
-        # inconclusive. Effect size stays None (unbounded).
-        #
-        # The pair-count floor is what keeps that reasoning honest. With every
-        # case moving the same way, the sharpest claim the data can support is the
-        # exact paired sign-flip test, whose smallest attainable two-sided p is
-        # ``2 ** (1 - n)`` — one of the 2**n equally likely sign assignments in
-        # each tail. Below the floor even a perfect gap cannot clear alpha, so
-        # calling it significant would assert something no test could establish.
-        # Composite values also live on a coarse lattice (a mean over a 5-point
-        # rubric), which makes "every case moved by exactly the same amount" an
-        # ordinary coincidence at small n rather than a finding.
-        significant = True
+    # Float differences of exact ones: a constant exact difference is one float, so its spread is exactly 0.
+    diffs = [float(y - x) for x, y in zip(a, b)]
+    hedges_g: float | None
+    significant: bool | None
+    p_value: float | None
+    exact = _no_spread_p(a, b, paired=True) if n_pairs >= 2 else None
+    if exact is None:
+        hedges_g, significant, p_value = composite_significance(
+            [float(x) for x in a], [float(y) for y in b], paired=True
+        )
+    elif exact == 1.0:
+        # Every case moved by exactly nothing: definitively not separated, with the exact p of 1.
+        hedges_g, significant, p_value = 0.0, False, 1.0
+    elif exact <= SIGNIFICANCE_ALPHA:
+        # A deterministic gap: every case moved by the same nonzero amount. No t exists (the
+        # difference SD is zero), but the exact paired sign-flip test does: its p is ``2 ** (1 - n)``,
+        # one of the ``2 ** n`` equally likely sign assignments in each tail, and here it clears α. The
+        # p is carried, so the label is checkable; the effect size stays None (unbounded).
+        hedges_g, significant, p_value = None, True, exact
+    else:
+        # The same pattern over too few pairs for the exact p to reach α — at three pairs it is 0.25
+        # whatever the data. No test can decide, so the move is untested, never "not separated" (which
+        # would say the data was asked and could not tell). Composite values live on a coarse lattice,
+        # so "every case moved by exactly the same amount" is an ordinary coincidence at small n.
+        hedges_g, significant, p_value = None, None, None
     equivalent, equivalence_p = paired_equivalence(diffs, equivalence_margin)
 
     def verdict(label: ChangeLabel) -> ChangeVerdict:
@@ -1405,12 +1418,11 @@ def paired_change(
         )
 
     if significant is None:
-        # Genuinely untestable — fewer than two pairs, or a uniform move below the
-        # pair floor. Report the measured delta if there is one, but never a
-        # directional label from a test that did not run, and never equivalence.
-        return ChangeVerdict(
-            "inconclusive", delta, relative, None, exceeds, hedges_g, n_pairs, p_value, equivalence_margin
-        )
+        # Genuinely untestable — fewer than two pairs, a uniform move below the
+        # pair floor, or a spread that vanishes in floating point. Report the measured
+        # delta if there is one, but never a directional label from a test that did not
+        # run, and never equivalence.
+        return ChangeVerdict("untested", delta, relative, None, exceeds, hedges_g, n_pairs, None, equivalence_margin)
     if significant and exceeds:
         return verdict("improved" if (delta > 0) == higher_is_better else "regressed")
     if equivalent:

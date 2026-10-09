@@ -57,6 +57,7 @@ from threetears.evals.contracts.models import (
     EvalTemplate,
     JudgeConfig,
     RubricDimTombstone,
+    JudgeConfigTombstone,
     utc_now_iso,
 )
 from threetears.evals.run.check_controls import refuse_non_discriminating_checks
@@ -903,6 +904,12 @@ def delete_judge_config(storage: DefinitionStore, config_id: str, scope_id: str,
       A/B control arm is re-run against a *superseded* version. That path
       accepts an archived config deliberately; a deleted one refuses.
 
+    **A delete sticks, seeded config or not.** The seed writes any corpus config whose slot
+    (``rubric_dim_id``, ``name``) no record in the scope carries, so the delete first writes a
+    :class:`~threetears.evals.contracts.models.JudgeConfigTombstone` for the slot, and the seeder never
+    writes a tombstoned slot back — the mechanism :func:`delete_rubric_dim` uses. Authoring a config into
+    the slot again is the way back; the tombstone does not block it.
+
     **Not refused outright when in use, and that is a cost judgement, not a
     preference.** A referent count is not computable here: ``judge_config_ids``
     lives on :class:`~threetears.evals.contracts.models.EvalResult`, and counting would mean
@@ -923,9 +930,11 @@ def delete_judge_config(storage: DefinitionStore, config_id: str, scope_id: str,
     Raises:
         NotFoundError: No judge config with that id in the scope.
         ValidationFailedError: ``confirm`` does not echo ``config_id``.
-        StorageError: The judge config failed to delete.
+        StorageError: The tombstone or the delete failed to write. A failed tombstone leaves the config in
+            place, so no delete happens that a seed could undo.
     """
-    if storage.load_judge_config(config_id, scope_id) is None:
+    config = storage.load_judge_config(config_id, scope_id)
+    if config is None:
         raise NotFoundError("judge config", config_id)
     require_delete_confirmation(
         "judge config",
@@ -942,6 +951,13 @@ def delete_judge_config(storage: DefinitionStore, config_id: str, scope_id: str,
         alternative=(
             "supersede it with `judge_config_update`, which archives this record and leaves it resolvable for the runs it scored"
         ),
+    )
+    # The tombstone first, as `delete_rubric_dim` writes its own: a delete whose tombstone failed would be one the
+    # next seed undoes, writing the seeded config back into the slot the delete emptied.
+    storage.save_judge_config_tombstone(
+        JudgeConfigTombstone(
+            scope_id=scope_id, rubric_dim_id=config.rubric_dim_id, name=config.name, deleted_config_id=config_id
+        )
     )
     if not storage.delete_judge_config(config_id, scope_id):
         raise StorageError(f"failed to delete judge config '{config_id}'")

@@ -50,8 +50,11 @@ active or archived, as an occupied slot.
 **A deleted rubric dim stays deleted.** Deleting is a decision too, and a delete empties the slot,
 so on its own it would hand a seeded dim back to the next boot. ``delete_rubric_dim`` therefore
 leaves a :class:`~threetears.evals.contracts.models.RubricDimTombstone` for the key, and a
-tombstoned key is not written: it is reported under ``deleted``, by key, on every boot. (Templates
-and judge configs carry no tombstone yet; deleting a seeded one of those still empties its slot.)
+tombstoned key is not written: it is reported under ``deleted``, by key, on every boot.
+``delete_judge_config`` does the same for a judge config's slot
+(:class:`~threetears.evals.contracts.models.JudgeConfigTombstone`). Templates carry none: no
+operation deletes a template, only the storage port's own ``delete_template``, which writes no
+tombstone, so a template deleted straight from the store still empties its slot.
 
 The seeder creates. It never updates and never deletes.
 
@@ -186,8 +189,8 @@ class SeedOutcome:
     #: contradict, per doc type — today only a non-archived judge config for a dim the store has an
     #: active config for. Keys rather than a count, because the operator resolves each one.
     conflicted: dict[str, list[str]] = field(default_factory=dict)
-    #: Natural keys NOT written because an operator deleted them (a tombstone), per doc type — today
-    #: only rubric dims. Reported rather than counted as present: the slot is empty by decision.
+    #: Natural keys NOT written because an operator deleted them (a tombstone), per doc type — rubric
+    #: dims and judge configs. Reported rather than counted as present: the slot is empty by decision.
     deleted: dict[str, list[str]] = field(default_factory=dict)
 
     @property
@@ -324,8 +327,8 @@ def seed_eval_definitions(
 
     Seeding semantics: empty slots only, the store is master once seeded. Occupancy is decided
     against the archived-inclusive queries, so a definition an operator archived stays
-    archived rather than being resurrected at the next boot; and a rubric dim key an operator
-    deleted carries a tombstone, so it stays deleted and is reported under ``deleted``.
+    archived rather than being resurrected at the next boot; and a rubric dim key or judge config
+    slot an operator deleted carries a tombstone, so it stays deleted and is reported under ``deleted``.
 
     Every template is first admitted through the gates ``create_template`` applies
     (:func:`~threetears.evals.run.authoring.admit_template`), all of them before any write, and is
@@ -415,6 +418,7 @@ def seed_eval_definitions(
         # The corpus holds at most one non-archived config per dim (SeedCorpus refuses more), so the
         # store's active configs are the only ones a write could contradict.
         conflicts=lambda c: not c.archived and c.rubric_dim_id in dims_with_an_active_config,
+        deleted={(t.rubric_dim_id, t.name) for t in storage.query_judge_config_tombstones(corpus.scope_id)},
     )
 
     return outcome

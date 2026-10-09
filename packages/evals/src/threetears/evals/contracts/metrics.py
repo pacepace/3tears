@@ -91,7 +91,7 @@ the system produces" — the second is not true and is not the goal.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import Field, model_validator
@@ -119,6 +119,7 @@ __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why th
     "ACCURACY_MEASURE",
     "CONFUSION_CELL_MEASURE",
     "CONFUSION_SEPARATOR",
+    "CLASSIFIER_TRACK_MEASURES",
     "DUAL_AXIS_FAMILY",
     "ENGINE_FAMILIES",
     "GOAL_STATE_FAMILY",
@@ -140,6 +141,7 @@ __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why th
     "classifier_label_of",
     "confusion_cell",
     "confusion_of",
+    "undeclarable_host_measures",
     "describe_classifier_label",
     "is_code_graded",
     "materiality",
@@ -2282,6 +2284,40 @@ def describe_classifier_label(statistic: ClassifierStatistic, label: str) -> Met
             "reader_prose": f"the {statistic} of the label {label!r}",
             "merit_axis": "quality",
         }
+    )
+
+
+#: The core measures a kind lands on ``host_measures`` itself: a classifier kind's verdict and its
+#: confusion cell. They are the classifier track's, read under the core's descriptors by design — every
+#: other core-named key on ``host_measures`` is one no host could have declared.
+CLASSIFIER_TRACK_MEASURES = frozenset({MATCH_MEASURE, CONFUSION_CELL_MEASURE})
+
+
+def undeclarable_host_measures(names: Iterable[str]) -> list[str]:
+    """The keys of a kind's ``host_measures`` that name a measure only the engine measures, sorted.
+
+    A host cannot DECLARE a measure named like a core one (the measure registry refuses it), and a minted
+    name — a goal check's ``goal_state:…``, a classifier label's ``classifier:…`` — is the engine's
+    namespace. So a kind landing such a key reports a value nobody described as the host's, and every
+    resolver reads it under the core's meaning: its values would pool into the engine's own distribution
+    of that name, ``n`` inflated. The classifier track's own keys (:data:`CLASSIFIER_TRACK_MEASURES`) are
+    the one legitimate core-named write and are not returned.
+
+    Args:
+        names: The keys a kind landed.
+
+    Returns:
+        The engine-owned keys among them, the classifier track's excepted.
+    """
+    return sorted(
+        name
+        for name in names
+        if name not in CLASSIFIER_TRACK_MEASURES
+        and (
+            name in METRIC_DESCRIPTORS
+            or name.startswith(GOAL_CHECK_MEASURE_PREFIX)
+            or name.startswith(CLASSIFIER_LABEL_MEASURE_PREFIX)
+        )
     )
 
 

@@ -3645,6 +3645,29 @@ class TestSweepRankingRanksAndNeverManufacturesItsFinding:
         cells = set(re.findall(r'fill="(rgb\([^)]*\)|#[0-9a-fA-F]{6})"', svg))
         assert len(cells) >= stops + 2, f"{stops + 2} levels drew only {len(cells)} distinct inks"
 
+    def test_neighbouring_columns_never_fuse_into_one_block(self):
+        """An ordered cell beside a categorical one read as one block where their inks met — and they can be equal.
+
+        The premise is pinned so the boundary cannot outlive its reason unnoticed: the light ramp's middle stop is
+        categorical slot 1. The boundary is structural, a few px of surface between every two columns, solved from
+        the panel width so it holds whatever the column count; cells down a column stay fused.
+        """
+        from threetears.evals.vega.palette import series_colors
+
+        assert sequential_colors("light")[2] == series_colors("light")[0], "the collision the gap exists for"
+        barcode = compile_chart("sweep_ranking", SWEEP_RANKING).spec["hconcat"][0]
+        columns = {
+            (layer["encoding"]["x"]["field"], json.dumps(layer["encoding"]["x"]["scale"], sort_keys=True))
+            for layer in barcode["layer"]
+        }
+        assert len(columns) == 1, "every layer must lay its cells on one column scale"
+        scale = barcode["layer"][0]["encoding"]["x"]["scale"]
+        n = len({mark["dimension"] for mark in barcode["data"]["values"]})
+        width = barcode["width"]
+        step = width / (n - scale["paddingInner"] + 2 * scale["paddingOuter"])
+        assert n > 1 and scale["paddingInner"] * step == pytest.approx(4.0), "a visible gap between columns"
+        assert "padding" not in barcode["layer"][0]["encoding"]["y"].get("scale", {}), "rows stay fused"
+
     def test_the_two_ink_vocabularies_never_share_a_scale(self):
         """A concurrency rank and a model name are not values of one thing.
 
