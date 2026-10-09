@@ -36,16 +36,23 @@ __all__ = [
     "GenerationSource",
     "GenerationVerdict",
     "NoWriteGeneration",
+    "READS_GENERATIONS_ATTRIBUTE",
     "UndeclaredWriteGeneration",
     "WriteGeneration",
     "WriteGenerationDeclaration",
+    "source_reads",
     "split_generation_token",
 ]
 
 
 @runtime_checkable
 class GenerationSource(Protocol):
-    """reads and advances each table's write generation."""
+    """reads and advances each table's write generation.
+
+    A source that can advance and not read declares ``reads_generations = False``
+    (:data:`READS_GENERATIONS_ATTRIBUTE`, read through :func:`source_reads`); absence caching is
+    then off on its registry.
+    """
 
     async def current(self, table_name: str) -> str:
         """the table's current generation, as an opaque token compared for equality only.
@@ -78,6 +85,28 @@ class GenerationSource(Protocol):
         :raises GenerationUnavailableError: when the generation cannot be advanced
         """
         ...
+
+
+#: the optional attribute a :class:`GenerationSource` sets to ``False`` when it can advance a table's
+#: generation and cannot read one, so :meth:`GenerationSource.current` always raises. A source
+#: without the attribute reads.
+READS_GENERATIONS_ATTRIBUTE: Final = "reads_generations"
+
+
+def source_reads(source: GenerationSource | None) -> bool:
+    """whether ``source`` can read a table's generation, not only advance it.
+
+    Reading and advancing are separate capabilities. A pod's
+    :class:`~threetears.core.backends.BrokerGenerationSource` advances through the L3 broker and
+    may hold no reader, and a collection that caches absences needs a generation it can READ to
+    stamp them with: on a source that cannot, it caches none, exactly as with no source at all.
+
+    :param source: the registry's source, or ``None``
+    :ptype source: GenerationSource | None
+    :return: ``True`` when there is a source and it does not say it cannot read
+    :rtype: bool
+    """
+    return source is not None and bool(getattr(source, READS_GENERATIONS_ATTRIBUTE, True))
 
 
 def split_generation_token(token: str) -> tuple[str, int] | None:

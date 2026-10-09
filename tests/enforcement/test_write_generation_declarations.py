@@ -20,7 +20,7 @@ while three things stay true across the family, and each is a rule here:
    schedules neither has a registry that counts broadcasts for ever and never acts on one missed.
 4. **One table, one line of classes, one declaration.** Every ``BaseCollection`` subclass the
    family defines is enumerated by importing every module, in a process of its own
-   (``_collection_census.py``). The classes that name one table must descend from one class that
+   (:mod:`threetears.enforcement.collection_census`). The classes that name one table must descend from one class that
    names it -- a subclass adding queries is the same class for this purpose, the way
    ``HubGroupMemberCollection`` extends ``GroupMemberCollection`` -- and they must all declare the
    same write generation. Two unrelated classes for a table are two places its declaration can
@@ -29,10 +29,11 @@ while three things stay true across the family, and each is a rule here:
    in :data:`_TABLES_NAMED_PER_INSTANCE` with why; the registry's own refusal
    (``CollectionRegistry.register``) covers those at run time.
 
-**What rule 4 cannot reach, stated rather than implied.** Classes in other repositories: the hub
-and the SDK each define a class for ``playbook_entries`` and ``concepts`` beside
-``threetears.agent.knowledge``'s. No check in this repository sees them; the one-class cleanup
-before the default flips removes them, and each repository runs this census over its own classes.
+**What rule 4 cannot reach from here, stated rather than implied.** Classes in other repositories.
+No check in this repository sees them. The census ships in ``threetears.enforcement`` so each
+product repository runs it over its own trees with the framework's classes joined
+(``run_census(roots, framework=True)``), which is where a product's second class for a framework
+table is caught.
 
 Rules 1 to 3 are AST-only; rule 4 imports, in a subprocess.
 """
@@ -40,13 +41,10 @@ Rules 1 to 3 are AST-only; rule 4 imports, in a subprocess.
 from __future__ import annotations
 
 import ast
-import json
-import os
-import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+
+from threetears.enforcement.collection_census import find_census_problems, run_census
 
 __all__: list[str] = []
 
@@ -271,73 +269,6 @@ _TABLES_NAMED_PER_INSTANCE: dict[str, str] = {
     "threetears.geo.features.FeatureCache": "one table per cache scope, geo_features_{scope}",
 }
 
-_CENSUS = Path(__file__).resolve().parent / "_collection_census.py"
-
-
-def run_census(roots: list[Path]) -> dict[str, Any]:
-    """enumerate every collection class under ``roots``, in a process of its own.
-
-    :param roots: package source roots to import
-    :ptype roots: list[Path]
-    :return: the census: ``classes`` and ``import_failures``
-    :rtype: dict[str, Any]
-    """
-    env = {**os.environ, "PYTHONPATH": os.pathsep.join(path for path in sys.path if path)}
-    completed = subprocess.run(  # noqa: S603 - this interpreter, this repository's own script
-        [sys.executable, str(_CENSUS), *(str(root) for root in roots)],
-        capture_output=True,
-        text=True,
-        env=env,
-        check=False,
-        timeout=600,
-    )
-    assert completed.returncode == 0, completed.stderr
-    census: dict[str, Any] = json.loads(completed.stdout)
-    return census
-
-
-def find_census_problems(census: dict[str, Any], named_per_instance: dict[str, str]) -> list[str]:
-    """every way the census breaks rule 4, or the enumeration itself is incomplete.
-
-    :param census: what :func:`run_census` found
-    :ptype census: dict[str, Any]
-    :param named_per_instance: concrete classes whose table is named per instance, with why
-    :ptype named_per_instance: dict[str, str]
-    :return: one line per problem
-    :rtype: list[str]
-    """
-    problems = [f"module did not import, so its classes were not enumerated: {f}" for f in census["import_failures"]]
-    classes: list[dict[str, Any]] = census["classes"]
-    names = {record["name"] for record in classes}
-    has_subclass = {ancestor for record in classes for ancestor in record["ancestors"]}
-    by_table: dict[str, list[dict[str, Any]]] = {}
-    for record in classes:
-        if record["declaration"] == "invalid":
-            problems.append(f"{record['name']}: write_generation is not one of the three declarations")
-        if record["declaration"] == "opted_out" and not str(record["reason"] or "").strip():
-            problems.append(f"{record['name']}: NoWriteGeneration without a reason")
-        if record["table"] is not None:
-            by_table.setdefault(record["table"], []).append(record)
-        elif not record["abstract"] and record["name"] not in has_subclass and record["name"] not in named_per_instance:
-            problems.append(
-                f"{record['name']}: its table cannot be read off the class; name it in a schema or a "
-                f"table_name property, or list it in _TABLES_NAMED_PER_INSTANCE with why"
-            )
-    for stale in sorted(set(named_per_instance) - names):
-        problems.append(f"_TABLES_NAMED_PER_INSTANCE lists {stale}, which the census no longer finds")
-    for table, records in sorted(by_table.items()):
-        members = {record["name"] for record in records}
-        roots = sorted(record["name"] for record in records if not set(record["ancestors"]) & members)
-        if len(roots) > 1:
-            problems.append(f"table {table!r} is named by unrelated classes: {', '.join(roots)}")
-        kinds = sorted({record["declaration"] for record in records})
-        if len(kinds) > 1:
-            problems.append(
-                f"table {table!r} has classes declaring different write generations ({', '.join(kinds)}): "
-                f"{', '.join(sorted(members))}"
-            )
-    return problems
-
 
 def _assert_clean(violations: list[Violation]) -> None:
     """fail, listing every violation.
@@ -492,6 +423,27 @@ class TestTheWalkersBite:
         census = run_census(_source_roots(_plant(tmp_path, "scoped.py", source)))
         assert [p.split(":")[0] for p in find_census_problems(census, {})] == ["threetears.planted.scoped.Scoped"]
         assert find_census_problems(census, {"threetears.planted.scoped.Scoped": "one per scope"}) == []
+
+    def test_a_product_class_for_a_framework_table_is_flagged_and_a_subclass_is_not(self, tmp_path: Path) -> None:
+        # a product repository's census, run over its own tree with the framework's classes joined
+        package = tmp_path / "src" / "aibots_planted"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("", encoding="utf-8")
+        (package / "knowledge.py").write_text(
+            _PLANTED_HEAD
+            + "from threetears.agent.knowledge.collections import PlaybookEntryCollection\n"
+            + _planted("ProductConcepts", "concepts")
+            + "\n\nclass AdminPlaybookEntries(PlaybookEntryCollection):\n    pass\n",
+            encoding="utf-8",
+        )
+        census = run_census([tmp_path / "src"], framework=True)
+        flagged = {record["name"]: record["framework"] for record in census["classes"]}
+        assert flagged["aibots_planted.knowledge.ProductConcepts"] is False
+        assert flagged["threetears.agent.knowledge.collections.ConceptCollection"] is True
+        assert find_census_problems(census, {}) == [
+            "table 'concepts' is named by unrelated classes: "
+            "aibots_planted.knowledge.ProductConcepts, threetears.agent.knowledge.collections.ConceptCollection"
+        ]
 
     def test_a_module_that_does_not_import_is_flagged(self, tmp_path: Path) -> None:
         root = _plant(tmp_path, "broken.py", "import threetears.planted.nowhere\n")
