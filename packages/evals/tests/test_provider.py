@@ -2,8 +2,9 @@
 
 ``threetears/evals/contracts/provider.py`` holds the provider trivia the engine needs, so it
 names no host LLM module. This file asserts the contract itself -- what the engine depends on.
-Parity with a particular host's own copies of those values, and the fit of that host's concrete
-client to the completion port, are that host's tests to keep.
+Parity with a particular host's own copies of those values is that host's test to keep, and so is the
+fit of its concrete completion type to the port, which it checks with
+:func:`~threetears.evals.testing.check_completion_conformance` -- the check this file runs on the toy host.
 """
 
 from __future__ import annotations
@@ -14,14 +15,19 @@ from typing import get_args
 import pytest
 
 from threetears.evals.contracts.provider import (
+    COMPLETION_RESULT_ATTRIBUTES,
     INCOMPLETE_STOP_REASONS,
     JSON_OBJECT_RESPONSE_FORMAT,
+    USAGE_LEDGER_ATTRIBUTES,
     StopReason,
     describe_incomplete_completion,
     extract_json,
     extract_json_array,
     sum_optional_tokens,
 )
+from threetears.evals.testing import CompletionConformanceFailure, check_completion_conformance
+
+from packages.evals.tests.fixtures.toyhost.judge import ToyJudgeCompletion
 
 
 @dataclass
@@ -113,13 +119,71 @@ class TestExtractJsonArray:
 class TestCompletionPort:
     """The injected client must still fit the shape eval was written against."""
 
-    def test_the_eval_call_usage_record_carries_them_too(self):
-        """``CallUsage`` is fed to the same ledger method as a real completion result."""
-        from threetears.evals.contracts.usage_capture import CallUsage
+    def test_the_eval_call_usage_record_carries_every_attribute_the_ledger_reads(self):
+        """``CallUsage`` is fed to the same ledger method as a real completion, so it carries the ledger's declared set.
+
+        Read off the declaration the ledger itself reads, never a list typed here: a hand-typed list
+        already missed ``price_source`` once, and a rename on ``CallUsage`` degraded every judge and
+        simulator row to "unreported" with nothing failing.
+        """
+        from threetears.evals.contracts.usage_capture import CALL_USAGE_ONLY_ATTRIBUTES, CallUsage
 
         usage = CallUsage()
-        for field in ("model", "input_tokens", "output_tokens", "reasoning_tokens", "cost_usd"):
+        for field in (*USAGE_LEDGER_ATTRIBUTES, *CALL_USAGE_ONLY_ATTRIBUTES):
             assert hasattr(usage, field), f"CallUsage lost {field!r}, which the ledger's duck type needs"
+
+    def test_every_attribute_the_ledger_reads_off_a_completion_is_a_protocol_member(self):
+        """The declaration names nothing the protocol does not promise, so a host held to the protocol supplies it."""
+        assert set(USAGE_LEDGER_ATTRIBUTES) <= set(COMPLETION_RESULT_ATTRIBUTES)
+
+    def test_the_protocol_member_list_is_read_off_the_protocol(self):
+        """``served_model`` and ``stop_reason`` are members; ``calls`` is not — it is ``CallUsage``'s alone."""
+        assert {"content", "served_model", "stop_reason", "price_source"} <= set(COMPLETION_RESULT_ATTRIBUTES)
+        assert "calls" not in COMPLETION_RESULT_ATTRIBUTES
+
+    def test_a_conforming_completion_passes_the_hosts_check(self):
+        """The toy host's completion type is what a host's own suite would hand the check."""
+        check_completion_conformance(
+            ToyJudgeCompletion(
+                content="{}", input_tokens=1, output_tokens=1, cost_usd=None, model="m", price_source=None
+            )
+        )
+
+    @pytest.mark.parametrize("renamed", USAGE_LEDGER_ATTRIBUTES)
+    def test_renaming_any_attribute_the_ledger_reads_fails_naming_it(self, renamed):
+        """A rename the ledger would read as "unreported" in silence fails the host's check by name."""
+        fields = {name: None for name in COMPLETION_RESULT_ATTRIBUTES}
+        fields.update(content="{}", stop_reason="end_turn")
+        fields[f"{renamed}_renamed"] = fields.pop(renamed)
+        completion = type("RenamedCompletion", (), fields)()
+
+        with pytest.raises(CompletionConformanceFailure, match=rf"missing {renamed}\b.*usage ledger"):
+            check_completion_conformance(completion)
+
+    def test_a_raw_provider_stop_reason_fails_the_check(self):
+        """OpenAI's ``length`` passed through reads as finished; the check says so."""
+        fields: dict[str, object] = {name: None for name in COMPLETION_RESULT_ATTRIBUTES}
+        fields.update(content="{}", stop_reason="length")
+
+        with pytest.raises(CompletionConformanceFailure, match="stop_reason 'length'"):
+            check_completion_conformance(type("RawCompletion", (), fields)())
+
+    def test_the_ledger_reads_the_served_model_never_the_requested_one(self):
+        """A completion naming the alias in ``model`` and the concrete model in ``served_model`` lands both, apart."""
+        from threetears.evals.contracts.usage_capture import RoleUsageLedger
+
+        ledger = RoleUsageLedger(role="candidate")
+        ledger.add_llm_result(_Completion(model="~vendor/model-latest", served_model="vendor/model-2026-03"))
+        ledger.add_llm_result(_Completion(model="~vendor/model-latest", served_model="vendor/model-2026-06"))
+        ledger.add_llm_result(_Completion(model="~vendor/model-latest"))
+
+        rows = ledger.rows()
+        assert [(row.model, row.served_model) for row in rows] == [
+            ("~vendor/model-latest", "vendor/model-2026-03"),
+            ("~vendor/model-latest", "vendor/model-2026-06"),
+            # A response that named no model is not recorded — never the alias standing in for it.
+            ("~vendor/model-latest", None),
+        ]
 
 
 class TestDescribeIncompleteCompletion:

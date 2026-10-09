@@ -365,6 +365,10 @@ async def run_judge_llm(
     # Where the dollars came from, as the client said. One client serves every attempt, so the
     # last attempt to name a source names it for all of them — the same reading `judge_model` gets.
     judge_price_source: str | None = None
+    # What each attempt's response named as having answered, ``None`` for one that named none. The
+    # usage record names a served model only when every attempt named the same one: one record
+    # folding attempts answered by different models cannot name either.
+    attempt_served: set[str | None] = set()
     attempts_made = 0
     max_attempts = JUDGE_CALL_ATTEMPTS
 
@@ -379,6 +383,7 @@ async def run_judge_llm(
             return None
         return CallUsage(
             model=judge_model,
+            served_model=next(iter(attempt_served)) if len(attempt_served) == 1 else None,
             input_tokens=total_input,
             output_tokens=total_output,
             reasoning_tokens=total_reasoning,
@@ -433,6 +438,7 @@ async def run_judge_llm(
         total_reasoning = sum_optional_tokens(total_reasoning, getattr(result, "reasoning_tokens", None))
         judge_model = getattr(result, "model", "") or judge_model
         judge_price_source = getattr(result, "price_source", None) or judge_price_source
+        attempt_served.add(getattr(result, "served_model", None) or None)
         # Logged whenever the provider reported anything about the attempt's spend — a call with
         # unreported counts and a known cost still spent, and a truthiness test would drop it.
         if attempt_input is not None or attempt_output is not None or attempt_cost is not None:

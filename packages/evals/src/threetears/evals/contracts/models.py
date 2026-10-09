@@ -111,6 +111,12 @@ were decided by, None on an analysis stored before tiers were decided on the agr
 were the point estimate against the bar, and are rendered as that, never as the interval rule's claim. And
 ``EvalRun.goal_check_proofs``: whether each goal check was shown, at launch, to beat doing nothing; None on a run
 launched before it, read as unproven.
+
+**Within v8, not a bump**: ``RoleUsage.served_model`` joined as an OPTIONAL field — the model the provider's
+response named as having answered the row's calls, which for a candidate launched on a floating alias is the
+only record of which model produced its numbers. A row stored before it carries None and reads as "not
+recorded", never as the alias in ``model``: the analysis names such an arm's served model unknown rather than
+the one requested.
 """
 
 
@@ -3115,11 +3121,13 @@ class RoleUsage(EvalDocumentModel):
     carries ``None`` reasoning — coercing it to 0 would fabricate an observation.
     A genuine zero (a non-reasoning model reporting 0 reasoning tokens) stays 0.
 
-    Rows are keyed by **(role, model, price source)**, not role alone: a role that spent
+    Rows are keyed by **(role, model, served model, price source)**, not role alone: a role that spent
     tokens on more than one model — a run whose per-dim judge configs pin different
     models, say — contributes one row per model, because blending them would have
     to drop ``model`` and with it the ability to re-derive the dollars. Dollars priced
-    two ways stay in two rows for the same reason.
+    two ways stay in two rows for the same reason, and so do calls one requested alias had
+    answered by two different models: ``served_model`` is the evidence of which model produced
+    the numbers, and a blended row could name neither.
 
     The ``external`` role (paid non-LLM APIs, e.g. web search) has no token
     concept at all: it reports ``call_count`` and — where the caller could count
@@ -3143,7 +3151,19 @@ class RoleUsage(EvalDocumentModel):
     role: UsageRole
     model: str | None = Field(
         default=None,
-        description="Model slug that produced this role's tokens; None when not model-attributable (e.g. an external API).",
+        description=(
+            "Model slug this role's tokens were attributed to, for spend; None when not model-attributable (e.g. an "
+            "external API). A client may fill it from the REQUEST, so for a floating alias it names the alias, not "
+            "the model that answered — that is served_model."
+        ),
+    )
+    served_model: str | None = Field(
+        default=None,
+        description=(
+            "The model the provider's RESPONSE named as having answered this row's calls, never the id requested. "
+            "None = not recorded: the responses named no model, or the row was stored before this was recorded. "
+            "Never read the alias in `model` in its place."
+        ),
     )
     prompt_tokens: int | None = Field(default=None, ge=0)
     completion_tokens: int | None = Field(default=None, ge=0)
