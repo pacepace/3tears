@@ -173,7 +173,7 @@ def analysis_over(surface: DecisionSurface, *, index: list[VariantIndexEntry] | 
         design_snapshot=CampaignDesign(
             axes=[SweptAxis(axis_id=AXIS, values=[_level(BASELINE), _level(CHALLENGER)])],
             control=_key(BASELINE),
-            controls=ControlDeclaration(stimulus="controlled", apparatus="commissioned"),
+            held_fixed=ControlDeclaration(stimulus="controlled", apparatus="commissioned"),
         ),
         variant_index=index if index is not None else [_entry(BASELINE), _entry(CHALLENGER)],
         decision_surface=surface,

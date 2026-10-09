@@ -354,7 +354,7 @@ def minimal_declaration(*, control: str | None = None, axis_id: str | None = Non
     return CampaignDesign(
         axes=[SweptAxis(axis_id=axis_id or CANDIDATE_MODEL_LEVER, values=[SweepableValue.of("glm", display="GLM")])],
         control=control,
-        controls=ControlDeclaration(stimulus="controlled", apparatus="commissioned"),
+        held_fixed=ControlDeclaration(stimulus="controlled", apparatus="commissioned"),
     )
 
 

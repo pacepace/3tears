@@ -10,12 +10,12 @@ pooled into one cell. Now:
 - the bundle reads the provenance off each run, and it enters the apparatus class id — so a
   witnessed and a commissioned observation of one variant are two cells on every per-cell surface,
   not only in the cell algebra;
-- the campaign's declared controls are compared with what the runs recorded.
+- what the campaign declared held fixed is compared with what the runs recorded.
 
 Mutations that turn this file red: restoring ``provenance="commissioned"`` in the bundle's
 ``_apparatus_classes`` (the hardcoded value, renamed); dropping ``provenance`` from the class digest
 in ``apparatus_class_of``; giving ``EvalRun.apparatus_provenance`` a default; deleting the launch
-path's stamp; inverting the contradiction test in ``_controls_reading``.
+path's stamp; inverting the contradiction test in ``_held_fixed_reading``.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ _COMMISSIONED = "commissioned-narrow"
 
 
 def _with_a_commissioned_twin(
-    *, controls: ControlDeclaration | None = None
+    *, held_fixed: ControlDeclaration | None = None
 ) -> tuple[EvalCampaign, list[EvalRun], dict[str, list[EvalResult]]]:
     """The toy campaign (two witnessed batches) plus a commissioned batch of the narrow variant.
 
@@ -50,7 +50,7 @@ def _with_a_commissioned_twin(
     the same recorded rig — and differs only in having been commissioned.
 
     Args:
-        controls: The controls the campaign declares; ``None`` keeps the toy host's own.
+        held_fixed: What the campaign declares held fixed; ``None`` keeps the toy host's own.
 
     Returns:
         The campaign, its runs (narrow, wide, twin) and each run's results.
@@ -67,8 +67,8 @@ def _with_a_commissioned_twin(
     ]
     design = campaign.declared_design
     assert design is not None
-    if controls is not None:
-        design = design.model_copy(update={"controls": controls})
+    if held_fixed is not None:
+        design = design.model_copy(update={"held_fixed": held_fixed})
     campaign = campaign.model_copy(update={"run_ids": [narrow_id, wide_id, twin.id], "declared_design": design})
     return campaign, [narrow, wide, twin], results
 
@@ -169,7 +169,7 @@ class TestTheDeclaredControlsAreReadAgainstTheRuns:
 
     def test_a_run_contradicting_the_declared_apparatus_is_named(self) -> None:
         campaign, runs, results = _with_a_commissioned_twin()
-        reading = _assemble(campaign, runs, results).controls_reading
+        reading = _assemble(campaign, runs, results).held_fixed_reading
 
         assert reading.declared_apparatus == "witnessed"
         assert reading.run_provenance[_COMMISSIONED] == "commissioned"
@@ -179,22 +179,22 @@ class TestTheDeclaredControlsAreReadAgainstTheRuns:
 
     def test_runs_that_agree_with_the_declaration_contradict_nothing(self) -> None:
         campaign, storage = toyhost_campaign()
-        reading = assemble_context_bundle(campaign, storage=storage, profile=toyhost_profile()).controls_reading
+        reading = assemble_context_bundle(campaign, storage=storage, profile=toyhost_profile()).held_fixed_reading
 
         assert reading.contradicting_run_ids == []
         assert reading.disclosure is not None and "recorded otherwise" not in reading.disclosure
 
     def test_a_mix_with_nothing_declared_is_disclosed(self) -> None:
         campaign, runs, results = _with_a_commissioned_twin()
-        reading = _assemble(campaign.model_copy(update={"declared_design": None}), runs, results).controls_reading
+        reading = _assemble(campaign.model_copy(update={"declared_design": None}), runs, results).held_fixed_reading
 
         assert reading.declared_apparatus is None
         assert reading.contradicting_run_ids == [], "nothing was declared, so nothing is contradicted"
-        assert reading.disclosure is not None and "declares no controls" in reading.disclosure
+        assert reading.disclosure is not None and "declares nothing held fixed" in reading.disclosure
 
     def test_an_uncontrolled_stimulus_is_said_with_its_reason(self) -> None:
         campaign, storage = toyhost_campaign()
-        reading = assemble_context_bundle(campaign, storage=storage, profile=toyhost_profile()).controls_reading
+        reading = assemble_context_bundle(campaign, storage=storage, profile=toyhost_profile()).held_fixed_reading
 
         assert reading.declared_stimulus == "uncontrolled"
         assert reading.disclosure == (
@@ -206,8 +206,8 @@ class TestTheDeclaredControlsAreReadAgainstTheRuns:
         campaign, storage = toyhost_campaign()
         design = campaign.declared_design
         assert design is not None
-        campaign = campaign.model_copy(update={"declared_design": design.model_copy(update={"controls": controlled})})
+        campaign = campaign.model_copy(update={"declared_design": design.model_copy(update={"held_fixed": controlled})})
 
-        reading = assemble_context_bundle(campaign, storage=storage, profile=toyhost_profile()).controls_reading
+        reading = assemble_context_bundle(campaign, storage=storage, profile=toyhost_profile()).held_fixed_reading
 
         assert reading.disclosure is None

@@ -90,7 +90,7 @@ uncontrolled stimulus and a witnessed apparatus, the run-path campaign a control
 commissioned one. Each run records the same word itself (`EvalRun.apparatus_provenance`): the corpus
 writes `witnessed` on the batches it constructs, and the launch path stamps `commissioned` on every
 run it starts, so the bundle reads provenance off the run and compares it with the declaration
-(`controls_reading`).
+(`held_fixed_reading`).
 
 ## The store
 

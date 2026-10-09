@@ -86,7 +86,7 @@ def toyhost_design() -> CampaignDesign:
     """What the toy-host campaign declared before any of it ran.
 
     Returns:
-        The declaration: one interval-scaled axis at two levels, one live question, and controls
+        The declaration: one interval-scaled axis at two levels, one live question, and ``held_fixed``
         recording that the stimulus was never held — documents arrive from live intake, the
         observational shape rather than a commissioned one.
     """
@@ -117,7 +117,7 @@ def toyhost_design() -> CampaignDesign:
         # A spend ceiling on an engine-core measure: the host registers bars on its own
         # measures only, so this is the bar the campaign adds rather than tightens.
         bars=[BarOverride(measure_id="cost_usd", threshold=TOYHOST_COST_BAR_USD, direction="lower_is_better")],
-        controls=ControlDeclaration(
+        held_fixed=ControlDeclaration(
             stimulus="uncontrolled",
             stimulus_reason="documents arrive from live intake; the vendor mix drifts week to week",
             apparatus="witnessed",

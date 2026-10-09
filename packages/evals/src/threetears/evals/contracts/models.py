@@ -117,7 +117,10 @@ launched before it, read as unproven.
 lever's ``status``, so a stored analysis loses nothing when the key is discarded on read. ``EvalCampaign.status``
 (open / closed) is removed: nothing could change it after creation and nothing enforced it, so a stored
 campaign's ``closed`` froze nothing and discarding it changes no membership and no analysis; the one thing it
-fed, ``list_campaigns``'s ``status`` filter, is gone with it.
+fed, ``list_campaigns``'s ``status`` filter, is gone with it. ``CampaignDesign.controls`` is renamed ``held_fixed``
+(one letter from ``control``, it named a different thing), and the bundle's ``controls_reading`` with it
+(``held_fixed_reading``): a stored campaign, an analysis's ``design_snapshot`` and a reporter case's frozen bundle
+read the old key under the new name, value unchanged.
 """
 
 

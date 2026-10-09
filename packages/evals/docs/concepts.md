@@ -293,7 +293,9 @@ agreement, never its point estimate, and an undecided one says how many more res
 #### Campaign
 A curated set of runs under one subject and behaviour, the hub an analysis attaches to (`EvalCampaign`).
 Membership is chosen, not queried; a run may sit in several campaigns. Its declared design names a
-**control**, which is a variant key, not a run. *Example:* "triage v1 vs v2", control = the v1 variant.
+**control**, which is a variant key, not a run, and what it **held fixed** (`held_fixed`: the stimulus,
+controlled or not, and the apparatus, commissioned or witnessed). *Example:* "triage v1 vs v2", control =
+the v1 variant, held fixed = one case battery on a commissioned rig.
 
 #### Analysis bundle
 Everything code computed about a campaign, assembled once and fingerprinted (`AnalysisContextBundle`), so

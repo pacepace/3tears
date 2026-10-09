@@ -252,7 +252,7 @@ def _declare(
                 ),
             }
         )
-    design: dict[str, Any] = {"axes": axes, "controls": {"stimulus": "controlled", "apparatus": "commissioned"}}
+    design: dict[str, Any] = {"axes": axes, "held_fixed": {"stimulus": "controlled", "apparatus": "commissioned"}}
     if repetitions is not None:
         design["intended_repetitions"] = repetitions
     campaign = create_campaign(

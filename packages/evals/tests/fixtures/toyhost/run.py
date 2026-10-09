@@ -452,7 +452,7 @@ def toyhost_run_design() -> CampaignDesign:
     """What the run-path campaign declared before any of it ran.
 
     One nominal axis at two levels — the extractor model, which is the shared core's own lever
-    and the only one this campaign moves — one live question, and controls recording that the
+    and the only one this campaign moves — one live question, and ``held_fixed`` recording that the
     stimulus WAS held: the three invoices are a fixed corpus every arm saw, which is the opposite
     of the corpus campaign's observational shape and is the reason both exist.
 
@@ -488,7 +488,7 @@ def toyhost_run_design() -> CampaignDesign:
             # matrix the runner executed is a commissioned apparatus. The corpus campaign is
             # observational on both, and a host that could only produce one of the two shapes
             # would leave the other's branches unexercised.
-            "controls": {
+            "held_fixed": {
                 "stimulus": "controlled",
                 "apparatus": "commissioned",
             },
@@ -596,7 +596,7 @@ def toyhost_retrieval_campaign(path: ToyhostRunPath, members: Sequence[EvalRun],
             ],
             "declared_at": TOYHOST_INSTANT,
             "control": control_key,
-            "controls": {"stimulus": "controlled", "apparatus": "commissioned"},
+            "held_fixed": {"stimulus": "controlled", "apparatus": "commissioned"},
         }
     )
     return EvalCampaign(

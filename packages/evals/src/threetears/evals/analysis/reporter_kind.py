@@ -50,6 +50,7 @@ from threetears.evals.analysis.generator import (
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.report.words import CONFIDENCE_WORDS, arm_namer, positions, stands_on_words
 from threetears.evals.contracts.authored import NO_CHART
+from threetears.evals.contracts.base import EvalDocumentModel
 from threetears.evals.contracts.campaign import (
     ConfidenceTier,
     EvalAnalysis,
@@ -400,33 +401,58 @@ def reporter_case_of(test_case: EvalTestCase) -> ReporterCase | None:
     return ReporterCase.model_validate(payload[REPORTER_CASE_KEY])
 
 
-def _losses(frozen: Any, rebuilt: Any, path: str, added: list[str]) -> list[str]:
+def _renamed_keys() -> dict[str, str]:
+    """Every key a document model renamed within the current schema version: old name → new name.
+
+    Read off the models' own ``__retired_fields__``, so a frozen bundle's renamed key is followed by the
+    same declaration its stored read follows. Renames only: a key removed outright is a frozen value the
+    rebuild does not carry, and stays a loss here.
+    """
+    renamed: dict[str, str] = {}
+    pending: list[type[EvalDocumentModel]] = [EvalDocumentModel]
+    while pending:
+        model = pending.pop()
+        pending.extend(model.__subclasses__())
+        renamed.update({old: new for old, new in model.__retired_fields__.items() if new is not None})
+    return renamed
+
+
+def _losses(frozen: Any, rebuilt: Any, path: str, added: list[str], renamed: dict[str, str] | None = None) -> list[str]:
     """Name every frozen value the rebuild dropped or changed, collecting the keys it only ADDED.
+
+    A frozen key a model renamed within the schema version (``__retired_fields__``) is compared with the
+    rebuilt value under its new name: the stored read moved it there, so it was carried, not dropped.
 
     Args:
         frozen: A node of the frozen document.
         rebuilt: The same node of the rebuilt bundle's ``to_dict()``.
         path: Where the node sits, for the message.
         added: Receives the path of every key the rebuild has and the frozen document lacks.
+        renamed: Old key → new key for every rename; read once from the models when omitted.
 
     Returns:
         One entry per lost or changed value; empty when every frozen value survived.
     """
+    renames = _renamed_keys() if renamed is None else renamed
     if isinstance(frozen, dict) and isinstance(rebuilt, dict):
         losses: list[str] = []
+        moved: set[str] = set()
         for key, value in frozen.items():
-            if key not in rebuilt:
-                losses.append(f"{path}.{key} dropped")
+            if key in rebuilt:
+                losses.extend(_losses(value, rebuilt[key], f"{path}.{key}", added, renames))
+            elif (renamed_to := renames.get(key)) is not None and renamed_to in rebuilt and renamed_to not in frozen:
+                moved.add(renamed_to)
+                losses.extend(_losses(value, rebuilt[renamed_to], f"{path}.{renamed_to}", added, renames))
             else:
-                losses.extend(_losses(value, rebuilt[key], f"{path}.{key}", added))
-        added.extend(f"{path}.{key}" for key in rebuilt if key not in frozen)
+                losses.append(f"{path}.{key} dropped")
+        added.extend(f"{path}.{key}" for key in rebuilt if key not in frozen and key not in moved)
         return losses
     if isinstance(frozen, list) and isinstance(rebuilt, list):
         if len(frozen) != len(rebuilt):
             return [f"{path} held {len(frozen)} items and rebuilds with {len(rebuilt)}"]
         losses = []
         for index, (old, new) in enumerate(zip(frozen, rebuilt, strict=True)):
-            losses.extend(_losses(old, new, f"{path}[{index}]", added))
+            losses.extend(_losses(old, new, f"{path}[{index}]", added, renames))
         return losses
     return [] if frozen == rebuilt else [f"{path} changed from {_clipped(frozen)} to {_clipped(rebuilt)}"]
 
@@ -447,7 +473,8 @@ def rebuild_bundle(case: ReporterCase) -> AnalysisContextBundle:
       holds the bundle it says it holds;
     - it must validate strictly — a field the bundle model no longer declares is refused, as on
       every stored read;
-    - every frozen value must survive the rebuild unchanged — none altered by validation.
+    - every frozen value must survive the rebuild unchanged — none altered by validation. A value under
+      a key renamed within the schema version (``__retired_fields__``) survives under its new name.
 
     **A field the bundle model gained after the freeze is NOT a loss, and that tolerance is
     deliberate** — the one place a read here accepts an older shape. The frozen bundle is the

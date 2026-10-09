@@ -199,7 +199,7 @@ def analysis(surface: DecisionSurface, **overrides) -> EvalAnalysis:
         "design_snapshot": CampaignDesign(
             axes=[SweptAxis(axis_id=AXIS, values=[level(CANDIDATE), level(INCUMBENT)])],
             control=key(INCUMBENT),
-            controls=ControlDeclaration(stimulus="controlled", apparatus="commissioned"),
+            held_fixed=ControlDeclaration(stimulus="controlled", apparatus="commissioned"),
         ),
         "variant_index": [entry(CANDIDATE), entry(INCUMBENT)],
         "decision_surface": surface,
