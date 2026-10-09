@@ -221,9 +221,11 @@ def delivered_a_turn(result: EvalResult) -> bool:
 
     **Where nothing counted the turns** (``turns_delivered`` None — a result stored before the count was kept,
     or a kind that neither reports a count nor stamps turn records) a model failure outside a cut-off reads as
-    no turn: the cause alone is all that is left, and for the single-call kinds that count nothing it is
-    exact. For a multi-turn conversation stored that way it is an approximation that drops the turns before
-    the failure.
+    no turn: the cause alone is all that is left. It is right for a call that failed outright and wrong for
+    any result whose candidate delivered something before failing — a multi-turn conversation's earlier
+    turns, or a single call that returned and was billed and failed afterwards — whose time and spend it
+    drops. That is why every in-tree kind counts: the quick callable kind (one call), the reporter kind (each
+    generator call that returned), and a conversing kind through its stamped turn records.
 
     Args:
         result: The result.

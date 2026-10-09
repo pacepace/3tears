@@ -12,6 +12,9 @@ through the operations and through :meth:`MountedTool.call`, the one path every 
 - **The bank is curatable**: a listing says which case each pair launches, what superseded or retired the
   rest, which cases this build cannot read (listed, never refused) and which pairs hold two live cases; a
   case is retired and restored through its own action.
+- **A reporter run counts the turns it delivered**: each generator call that returned. A memo that failed
+  validation after its billed calls returned keeps their cost; one whose first call was refused delivered
+  none, and its cell reads as one where no result took a turn.
 """
 
 from __future__ import annotations
@@ -21,9 +24,9 @@ from typing import Any
 import pytest
 
 from threetears.evals.actions import Caller, eval_catalogue, standard_tools
-from threetears.evals.analysis import REPORTER_KIND, assemble_context_bundle
+from threetears.evals.analysis import REPORTER_KIND, ReporterKind, assemble_context_bundle
 from threetears.evals.analysis.reporter_kind import REPORTER_CASE_KEY, LabelCriterion, reporter_case_of
-from threetears.evals.contracts import NotFoundError, ValidationFailedError
+from threetears.evals.contracts import EvalResult, NotFoundError, ValidationFailedError, delivered_a_turn
 from threetears.evals.contracts.models import EvalTemplate, EvalTestCase, RubricDim
 from threetears.evals.ops import (
     FrozenReporterCase,
@@ -34,9 +37,12 @@ from threetears.evals.ops import (
     reporter_case_freeze,
     reporter_cases_list,
 )
+from threetears.evals.run.runner import RunnerOptions, execute_run
+from packages.evals.tests.factories import make_campaign, make_eval_run
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_INSTANT
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture, settled
+from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient
 
 GROUNDED = "reporter.groundedness"
 USEFUL = "reporter.usefulness"
@@ -348,3 +354,66 @@ async def test_an_agent_lists_retires_and_restores_through_the_actions() -> None
         caller=CALLER,
     )
     assert f"- {case_id}: retired: orphaned — campaign" in listed.text
+
+
+# =============================================================================
+# A memo that failed after its generator calls returned keeps their cost
+# =============================================================================
+
+
+class _RefusedWriter(FixturedClient):
+    """A generator client whose provider refuses every call: nothing returns, nothing is billed."""
+
+    async def generate(self, *, system: str, user: str, response_format: Any = None, tools: Any = None) -> Any:
+        """Refuse the call."""
+        raise RuntimeError("the provider refused the request")
+
+
+async def _reporter_result(client: FixturedClient) -> tuple[EvalResult, Any]:
+    """Run the reporter kind once over a frozen case with ``client``, and return its result and a bundle over it."""
+    fixture = _fixture()
+    host = fixture.host.eval_host
+    receipt = _freeze(fixture)
+    case = host.storage.load_test_case(receipt.test_case_id, TOYHOST_SCOPE)
+    template = host.storage.load_template(_reporter_template().id, TOYHOST_SCOPE)
+    assert case is not None and template is not None
+    kind = ReporterKind(prompt=PROMPT, prompt_id=PROMPT_ID, prompt_version=None, client=client, model=MODEL, host=host)
+    run = make_eval_run(
+        id="reporter-run",
+        scope_id=TOYHOST_SCOPE,
+        template_id=template.id,
+        candidate_model=MODEL,
+        k_runs=1,
+        test_case_ids=[case.id],
+    )
+    host.storage.save_eval_run(run)
+    options = RunnerOptions(candidate_kinds={REPORTER_KIND: lambda _cell: kind})
+    await execute_run(host, run=run, template=template, test_cases=[case], judge_service=None, options=options)
+    (result,) = host.storage.query_eval_results_by_run(run.id, TOYHOST_SCOPE)
+    campaign = make_campaign(scope_id=TOYHOST_SCOPE, run_ids=[run.id])
+    return result, assemble_context_bundle(campaign, storage=host.storage, profile=host.profile)
+
+
+async def test_a_memo_refused_after_its_billed_calls_returned_keeps_their_cost() -> None:
+    """Both generator calls returned and were billed, then the memo failed validation: two turns delivered."""
+    client = FixturedClient("this is not a memo")
+    client.completion.cost_usd = 0.15
+    result, bundle = await _reporter_result(client)
+
+    assert result.candidate_error is not None and result.infra_error is None
+    assert (result.turns_delivered, result.cost_usd) == (2, pytest.approx(0.30))
+    assert delivered_a_turn(result), "the calls that returned are the memo's time and spend"
+    (cell,) = bundle.cell_measures
+    assert (cell.n_candidate_failed, cell.n_no_turn, cell.all_failed) == (1, 0, False)
+    cost = next(summary for summary in cell.measures.measures if summary.name == "cost_usd")
+    assert (cost.mean, cost.n, cost.population) == (pytest.approx(0.30), 1, "delivered")
+
+
+async def test_a_memo_whose_first_call_was_refused_delivered_no_turn() -> None:
+    result, bundle = await _reporter_result(_RefusedWriter(""))
+
+    assert result.candidate_error is not None
+    assert result.turns_delivered == 0
+    assert not delivered_a_turn(result)
+    (cell,) = bundle.cell_measures
+    assert (cell.n_candidate_failed, cell.n_no_turn, cell.all_failed) == (1, 1, True)

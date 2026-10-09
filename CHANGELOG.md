@@ -19,7 +19,8 @@ packages (bumped in lock-step).
 - **`EvalResult.turns_delivered`** (`int | None`, optional) records how many turns the candidate delivered. The
   runner sets it on every exit (`count_delivered_turns`): the kind's own count
   (`CandidateTelemetry.turns_delivered`, new), else the candidate turn records its trace stamps, else None. The
-  quick callable kind counts 1 for an answer and 0 for a raise. None means nothing counted, never 0. That is a
+  quick callable kind counts 1 for an answer and 0 for a raise, and the reporter kind counts each generator call
+  that returned, so a memo refused after its billed calls keeps their cost. None means nothing counted, never 0. That is a
   result stored before the field existed, or a kind that neither counts nor stamps. For those the predicate
   falls back to the cause alone, which is exact for a single call and drops a stored multi-turn conversation's
   earlier turns. `EVAL_SCHEMA_VERSION` stays 8: older results still load, and read as not counted.
