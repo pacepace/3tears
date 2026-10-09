@@ -147,7 +147,7 @@ class TestAnAdoptionTheStatisticsSupportIsAccepted:
         """The assembled family as it stands: the wide width improves accuracy and regresses cost and latency."""
         bundle = _toy_bundle(control=True)
         verdicts = {c.name: c.verdict for f in bundle.multiple_comparisons.families for c in f.comparisons}
-        assert verdicts["field_accuracy"] == "improved" and verdicts["cost_usd"] == "regressed"
+        assert verdicts["field_accuracy"] == "improved" and verdicts["production_replicating_cost"] == "regressed"
 
         analysis = await _adopt(bundle, TOYHOST_WIDE)
 
@@ -155,7 +155,9 @@ class TestAnAdoptionTheStatisticsSupportIsAccepted:
 
     async def test_an_arm_separated_only_on_cost_is_adopted(self):
         """Cheaper, and not separated on quality: a trade-off a reader may take."""
-        bundle = _with_verdicts(_toy_bundle(control=True), {"cost_usd": "improved"}, otherwise="not_separated")
+        bundle = _with_verdicts(
+            _toy_bundle(control=True), {"production_replicating_cost": "improved"}, otherwise="not_separated"
+        )
         assert _status(await _adopt(bundle, TOYHOST_WIDE), bundle, TOYHOST_WIDE) == "winner"
 
     async def test_adopting_the_control_needs_no_separation(self):
@@ -186,8 +188,10 @@ class TestAnAdoptionNoReadingSeparatedIsRefused:
 
     async def test_an_arm_separated_only_by_regressing_is_refused(self):
         """Its only separation is evidence against it: there is no upside a trade-off could buy."""
-        bundle = _with_verdicts(_toy_bundle(control=True), {"cost_usd": "regressed"}, otherwise="not_separated")
-        with pytest.raises(SoundnessRefusal, match=r"only by being worse \(cost_usd regressed\)"):
+        bundle = _with_verdicts(
+            _toy_bundle(control=True), {"production_replicating_cost": "regressed"}, otherwise="not_separated"
+        )
+        with pytest.raises(SoundnessRefusal, match=r"only by being worse \(production_replicating_cost regressed\)"):
             await _adopt(bundle, TOYHOST_WIDE)
 
     async def test_the_repair_round_defers_it_and_the_analysis_is_stored(self):

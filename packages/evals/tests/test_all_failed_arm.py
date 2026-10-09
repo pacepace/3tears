@@ -441,7 +441,9 @@ class TestATurnTheBudgetEndedStaysInCostAndLatency:
         assert summaries["total_ms"].mean > 30_000
         assert summaries["cost_usd"].mean == pytest.approx((4 * 0.20 + 4 * 0.005) / 8)
 
-    @pytest.mark.parametrize("reading", ["total_ms", "cost_usd", _TURN_COST])
+    # The candidate's spend is contrasted as production_replicating_cost: cost_usd, which would also sum a
+    # judge's spend, is on no merit axis and enters no family.
+    @pytest.mark.parametrize("reading", ["total_ms", "production_replicating_cost", _TURN_COST])
     def test_it_never_reads_faster_or_cheaper_than_the_control(self, reading: str) -> None:
         comparison = _comparison(_budget_campaign(), reading, _FLAKY)
         assert comparison.verdict != "improved"
@@ -488,7 +490,7 @@ class TestAModelFailureAfterDeliveredTurnsStaysInCostAndLatency:
         latency = _summaries(cell)["total_ms"]
         assert latency.n == 12 and latency.mean is not None and latency.mean > 15_000
 
-    @pytest.mark.parametrize("reading", ["total_ms", "cost_usd"])
+    @pytest.mark.parametrize("reading", ["total_ms", "production_replicating_cost"])
     def test_it_never_reads_faster_or_cheaper_than_the_control(self, reading: str) -> None:
         comparison = _comparison(_late_failure_campaign(), reading, "late")
         assert comparison.verdict != "improved"
