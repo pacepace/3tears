@@ -70,7 +70,9 @@ print(summary.render())
 `run_eval` builds the rest — a kind over the function, a host with one measure per scorer, the
 in-memory store — launches one run through the engine's own launch path, and returns its
 `EvalSummary`. A candidate that raises fails its cell (one case at one repeat); a scorer that raises
-excludes that cell.
+excludes that cell. It also reads names and docstrings off your functions (a scorer's docstring describes
+its measure, for one): [what the engine reads from your code](docs/concepts.md#what-the-engine-reads-from-your-code)
+lists each, and how to state it instead.
 
 **A classifier** is graded by each case's expected label rather than by a scorer. Pass `expected=`, a
 function from a case to the label a correct answer gives, and `classify` returns a label:
@@ -200,9 +202,15 @@ judge = Judge(
     rubric={"helpful": "Resolves the question.", "grounded": "Claims only what the policy says."},
     case_material=lambda case: f"Policy:\n{POLICY}\n\nQuestion: {case['question']}",
 )
-summary = await run_eval(cases, answer, [concise], judge=judge, scope_id="faq")
-print(summary.render())   # adds "answer.helpful (judged 1-5): mean ..." and "judge spend: $..."
+summary = await run_eval(
+    cases, answer, [concise], judge=judge, intent="Answer a customer's question from the policy.", scope_id="faq"
+)
+print(summary.render())   # adds "intent: ...", "answer.helpful (judged 1-5): mean ..." and "judge spend: $..."
 ```
+
+The judge reads `intent=` beside every answer as what each case asks, so its wording can move the scores.
+Left out, it is the first line of the candidate's docstring, and `render()` says so:
+`intent (from answer's docstring): ...`.
 
 A bare rubric name is placed under the judge's `context` (`answer` by default), so `helpful` is reported
 as `answer.helpful`. The judge's spend reaches the summary as its client prices it; a candidate that calls

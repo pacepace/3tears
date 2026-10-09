@@ -75,7 +75,9 @@ twice this month", expected queue `billing`.
 #### Template
 The blueprint the cases belong to (`EvalTemplate`): what is being tested (its intent), how to score it
 (goal-state checks and rubric dimensions), the axes cases vary along, and anything only its kind reads (its
-spec). *Example:* "route a support ticket to a queue", with the four labels in its spec.
+spec). *Example:* "route a support ticket to a queue", with the four labels in its spec. `run_eval` takes its
+intent from `intent=` or a candidate's docstring: see [what the engine reads from your
+code](#what-the-engine-reads-from-your-code).
 
 #### Variation axis
 One direction along which a template's cases differ (`VariationAxis`): `enum` yields each listed value once,
@@ -252,8 +254,9 @@ classifier lands two core measures, `match` and `confusion_cell`, and the analys
 `match`. *Example:* `match` is 1 when ticket 17 went to `billing`, else 0.
 
 #### Scorer
-In `run_eval`, a plain function `(case, answer) -> bool | number` that becomes one measure. A scorer that
-raises excludes the cell (it is part of the rig, not the candidate).
+In `run_eval`, a plain function `(case, answer) -> bool | number` that becomes one measure, named by its
+`__name__` and described by its docstring's first line. A scorer that raises excludes the cell (it is part of
+the rig, not the candidate).
 
 #### Goal-state check
 A code check over a cell's end state (`state.<dimension>`), the calls the candidate made (`calls(...)`) and
@@ -306,3 +309,19 @@ was generated, say, or that a stratum holds too few cases to read alone.
 Model calls the engine makes outside any run (generating cases, proposing a rubric, writing an analysis,
 repeating judge scores): priced before they are made and ledgered as `OutOfRunSpend`. See
 [cost and budgets](cost-and-budgets.md).
+
+## What the engine reads from your code
+
+`run_eval` and `compare` take plain functions, so a few things you might think of as documentation are
+read as data. Everything they read is below, with the way to state it outright instead.
+
+| What | Which part | Who reads it | To state it instead |
+|---|---|---|---|
+| A candidate's docstring | its first line | The [template](#template)'s intent. A [judge](#judge) reads it beside every answer (`**Intent:**` in its prompt), so rewording it can move judged scores. Unjudged (and `compare` seats no judge), nothing that grades reads it; a listing of templates shows it. With several arms, it is read only when every arm's docstring has the same first line; otherwise a generic sentence stands in. | `intent=` on `run_eval` or `compare`. A judged run's `summary.render()` prints the intent and where it came from: `intent (from answer's docstring): ...`, or `intent: ...` when stated. |
+| A candidate's `__name__` | the whole name | The arm's label: the run's candidate model, keyed into its variant. | `model=` on `run_eval`; `compare` labels each arm by its key. |
+| A scorer's `__name__` | the whole name | The [measure](#measure)'s name, in the summary, reports and the analysis bundle. | Rename the function. |
+| A scorer's docstring | its first line | The measure's description, in the analysis bundle's `measure_catalog`, which a model writing an [analysis](#analysis) reads for what the measure means. | Declare the measure, with its description, on a [host](#host) of your own (`host=`). |
+| A `WorldTool`'s function: `__name__` and docstring | the name, and the docstring's first line | The tool's name and description, which the model is shown, as in any tool-use API. | None: the function's name and docstring are the tool's. |
+
+With no docstring, a scorer is described as "The score the `<name>` function gave the candidate's answer.",
+a tool as "The `<name>` tool.", and the intent is a generic sentence the summary labels as such.
