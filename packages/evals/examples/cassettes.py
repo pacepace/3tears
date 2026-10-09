@@ -1,14 +1,13 @@
-"""Record what a tool answered once, and replay it so every arm of a comparison sees the same answers.
+"""How do I compare candidates fairly when the tool they call answers differently every time?
 
-The candidates here call a search tool, whose live results change from call to call, so two arms run one
-after the other would be graded on different results. A cassette fixes that: a ``capture`` run calls the
-tools live and records their answers, and a ``replay`` run is served that recording instead of calling them.
-It records the tools only, never the candidate. New since ``compare_two_prompts.py``: ``tools=``, which
-hands the candidate its tools as ``candidate(case, tools)``, and ``cassette_mode=`` / ``cassette_corpus_id=``.
-How replay matches each ask, and what a miss does, is in ``docs/adopting-a-host.md`` (Cassettes).
+The candidates call a search whose results drift from call to call, so two arms run one after the other
+would be graded on different results. A cassette fixes that: a ``capture`` run calls the tools live and
+records what they answered, and a ``replay`` run serves that recording instead; it records the tools, never
+the candidate. New here: ``tools=``, which hands the candidate its tools as ``candidate(case, tools)``, and
+``cassette_mode=`` / ``cassette_corpus_id=``. How replay matches each ask: ``docs/adopting-a-host.md``.
 
-Run it with ``python packages/evals/examples/cassettes.py``.
-It calls no model and needs no API key: the candidates are plain code and the search is an offline stand-in.
+Run it with ``python packages/evals/examples/cassettes.py``. It calls no model, so it needs no API key and
+costs nothing: the candidates are plain code and the search is an offline stand-in.
 """
 
 import asyncio
@@ -84,13 +83,12 @@ def correct(case: Mapping[str, Any], answer: str) -> bool:
 
 
 # -----------------------------------------------------------------------------
-# 4. Capture the search once, then replay that recording for both arms.
+# 4. Capture the search once, then replay that recording to both arms, twice per case, and print the report.
 # -----------------------------------------------------------------------------
 
 
 async def main() -> Comparison:
-    """Record the search's answers, compare the two candidates on that recording, and print the report."""
-    print("No model is called: the candidates are plain code, and the search is an OFFLINE stand-in.\n")
+    print("No model is called: running OFFLINE, with plain-code candidates and a stand-in search.\n")
     tools = {"search": offline_search}  # each tool by the name the candidate calls it by
     # The replay reads the capture's recording from the same host and scope.
     host, scope = callable_host([correct]), "cassettes-example"

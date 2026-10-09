@@ -37,7 +37,7 @@ async def test_the_example_captures_once_and_replays_one_recording_to_both_arms(
     comparison = await module.main()
     assert isinstance(comparison, Comparison)
     out = capsys.readouterr().out
-    assert "OFFLINE stand-in" in out.splitlines()[0]
+    assert out.startswith("No model is called: running OFFLINE")
 
     # The capture called the search once per case, and the replay never called it.
     n_cases = len(module.CASES)

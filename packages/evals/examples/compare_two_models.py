@@ -1,10 +1,9 @@
 """Is the cheaper model good enough for this prompt, given what it saves?
 
-``compare_two_prompts.py`` changed the prompt and kept the model; this keeps the prompt and changes the
-model, so accuracy has to be weighed against cost. New here: each candidate returns an ``Answer``, its
-label plus the tokens and dollars the call spent, so each arm's summary prints its spend and the report
-tests the arms' ``cost_usd`` against the control as it tests their accuracy. How spend is counted:
-``packages/evals/docs/cost-and-budgets.md``.
+``compare_two_prompts.py`` changed the prompt; this keeps the prompt and changes the model, so accuracy is
+weighed against cost. New here: each candidate returns an ``Answer``, its label plus the tokens and dollars
+the call spent, so each arm's summary prints its spend and the report tests the arms' ``cost_usd`` against
+the control as it tests their accuracy. How spend is counted: ``docs/cost-and-budgets.md``.
 
 Run it with ``python packages/evals/examples/compare_two_models.py``. With ``ANTHROPIC_API_KEY`` set it
 calls Claude 48 times (12 emails, 2 repeats, 2 models) for well under a cent; without it, keyword
@@ -88,7 +87,9 @@ def claude_classifier(model: str) -> Candidate:
 
 
 # -----------------------------------------------------------------------------
-# 4. The OFFLINE stand-in: keyword rules with made-up token counts. The control's knows two more rules.
+# 4. The OFFLINE stand-in: keyword rules with made-up token counts, not a model.
+#
+# The control's stand-in knows two rules the cheaper one does not.
 # -----------------------------------------------------------------------------
 
 
@@ -112,12 +113,11 @@ def offline_classifier(model: str) -> Candidate:
 
 
 # -----------------------------------------------------------------------------
-# 5. Run both models over every email, test the cheaper against the control, print the verdict.
+# 5. Run both models over every email twice, test the cheaper against the control, print the verdict.
 # -----------------------------------------------------------------------------
 
 
 async def main() -> Comparison:
-    """Compare the two models over every email, twice each, and print each arm's summary and the report."""
     online = bool(os.environ.get("ANTHROPIC_API_KEY"))
     make = claude_classifier if online else offline_classifier
     if online:

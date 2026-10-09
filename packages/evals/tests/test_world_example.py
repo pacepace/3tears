@@ -51,7 +51,6 @@ async def test_with_no_api_key_the_example_runs_offline_and_says_so(
     assert summary.errors == []
     out = capsys.readouterr().out
     assert out.startswith("ANTHROPIC_API_KEY is not set: running OFFLINE")
-    assert "say nothing about Claude" in out
     assert summary.render() in out
 
 

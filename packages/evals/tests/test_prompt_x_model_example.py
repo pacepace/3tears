@@ -62,7 +62,6 @@ async def test_offline_the_example_runs_four_arms_keyed_by_both_factors(
 
     out = capsys.readouterr().out
     assert out.startswith("ANTHROPIC_API_KEY is not set: running OFFLINE, with keyword stand-ins")
-    assert "say nothing about Claude" in out
     assert comparison.render() in out
     assert out.rstrip().endswith(
         f"Does v2 beat v1?\n  on {old}: accuracy +0.50, improved on the control\n"

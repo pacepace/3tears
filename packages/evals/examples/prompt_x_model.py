@@ -1,13 +1,13 @@
-"""Two prompts and two models: does the better prompt help on both models?
+"""Does the better prompt help on both models, or only on one?
 
-The step after ``compare_two_prompts.py``, which varied one thing. Here two factors vary at once, the
-prompt and the model, so there are four arms, one per combination, and each factor is a lever the report
-names every arm by (``callable.prompt=v2, model=...``). The engine tests arms against one control, so the
-prompt's effect on the second model is read against a second control over the same runs.
+Two factors vary at once, the prompt and the model: four arms, one per combination, each named in the report
+by both (``callable.prompt=v2, model=...``). Arms are tested against one control, so the prompt's effect on the
+second model is read against a second control over the same runs. New here: ``factors=``, which keys each arm
+by its level of each factor, and ``Comparison.against``. Levers and arms: ``docs/concepts.md``.
 
-Run it with ``python packages/evals/examples/prompt_x_model.py``.
-With ``ANTHROPIC_API_KEY`` set it calls Claude (112 short calls, about two US cents); without it, keyword
-stand-ins play each combination. Levers and arms: ``docs/concepts.md``.
+Run it with ``python packages/evals/examples/prompt_x_model.py``. With ``ANTHROPIC_API_KEY`` set it calls
+Claude 112 times for about two US cents; without it, keyword stand-ins play each combination and say nothing
+about Claude.
 """
 
 import asyncio
@@ -16,6 +16,9 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from threetears.evals.quick import Comparison, compare
+
+MODELS = ("claude-haiku-4-5", "claude-haiku-5-5")
+OLD, NEW = MODELS  # the older cheap model and the newer one
 
 # -----------------------------------------------------------------------------
 # 1. The cases: the tickets from compare_two_prompts.py, and two more hard ones.
@@ -39,17 +42,16 @@ CASES = [
 ]
 
 # -----------------------------------------------------------------------------
-# 2. The two factors: two prompts, and two cheap models, the older Haiku and the newer.
+# 2. The two factors: these two prompts, and the two models in MODELS.
 # -----------------------------------------------------------------------------
 
 PROMPTS = {
-    "v1": "Classify the support ticket into one of: billing, bug, account, feature_request. Answer with the label only.",
+    "v1": "Classify the support ticket into one of: billing, bug, account, feature_request. "
+    "Answer with the label only.",
     "v2": "Classify the support ticket into one of: billing, bug, account, feature_request. Money taken without "
     "the service delivered is billing; a login the product breaks is a bug; anything it does not do yet is a "
     "feature_request. Answer with the label only.",
 }
-MODELS = ("claude-haiku-4-5", "claude-haiku-5-5")
-OLD, NEW = MODELS
 
 # -----------------------------------------------------------------------------
 # 3. One candidate per combination: an async function from a case to a label.
@@ -78,8 +80,13 @@ def claude_classifier(model: str, prompt: str) -> Candidate:
     return classify
 
 
-# The OFFLINE stand-ins: keyword rules, not models. Under v1 the older model takes the first queue whose
-# words appear; v2's tie-breaks fix that, and the newer model applies them unprompted but for one ticket.
+# -----------------------------------------------------------------------------
+# 4. The OFFLINE stand-ins: keyword rules, not models.
+#
+# Under v1 the older model takes the first queue whose words appear; v2's tie-breaks fix that, and the
+# newer model applies them unprompted but for one ticket.
+# -----------------------------------------------------------------------------
+
 FIRST_WORDS = {"account": ("log in", "login", "account", "email"), "bug": ("error", "crash", "does nothing")}
 FIRST_WORDS["billing"] = ("charged", "refund", "invoice", "plan")
 TIE_BREAKS = {" add ": "feature_request", "would be great": "feature_request", "charged": "billing", "loops": "bug"}
@@ -102,18 +109,17 @@ def offline_classifier(model: str, prompt: str) -> Candidate:
 
 
 # -----------------------------------------------------------------------------
-# 4. Run all four combinations, then read v2 against v1 on each model.
+# 5. Run all four combinations over every ticket twice, then read v2 against v1 on each model.
 # -----------------------------------------------------------------------------
 
 
 async def main() -> Comparison:
-    """Run the 2x2 over every ticket, twice each, print the report, then the answer to the question."""
     online = bool(os.environ.get("ANTHROPIC_API_KEY"))
     make = claude_classifier if online else offline_classifier
     if online:
         print(f"Running against Claude ({OLD}, {NEW}).\n")
     else:
-        print("ANTHROPIC_API_KEY is not set: running OFFLINE, with keyword stand-ins that say nothing about Claude.\n")
+        print("ANTHROPIC_API_KEY is not set: running OFFLINE, with keyword stand-ins for each combination.\n")
 
     comparison = await compare(
         CASES,

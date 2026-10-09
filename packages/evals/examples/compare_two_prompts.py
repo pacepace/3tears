@@ -1,23 +1,11 @@
-"""Compare two prompts for a support-ticket classifier, and ask the engine which one is better.
+"""Is the new prompt better than the old one, or is the difference noise?
 
-This is the step after ``rung_zero.py``. There, one function was measured; here two versions of
-one classifier are measured over the same cases, and the engine says whether the second does
-better than the first or whether the difference is noise.
+Two versions of a support-ticket classifier, differing only in their prompt, run over the same tickets,
+and the engine tests the new one against the old one, the control, and gives a verdict. New here:
+``compare``, which runs each candidate as one arm and reports every arm against the control.
 
-The classifier sorts a customer's support ticket into one of four queues. The two versions
-differ only in their prompt:
-
-- ``baseline`` is the prompt you have today: a bare list of the queue names.
-- ``candidate`` is the prompt you want to ship: each queue defined, with the rule for the cases
-  that look like two queues at once.
-
-Each version is called on every ticket a few times, graded against the queue a person filed it
-under, and the two are tested against each other with ``baseline`` as the control.
-
-Run it with ``python packages/evals/examples/compare_two_prompts.py``. With ``ANTHROPIC_API_KEY``
-set, every answer comes from Claude (``claude-haiku-5-5``). Without it, the example runs OFFLINE: a
-keyword stand-in plays each prompt, so the script always runs, and the output says so. The
-stand-in is only there to show the shape of the result; its numbers say nothing about Claude.
+Run it with ``python packages/evals/examples/compare_two_prompts.py``. With ``ANTHROPIC_API_KEY`` set it calls
+Claude 48 times for well under a cent; without it, keyword stand-ins play the prompts and say nothing about Claude.
 """
 
 import asyncio
@@ -27,11 +15,10 @@ from typing import Any
 
 from threetears.evals.quick import Comparison, compare
 
+MODEL = "claude-haiku-5-5"
+
 # -----------------------------------------------------------------------------
 # 1. The cases: each ticket, and the queue a person filed it under.
-#
-# A case is any JSON object. The candidate is handed the whole case; the engine
-# reads the expected label through ``expected=`` below, so the key names are yours.
 # -----------------------------------------------------------------------------
 
 CASES = [
@@ -49,8 +36,6 @@ CASES = [
     {"ticket": "I was charged for a seat after removing that user from my account.", "queue": "billing"},
     {"ticket": "Could you add an option to pay by invoice?", "queue": "feature_request"},
 ]
-
-QUEUES = ("billing", "bug", "account", "feature_request")
 
 # -----------------------------------------------------------------------------
 # 2. The two prompts under comparison.
@@ -73,11 +58,7 @@ without the service delivered is billing; a login that fails because the product
 Answer with the label only."""
 
 # -----------------------------------------------------------------------------
-# 3. How one prompt becomes a candidate: an async function from a case to a label.
-#
-# The engine calls the candidate once per case and repeat. Whatever string it
-# returns is the predicted label; anything that is not a label counts as an
-# unusable answer, which is never a match.
+# 3. The live candidate: an async function from a case to a label.
 # -----------------------------------------------------------------------------
 
 Candidate = Callable[[Mapping[str, Any]], Awaitable[str]]
@@ -91,22 +72,24 @@ def claude_classifier(prompt: str) -> Candidate:
 
     async def classify(case: Mapping[str, Any]) -> str:
         response = await client.messages.create(
-            model="claude-haiku-5-5",
+            model=MODEL,
             max_tokens=1024,
             output_config={"effort": "low"},  # a four-way label needs little thought
             system=prompt,
             messages=[{"role": "user", "content": case["ticket"]}],
         )
-        text = "".join(block.text for block in response.content if block.type == "text")
-        return text.strip().lower()
+        return "".join(block.text for block in response.content if block.type == "text").strip().lower()
 
     return classify
 
 
-# The OFFLINE stand-ins: keyword rules that play each prompt when there is no API key.
-# The baseline takes the first queue whose words appear, in this order; the candidate
-# first applies the tie-break rule its prompt states. Nothing here is a model.
-_WORDS = {
+# -----------------------------------------------------------------------------
+# 4. The OFFLINE stand-in: keyword rules, not a model.
+#
+# The baseline takes the first queue whose words appear; the candidate first applies its prompt's tie-break.
+# -----------------------------------------------------------------------------
+
+WORDS = {
     "account": ("log in", "login", "password", "email address", "account"),
     "bug": ("error", "crash", "does nothing", "loops", "broken"),
     "billing": ("charged", "refund", "invoice", "plan", "card"),
@@ -117,70 +100,50 @@ _WORDS = {
 def offline_classifier(prompt: str) -> Candidate:
     """A keyword stand-in for one of the two prompts, so the example runs with no API key."""
 
-    def hits(text: str, queue: str) -> bool:
-        return any(word in text for word in _WORDS[queue])
-
     async def classify(case: Mapping[str, Any]) -> str:
         text = case["ticket"].lower()
+        found = [queue for queue, words in WORDS.items() if any(word in text for word in words)]
         if prompt is CANDIDATE_PROMPT:
-            if hits(text, "feature_request"):
+            if "feature_request" in found:
                 return "feature_request"
-            if hits(text, "billing") and "charged" in text:
+            if "charged" in text:
                 return "billing"  # money taken without the service delivered
-            if hits(text, "bug"):
+            if "bug" in found:
                 return "bug"  # a failure outranks the account words around it
-        for queue in _WORDS:  # the baseline: whichever queue's words come first
-            if hits(text, queue):
-                return queue
-        return "bug"
+        return found[0] if found else "bug"
 
     return classify
 
 
 # -----------------------------------------------------------------------------
-# 4. Run both prompts, test the candidate against the baseline, print the verdict.
+# 5. Run both prompts over every ticket twice, test the candidate against the baseline, print the verdict.
 # -----------------------------------------------------------------------------
 
 
 async def main() -> Comparison:
-    """Compare the two prompts over every ticket, twice each, and print the campaign's report."""
     online = bool(os.environ.get("ANTHROPIC_API_KEY"))
     make = claude_classifier if online else offline_classifier
     if online:
-        print("Running against Claude (claude-haiku-5-5).\n")
+        print(f"Running against Claude ({MODEL}).\n")
     else:
         print("ANTHROPIC_API_KEY is not set: running OFFLINE, with a keyword stand-in for each prompt.\n")
 
     comparison = await compare(
         CASES,
-        # Each arm is named; the name is how the report refers to it (``model=<name>``).
+        # Each arm by name; the report calls it model=<name>.
         {"baseline": make(BASELINE_PROMPT), "candidate": make(CANDIDATE_PROMPT)},
-        # Handing over each case's expected label makes this a classifier eval:
-        # accuracy, a confusion matrix, and per-label precision/recall/F1.
-        expected=lambda case: case["queue"],
-        # The control is the arm every other arm is tested against.
-        control="baseline",
+        expected=lambda case: case["queue"],  # a classifier eval: accuracy and a confusion matrix
+        control="baseline",  # the arm every other arm is tested against
         name="ticket triage: baseline vs candidate prompt" + ("" if online else " (offline)"),
-        # Where the runs and the campaign are stored. The default store is in memory.
         scope_id="compare-two-prompts",
-        # Repeats per case. A model's answer can change between calls; repeats show by how much.
-        k=2,
+        k=2,  # repeats per case: a model's answer can change between calls
     )
 
-    # Each arm's own summary: accuracy and the confusion matrix, as rung zero prints it.
     for arm, summary in comparison.arms.items():
-        print(f"--- {arm} ---")
-        print(summary.render())
-        print()
+        print(f"--- {arm} ---\n{summary.render()}\n")
 
-    # The campaign's report. Its "Contrasts against the control" table is the verdict:
-    # for each reading (accuracy here), the candidate's difference from the baseline,
-    # the p-value after correcting for every comparison made, and whether that difference
-    # separated from the control or is within what chance produces.
-    #
-    # A note on cost: the report lists a ``cost_usd`` reading, and it is 0 for both arms.
-    # The candidate here is a plain function, and the engine does not see what it spends
-    # inside — so the two prompts compare on accuracy here, not on price.
+    # "Contrasts against the control" is the verdict: the difference, its Holm-adjusted p, and whether it separated.
+    # Its cost_usd reads 0 because a plain candidate reports no spend; compare_two_models.py shows how to report it.
     print(comparison.render())
     return comparison
 

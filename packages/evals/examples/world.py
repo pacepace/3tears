@@ -1,14 +1,14 @@
-"""Does a model turn the light on when the room is dark? Grade what it does to a world, not what it says.
+"""Does the model turn the light on when the room is dark, judged by the room it leaves rather than what it says?
 
-The earlier examples grade an answer. Here the model acts: each case seeds a small world (a room's
-``light`` and ``daylight``), the model changes it through a tool, and the engine reads the room back
-after the model's last turn. A goal-state check — code over the end state and the calls made — grades
-it, with no judge. New since ``llm_judge.py``: ``world=``, ``seed=`` and ``goal_checks=`` on ``run_eval``.
-The engine's words for this are in ``docs/concepts.md`` (World, Goal-state check).
+Here the model acts: each case seeds a small world (a room's ``light`` and ``daylight``), the model changes
+it through the world's own tool, and the engine reads the room back after the model's last turn. Goal-state
+checks, code over the end state and the calls made, grade it with no judge. New here: ``world=``, ``seed=``
+and ``goal_checks=``; unlike ``cassettes.py``'s ``tools=``, the tools act on the cell's world. The engine's
+words for this: ``docs/concepts.md`` (World, Goal-state check).
 
-Run it with ``python packages/evals/examples/world.py``. With ``ANTHROPIC_API_KEY`` set, Claude
-(``claude-haiku-5-5``) runs a real tool-use loop: about 16 short calls, well under a cent. Without it, the
-example runs OFFLINE with a rule-based stand-in that makes one deliberate mistake, so a check fails.
+Run it with ``python packages/evals/examples/world.py``. With ``ANTHROPIC_API_KEY`` set, Claude runs a real
+tool-use loop (about 16 short calls, well under a cent); without it, a rule-based stand-in runs, with one
+deliberate mistake so that a check fails, and its numbers say nothing about Claude.
 """
 
 import asyncio
@@ -104,18 +104,16 @@ async def offline_assistant(case: dict, room: WorldTools) -> str:
 
 
 # -----------------------------------------------------------------------------
-# 5. Seed every case's room, let the candidate act on it twice, and grade how each room ended.
+# 5. Seed every case's room, let the candidate act on it twice, grade how each room ended, and print it.
 # -----------------------------------------------------------------------------
 
 
 async def main() -> EvalSummary:
-    """Run the candidate over every case twice and print the run's summary, goal checks included."""
     online = bool(os.environ.get("ANTHROPIC_API_KEY"))
     if online:
         print(f"Running against Claude ({MODEL}).\n")
     else:
-        print("ANTHROPIC_API_KEY is not set: running OFFLINE, with a rule-based stand-in for the model.")
-        print("Its numbers show the shape of the result and say nothing about Claude.\n")
+        print("ANTHROPIC_API_KEY is not set: running OFFLINE, with a rule-based stand-in for the model.\n")
 
     summary = await run_eval(
         CASES,
