@@ -31,7 +31,7 @@ from threetears.evals.contracts.surface import (
 _REF = cell_ref("v1", "rig")
 
 
-def _surface(*, n_independent: int = 4) -> DecisionSurface:
+def _surface(*, n_independent: int = 4, judged_cases: int = 4, judged_sem: float | None = 0.25) -> DecisionSurface:
     cell = CellFacts(
         variant_key="v1",
         apparatus_class_id="rig",
@@ -72,7 +72,12 @@ def _surface(*, n_independent: int = 4) -> DecisionSurface:
         ),
         judged=[
             JudgedReading(
-                dimension="reply.grounding", mean=4.0, sem=0.25, n=4, n_independent=4, evidence_tier="separation"
+                dimension="reply.grounding",
+                mean=4.0,
+                sem=judged_sem,
+                n=4,
+                n_independent=judged_cases,
+                evidence_tier="separation",
             )
         ],
     )
@@ -92,10 +97,30 @@ def test_a_measure_reads_its_mean_basis_and_frozen_facts():
     assert reading.dispersion == "sem 50; 95% CI [1041, 1359]"
 
 
-def test_clustered_observations_are_said_to_narrow_the_interval():
+def test_a_clustered_reading_states_its_interval_with_no_caveat():
+    """The interval is computed over the cases already, so a clustered cell's reading needs no warning (#590)."""
     reading = resolve_reading(_surface(n_independent=2), _REF, "total_ms")
 
-    assert reading.dispersion.endswith("; 4 obs over 2 cases, interval too narrow")
+    assert (reading.n, reading.n_cases) == (4, 2)
+    assert reading.dispersion == "sem 50; 95% CI [1041, 1359]"
+
+
+def test_a_clustered_judged_reading_takes_its_degrees_of_freedom_from_the_cases():
+    """Four scores over two cases are two draws: t on one degree of freedom, not three (#590)."""
+    reading = resolve_reading(_surface(judged_cases=2), _REF, "reply.grounding", "judged")
+
+    half = t_critical_two_sided(INTERVAL_LEVEL, 1) * 0.25
+    assert reading.ci_low == pytest.approx(max(1.0, 4.0 - half))
+    assert reading.ci_high == pytest.approx(min(5.0, 4.0 + half))
+    assert "obs over" not in reading.dispersion
+
+
+def test_a_reading_of_one_case_has_no_interval_and_says_why():
+    """Repeats of a single case carry no between-case spread, so there is no interval to state."""
+    reading = resolve_reading(_surface(judged_cases=1, judged_sem=None), _REF, "reply.grounding", "judged")
+
+    assert (reading.ci_low, reading.ci_high) == (None, None)
+    assert reading.dispersion == "unestimable: 4 obs of one case, which has no between-case spread"
 
 
 def test_a_judged_reading_takes_a_t_interval_and_the_quality_axis():

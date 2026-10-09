@@ -176,8 +176,9 @@ all-`NONE` batch with several messages, so a model cannot learn that more messag
 ## 4. How many cases
 
 Every rate an eval reports is an estimate, and how far it can be trusted depends on how many cases are
-behind it. The package reports a 95% interval beside each rate (a Wilson interval). For a model that got 90%
-right:
+behind it. The package reports a 95% interval beside each rate (a Wilson interval, over cases: run each case
+three times and the interval still counts the cases, widened by however much the repeats agree with each
+other). For a model that got 90% right, one run per case:
 
 | Cases behind the rate | Correct | Interval |
 |---|---|---|
@@ -190,7 +191,8 @@ Ten cases cannot tell a 90% model from a 65% one, which shapes how you size the 
 
 - **Count per label, not in total.** Precision and recall for a label rest only on the cases with that
   label. A 100-case set with 6 `RELEVANT` cases has an unreadable `RELEVANT` recall. The package reports each
-  label's support (how many cases carried it) so you can see this.
+  label's support — how many observations carried it, and over how many cases when each case ran more than
+  once (`recall 1 (4/4 over 2 cases)`) — so you can see this. The cases are what the figure rests on.
 - **Do not copy your traffic's label mix.** If 90% of real messages are `NONE`, a set that is 90% `NONE` lets
   a model that always answers `NONE` score 90%. Weight the set toward the labels and kinds of case you need
   to measure, and read per-label figures rather than overall accuracy.

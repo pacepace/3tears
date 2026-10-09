@@ -21,9 +21,11 @@ anything, so everything below this seam, and every stored analysis, carries the 
 bar is adjudicated over, so a reading and a bar verdict on one cell describe the same observations. A
 cost or latency reading is over the turns the candidate took (population ``delivered``), for the bar and
 the reading alike, and a cell where no result took a turn has none to resolve.
-The interval is t-based on ``n``; where ``n_cases`` is below ``n`` the observations are clustered
-and the interval is narrower than the clustering supports, which :attr:`ResolvedReading.dispersion`
-says in a short clause (``N obs over M cases, interval too narrow``) rather than leaving to the reader.
+The interval is computed over the cell's cases, not its observations: where ``n_cases`` is below ``n``
+the observations are repeats of the same cases, and the standard error is the cluster-robust one read
+on ``n_cases - 1`` degrees of freedom (:func:`threetears.evals.analysis.stats.clustered_standard_error`).
+Observations of a single case carry no between-case spread, so such a reading has no interval, and
+:attr:`ResolvedReading.dispersion` says why.
 
 **One reading is a** :class:`ReadingRef` — a name and the namespace it is in, stated rather than
 inferred — wherever code reads one off an authored evidence row or chart
@@ -31,7 +33,7 @@ inferred — wherever code reads one off an authored evidence row or chart
 reading carries no policy of its own: what it names either resolves here or is refused here.
 
 **Every interval here is computed and labelled at one level.** A measure's arrives already computed
-on its summary, a judged dimension's is computed here, and both widths come from
+on its summary, a judged dimension's is computed here from its cluster-robust sem, and both widths come from
 :func:`threetears.evals.analysis.stats.mean_interval` at :data:`threetears.evals.analysis.stats.INTERVAL_LEVEL` — the same
 constant the dispersion text and every chart caption state. The level is not a second decision this
 module makes; it reads the one the width was computed at.
@@ -323,12 +325,13 @@ def _resolve_judged(surface: DecisionSurface, cell: CellFacts, ref: str, dimensi
         )
     # The same interval function the bundle computes every measure's interval with, so a judged
     # interval and a measure's drawn side by side are at one level by construction — and inside the
-    # dimension's scale, which a mean near its top would otherwise overrun.
+    # dimension's scale, which a mean near its top would otherwise overrun. The sem is over the cases,
+    # so the degrees of freedom are too.
     facts = _dimension_facts(surface, dimension)
     interval = (
         None
         if judged.sem is None
-        else stats.mean_interval(judged.mean, judged.sem, judged.n, value_range=facts.value_range)
+        else stats.mean_interval(judged.mean, judged.sem, judged.n_independent, value_range=facts.value_range)
     )
     ci_low, ci_high = (None, None) if interval is None else interval
     return ResolvedReading(
@@ -395,19 +398,21 @@ def _find_judged(cell: CellFacts, dimension: str) -> JudgedReading | None:
 def _dispersion(sem: float | None, ci_low: float | None, ci_high: float | None, n: int, n_cases: int | None) -> str:
     """State a reading's spread in words, including when there is none to state.
 
+    The interval it states is already computed over the cases, so a clustered cell needs no caveat
+    beside it; the one case it explains is the interval a single case cannot have.
+
     Returns:
         The dispersion text an evidence row carries.
     """
     if ci_low is None or ci_high is None:
+        if n_cases == 1 and n > 1:
+            return f"unestimable: {n} obs of one case, which has no between-case spread"
         return f"unestimable at n={n}"
-    # A rate carries its Wilson interval and no standard error, and its interval is its spread: stated, never
+    # A rate carries its interval and no standard error, and its interval is its spread: stated, never
     # reported as unestimable because the sem it does not have is absent.
     text = f"{stats.INTERVAL_LEVEL:.0%} CI [{format_number(ci_low)}, {format_number(ci_high)}]"
     if sem is not None:
         text = f"sem {format_number(sem)}; {text}"
-    if n_cases is not None and n_cases < n:
-        # Short on purpose: it rides on every reading of a clustered cell, in every table a reader scans.
-        text += f"; {n} obs over {n_cases} cases, interval too narrow"
     return text
 
 

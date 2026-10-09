@@ -87,15 +87,17 @@ def _table(report: Report, name: str) -> TableBlock | None:
 
 
 def _figure(summary: MeasureSummary) -> str:
-    """A per-label figure as the table states it: the rate with its interval, or F1's value, with its n."""
+    """A per-label figure as the table states it: the rate with its interval, or F1's value, with its n.
+
+    The n names the cases it is over where they repeat — k=2 here — since those are the draws the interval counts.
+    """
+    cases = summary.n_independent
+    n = f"(n={summary.n} over {cases} case{'' if cases == 1 else 's'})" if 0 < cases < summary.n else f"(n={summary.n})"
     if summary.rate is not None:
         assert summary.ci_low is not None and summary.ci_high is not None
-        return (
-            f"{format_number(summary.rate)} [{format_number(summary.ci_low)}, {format_number(summary.ci_high)}] "
-            f"(n={summary.n})"
-        )
+        return f"{format_number(summary.rate)} [{format_number(summary.ci_low)}, {format_number(summary.ci_high)}] {n}"
     assert summary.mean is not None
-    return f"{format_number(summary.mean)} (n={summary.n})"
+    return f"{format_number(summary.mean)} {n}"
 
 
 class TestPerLabelStatisticsAreOneTable:
@@ -140,7 +142,7 @@ class TestPerLabelStatisticsAreOneTable:
         (never_said,) = [row for row in table.rows if (row["label"], row["arm"]) == ("animal", CANDIDATE_ARM)]
         # Never predicted: no precision, and so no F1; recall is 0 of the 4 animals it met.
         assert never_said["precision"] is None and never_said["f1"] is None
-        assert str(never_said["recall"]).startswith("0 [") and str(never_said["recall"]).endswith("(n=4)")
+        assert str(never_said["recall"]).startswith("0 [") and str(never_said["recall"]).endswith("(n=4 over 2 cases)")
 
         (said,) = [
             block.text
@@ -148,8 +150,9 @@ class TestPerLabelStatisticsAreOneTable:
             if isinstance(block, DisclosureBlock) and block.text.startswith("Precision is counted over")
         ]
         assert "95% Wilson interval" in said and "F1 has no interval by construction" in said
-        # k=2 repeats each case: the interval is over observations, so it says it is narrower than that supports.
-        assert "repeats of one case counted as independent" in said
+        # k=2 repeats each case: the interval is over the cases, and says so.
+        assert "Wilson interval over the cell's cases" in said
+        assert "a case's repeats are not counted as independent" in said
         assert "A label an arm never predicted has no precision" in said
 
         markdown = report_markdown(comparison.report)

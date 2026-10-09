@@ -176,7 +176,8 @@ class EvalSummary(BaseModel):
             ``confusion_cell`` when a result carries them and the host does not declare them.
         confusion: The confusion matrix of the results' ``confusion_cell`` values, by expected then
             predicted label; empty for a run that classified nothing.
-        labels: Each label's precision, recall and F1 from that matrix, by label; empty with it.
+        labels: Each label's precision, recall and F1 from the same observations, by label, each interval
+            over the cases behind it (a case classified k times is one draw); empty with the matrix.
         judged: Each rubric dimension a judge scored or could not tell on, in the order first met; empty
             for an unjudged run.
         goal_checks: Each goal-state check the results carry, in the order first met; empty for a run
@@ -296,10 +297,15 @@ def _shown(label: str) -> str:
     return repr(label) if label != label.strip() else label
 
 
-def _proportion(name: str, rate: float | None, hits: int, n: int, interval: tuple[float, float] | None) -> str:
+def _proportion(
+    name: str, rate: float | None, hits: int, n: int, cases: int, interval: tuple[float, float] | None
+) -> str:
+    """A rate with its count and interval; where cases repeat, the count says over how many cases it rests on."""
     if rate is None:
         return f"{name} none (n=0)"
     shown = f"{name} {rate:.3g} ({hits}/{n}"
+    if cases < n:
+        shown += f" over {cases} case{'' if cases == 1 else 's'}"
     if interval is not None:
         shown += f", {INTERVAL_LEVEL:.0%} CI {interval[0]:.2g}-{interval[1]:.2g}"
     return shown + ")"
@@ -321,10 +327,20 @@ def _dimension_line(dimension: DimensionSummary) -> str:
 def _label_line(statistics: LabelStatistics) -> str:
     """One label's line: its precision and recall with their counts and intervals, and its F1."""
     precision = _proportion(
-        "precision", statistics.precision, statistics.correct, statistics.predicted, statistics.precision_interval
+        "precision",
+        statistics.precision,
+        statistics.correct,
+        statistics.predicted,
+        statistics.predicted_cases,
+        statistics.precision_interval,
     )
     recall = _proportion(
-        "recall", statistics.recall, statistics.correct, statistics.expected, statistics.recall_interval
+        "recall",
+        statistics.recall,
+        statistics.correct,
+        statistics.expected,
+        statistics.expected_cases,
+        statistics.recall_interval,
     )
     f1 = "f1 none" if statistics.f1 is None else f"f1 {statistics.f1:.3g}"
     return f"{_shown(statistics.label)}: {precision}, {recall}, {f1}"
@@ -386,6 +402,12 @@ def summarize_run(host: EvalHost, run_id: str, scope_id: str) -> EvalSummary:
         cell for result in results if isinstance(cell := result.host_measures.get(CONFUSION_CELL_MEASURE), str)
     )
     confusion = confusion_matrix(cells)
+    # Each observation beside its case, so a label's interval counts a case classified k times as one draw.
+    classifications = [
+        (cell, result.test_case_id)
+        for result in results
+        if isinstance(cell := result.host_measures.get(CONFUSION_CELL_MEASURE), str)
+    ]
     judge_rows = [row for result in results for row in result.usage if row.role == "judge"]
     template = None
     if run.judge_model is not None and run.template_id is not None:
@@ -405,7 +427,7 @@ def summarize_run(host: EvalHost, run_id: str, scope_id: str) -> EvalSummary:
         n_excluded=outcomes.count(ResultOutcome.INFRA_EXCLUDE),
         measures=measures,
         confusion=confusion,
-        labels=label_statistics(confusion),
+        labels=label_statistics(classifications),
         judged=_judged_dimensions(results),
         judge_calls=sum(row.call_count or 0 for row in judge_rows),
         judge_cost_usd=blended_cost(judge_rows, _JUDGE_ROLE) if judge_rows else None,

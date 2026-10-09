@@ -49,7 +49,9 @@ class JudgedReading(EvalDocumentModel):
 
     dimension: DimName = Field(min_length=1, description="The dimension, spelled exactly as the judge stamped it.")
     mean: float | None = Field(default=None, description="Mean score on the dimension's own scale. None when n is 0.")
-    sem: float | None = Field(default=None, description="Standard error of that mean. None below n=2.")
+    sem: float | None = Field(
+        default=None, description="Standard error of that mean, over the test cases. None below two cases."
+    )
     n: int = Field(ge=0, description="Scores contributing to the mean — one per scored, non-faulted observation.")
     n_independent: int = Field(ge=0, description="Distinct test cases behind those scores.")
     n_infra_excluded: int = Field(

@@ -49,7 +49,7 @@ which the published schema and the model both refuse. It holds:
 - the contrasts the evidence tested against the control;
 - a distribution chart per measure and judged dimension;
 - for a classifier, one `labels` table of each label's precision, recall and F1, a row per label and arm:
-  precision and recall with their 95% Wilson intervals, F1 with none (it has none by construction), and
+  precision and recall with their 95% Wilson intervals over the cases, F1 with none (it has none by construction), and
   every figure with the n it is counted over;
 - the results by stratum when the cases declare strata ([below](#results-by-kind-of-case-strata));
 - every disclosure the evidence carries, opening with one line saying no analysis was generated.
@@ -184,7 +184,7 @@ stratum is not broken down, and its report reads as if strata did not exist.
 figure under `All cases`, then a column per stratum. Each arm opens with a `cases` row giving the cases
 and observations behind each column. A stratum holding fewer than `STRATUM_MIN_CASES` (10) cases is still
 shown, marked too few to read alone, and named in a `strata` disclosure below the table. A rate is shown
-with its Wilson interval and a mean with its standard error, each with its n.
+with its Wilson interval and a mean with its standard error, each over the cases and each with its n.
 
 **Generated cases** take their stratum from the template: mark one `enum` or `sample` variation axis
 `VariationAxis(..., stratum=True)` and each case generated takes that axis's value as its stratum. A case
