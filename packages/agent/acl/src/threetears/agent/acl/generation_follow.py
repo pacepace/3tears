@@ -25,6 +25,7 @@ Needs ``3tears-epoch``, which comes with the ``3tears-agent-acl[bus]`` extra.
 from __future__ import annotations
 
 import asyncio
+import functools
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from datetime import timedelta
@@ -52,6 +53,7 @@ __all__ = [
     "WatchHealth",
     "follow_access_tables",
     "follow_caller_access_cache",
+    "follow_tables",
 ]
 
 log = get_logger(__name__)
@@ -210,6 +212,16 @@ class AccessTableFollower:
         """
         return self.running and all(h.consecutive_failures == 0 for h in self._health.values())
 
+    def _table_watching(self, table: str) -> bool:
+        """whether ``table``'s watch is running with no failure since its last push.
+
+        :param table: the table
+        :ptype table: str
+        :return: ``True`` while the watch can judge the table
+        :rtype: bool
+        """
+        return self.running and self._health[table].consecutive_failures == 0
+
     @property
     def healthy(self) -> bool:
         """whether every table's watch is running and has been pushed a value since it last failed.
@@ -240,6 +252,8 @@ class AccessTableFollower:
         # be stopped -- nothing is accumulated or flushed
         for table in self._tables:
             self._registry.follow_generation(table)
+            # what a cache derived from the table reads to know whether it may serve what it holds
+            self._registry.watched_by(table, functools.partial(self._table_watching, table))
         self._tasks = [
             asyncio.create_task(self._watch(table), name=f"follow-generation:{table}") for table in self._tables
         ]
@@ -255,6 +269,8 @@ class AccessTableFollower:
         :rtype: None
         """
         tasks, self._tasks = self._tasks, []
+        for table in self._tables:
+            self._registry.watched_by(table, None)
         for task in tasks:
             task.cancel()
         if tasks:
@@ -351,6 +367,50 @@ class AccessTableFollowing:
         """
         await self.follower.stop()
         self._unbind()
+
+
+def follow_tables(
+    registry: CollectionRegistry,
+    reader: GenerationWatcher,
+    tables: Sequence[str],
+    *,
+    grace: timedelta = DEFAULT_BROADCAST_GRACE,
+    restart_delay: timedelta = DEFAULT_WATCH_RESTART_DELAY,
+    max_restart_delay: timedelta = MAX_WATCH_RESTART_DELAY,
+) -> AccessTableFollower:
+    """follow ``tables`` on ``registry`` by watching their generation keys, and return the follower, started.
+
+    For tables whose derived caches live on the registry itself -- the visibility-scan cache
+    (:meth:`~threetears.core.collections.registry.CollectionRegistry.scan_cache`), which serves an
+    entry only while every table it depends on is followed this way. Stop the follower before the
+    registry's invalidation listener.
+
+    :param registry: the registry whose listener hears the rows, and which follows the tables
+    :ptype registry: CollectionRegistry
+    :param reader: reads and watches the epoch bucket
+    :ptype reader: GenerationWatcher
+    :param tables: the tables to follow
+    :ptype tables: Sequence[str]
+    :param grace: how long a watch waits for an advance's rows before judging them missed
+    :ptype grace: timedelta
+    :param restart_delay: a failing watch's first wait before it starts again
+    :ptype restart_delay: timedelta
+    :param max_restart_delay: the longest wait between a failing watch's attempts
+    :ptype max_restart_delay: timedelta
+    :return: the running follower
+    :rtype: AccessTableFollower
+    :raises RuntimeError: when the registry's invalidation listener is not running
+    """
+    follower = AccessTableFollower(
+        registry,
+        reader,
+        tables=tuple(tables),
+        grace=grace,
+        restart_delay=restart_delay,
+        max_restart_delay=max_restart_delay,
+    )
+    follower.start()
+    return follower
 
 
 def follow_access_tables(

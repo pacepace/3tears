@@ -251,10 +251,10 @@ async def test_a_watch_whose_connection_closed_stops_instead_of_retrying() -> No
     )
     follower.start()
     for _ in range(100):
-        if all(task.done() for task in follower._tasks):  # noqa: SLF001 -- the watch tasks' own state
+        if follower.health["groups"].consecutive_failures:
             break
         await asyncio.sleep(0.005)
-    await asyncio.sleep(0.02)
+    await asyncio.sleep(0.05)
     assert reader.attempts == 1
     assert not follower.watching
     await follower.stop()
@@ -305,3 +305,35 @@ async def test_the_epoch_reader_says_when_its_client_is_closed() -> None:
     assert reader.closed is False
     client.is_closed = True
     assert reader.closed is True
+
+
+async def test_the_registry_trusts_a_followed_table_only_while_its_watch_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """the scan cache has no age: it may hold a scan only while every table it read is watched."""
+    from threetears.agent.acl.generation_follow import follow_tables
+
+    scanned = ("concepts", "playbook_entries")
+    watches = _FailsWhenTold()
+    monkeypatch.setattr(generation_follow, "follow_generation_key", watches)
+    registry = await _listening_registry()
+    assert not registry.tables_trusted(scanned)
+    following = follow_tables(
+        registry,
+        object(),  # type: ignore[arg-type]
+        scanned,
+        restart_delay=timedelta(milliseconds=1),
+    )
+    try:
+        assert following.running
+        assert registry.tables_trusted(scanned)
+        assert not registry.tables_trusted((*scanned, "role_assignments")), "not followed here"
+        watches.fail.set()
+        for _ in range(200):
+            if not registry.tables_trusted(scanned):
+                break
+            await asyncio.sleep(0.005)
+        assert not registry.tables_trusted(scanned)
+    finally:
+        await following.stop()
+    assert not registry.tables_trusted(scanned)

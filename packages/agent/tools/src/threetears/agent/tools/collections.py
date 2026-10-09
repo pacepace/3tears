@@ -194,7 +194,7 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
             data = self._coerce_row(dict(row))
             entity = self.entity_class(data, is_new=False, collection=self)
             entity.original_date_updated = data.get("date_updated")
-            self.write_to_cache_sync(data, from_lower_tier=True)
+            self.write_to_cache_sync(data)
             entities.append(entity)
         return entities
 

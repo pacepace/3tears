@@ -34,8 +34,23 @@ see "What Must Already Be Deployed Everywhere" in the note.
   subjects. An agent pod keeps the subscribe, dated, so a pod one release back is not refused it;
   `Subjects.acl_invalidate` stays for that grant alone.
 - **Removed:** the registry stack's `acl.*` subscriptions and `THREETEARS_REGISTRY_ACL_TTL_SECONDS`.
-- **Unchanged, on purpose:** `CollectionRegistry.set_l1_max_age` and `ScanCache`'s TTL. Their
-  callers are not access-table caches; they go with stage 4.
+- **Removed, breaking (owner, 2026-10-09):** the L1 age mechanism: `CollectionRegistry.set_l1_max_age`
+  / `get_l1_max_age`, `DEFAULT_L1_MAX_AGE_SECONDS`, `BaseCollection.l1_max_age_seconds`,
+  `write_to_cache_sync(from_lower_tier=)`, `L1Backend.select_by_id` / `select_batch`
+  `max_age_seconds=` / `now_monotonic=`, the SQLite cached-at stamp, `CACHED_AT_COLUMN`,
+  `TABLES_WITHOUT_CACHE_STAMP` and `entry_is_fresh`. Nothing in L1 ages.
+- **Changed, breaking:** `ScanCache` has no TTL (`DEFAULT_SCAN_TTL_SECONDS`, `ttl_seconds=`, the
+  `now_monotonic=` of `get` / `put` are gone): it stores and serves an entry only while every table
+  it depends on is followed with its watch running (`trusted=`, which the registry supplies from
+  the new `CollectionRegistry.watched_by` / `tables_trusted`). A `ScanCache` built without
+  `trusted=` caches nothing.
+- **Switched on:** `concepts`, `playbook_entries` (`threetears.agent.knowledge`), `datasources` and
+  `datasource_tables` (`threetears.datasources`). A process caching knowledge scans follows them
+  beside the access tables: `generation_follow.follow_tables(registry, reader,
+  KNOWLEDGE_SCAN_TABLES)`. The scans' dependencies name `namespaces` too.
+- **Fixed:** a write-generation watch whose connection is closed stops instead of restarting forever
+  (`EpochGenerationReader.closed`), and `AccessTableFollower.stop` is bounded (`stop_timeout`, 5 s);
+  a tool pod no longer hangs on SIGTERM.
 
 ### Core coordination: a fence on a producer's ready signal
 

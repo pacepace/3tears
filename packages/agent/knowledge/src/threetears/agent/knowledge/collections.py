@@ -22,11 +22,11 @@ are cross-table JOINs the by-pk Collection abstraction cannot express.
 from __future__ import annotations
 
 import json
-from time import monotonic
 from typing import Any
 from uuid import UUID
 
 from threetears.agent.acl import three_scope_visibility_clause
+from threetears.core.collections import WRITE_GENERATION
 from threetears.core.collections.scan_cache import ScanCacheKey
 from threetears.core.collections.schema_backed import (
     BOOL_TYPE,
@@ -47,18 +47,29 @@ from threetears.knowledge import (
 )
 
 
-#: Every table the concept visibility scan reads. The RBAC pair is not optional:
-#: the visibility clause JOINs them, so a REVOKED GRANT must evict the cached
-#: result rather than linger until the TTL. Declaring only the data table would
+#: Every table the concept visibility scan reads. The RBAC tables are not optional:
+#: the visibility clause JOINs ``role_assignments``, ``group_members`` and ``namespaces``,
+#: so a REVOKED GRANT must evict the cached result. Declaring only the data table would
 #: turn a staleness window into an authorization one. ``datasources`` is read by the
-#: KNW-77 origin-link subquery of a datasource-scoped scan; the hub writes that link
-#: through ``CapabilitySourceCollection.save_entity`` with its NATS client, which
-#: broadcasts on ``datasources``, so linking or unlinking a datasource evicts the
-#: widened (or narrowed) knowledge set instead of serving it until the TTL.
-_CONCEPT_SCAN_DEPENDS_ON = ("concepts", "datasource_tables", "datasources", "role_assignments", "group_members")
+#: origin-link subquery of a datasource-scoped scan, so linking or unlinking a datasource
+#: evicts the widened (or narrowed) knowledge set. Nothing here ages: a scan is cached
+#: only while every one of these tables is followed (``ScanCache``).
+_CONCEPT_SCAN_DEPENDS_ON = (
+    "concepts",
+    "datasource_tables",
+    "datasources",
+    "role_assignments",
+    "group_members",
+    "namespaces",
+)
 
 #: Same, for the entry scan.
-_ENTRY_SCAN_DEPENDS_ON = ("playbook_entries", "datasources", "role_assignments", "group_members")
+_ENTRY_SCAN_DEPENDS_ON = ("playbook_entries", "datasources", "role_assignments", "group_members", "namespaces")
+
+#: the tables beyond the access tables that a knowledge scan depends on: a process that caches
+#: these scans follows them (``threetears.agent.acl.generation_follow.follow_tables``) beside the
+#: access tables its ACL cache follows
+KNOWLEDGE_SCAN_TABLES: tuple[str, ...] = ("playbook_entries", "concepts", "datasources", "datasource_tables")
 
 
 def _scan_cache_for(collection: Any) -> Any:
@@ -81,7 +92,7 @@ def _scan_cache_for(collection: Any) -> Any:
 from threetears.agent.knowledge.entities import ConceptEntity, PlaybookEntryEntity
 from threetears.agent.knowledge.integration import DraftView
 
-__all__ = ["ConceptCollection", "PlaybookEntryCollection"]
+__all__ = ["KNOWLEDGE_SCAN_TABLES", "ConceptCollection", "PlaybookEntryCollection"]
 
 
 def _as_uuid(value: Any) -> UUID | None:
@@ -286,6 +297,10 @@ class PlaybookEntryCollection(SchemaBackedCollection[PlaybookEntryEntity]):
     author-private draft read).
     """
 
+    #: switched on (epoch-task-06): its writes advance the table's write generation, so a cache
+    #: derived from it (a visibility scan) is evicted when a broadcast is missed, not timed out
+    write_generation = WRITE_GENERATION
+
     primary_key_column: str = "id"
     schema = TableSchema(
         name="playbook_entries",
@@ -410,8 +425,7 @@ class PlaybookEntryCollection(SchemaBackedCollection[PlaybookEntryEntity]):
 
             cache = _scan_cache_for(self)
             cache_key = ScanCacheKey("playbook_entries", user_id, datasource_id, customer_scope)
-            now = monotonic()
-            cached = None if cache is None else cache.get(cache_key, now_monotonic=now)
+            cached = None if cache is None else cache.get(cache_key)
             if cached is None:
                 # the token is taken BEFORE the read: a write evicted while the read is in
                 # flight makes put() refuse, instead of caching the pre-write rows where
@@ -420,7 +434,7 @@ class PlaybookEntryCollection(SchemaBackedCollection[PlaybookEntryEntity]):
                 fetched = await self.l3_pool.fetch(sql, *params, customer_scope=customer_scope)
                 cached = [dict(row) for row in fetched]
                 if cache is not None and token is not None:
-                    cache.put(cache_key, cached, token=token, now_monotonic=now)
+                    cache.put(cache_key, cached, token=token)
             for row in cached:
                 result.append(_row_to_snapshot(row))
         return result
@@ -515,6 +529,10 @@ class ConceptCollection(SchemaBackedCollection[ConceptEntity]):
     filtered list evaluated SQL-side, exactly mirroring the entry collection) and
     :meth:`list_own_drafts` (the author-private draft read).
     """
+
+    #: switched on (epoch-task-06): its writes advance the table's write generation, so a cache
+    #: derived from it (a visibility scan) is evicted when a broadcast is missed, not timed out
+    write_generation = WRITE_GENERATION
 
     primary_key_column: str = "id"
     schema = TableSchema(
@@ -653,8 +671,7 @@ class ConceptCollection(SchemaBackedCollection[ConceptEntity]):
                 datasource_table_id,
                 customer_scope,
             )
-            now = monotonic()
-            cached = None if cache is None else cache.get(cache_key, now_monotonic=now)
+            cached = None if cache is None else cache.get(cache_key)
             if cached is None:
                 # the token is taken BEFORE the read: a write evicted while the read is in
                 # flight makes put() refuse, instead of caching the pre-write rows where
@@ -663,7 +680,7 @@ class ConceptCollection(SchemaBackedCollection[ConceptEntity]):
                 fetched = await self.l3_pool.fetch(sql, *params, customer_scope=customer_scope)
                 cached = [dict(row) for row in fetched]
                 if cache is not None and token is not None:
-                    cache.put(cache_key, cached, token=token, now_monotonic=now)
+                    cache.put(cache_key, cached, token=token)
             for row in cached:
                 result.append(_row_to_concept_snapshot(row))
         return result

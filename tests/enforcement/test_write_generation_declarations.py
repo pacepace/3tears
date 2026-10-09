@@ -444,10 +444,15 @@ class TestTheWalkersBite:
         flagged = {record["name"]: record["framework"] for record in census["classes"]}
         assert flagged["aibots_planted.knowledge.ProductConcepts"] is False
         assert flagged["threetears.agent.knowledge.collections.ConceptCollection"] is True
-        assert find_census_problems(census, {}) == [
-            "table 'concepts' is named by unrelated classes: "
-            "aibots_planted.knowledge.ProductConcepts, threetears.agent.knowledge.collections.ConceptCollection"
-        ]
+        # the framework's class is switched on and the product's is not: both are reported
+        assert sorted(find_census_problems(census, {})) == sorted(
+            [
+                "table 'concepts' is named by unrelated classes: "
+                "aibots_planted.knowledge.ProductConcepts, threetears.agent.knowledge.collections.ConceptCollection",
+                "table 'concepts' has classes declaring different write generations (on, undeclared): "
+                "aibots_planted.knowledge.ProductConcepts, threetears.agent.knowledge.collections.ConceptCollection",
+            ]
+        )
 
     def test_a_module_that_does_not_import_is_flagged(self, tmp_path: Path) -> None:
         root = _plant(tmp_path, "broken.py", "import threetears.planted.nowhere\n")

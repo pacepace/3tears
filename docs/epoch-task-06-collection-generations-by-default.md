@@ -6,8 +6,11 @@ AND STAGE 5 FOR THE ACCESS TABLES (contract). `groups`, `group_members`, `roles`
 the gateway's, each agent pod's and the standalone registry's -- is evicted row by row from their
 broadcasts and follows their generation keys. That is now the only invalidation they have: the
 `acl.*` subjects and `AclCache`'s TTL are gone, and a hub start puts the platform migrations' writes
-on the epoch system. Stage 4 (flip the default) and the rest of stage 5 (the L1 max age and the scan
-TTL) wait, for the reason under "Built in the Contract Stage". What exists, what each build decided,
+on the epoch system. The L1 max age and the scan TTL are gone too (the owner's rulings of 2026-10-09):
+the data-version fence reads the database on every request, and `concepts`, `playbook_entries`,
+`datasources` and `datasource_tables` are switched on and followed, so a visibility scan is cached
+only while every table it depends on is followed. Stage 4 (flip the default) waits on the
+measurement. What exists, what each build decided,
 where this note was wrong against the code, and what the later stages need are under "Built in the
 Expand Stage", "Built in the Migrate-Writers Stage", "Built in the Switch-On Stage" and "Built in
 the Contract Stage (the Access Tables)" at the end. The direction was decided by the product owner on
@@ -1276,17 +1279,59 @@ start. A failed advance fails the start. The migration CLI does the same after a
 that applied anything or a platform `downgrade`, connecting as the hub does; when it cannot, it
 exits 3 and says that a hub restart announces it. Agent-scope migrations write no platform table.
 
-**The L1 max age and the scan TTL stay; they are not the access tables'.** Stage 5 names them with
-the hub's one caller, `data_version_fence`, and the owner ruled the max age goes at contract. Read
-against the code, neither is an access-table cache: the max age's only caller bounds the two
-data-version tables, which the data-space upgrade writes by raw SQL on its own connection and
-whose bound the upgrade executor waits out, and the scan TTL bounds `ScanCache` entries that depend
-on data tables no generation covers before stage 4. Removing either now would leave those caches
-with nothing. They go with stage 4 and the data-version tables put on the epoch system.
+**The L1 max age and the scan TTL: the builder kept them, the owner ruled otherwise.** The build
+first kept both, since neither bounded an access-table cache. The owner ruled (below) that both go
+now, with what they protected put on the epoch system first.
 
 **`invalidate_all` on a namespace teardown** (`deprovision_namespace_tree`) still empties the
 hub's own cache when it removes a tree: a heard change answered with ALL. Over-eviction in one
 process, not a correctness gap; left as it was, and noted.
+
+### Decided by the Owner (2026-10-09): the L1 Max Age and the Scan TTL
+
+**The data-version fence reads the space's target from the database on every request it judges.**
+No cache, no wait: `DataVersionFence.versions_of` reads `agent_data_versions` /
+`namespace_data_versions` straight from L3 (`fetch_from_store`), so an upgrade's new `target` holds on
+the very next request on every replica. `DATA_VERSION_CACHE_TTL_SECONDS`, the fence's
+`set_l1_max_age` and the upgrade executor's wait (`cache_ttl_seconds`, `sleep`) are gone. The cost is
+one primary-key read per request on an agent or tool-provider namespace.
+- *Rejected: a replica acknowledgement* -- the fence keeps a followed cache and the upgrade waits
+  until every live hub replica acknowledges the advanced generation. The hub has no live-replica
+  membership today, so this is a subsystem of its own for one read per request.
+- *Rejected: keeping the limit* -- the upgrade waits out a cache bound in time, which is a timer.
+
+**The full route for the scan cache.** `concepts`, `playbook_entries`, `datasources` and
+`datasource_tables` are switched on (their framework classes declare `WRITE_GENERATION`). Every raw
+write to them is announced: the hub's template routes and schema endpoint write inside
+`bypassing_write`, the data upgrade's set-based row moves invalidate each returned id, a datasource
+removal invalidates the rows its delete cascades to (now including the datasources whose
+`origin_datasource_id` its delete clears), and the platform migrations are announced at every hub
+start. The hub and every agent pod follow the four tables beside the access tables
+(`threetears.agent.acl.generation_follow.follow_tables`, `KNOWLEDGE_SCAN_TABLES`). `ScanCache`
+has no TTL: it stores and serves an entry only while every table it depends on is followed with its
+watch running (`CollectionRegistry.tables_trusted`, fed by each follower through `watched_by`), and
+otherwise the scan reads L3. The scans' dependencies now name `namespaces`, which their visibility
+clause JOINs, and the hub's concept scan names `datasources`, which it reads.
+- *Rejected: keeping the limit* -- a timer on a cache the epoch system can invalidate.
+- *Rejected: never caching these scans* -- the scan this cache exists for timed out at 5 s per turn
+  on cobalt-dev before it was cached.
+
+**Removed with them:** the whole L1 age mechanism -- `CollectionRegistry.set_l1_max_age` /
+`get_l1_max_age`, `DEFAULT_L1_MAX_AGE_SECONDS`, `BaseCollection.l1_max_age_seconds`,
+`write_to_cache_sync(from_lower_tier=)`, the L1 backends' `max_age_seconds` / `now_monotonic`, the
+SQLite backend's injected cached-at stamp, `CACHED_AT_COLUMN`, `TABLES_WITHOUT_CACHE_STAMP`,
+`entry_is_fresh` and `ScanCache`'s `DEFAULT_SCAN_TTL_SECONDS` and `stored_at_monotonic`. A row's own
+declared expiry (`expires_at_column`) is data, not a cache bound, and stays.
+
+**Writes left unannounced, on purpose:** the hub's capability endpoints write `datasources.face_*`
+and `datasources.spec`, columns no collection declares or caches and no scan reads.
+
+**A follower that stops when its connection closes.** A tool pod on SIGTERM drained its client and
+`AccessTableFollower` restarted every watch against the closed connection, keeping the process
+alive. A watch whose watcher reports its connection closed (`EpochGenerationReader.closed`) now
+stops, and `AccessTableFollower.stop` is bounded (`stop_timeout`, 5 s). The reports product's
+pod stops following after its server's drain (`storage_closing`); with this it no longer hangs, and
+moving that stop before the drain is the product's to do.
 
 ### Test Evidence
 

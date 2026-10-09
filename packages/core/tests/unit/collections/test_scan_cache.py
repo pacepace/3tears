@@ -8,24 +8,43 @@ keep reading rows.
 
 from __future__ import annotations
 
+from typing import Any
+from uuid import uuid4
+
 import pytest
 
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.scan_cache import ScanCache, ScanCacheKey
 
 
-def _cache(ttl: float = 60.0) -> ScanCache:
-    """build a scan cache over a real in-memory L1 backend.
+def _cache() -> ScanCache:
+    """build a scan cache over a real in-memory L1 backend, every table followed.
 
     Deliberately NOT a mock: the point of the class is that it uses the pod's
     L1 rather than a process-local dict, so the test exercises the real one.
 
-    :param ttl: backstop expiry
-    :ptype ttl: float
     :return: a scan cache
     :rtype: ScanCache
     """
-    return ScanCache(SQLiteBackend(), ttl_seconds=ttl)
+    return ScanCache(SQLiteBackend(db_name=f"scan-{uuid4().hex}"), trusted=lambda _tables: True)
+
+
+def _followed_registry(*tables: str) -> object:
+    """a registry over a real L1 whose given tables are followed with their watches running.
+
+    :param tables: the tables
+    :ptype tables: str
+    :return: the registry
+    :rtype: CollectionRegistry
+    """
+    from threetears.core.collections.registry import CollectionRegistry
+
+    registry = CollectionRegistry()
+    registry.configure(l1_backend=SQLiteBackend())
+    for table in tables:
+        registry.follow_generation(table)
+        registry.watched_by(table, lambda: True)
+    return registry
 
 
 _ROWS = [{"id": "a", "name": "concept one"}, {"id": "b", "name": "concept two"}]
@@ -34,63 +53,98 @@ _ROWS = [{"id": "a", "name": "concept one"}, {"id": "b", "name": "concept two"}]
 class TestRoundTrip:
     def test_miss_before_anything_is_stored(self) -> None:
         cache = _cache()
-        assert cache.get(ScanCacheKey("concepts", "user-1"), now_monotonic=0.0) is None
+        assert cache.get(ScanCacheKey("concepts", "user-1")) is None
 
     def test_stored_rows_come_back(self) -> None:
         cache = _cache()
         key = ScanCacheKey("concepts", "user-1")
-        cache.put(key, _ROWS, token=cache.begin_read(("concepts",)), now_monotonic=0.0)
-        assert cache.get(key, now_monotonic=1.0) == _ROWS
+        cache.put(key, _ROWS, token=cache.begin_read(("concepts",)))
+        assert cache.get(key) == _ROWS
 
     def test_a_different_caller_is_a_different_entry(self) -> None:
         """two callers with different grants must never share a result."""
         cache = _cache()
-        cache.put(ScanCacheKey("concepts", "user-1"), _ROWS, token=cache.begin_read(("concepts",)), now_monotonic=0.0)
-        assert cache.get(ScanCacheKey("concepts", "user-2"), now_monotonic=0.0) is None
+        cache.put(ScanCacheKey("concepts", "user-1"), _ROWS, token=cache.begin_read(("concepts",)))
+        assert cache.get(ScanCacheKey("concepts", "user-2")) is None
 
 
 class TestEviction:
     def test_write_to_the_owning_table_evicts(self) -> None:
         cache = _cache()
         key = ScanCacheKey("concepts", "user-1")
-        cache.put(key, _ROWS, token=cache.begin_read(("concepts", "role_assignments")), now_monotonic=0.0)
+        cache.put(key, _ROWS, token=cache.begin_read(("concepts", "role_assignments")))
         assert cache.drop_for_table("concepts") == 1
-        assert cache.get(key, now_monotonic=0.0) is None
+        assert cache.get(key) is None
 
     def test_write_to_an_rbac_table_evicts(self) -> None:
         """THE SECURITY CASE.
 
         The visibility predicate JOINs ``role_assignments``. If a revoked grant
         did not drop the entry, the caller would keep reading rows they can no
-        longer see until the TTL lapsed.
+        longer see.
         """
         cache = _cache()
         key = ScanCacheKey("concepts", "user-1")
-        cache.put(key, _ROWS, token=cache.begin_read(("concepts", "role_assignments")), now_monotonic=0.0)
+        cache.put(key, _ROWS, token=cache.begin_read(("concepts", "role_assignments")))
         assert cache.drop_for_table("role_assignments") == 1
-        assert cache.get(key, now_monotonic=0.0) is None
+        assert cache.get(key) is None
 
     def test_an_unrelated_table_does_not_evict(self) -> None:
         """or every write anywhere would flush the cache and it would buy nothing."""
         cache = _cache()
         key = ScanCacheKey("concepts", "user-1")
-        cache.put(key, _ROWS, token=cache.begin_read(("concepts",)), now_monotonic=0.0)
+        cache.put(key, _ROWS, token=cache.begin_read(("concepts",)))
         assert cache.drop_for_table("conversations") == 0
-        assert cache.get(key, now_monotonic=0.0) == _ROWS
+        assert cache.get(key) == _ROWS
 
 
-class TestTtlBackstop:
-    def test_expired_entry_is_a_miss(self) -> None:
-        cache = _cache(ttl=30.0)
+class TestNoAgeOnlyTrust:
+    """nothing expires; an entry is served and stored only while every dependency is followed."""
+
+    def test_an_entry_is_served_however_old(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import time as _time
+
+        cache = _cache()
         key = ScanCacheKey("concepts", "user-1")
-        cache.put(key, _ROWS, token=cache.begin_read(("concepts",)), now_monotonic=0.0)
-        assert cache.get(key, now_monotonic=31.0) is None
+        cache.put(key, _ROWS, token=cache.begin_read(("concepts",)))
+        later = _time.monotonic() + 365 * 24 * 3600
+        monkeypatch.setattr(_time, "monotonic", lambda: later)
+        assert cache.get(key) == _ROWS
 
-    def test_entry_inside_the_ttl_survives(self) -> None:
-        cache = _cache(ttl=30.0)
+    def test_a_cache_nothing_follows_stores_nothing(self) -> None:
+        cache = ScanCache(SQLiteBackend())
         key = ScanCacheKey("concepts", "user-1")
-        cache.put(key, _ROWS, token=cache.begin_read(("concepts",)), now_monotonic=0.0)
-        assert cache.get(key, now_monotonic=29.0) == _ROWS
+        assert cache.put(key, _ROWS, token=cache.begin_read(("concepts",))) is False
+        assert cache.get(key) is None
+
+    def test_an_entry_is_not_served_while_a_dependency_is_not_followed(self) -> None:
+        followed = {"concepts": True, "role_assignments": True}
+        cache = ScanCache(SQLiteBackend(), trusted=lambda tables: all(followed.get(t, False) for t in tables))
+        key = ScanCacheKey("concepts", "user-1")
+        assert cache.put(key, _ROWS, token=cache.begin_read(("concepts", "role_assignments")))
+        followed["role_assignments"] = False
+        assert cache.get(key) is None
+        followed["role_assignments"] = True
+        assert cache.get(key) == _ROWS
+
+    def test_the_registry_trusts_a_table_only_while_it_is_followed_and_watched(self) -> None:
+        from threetears.core.collections.registry import CollectionRegistry
+
+        registry = CollectionRegistry()
+        registry.configure(l1_backend=SQLiteBackend())
+        assert not registry.tables_trusted(("concepts",))
+        registry.follow_generation("concepts")
+        assert not registry.tables_trusted(("concepts",)), "followed but nobody watches it"
+        watching = [True]
+        registry.watched_by("concepts", lambda: watching[0])
+        assert registry.tables_trusted(("concepts",))
+        watching[0] = False
+        assert not registry.tables_trusted(("concepts",))
+        registry.watched_by("concepts", None)
+        watching[0] = True
+        assert not registry.tables_trusted(("concepts",))
+        key = ScanCacheKey("concepts", "user-1")
+        assert registry.scan_cache.put(key, _ROWS, token=registry.scan_cache.begin_read(("concepts",))) is False
 
 
 class TestDisabled:
@@ -98,8 +152,8 @@ class TestDisabled:
         """a pod with no L1 must still serve, just uncached."""
         cache = ScanCache(None)
         key = ScanCacheKey("concepts", "user-1")
-        cache.put(key, _ROWS, token=cache.begin_read(("concepts",)), now_monotonic=0.0)
-        assert cache.get(key, now_monotonic=0.0) is None
+        cache.put(key, _ROWS, token=cache.begin_read(("concepts",)))
+        assert cache.get(key) is None
         assert cache.drop_for_table("concepts") == 0
 
 
@@ -113,21 +167,18 @@ class TestLocalWriteEvictsLocalScans:
     guaranteed never to be told.
 
     Shipped without this in 0.23.6: a hub that imported knowledge kept serving
-    the pre-import concept set until the TTL lapsed.
+    the pre-import concept set.
     """
 
     @pytest.mark.asyncio
     async def test_publish_invalidation_drops_dependent_scans(self) -> None:
-        from threetears.core.collections.registry import CollectionRegistry
-
-        registry = CollectionRegistry()
-        registry.configure(l1_backend=SQLiteBackend())
+        registry: Any = _followed_registry("concepts", "role_assignments")
         key = ScanCacheKey("concepts", "user-1")
-        registry.scan_cache.put(key, _ROWS, token=registry.scan_cache.begin_read(("concepts",)), now_monotonic=0.0)
+        registry.scan_cache.put(key, _ROWS, token=registry.scan_cache.begin_read(("concepts",)))
 
         await registry.publish_invalidation(None, "concepts", "some-id")
 
-        assert registry.scan_cache.get(key, now_monotonic=0.0) is None
+        assert registry.scan_cache.get(key) is None
 
     @pytest.mark.asyncio
     async def test_eviction_happens_without_a_nats_client(self) -> None:
@@ -137,31 +188,23 @@ class TestLocalWriteEvictsLocalScans:
         scan drop after that return would leave devx, tests, and any pod whose
         bus is down serving stale scans forever.
         """
-        from threetears.core.collections.registry import CollectionRegistry
-
-        registry = CollectionRegistry()
-        registry.configure(l1_backend=SQLiteBackend())
+        registry: Any = _followed_registry("concepts", "role_assignments")
         key = ScanCacheKey("concepts", "user-1")
-        registry.scan_cache.put(
-            key, _ROWS, token=registry.scan_cache.begin_read(("concepts", "role_assignments")), now_monotonic=0.0
-        )
+        registry.scan_cache.put(key, _ROWS, token=registry.scan_cache.begin_read(("concepts", "role_assignments")))
 
         await registry.publish_invalidation(None, "role_assignments", "grant-id")
 
-        assert registry.scan_cache.get(key, now_monotonic=0.0) is None
+        assert registry.scan_cache.get(key) is None
 
     @pytest.mark.asyncio
     async def test_an_unrelated_write_leaves_the_scan_alone(self) -> None:
-        from threetears.core.collections.registry import CollectionRegistry
-
-        registry = CollectionRegistry()
-        registry.configure(l1_backend=SQLiteBackend())
+        registry: Any = _followed_registry("concepts", "role_assignments")
         key = ScanCacheKey("concepts", "user-1")
-        registry.scan_cache.put(key, _ROWS, token=registry.scan_cache.begin_read(("concepts",)), now_monotonic=0.0)
+        registry.scan_cache.put(key, _ROWS, token=registry.scan_cache.begin_read(("concepts",)))
 
         await registry.publish_invalidation(None, "conversations", "other-id")
 
-        assert registry.scan_cache.get(key, now_monotonic=0.0) == _ROWS
+        assert registry.scan_cache.get(key) == _ROWS
 
 
 class TestAReadOvertakenByAnEvictionIsNotStored:
@@ -179,8 +222,8 @@ class TestAReadOvertakenByAnEvictionIsNotStored:
         token = cache.begin_read(("concepts", "role_assignments"))
         # the write commits and evicts while the read is in flight, before anything is stored
         cache.drop_for_table("concepts")
-        assert cache.put(key, _ROWS, token=token, now_monotonic=0.0) is False
-        assert cache.get(key, now_monotonic=0.0) is None
+        assert cache.put(key, _ROWS, token=token) is False
+        assert cache.get(key) is None
 
     def test_rbac_eviction_during_the_read_refuses_the_store(self) -> None:
         """the security case: a grant revoked mid-read must not leave the old result cached."""
@@ -188,16 +231,16 @@ class TestAReadOvertakenByAnEvictionIsNotStored:
         key = ScanCacheKey("concepts", "user-1")
         token = cache.begin_read(("concepts", "role_assignments"))
         cache.drop_for_table("role_assignments")
-        assert cache.put(key, _ROWS, token=token, now_monotonic=0.0) is False
-        assert cache.get(key, now_monotonic=0.0) is None
+        assert cache.put(key, _ROWS, token=token) is False
+        assert cache.get(key) is None
 
     def test_an_unrelated_eviction_during_the_read_still_stores(self) -> None:
         cache = _cache()
         key = ScanCacheKey("concepts", "user-1")
         token = cache.begin_read(("concepts",))
         cache.drop_for_table("conversations")
-        assert cache.put(key, _ROWS, token=token, now_monotonic=0.0) is True
-        assert cache.get(key, now_monotonic=0.0) == _ROWS
+        assert cache.put(key, _ROWS, token=token) is True
+        assert cache.get(key) == _ROWS
 
     def test_an_eviction_before_the_token_does_not_refuse(self) -> None:
         """the read began after the eviction, so it saw the write; its result is safe."""
@@ -205,27 +248,24 @@ class TestAReadOvertakenByAnEvictionIsNotStored:
         key = ScanCacheKey("concepts", "user-1")
         cache.drop_for_table("concepts")
         token = cache.begin_read(("concepts",))
-        assert cache.put(key, _ROWS, token=token, now_monotonic=0.0) is True
-        assert cache.get(key, now_monotonic=0.0) == _ROWS
+        assert cache.put(key, _ROWS, token=token) is True
+        assert cache.get(key) == _ROWS
 
     def test_a_token_from_another_cache_is_refused_loudly(self) -> None:
         """a token's counts belong to the cache that issued it; comparing them elsewhere is meaningless."""
         issuing, other = _cache(), _cache()
         token = issuing.begin_read(("concepts",))
         with pytest.raises(ValueError, match="different ScanCache"):
-            other.put(ScanCacheKey("concepts", "user-1"), _ROWS, token=token, now_monotonic=0.0)
+            other.put(ScanCacheKey("concepts", "user-1"), _ROWS, token=token)
 
     @pytest.mark.asyncio
     async def test_a_local_write_committing_mid_read_refuses_the_store(self) -> None:
         """the writing pod's own post-commit eviction runs through publish_invalidation."""
-        from threetears.core.collections.registry import CollectionRegistry
-
-        registry = CollectionRegistry()
-        registry.configure(l1_backend=SQLiteBackend())
+        registry: Any = _followed_registry("concepts", "role_assignments")
         key = ScanCacheKey("concepts", "user-1")
         token = registry.scan_cache.begin_read(("concepts",))
 
         await registry.publish_invalidation(None, "concepts", "some-id")
 
-        assert registry.scan_cache.put(key, _ROWS, token=token, now_monotonic=0.0) is False
-        assert registry.scan_cache.get(key, now_monotonic=0.0) is None
+        assert registry.scan_cache.put(key, _ROWS, token=token) is False
+        assert registry.scan_cache.get(key) is None

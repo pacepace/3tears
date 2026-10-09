@@ -38,6 +38,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from threetears.core.collections import WRITE_GENERATION
 from threetears.core.backends import L3Backend, parse_rowcount
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.schema_backed import (
@@ -459,6 +460,10 @@ class CapabilitySourceCollection(SchemaBackedCollection[CapabilitySourceEntity])
     admin endpoints via the L3 pool with cache-bypass rationales).
     """
 
+    #: switched on (epoch-task-06): its writes advance the table's write generation, so a cache
+    #: derived from it (a visibility scan) is evicted when a broadcast is missed, not timed out
+    write_generation = WRITE_GENERATION
+
     primary_key_column: str = "id"
     schema = TableSchema(
         name="datasources",
@@ -703,7 +708,7 @@ class CapabilitySourceCollection(SchemaBackedCollection[CapabilitySourceEntity])
             )
             if row is not None:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, from_lower_tier=True)
+                self.write_to_cache_sync(data)
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
 
@@ -748,6 +753,10 @@ class DataSourceTableCollection(BaseCollection[DataSourceTableEntity]):
     provides CRUD operations with L1 -> L2 -> L3 caching.
     data source tables are hard-deleted (no soft-delete pattern).
     """
+
+    #: switched on (epoch-task-06): its writes advance the table's write generation, so a cache
+    #: derived from it (a visibility scan) is evicted when a broadcast is missed, not timed out
+    write_generation = WRITE_GENERATION
 
     @property
     def table_name(self) -> str:
