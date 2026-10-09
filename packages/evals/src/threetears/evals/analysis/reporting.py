@@ -40,7 +40,15 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple, get_args
 from pydantic import Field, model_validator
 
 from threetears.evals.analysis.numbers import format_number
-from threetears.evals.analysis.stats import ChangeLabel
+from threetears.evals.analysis.stats import (
+    SIGNIFICANCE_ALPHA,
+    ChangeLabel,
+    case_rate_interval,
+    holm_adjust,
+    interval_clears,
+    separation_p,
+)
+from threetears.evals.contracts.analysis_measures import BarDecision
 from threetears.evals.contracts.base import EvalBaseModel, VerbatimText
 from threetears.evals.contracts.hashing import canonical_digest, canonical_json
 from threetears.evals.contracts.host.profile import HostProfile
@@ -69,9 +77,11 @@ from threetears.evals.contracts.result_condition import (
 )
 from threetears.evals.contracts.scoring import (
     PassHatPoint,
+    case_pass_hat_k,
     pass_hat_k_at,
     pass_hat_k_cell,
     pool_pass_hat_k,
+    pool_pass_hat_k_attempts,
     result_composite,
 )
 from threetears.observe import get_logger
@@ -3433,10 +3443,10 @@ def _planned_cost_per_observation(
 
     A planned cell's prediction is its sweep's TOTAL (``n_observations`` draws), and a pivot cell's
     value is a mean per observation, so the prediction is divided by the planned observation count —
-    and so is its band. That is not a rescaling of convenience: the total's half-width is
-    ``t * s * sqrt(n + n²/N)`` over ``N`` historical observations, and divided by ``n`` it is
-    ``t * s * sqrt(1/n + 1/N)``, exactly the prediction band for the mean of the ``n`` planned
-    observations. One derivation, read two ways.
+    and so is its band. That is not a rescaling of convenience: the mean of the ``n`` planned
+    observations is their total over ``n``, so the band on the total, divided by ``n``, is exactly the
+    band on that mean, at the same level and on the same assumptions.
+    One prediction, read two ways.
 
     Args:
         estimate: The estimate, or the planned costs, or None.
@@ -3540,9 +3550,17 @@ def _plan_for(
 # gap. `comparison_sets` is where a reader goes to group by template.
 #
 # Domination is over three axes: pass^k (higher better), production-replicating
-# cost (lower better), and total latency (lower better). mean-composite is shown
+# cost (lower better), and mean total latency (lower better). mean-composite is shown
 # beside pass^k as the secondary quality read but is NOT a domination
 # axis — ranking on two correlated quality measures would double-weight quality.
+#
+# Domination is a claim that one contestant is worse, so it is DECIDED, by test, never read off
+# point estimates: two contestants drawn from one distribution differ on every continuous axis,
+# and comparing the numbers flagged one of them dominated about a third of the time. See
+# `_dominance_p` for the rule. Latency is ranked on the MEAN, not a tail, for the same reason:
+# a ranking axis must carry a test, and at the sizes a frontier sees a 95th percentile has
+# none — a 95% interval on a p95 has no upper end below 72 observations — while a mean has a paired test over
+# cases. The tail is read beside it (the run summary's `p95_total_ms` / `max_total_ms`).
 #
 # Cost is restricted to the production-replicating roles (candidate + inner_agent
 # + external). A frontier computed on judge/simulator-inclusive cost ranks a
@@ -3709,7 +3727,7 @@ def _template_span_disclosure(span_entries: Sequence[str]) -> str | None:
 
 
 class FrontierDominator(EvalBaseModel):
-    """One contestant that beats another point on every axis, named as a ROW is named.
+    """One contestant shown to beat another point on every axis it measured, named as a ROW is named.
 
     The identity triple of :class:`FrontierPoint`, carried rather than projected down to
     ``model``. A point is one ``(subject, variant, identity version)`` and every surface renders it as
@@ -3737,6 +3755,15 @@ class FrontierDominator(EvalBaseModel):
     #: is not blocked: the gate says these are two contestants, and two contestants beating
     #: each other on measured axes is what a frontier is for. Only the LABEL needed fixing.
     variant_identity_version: int
+    #: The Holm-adjusted p the domination was decided on, below :data:`~threetears.evals.analysis.stats.SIGNIFICANCE_ALPHA`
+    #: (see :func:`_dominance_p`). Carried because a verdict a reader cannot check against its statistic is
+    #: an assertion. ``None`` on a dominator stored before domination was tested: that one was read off
+    #: point estimates.
+    p_value: float | None = None
+
+
+#: Whether a frontier point is shown dominated — see :attr:`FrontierPoint.dominance`.
+FrontierDominance = Literal["dominated", "not_separated", "untested"]
 
 
 class FrontierPoint(EvalBaseModel):
@@ -3783,6 +3810,18 @@ class FrontierPoint(EvalBaseModel):
     #: pass^1..pass^K for this point, each with its own case count. pass^1 is the per-case pass
     #: rate; the deeper points show how fast reliability decays with repetition.
     pass_hat_k_curve: list[PassHatPoint] = []
+    #: The interval on ``pass_hat_k`` at :data:`~threetears.evals.analysis.stats.INTERVAL_LEVEL`, over its
+    #: cases (:func:`~threetears.evals.analysis.stats.case_rate_interval`): the cases are the draws, and each
+    #: case's own estimate is noisy too. ``None`` below two cases, where none is estimable, and on a point
+    #: stored before pass^k carried one.
+    pass_hat_k_ci_low: float | None = None
+    #: The high end of that interval; ``None`` exactly when ``pass_hat_k_ci_low`` is.
+    pass_hat_k_ci_high: float | None = None
+    #: How this point's pass^k reads against the bar, decided by its interval the way every campaign bar is
+    #: (:func:`~threetears.evals.analysis.stats.interval_clears`): ``cleared``, ``missed``, ``undecided`` (the
+    #: interval straddles the bar — neither a pass nor a failure), ``no_interval`` (fewer than two cases, not
+    #: read) or ``no_data``. ``None`` when no bar was supplied.
+    bar_decision: BarDecision | None = None
     mean_composite: float | None = None
     composite_sem: float | None = None
     n_composite_cases: int = 0
@@ -3809,7 +3848,8 @@ class FrontierPoint(EvalBaseModel):
     cost_per_acceptable_outcome: float | None = None
 
     # Latency — total wall-clock ms, the performance axis. Mean over the turns the candidate took
-    # (`delivered_a_turn`) that harvested a total; ``None`` when none did.
+    # (`delivered_a_turn`) that harvested a total; ``None`` when none did. The mean, not a tail: it is
+    # the latency statistic a domination can be TESTED on at these sizes (see the section comment).
     mean_total_ms: float | None = None
     n_latency: int = 0
     #: Results whose candidate's model refused or errored with no turn taken — failures pass^k counts,
@@ -3870,18 +3910,28 @@ class FrontierPoint(EvalBaseModel):
 
     # Domination — a dominated point is grayed, never dropped: silently removing a
     # cheap-but-brittle variant looks identical to it never having run.
+    #: True only when another point is SHOWN to beat this one (:attr:`dominance` ``dominated``).
+    #: False is not a claim that nothing beats it. On a point stored before domination was tested
+    #: (``dominance`` is ``None``), this was read off point estimates.
     dominated: bool = False
-    #: Every point that beats this one on every axis, each carrying the identity a row
-    #: carries. In the order the points are sorted, which is the order the table prints
-    #: them, so a reader scanning for a named dominator meets them in that order.
+    #: ``dominated`` — some other point is shown better on every axis this one measured, by the test
+    #: :func:`_dominance_p` states; ``not_separated`` — this point was tested against at least one other
+    #: and no domination was shown, which says nothing about whether one exists; ``untested`` — no
+    #: other point could be tested against it (fewer than two cases on an axis, or no shared axis).
+    #: ``None`` on a point stored before domination was tested.
+    dominance: FrontierDominance | None = None
+    #: Every point shown to beat this one on every axis, each carrying the identity a row
+    #: carries and the p it was shown at. In the order the points are sorted, which is the order
+    #: the table prints them, so a reader scanning for a named dominator meets them in that order.
     dominated_by: list[FrontierDominator] = []
 
 
 class FrontierVerdict(EvalBaseModel):
     """The cheapest variant clearing the operator's bar, for one subject.
 
-    Present only when a bar was supplied AND at least one point both cleared it
-    and reported a production-replicating cost — a pick cannot be named cheapest
+    Present only when a bar was supplied AND at least one point both cleared it — its pass^k
+    interval wholly at or above the bar, the rule every campaign bar is read by — and reported a
+    production-replicating cost — a pick cannot be named cheapest
     on a cost nobody observed. ``cost_is_partial`` rides along so a pick made on a
     partially-observed cost basis says so, and ``cassette_mode_disclosure`` for the
     stronger version of the same duty: a verdict is a RECOMMENDATION, so one drawn from
@@ -3900,6 +3950,10 @@ class FrontierVerdict(EvalBaseModel):
     pass_hat_k: float
     #: The depth ``pass_hat_k`` was read at — the subject's, the same as every point's.
     k: int = 1
+    #: The interval the bar was decided on (:attr:`FrontierPoint.pass_hat_k_ci_low`). ``None`` only on a
+    #: verdict stored before the bar read intervals: that one compared the point pass^k with the bar.
+    pass_hat_k_ci_low: float | None = None
+    pass_hat_k_ci_high: float | None = None
     production_replicating_cost: float | None = None
     cost_is_partial: bool = False
     cassette_mode_disclosure: str | None = None
@@ -3926,7 +3980,8 @@ class SubjectFrontier(EvalBaseModel):
     Per-subject always: composite quality is derived from the subject's own rubric
     and is not comparable across subjects, so two subjects are two frontiers, never one.
     ``n_cleared_bar`` is carried so an absent verdict distinguishes "no variant cleared
-    the bar" from "some cleared it but none has a known cost to be cheapest by".
+    the bar" from "some cleared it but none has a known cost to be cheapest by", and
+    ``n_undecided_bar`` so "none cleared" distinguishes "shown short" from "too few cases to say".
     """
 
     subject_id: str
@@ -3940,6 +3995,8 @@ class SubjectFrontier(EvalBaseModel):
     points: list[FrontierPoint] = []
     verdict: FrontierVerdict | None = None
     n_cleared_bar: int = 0
+    #: Points whose pass^k interval straddles the bar: neither cleared nor missed.
+    n_undecided_bar: int = 0
 
 
 class FrontierResult(EvalBaseModel):
@@ -4091,8 +4148,8 @@ def _frontier_point(
     cassette_modes_by_run: Mapping[str, str],
     templates_by_run: Mapping[str, str | None],
     degraded_by_run: Mapping[str, str],
-) -> FrontierPoint:
-    """Aggregate one contestant's results into a single frontier point.
+) -> tuple[FrontierPoint, _ContestantCases]:
+    """Aggregate one contestant's results into a single frontier point, and the per-case values behind it.
 
     Every axis aggregates over its own measured subset — pass^k reuses
     :func:`~threetears.evals.contracts.scoring.pool_pass_hat_k` (which drops infra-excluded
@@ -4136,9 +4193,10 @@ def _frontier_point(
             caller that forgot it rank a truncated contestant as if it were whole.
 
     Returns:
-        A :class:`FrontierPoint` with quality, cost, latency, and every
-        denominator. Domination is filled by the caller, which needs the subject's
-        other points to compute it.
+        A :class:`FrontierPoint` with quality (and its interval), cost, latency, and every
+        denominator, and the per-case values each axis averages, which a domination test pairs
+        on. Domination and the bar are filled by the caller, which needs the subject's other
+        points and the bar to decide them.
     """
     from threetears.evals.contracts.usage_capture import count_substituted_deliveries, production_replicating_cost
 
@@ -4152,6 +4210,20 @@ def _frontier_point(
     pooled = pool_pass_hat_k(results, cell_of_run=cell_of_run, k=k, rubric_threshold=rubric_threshold)
     pass_hat_k = pooled["pass_hat_k"]
     pass_hat_1 = pass_hat_k_at(pooled["pass_hat_k_curve"], 1)["pass_hat_k"]
+    # The same cases the headline averages, one estimate each: the interval runs over them, and a
+    # domination test pairs two contestants on the test cases both measured.
+    attempts, _ = pool_pass_hat_k_attempts(results, cell_of_run=cell_of_run, rubric_threshold=rubric_threshold)
+    unit_estimates: list[float] = []
+    unit_attempts = 0
+    pass_by_case: dict[str, list[float]] = {}
+    for (_, _, _, _, test_case_id), case_attempts in attempts.items():
+        estimate = case_pass_hat_k(case_attempts, k)
+        if estimate is None:
+            continue
+        unit_estimates.append(estimate)
+        unit_attempts += len(case_attempts)
+        pass_by_case.setdefault(test_case_id, []).append(estimate)
+    pass_interval = case_rate_interval(unit_estimates, max_effective_n=unit_attempts / k) if unit_estimates else None
 
     # composite — case-weighted mean of the 0-1 scores, dropping the nulls that
     # mark infra-excluded and no-rubric results (a candidate failure scores 0.0
@@ -4189,15 +4261,16 @@ def _frontier_point(
     # A call the candidate's model refused or errored on took no turn (`delivered_a_turn`), so its dollars are
     # no turn's spend, and averaged in they rank a refusing contestant cheap; it is left out here as on every
     # cost reading. A faulted cell is not: that is the deliberate exception above, whose dollars a turn spent.
-    observed_costs = [
-        c
-        for c in (
-            production_replicating_cost(r.usage, substituted_deliveries=count_substituted_deliveries(r))
+    priced = [
+        (r.test_case_id, c)
+        for r, c in (
+            (r, production_replicating_cost(r.usage, substituted_deliveries=count_substituted_deliveries(r)))
             for r in results
             if delivered_a_turn(r) or harness_faulted(r)
         )
         if c is not None
     ]
+    observed_costs = [c for _, c in priced]
     n_cost = len(observed_costs)
     prod_cost = math.fsum(observed_costs) / n_cost if n_cost else None
     cost_is_partial = 0 < n_cost < len(results)
@@ -4221,11 +4294,12 @@ def _frontier_point(
     # on the subject, dominating the arms that answered. `delivered_a_turn` is that predicate — the
     # cells' own — and it keeps a turn the budget ended or the deadline struck, which really took
     # that long.
-    totals = [
-        r.latency.total_ms
+    timed = [
+        (r.test_case_id, r.latency.total_ms)
         for r in results
         if r.latency is not None and r.latency.total_ms is not None and delivered_a_turn(r)
     ]
+    totals = [total for _, total in timed]
     n_latency = len(totals)
     mean_total_ms = round(sum(totals) / n_latency, 3) if n_latency else None
 
@@ -4255,7 +4329,12 @@ def _frontier_point(
     # disagree; one cannot.
     template_span = _template_span_entries(contributing_templates)
 
-    return FrontierPoint(
+    cases = _ContestantCases(
+        pass_hat_k=_case_means((case, value) for case, values in pass_by_case.items() for value in values),
+        production_replicating_cost=_case_means(priced),
+        mean_total_ms=_case_means(timed),
+    )
+    point = FrontierPoint(
         cassette_mode_disclosure=cassette_mode_disclosure(contributing_modes),
         template_span=template_span,
         template_span_disclosure=_template_span_disclosure(template_span),
@@ -4273,6 +4352,8 @@ def _frontier_point(
         k=k,
         n_pass_cases=pooled["n_cases_at_k"],
         pass_hat_k_curve=pooled["pass_hat_k_curve"],
+        pass_hat_k_ci_low=None if pass_interval is None else pass_interval[0],
+        pass_hat_k_ci_high=None if pass_interval is None else pass_interval[1],
         mean_composite=mean_composite,
         composite_sem=composite_sem,
         n_composite_cases=len(values_by_case),
@@ -4289,55 +4370,163 @@ def _frontier_point(
         n_results=len(results),
         n_cases=len({r.test_case_id for r in results}),
     )
+    return point, cases
 
 
-def _dominates(a: FrontierPoint, b: FrontierPoint) -> bool:
-    """Whether point ``a`` Pareto-dominates point ``b``.
+class _ContestantCases(NamedTuple):
+    """One contestant's per-test-case value on each domination axis: what a test between two pairs on.
 
-    ``a`` dominates ``b`` iff it is no worse on every axis both define and
-    strictly better on at least one, with a deliberate asymmetry in how a missing
-    axis is treated:
+    Keyed by ``test_case_id``, each the mean of the contestant's values at that case — its unit pass^k
+    estimates (one per cell the case was measured under), or its observations' cost or total latency. An
+    axis the contestant never measured is empty.
+    """
 
-    - **If ``b`` defines an axis ``a`` does not, ``a`` cannot dominate** — ``a``'s
-      unknown value there could be worse, so a point missing latency never
-      dominates one that measured it, and an unmeasured axis is never silently
-      treated as the winning "fastest" or "cheapest".
-    - **The reverse does NOT block.** When ``a`` defines an axis ``b`` does not,
-      that axis is simply skipped, so ``a`` may still dominate on the axes they
-      share. This is what lets a working variant dominate one that failed
-      everywhere — its quality is strictly worse (its pass^k is defined, as it is whenever a case was scored ``k`` deep) and
-      its unmeasured cost/latency cannot rescue a zero-quality contestant. The
-      trade-off is that a decent point whose cost nothing observed (real quality,
-      no cost) can be grayed by a higher-quality measured one; domination only
-      grays, never drops, and the verdict still refuses any point without an
-      observed cost, so the honest cheap option is never picked *or* hidden.
+    pass_hat_k: dict[str, float]
+    production_replicating_cost: dict[str, float]
+    mean_total_ms: dict[str, float]
+
+
+#: The domination axes, each a :class:`FrontierPoint` headline with its :class:`_ContestantCases` field of
+#: the same name, and whether higher is better on it.
+_DOMINATION_AXES: tuple[tuple[Literal["pass_hat_k", "production_replicating_cost", "mean_total_ms"], bool], ...] = (
+    ("pass_hat_k", True),
+    ("production_replicating_cost", False),
+    ("mean_total_ms", False),
+)
+
+
+def _case_means(pairs: Iterable[tuple[str, float]]) -> dict[str, float]:
+    """The mean value at each case, from ``(case, value)`` pairs."""
+    grouped: dict[str, list[float]] = {}
+    for case, value in pairs:
+        grouped.setdefault(case, []).append(value)
+    return {case: math.fsum(values) / len(values) for case, values in grouped.items()}
+
+
+def _dominance_p(
+    a: FrontierPoint, a_cases: _ContestantCases, b: FrontierPoint, b_cases: _ContestantCases
+) -> float | None:
+    """The p of the test that point ``a`` dominates point ``b``, or ``None`` where none can run.
+
+    ``a`` dominates ``b`` when it is SHOWN better on every axis ``b`` measured — an intersection–union
+    test (Berger 1982): each axis is tested on its own, and the claim stands only if every one rejects, so
+    its p is the largest of theirs. Requiring every axis is what makes the conjunction a level-α test with
+    no correction across axes; correcting across them would only make it stricter than α.
+
+    Each axis is the engine's separation test (:func:`~threetears.evals.analysis.stats.separation_p`):
+    paired over the test cases both contestants measured where they share at least two, Welch over each
+    side's cases otherwise, two-sided, and counting only in ``a``'s favour — so on one axis a false call
+    of "better" happens at most α/2 of the time.
+
+    **"Better or equal" collapses to "better".** Showing a contestant no worse than another by at most a
+    margin is an equivalence test, and these axes declare no margin; showing it no worse by zero is
+    showing it better. So a tie on an axis — two contestants that each passed every case — blocks the
+    claim rather than satisfying it: the data cannot say which is better there, and absence of evidence
+    is not a claim.
+
+    The missing-axis rule is the one point estimates were held to. If ``b`` measured an axis ``a`` did not,
+    ``a`` cannot dominate: its unknown value there could be worse, and an unmeasured axis is never the
+    winning "fastest" or "cheapest". The reverse does not block: an axis only ``a`` measured is skipped,
+    which is what lets a working variant dominate one that failed everywhere (measured pass^k, no turn
+    taken, so no cost or latency to rescue it).
 
     Args:
         a: The candidate dominator.
+        a_cases: Its per-case values.
         b: The point tested for being dominated.
+        b_cases: Its per-case values.
 
     Returns:
-        ``True`` when ``a`` dominates ``b``.
+        The p: below α only when every axis ``b`` measured separates in ``a``'s favour, and 1.0 when an
+        axis was tested and did not — a tie, a separation the other way, or no separation. ``None`` when
+        no test could run: ``b`` measured no axis, ``a`` lacks one ``b`` measured, or a side has fewer than
+        two cases on one.
     """
-    # (value_a, value_b, higher_is_better)
-    axes = (
-        (a.pass_hat_k, b.pass_hat_k, True),
-        (a.production_replicating_cost, b.production_replicating_cost, False),
-        (a.mean_total_ms, b.mean_total_ms, False),
+    measured = [(axis, higher) for axis, higher in _DOMINATION_AXES if getattr(b, axis) is not None]
+    if not measured:
+        return None
+    largest = 0.0
+    for axis, higher_is_better in measured:
+        if getattr(a, axis) is None:
+            return None
+        a_values, b_values = getattr(a_cases, axis), getattr(b_cases, axis)
+        if len(a_values) < 2 or len(b_values) < 2:
+            return None
+        shared = sorted(set(a_values) & set(b_values))
+        paired = len(shared) >= 2
+        a_side = [a_values[case] for case in shared] if paired else list(a_values.values())
+        b_side = [b_values[case] for case in shared] if paired else list(b_values.values())
+        p = separation_p(a_side, b_side, paired=paired)
+        gap = math.fsum(a_side) / len(a_side) - math.fsum(b_side) / len(b_side)
+        a_better = gap > 0 if higher_is_better else gap < 0
+        largest = max(largest, p if p is not None and a_better else 1.0)
+    return largest
+
+
+def _decide_dominance(points: list[FrontierPoint], cases: list[_ContestantCases]) -> None:
+    """Fill every point's ``dominance``, ``dominated`` and ``dominated_by``, by test.
+
+    Every pair of contestants in the subject is one comparison, with the smaller p of its two directions
+    (:func:`_dominance_p`). Each direction's p is built from two-sided axis tests read in one direction
+    only, so it errs at most α/2; the two directions are disjoint claims, so the smaller of the two is the
+    pair's two-sided p, as the engine's every separation test is. The pairs are one family, Holm-adjusted together
+    (:func:`~threetears.evals.analysis.stats.holm_adjust`), so the chance that ANY point in the subject is
+    flagged dominated when it is not stays within α — the rule every family of between-arm claims in
+    the engine is read by. A domination is shown when its pair's adjusted p is below α in that direction.
+
+    Args:
+        points: The subject's points, in display order. Mutated.
+        cases: Each point's per-case values, aligned with ``points``.
+    """
+    family: list[tuple[int, int, float]] = []
+    tested: set[int] = set()
+    for i in range(len(points)):
+        for j in range(i + 1, len(points)):
+            forward = _dominance_p(points[i], cases[i], points[j], cases[j])
+            backward = _dominance_p(points[j], cases[j], points[i], cases[i])
+            if forward is not None:
+                tested.add(j)
+            if backward is not None:
+                tested.add(i)
+            if forward is None and backward is None:
+                continue
+            if backward is None or (forward is not None and forward <= backward):
+                family.append((i, j, forward if forward is not None else 1.0))
+            else:
+                family.append((j, i, backward))
+    adjusted = holm_adjust([p for _, _, p in family])
+    dominators: dict[int, list[tuple[int, float]]] = {}
+    for (winner, loser, _), p_adjusted in zip(family, adjusted, strict=True):
+        if p_adjusted < SIGNIFICANCE_ALPHA:
+            dominators.setdefault(loser, []).append((winner, p_adjusted))
+    for index, point in enumerate(points):
+        # Built by walking the sorted points rather than by collecting a SET of names: a set over
+        # `model` alone silently merges two variants of one model and leaves behind the dominated
+        # row's own model name, which reads as a row dominating itself.
+        found = sorted(dominators.get(index, []))
+        point.dominated_by = [
+            FrontierDominator(
+                variant_key=points[winner].variant_key,
+                model=points[winner].model,
+                variant_identity_version=points[winner].variant_identity_version,
+                p_value=p_adjusted,
+            )
+            for winner, p_adjusted in found
+        ]
+        point.dominated = bool(found)
+        point.dominance = "dominated" if found else "not_separated" if index in tested else "untested"
+
+
+def _bar_decision(point: FrontierPoint, bar: float) -> BarDecision:
+    """How a point's pass^k reads against the frontier's bar — the five words a campaign bar's verdict uses."""
+    if point.pass_hat_k is None:
+        return "no_data"
+    if point.pass_hat_k_ci_low is None or point.pass_hat_k_ci_high is None:
+        return "no_interval"
+    cleared = interval_clears(
+        (point.pass_hat_k_ci_low, point.pass_hat_k_ci_high), bar, margin=None, higher_is_better=True
     )
-    strictly_better = False
-    for value_a, value_b, higher_is_better in axes:
-        if value_b is not None and value_a is None:
-            return False
-        if value_a is None or value_b is None:
-            continue
-        if value_a == value_b:
-            continue
-        better = value_a > value_b if higher_is_better else value_a < value_b
-        if not better:
-            return False
-        strictly_better = True
-    return strictly_better
+    return "undecided" if cleared is None else "cleared" if cleared else "missed"
 
 
 def compute_frontier(
@@ -4381,10 +4570,15 @@ def compute_frontier(
     rather than doubling its case count, and no contestant is ranked on a different depth than
     its rivals.
 
-    When ``bar`` is supplied it gates pass^k, and the cheapest above-bar variant
-    with a known cost is named as the verdict; an unsupplied bar yields the full
-    frontier with no verdict, because inventing a quality threshold would
-    editorialize. Two-pillar disqualification is descoped with disclosure —
+    When ``bar`` is supplied it gates pass^k, read by each point's pass^k interval the way every
+    campaign bar is read (:attr:`FrontierPoint.bar_decision`): cleared only when the whole interval is at
+    or above the bar, undecided when it straddles it. The cheapest cleared variant with a known cost is
+    named as the verdict; an unsupplied bar yields the full frontier with no verdict, because inventing
+    a quality threshold would editorialize.
+
+    **Domination is decided by test, never read off point estimates** (:func:`_dominance_p`): a point is
+    flagged dominated only when another is shown better on every axis it measured, the subject's pairs
+    Holm-adjusted together, and otherwise reads ``not_separated`` or ``untested``. Two-pillar disqualification is descoped with disclosure —
     see :class:`TwoPillarDisclosure`.
 
     The two skips :func:`project_score_records` makes — a result whose run is
@@ -4492,7 +4686,7 @@ def compute_frontier(
     for resolved in sorted(by_subject):
         groups = by_subject[resolved]
         subject_k = k_by_subject[resolved]
-        points = [
+        built = [
             _frontier_point(
                 groups[key],
                 contestant=key,
@@ -4509,30 +4703,22 @@ def compute_frontier(
         # reachable: two points can share a model and a key and differ only in predicate.
         # Sort stability alone would have made that order deterministic but arbitrary —
         # and the two rows sit adjacent, which is where an unexplained order reads as noise.
-        points.sort(key=lambda p: (p.model, p.variant_key, p.variant_identity_version))
-
-        for point in points:
-            # Built by walking the already-sorted points rather than by collecting a SET
-            # of names: a set over `model` alone silently merges two variants of one model
-            # and leaves behind the dominated row's own model name, which reads as a row
-            # dominating itself.
-            dominators = [
-                FrontierDominator(
-                    variant_key=other.variant_key,
-                    model=other.model,
-                    variant_identity_version=other.variant_identity_version,
-                )
-                for other in points
-                if other is not point and _dominates(other, point)
-            ]
-            point.dominated = bool(dominators)
-            point.dominated_by = dominators
+        built.sort(key=lambda pair: (pair[0].model, pair[0].variant_key, pair[0].variant_identity_version))
+        points = [point for point, _ in built]
+        _decide_dominance(points, [cases for _, cases in built])
 
         verdict: FrontierVerdict | None = None
         n_cleared_bar = 0
+        n_undecided_bar = 0
         if bar is not None:
-            cleared = [p for p in points if p.pass_hat_k is not None and p.pass_hat_k >= bar]
+            # The bar is read by the point's pass^k INTERVAL, the rule every campaign bar is read by
+            # (`stats.interval_clears`): cleared only when the whole interval is at or above it, and a
+            # straddle is undecided — neither a pass nor a failure, and never the cheapest pick.
+            for point in points:
+                point.bar_decision = _bar_decision(point, bar)
+            cleared = [p for p in points if p.bar_decision == "cleared"]
             n_cleared_bar = len(cleared)
+            n_undecided_bar = sum(1 for p in points if p.bar_decision == "undecided")
             costed = [
                 (p, p.production_replicating_cost, p.pass_hat_k)
                 for p in cleared
@@ -4545,6 +4731,8 @@ def compute_frontier(
                     model=pick.model,
                     pass_hat_k=pick_pass_hat_k,
                     k=subject_k,
+                    pass_hat_k_ci_low=pick.pass_hat_k_ci_low,
+                    pass_hat_k_ci_high=pick.pass_hat_k_ci_high,
                     production_replicating_cost=pick_cost,
                     cost_is_partial=pick.cost_is_partial,
                     # Carried from the picked point rather than re-derived: one predicate,
@@ -4574,6 +4762,7 @@ def compute_frontier(
                 points=points,
                 verdict=verdict,
                 n_cleared_bar=n_cleared_bar,
+                n_undecided_bar=n_undecided_bar,
             )
         )
 
@@ -5938,12 +6127,13 @@ def export_projection(projection: ScoreProjection, *, fmt: str) -> ScoreExport:
 # +/-2.4% band off a two-observation basis, and a sweep can then land well outside that
 # band — in either direction, since nothing in that arithmetic prefers over-prediction.
 #
-# The half-width therefore carries both terms: the uncertainty in the mean
-# (n_obs^2 * s^2 / n) and the variation the sweep's own observations will show
-# (n_obs * s^2), on Student's t at n-1 degrees of freedom rather than the large-sample
-# 1.96 — the reasoning `stats.t_critical_two_sided` already carries for every other
-# interval in this tier, applied here at last.
-_COST_ESTIMATE_CONFIDENCE = 0.95
+# The band carries both terms: the uncertainty in where the history's distribution sits, and
+# the variation the sweep's own observations will show. It is read on the LOG scale
+# (`stats.lognormal_sum_prediction_band`), because costs are positive and right-skewed: a few
+# long conversations cost several times the median. The normal-theory band it replaced,
+# `t * s * sqrt(n_obs + n_obs^2 / n)`, covered a lognormal sweep's total (log-SD 1.0, five
+# past observations) 82% of the time against its stated 95%. That band is kept only for a
+# history holding a cost of zero or less, which the log scale cannot read.
 
 # Smallest historical basis that gets a published band at all. Two observations yield
 # exactly ONE difference: whatever spread they show is a single accident with nothing to
@@ -5956,28 +6146,59 @@ _COST_ESTIMATE_CONFIDENCE = 0.95
 # difference.
 COST_ESTIMATE_MIN_BASIS = 3
 
+#: What every band assumes about its observations, stated on each band (:attr:`CostEstimateCell.band_basis`).
+_COST_BAND_INDEPENDENCE = (
+    "Each past observation and each planned one is treated as an independent draw; repeats of one case are not, "
+    "so where cases differ in cost the band is narrower than it should be."
+)
 
-def _cost_band_half_width(*, sem: float, n_historical: int, n_observations: int) -> float:
-    """Half-width of the ~95% prediction band for a sweep of ``n_observations``.
 
-    Predicts the *total* of ``n_observations`` future draws, so it sums the variance
-    of those draws (``n_obs * s^2``) with the uncertainty in the mean they are drawn
-    around (``n_obs^2 * s^2 / n``), on Student's t at ``n_historical - 1`` df.
+def _cost_band(history: Sequence[float], n_observations: int) -> tuple[float, float, str]:
+    """The ~95% prediction band for the total of a sweep of ``n_observations``, and what it assumes.
+
+    Log-scale (:func:`~threetears.evals.analysis.stats.lognormal_sum_prediction_band`) wherever every
+    past cost is positive. A history with a zero or negative cost cannot be read on the log scale, and
+    takes the normal-theory band ``t(0.95, n-1) * s * sqrt(m + m^2/n)`` around ``m`` times its mean, floored
+    at zero — which assumes symmetric costs and says so.
 
     Args:
-        sem: Standard error of the historical per-observation costs (``s / sqrt(n)``).
-        n_historical: How many historical observations the basis rests on; must be at
-            least :data:`COST_ESTIMATE_MIN_BASIS`, so ``df >= 2``.
+        history: The past per-observation costs, at least :data:`COST_ESTIMATE_MIN_BASIS` of them.
         n_observations: How many observations the proposed sweep would run.
 
     Returns:
-        The band's half-width in dollars.
+        ``(low, high, basis)``: the band in dollars and the sentence stating its method and assumptions.
     """
-    from threetears.evals.analysis.stats import t_critical_two_sided
+    from threetears.evals.analysis.stats import (
+        INTERVAL_LEVEL,
+        lognormal_sum_prediction_band,
+        standard_error_of_mean,
+        t_critical_two_sided,
+    )
 
-    sample_sd = sem * math.sqrt(n_historical)
-    multiplier = t_critical_two_sided(_COST_ESTIMATE_CONFIDENCE, n_historical - 1)
-    return multiplier * sample_sd * math.sqrt(n_observations + n_observations**2 / n_historical)
+    n = len(history)
+    log_band = lognormal_sum_prediction_band(history, n_observations)
+    if log_band is not None:
+        return (
+            log_band[0],
+            log_band[1],
+            f"{INTERVAL_LEVEL:.0%} prediction band for the sweep's total from a lognormal fit to {n} past "
+            f"observations, the fit's own uncertainty included. {_COST_BAND_INDEPENDENCE}",
+        )
+    sem = standard_error_of_mean(list(history)) or 0.0
+    centre = n_observations * math.fsum(history) / n
+    half = (
+        t_critical_two_sided(INTERVAL_LEVEL, n - 1)
+        * sem
+        * math.sqrt(n)
+        * math.sqrt(n_observations + n_observations**2 / n)
+    )
+    return (
+        max(0.0, centre - half),
+        centre + half,
+        f"{INTERVAL_LEVEL:.0%} normal-theory prediction band for the sweep's total from {n} past observations — "
+        "some cost nothing, which the log scale cannot read, so this band assumes symmetric costs and is narrow "
+        f"on the high side when a few cost far more than the rest. {_COST_BAND_INDEPENDENCE}",
+    )
 
 
 class CostEstimateError(ValueError):
@@ -6029,7 +6250,8 @@ class CostEstimateCell(EvalBaseModel):
     ``predicted.value`` is ``mean_cost_per_observation × n_observations``.
     ``predicted.interval_low`` / ``interval_high`` are the ~95% **prediction** band for what
     the proposed sweep will cost — not a confidence interval on the historical
-    mean, which is a narrower claim than any caller of this surface is making.
+    mean, which is a narrower claim than any caller of this surface is making — and
+    ``band_basis`` says how it was drawn and what it assumes.
 
     The band is ``None`` when ``n_historical`` is below :data:`COST_ESTIMATE_MIN_BASIS`. At one observation the spread is
     *unknown*, not zero — the same rule the pivot applies to an n=1 cell. At two it
@@ -6051,6 +6273,11 @@ class CostEstimateCell(EvalBaseModel):
     mean_cost_per_observation: float | None = None
     predicted: PredictedValue | None = None
     basis: Literal["historical", "no_history"]
+    #: What the band assumes, in words: how ``predicted.interval_low`` / ``interval_high`` were drawn and what
+    #: they leave out — among them that every observation is treated as independent. ``None`` with no band, or
+    #: on an estimate stored before bands stated it: those were the normal-theory t band, which assumed
+    #: symmetric costs and covered a skewed sweep's total well short of its 95%.
+    band_basis: str | None = None
     #: Matching historical results whose spend could not be priced, and so are not in the basis:
     #: a mean drawn only from the priced ones prices a model that partly runs unpriced as if it
     #: never did. Counted rather than folded in as zeros, which would pull the estimate down.
@@ -6182,13 +6409,16 @@ def compute_estimate_cost(
     corpus and **filtered to the proposed cassette mode** — gives a mean, scaled
     by the proposed observation count, and a ~95% **prediction** band around it.
 
-    **The band predicts the sweep, not the history's mean.** It is
-    ``t(0.95, n-1) * s * sqrt(n_obs + n_obs^2/n)``: the variation the sweep's own
-    observations will show, plus the uncertainty in the mean they are drawn around,
-    on Student's t rather than the large-sample 1.96. A confidence interval on the
-    mean — the previous construction — answers a narrower question and shrinks as
-    history accumulates, which is why it could publish a +/-2.4% band from two
-    observations and then miss the sweep it priced by 12%.
+    **The band predicts the sweep, not the history's mean**: the variation the sweep's own
+    observations will show, plus the uncertainty in where the history's distribution sits. It is
+    read on the log scale, because costs are positive and right-skewed
+    (:func:`~threetears.evals.analysis.stats.lognormal_sum_prediction_band`); a history holding a zero
+    cost takes the normal-theory ``t(0.95, n-1) * s * sqrt(n_obs + n_obs^2/n)`` instead and says so.
+    Each band states its method and assumptions in the cell's ``band_basis`` — among them that every
+    observation is treated as independent, which repeats of one case are not. A confidence interval on
+    the mean — the construction before either — answers a narrower question and shrinks as history
+    accumulates, which is why it could publish a +/-2.4% band from two observations and then miss the
+    sweep it priced by 12%.
 
     **Below :data:`COST_ESTIMATE_MIN_BASIS` historical observations there is no band at all**, only the point
     estimate. Two observations give one difference; a width computed from it is an
@@ -6247,8 +6477,6 @@ def compute_estimate_cost(
         CostEstimateError: The proposal is malformed — no models, or a
             non-positive grid.
     """
-    from threetears.evals.analysis.stats import standard_error_of_mean
-
     if not models:
         raise CostEstimateError("no models proposed — nothing to estimate")
     if k_runs < 1 or n_test_cases < 1 or n_settings < 1:
@@ -6309,22 +6537,22 @@ def compute_estimate_cost(
 
         any_covered = True
         mean = sum(history) / len(history)
-        sem = standard_error_of_mean(history)
         estimate = n_observations * mean
         total_estimate += estimate
 
-        if sem is None or len(history) < COST_ESTIMATE_MIN_BASIS:
+        low: float | None
+        high: float | None
+        band_basis: str | None
+        if len(history) < COST_ESTIMATE_MIN_BASIS:
             # Too thin for a band. At n=1 the spread is unknown, not zero; at n=2 it is
             # one difference, which is an accident rather than a dispersion — and one
             # that prints narrow exactly when the pair lands close. The point estimate
             # stands and the absence is stated, never rendered as a false ± 0 and never
             # as a width the sample cannot support.
-            low = high = None
+            low = high = band_basis = None
             total_bandable = False
         else:
-            half_width = _cost_band_half_width(sem=sem, n_historical=len(history), n_observations=n_observations)
-            low = max(0.0, estimate - half_width)
-            high = estimate + half_width
+            low, high, band_basis = _cost_band(history, n_observations)
             total_low += low
             total_high += high
 
@@ -6342,6 +6570,7 @@ def compute_estimate_cost(
                     method_id=COST_PREDICTION_METHOD,
                     computed_at=stamp,
                 ),
+                band_basis=band_basis,
                 basis="historical",
                 n_unpriced_historical=unpriced_by_model.get(model, 0),
                 basis_cost_compositions=basis_compositions,
@@ -6441,6 +6670,7 @@ __all__ = [
     "CostEstimateError",
     "ExportError",
     "ExportFormat",
+    "FrontierDominance",
     "FrontierDominator",
     "FrontierError",
     "FrontierPoint",

@@ -66,8 +66,12 @@ whose retest agreement you have measured. Ranking and diagnosis are two jobs.
 *Evidence:* agent with tools, 2 campaigns, 2026-07 and 2026-08, one never-clearing dimension held pass^k to 0.0 or 0.2 for every arm, and a strict check set pinned it at 0 for every arm; in simulation (2026-09) a perfect candidate with five dimensions, each falsely failing 5% of the time, shows pass^3 ≈ 0.46.
 
 **Pair quality with coverage and latency with a delivery rate, and read the floor.** An arm delivering
-almost nothing has little to get wrong; one can be fast by declining the work. Rank latency on p95.
-*Evidence:* retrieval sub-agent, 2026-07, an arm delivering almost nothing scored grounding and honesty 5.0, and one with a 69 s p95 declined 60% of hard cases; agent with tools, 2026-08, an incumbent averaging 4.3 had a minimum of 1 against a challenger's 5; 2 campaigns.
+almost nothing has little to get wrong; one can be fast by declining the work. Rank latency on its mean, which
+has an interval and a paired test at these sizes, and read the tail beside it. A tail cannot rank: a 95% interval
+on a p95 has no upper end below 72 observations, and the engine gives a p95 only from 13 (median-unbiased,
+Hyndman–Fan type 8). Below that it reports the slowest observation as `max`, the worst case seen, never as a
+percentile.
+*Evidence:* retrieval sub-agent, 2026-07, an arm delivering almost nothing scored grounding and honesty 5.0, and one with a 69 s p95 declined 60% of hard cases; agent with tools, 2026-08, an incumbent averaging 4.3 had a minimum of 1 against a challenger's 5; 2 campaigns. In simulation (2026-10), a "p95" read nearest-rank from 5 latencies, which is their maximum, fell below the true p95 77% of the time, and one read by linear interpolation still did 68% of the time at 30.
 
 **Price per token is not cost.** Reasoning tokens bill at the output rate. Compare measured cost per
 observation ([how a result's cost is counted](cost-and-budgets.md#how-a-results-cost-is-counted)).
@@ -139,8 +143,9 @@ reported counts, not exit codes: a run that never happened and a run that failed
 
 **Test failure paths, not more samples.** The defects that change verdicts live in the code deciding what an
 incomplete run may contribute. The engine now discloses cells short of their intended repetitions, and gives
-no cost band below 3 observations.
-*Evidence:* agent with tools, 3 rounds, 2026-08, defects found rose 4 → 7 → 10; the failure-path round found a budget-stopped run flipping a frontier ranking and a ±1.5% cost band from 2 observations missing the actual by 13%; single program.
+no cost band below 3 observations. Above that the band is read on the log scale, because costs are positive and
+skewed, so with only a few past results it is wide on the high side.
+*Evidence:* agent with tools, 3 rounds, 2026-08, defects found rose 4 → 7 → 10; the failure-path round found a budget-stopped run flipping a frontier ranking and a ±1.5% cost band from 2 observations missing the actual by 13%; single program. In simulation (2026-10), the normal-theory band from 5 lognormal costs (log-SD 1.0) covered a 15-observation sweep 82% of the time against its stated 95%; the log-scale band covers 97%.
 
 ## Judges
 

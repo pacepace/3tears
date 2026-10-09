@@ -3632,12 +3632,10 @@ class TestCostEstimate:
         ``1.96 * n_obs * SEM`` — the construction this replaces — says how precisely the
         history locates its own mean, and it keeps TIGHTENING as history accumulates.
         The caller is asking what the sweep will cost, which needs the variation the
-        sweep's own observations will show as well, on Student's t at n-1 df rather than
-        the large-sample multiplier.
+        sweep's own observations will show as well — read on the log scale, since costs
+        are positive and skewed (``stats.lognormal_sum_prediction_band``).
         """
-        import math
-
-        from threetears.evals.analysis.stats import standard_error_of_mean, t_critical_two_sided
+        from threetears.evals.analysis.stats import lognormal_sum_prediction_band, standard_error_of_mean
 
         costs = [0.10, 0.20, 0.30, 0.40]
         run, results = self._history("sonnet", costs)
@@ -3652,9 +3650,9 @@ class TestCostEstimate:
         sem = standard_error_of_mean(costs)
         assert half_width > 1.96 * n_obs * sem, "the band is no wider than the confidence interval it replaced"
 
-        sample_sd = sem * math.sqrt(len(costs))
-        expected = t_critical_two_sided(0.95, len(costs) - 1) * sample_sd * math.sqrt(n_obs + n_obs**2 / len(costs))
-        assert half_width == pytest.approx(expected)
+        expected = lognormal_sum_prediction_band(costs, n_obs)
+        assert (cell.predicted.interval_low, cell.predicted.interval_high) == pytest.approx(expected)
+        assert cell.band_basis is not None and "lognormal" in cell.band_basis
 
     def test_a_priced_cell_without_a_band_leaves_the_whole_total_unbracketed(self):
         """Summing a banded cell with an unbanded one narrows the envelope on the thinnest cell.
@@ -4426,6 +4424,16 @@ def _point_by_model(subject_frontier, model):
     return matches[0]
 
 
+def _fr_cases(run, n, **kwargs):
+    """``n`` results of one contestant, one per test case ``tc1``..``tc<n>``, each built by :func:`_fr_result`.
+
+    The frontier decides domination and its bar by test over cases, so a fixture that is to show either
+    needs the cases for a test to show it: two for a pass^k interval, six for a constant gap on every case
+    to separate two contestants at α (the sign-flip p is ``2^(1 - n)``), more for a bar near 1.
+    """
+    return [_fr_result(run, test_case_id=f"tc{index}", **kwargs) for index in range(1, n + 1)]
+
+
 class TestHistoryLatencyExcludesTheHarnesssOwnCells:
     """The same divergence as on the frontier, on the surface that issues regression verdicts.
 
@@ -4789,23 +4797,14 @@ class TestBothLensesGateOnTheIdentityVersion:
         """
         run = _fr_run()
         results = [
-            # Same model, same key, two predicates. The current-predicate arm is better on
-            # every axis, so it dominates its superseded twin.
-            _fr_result(
-                run,
-                model="sonnet",
-                variant_key="vk-1",
-                test_case_id="tc1",
-                roles={"candidate": 0.5},
-                identity_version=1,
+            # Same model, same key, two predicates. The current-predicate arm is shown better on
+            # every axis its twin measured — it passes six cases its twin fails, at a fifth of the
+            # cost — so it dominates its superseded twin.
+            *_fr_cases(
+                run, 6, model="sonnet", variant_key="vk-1", passes=False, roles={"candidate": 0.5}, identity_version=1
             ),
-            _fr_result(
-                run,
-                model="sonnet",
-                variant_key="vk-1",
-                test_case_id="tc1",
-                roles={"candidate": 0.1},
-                identity_version=IDENTITY_VERSION,
+            *_fr_cases(
+                run, 6, model="sonnet", variant_key="vk-1", roles={"candidate": 0.1}, identity_version=IDENTITY_VERSION
             ),
         ]
 
@@ -4910,16 +4909,8 @@ class TestASupersededPredicateSaysSo:
     def test_the_verdict_carries_the_picks_disclosure(self):
         """A verdict is a recommendation, so the caveat travels with it, not only with the row."""
         run = _fr_run()
-        results = [
-            _fr_result(
-                run,
-                model="sonnet",
-                variant_key="vk-old",
-                test_case_id="tc1",
-                roles={"candidate": 0.1},
-                identity_version=1,
-            )
-        ]
+        # Eight cases, every one passed: enough for the pass^k interval to clear 0.5.
+        results = _fr_cases(run, 8, model="sonnet", variant_key="vk-old", roles={"candidate": 0.1}, identity_version=1)
 
         subject = compute_frontier([run], results, bar=0.5).subjects[0]
 
@@ -5118,7 +5109,8 @@ class TestFrontierCassetteSpan:
 
     def test_a_clean_verdict_says_nothing(self):
         run = _fr_run(cassette_mode="off")
-        results = [_fr_result(run, model="flash", variant_key="vk-1", test_case_id="c1", roles={"candidate": 0.02})]
+        # Two cases: a pass^k interval, which a bar is read by, needs two.
+        results = _fr_cases(run, 2, model="flash", variant_key="vk-1", roles={"candidate": 0.02})
 
         verdict = compute_frontier([run], results, bar=0.0).subjects[0].verdict
 
@@ -5255,9 +5247,18 @@ class TestFrontierTemplateSpan:
         An operator who reads only the verdict line must not be handed a pick whose
         quality figure is an average over suites of different difficulty.
         """
-        runs, results = self._corpus()
+        easy = _fr_run(template_id="single_turn_plain_v1")
+        hard = _fr_run(template_id="multi_turn_tools_v1")
+        # Four cases from each suite, all passed: enough for the pooled pass^k's interval to clear 0.5.
+        results = [
+            _fr_result(
+                run, model="flash", variant_key="vk-1", test_case_id=f"{suite}{index}", roles={"candidate": 0.01}
+            )
+            for run, suite in ((easy, "easy"), (hard, "hard"))
+            for index in range(4)
+        ]
 
-        verdict = compute_frontier(runs, results, bar=0.5).subjects[0].verdict
+        verdict = compute_frontier([easy, hard], results, bar=0.5).subjects[0].verdict
 
         assert verdict is not None
         assert verdict.template_span_disclosure is not None
@@ -5267,11 +5268,14 @@ class TestFrontierTemplateSpan:
         """Disclosure only — the ranking itself is unchanged by this fix."""
         easy = _fr_run(template_id="single_turn_plain_v1")
         hard = _fr_run(template_id="multi_turn_tools_v1")
+        # Eight passed cases from each suite: sixteen, enough for an all-pass interval to clear 0.7.
         results = [
-            _fr_result(easy, model="cheap", variant_key="vk-cheap", test_case_id="c1", roles={"candidate": 0.01}),
-            _fr_result(hard, model="cheap", variant_key="vk-cheap", test_case_id="c2", roles={"candidate": 0.01}),
-            _fr_result(easy, model="dear", variant_key="vk-dear", test_case_id="c1", roles={"candidate": 0.50}),
-            _fr_result(hard, model="dear", variant_key="vk-dear", test_case_id="c2", roles={"candidate": 0.50}),
+            _fr_result(
+                run, model=model, variant_key=f"vk-{model}", test_case_id=f"{suite}{index}", roles={"candidate": cost}
+            )
+            for model, cost in (("cheap", 0.01), ("dear", 0.50))
+            for run, suite in ((easy, "easy"), (hard, "hard"))
+            for index in range(8)
         ]
 
         verdict = compute_frontier([easy, hard], results, bar=0.7).subjects[0].verdict
@@ -5282,7 +5286,7 @@ class TestFrontierTemplateSpan:
 
     def test_a_clean_verdict_says_nothing(self):
         run = _fr_run(template_id="tpl-1")
-        results = [_fr_result(run, model="flash", variant_key="vk-1", test_case_id="c1", roles={"candidate": 0.01})]
+        results = _fr_cases(run, 2, model="flash", variant_key="vk-1", roles={"candidate": 0.01})
 
         verdict = compute_frontier([run], results, bar=0.0).subjects[0].verdict
 
@@ -5291,43 +5295,34 @@ class TestFrontierTemplateSpan:
 
 
 class TestFrontierDomination:
-    """The non-dominated set is computed; dominated points are flagged, not dropped."""
+    """A domination is shown by test before it is flagged; dominated points are flagged, not dropped."""
 
     def _corpus(self):
+        """Three contestants over eight cases — enough for a constant gap to separate after Holm over three pairs.
+
+        - cheap: passes every case, $0.25, 50 ms.
+        - pricey: fails every case, $1.00, 100 ms — shown worse than cheap on all three axes.
+        - fast: passes half, $0.10, 20 ms — cheaper and faster than cheap, worse on pass^k: no domination
+          either way. Better than pricey on every axis too, but its pass^k edge (half the cases) is not
+          shown once the family is adjusted.
+        """
         run = _fr_run()
         results = [
-            # cheap: pass 1.0, cost 0.25, latency 50 — non-dominated
-            _fr_result(
-                run, model="cheap", variant_key="vk-cheap", test_case_id="c1", roles={"candidate": 0.25}, total_ms=50
+            *_fr_cases(run, 8, model="cheap", variant_key="vk-cheap", roles={"candidate": 0.25}, total_ms=50),
+            *_fr_cases(
+                run, 8, model="pricey", variant_key="vk-pricey", passes=False, roles={"candidate": 1.0}, total_ms=100
             ),
-            _fr_result(
-                run, model="cheap", variant_key="vk-cheap", test_case_id="c2", roles={"candidate": 0.25}, total_ms=50
-            ),
-            # pricey: pass 1.0, cost 1.00, latency 50 — dominated by cheap
-            _fr_result(
-                run, model="pricey", variant_key="vk-pricey", test_case_id="c1", roles={"candidate": 1.0}, total_ms=50
-            ),
-            _fr_result(
-                run, model="pricey", variant_key="vk-pricey", test_case_id="c2", roles={"candidate": 1.0}, total_ms=50
-            ),
-            # fast_weak: pass 0.5, cost 0.10, latency 20 — non-dominated (cheapest+fastest, lower quality)
-            _fr_result(
-                run,
-                model="fast",
-                variant_key="vk-fast",
-                test_case_id="c1",
-                roles={"candidate": 0.1},
-                total_ms=20,
-                passes=True,
-            ),
-            _fr_result(
-                run,
-                model="fast",
-                variant_key="vk-fast",
-                test_case_id="c2",
-                roles={"candidate": 0.1},
-                total_ms=20,
-                passes=False,
+            *(
+                _fr_result(
+                    run,
+                    model="fast",
+                    variant_key="vk-fast",
+                    test_case_id=f"tc{index}",
+                    roles={"candidate": 0.1},
+                    total_ms=20,
+                    passes=index <= 4,
+                )
+                for index in range(1, 9)
             ),
         ]
         return run, results
@@ -5337,10 +5332,13 @@ class TestFrontierDomination:
 
         pf = compute_frontier([run], results).subjects[0]
 
-        assert _point_by_model(pf, "pricey").dominated is True
+        pricey = _point_by_model(pf, "pricey")
+        assert pricey.dominated is True and pricey.dominance == "dominated"
         # The row's own identity, not its model: a dominator names the variant a reader
         # would move TO, which is what the frontier exists to answer.
-        assert [(d.model, d.variant_key) for d in _point_by_model(pf, "pricey").dominated_by] == [("cheap", "vk-cheap")]
+        assert [(d.model, d.variant_key) for d in pricey.dominated_by] == [("cheap", "vk-cheap")]
+        # And the statistic it was shown at: eight constant gaps give a sign-flip p of 2^-7, times three pairs.
+        assert pricey.dominated_by[0].p_value == pytest.approx(3 * 2.0**-7)
 
     def test_non_dominated_points_are_not_flagged(self):
         run, results = self._corpus()
@@ -5349,6 +5347,42 @@ class TestFrontierDomination:
 
         assert _point_by_model(pf, "cheap").dominated is False
         assert _point_by_model(pf, "fast").dominated is False
+        # Not dominated is not "shown on the frontier": each was tested, and nothing was shown.
+        assert _point_by_model(pf, "cheap").dominance == "not_separated"
+        assert _point_by_model(pf, "fast").dominance == "not_separated"
+
+    def test_a_cost_gap_with_a_quality_tie_is_not_a_domination(self):
+        """Dearer on every case and equal on pass^k is not shown worse on pass^k, so it is not dominated.
+
+        "No worse" on an axis would need a margin to be shown, and pass^k declares none: two contestants
+        that each passed every case are tied there, and a tie cannot be told from a small difference
+        either way. The cost gap alone is a separation, not a domination.
+        """
+        run = _fr_run()
+        results = [
+            *_fr_cases(run, 8, model="cheap", variant_key="vk-cheap", roles={"candidate": 0.25}, total_ms=50),
+            *_fr_cases(run, 8, model="pricey", variant_key="vk-pricey", roles={"candidate": 1.0}, total_ms=50),
+        ]
+
+        pf = compute_frontier([run], results).subjects[0]
+
+        assert _point_by_model(pf, "pricey").dominated is False
+        assert _point_by_model(pf, "pricey").dominance == "not_separated"
+
+    def test_a_point_with_one_case_is_untested(self):
+        """One case gives no test, so the point is neither dominated nor shown clear of it."""
+        run = _fr_run()
+        results = [
+            *_fr_cases(run, 8, model="cheap", variant_key="vk-cheap", roles={"candidate": 0.25}, total_ms=50),
+            _fr_result(
+                run, model="pricey", variant_key="vk-pricey", test_case_id="tc1", passes=False, roles={"candidate": 1.0}
+            ),
+        ]
+
+        pf = compute_frontier([run], results).subjects[0]
+
+        assert _point_by_model(pf, "pricey").dominance == "untested"
+        assert _point_by_model(pf, "pricey").dominated is False
 
     def test_dominated_point_is_retained_not_dropped(self):
         run, results = self._corpus()
@@ -5369,24 +5403,11 @@ class TestFrontierDomination:
         run = _fr_run()
         results = [
             # Cheap and slow-ish.
-            _fr_result(
-                run, model="flash-x", variant_key="vk-a", test_case_id="c1", roles={"candidate": 0.0021}, total_ms=92
-            ),
-            # Dear and fast — neither dominates the other, and both dominate `vk-c`.
-            _fr_result(
-                run, model="flash-x", variant_key="vk-b", test_case_id="c1", roles={"candidate": 0.024}, total_ms=48
-            ),
-            _fr_result(
-                run, model="flash-x", variant_key="vk-c", test_case_id="c1", roles={"candidate": 0.030}, total_ms=100
-            ),
-            _fr_result(
-                run,
-                model="flash-x",
-                variant_key="vk-c",
-                test_case_id="c2",
-                passes=False,
-                roles={"candidate": 0.030},
-                total_ms=100,
+            *_fr_cases(run, 8, model="flash-x", variant_key="vk-a", roles={"candidate": 0.0021}, total_ms=92),
+            # Dear and fast — neither dominates the other, and both are shown better than `vk-c` on every axis.
+            *_fr_cases(run, 8, model="flash-x", variant_key="vk-b", roles={"candidate": 0.024}, total_ms=48),
+            *_fr_cases(
+                run, 8, model="flash-x", variant_key="vk-c", passes=False, roles={"candidate": 0.030}, total_ms=100
             ),
         ]
 
@@ -5515,9 +5536,8 @@ class TestFrontierAllFailedVariantRanksAtZero:
                 infra_error="sandbox died",
                 roles={"candidate": 0.1},
             ),
-            _fr_result(
-                run, model="fails", variant_key="vk-fails", test_case_id="c1", passes=False, roles={"candidate": 0.2}
-            ),
+            # Two cases, so its pass^k has the interval a bar is read by.
+            *_fr_cases(run, 2, model="fails", variant_key="vk-fails", passes=False, roles={"candidate": 0.2}),
         ]
 
         result = compute_frontier([run], results, bar=0.0)
@@ -5526,23 +5546,17 @@ class TestFrontierAllFailedVariantRanksAtZero:
         assert _point_by_model(pf, "rig").pass_hat_k is None
         assert _point_by_model(pf, "rig").cost_per_acceptable_outcome is None
         assert _point_by_model(pf, "fails").pass_hat_k == 0.0
+        assert _point_by_model(pf, "rig").bar_decision == "no_data"
         assert pf.verdict is not None and pf.verdict.model == "fails"
 
     def test_candidate_failure_scores_zero_quality_and_ranks(self):
         run = _fr_run()
         results = [
-            # a working variant — cheaper and faster, so it dominates the failure
-            _fr_result(
-                run, model="works", variant_key="vk-works", test_case_id="c1", roles={"candidate": 0.10}, total_ms=30
-            ),
+            # a working variant, over six cases — shown better on every axis the failure measured
+            *_fr_cases(run, 6, model="works", variant_key="vk-works", roles={"candidate": 0.10}, total_ms=30),
             # a variant that failed everywhere — candidate error, dearer, no latency harvest
-            _fr_result(
-                run,
-                model="broken",
-                variant_key="vk-broken",
-                test_case_id="c1",
-                candidate_error="boom",
-                roles={"candidate": 0.50},
+            *_fr_cases(
+                run, 6, model="broken", variant_key="vk-broken", candidate_error="boom", roles={"candidate": 0.50}
             ),
         ]
 
@@ -5560,11 +5574,12 @@ class TestFrontierBar:
     """The bar gates pass^k, is echoed back, and picks the cheapest above it."""
 
     def _corpus(self):
+        # Twenty cases each: an all-pass interval clears 0.8 from twenty (at twelve it reaches only 0.70).
         run = _fr_run()
         results = [
-            _fr_result(run, model="a", variant_key="vk-a", test_case_id="c1", roles={"candidate": 0.50}, passes=True),
-            _fr_result(run, model="b", variant_key="vk-b", test_case_id="c1", roles={"candidate": 0.30}, passes=True),
-            _fr_result(run, model="c", variant_key="vk-c", test_case_id="c1", roles={"candidate": 0.10}, passes=False),
+            *_fr_cases(run, 20, model="a", variant_key="vk-a", roles={"candidate": 0.50}, passes=True),
+            *_fr_cases(run, 20, model="b", variant_key="vk-b", roles={"candidate": 0.30}, passes=True),
+            *_fr_cases(run, 20, model="c", variant_key="vk-c", roles={"candidate": 0.10}, passes=False),
         ]
         return run, results
 
@@ -5586,11 +5601,33 @@ class TestFrontierBar:
 
         pf = compute_frontier([run], results, bar=0.8).subjects[0]
 
-        # a and b both pass (1.0 >= 0.8); c fails (0.0). Cheapest of {a: 0.5, b: 0.3} is b.
-        assert pf.n_cleared_bar == 2
+        # a and b both pass, their intervals wholly above 0.8; c fails, its interval wholly below. Cheapest
+        # of {a: 0.5, b: 0.3} is b.
+        assert pf.n_cleared_bar == 2 and pf.n_undecided_bar == 0
+        assert [p.bar_decision for p in pf.points] == ["cleared", "cleared", "missed"]
         assert pf.verdict is not None
         assert pf.verdict.model == "b"
         assert pf.verdict.production_replicating_cost == pytest.approx(0.30)
+        assert pf.verdict.pass_hat_k_ci_low is not None and pf.verdict.pass_hat_k_ci_low >= 0.8
+
+    def test_an_interval_across_the_bar_is_undecided_and_never_the_pick(self):
+        """The rule every campaign bar is read by: a straddle is neither a pass nor a failure.
+
+        A perfect pass^k over four cases is 1.0 — above 0.8 as a number — but its interval reaches far below
+        the bar, so it does not clear it, and the cheaper contestant cannot be named on it.
+        """
+        run = _fr_run()
+        results = [
+            *_fr_cases(run, 4, model="thin", variant_key="vk-thin", roles={"candidate": 0.05}),
+            *_fr_cases(run, 20, model="deep", variant_key="vk-deep", roles={"candidate": 0.30}),
+        ]
+
+        pf = compute_frontier([run], results, bar=0.8).subjects[0]
+
+        assert _point_by_model(pf, "thin").pass_hat_k == 1.0
+        assert _point_by_model(pf, "thin").bar_decision == "undecided"
+        assert (pf.n_cleared_bar, pf.n_undecided_bar) == (1, 1)
+        assert pf.verdict is not None and pf.verdict.model == "deep"
 
     def test_a_bar_no_one_reaches_yields_zero_cleared(self):
         run = _fr_run()
@@ -5655,21 +5692,31 @@ class TestFrontierPassHatKPoolsRepeatRuns:
     def test_every_contestant_is_ranked_at_the_subject_depth(self):
         """A k=1 run beside a k=3 run ranks the subject at pass^1 — one depth, never two."""
         deep, pilot = self._run("ctx-1", k_runs=3), self._run("ctx-2")
+        # Sixteen cases: enough for each contestant's pass^1 interval to clear 0.5.
         results = [
             *(
                 _fr_result(
                     deep,
                     model="deep",
                     variant_key="vk-deep",
-                    test_case_id="c1",
+                    test_case_id=f"c{case}",
                     passes=p,
                     k_iteration=i,
                     roles={"candidate": 0.1},
                 )
+                for case in range(16)
                 for i, p in enumerate((True, True, False), start=1)
             ),
-            _fr_result(
-                pilot, model="pilot", variant_key="vk-pilot", test_case_id="c1", passes=True, roles={"candidate": 0.2}
+            *(
+                _fr_result(
+                    pilot,
+                    model="pilot",
+                    variant_key="vk-pilot",
+                    test_case_id=f"c{case}",
+                    passes=True,
+                    roles={"candidate": 0.2},
+                )
+                for case in range(16)
             ),
         ]
 
@@ -5677,7 +5724,7 @@ class TestFrontierPassHatKPoolsRepeatRuns:
 
         assert pf.k == 1
         assert _point_by_model(pf, "deep").pass_hat_k == pytest.approx(2 / 3)
-        assert _point_by_model(pf, "deep").pass_hat_k_curve[-1] == {"k": 3, "pass_hat_k": 0.0, "n_cases": 1}
+        assert _point_by_model(pf, "deep").pass_hat_k_curve[-1] == {"k": 3, "pass_hat_k": 0.0, "n_cases": 16}
         # Both clear 0.5 at pass^1; the cheaper is named, and the verdict says which depth it was read at.
         assert pf.verdict is not None and (pf.verdict.model, pf.verdict.k) == ("deep", 1)
 

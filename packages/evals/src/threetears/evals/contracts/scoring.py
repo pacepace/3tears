@@ -359,7 +359,7 @@ def _trial_pass(result: EvalResult, *, rubric_threshold: int) -> tuple[bool | No
     ), False
 
 
-def _pass_hat_k_entry(attempts_by_case: Mapping[Hashable, list[bool]], *, k: int, n_cannot_tell: int) -> dict[str, Any]:
+def _pass_hat_k_entry(attempts_by_case: Mapping[Any, list[bool]], *, k: int, n_cannot_tell: int) -> dict[str, Any]:
     """The one row shape both pass^k producers return, so the two cannot describe a pool differently."""
     curve = _pass_hat_k_curve(attempts_by_case.values())
     headline = pass_hat_k_at(curve, k)
@@ -483,6 +483,64 @@ def pass_hat_k_cell(run: EvalRun) -> tuple[str, ...]:
     return ("context", run.context_key, str(run.identity_version), run.apparatus_provenance)
 
 
+def pool_pass_hat_k_attempts(
+    results: Sequence[EvalResult],
+    *,
+    cell_of_run: Mapping[str, Hashable],
+    rubric_threshold: int = 3,
+) -> tuple[dict[tuple[Hashable, str, int, str, str], list[bool]], int]:
+    """Each case's scored attempts in one pool, keyed as :func:`pool_pass_hat_k` keys them.
+
+    The grouping behind :func:`pool_pass_hat_k`, public so a surface that needs the cases themselves — an
+    interval over them, or a test pairing two contestants on the cases both ran — reads them through the
+    one keying that produced the headline rather than re-deriving it.
+
+    Args:
+        results: The pool.
+        cell_of_run: Run id → its cell, from :func:`pass_hat_k_cell`; a run absent from it is its own cell.
+        rubric_threshold: The 1–5 score a rubric dimension must reach to pass.
+
+    Returns:
+        ``(attempts, n_cannot_tell)``: each ``(cell, variant_key, identity_version, model, test_case_id)``
+        unit's scored attempts in result order, and the attempts left out because a judge could not tell.
+        A unit whose every attempt was left out is absent.
+    """
+    cases: dict[tuple[Hashable, str, int, str, str], list[bool]] = {}
+    n_cannot_tell = 0
+    for r in results:
+        passed, was_cannot_tell = _trial_pass(r, rubric_threshold=rubric_threshold)
+        n_cannot_tell += was_cannot_tell
+        if passed is None:
+            continue
+        cell = cell_of_run.get(r.eval_run_id, ("run", r.eval_run_id))
+        cases.setdefault((cell, r.variant_key, r.identity_version, r.model, r.test_case_id), []).append(passed)
+    return cases, n_cannot_tell
+
+
+def case_pass_hat_k(attempts: Sequence[bool], k: int) -> float | None:
+    """One case's unbiased pass^k estimate from its scored attempts, ``None`` below ``k`` of them.
+
+    ``C(c, k) / C(n, k)`` (see :func:`compute_pass_hat_k`): the per-case value every pass^k headline
+    averages, public so an interval or a paired test over cases reads the same number the headline does.
+
+    Args:
+        attempts: The case's scored attempts.
+        k: The depth, at least 1.
+
+    Returns:
+        The estimate, or ``None`` when the case has fewer than ``k`` scored attempts — it cannot stand in
+        for a depth it was not measured at.
+
+    Raises:
+        ValueError: ``k`` is below 1.
+    """
+    if k < 1:
+        raise ValueError(f"pass^k needs k >= 1, got {k}")
+    if len(attempts) < k:
+        return None
+    return _case_pass_hat_k(len(attempts), sum(attempts), k)
+
+
 def pool_pass_hat_k(
     results: Sequence[EvalResult],
     *,
@@ -516,15 +574,7 @@ def pool_pass_hat_k(
     """
     if k < 1:
         raise ValueError(f"pass^k needs k >= 1, got {k}")
-    cases: dict[Hashable, list[bool]] = {}
-    n_cannot_tell = 0
-    for r in results:
-        passed, was_cannot_tell = _trial_pass(r, rubric_threshold=rubric_threshold)
-        n_cannot_tell += was_cannot_tell
-        if passed is None:
-            continue
-        cell = cell_of_run.get(r.eval_run_id, ("run", r.eval_run_id))
-        cases.setdefault((cell, r.variant_key, r.identity_version, r.model, r.test_case_id), []).append(passed)
+    cases, n_cannot_tell = pool_pass_hat_k_attempts(results, cell_of_run=cell_of_run, rubric_threshold=rubric_threshold)
     return _pass_hat_k_entry(cases, k=k, n_cannot_tell=n_cannot_tell)
 
 
@@ -536,18 +586,14 @@ def pool_pass_hat_k(
 def percentile(sorted_values: list[float], pct: float) -> float:
     """Nearest-rank percentile of an already-sorted, non-empty list.
 
-    **Nearest-rank, not interpolated**: rank = ceil(pct/100 * n), 1-indexed. Chosen over
-    interpolation because eval runs have small n (a handful of test cases × k) where
-    interpolating between two samples is more misleading than picking the rank-nearest observed
-    value. ``pct=95`` on small n collapses toward the max, which is the intended tail signal.
+    **Nearest-rank, not interpolated**: rank = ceil(pct/100 * n), 1-indexed — an observed value. The run
+    summary reads its median with it. **It is not the engine's tail estimator**: at ``pct=95`` it is the
+    sample maximum for every ``n <= 19``, which falls below the true 95th percentile most of the time at
+    the sizes a run has, so a tail is read with :func:`median_unbiased_quantile` instead.
 
-    **There is a second percentile in this package and it differs on TWO axes.**
-    :mod:`threetears.evals.analysis.bundle`'s ``_percentile`` interpolates linearly between
-    neighbouring ranks, and it takes its quantile on the **[0, 1] scale** where this one takes
-    **0-100**. The method difference is a judgement call and both are defensible — this one
-    summarises a run's own handful of cells, where an interpolated value is a number nothing
-    observed, while the bundle's summarises a campaign-scale distribution, where interpolation is
-    the standard reading — so they are deliberately not unified.
+    **There is a second percentile in this module and it differs on TWO axes.**
+    :func:`median_unbiased_quantile` interpolates (Hyndman–Fan type 8) and takes its quantile on the
+    **[0, 1] scale** where this one takes **0-100**.
 
     **The scale difference is the dangerous one and is why this raises.** Handed ``0.95`` by
     someone carrying the bundle's habit across, nearest-rank would compute rank 1 and return the
@@ -583,7 +629,7 @@ def percentile(sorted_values: list[float], pct: float) -> float:
     if 0 < pct <= 1:
         raise ValueError(
             f"pct={pct} is on the [0, 1] scale; this function takes 0-100 "
-            "(threetears.evals.analysis.bundle's _percentile is the [0, 1] one). "
+            "(median_unbiased_quantile, which the analysis bundle reads its percentiles with, is the [0, 1] one). "
             "For the maximum, pass 100 — on this scale 1.0 is the FIRST percentile and "
             "resolves to the minimum."
         )
@@ -591,6 +637,74 @@ def percentile(sorted_values: list[float], pct: float) -> float:
     rank = math.ceil(pct / 100.0 * n)
     idx = min(max(rank, 1), n) - 1
     return sorted_values[idx]
+
+
+#: Hyndman and Fan's type 8 plotting position, ``h = (n + 1/3) q + 1/3``: the one rule both the run summary
+#: and the analysis bundle read a percentile with.
+_TYPE_8_OFFSET = 1.0 / 3.0
+
+
+def median_unbiased_quantile_min_n(q: float) -> int:
+    """The fewest observations at which :func:`median_unbiased_quantile` gives the ``q`` quantile at all.
+
+    Type 8's position ``h = (n + 1/3) q + 1/3`` must fall inside the sample, ``1 <= h <= n``: past either
+    end the estimate would be the extreme observation, whose median sits short of the quantile it is
+    labelled. For the 95th percentile (and the 5th) that is 13 observations: the largest of 13 falls below
+    the true 95th percentile ``0.95^13 = 0.51`` of the time, the largest of 5 ``0.95^5 = 0.77`` of it.
+
+    Args:
+        q: The quantile, in ``(0, 1)``.
+
+    Returns:
+        The smallest ``n`` with ``1 <= h <= n``.
+
+    Raises:
+        ValueError: ``q`` is outside ``(0, 1)``.
+    """
+    if not 0.0 < q < 1.0:
+        raise ValueError(f"a quantile needs 0 < q < 1, got {q}")
+    n = 1
+    while not 1.0 <= (n + _TYPE_8_OFFSET) * q + _TYPE_8_OFFSET <= n:
+        n += 1
+    return n
+
+
+def median_unbiased_quantile(sorted_values: Sequence[float], q: float) -> float | None:
+    """The ``q`` quantile of an ascending sample, read so it is as likely above the truth as below it.
+
+    Hyndman and Fan's (1996) type 8, the estimator they recommend: interpolation between the order
+    statistics at position ``h = (n + 1/3) q + 1/3``, which is approximately median-unbiased whatever the
+    distribution — the figure falls below the population quantile about half the time. The two rules this
+    replaced both fall short of a tail: nearest-rank is the sample maximum for every ``n <= 19`` (below the
+    true 95th percentile 0.77 of the time at five observations), and linear interpolation (numpy's
+    default, type 7) still sat below it 0.68 of the time at thirty.
+
+    **Below :func:`median_unbiased_quantile_min_n` observations it answers ``None``**, because no order
+    statistic, nor any interpolation between two, is median-unbiased there: the position falls outside
+    the sample, and the only figure left is the extreme observation, which is a different statistic
+    with a different name. A caller reports the maximum (or minimum) under that name instead.
+
+    Args:
+        sorted_values: The observations, ascending.
+        q: The quantile, in ``(0, 1)`` — on the [0, 1] scale, not :func:`percentile`'s 0–100.
+
+    Returns:
+        The estimate, or ``None`` when the sample is too small to give one.
+
+    Raises:
+        ValueError: ``q`` is outside ``(0, 1)``.
+    """
+    if not 0.0 < q < 1.0:
+        raise ValueError(f"a quantile needs 0 < q < 1, got {q}")
+    n = len(sorted_values)
+    position = (n + _TYPE_8_OFFSET) * q + _TYPE_8_OFFSET
+    if not 1.0 <= position <= n:
+        return None
+    lower = math.floor(position)
+    fraction = position - lower
+    if fraction == 0.0:
+        return float(sorted_values[lower - 1])
+    return float(sorted_values[lower - 1] + fraction * (sorted_values[lower] - sorted_values[lower - 1]))
 
 
 def compute_latency_summary(
@@ -634,11 +748,18 @@ def compute_latency_summary(
     is still a different answer from the omission above, where no result
     reached the harvest at all.
 
+    **The tail is the 95th percentile only where one can be estimated.** ``p95_total_ms`` is
+    :func:`median_unbiased_quantile` (Hyndman–Fan type 8), present from 13 measured totals, and absent below:
+    there the only figure a sample offers for its tail is its slowest observation, which is not a 95th
+    percentile — at five totals it falls below the true one 77% of the time — so it is reported as
+    ``max_total_ms``, under its own name, at every size. A row stored before this rule read its ``p95_total_ms``
+    nearest-rank, which is that same maximum for every ``n <= 19``.
+
     Returns:
         ``{(model, eval_run_id): {"mean_total_ms", "median_total_ms",
-        "p95_total_ms", "mean_llm_ms", "mean_tool_ms", "n_total_ms",
+        "p95_total_ms", "max_total_ms", "mean_llm_ms", "mean_tool_ms", "n_total_ms",
         "n_llm_ms", "n_tool_ms", "n_results"}}``, with a component and its
-        count both absent when nothing measured it. ``n_results`` counts the
+        count both absent when nothing measured it, and ``p95_total_ms`` absent below 13 totals. ``n_results`` counts the
         results carrying a :class:`LatencyMetrics` at all; each ``n_<field>``
         is the denominator its own mean was computed over, and they can
         legitimately disagree.
@@ -671,7 +792,13 @@ def compute_latency_summary(
         if totals:
             row["mean_total_ms"] = sum(totals) / len(totals)
             row["median_total_ms"] = percentile(totals, 50)
-            row["p95_total_ms"] = percentile(totals, 95)
+            # The tail, median-unbiased, and ABSENT below the 13 observations at which any estimate of a
+            # 95th percentile can be: under that the only candidate is the slowest observation, which falls
+            # below the true p95 most of the time and is reported under its own name, never this one.
+            tail = median_unbiased_quantile(totals, 0.95)
+            if tail is not None:
+                row["p95_total_ms"] = tail
+            row["max_total_ms"] = totals[-1]
             row["n_total_ms"] = len(totals)
         if llms:
             row["mean_llm_ms"] = sum(llms) / len(llms)
@@ -983,11 +1110,15 @@ __all__ = [
     "compute_latency_summary",
     "compute_pass_hat_k",
     "compute_per_case_composites",
+    "case_pass_hat_k",
+    "median_unbiased_quantile",
+    "median_unbiased_quantile_min_n",
     "pass_hat_k_at",
     "pass_hat_k_cell",
     "PassHatPoint",
     "percentile",
     "pool_pass_hat_k",
+    "pool_pass_hat_k_attempts",
     "reconstruct_completeness",
     "result_composite",
     "summarize_completeness",

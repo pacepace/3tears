@@ -434,6 +434,64 @@ def proportion_interval(outcomes: Sequence[bool], cases: Sequence[Hashable]) -> 
     return _wilson_bounds(n_true / n, effective_n, _t_multiplier(groups - 1))
 
 
+def _beta_quantile(p: float, a: float, b: float) -> float:
+    """The ``p`` quantile of a Beta(a, b), by bisection on :func:`_betai` (monotone in ``x``)."""
+    low, high = 0.0, 1.0
+    for _ in range(64):
+        middle = 0.5 * (low + high)
+        if _betai(a, b, middle) < p:
+            low = middle
+        else:
+            high = middle
+    return 0.5 * (low + high)
+
+
+def case_rate_interval(case_rates: Sequence[float], *, max_effective_n: float) -> tuple[float, float] | None:
+    """The interval at :data:`INTERVAL_LEVEL` on the mean of per-case rates, each in ``[0, 1]``.
+
+    For a reading that averages one estimate per case — pass^k's ``C(c, k) / C(n, k)`` is the one this
+    serves — where the cases are the independent draws and each case's own estimate is noisy. It takes
+    :func:`proportion_interval`'s route to an effective sample size, and with it that function's guard:
+    the spread of the case rates is read with two pseudo-cases added, one at 1 and one at 0, so a handful
+    of identical cases (every one passing) is not read as no spread at all, and the effective size is
+    ``s̃ (1 − s̃) / Var̃``, never more than ``max_effective_n``.
+
+    **The bounds are Clopper–Pearson's on that effective size**, not Wilson's, at the tail mass the
+    t multiplier on ``cases − 1`` degrees of freedom leaves on each side. Wilson's shape covered as little as
+    87% of the time in simulation where the truth sat near 0 or 1 at 8–15 cases; Clopper–Pearson's held at
+    least 96% over 2–15 cases, depth 1–5 and case rates from all-alike to all-or-nothing, for about a tenth
+    more width (``tests/test_simulated_frontier.py`` checks it on the engine).
+
+    Args:
+        case_rates: One estimate per case, each in ``[0, 1]``.
+        max_effective_n: The most information the cases can carry — for pass^k, the scored attempts at the
+            qualifying cases over ``k``: the number of separate ``k``-attempt runs they contain.
+
+    Returns:
+        ``(low, high)`` containing the mean of ``case_rates``, or ``None`` below two cases, where there is
+        no between-case spread to estimate.
+
+    Raises:
+        ValueError: A rate is outside ``[0, 1]``.
+    """
+    stray = [rate for rate in case_rates if not 0.0 <= rate <= 1.0]
+    if stray:
+        raise ValueError(f"case rates must lie in [0, 1]; got {stray}")
+    cases = len(case_rates)
+    if cases < 2:
+        return None
+    rate = math.fsum(case_rates) / cases
+    padded = [float(value) for value in case_rates] + [1.0, 0.0]
+    smoothed = math.fsum(padded) / len(padded)
+    variance = math.fsum((value - smoothed) ** 2 for value in padded) / ((len(padded) - 1) * len(padded))
+    effective_n = max(1.0, min(max_effective_n, smoothed * (1.0 - smoothed) / variance))
+    tail = 1.0 - NormalDist().cdf(_t_multiplier(cases - 1))
+    held = rate * effective_n
+    low = 0.0 if held <= 0.0 else _beta_quantile(tail, held, effective_n - held + 1.0)
+    high = 1.0 if held >= effective_n else _beta_quantile(1.0 - tail, held + 1.0, effective_n - held)
+    return min(rate, low), max(rate, high)
+
+
 def mean_interval(
     mean: float, sem: float, n_cases: int, *, value_range: tuple[float, float] | None = None
 ) -> tuple[float, float] | None:
@@ -795,6 +853,34 @@ def composite_significance(
     if math.isnan(p_value) or not math.isfinite(cohens_d):
         return _UNTESTED
     return SignificanceResult(cohens_d, p_value < SIGNIFICANCE_ALPHA, p_value)
+
+
+def separation_p(sample_a: Sequence[float], sample_b: Sequence[float], *, paired: bool) -> float | None:
+    """The two-sided p of the separation test between two samples, where one exists.
+
+    :func:`composite_significance`'s p — paired t on shared per-case values, Welch otherwise — and, where
+    that has none because every paired difference is the same nonzero amount, the exact sign-flip p
+    ``2^(1 − n)``: with the differences all alike, only the two all-one-sign assignments of the ``2^n``
+    are as extreme. That is the reasoning :func:`paired_change` gives a deterministic gap, with its p
+    stated rather than a floor, so a caller combining p's has one to combine.
+
+    Args:
+        sample_a: One side's per-case values.
+        sample_b: The other's, aligned with ``sample_a`` when ``paired``.
+        paired: Whether the two are one-to-one on the same cases.
+
+    Returns:
+        The p, or ``None`` where no test separates the two: fewer than two values a side, identical paired
+        samples, or two unpaired samples each without spread.
+    """
+    tested = composite_significance(list(sample_a), list(sample_b), paired=paired)
+    if tested.p_value is not None:
+        return tested.p_value
+    if paired and len(sample_a) == len(sample_b) >= 2:
+        diffs = [float(b) - float(a) for a, b in zip(sample_a, sample_b)]
+        if _sample_std(diffs) == 0.0 and diffs[0] != 0.0:
+            return min(1.0, 2.0 ** (1 - len(diffs)))
+    return None
 
 
 #: What a change between two paired samples reads as — see :class:`ChangeVerdict`.
@@ -1165,6 +1251,160 @@ def level_difference[Case: Hashable](
     return LevelDifference(test, n_a, n_b, mean_a, mean_b, delta, se, p, p < SIGNIFICANCE_ALPHA, None, None, None)
 
 
+def _lower_incomplete_gamma(a: float, x: float) -> float:
+    """The regularized lower incomplete gamma ``P(a, x)``: series below ``a + 1``, continued fraction above."""
+    if x <= 0.0:
+        return 0.0
+    log_front = -x + a * math.log(x) - math.lgamma(a)
+    if x < a + 1.0:
+        term = total = 1.0 / a
+        shape = a
+        for _ in range(1000):
+            shape += 1.0
+            term *= x / shape
+            total += term
+            if abs(term) < abs(total) * 1e-15:
+                break
+        return total * math.exp(log_front)
+    tiny = 1e-300
+    b = x + 1.0 - a
+    c = 1.0 / tiny
+    d = 1.0 / b
+    h = d
+    for i in range(1, 1000):
+        an = -i * (i - a)
+        b += 2.0
+        d = an * d + b
+        d = tiny if abs(d) < tiny else d
+        c = b + an / c
+        c = tiny if abs(c) < tiny else c
+        d = 1.0 / d
+        step = d * c
+        h *= step
+        if abs(step - 1.0) < 1e-15:
+            break
+    return 1.0 - math.exp(log_front) * h
+
+
+#: How many equal-probability points stand for the chi-square law of a spread estimate when a prediction
+#: band integrates over it. 128 places the outermost at the 0.4% quantile; raised to 1,024, the band's ends
+#: moved under 1%, and under 2% at three observations and a log-SD of 1.5, where the band spans eight orders.
+_SPREAD_NODES = 128
+
+
+@functools.cache
+def _chi_square_nodes(df: int) -> tuple[float, ...]:
+    """The chi-square law on ``df`` degrees of freedom as :data:`_SPREAD_NODES` equal-probability points."""
+    nodes = []
+    for index in range(_SPREAD_NODES):
+        target = (index + 0.5) / _SPREAD_NODES
+        low, high = 0.0, df + 100.0 * math.sqrt(df) + 100.0
+        for _ in range(100):
+            middle = 0.5 * (low + high)
+            if _lower_incomplete_gamma(0.5 * df, 0.5 * middle) < target:
+                low = middle
+            else:
+                high = middle
+        nodes.append(0.5 * (low + high))
+    return tuple(nodes)
+
+
+def _log_sum_variance(spread: float, count: int) -> float:
+    """``ln(1 + (e^σ² − 1) / m)``, the log-variance of a sum of ``m`` lognormals matched on two moments."""
+    if spread < 30.0:
+        return math.log1p(math.expm1(spread) / count)
+    return spread - math.log(count) + math.log1p((count - 1) * math.exp(-spread))
+
+
+def lognormal_sum_prediction_band(history: Sequence[float], n_future: int) -> tuple[float, float] | None:
+    """A prediction band at :data:`INTERVAL_LEVEL` for the TOTAL of ``n_future`` new draws like ``history``.
+
+    For positive, right-skewed quantities — what a turn costs — read on the log scale, where they are
+    near normal. The logs of the history give a mean and a spread; the band is the predictive law of the
+    future total under a lognormal with that mean and spread unknown (the reference prior, ``1/σ``): the
+    spread's uncertainty is its chi-square law on ``n − 1`` degrees of freedom, the mean's is normal given
+    the spread, and a sum of ``m`` lognormals is matched on its first two moments (Fenton–Wilkinson).
+    For one future draw this is exactly the log-scale t prediction interval.
+
+    Why not the normal-theory band ``t · s · sqrt(m + m²/n)``: costs are positive and their tail is long.
+    With five historical observations of a lognormal at log-SD 1.0, that band covered a 15-observation
+    sweep's total 82% of the time; this one 96%. It holds within a point or two of 95% on normal costs
+    too (the normal band's own case), and runs wide on lighter tails (gamma, exponential) rather than narrow.
+
+    **It treats every historical observation as an independent draw**, and so does the sweep it predicts.
+    Repeats of one case are not: where cases cost differently and each is repeated, the history's spread
+    and the sweep's both cluster, and the band is narrower than it should be.
+
+    Args:
+        history: Past observations, each positive.
+        n_future: How many new observations the total sums, at least one.
+
+    Returns:
+        ``(low, high)``, or ``None`` with fewer than two observations or any that is not positive — the
+        log scale cannot read a zero, and a caller that has some falls back to a band that can.
+
+    Raises:
+        ValueError: ``n_future`` is below one.
+    """
+    if n_future < 1:
+        raise ValueError(f"a prediction needs at least one future observation, got {n_future}")
+    n = len(history)
+    if n < 2 or any(value <= 0.0 for value in history):
+        return None
+    logs = [math.log(value) for value in history]
+    centre = math.fsum(logs) / n
+    spread = math.fsum((value - centre) ** 2 for value in logs) / (n - 1)
+    if spread == 0.0:
+        total = n_future * math.exp(centre)
+        return total, total
+    df = n - 1
+    components = []
+    for node in _chi_square_nodes(df):
+        variance = df * spread / node
+        sum_variance = _log_sum_variance(variance, n_future)
+        components.append(
+            (
+                math.log(n_future) + centre + 0.5 * variance - 0.5 * sum_variance,
+                math.sqrt(sum_variance + variance / n),
+            )
+        )
+    tail = 0.5 * (1.0 - INTERVAL_LEVEL)
+
+    root_two = math.sqrt(2.0)
+    root_two_pi = math.sqrt(2.0 * math.pi)
+
+    def cdf_and_density(log_total: float) -> tuple[float, float]:
+        mass = density = 0.0
+        for mean, scale in components:
+            z = (log_total - mean) / scale
+            mass += 0.5 * math.erfc(-z / root_two)
+            density += math.exp(-0.5 * z * z) / (scale * root_two_pi)
+        return mass / len(components), density / len(components)
+
+    def quantile(p: float) -> float:
+        # Newton's method on the mixture's CDF, kept inside a bracket that every component's own quantile
+        # bounds, and bisecting whenever a step would leave it.
+        z = NormalDist().inv_cdf(p)
+        low = min(mean + scale * z for mean, scale in components)
+        high = max(mean + scale * z for mean, scale in components)
+        guess = 0.5 * (low + high)
+        for _ in range(100):
+            mass, density = cdf_and_density(guess)
+            if mass < p:
+                low = guess
+            else:
+                high = guess
+            step = guess - (mass - p) / density if density > 0.0 else 0.5 * (low + high)
+            if not low < step < high:
+                step = 0.5 * (low + high)
+            if abs(step - guess) < 1e-12 * max(1.0, abs(guess)):
+                return math.exp(step)
+            guess = step
+        return math.exp(guess)
+
+    return quantile(tail), quantile(1.0 - tail)
+
+
 __all__ = [
     "BAR_SEED_HALF_WIDTH_FRACTION",
     "EQUIVALENCE_TEST_NAME",
@@ -1178,6 +1418,7 @@ __all__ = [
     "LevelDifference",
     "SignificanceResult",
     "bar_seed",
+    "case_rate_interval",
     "ci_half_width",
     "clustered_standard_error",
     "cohen_kappa",
@@ -1185,10 +1426,12 @@ __all__ = [
     "holm_adjust",
     "interval_clears",
     "level_difference",
+    "lognormal_sum_prediction_band",
     "mean_interval",
     "observed_mean_interval",
     "paired_change",
     "proportion_interval",
+    "separation_p",
     "standard_error_of_mean",
     "t_critical_two_sided",
     "wilson_interval",

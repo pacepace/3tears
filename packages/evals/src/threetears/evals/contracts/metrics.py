@@ -895,7 +895,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
         attribution_scope="end_to_end",
         unit="results",
         description=(
-            "How many results contributed a measured total_ms — the denominator behind mean/median/p95 total_ms, "
+            "How many results contributed a measured total_ms — the denominator behind mean/median/p95/max total_ms, "
             "which can be smaller than n_results because latency components are nulled independently."
         ),
     ),
@@ -1031,9 +1031,30 @@ _SEED: tuple[MetricDescriptor, ...] = (
         attribution_scope="end_to_end",
         higher_is_better=False,
         unit="ms",
-        formula="nearest-rank 95th percentile of total_ms, excluding cells a harness failure produced",
+        formula=(
+            "median-unbiased (Hyndman-Fan type 8) 95th percentile of total_ms, excluding cells a harness failure "
+            "produced; absent below 13 measured totals"
+        ),
         description=(
-            "Tail end-to-end wall-clock. Nearest-rank, so on small n it is an actual observed value. Over the same "
+            "Tail end-to-end wall-clock: as likely above the true 95th percentile as below it. Absent below 13 "
+            "measured totals, where no estimate of a 95th percentile is — the slowest of 5 falls below the true one "
+            "77% of the time — and max_total_ms is the tail figure there. A row stored before this rule was "
+            "nearest-rank, the sample maximum at every n up to 19. Over the same candidate-measuring population as "
+            "mean_total_ms: a cell an apparatus fault produced is excluded."
+        ),
+    ),
+    _d(
+        name="max_total_ms",
+        data_type="numeric",
+        family="mechanical",
+        transferability_class="mechanical",
+        attribution_scope="end_to_end",
+        higher_is_better=False,
+        unit="ms",
+        formula="largest total_ms, excluding cells a harness failure produced",
+        description=(
+            "The slowest measured turn: the worst case seen, never a percentile. Below 13 measured totals it is the "
+            "only tail figure a run has, and it understates the 95th percentile most of the time there. Over the same "
             "candidate-measuring population as mean_total_ms: a cell an apparatus fault produced is excluded."
         ),
     ),
