@@ -14,6 +14,10 @@ you still get a **code-only report**: every table and chart code can build, with
 and a note saying what an analysis would add. Either way, every number comes from code; a model never
 gets to state a figure or decide how much a judged score can be trusted.
 
+[`examples/reports.py`](../examples/reports.py) takes a finished campaign to the files people read: the
+contrasts' verdicts read off the `Report` as data, the report as Markdown and HTML, the evidence bundle
+as JSON, and each chart as a Vega-Lite spec (plus an SVG with the `[vega]` extra). It runs offline.
+
 ## The report
 
 A generated analysis is read through one document. `analysis_report(storage, analysis_id, scope_id)`
