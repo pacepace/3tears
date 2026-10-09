@@ -1861,7 +1861,7 @@ class CallProxy:
             )
         return result
 
-    def hub_publishes_delegation_key(self) -> bool:
+    def _hub_publishes_delegation_key(self) -> bool:
         """whether the hub JWKS publishes this registry's delegated-token key, so a pod can verify it.
 
         A pod sent the delegation in place of the agent's token verifies it against the hub JWKS; a
@@ -1927,7 +1927,7 @@ class CallProxy:
                 conversation_id=str(context.conversation_id) if context.conversation_id is not None else None,
             )
             forwarded: dict[str, str | None] = {"delegated_token": token}
-            if endpoint is not None and endpoint.proves_delegation and self.hub_publishes_delegation_key():
+            if endpoint is not None and endpoint.proves_delegation and self._hub_publishes_delegation_key():
                 forwarded |= {"identity_token": None, "user_identity_token": None}
             result = request.model_copy(update={"context": context.model_copy(update=forwarded)})
         return result

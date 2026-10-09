@@ -21,7 +21,9 @@ from threetears.core.testing.replay_guard import FakeReplayGuard
 import asyncio
 import base64
 import json
+import inspect
 import time
+from collections.abc import Callable
 from datetime import timedelta
 from typing import Any
 from uuid import UUID, uuid7
@@ -171,12 +173,18 @@ class _ProxyNats:
 
 # parity-exempt: subset stand-in for NatsClient: the caller's typed request delivered in-process to the real proxy
 class _CallerNats:
-    def __init__(self, proxy: CallProxy, proxy_nats: _ProxyNats) -> None:
+    def __init__(self, proxy: CallProxy, proxy_nats: _ProxyNats, *, conversation_id: UUID | None = None) -> None:
         self._proxy = proxy
         self._proxy_nats = proxy_nats
+        self._conversation_id = conversation_id
 
     async def request(self, *, subject: Subject, message: Any, response_type: Any, timeout: timedelta) -> Any:
         del timeout
+        if self._conversation_id is not None:
+            # an agent's call carries its conversation; the proof covers the body, not the context
+            message = message.model_copy(
+                update={"context": message.context.model_copy(update={"conversation_id": self._conversation_id})}
+            )
         before = len(self._proxy_nats.replies)
         await self._proxy.handle_call(
             IncomingMessage(
@@ -335,7 +343,13 @@ class TestTheForwardedCallCarriesADelegatedToken:
 
     @staticmethod
     async def _forward(
-        *, pod_key: Ed25519PrivateKey | None, declares: bool = False, hub_publishes_key: bool = True
+        *,
+        pod_key: Ed25519PrivateKey | None,
+        declares: bool = False,
+        hub_publishes_key: bool = True,
+        conversation: UUID | None = None,
+        proxy_jwks: Callable[[dict[str, Any]], Callable[[], dict[str, Any]]] | None = None,
+        calls: int = 1,
     ) -> tuple[_ProxyNats, Any, Any, _ScopeRecordingTool]:
         from threetears.core.security import DelegatedTokenSigner, RegistrationKey  # noqa: PLC0415
 
@@ -386,7 +400,11 @@ class TestTheForwardedCallCarriesADelegatedToken:
             FakeReplayGuard(),
             limit_guard=AllowAllLimitGuard(),
             namespace=_NS,
-            jwks_provider=lambda: jwks if hub_publishes_key else {"keys": build_jwks({"kid-1": hub_pub})["keys"]},
+            jwks_provider=(
+                proxy_jwks(jwks)
+                if proxy_jwks is not None
+                else lambda: jwks if hub_publishes_key else {"keys": build_jwks({"kid-1": hub_pub})["keys"]}
+            ),
             proxy_signer=proxy_signer,
             delegated_signer=delegated,
         )
@@ -396,12 +414,13 @@ class TestTheForwardedCallCarriesADelegatedToken:
         caller = uuid7()
         token = _pod_token(hub_priv, pod_id=caller, holder_key=caller_key, customer_claim=PLATFORM_CUSTOMER_SENTINEL)
         client = ToolCallClient(
-            _CallerNats(proxy, hop),  # type: ignore[arg-type]
+            _CallerNats(proxy, hop, conversation_id=conversation),  # type: ignore[arg-type]
             principal_id=caller,
             identity_token=lambda: token,
             pop_signer=_Signer(caller_key),
         )
-        await client.call(_TOOL, _VERSION, {"text": "hi"})
+        for _ in range(calls):
+            await client.call(_TOOL, _VERSION, {"text": "hi"})
         return hop, jwks, caller, tool
 
     @pytest.mark.asyncio
@@ -489,28 +508,52 @@ class TestTheForwardedCallCarriesADelegatedToken:
         assert context.identity_token
 
     @pytest.mark.asyncio
+    async def test_the_delegation_signs_the_calls_conversation_and_the_pod_runs_it_there(self) -> None:
+        """an agent's call in a conversation reaches a declaring pod with that conversation signed in."""
+        from threetears.core.security import verify_delegation_at_pod  # noqa: PLC0415
+
+        conversation = UUID("06ac4016-baf3-7422-8000-000000000c01")
+        pod_key = Ed25519PrivateKey.generate()
+        hop, jwks, _caller, tool = await self._forward(pod_key=pod_key, declares=True, conversation=conversation)
+        forwarded = hop.forwarded[0].context
+        assert forwarded is not None
+        assert forwarded.identity_token is None
+        assert forwarded.delegated_token
+        claims = verify_delegation_at_pod(
+            forwarded.delegated_token, jwks=jwks, pod_id=_SERVING_POD, correlation_id=f"{forwarded.correlation_id}"
+        )
+        assert claims.conversation_id == f"{conversation}"
+        (context,) = tool.contexts
+        assert context.conversation_id == conversation
+
+    @pytest.mark.asyncio
     async def test_an_unreadable_hub_jwks_keeps_the_token_on_the_call_and_says_so_once(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         """the registry cannot tell whether the hub publishes its key, so it strips nothing."""
-        from threetears.core.security import DelegatedTokenSigner  # noqa: PLC0415
 
-        def _unreadable() -> dict[str, Any]:
-            raise RuntimeError("the hub is unreachable")
+        def _unreadable_but_for_verification(jwks: dict[str, Any]) -> Callable[[], dict[str, Any]]:
+            # the hub JWKS answers the caller's token verification and fails every other read: the
+            # registry still admits the call, but cannot learn whether the hub publishes its key
+            def _provider() -> dict[str, Any]:
+                frame = inspect.currentframe()
+                caller = frame.f_back if frame is not None else None
+                if caller is None or caller.f_code.co_name != "_load_jwks":
+                    raise RuntimeError("the hub is unreachable")
+                return jwks
 
-        delegated_key = Ed25519PrivateKey.generate()
-        proxy = CallProxy(
-            ToolCatalog(),
-            AllowAllAuthorizer(),
-            FakeReplayGuard(),
-            limit_guard=AllowAllLimitGuard(),
-            namespace=_NS,
-            jwks_provider=_unreadable,
-            delegated_signer=DelegatedTokenSigner(
-                signing_key=delegated_key, kid=jwk_thumbprint(delegated_key.public_key())
-            ),
-        )
+            return _provider
+
+        pod_key = Ed25519PrivateKey.generate()
         with caplog.at_level("WARNING"):
-            assert proxy.hub_publishes_delegation_key() is False
-            assert proxy.hub_publishes_delegation_key() is False
+            hop, _jwks, _caller, tool = await self._forward(
+                pod_key=pod_key, declares=True, proxy_jwks=_unreadable_but_for_verification, calls=2
+            )
+        assert len(hop.forwarded) == 2
+        for forwarded in hop.forwarded:
+            assert forwarded.context is not None
+            assert forwarded.context.delegated_token
+            assert forwarded.context.identity_token
+        assert all(context.identity_token for context in tool.contexts)
+        assert len(tool.contexts) == 2
         assert sum("hub JWKS unreadable" in record.getMessage() for record in caplog.records) == 1

@@ -40,11 +40,13 @@ packages (bumped in lock-step).
   agent's own `identity_token` and `user_identity_token`, and the pod takes the caller from the
   delegation (`verify_delegation_at_pod`: the registry's key, this pod as audience and actor, this
   call's correlation id, and the call's conversation, which the delegation now signs as
-  `conversation_id`). The caller is read with `principal_from`, the reading `principal_from_claims`
+  `conversation_id`; a delegation that carries no `conversation_id`, from a registry that predates
+  the claim, is still taken, so pods and registries roll in either order, and a claim naming
+  another conversation is refused). The caller is read with `principal_from`, the reading `principal_from_claims`
   uses, so a tool pod calling through keeps its tool-pod mark. Only a key the pod has not seen
   (`DelegatedKeyNotFoundError`) refreshes its JWKS. A pod that does not declare, a registry that
   predates the field, an unprovisioned delegated-token key and an unreadable hub JWKS
-  (`CallProxy.hub_publishes_delegation_key`, logged once until it reads again) all keep sending
+  (logged once until it reads again) all keep sending
   both, as before.
 - A door counts a request without a proof under the sender its own token claims
   (`claimed_sender_of(body)`: the `sub` of `identity_token`, else of `user_identity_token`, read
