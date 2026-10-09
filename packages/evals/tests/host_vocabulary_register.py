@@ -157,6 +157,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "run/witnessed.py": {},
     "__main__.py": {},
     "quick/__init__.py": {},
+    "quick/answer.py": {},
     "quick/cli.py": {},
     "quick/compare.py": {},
     "quick/judged.py": {},

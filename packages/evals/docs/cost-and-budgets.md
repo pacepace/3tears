@@ -113,6 +113,16 @@ never assumes a provider. Your kind reports its own calls' spend only as usage r
 result's `cost_usd` from those rows and its background work's (`async_deliveries`, see
 [background work](adopting-a-host.md#background-work-payloads-and-spend)).
 
+**A `run_eval` or `compare` candidate reports its spend by returning an `Answer`.** The quick layer's
+candidate is a plain async function, so the engine sees what it returns and nothing of what it spent.
+Return `Answer(value, model=..., input_tokens=..., output_tokens=..., cost_usd=...)` instead of the bare
+value and the call becomes the cell's `candidate` usage row: `value` is graded and stored as a plain return
+would be, the result's `cost_usd` is derived from the row, the summary prints `candidate spend: $... over N
+call(s)`, and `compare`'s report tests the arms' `cost_usd` against the control like any other reading. A
+field left `None` is unreported, not zero, so an `Answer` with no `cost_usd` leaves its result's cost
+unknown. A candidate that returns anything else reports no spend, as before.
+`examples/compare_two_models.py` prices each Claude call this way.
+
 **Unpriced is a state, never zero.** A call your client could not price (a local model, say), or
 background work's paid calls that report no `money` and that a run with declared rates has no rate
 for, leaves the result's `cost_usd` as `None`. A reported `money` wins over the run's rate.

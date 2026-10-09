@@ -18,6 +18,11 @@ confusion matrix and each label's precision, recall and F1, counted by
 **A judged run's rubric is read too.** Each dimension a judge scored is summarised over the results that
 carry its score, beside how many the judge could not tell on, and the judge's spend is the sum of the
 results' ``judge`` usage rows — unknown, never zero, when any judge call went unpriced.
+
+**So is what the candidate reported spending.** A kind's own ``candidate`` usage rows — a
+:func:`~threetears.evals.quick.run_eval` candidate's :class:`~threetears.evals.quick.Answer` — are summed
+the same way, unknown rather than zero when any went unpriced. A run whose candidate reported nothing
+carries none of it.
 """
 
 from __future__ import annotations
@@ -113,6 +118,10 @@ class EvalSummary(BaseModel):
         judge_calls: How many judge calls the results' ``judge`` usage rows count.
         judge_cost_usd: What those calls cost, as their client priced them; ``None`` when any went
             unpriced, and for a run no judge was called in.
+        candidate_calls: How many calls the results' ``candidate`` usage rows count; 0 when the candidate
+            reported no spend.
+        candidate_cost_usd: What those calls cost, as the candidate priced them; ``None`` when any went
+            unpriced, and for a run whose candidate reported no spend.
         errors: Each failed or excluded result's error, prefixed by its case, then the run's own.
     """
 
@@ -135,6 +144,8 @@ class EvalSummary(BaseModel):
     judged: list[DimensionSummary] = []
     judge_calls: int = 0
     judge_cost_usd: float | None = None
+    candidate_calls: int = 0
+    candidate_cost_usd: float | None = None
     errors: list[str]
 
     def render(self) -> str:
@@ -173,6 +184,13 @@ class EvalSummary(BaseModel):
                 "unknown: a judge call went unpriced" if self.judge_cost_usd is None else f"${self.judge_cost_usd:.6f}"
             )
             lines.append(f"  judge spend: {spend} over {self.judge_calls} call(s)")
+        if self.candidate_calls:
+            spend = (
+                "unknown: a candidate call went unpriced"
+                if self.candidate_cost_usd is None
+                else f"${self.candidate_cost_usd:.6f}"
+            )
+            lines.append(f"  candidate spend: {spend} over {self.candidate_calls} call(s)")
         lines.extend(f"  error: {error}" for error in self.errors)
         return "\n".join(lines)
 
@@ -266,6 +284,7 @@ def summarize_run(host: EvalHost, run_id: str, scope_id: str) -> EvalSummary:
     )
     confusion = confusion_matrix(cells)
     judge_rows = [row for result in results for row in result.usage if row.role == "judge"]
+    candidate_rows = [row for result in results for row in result.usage if row.role == "candidate"]
     return EvalSummary(
         run_id=run.id,
         scope_id=scope_id,
@@ -284,12 +303,17 @@ def summarize_run(host: EvalHost, run_id: str, scope_id: str) -> EvalSummary:
         judged=_judged_dimensions(results),
         judge_calls=sum(row.call_count or 0 for row in judge_rows),
         judge_cost_usd=blended_cost(judge_rows, _JUDGE_ROLE) if judge_rows else None,
+        candidate_calls=sum(row.call_count or 0 for row in candidate_rows),
+        candidate_cost_usd=blended_cost(candidate_rows, _CANDIDATE_ROLE) if candidate_rows else None,
         errors=errors,
     )
 
 
 #: The one role a run's judge spends under, which the summary's judge spend sums.
 _JUDGE_ROLE: tuple[UsageRole, ...] = ("judge",)
+
+#: The role a kind's own calls spend under, which the summary's candidate spend sums.
+_CANDIDATE_ROLE: tuple[UsageRole, ...] = ("candidate",)
 
 
 def _judged_dimensions(results: list[EvalResult]) -> list[DimensionSummary]:
