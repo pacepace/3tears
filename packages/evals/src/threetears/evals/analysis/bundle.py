@@ -168,6 +168,7 @@ from threetears.evals.contracts.metrics import (
     summary_population,
     undeclarable_host_measures,
 )
+from threetears.evals.contracts.covariates import undeclarable_covariates
 from threetears.evals.contracts.base import EvalDocumentModel
 
 # At runtime for its field set, which tells a result-level measure from a row-level one.
@@ -3370,8 +3371,11 @@ def _open_map_leaves(
     absence of a name, not a name that failed to resolve). Skip rather than raise, so one
     malformed key cannot destroy the analysis it appears in.
     """
+    # A core-named covariate no covariate writer lands — a result stored by another writer, or before the rule —
+    # is dropped and named, never pooled, as an undeclarable host measure is (`_undeclarable_host_entries`).
+    stray = set(undeclarable_covariates(result.covariates))
     for name, value in result.covariates.items():
-        if name.strip():
+        if name.strip() and name not in stray:
             yield name, value, describe_measure(name, profile.measures)
     for name, value in result.phase_timings.items():
         if name.strip():
@@ -3413,9 +3417,13 @@ def _undeclarable_host_entries(results: Sequence[EvalResult]) -> list[str]:
         One entry per dropped key, sorted.
     """
     names = {name for result in results for name in undeclarable_host_measures(result.host_measures)}
+    covariates = {name for result in results for name in undeclarable_covariates(result.covariates)}
     return [
         f"{name} (a host kind reported it on host_measures, where only the engine measures it; dropped, not pooled)"
         for name in sorted(names)
+    ] + [
+        f"{name} (a result carried it as a covariate, which no covariate writer lands; dropped, not pooled)"
+        for name in sorted(covariates)
     ]
 
 

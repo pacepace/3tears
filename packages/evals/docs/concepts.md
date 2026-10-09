@@ -258,7 +258,8 @@ its readings would carry the core's meaning and pool with the engine's own, so t
 For the same reason the runner refuses a kind that lands any core-named key on `host_measures`, or one in the
 engine's minted `goal_state:` and `classifier:` namespaces, other than the classifier's own `match` and
 `confusion_cell`. A result stored before that refusal has the key dropped when it is read, named in
-`unreported_observations`, never pooled.
+`unreported_observations`, never pooled. A result's covariates are held to the same rule: only the keys the
+engine's covariate writer lands are read, and any other core-named key is dropped and named the same way.
 *Example:* `match` is 1 when ticket 17 went to `billing`, else 0.
 
 #### Scorer

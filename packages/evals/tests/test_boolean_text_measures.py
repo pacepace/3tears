@@ -283,6 +283,44 @@ def test_an_engine_owned_key_a_host_kind_stored_is_dropped_and_named_never_poole
     assert [entry.split(" ")[0] for entry in dropped] == sorted(smuggled)
 
 
+def test_a_core_named_covariate_no_writer_lands_is_dropped_and_named_never_pooled() -> None:
+    """The host-measure rule, carried to covariates: only the covariate writer's own keys are read."""
+    results = [
+        make_eval_result(
+            test_case_id=f"c{i}",
+            covariates={"cost_usd": 99.0, "execution_mode": "serial"},
+            host_measures={},
+            rubric_scores=[],
+            goal_state_outcomes=[],
+        )
+        for i in range(2)
+    ]
+
+    collection = _collection(results)
+    summaries = {summary.name: summary for summary in collection.measures}
+
+    assert "cost_usd" not in summaries or 99.0 not in {summaries["cost_usd"].maximum, summaries["cost_usd"].mean}
+    assert "execution_mode" in summaries, "a covariate the writer lands is read as before"
+    (dropped,) = [entry for entry in collection.unreported_observations if "covariate" in entry]
+    assert dropped.startswith("cost_usd ")
+
+
+def test_the_covariate_writer_writes_exactly_the_covariate_keys() -> None:
+    from threetears.evals.contracts import RoleUsage
+    from threetears.evals.contracts.covariates import COVARIATE_KEYS, derive_covariates, undeclarable_covariates
+
+    written = derive_covariates(
+        usage=[RoleUsage(role="candidate", model="m", prompt_tokens=10, completion_tokens=5, reasoning_tokens=1)],
+        concurrent_eval_jobs=1,
+        dropped_tool_calls=0,
+        refused_tool_attaches=0,
+        truncated_rounds=0,
+        turns_ended_by_budget=0,
+    )
+    assert set(written) == COVARIATE_KEYS
+    assert undeclarable_covariates(["execution_mode", "my_host_condition", "cost_usd"]) == ["cost_usd"]
+
+
 # --- population ----------------------------------------------------------------------------------------
 
 

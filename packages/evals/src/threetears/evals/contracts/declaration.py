@@ -40,11 +40,7 @@ from pydantic import BaseModel, Field, TypeAdapter, field_validator, model_valid
 
 from threetears.evals.contracts.base import EvalDocumentModel
 from threetears.evals.contracts.covariates import (
-    DROPPED_TOOL_CALLS_KEY,
-    REASONING_RATIO_KEY,
-    REFUSED_TOOL_ATTACHES_KEY,
-    TRUNCATED_ROUNDS_KEY,
-    TURN_BUDGET_ENDED_KEY,
+    COVARIATE_KEYS,
 )
 from threetears.evals.contracts.host.bars import Bar, BarRegistrationError, contradicts_descriptor, no_better_end
 from threetears.evals.contracts.host.values import Scale, SweepableValue
@@ -648,19 +644,8 @@ BarNameKind = Literal["measure", "judged", "goal_state"]
 BarNameRefusal = Literal["not_numeric", "no_better_end", "not_carried"]
 
 #: The covariate keys a result can carry — every key ``derive_covariates`` writes. A covariate is a
-#: per-result observation keyed by a described name, so a bar may name one; a test reads the
-#: writer's own assignments and fails when this set and they disagree.
-_COVARIATE_MEASURES: frozenset[str] = frozenset(
-    {
-        "execution_mode",
-        DROPPED_TOOL_CALLS_KEY,
-        REFUSED_TOOL_ATTACHES_KEY,
-        TRUNCATED_ROUNDS_KEY,
-        TURN_BUDGET_ENDED_KEY,
-        "context_tokens_in",
-        REASONING_RATIO_KEY,
-    }
-)
+#: per-result observation keyed by a described name, so a bar may name one.
+_COVARIATE_MEASURES: frozenset[str] = COVARIATE_KEYS
 
 
 @dataclass(frozen=True)

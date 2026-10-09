@@ -142,6 +142,7 @@ __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why th
     "confusion_cell",
     "confusion_of",
     "undeclarable_host_measures",
+    "engine_owned_names",
     "describe_classifier_label",
     "is_code_graded",
     "materiality",
@@ -2299,15 +2300,38 @@ def describe_classifier_label(statistic: ClassifierStatistic, label: str) -> Met
 CLASSIFIER_TRACK_MEASURES = frozenset({MATCH_MEASURE, CONFUSION_CELL_MEASURE})
 
 
+def engine_owned_names(names: Iterable[str], *, written_by_the_engine: frozenset[str]) -> list[str]:
+    """The names among ``names`` that only the engine measures, less the ones the engine itself writes there, sorted.
+
+    Engine-owned is a core measure (:data:`METRIC_DESCRIPTORS`) or a name in a namespace the engine mints — a goal
+    check's ``goal_state:…``, a classifier label's ``classifier:…``. A host cannot declare one, so a value under
+    such a name in an open map reads under the core's meaning and pools into the engine's own distribution of it,
+    ``n`` inflated. ``written_by_the_engine`` names the keys the map legitimately carries under core names.
+
+    Args:
+        names: The keys an open map carries.
+        written_by_the_engine: The core-named keys that map's own writer lands there.
+
+    Returns:
+        The engine-owned keys, less those.
+    """
+    return sorted(
+        name
+        for name in names
+        if name not in written_by_the_engine
+        and (
+            name in METRIC_DESCRIPTORS
+            or name.startswith(GOAL_CHECK_MEASURE_PREFIX)
+            or name.startswith(CLASSIFIER_LABEL_MEASURE_PREFIX)
+        )
+    )
+
+
 def undeclarable_host_measures(names: Iterable[str]) -> list[str]:
     """The keys of a kind's ``host_measures`` that name a measure only the engine measures, sorted.
 
-    A host cannot DECLARE a measure named like a core one (the measure registry refuses it), and a minted
-    name — a goal check's ``goal_state:…``, a classifier label's ``classifier:…`` — is the engine's
-    namespace. So a kind landing such a key reports a value nobody described as the host's, and every
-    resolver reads it under the core's meaning: its values would pool into the engine's own distribution
-    of that name, ``n`` inflated. The classifier track's own keys (:data:`CLASSIFIER_TRACK_MEASURES`) are
-    the one legitimate core-named write and are not returned.
+    :func:`engine_owned_names` over ``host_measures``, whose one legitimate core-named write is the classifier
+    track's own (:data:`CLASSIFIER_TRACK_MEASURES`).
 
     Args:
         names: The keys a kind landed.
@@ -2315,16 +2339,7 @@ def undeclarable_host_measures(names: Iterable[str]) -> list[str]:
     Returns:
         The engine-owned keys among them, the classifier track's excepted.
     """
-    return sorted(
-        name
-        for name in names
-        if name not in CLASSIFIER_TRACK_MEASURES
-        and (
-            name in METRIC_DESCRIPTORS
-            or name.startswith(GOAL_CHECK_MEASURE_PREFIX)
-            or name.startswith(CLASSIFIER_LABEL_MEASURE_PREFIX)
-        )
-    )
+    return engine_owned_names(names, written_by_the_engine=CLASSIFIER_TRACK_MEASURES)
 
 
 def partition_components(whole: str, *extra: dict[str, MetricDescriptor], measures: MeasureRegistry) -> list[str]:

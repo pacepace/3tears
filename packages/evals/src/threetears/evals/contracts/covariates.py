@@ -26,6 +26,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
+from threetears.evals.contracts.metrics import engine_owned_names
 from threetears.evals.contracts.models import RoleUsage
 from threetears.evals.contracts.provider import sum_optional_tokens
 from threetears.observe import get_logger
@@ -231,6 +232,37 @@ def count_delivered_turns(trace: list[dict[str, Any]], *, reported: int | None) 
     return len(records) if records else None
 
 
+#: Every key :func:`derive_covariates` writes: the covariates a result can carry, each a core measure. A test reads
+#: the writer's own assignments and fails when this set and they disagree.
+COVARIATE_KEYS: frozenset[str] = frozenset(
+    {
+        "execution_mode",
+        DROPPED_TOOL_CALLS_KEY,
+        REFUSED_TOOL_ATTACHES_KEY,
+        TRUNCATED_ROUNDS_KEY,
+        TURN_BUDGET_ENDED_KEY,
+        "context_tokens_in",
+        REASONING_RATIO_KEY,
+    }
+)
+
+
+def undeclarable_covariates(names: Iterable[str]) -> list[str]:
+    """The covariate keys that name a measure only the engine measures and that no covariate writer lands, sorted.
+
+    The rule ``host_measures`` is held to (:func:`~threetears.evals.contracts.metrics.undeclarable_host_measures`),
+    carried to the covariates map: its legitimate core-named keys are :data:`COVARIATE_KEYS`, and any other
+    engine-owned key would pool into the engine's own observations of that name.
+
+    Args:
+        names: The keys a result's covariates carry.
+
+    Returns:
+        The engine-owned keys among them that are not covariates.
+    """
+    return engine_owned_names(names, written_by_the_engine=COVARIATE_KEYS)
+
+
 def derive_covariates(
     *,
     usage: list[RoleUsage],
@@ -303,6 +335,11 @@ def derive_covariates(
     if reasoning_ratio is not None:
         out[REASONING_RATIO_KEY] = reasoning_ratio
 
+    # The one writer of a result's covariates, so the rule host_measures is held to is held here, at the write: a
+    # key outside COVARIATE_KEYS — a core-named one would pool into the engine's own observations of that name —
+    # is refused, and the set read by the walk and the bar gate cannot drift from what is written.
+    if stray := sorted(set(out) - COVARIATE_KEYS):
+        raise ValueError(f"derive_covariates wrote {stray!r}, which are not covariates (COVARIATE_KEYS)")
     return out
 
 
@@ -376,6 +413,8 @@ def fold_phase_timings(
 
 
 __all__ = [
+    "COVARIATE_KEYS",
+    "undeclarable_covariates",
     "DROPPED_TOOL_CALLS_KEY",
     "REASONING_RATIO_KEY",
     "REFUSED_TOOL_ATTACHES_KEY",
