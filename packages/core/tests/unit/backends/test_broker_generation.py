@@ -247,10 +247,12 @@ class TestABrokerBuiltBeforeGenerations:
         await _Broker({"success": True, "row_count": 1}).proxy().execute("DELETE FROM group_members")
         assert await BrokerGenerationSource().advance(_TABLE) is None
 
-    async def test_it_is_warned_about_once_per_table(self, caplog: pytest.LogCaptureFixture) -> None:
+    async def test_it_is_warned_about_once_per_table(
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from threetears.core.backends import broker_generation  # noqa: PLC0415 -- the once-per-table record
 
-        broker_generation._WARNED_UNADVANCED.discard(_TABLE)
+        monkeypatch.setattr(broker_generation, "_WARNED_UNADVANCED", set())
         proxy = _Broker({"success": True, "row_count": 1}, {"success": True, "row_count": 1}).proxy()
         with caplog.at_level("WARNING"):
             await proxy.execute("DELETE FROM group_members")
@@ -261,8 +263,10 @@ class TestABrokerBuiltBeforeGenerations:
         assert len(warned) == 1
 
     async def test_a_broker_that_names_generations_and_not_the_table_still_raises(self) -> None:
-        await _Broker({"success": True, "row_count": 1, GENERATIONS_REPLY_FIELD: {}}).proxy().execute(
-            "DELETE FROM group_members"
+        await (
+            _Broker({"success": True, "row_count": 1, GENERATIONS_REPLY_FIELD: {}})
+            .proxy()
+            .execute("DELETE FROM group_members")
         )
         with pytest.raises(GenerationUnavailableError, match="named no write generation"):
             await BrokerGenerationSource().advance(_TABLE)
