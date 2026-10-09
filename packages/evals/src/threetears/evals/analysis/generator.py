@@ -1431,7 +1431,8 @@ def _run_index_entry(summary: RunSummary, *, reported: set[str], omitted: list[s
     """Build one run-index row from a bundle run summary (factual, not LLM).
 
     A numeric measure contributes the tail at its *worse* end — p95 where lower is better,
-    p05 where higher is — under a key naming which, so a reader is never invited to compare
+    p05 where higher is — under a key naming which (the maximum, as ``<name>_max``, where lower is
+    better and too few observations give a p95), so a reader is never invited to compare
     a measure's best outcome against another's worst as though both moved the same way. A
     categorical measure contributes its counts.
 
@@ -1478,6 +1479,9 @@ def _run_index_entry(summary: RunSummary, *, reported: set[str], omitted: list[s
         tail = measure.bad_tail()
         if tail is not None:
             key_metrics[f"{measure.name}_p05" if measure.higher_is_better else f"{measure.name}_p95"] = tail
+        elif measure.higher_is_better is False and measure.max is not None:
+            # Too few observations for a 95th percentile: the slowest seen, named as what it is.
+            key_metrics[f"{measure.name}_max"] = measure.max
     if omitted:
         key_metrics["measures_omitted"] = ", ".join(omitted)
     return RunIndexEntry(

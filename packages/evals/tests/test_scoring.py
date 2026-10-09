@@ -126,19 +126,19 @@ class TestPercentileIsNearestRank:
         assert percentile([7.0], 50) == 7.0
         assert percentile([7.0], 95) == 7.0
 
-    def test_the_two_percentiles_in_this_package_genuinely_disagree(self):
-        """The reason they are documented rather than unified: same data, different answers.
+    def test_nearest_rank_is_not_the_tail_the_bundle_reports(self):
+        """Same data, different answers, and why the tail is not read nearest-rank.
 
-        Read on each function's own scale, so this is not the scale confusion above — it is the
-        method difference, which is real and intended.
+        Read on each function's own scale, so this is not the scale confusion above. Nearest-rank's
+        95th percentile of five values is their maximum, which is not a 95th percentile; the bundle reads
+        its tail median-unbiased and, at five observations, where no estimate is, reports none.
         """
         bundle_p50, bundle_p95 = _bundle_percentiles(_SORTED)
 
         assert percentile(_SORTED, 50) == 3.0
         assert bundle_p50 == 3.0
-        # p95 is where nearest-rank and interpolation part company on small n.
         assert percentile(_SORTED, 95) == 100.0
-        assert bundle_p95 == pytest.approx(80.8)
+        assert bundle_p95 is None
 
 
 def _bundle_percentiles(costs: list[float]) -> tuple[float, float]:
@@ -774,11 +774,22 @@ def test_compute_latency_summary_aggregates_per_model_run():
     assert stats["n_results"] == 2
 
 
-def test_compute_latency_summary_median_and_p95_nearest_rank():
+def test_compute_latency_summary_median_and_tail_at_small_n():
     results = [_lat_result(k=i, total=float(t)) for i, t in enumerate([10, 20, 30, 40, 100], start=1)]
     stats = compute_latency_summary(results)[("m1", "r1")]
     assert stats["median_total_ms"] == 30.0  # nearest-rank p50 of 5 values
-    assert stats["p95_total_ms"] == 100.0  # tail collapses toward max at small n
+    # Five totals cannot give a 95th percentile; the slowest is reported under its own name, not as one.
+    assert "p95_total_ms" not in stats
+    assert stats["max_total_ms"] == 100.0
+
+
+def test_compute_latency_summary_p95_is_type_8_from_thirteen_totals():
+    totals = [float(t) for t in range(10, 210, 10)]  # 20 totals, 10..200
+    results = [_lat_result(k=i, total=t) for i, t in enumerate(totals, start=1)]
+    stats = compute_latency_summary(results)[("m1", "r1")]
+    # h = (20 + 1/3) * 0.95 + 1/3 = 19.65: between the 19th (190) and 20th (200) totals.
+    assert stats["p95_total_ms"] == pytest.approx(190.0 + 0.65 * 10.0)
+    assert stats["max_total_ms"] == 200.0
 
 
 def test_compute_latency_summary_skips_none_latency():
@@ -899,7 +910,7 @@ def test_a_component_nothing_measured_is_absent_not_zero():
     stats = compute_latency_summary(results)[("m1", "r1")]
 
     assert "mean_total_ms" not in stats
-    assert "median_total_ms" not in stats and "p95_total_ms" not in stats
+    assert "median_total_ms" not in stats and "p95_total_ms" not in stats and "max_total_ms" not in stats
     assert "mean_tool_ms" not in stats
     assert stats["mean_llm_ms"] == 60.0
 

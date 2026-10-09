@@ -66,8 +66,12 @@ whose retest agreement you have measured. Ranking and diagnosis are two jobs.
 *Evidence:* agent with tools, 2 campaigns, 2026-07 and 2026-08, one never-clearing dimension held pass^k to 0.0 or 0.2 for every arm, and a strict check set pinned it at 0 for every arm; in simulation (2026-09) a perfect candidate with five dimensions, each falsely failing 5% of the time, shows pass^3 ≈ 0.46.
 
 **Pair quality with coverage and latency with a delivery rate, and read the floor.** An arm delivering
-almost nothing has little to get wrong; one can be fast by declining the work. Rank latency on p95.
-*Evidence:* retrieval sub-agent, 2026-07, an arm delivering almost nothing scored grounding and honesty 5.0, and one with a 69 s p95 declined 60% of hard cases; agent with tools, 2026-08, an incumbent averaging 4.3 had a minimum of 1 against a challenger's 5; 2 campaigns.
+almost nothing has little to get wrong; one can be fast by declining the work. Rank latency on its mean, which
+has an interval and a paired test at these sizes, and read the tail beside it. A tail cannot rank: a 95% interval
+on a p95 has no upper end below 72 observations, and the engine gives a p95 only from 13 (median-unbiased,
+Hyndman–Fan type 8). Below that it reports the slowest observation as `max`, the worst case seen, never as a
+percentile.
+*Evidence:* retrieval sub-agent, 2026-07, an arm delivering almost nothing scored grounding and honesty 5.0, and one with a 69 s p95 declined 60% of hard cases; agent with tools, 2026-08, an incumbent averaging 4.3 had a minimum of 1 against a challenger's 5; 2 campaigns. In simulation (2026-10), a "p95" read nearest-rank from 5 latencies, which is their maximum, fell below the true p95 77% of the time, and one read by linear interpolation still did 68% of the time at 30.
 
 **Price per token is not cost.** Reasoning tokens bill at the output rate. Compare measured cost per
 observation ([how a result's cost is counted](cost-and-budgets.md#how-a-results-cost-is-counted)).

@@ -817,7 +817,7 @@ def run_summary(
         ``{"run_id", "status", "candidate_kind", "candidate_model", "k_runs", "rubric_threshold",
         "rows": [{"model", "run_id", "pass_hat_k", "k", "n_cases_at_k", "pass_hat_k_curve",
         "n_test_cases", "n_cannot_tell_excluded", "mean_total_ms", "median_total_ms",
-        "p95_total_ms", "mean_llm_ms", "mean_tool_ms", "n_total_ms",
+        "p95_total_ms", "max_total_ms", "mean_llm_ms", "mean_tool_ms", "n_total_ms",
         "n_llm_ms", "n_tool_ms", "total_cost_usd",
         "mean_cost_usd", "n_cost_usd", "total_prod_cost_usd",
         "mean_prod_cost_usd",

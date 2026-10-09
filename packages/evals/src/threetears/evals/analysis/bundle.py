@@ -121,6 +121,7 @@ from threetears.evals.contracts.campaign import (
     derive_window,
 )
 from threetears.evals.contracts.covariates import REASONING_RATIO_KEY
+from threetears.evals.contracts.scoring import median_unbiased_quantile
 from threetears.evals.contracts.declaration import BarName, CampaignDesign, UnreadableBarName, resolve_bar_name
 from threetears.evals.contracts.hashing import canonical_digest, canonical_json
 from threetears.evals.contracts.host.profile import CANDIDATE_MODEL_LEVER, HostProfile
@@ -2209,34 +2210,24 @@ class BundleInspection(EvalDocumentModel):
 # =============================================================================
 
 
-def _percentile(sorted_values: list[float], q: float) -> float:
-    """Linear-interpolation percentile of a pre-sorted non-empty list.
+def _percentile(sorted_values: list[float], q: float) -> float | None:
+    """A measure's ``q`` quantile, median-unbiased, or ``None`` where its sample cannot give one.
 
-    Matches numpy's default (``method="linear"``) without the dependency, so the
-    result is deterministic for fingerprinting.
-
-    **Not the same function as :func:`threetears.evals.contracts.scoring.percentile`, on two axes.** That one
-    is nearest-rank rather than interpolated, and it takes its argument on the 0-100 scale where
-    this one takes [0, 1]. Interpolation is right here — a campaign-scale distribution — and
-    nearest-rank is right there, over a run's handful of cells, where an interpolated value is a
-    number nothing observed. Neither is a candidate to replace the other.
+    :func:`~threetears.evals.contracts.scoring.median_unbiased_quantile` (Hyndman–Fan type 8), the rule the
+    run summary's ``p95_total_ms`` reads too, so a tail figure means one thing on every surface. It replaced
+    linear interpolation (numpy's default), which at the sizes a campaign's cells have sat below the true
+    95th percentile 0.84 (n=5), 0.73 (n=15) and 0.68 (n=30) of the time — a tail figure that understates
+    the tail. The median is unchanged by the switch: type 8 and linear interpolation place it alike.
 
     Args:
         sorted_values: Ascending-sorted values, at least one element.
-        q: Quantile in [0, 1] — NOT 0-100.
+        q: Quantile in (0, 1) — NOT 0-100.
 
     Returns:
-        The interpolated percentile.
+        The estimate, or ``None`` for ``p05``/``p95`` below 13 observations, where no estimate is
+        median-unbiased; ``max`` beside it is then the worst case seen, under its own name.
     """
-    if len(sorted_values) == 1:
-        return sorted_values[0]
-    pos = q * (len(sorted_values) - 1)
-    lo = math.floor(pos)
-    hi = math.ceil(pos)
-    if lo == hi:
-        return sorted_values[lo]
-    frac = pos - lo
-    return sorted_values[lo] * (1 - frac) + sorted_values[hi] * frac
+    return median_unbiased_quantile(sorted_values, q)
 
 
 #: The one name the candidate model answers to, everywhere. The coverage map, the divergence

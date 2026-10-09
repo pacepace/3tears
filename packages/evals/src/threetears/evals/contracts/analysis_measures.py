@@ -85,13 +85,28 @@ class MeasureSummary(EvalDocumentModel):
     )
     mean: float | None = Field(default=None, description="Arithmetic mean (numeric only).")
     p05: float | None = Field(
-        default=None, description="5th percentile — the bad tail when higher is better (numeric only)."
+        default=None,
+        description=(
+            "5th percentile — the bad tail when higher is better (numeric only). Median-unbiased (Hyndman-Fan "
+            "type 8): as likely above the true 5th percentile as below. None below 13 observations, where no "
+            "estimate of it is: the smallest observation sits above the true one most of the time there."
+        ),
     )
-    p50: float | None = Field(default=None, description="Median, linear-interpolation percentile (numeric only).")
+    p50: float | None = Field(default=None, description="Median, interpolated between the middle two (numeric only).")
     p95: float | None = Field(
-        default=None, description="95th percentile — the bad tail when lower is better (numeric only)."
+        default=None,
+        description=(
+            "95th percentile — the bad tail when lower is better (numeric only). Median-unbiased (Hyndman-Fan "
+            "type 8): as likely above the true 95th percentile as below. None below 13 observations, where no "
+            "estimate of it is — the largest of 5 falls below the true p95 77% of the time — so read `max` there, "
+            "as the worst case seen and never as a percentile. A summary stored before this rule interpolated "
+            "linearly, which understates the tail at every size a cell has."
+        ),
     )
-    max: float | None = Field(default=None, description="Largest observed value (numeric only).")
+    max: float | None = Field(
+        default=None,
+        description="Largest observed value (numeric only): the worst case seen where lower is better.",
+    )
     sem: float | None = Field(
         default=None,
         description=(
@@ -146,7 +161,8 @@ class MeasureSummary(EvalDocumentModel):
 
         Returns:
             p05 when higher is better, p95 when lower is better, None for a categorical
-            measure or one with no declared direction.
+            measure, one with no declared direction, or one with too few observations to
+            estimate that tail (below 13).
         """
         if self.higher_is_better is None:
             return None
