@@ -1031,6 +1031,50 @@ def _constant_split_p(n_a: int, n_b: int) -> float:
     return min(1.0, 2.0 / math.comb(n_a + n_b, n_a))
 
 
+def exact_decimal(value: float | Fraction) -> Fraction:
+    """A value as the decimal it is written as, exactly — the one way the engine reads a value exactly.
+
+    Over the float's own binary value, two cases written 0.1 and 0.6 differ by a hair over 0.5, and a
+    constant per-case shift picks up a residue a t-test reads as a tiny, perfectly consistent spread: its p
+    collapses to ~1e-113 where the exact sign-flip p is ``2 ** (1 - n)``. Over the shortest decimal that
+    round-trips the float, they differ by exactly 0.5. A :class:`~fractions.Fraction` passes through, so a
+    caller that already averaged exactly keeps its exact mean.
+
+    Args:
+        value: A float, or an exact value already.
+
+    Returns:
+        The exact rational.
+    """
+    return value if isinstance(value, Fraction) else Fraction(repr(float(value)))
+
+
+def _no_spread_p(a: Sequence[Fraction], b: Sequence[Fraction], *, paired: bool) -> float | None:
+    """The exact permutation p where two exact samples have no spread to test, else ``None``.
+
+    Paired, every difference one amount: ``2 ** (1 - n)`` (:func:`_sign_flip_p`), or 1 when that amount is
+    zero. Unpaired, each side constant: ``2 / C(n_a + n_b, n_a)`` (:func:`_constant_split_p`), or 1 when the
+    two constants agree. Decided on exact values (:func:`exact_decimal`), so a float residue cannot pass for a
+    spread. The one reading of that pattern, shared by :func:`separation_p` and :func:`level_difference`.
+
+    Args:
+        a: One side's exact values, at least two.
+        b: The other's, aligned with ``a`` when ``paired``.
+        paired: Whether the two are one-to-one.
+
+    Returns:
+        The exact p, or ``None`` when the values have spread and a t-test reads them.
+    """
+    if paired:
+        diffs = [y - x for x, y in zip(a, b)]
+        if not _all_equal(diffs):
+            return None
+        return 1.0 if diffs[0] == 0 else _sign_flip_p(len(diffs))
+    if not (_all_equal(a) and _all_equal(b)):
+        return None
+    return 1.0 if a[0] == b[0] else _constant_split_p(len(a), len(b))
+
+
 class GuardrailVerdict(NamedTuple):
     """What :func:`guardrail_decision` came to: the decision, the interval it read, and how that interval was formed."""
 
@@ -1094,16 +1138,26 @@ def guardrail_decision(
     return GuardrailVerdict(decision, interval, basis)
 
 
-def separation_p(sample_a: Sequence[float], sample_b: Sequence[float], *, paired: bool) -> float | None:
-    """The two-sided p of the separation test between two samples, where one exists.
+def separation_p(
+    sample_a: Sequence[float | Fraction], sample_b: Sequence[float | Fraction], *, paired: bool
+) -> float | None:
+    """The two-sided p of the separation test between two samples, where a test can decide.
 
     :func:`composite_significance`'s p — paired t on shared per-case values, Welch otherwise — and, where
-    that has none because the values have no spread, the exact permutation p :func:`level_difference`
-    states for the same pattern, so one concept has one answer: every paired difference the same nonzero
-    amount reads ``2^(1 − n)`` (:func:`_sign_flip_p`), two unpaired sides each constant and different read
-    ``2 / C(n_a + n_b, n_a)`` (:func:`_constant_split_p`), and identical values (no gap, no spread) read 1.
-    The p is stated whether or not it can reach α — at three pairs the sign-flip p is 0.25 — so a caller
-    combining p's has one to combine, and reads one that cannot reach α as no separation.
+    the values have no spread, the exact permutation p :func:`level_difference` reads for the same pattern,
+    so one concept has one answer: every paired difference the same nonzero amount reads ``2^(1 − n)``
+    (:func:`_sign_flip_p`), two unpaired sides each constant and different read ``2 / C(n_a + n_b, n_a)``
+    (:func:`_constant_split_p`), and identical values (no gap, no spread) read 1.
+
+    **The spread is decided on exact values** (:func:`exact_decimal`), the arithmetic
+    :func:`level_difference` uses. Over floats, a constant shift such as ``i/10`` against ``i/10 + 0.5``
+    carries a residue in its differences, and the t-test reads that residue as a tiny, perfectly consistent
+    spread, with a p near 1e-113 where the exact one is ``2^(1 − n)``.
+
+    **Where the exact p cannot reach α the answer is ``None`` — untested, never a p.** At three pairs the
+    sign-flip p is 0.25 whatever the data: no test can decide, and :func:`level_difference` calls the same
+    pattern untested. Stating the p would let a caller read the pattern as tested and not separated, which
+    claims the data was asked and could not tell — a different statement from "no test could ask".
 
     Args:
         sample_a: One side's per-case values.
@@ -1111,24 +1165,19 @@ def separation_p(sample_a: Sequence[float], sample_b: Sequence[float], *, paired
         paired: Whether the two are one-to-one on the same cases.
 
     Returns:
-        The p, or ``None`` where no test separates the two: fewer than two values a side, or paired samples
-        of different lengths.
+        The p, or ``None`` where no test can decide: fewer than two values a side, paired samples of
+        different lengths, a spread that vanishes in floating point, or no spread over too few cases for the
+        exact test to reach α.
     """
-    tested = composite_significance(list(sample_a), list(sample_b), paired=paired)
-    if tested.p_value is not None:
-        return tested.p_value
-    a = [float(x) for x in sample_a]
-    b = [float(y) for y in sample_b]
-    if paired:
-        if len(a) != len(b) or len(a) < 2:
-            return None
-        diffs = [y - x for x, y in zip(a, b)]
-        if _sample_std(diffs) != 0.0:
-            return None
-        return 1.0 if diffs[0] == 0.0 else _sign_flip_p(len(diffs))
-    if len(a) < 2 or len(b) < 2 or not (_all_equal(a) and _all_equal(b)):
+    a = [exact_decimal(x) for x in sample_a]
+    b = [exact_decimal(y) for y in sample_b]
+    if len(a) < 2 or len(b) < 2 or (paired and len(a) != len(b)):
         return None
-    return 1.0 if a[0] == b[0] else _constant_split_p(len(a), len(b))
+    exact = _no_spread_p(a, b, paired=paired)
+    if exact is not None:
+        return exact if exact == 1.0 or exact <= SIGNIFICANCE_ALPHA else None
+    # The spread is exactly nonzero, so the t statistic exists unless its float residue vanishes.
+    return composite_significance([float(x) for x in a], [float(y) for y in b], paired=paired).p_value
 
 
 #: What a change between two paired samples reads as — see :class:`ChangeVerdict`.
@@ -1432,8 +1481,9 @@ def level_difference[Case: Hashable](
     rule out — a 0/1 value moving the same way on two cases happens one time in eight by chance — so it is
     untested, never separated. Identical values on both sides (no gap, no spread) have the exact p of 1.
 
-    Values may be :class:`~fractions.Fraction` so a zero spread is decided exactly: two cases whose
-    difference is the same decimal must not acquire a float residue a t-test would read as a tiny spread.
+    Every value is read exactly (:func:`exact_decimal`) so a zero spread is decided exactly: two cases whose
+    difference is the same decimal must not acquire a float residue a t-test would read as a tiny spread. A
+    :class:`~fractions.Fraction` passes through, so a caller that averaged repeats exactly keeps that mean.
 
     Args:
         values_a: Case -> its value at the first level.
@@ -1446,8 +1496,8 @@ def level_difference[Case: Hashable](
     """
     shared = [case for case in values_a if case in values_b]
     paired = len(shared) >= 2
-    a = [values_a[case] for case in shared] if paired else list(values_a.values())
-    b = [values_b[case] for case in shared] if paired else list(values_b.values())
+    a = [exact_decimal(values_a[case]) for case in shared] if paired else [exact_decimal(v) for v in values_a.values()]
+    b = [exact_decimal(values_b[case]) for case in shared] if paired else [exact_decimal(v) for v in values_b.values()]
     n_a, n_b = len(a), len(b)
     mean_a = float(sum(a, Fraction(0)) / n_a) if n_a else None
     mean_b = float(sum(b, Fraction(0)) / n_b) if n_b else None
@@ -1461,33 +1511,29 @@ def level_difference[Case: Hashable](
         return untested("fewer than two cases on a side")
     equivalent: bool | None = None
     equivalence_p: float | None = None
-    if paired:
-        diffs = [y - x for x, y in zip(a, b)]
-        if _all_equal(diffs):
+    diffs = [y - x for x, y in zip(a, b)] if paired else []
+    exact = _no_spread_p(a, b, paired=paired)
+    if exact is not None:
+        if paired:
             # Decided on the exact differences, so the float the equivalence test reads has no residue either.
             equivalent, equivalence_p = paired_equivalence([float(diffs[0])] * len(diffs), equivalence_margin)
-            if diffs[0] == 0:
-                return LevelDifference(
-                    test, n_a, n_b, mean_a, mean_b, delta, 0.0, 1.0, False, None, equivalent, equivalence_p
-                )
-            exact = _sign_flip_p(len(diffs))
-            if exact > SIGNIFICANCE_ALPHA:
-                return untested(
-                    f"every shared case moved by the same amount, and over {len(diffs)} cases no exact test can "
-                    f"call that at α={SIGNIFICANCE_ALPHA}"
-                )
-            return LevelDifference(test, n_a, n_b, mean_a, mean_b, delta, 0.0, exact, True, None, None, None)
-        equivalent, equivalence_p = paired_equivalence([float(d) for d in diffs], equivalence_margin)
-    elif _all_equal(a) and _all_equal(b):
-        if a[0] == b[0]:
-            return LevelDifference(test, n_a, n_b, mean_a, mean_b, delta, 0.0, 1.0, False, None, None, None)
-        exact = _constant_split_p(n_a, n_b)
+        else:
+            equivalent, equivalence_p = None, None
+        if exact == 1.0:
+            return LevelDifference(
+                test, n_a, n_b, mean_a, mean_b, delta, 0.0, 1.0, False, None, equivalent, equivalence_p
+            )
         if exact > SIGNIFICANCE_ALPHA:
             return untested(
-                f"each side's values are constant, and over {n_a} and {n_b} cases no exact test can call two "
+                f"every shared case moved by the same amount, and over {len(diffs)} cases no exact test can "
+                f"call that at α={SIGNIFICANCE_ALPHA}"
+                if paired
+                else f"each side's values are constant, and over {n_a} and {n_b} cases no exact test can call two "
                 f"constants apart at α={SIGNIFICANCE_ALPHA}"
             )
         return LevelDifference(test, n_a, n_b, mean_a, mean_b, delta, 0.0, exact, True, None, None, None)
+    if paired:
+        equivalent, equivalence_p = paired_equivalence([float(d) for d in diffs], equivalence_margin)
     # The spread is exactly nonzero, so the shared statistic exists; its float residue is all that could
     # still vanish, and then no t is quoted.
     statistic = _t_statistic([float(x) for x in a], [float(y) for y in b], paired=paired)
@@ -1674,6 +1720,7 @@ __all__ = [
     "cohen_kappa",
     "composite_significance",
     "difference_interval",
+    "exact_decimal",
     "guardrail_decision",
     "hedges_j",
     "holm_adjust",

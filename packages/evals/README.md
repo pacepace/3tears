@@ -255,7 +255,8 @@ The verdict is one of five:
   good enough" gets shown. It needs a margin (`materiality_threshold`) on the measure.
 - **not separated from the control**: the cases could not tell the arms apart. It does not mean they are
   equal. Add cases (above all hard ones), or declare a margin so equivalence can be tested.
-- **untested**: no test could run (fewer than two cases on a side, or no spread at all). The row says why.
+- **untested**: no test could decide (fewer than two cases on a side, or no spread over too few cases for an
+  exact test to reach 0.05). The row says why.
 
 [Reading a comparison](docs/reading-reports.md#reading-a-comparison) has the details.
 `result.arms["candidate"]` is that arm's `EvalSummary`, and `result.campaign_id` names the campaign holding

@@ -109,6 +109,7 @@ from threetears.evals.analysis.stats import (
     clustered_standard_error,
     composite_significance,
     difference_interval,
+    exact_decimal,
     guardrail_decision,
     holm_adjust,
     interval_clears,
@@ -4515,24 +4516,13 @@ def _mechanism_observations(results: Sequence[EvalResult], *, profile: HostProfi
     return observed
 
 
-def _exact(value: float) -> Fraction:
-    """A value as the decimal it is written as, exactly.
-
-    A divergence threshold is a bound, not a tolerance to tune, so the levels' means it bounds are taken
-    over rationals rather than floats. Over the float's own binary value, two levels written 0.7 and 0.5
-    would sit a hair under the 0.2 apart they are read as; over the shortest decimal that round-trips the
-    float, they sit exactly that far apart.
-    """
-    return Fraction(repr(value))
-
-
 def _per_case_means(values: Mapping[str, tuple[str, float]], result_ids: Collection[str]) -> dict[str, Fraction]:
     """One level's exact per-case means of one mechanism — the unit the separation test reads.
 
     Repeats of a case are averaged first, as :func:`_per_case_values` averages them for a family comparison,
-    and averaged EXACTLY (:func:`_exact`): a float mean of three 0.1s is 0.10000000000000002, so a constant
-    measure read at three repeats a case on one level and one on another would differ by float noise with no
-    spread, which the separation test counts as a gap.
+    and averaged EXACTLY (:func:`~threetears.evals.analysis.stats.exact_decimal`): a float mean of three
+    0.1s is 0.10000000000000002, so a constant measure read at three repeats a case on one level and one on
+    another would differ by float noise with no spread, which the separation test counts as a gap.
 
     Args:
         values: Result id -> that result's ``(case id, value)``.
@@ -4546,7 +4536,7 @@ def _per_case_means(values: Mapping[str, tuple[str, float]], result_ids: Collect
     for result_id in result_ids:
         if result_id in values:
             case_id, value = values[result_id]
-            by_case[case_id].append(_exact(value))
+            by_case[case_id].append(exact_decimal(value))
     return {
         case_id: sum(case_values, Fraction(0)) / len(case_values) for case_id, case_values in sorted(by_case.items())
     }
@@ -4714,7 +4704,7 @@ def _observed_mechanism_confounds(
         if not _raises_observed_mechanism(lever, covariate, profile=profile):
             continue
         means = _level_means(observations.get(covariate, {}), result_ids_by_level)
-        if len(means) < 2 or max(means.values()) - min(means.values()) < _exact(mechanism.threshold):
+        if len(means) < 2 or max(means.values()) - min(means.values()) < exact_decimal(mechanism.threshold):
             continue
         confounds.append(
             Confound(
@@ -4918,8 +4908,8 @@ def _per_case_measures(pooled: Mapping[str, _PooledMeasure]) -> _PerCaseMeasures
     """Each numeric measure's per-case means at one level, exact — the unit a between-level test reads.
 
     Repeats of a case are averaged first, so a case repeated three times is one case, and averaged
-    exactly (:func:`_exact`) so a constant read at unequal repeats stays one constant rather than
-    acquiring a float residue a test would read as spread.
+    exactly (:func:`~threetears.evals.analysis.stats.exact_decimal`) so a constant read at unequal repeats
+    stays one constant rather than acquiring a float residue a test would read as spread.
 
     Args:
         pooled: The level's pooled observations, from :func:`_collect_measures`.
@@ -4933,7 +4923,7 @@ def _per_case_measures(pooled: Mapping[str, _PooledMeasure]) -> _PerCaseMeasures
             continue
         by_case: dict[str, list[Fraction]] = defaultdict(list)
         for value, case in zip(values, cases):
-            by_case[case].append(_exact(float(value)))
+            by_case[case].append(exact_decimal(float(value)))
         per_case[name] = {
             case: sum(case_values, Fraction(0)) / len(case_values) for case, case_values in sorted(by_case.items())
         }

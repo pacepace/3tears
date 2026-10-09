@@ -35,6 +35,7 @@ import json
 import math
 from collections.abc import Hashable, Iterable, Mapping, Sequence
 from datetime import datetime
+from fractions import Fraction
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, get_args
 
 from pydantic import Field, model_validator
@@ -44,6 +45,7 @@ from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
     ChangeLabel,
     case_rate_interval,
+    exact_decimal,
     holm_adjust,
     interval_clears,
     separation_p,
@@ -3794,8 +3796,9 @@ class FrontierCostTie(EvalBaseModel):
     variant_identity_version: int
     production_replicating_cost: float
     #: The Holm-adjusted p of the test that the pick costs less than this contestant, at or above
-    #: :data:`~threetears.evals.analysis.stats.SIGNIFICANCE_ALPHA`. ``None`` when no test could run — fewer
-    #: than two cases carried a cost on a side — which is untested, not a tie the data showed.
+    #: :data:`~threetears.evals.analysis.stats.SIGNIFICANCE_ALPHA`. ``None`` when no test could decide — fewer
+    #: than two cases carried a cost on a side, or every case differed by one amount over too few cases for the
+    #: exact test to reach α — which is untested, not a tie the data showed.
     p_value: float | None = None
 
 
@@ -3951,7 +3954,9 @@ class FrontierPoint(EvalBaseModel):
     #: ``dominated`` — some other point is shown better on every axis this one measured, by the test
     #: :func:`_dominance_p` states; ``not_separated`` — this point was tested against at least one other
     #: and no domination was shown, which says nothing about whether one exists; ``untested`` — no
-    #: other point could be tested against it (fewer than two cases on an axis, or no shared axis).
+    #: test against any other point could decide (fewer than two cases on an axis, no shared axis, or an axis
+    #: on which every case differed by one amount over too few cases for the exact test to reach α — the
+    #: reading :func:`~threetears.evals.analysis.stats.level_difference` also calls untested).
     #: ``None`` on a point stored before domination was tested.
     dominance: FrontierDominance | None = None
     #: Every point shown to beat this one on every axis, each carrying the identity a row
@@ -4019,7 +4024,8 @@ class FrontierVerdict(EvalBaseModel):
     #: (:func:`_cost_ties`). ``shown_cheapest`` — every comparison separated in the pick's favour;
     #: ``not_separated`` — at least one rival could not be shown dearer, so the data says only that the
     #: cheapest is among the pick and :attr:`tied_with`, and the verdict names that set rather than a winner;
-    #: ``untested`` — every rival left in the set had too few priced cases to test; ``only_cleared`` — no
+    #: ``untested`` — no test against any rival left in the set could decide (too few priced cases, or every
+    #: case differing by one amount over too few cases for the exact test to reach α); ``only_cleared`` — no
     #: other contestant cleared the bar with a cost. ``None`` on a verdict stored before the pick was tested:
     #: that one was the lowest point cost, a winner the data may not have shown.
     cost_decision: FrontierCostDecision | None = None
@@ -4435,9 +4441,9 @@ class _ContestantCases(NamedTuple):
     axis the contestant never measured is empty.
     """
 
-    pass_hat_k: dict[str, float]
-    production_replicating_cost: dict[str, float]
-    mean_total_ms: dict[str, float]
+    pass_hat_k: dict[str, Fraction]
+    production_replicating_cost: dict[str, Fraction]
+    mean_total_ms: dict[str, Fraction]
 
 
 #: The domination axes, each a :class:`FrontierPoint` headline with its :class:`_ContestantCases` field of
@@ -4449,12 +4455,19 @@ _DOMINATION_AXES: tuple[tuple[Literal["pass_hat_k", "production_replicating_cost
 )
 
 
-def _case_means(pairs: Iterable[tuple[str, float]]) -> dict[str, float]:
-    """The mean value at each case, from ``(case, value)`` pairs."""
-    grouped: dict[str, list[float]] = {}
+def _case_means(pairs: Iterable[tuple[str, float]]) -> dict[str, Fraction]:
+    """The mean value at each case, from ``(case, value)`` pairs, exactly.
+
+    Each value is read as the decimal it is written as (:func:`~threetears.evals.analysis.stats.exact_decimal`)
+    and averaged over rationals — the arithmetic :func:`~threetears.evals.analysis.stats.level_difference`
+    reads — so a constant per-case shift between two contestants stays a constant the separation test reads
+    exactly, rather than acquiring a float residue its t-test would read as a tiny, perfectly consistent
+    spread.
+    """
+    grouped: dict[str, list[Fraction]] = {}
     for case, value in pairs:
-        grouped.setdefault(case, []).append(value)
-    return {case: math.fsum(values) / len(values) for case, values in grouped.items()}
+        grouped.setdefault(case, []).append(exact_decimal(value))
+    return {case: sum(values, Fraction(0)) / len(values) for case, values in grouped.items()}
 
 
 def _dominance_p(
@@ -4493,8 +4506,8 @@ def _dominance_p(
     Returns:
         The p: below α only when every axis ``b`` measured separates in ``a``'s favour, and 1.0 when an
         axis was tested and did not — a tie, a separation the other way, or no separation. ``None`` when
-        no test could run: ``b`` measured no axis, ``a`` lacks one ``b`` measured, or a side has fewer than
-        two cases on one.
+        no test could decide: ``b`` measured no axis, ``a`` lacks one ``b`` measured, or an axis has no test
+        that can decide (:func:`_axis_p`).
     """
     measured = [(axis, higher) for axis, higher in _DOMINATION_AXES if getattr(b, axis) is not None]
     if not measured:
@@ -4510,7 +4523,9 @@ def _dominance_p(
     return largest
 
 
-def _axis_p(a_values: Mapping[str, float], b_values: Mapping[str, float], *, higher_is_better: bool) -> float | None:
+def _axis_p(
+    a_values: Mapping[str, Fraction], b_values: Mapping[str, Fraction], *, higher_is_better: bool
+) -> float | None:
     """The p of the test that ``a`` is better than ``b`` on one axis, counting only in ``a``'s favour.
 
     The engine's separation test (:func:`~threetears.evals.analysis.stats.separation_p`): paired over the
@@ -4525,7 +4540,8 @@ def _axis_p(a_values: Mapping[str, float], b_values: Mapping[str, float], *, hig
         higher_is_better: Which way is better on the axis.
 
     Returns:
-        The p, or ``None`` where no test can run (fewer than two cases on a side).
+        The p, or ``None`` where no test can decide: fewer than two cases on a side, or no spread over too few
+        cases for the exact test to reach α (:func:`~threetears.evals.analysis.stats.separation_p`).
     """
     if len(a_values) < 2 or len(b_values) < 2:
         return None
@@ -4536,7 +4552,7 @@ def _axis_p(a_values: Mapping[str, float], b_values: Mapping[str, float], *, hig
     p = separation_p(a_side, b_side, paired=paired)
     if p is None:
         return None
-    gap = math.fsum(a_side) / len(a_side) - math.fsum(b_side) / len(b_side)
+    gap = sum(a_side, Fraction(0)) / len(a_side) - sum(b_side, Fraction(0)) / len(b_side)
     a_better = gap > 0 if higher_is_better else gap < 0
     return p if a_better else 1.0
 

@@ -90,7 +90,7 @@ the control on each reading, under one rig.
 | improved / regressed | adjusted p < 0.05, in that direction | act on it, unless the row says *immaterial* (below the measure's margin) |
 | equivalent | the paired difference is shown inside ± the measure's margin by TOST, corrected in the same family | treat the arms as interchangeable on this reading |
 | not separated | the cases could not tell the arms apart | add cases, or declare a margin; never read it as a tie |
-| untested | no test could run; the row says why | fix what it names (usually too few cases) |
+| untested | no test could decide: too few cases, or every case moved by one amount over too few cases for an exact test to reach 0.05; the row says why | fix what it names (usually too few cases) |
 
 `equivalent` needs a declared margin (`MetricDescriptor.materiality_threshold`) and a paired test. Its p
 is corrected in the same Holm family as the separations, with the multiplier capped at the number of

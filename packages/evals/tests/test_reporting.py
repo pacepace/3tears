@@ -5393,6 +5393,25 @@ class TestFrontierDomination:
         assert _point_by_model(pf, "pricey").dominated is False
         assert _point_by_model(pf, "pricey").dominance == "not_separated"
 
+    def test_a_gap_no_exact_test_can_decide_is_untested_not_not_separated(self):
+        """Three cases, every axis moved by one amount: the sign-flip p is 0.25 whatever the data.
+
+        No test could decide, so the point is untested — level_difference's word for the same pattern — and
+        not ``not_separated``, which says a test asked and could not tell.
+        """
+        run = _fr_run()
+        results = [
+            *_fr_cases(run, 3, model="cheap", variant_key="vk-cheap", roles={"candidate": 0.25}, total_ms=50),
+            *_fr_cases(
+                run, 3, model="pricey", variant_key="vk-pricey", passes=False, roles={"candidate": 1.0}, total_ms=100
+            ),
+        ]
+
+        pf = compute_frontier([run], results).subjects[0]
+
+        assert _point_by_model(pf, "pricey").dominance == "untested"
+        assert _point_by_model(pf, "cheap").dominance == "untested"
+
     def test_a_point_with_one_case_is_untested(self):
         """One case gives no test, so the point is neither dominated nor shown clear of it."""
         run = _fr_run()
@@ -5658,6 +5677,36 @@ class TestFrontierBar:
         assert (tie.model, tie.variant_key) == ("b", "vk-b")
         assert tie.p_value is not None and tie.p_value >= 0.05
         assert tie.production_replicating_cost == pytest.approx(0.4005)
+
+    def test_a_constant_cost_shift_too_short_for_an_exact_test_is_untested(self):
+        """Five cases, each $0.50 dearer for b: the exact sign-flip p is 2^-4, which cannot reach α.
+
+        The costs are written ``i/10`` and ``i/10 + 0.5``, so their float differences carry residue. Read over
+        floats, a t-test took that residue for a tiny, perfectly consistent spread and named a the cheapest at
+        p ≈ 1e-80. Read exactly, no test can decide here, which is untested — the word level_difference uses
+        for the same values — never a p read as shown or as not separated.
+        """
+        run = _fr_run()
+        a_costs = [i / 10 for i in range(1, 6)]
+        b_costs = [i / 10 + 0.5 for i in range(1, 6)]
+        assert len({b - a for a, b in zip(a_costs, b_costs)}) > 1, "the fixture must carry float residue"
+        results = [
+            *(
+                _fr_result(run, model="a", variant_key="vk-a", test_case_id=f"tc{i}", roles={"candidate": cost})
+                for i, cost in enumerate(a_costs)
+            ),
+            *(
+                _fr_result(run, model="b", variant_key="vk-b", test_case_id=f"tc{i}", roles={"candidate": cost})
+                for i, cost in enumerate(b_costs)
+            ),
+        ]
+
+        verdict = compute_frontier([run], results, bar=0.3).subjects[0].verdict
+
+        assert verdict is not None and verdict.model == "a"
+        assert verdict.cost_decision == "untested"
+        (tie,) = verdict.tied_with
+        assert tie.p_value is None
 
     def test_the_only_cleared_contestant_is_named_alone(self):
         run, results = self._corpus()

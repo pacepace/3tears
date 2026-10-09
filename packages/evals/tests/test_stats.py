@@ -653,20 +653,48 @@ class TestSeparationPAgreesWithLevelDifference:
         a = [1.0] * n_a
         b = [2.0] * n_b
         exact = 2 / math.comb(n_a + n_b, n_a)
-        assert separation_p(a, b, paired=False) == pytest.approx(exact)
         tested = level_difference({f"a{i}": 1.0 for i in range(n_a)}, {f"b{i}": 2.0 for i in range(n_b)})
-        # level_difference states the p where it can reach alpha and calls the rest untested; both read it alike.
-        if tested.p_value is not None:
+        # Both state the p where it can reach alpha and call the rest untested (None), alike.
+        if exact <= SIGNIFICANCE_ALPHA:
+            assert separation_p(a, b, paired=False) == pytest.approx(exact)
             assert tested.p_value == pytest.approx(exact)
         else:
-            assert exact > SIGNIFICANCE_ALPHA
+            assert separation_p(a, b, paired=False) is None
+            assert (tested.p_value, tested.separated) == (None, None)
 
     @pytest.mark.parametrize("n", [2, 5, 6, 8])
     def test_an_alike_paired_shift_reads_the_sign_flip_p(self, n: int) -> None:
         # Exactly representable, so the differences carry no float residue for a t statistic to read.
         a = [float(i) for i in range(n)]
         b = [value + 0.5 for value in a]
-        assert separation_p(a, b, paired=True) == pytest.approx(2.0 ** (1 - n))
+        tested = level_difference(dict(enumerate(a)), dict(enumerate(b)))
+        if 2.0 ** (1 - n) <= SIGNIFICANCE_ALPHA:
+            assert separation_p(a, b, paired=True) == pytest.approx(2.0 ** (1 - n))
+            assert tested.p_value == pytest.approx(2.0 ** (1 - n))
+        else:
+            # No exact test can reach alpha here: untested on both paths, never a p read as not separated.
+            assert separation_p(a, b, paired=True) is None
+            assert tested.separated is None
+
+    @pytest.mark.parametrize("n", [3, 6, 8, 12])
+    def test_a_constant_shift_with_float_residue_reads_the_exact_p(self, n: int) -> None:
+        """``i/10`` against ``i/10 + 0.5``: the float differences are not all 0.5, the decimal ones are.
+
+        Over floats the t-test read the residue as a tiny, perfectly consistent spread and returned a p near
+        1e-113. Read exactly, the pattern is the sign-flip one: ``2^(1 - n)`` where that reaches alpha, and
+        untested where it cannot, the reading level_difference makes of the same values.
+        """
+        a = [i / 10 for i in range(n)]
+        b = [i / 10 + 0.5 for i in range(n)]
+        assert len({y - x for x, y in zip(a, b)}) > 1, "the fixture must carry float residue to test anything"
+        exact = 2.0 ** (1 - n)
+        tested = level_difference(dict(enumerate(a)), dict(enumerate(b)))
+        if exact <= SIGNIFICANCE_ALPHA:
+            assert separation_p(a, b, paired=True) == pytest.approx(exact)
+            assert tested.p_value == pytest.approx(exact)
+        else:
+            assert separation_p(a, b, paired=True) is None
+            assert tested.separated is None
 
     @pytest.mark.parametrize("paired", [True, False])
     def test_identical_values_read_one(self, paired: bool) -> None:
