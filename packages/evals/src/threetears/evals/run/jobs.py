@@ -43,7 +43,10 @@ log = get_logger(__name__)
 # above) still gets a bounded value rather than an unbounded one; a host that ships its own
 # default pins the two equal in its own tests.
 MAX_CONCURRENT_JOBS = 2
-DEFAULT_JOB_TIMEOUT_S = 3600  # 1 hour — fixed fallback for deferred jobs (no matrix to size against)
+# The manager's budget for a launch-group member that carries no timeout of its own. A launched run
+# always carries one sized to its matrix (``adaptive_job_timeout_s``), so this binds only a caller that
+# passes ``None``, and a manager built without an explicit ``job_timeout_s``.
+DEFAULT_JOB_TIMEOUT_S = 3600  # 1 hour
 # How long :meth:`EvalJobManager.shutdown` waits for cancelled jobs to write their terminal status.
 # A host with its own configured value passes it; this is the default for a caller that does not.
 SHUTDOWN_SETTLE_TIMEOUT_S = 5.0
@@ -363,10 +366,9 @@ class AdmissionTicket:
 class EvalJobManager:
     """Manages background async eval jobs.
 
-    ``start_group`` runs evals (one run per arm); ``start_job_deferred`` has no production caller
-    and is due for deletion;
+    ``start_group`` runs evals (one run per arm), each saved before its task starts;
     state lives in the database, and one task pool and one concurrency
-    semaphore serve both. ``start_task`` runs detached work that records its own
+    semaphore serve them. ``start_task`` runs detached work that records its own
     ending (an analysis generation), outside that semaphore and outside run admission.
 
     **A launching host does not build one.** :class:`~threetears.evals.run.launch.LaunchHost` builds
@@ -411,8 +413,9 @@ class EvalJobManager:
             on_progress: Optional ``(job_id, progress_dict)`` callback fired
                 on every progress update — typically wired to a WebSocket
                 broadcast.
-            job_timeout_s: Per-job wall-clock timeout in seconds; jobs
-                that exceed it are cancelled and recorded as failed.
+            job_timeout_s: The wall-clock budget, in seconds, for a launch-group
+                member that carries none of its own; jobs that exceed it are
+                cancelled and recorded as failed.
             job_timeout_factory: Builds the context manager each job runs
                 inside, called with that job's resolved budget. Defaults to
                 :func:`default_job_timeout`, which is asyncio and nothing else;
@@ -572,10 +575,8 @@ class EvalJobManager:
             job_id: Run id to cancel.
             reason: Optional operator-facing reason recorded on the terminal
                 status write, always to ``EvalRun.cancellation_reason`` and never
-                to ``error_details``. A deferred job whose run document does not
-                exist yet has nothing to write it to and the reason is dropped —
-                this used to claim such a job filed it under ``error``, which no
-                branch has ever done.
+                to ``error_details``. Every run :meth:`start_group` starts is saved
+                before its task exists, so there is always a document to write it to.
 
         Returns:
             True if cancellation was requested, False if the job
@@ -847,29 +848,6 @@ class EvalJobManager:
             except ConflictError, StorageError:
                 log.exception("eval.start_group run=%s left pending: its cancellation could not be saved", run.id)
 
-    async def start_job_deferred(self, run_id: str, scope_id: str, work: WorkFn) -> str:
-        """Start a job where the EvalRun is created by the work function.
-
-        Unlike :meth:`start_group`, the EvalRun document does not need to exist
-        in storage at start time — the work function creates it during execution.
-        Progress broadcasts still work via WebSocket; storage updates are skipped
-        until the document exists.
-
-        Args:
-            run_id: Pre-generated run ID for tracking.
-            scope_id: Scope the run is stored under.
-            work: Async callable(progress_fn) that performs the work.
-
-        Returns:
-            The run ID.
-        """
-        task = asyncio.create_task(
-            self._run_job(run_id, scope_id, work),
-            name=f"eval-{run_id[:8]}",
-        )
-        self._tasks[run_id] = task
-        return run_id
-
     async def _run_job(
         self,
         run_id: str,
@@ -882,8 +860,7 @@ class EvalJobManager:
         """Execute a job with lifecycle management and timeout.
 
         ``job_timeout_s`` is the resolved per-job budget; ``None`` falls back to
-        the manager-level default (deferred jobs, which have no matrix
-        to size against). ``slot`` is the launch group's shared slot, taken in
+        the manager-level default. ``slot`` is the launch group's shared slot, taken in
         place of one of the manager's own.
         """
         from threetears.evals.run.budget import AccountExhaustedError, BudgetStoppedError
@@ -1091,8 +1068,9 @@ class EvalJobManager:
             )
             return
         if outcome == "missing":
-            # Run may not exist yet (deferred creation). Broadcast only.
-            log.info("Job %s: EvalRun not found (may be deferred), broadcasting status=%s", run_id, status)
+            # Every run is saved before its task starts, so this is a document deleted from under a
+            # live job. Nothing to write to; broadcast only.
+            log.warning("Job %s: EvalRun not found (deleted while running?), broadcasting status=%s", run_id, status)
             self._safe_broadcast(run_id, {"status": status, **({"error": error} if error else {})})
             return
         if outcome == "refused":
@@ -1164,10 +1142,9 @@ class EvalJobManager:
 
         Returns:
             ``"saved"``, or ``"refused"`` when the conditional write lost its race or
-            failed — a tick is not retried, since the next one supersedes it; ``None`` when there is no document
-            to write to yet — a deferred job whose work function has not created
-            it; or ``"declined"`` when the run has already reached a terminal
-            status, which no progress tick may reopen. Neither ``None`` nor
+            failed — a tick is not retried, since the next one supersedes it; ``None`` when there is no
+            document to write to — one deleted from under the live job; or ``"declined"`` when the run has
+            already reached a terminal status, which no progress tick may reopen. Neither ``None`` nor
             ``"declined"`` is a refusal and neither is logged as one.
         """
         run, etag = self._storage.load_eval_run_with_etag(run_id, scope_id)

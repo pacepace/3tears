@@ -839,29 +839,6 @@ async def test_a_refused_progress_write_is_logged_with_the_figure_it_lost(caplog
     assert "'completed': 7" in refusals[0].getMessage(), "the log line did not carry the figure it lost"
 
 
-async def test_a_tick_for_a_document_that_does_not_exist_yet_is_not_a_refusal(caplog: Any) -> None:
-    """A deferred job broadcasts progress before its work function creates the run.
-
-    ``start_job_deferred`` exists precisely so the document can be created inside
-    the work function, so "no document" is the designed state rather than a lost
-    write, and reporting it as a refusal would put a warning on every deferred
-    job's first ticks.
-    """
-    storage = InMemoryRunStore()
-    seen: list[dict[str, Any]] = []
-    manager = EvalJobManager(storage, on_progress=lambda job_id, payload: seen.append(payload))
-
-    async def work(progress: Any) -> None:
-        await progress({"completed": 1, "total": 1})
-
-    with caplog.at_level(logging.WARNING, logger="threetears.evals.run.jobs"):
-        await manager.start_job_deferred("run-not-yet-written", "uni-1", work)
-        await settled(manager, "run-not-yet-written", timeout=5)
-
-    assert {"status": "running", "progress": {"completed": 1, "total": 1}} in seen
-    assert not [r for r in caplog.records if "progress write refused" in r.getMessage()]
-
-
 class TestATerminalStatusIsFinal:
     """The transition model the thread hop made necessary.
 
