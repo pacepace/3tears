@@ -1337,15 +1337,15 @@ class RunSummary(EvalDocumentModel):
 
 
 class LeverCoverageInput(EvalDocumentModel):
-    """Structural coverage of one lever — the raw material the generator grades.
+    """Structural coverage of one lever, as the bundle computes it.
 
-    This is *input* to generation, not the final graded
+    The generator copies it, field for field, into the stored
     :class:`~threetears.evals.contracts.campaign.LeverCoverage`: it reports how finely a
     lever was swept (``cells`` = distinct observed levels), how many samples inform
     it (``n`` = distinct results), the repeat floor (``k``), a scored-signal spread
     (``dispersion``, the composite SEM read via the core ``stats`` helper — never a
-    new statistic), and a coarse ``status``. The generator refines confidence from
-    these facts; carrying them is what makes coverage the analysis's spine.
+    new statistic), and a coarse ``status``. Nothing grades these into a confidence:
+    carrying them is what makes coverage the analysis's spine.
     """
 
     name: str = Field(description="Lever name — a dotted factor key or 'model'.")

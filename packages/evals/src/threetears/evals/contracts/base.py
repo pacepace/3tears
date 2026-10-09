@@ -8,17 +8,29 @@ diff-visible on its own terms.
 
 **Reads are strict, and so is construction.** ``extra="forbid"`` refuses an unknown key on every
 path — a kwarg typed in code, a key in a stored document, a field in a payload a host supplied.
-There is no tolerant read: stored eval documents are disposable, so a document written under a
-shape this build does not declare is dropped and regenerated, never migrated or filtered on the
-way in. A filter would turn "this document is from another schema" into a quietly different
-document, which is the one outcome worse than refusing it. ``schema_version`` on the stored
-models says which schema wrote a document, and a read refuses any other
-(:data:`~threetears.evals.contracts.models.EVAL_SCHEMA_VERSION`).
+There is no tolerant read, save the one narrow exception below: stored eval documents are
+disposable, so a document written under a shape this build does not declare is dropped and
+regenerated, never migrated or filtered on the way in. A filter would turn "this document is from
+another schema" into a quietly different document, which is the one outcome worse than refusing it.
+``schema_version`` on the stored models says which schema wrote a document, and a read refuses any
+other (:data:`~threetears.evals.contracts.models.EVAL_SCHEMA_VERSION`).
 
 That stance has a known cost, stated so it is a decision rather than an oversight: when two
 builds share one store, the older refuses what the newer wrote. While one build writes and reads
 every eval document that is a typo caught early; the second concurrent writer is when it has to
 be re-decided.
+
+**One narrow exception: a field retired within a schema version.** A confusable name can be renamed,
+and a field that carried nothing (a value no writer could vary, or one no reader consumed) removed,
+without dropping every stored document to do it. The model names it in ``__retired_fields__`` — old
+name to new name, or to ``None`` for a field removed outright — and :meth:`EvalBaseModel.from_dict`,
+the stored read, accepts the old key: a renamed key's value is read under its new name, and a removed
+key is discarded. Only a stored read does this. A construction or a payload naming a retired key is
+refused, by name and with its replacement, because a caller writing today's document has no reason to
+spell yesterday's; and a document carrying both the old and the new name is refused, since it cannot
+say which it meant. A rename loses nothing. A removal is allowed only where discarding the value
+changes what no stored document means; a field that carried evidence still needs a version bump.
+Each retirement is listed in :data:`~threetears.evals.contracts.models.EVAL_SCHEMA_VERSION`'s notes.
 
 **The JSON pair is a transport API.** Every eval store path goes through :meth:`to_dict`, so
 :meth:`to_json` / :meth:`from_json` serve a consumer that moves these models over a wire.
@@ -48,9 +60,18 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping
-from typing import Annotated, Any, Self
+from typing import Annotated, Any, ClassVar, Self
 
-from pydantic import BaseModel, ConfigDict, JsonValue, PlainValidator, StringConstraints, TypeAdapter, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    JsonValue,
+    PlainValidator,
+    StringConstraints,
+    TypeAdapter,
+    ValidationInfo,
+    model_validator,
+)
 
 from threetears.observe import get_logger
 
@@ -73,6 +94,11 @@ _EVAL_BASE_CONFIG_OPTIONS = ConfigDict(
     # Schema generation
     populate_by_name=True,  # Allow both alias and field name
 )
+
+
+#: The validation-context key :meth:`EvalBaseModel.from_dict` sets: this validation is a stored read,
+#: so a retired field (``EvalDocumentModel.__retired_fields__``) is read rather than refused.
+STORED_READ = "threetears.evals.stored_read"
 
 
 #: Validates without the stance's whitespace stripping: an opaque payload's strings are its owner's.
@@ -219,10 +245,14 @@ class EvalBaseModel(BaseModel):
         Returns:
             Model instance
 
+        This is the stored read: every load path in the engine goes through it. It is the one validation
+        that reads a field retired within the current schema version (``__retired_fields__`` on an
+        :class:`EvalDocumentModel`); every other path refuses one.
+
         Raises:
             ValidationError: If data fails validation
         """
-        return cls.model_validate(data)
+        return cls.model_validate(data, context={STORED_READ: True})
 
 
 class EvalDocumentModel(EvalBaseModel):
@@ -243,6 +273,49 @@ class EvalDocumentModel(EvalBaseModel):
 
     model_config = ConfigDict(**_EVAL_BASE_CONFIG_OPTIONS, json_schema_serialization_defaults_required=True)
 
+    #: Fields retired within the current schema version: the old key → the field it was renamed to, or
+    #: ``None`` for a field removed outright. A stored read accepts the old key; nothing else does. See
+    #: the module docstring.
+    __retired_fields__: ClassVar[dict[str, str | None]] = {}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _read_retired_fields(cls, data: Any, info: ValidationInfo) -> Any:
+        """Read a retired key on a stored read, and refuse it, naming what replaced it, everywhere else.
+
+        Args:
+            data: The input under validation; only a mapping is touched.
+            info: The validation's context, which says whether this is a stored read.
+
+        Returns:
+            The input with each retired key renamed or removed.
+
+        Raises:
+            ValueError: A retired key outside a stored read, or a document carrying a renamed key beside
+                the name it was renamed to.
+        """
+        retired = cls.__retired_fields__
+        if not retired or not isinstance(data, Mapping) or not any(key in retired for key in data):
+            return data
+        stored_read = bool(info.context and info.context.get(STORED_READ))
+        read = dict(data)
+        for old, new in retired.items():
+            if old not in read:
+                continue
+            if not stored_read:
+                replacement = f"renamed `{new}`" if new is not None else "removed"
+                raise ValueError(f"`{old}` is not a field of {cls.__name__}: it was {replacement}")
+            value = read.pop(old)
+            if new is None:
+                continue
+            if new in read:
+                raise ValueError(
+                    f"this {cls.__name__} carries both `{old}` and `{new}`, the name it was renamed to, so it "
+                    "cannot say which it meant"
+                )
+            read[new] = value
+        return read
+
     @model_validator(mode="before")
     @classmethod
     def _discard_computed_field_echo(cls, data: Any) -> Any:
@@ -261,6 +334,7 @@ class EvalDocumentModel(EvalBaseModel):
 
 
 __all__ = [
+    "STORED_READ",
     "EvalBaseModel",
     "EvalDocumentModel",
     "VerbatimJsonObject",

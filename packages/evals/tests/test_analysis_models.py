@@ -194,7 +194,6 @@ def _make_analysis(**overrides: Any) -> EvalAnalysis:
                     n=15,
                     dispersion="±0.10",
                     status="measured",
-                    confidence="high",
                 )
             ],
         ),
@@ -332,6 +331,51 @@ def test_an_authored_confidence_is_a_tier_and_nothing_else(build, bad):
         build(bad)
 
 
+def test_the_stored_tiers_are_the_authored_tiers():
+    """One declaration of the tiers: what a writer may author and what a stored analysis may hold cannot diverge."""
+    from typing import get_args
+
+    from threetears.evals.contracts import authored, campaign
+
+    assert campaign.ConfidenceTier is authored.Confidence
+    assert campaign.CONFIDENCE_TIERS == get_args(authored.Confidence) == ("very_high", "high", "medium", "low")
+
+
+# ---------------------------------------------------------------------------
+# A lever's coverage carries no confidence
+# ---------------------------------------------------------------------------
+
+
+def test_a_lever_carries_no_confidence_looked_up_from_its_status():
+    """``confidence`` was a fixed lookup on ``status``: it is not a field, and naming it says what became of it."""
+    assert "confidence" not in LeverCoverage.model_fields
+    with pytest.raises(ValidationError, match="`confidence` is not a field of LeverCoverage: it was removed"):
+        LeverCoverage(name="l", cells=1, k=1, n=1, dispersion="±0", status="unswept", confidence="low")
+
+
+@pytest.mark.parametrize("tier", ["high", "medium", "low"])
+def test_a_stored_analysis_whose_levers_carry_a_confidence_still_loads(tier: str):
+    """An analysis stored before the field was retired loads, the tier discarded and every fact kept."""
+    analysis = _make_analysis()
+    stored = analysis.to_dict()
+    stored["coverage"]["levers"][0]["confidence"] = tier
+
+    reloaded = EvalAnalysis.from_dict(stored)
+
+    assert reloaded == analysis
+    assert "confidence" not in reloaded.to_dict()["coverage"]["levers"][0]
+
+
+def test_an_old_analysis_loads_through_storage():
+    storage, store = memory_storage()
+    analysis = _make_analysis()
+    stored = analysis.to_dict()
+    stored["coverage"]["levers"][0]["confidence"] = "high"
+    store.upsert(stored)
+
+    assert storage.load_analysis(analysis.id, analysis.scope_id) == analysis
+
+
 # ---------------------------------------------------------------------------
 # A point estimate needs n + dispersion — both REQUIRED
 # ---------------------------------------------------------------------------
@@ -339,12 +383,12 @@ def test_an_authored_confidence_is_a_tier_and_nothing_else(build, bad):
 
 def test_lever_coverage_requires_n():
     with pytest.raises(ValidationError):
-        LeverCoverage(name="l", cells=1, k=1, dispersion="±0", status="measured", confidence="high")
+        LeverCoverage(name="l", cells=1, k=1, dispersion="±0", status="measured")
 
 
 def test_lever_coverage_requires_dispersion():
     with pytest.raises(ValidationError):
-        LeverCoverage(name="l", cells=1, k=1, n=1, status="measured", confidence="high")
+        LeverCoverage(name="l", cells=1, k=1, n=1, status="measured")
 
 
 @pytest.mark.parametrize("missing", ["n", "dispersion"])
@@ -496,14 +540,8 @@ class TestPositionsMustResolve:
             id="QuestionAnswer.resolution",
         ),
         pytest.param(
-            lambda: LeverCoverage(name="l", cells=1, k=1, n=1, dispersion="±0", status="guessed", confidence="high"),
+            lambda: LeverCoverage(name="l", cells=1, k=1, n=1, dispersion="±0", status="guessed"),
             id="LeverCoverage.status",
-        ),
-        pytest.param(
-            # A lever's confidence is the status-derived tier the generator assigns; a probability is
-            # a state no analysis can hold, so it is refused.
-            lambda: LeverCoverage(name="l", cells=1, k=1, n=1, dispersion="±0", status="measured", confidence=0.5),
-            id="LeverCoverage.confidence",
         ),
     ],
 )

@@ -111,6 +111,10 @@ were decided by, None on an analysis stored before tiers were decided on the agr
 were the point estimate against the bar, and are rendered as that, never as the interval rule's claim. And
 ``EvalRun.goal_check_proofs``: whether each goal check was shown, at launch, to beat doing nothing; None on a run
 launched before it, read as unproven.
+
+**Within v8, not a bump: fields retired** (``__retired_fields__``, read only by a stored read — see
+:mod:`threetears.evals.contracts.base`). ``LeverCoverage.confidence`` is removed: it was a fixed lookup on the
+lever's ``status``, so a stored analysis loses nothing when the key is discarded on read.
 """
 
 
