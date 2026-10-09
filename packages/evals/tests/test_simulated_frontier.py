@@ -13,12 +13,16 @@ ordering: of two IDENTICAL contestants (5 cases × k=3) one was flagged dominate
   intersection–union test bounds it by α/2 there.
 - A contestant worse on every axis is flagged: the rule is not vacuous.
 - The pass^k interval the bar is read by covers the true pass^k at its level.
+- The verdict's "cheapest" is decided by test too. Picked on point cost, it named one of two identical
+  contestants the cheapest in every replicate; now a winner is named on identical contestants at most α of
+  the time, and the rest name the set the data cannot order.
 """
 
 from __future__ import annotations
 
 import math
 import random
+from collections.abc import Sequence
 
 import pytest
 
@@ -219,3 +223,79 @@ def test_the_pass_k_interval_covers_the_true_pass_k(
         covered += interval[0] <= truth <= interval[1]
     coverage = covered / replicates
     assert coverage >= at_least(INTERVAL_LEVEL, replicates), f"covered the true pass^{k} {truth:.3f} in {coverage:.3f}"
+
+
+def _priced_contestants(
+    rng: random.Random, n_cases: int, repeats: int, cost_factors: Sequence[float]
+) -> tuple[list[EvalRun], list[EvalResult]]:
+    """One contestant per cost factor, alike in every other respect, over the same cases.
+
+    Every attempt passes, so each contestant clears any bar its interval can reach and the verdict turns on
+    cost alone. Cases differ in cost alike for every contestant (what pairing on the case buys); contestant
+    ``i``'s cost is ``cost_factors[i]`` times the case's level, with lognormal noise per attempt.
+    """
+    models = [f"model-{index}" for index in range(len(cost_factors))]
+    runs = [make_eval_run(status="completed", candidate_model=model) for model in models]
+    case_cost = [rng.gauss(0.0, 0.5) for _ in range(n_cases)]
+    results = []
+    for run, model, factor in zip(runs, models, cost_factors, strict=True):
+        for case in range(n_cases):
+            for repeat in range(1, repeats + 1):
+                cost = factor * math.exp(-4.0 + case_cost[case] + rng.gauss(0.0, 0.3))
+                results.append(
+                    make_eval_result(
+                        eval_run_id=run.id,
+                        scope_id=run.scope_id,
+                        model=model,
+                        test_case_id=f"tc-{case}",
+                        k_iteration=repeat,
+                        goal_state_outcomes=[GoalStateOutcome(expression="ok", passed=True)],
+                        rubric_scores=[RubricScore(dim="reply.quality", score=4, scale="ordinal")],
+                        usage=[RoleUsage(role="candidate", cost_usd=round(cost, 6))],
+                        latency=LatencyMetrics(total_ms=round(rng.gauss(2000.0, 300.0), 3)),
+                    )
+                )
+    return runs, results
+
+
+def _shown_cheapest(seed: str, replicates: int, cost_factors: Sequence[float]) -> tuple[float, str]:
+    """The share of replicates whose verdict names a single cheapest, and the model named most often."""
+    rng = random.Random(seed)
+    named = 0
+    picks: dict[str, int] = {}
+    for _ in range(replicates):
+        runs, results = _priced_contestants(rng, n_cases=8, repeats=3, cost_factors=cost_factors)
+        (subject,) = compute_frontier(runs, results, bar=0.5).subjects
+        assert subject.verdict is not None and subject.n_cleared_bar == len(cost_factors)
+        if subject.verdict.cost_decision == "shown_cheapest":
+            named += 1
+            picks[subject.verdict.model] = picks.get(subject.verdict.model, 0) + 1
+        else:
+            # Every cleared contestant the pick was not shown cheaper than is named beside it.
+            assert subject.verdict.cost_decision in ("not_separated", "untested")
+            assert subject.verdict.tied_with
+    return named / replicates, max(picks, key=picks.__getitem__) if picks else ""
+
+
+@pytest.mark.parametrize("n_contestants", [2, 3])
+def test_identical_contestants_name_no_cheapest_beyond_alpha(n_contestants: int) -> None:
+    """Identical contestants, 8 cases x k=3: picked on point cost, one was named cheapest every time.
+
+    Measured 0.043 at two (the pick always leans its own way, so the two-sided test's whole α lands on it)
+    and 0.005 at three, where the pick must separate from both rivals. 400 replicates: SE at α
+    is 0.0109, so the bound is 0.094.
+    """
+    replicates = 400
+    rate, _ = _shown_cheapest(f"frontier-cheapest-identical-{n_contestants}", replicates, [1.0] * n_contestants)
+    assert rate <= at_most(SIGNIFICANCE_ALPHA, replicates), f"named a cheapest of identical contestants in {rate:.3f}"
+
+
+def test_a_contestant_at_half_the_cost_is_named_cheapest() -> None:
+    """One contestant at half the others' cost, 8 cases x k=3: measured 0.975.
+
+    200 replicates; held to at least 0.90 (less 4 SE, 0.82), so a rule that never names a winner fails it.
+    """
+    replicates = 200
+    rate, named = _shown_cheapest("frontier-cheapest-power", replicates, [1.0, 0.5, 1.0])
+    assert rate >= at_least(0.90, replicates), f"the half-cost contestant was named cheapest in only {rate:.3f}"
+    assert named == "model-1"

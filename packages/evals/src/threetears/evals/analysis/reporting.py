@@ -3776,6 +3776,27 @@ class FrontierDominator(EvalBaseModel):
 #: Whether a frontier point is shown dominated — see :attr:`FrontierPoint.dominance`.
 FrontierDominance = Literal["dominated", "not_separated", "untested"]
 
+#: How a frontier verdict's pick stands on cost against the other contestants that cleared the bar with a
+#: cost — see :attr:`FrontierVerdict.cost_decision`.
+FrontierCostDecision = Literal["shown_cheapest", "not_separated", "untested", "only_cleared"]
+
+
+class FrontierCostTie(EvalBaseModel):
+    """A contestant that cleared the bar with a cost, which the verdict's pick was NOT shown cheaper than.
+
+    Named as a row is named (the identity triple :class:`FrontierDominator` carries, for its reasons), with
+    the cost it was read at and the p the comparison reached, so a reader can check why it stays in the set.
+    """
+
+    variant_key: str
+    model: str
+    variant_identity_version: int
+    production_replicating_cost: float
+    #: The Holm-adjusted p of the test that the pick costs less than this contestant, at or above
+    #: :data:`~threetears.evals.analysis.stats.SIGNIFICANCE_ALPHA`. ``None`` when no test could run — fewer
+    #: than two cases carried a cost on a side — which is untested, not a tie the data showed.
+    p_value: float | None = None
+
 
 class FrontierPoint(EvalBaseModel):
     """One contestant's position on quality x cost x latency, within a subject.
@@ -3938,12 +3959,17 @@ class FrontierPoint(EvalBaseModel):
 
 
 class FrontierVerdict(EvalBaseModel):
-    """The cheapest variant clearing the operator's bar, for one subject.
+    """The cheapest variant clearing the operator's bar for one subject — or, where the data cannot pick
+    one, the set it is among.
 
     Present only when a bar was supplied AND at least one point both cleared it — its pass^k
     interval wholly at or above the bar, the rule every campaign bar is read by — and reported a
     production-replicating cost — a pick cannot be named cheapest
-    on a cost nobody observed. ``cost_is_partial`` rides along so a pick made on a
+    on a cost nobody observed. "Cheapest" is decided by test, as domination is: the lowest point cost
+    is named the cheapest only when it is shown cheaper than each rival (:attr:`cost_decision`), and
+    otherwise the verdict names it beside every rival it was not shown cheaper than (:attr:`tied_with`).
+    Two contestants drawn from one distribution always differ in point cost, so the lowest one alone
+    would crown one of them every time. ``cost_is_partial`` rides along so a pick made on a
     partially-observed cost basis says so, and ``cassette_mode_disclosure`` for the
     stronger version of the same duty: a verdict is a RECOMMENDATION, so one drawn from
     a pool in which some observations replayed their third-party half has to carry that
@@ -3956,6 +3982,9 @@ class FrontierVerdict(EvalBaseModel):
     runs which never finished their matrix.
     """
 
+    #: The contestant with the lowest point cost among those that cleared the bar with a cost. It is
+    #: named THE cheapest only when :attr:`cost_decision` is ``shown_cheapest`` (or ``only_cleared``);
+    #: otherwise it is one member, listed first, of the set :attr:`tied_with` completes.
     variant_key: str
     model: str
     pass_hat_k: float
@@ -3983,6 +4012,18 @@ class FrontierVerdict(EvalBaseModel):
     #: renderer using whether the sentence above is set, which are two predicates for one
     #: question and only agree while one producer keeps them in step.
     variant_identity_version: int
+    #: Whether the pick is SHOWN cheaper than every other contestant that cleared the bar with a cost, by the
+    #: separation test the frontier's dominance reads, one comparison per rival, Holm-adjusted together
+    #: (:func:`_cost_ties`). ``shown_cheapest`` — every comparison separated in the pick's favour;
+    #: ``not_separated`` — at least one rival could not be shown dearer, so the data says only that the
+    #: cheapest is among the pick and :attr:`tied_with`, and the verdict names that set rather than a winner;
+    #: ``untested`` — every rival left in the set had too few priced cases to test; ``only_cleared`` — no
+    #: other contestant cleared the bar with a cost. ``None`` on a verdict stored before the pick was tested:
+    #: that one was the lowest point cost, a winner the data may not have shown.
+    cost_decision: FrontierCostDecision | None = None
+    #: The rivals the pick was not shown cheaper than, ordered by point cost. Empty when ``cost_decision``
+    #: is ``shown_cheapest`` or ``only_cleared``.
+    tied_with: list[FrontierCostTie] = []
 
 
 class SubjectFrontier(EvalBaseModel):
@@ -4460,18 +4501,42 @@ def _dominance_p(
     for axis, higher_is_better in measured:
         if getattr(a, axis) is None:
             return None
-        a_values, b_values = getattr(a_cases, axis), getattr(b_cases, axis)
-        if len(a_values) < 2 or len(b_values) < 2:
+        p = _axis_p(getattr(a_cases, axis), getattr(b_cases, axis), higher_is_better=higher_is_better)
+        if p is None:
             return None
-        shared = sorted(set(a_values) & set(b_values))
-        paired = len(shared) >= 2
-        a_side = [a_values[case] for case in shared] if paired else list(a_values.values())
-        b_side = [b_values[case] for case in shared] if paired else list(b_values.values())
-        p = separation_p(a_side, b_side, paired=paired)
-        gap = math.fsum(a_side) / len(a_side) - math.fsum(b_side) / len(b_side)
-        a_better = gap > 0 if higher_is_better else gap < 0
-        largest = max(largest, p if p is not None and a_better else 1.0)
+        largest = max(largest, p)
     return largest
+
+
+def _axis_p(a_values: Mapping[str, float], b_values: Mapping[str, float], *, higher_is_better: bool) -> float | None:
+    """The p of the test that ``a`` is better than ``b`` on one axis, counting only in ``a``'s favour.
+
+    The engine's separation test (:func:`~threetears.evals.analysis.stats.separation_p`): paired over the
+    test cases both sides measured where they share at least two, Welch over each side's cases otherwise,
+    two-sided. Read in one direction: where the tested means do not favour ``a`` the p is 1.0, so a false
+    call of "better" happens at most α/2 of the time. The one axis test both :func:`_dominance_p` and the
+    verdict's cost comparison (:func:`_cost_ties`) read.
+
+    Args:
+        a_values: ``a``'s per-case values on the axis.
+        b_values: ``b``'s.
+        higher_is_better: Which way is better on the axis.
+
+    Returns:
+        The p, or ``None`` where no test can run (fewer than two cases on a side).
+    """
+    if len(a_values) < 2 or len(b_values) < 2:
+        return None
+    shared = sorted(set(a_values) & set(b_values))
+    paired = len(shared) >= 2
+    a_side = [a_values[case] for case in shared] if paired else list(a_values.values())
+    b_side = [b_values[case] for case in shared] if paired else list(b_values.values())
+    p = separation_p(a_side, b_side, paired=paired)
+    if p is None:
+        return None
+    gap = math.fsum(a_side) / len(a_side) - math.fsum(b_side) / len(b_side)
+    a_better = gap > 0 if higher_is_better else gap < 0
+    return p if a_better else 1.0
 
 
 def _decide_dominance(points: list[FrontierPoint], cases: list[_ContestantCases]) -> None:
@@ -4526,6 +4591,60 @@ def _decide_dominance(points: list[FrontierPoint], cases: list[_ContestantCases]
         ]
         point.dominated = bool(found)
         point.dominance = "dominated" if found else "not_separated" if index in tested else "untested"
+
+
+def _cost_ties(
+    pick: int, rivals: Sequence[int], points: Sequence[FrontierPoint], cases: Sequence[_ContestantCases]
+) -> tuple[FrontierCostDecision, list[FrontierCostTie]]:
+    """Whether the pick is shown cheaper than each rival, and the rivals it is not.
+
+    One comparison per rival, each the frontier's own axis test on production-replicating cost
+    (:func:`_axis_p`, counting only in the pick's favour), Holm-adjusted together
+    (:func:`~threetears.evals.analysis.stats.holm_adjust`): dropping a rival from the set is a claim that it
+    is dearer, and the claims are one family. The pick is the lowest point cost, so on identical
+    contestants every comparison already leans its way; requiring each to separate is what keeps a
+    "cheapest" named on noise near α.
+
+    Args:
+        pick: The index of the lowest point cost among the cleared, priced points.
+        rivals: The other cleared, priced points' indices, ordered by point cost.
+        points: The subject's points.
+        cases: Each point's per-case values, aligned with ``points``.
+
+    Returns:
+        The decision and the rivals left in the set, each with its adjusted p (``None`` where untested).
+    """
+    if not rivals:
+        return "only_cleared", []
+    raw = [
+        _axis_p(
+            cases[pick].production_replicating_cost, cases[rival].production_replicating_cost, higher_is_better=False
+        )
+        for rival in rivals
+    ]
+    tested = [p for p in raw if p is not None]
+    adjusted = iter(holm_adjust(tested))
+    ties: list[FrontierCostTie] = []
+    for rival, p in zip(rivals, raw, strict=True):
+        p_adjusted = None if p is None else next(adjusted)
+        if p_adjusted is not None and p_adjusted < SIGNIFICANCE_ALPHA:
+            continue
+        point = points[rival]
+        assert point.production_replicating_cost is not None  # Only priced points are rivals.
+        ties.append(
+            FrontierCostTie(
+                variant_key=point.variant_key,
+                model=point.model,
+                variant_identity_version=point.variant_identity_version,
+                production_replicating_cost=point.production_replicating_cost,
+                p_value=p_adjusted,
+            )
+        )
+    if not ties:
+        return "shown_cheapest", []
+    if all(tie.p_value is None for tie in ties):
+        return "untested", ties
+    return "not_separated", ties
 
 
 def _bar_decision(point: FrontierPoint, bar: float) -> BarDecision:
@@ -4583,9 +4702,11 @@ def compute_frontier(
 
     When ``bar`` is supplied it gates pass^k, read by each point's pass^k interval the way every
     campaign bar is read (:attr:`FrontierPoint.bar_decision`): cleared only when the whole interval is at
-    or above the bar, undecided when it straddles it. The cheapest cleared variant with a known cost is
-    named as the verdict; an unsupplied bar yields the full frontier with no verdict, because inventing
-    a quality threshold would editorialize.
+    or above the bar, undecided when it straddles it. The cleared variant with the lowest known cost is
+    the verdict's pick, and it is named the cheapest only when it is shown cheaper than every other cleared,
+    priced variant by the dominance test's own cost comparison, Holm-adjusted over them; otherwise the
+    verdict names the set the data cannot order (:attr:`FrontierVerdict.cost_decision`). An unsupplied bar
+    yields the full frontier with no verdict, because inventing a quality threshold would editorialize.
 
     **Domination is decided by test, never read off point estimates** (:func:`_dominance_p`): a point is
     flagged dominated only when another is shown better on every axis it measured, the subject's pairs
@@ -4716,7 +4837,8 @@ def compute_frontier(
         # and the two rows sit adjacent, which is where an unexplained order reads as noise.
         built.sort(key=lambda pair: (pair[0].model, pair[0].variant_key, pair[0].variant_identity_version))
         points = [point for point, _ in built]
-        _decide_dominance(points, [cases for _, cases in built])
+        point_cases = [cases for _, cases in built]
+        _decide_dominance(points, point_cases)
 
         verdict: FrontierVerdict | None = None
         n_cleared_bar = 0
@@ -4730,13 +4852,24 @@ def compute_frontier(
             cleared = [p for p in points if p.bar_decision == "cleared"]
             n_cleared_bar = len(cleared)
             n_undecided_bar = sum(1 for p in points if p.bar_decision == "undecided")
-            costed = [
-                (p, p.production_replicating_cost, p.pass_hat_k)
-                for p in cleared
-                if p.production_replicating_cost is not None and p.pass_hat_k is not None
-            ]
+            # The cleared, priced points by point cost. The lowest is the pick, and it is named THE cheapest
+            # only when it is shown cheaper than each of the rest (`_cost_ties`); otherwise the verdict names
+            # it beside every rival it could not be shown cheaper than.
+            costed = sorted(
+                (
+                    index
+                    for index, p in enumerate(points)
+                    if p.bar_decision == "cleared"
+                    and p.production_replicating_cost is not None
+                    and p.pass_hat_k is not None
+                ),
+                key=lambda i: (points[i].production_replicating_cost, -(points[i].pass_hat_k or 0.0), points[i].model),
+            )
             if costed:
-                pick, pick_cost, pick_pass_hat_k = min(costed, key=lambda c: (c[1], -c[2], c[0].model))
+                pick = points[costed[0]]
+                pick_cost, pick_pass_hat_k = pick.production_replicating_cost, pick.pass_hat_k
+                assert pick_pass_hat_k is not None  # Only points with a pass^k are costed.
+                cost_decision, tied_with = _cost_ties(costed[0], costed[1:], points, point_cases)
                 verdict = FrontierVerdict(
                     variant_key=pick.variant_key,
                     model=pick.model,
@@ -4763,6 +4896,8 @@ def compute_frontier(
                     # predicate minted the key this recommendation is addressed by.
                     identity_version_disclosure=pick.identity_version_disclosure,
                     variant_identity_version=pick.variant_identity_version,
+                    cost_decision=cost_decision,
+                    tied_with=tied_with,
                 )
 
         subjects.append(
@@ -6684,6 +6819,8 @@ __all__ = [
     "CostEstimateError",
     "ExportError",
     "ExportFormat",
+    "FrontierCostDecision",
+    "FrontierCostTie",
     "FrontierDominance",
     "FrontierDominator",
     "FrontierError",
