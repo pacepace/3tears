@@ -238,10 +238,14 @@ class TestPairedChange:
         assert verdict.label == "improved"
 
     def test_lower_is_better_makes_an_increase_the_regression(self) -> None:
-        """Cost/latency invert: a significant rise is the decline, not the drop."""
+        """Cost/latency invert: a significant rise is the decline, not the drop.
+
+        The rise is not one constant amount: a constant +0.2 over five pairs has the exact sign-flip p of
+        1/16 and is untested, which the float residue in ``0.30 - 0.10`` once hid behind a t-test.
+        """
         verdict = paired_change(
             [0.10, 0.11, 0.09, 0.10, 0.10],
-            [0.30, 0.31, 0.29, 0.30, 0.30],
+            [0.30, 0.32, 0.29, 0.31, 0.30],
             min_absolute_change=0.05,
             min_relative_change=0.0,
             higher_is_better=False,
@@ -306,17 +310,17 @@ class TestPairedChange:
         assert verdict.exceeds_threshold is False
         assert verdict.label == "below_threshold"
 
-    def test_a_deterministic_uniform_decline_is_significant_not_inconclusive(self) -> None:
+    def test_a_deterministic_uniform_decline_is_significant_not_untested(self) -> None:
         """Every case dropping by the same amount is the strongest regression, not the weakest.
 
         The paired t-test is undefined on zero difference-variance (it divides by
         that SD), and the effect-size helper returns None there — but a perfectly
         consistent decline is strong evidence of a real move, so the flag calls it
-        significant rather than punting to inconclusive.
+        significant rather than punting to untested, on the exact sign-flip p it carries.
 
         The sample is sized at the pair-count floor deliberately: below it, the
         exact sign-flip test that licenses this reasoning cannot reach alpha, so a
-        smaller uniform decline is inconclusive and is pinned as such separately.
+        smaller uniform decline is untested and is pinned as such separately.
         """
         verdict = paired_change(
             [1.0] * 6,
@@ -327,9 +331,10 @@ class TestPairedChange:
         )
         assert verdict.significant is True
         assert verdict.label == "regressed"
+        assert verdict.p_value == 2.0**-5, "the exact sign-flip p, so the label can be checked"
 
     @pytest.mark.parametrize("n_pairs", [2, 3, 4, 5])
-    def test_a_uniform_move_below_the_pair_floor_is_inconclusive_not_significant(self, n_pairs) -> None:
+    def test_a_uniform_move_below_the_pair_floor_is_untested_not_significant(self, n_pairs) -> None:
         """A perfectly consistent move too small to be tested must not be called significant.
 
         Zero difference-variance leaves no t-statistic, so the only reasoning that
@@ -352,7 +357,7 @@ class TestPairedChange:
         )
         assert verdict.n_pairs == n_pairs
         assert verdict.significant is None
-        assert verdict.label == "inconclusive"
+        assert verdict.label == "untested"
         assert verdict.p_value is None
         assert verdict.hedges_g is None
 
@@ -379,13 +384,13 @@ class TestPairedChange:
         assert 2.0 ** (1 - n) <= SIGNIFICANCE_ALPHA
         assert 2.0 ** (1 - (n - 1)) > SIGNIFICANCE_ALPHA
 
-    def test_a_deterministic_no_change_is_not_separated_not_inconclusive(self) -> None:
+    def test_a_deterministic_no_change_is_not_separated_not_untested(self) -> None:
         """Two identical paired samples (>= 2 pairs) are measured, and read 'not_separated' without a margin.
 
         Zero difference-variance makes the paired t-test undefined, but a perfect
         no-change is a definite result, not too-few-data: ``composite_significance``
-        reports it as ``(0.0, not-significant)``. 'inconclusive' is reserved for
-        fewer than two pairs. Three identical pairs with no declared margin still
+        reports it as ``(0.0, not-significant)``. 'untested' is reserved for
+        what no test can decide. Three identical pairs with no declared margin still
         claim no stability: only an equivalence test against a margin may (#592).
         """
         verdict = paired_change(
@@ -400,16 +405,16 @@ class TestPairedChange:
         assert verdict.delta == 0.0
         assert verdict.n_pairs == 3
 
-    def test_fewer_than_two_pairs_is_inconclusive_never_a_measured_reading(self) -> None:
+    def test_fewer_than_two_pairs_is_untested_never_a_measured_reading(self) -> None:
         """One pair cannot be tested; it must not masquerade as a measured 'no change'."""
         verdict = paired_change([0.8], [0.4], min_absolute_change=0.0, min_relative_change=0.0, higher_is_better=True)
-        assert verdict.label == "inconclusive"
+        assert verdict.label == "untested"
         assert verdict.significant is None
         assert verdict.n_pairs == 1
 
-    def test_no_pairs_is_inconclusive_with_null_delta(self) -> None:
+    def test_no_pairs_is_untested_with_null_delta(self) -> None:
         verdict = paired_change([], [], min_absolute_change=0.0, min_relative_change=0.0, higher_is_better=True)
-        assert verdict.label == "inconclusive"
+        assert verdict.label == "untested"
         assert verdict.delta is None
         assert verdict.n_pairs == 0
 
@@ -428,13 +433,11 @@ class TestPairedChange:
     @pytest.mark.parametrize(
         ("baseline", "current", "expected_label"),
         [
-            ([0.8], [0.4], "inconclusive"),  # one pair: the test is undefined
-            ([], [], "inconclusive"),  # no pairs at all
-            # Every case moved by exactly the same amount, so the difference SD is
-            # zero and no t-statistic exists. `paired_change` still labels it, by
-            # reasoning from the zero variance rather than from a test — and that
-            # is precisely the label whose absent p a reader must be able to see.
-            ([1.0] * 6, [0.0] * 6, "regressed"),
+            ([0.8], [0.4], "untested"),  # one pair: the test is undefined
+            ([], [], "untested"),  # no pairs at all
+            # Every case moved by the same amount over too few pairs for the exact
+            # sign-flip p to reach alpha: no test decided, so no p is stated.
+            ([1.0] * 4, [0.0] * 4, "untested"),
         ],
     )
     def test_a_label_no_t_test_produced_reports_no_p(self, baseline, current, expected_label) -> None:
@@ -444,6 +447,33 @@ class TestPairedChange:
         )
         assert verdict.label == expected_label
         assert verdict.p_value is None
+
+    def test_a_constant_shift_written_in_decimals_reads_its_exact_sign_flip_p_not_a_float_residue(self) -> None:
+        """``i/10`` against ``i/10 + 0.5``: every case moved by exactly 0.5, though the floats differ by a hair.
+
+        Over floats the differences carry a residue a t-test reads as a tiny, perfectly consistent spread,
+        with a p near 1e-113; read exactly, there is no spread and the p is the sign-flip ``2 ** (1 - n)`` —
+        the same p :func:`separation_p` states for the same values.
+        """
+        baseline = [i / 10 for i in range(8)]
+        current = [i / 10 + 0.5 for i in range(8)]
+        verdict = paired_change(
+            baseline, current, min_absolute_change=0.05, min_relative_change=0.0, higher_is_better=True
+        )
+
+        assert verdict.p_value == 2.0**-7 == separation_p(baseline, current, paired=True)
+        assert verdict.hedges_g is None, "no spread, so no finite effect size"
+        assert verdict.delta == 0.5
+        assert verdict.label == "improved"
+
+    def test_the_same_shift_over_too_few_cases_is_untested_not_a_residue_p(self) -> None:
+        baseline = [i / 10 for i in range(4)]
+        current = [i / 10 + 0.5 for i in range(4)]
+        verdict = paired_change(
+            baseline, current, min_absolute_change=0.05, min_relative_change=0.0, higher_is_better=True
+        )
+
+        assert (verdict.label, verdict.p_value, verdict.significant) == ("untested", None, None)
 
     def test_misaligned_samples_are_a_pairing_bug_not_missing_data(self) -> None:
         with pytest.raises(ValueError, match="aligned"):
@@ -532,7 +562,7 @@ class TestEquivalence:
     def test_fewer_than_two_pairs_runs_no_equivalence_test(self) -> None:
         verdict = self._change([0.5], [0.5], margin=0.05)
 
-        assert verdict.label == "inconclusive"
+        assert verdict.label == "untested"
         assert verdict.equivalence_p is None
 
 

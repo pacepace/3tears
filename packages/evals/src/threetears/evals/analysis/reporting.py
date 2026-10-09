@@ -5314,7 +5314,7 @@ class RegressionFlag(EvalBaseModel):
     thresholds it applied, so the label can never be read as a calibrated
     judgement — automated alerting stays gated behind judge calibration. ``label``
     is one of ``regressed`` / ``improved`` / ``equivalent`` / ``below_threshold`` /
-    ``not_separated`` / ``inconclusive`` (:class:`~threetears.evals.analysis.stats.ChangeVerdict`
+    ``not_separated`` / ``untested`` (:class:`~threetears.evals.analysis.stats.ChangeVerdict`
     defines each). A move earns a directional label only when it is both
     statistically significant and over a magnitude threshold (a joint gate). A move
     that misses significance reads ``not_separated``, never "no change": the one label
@@ -5351,10 +5351,10 @@ class RegressionFlag(EvalBaseModel):
     exceeds_threshold: bool | None = None
     #: Hedges' g_z of the paired move — bias-corrected, so not comparable with a Cohen's d.
     hedges_g: float | None = None
-    #: The p ``significant`` was thresholded against; ``None`` wherever no t-test
-    #: was evaluated. Carried for the same reason ``hedges_g`` is: a verdict
-    #: whose statistic is absent cannot be checked, and a reader must be able to
-    #: tell a label a test produced from one reasoned around an undefined test.
+    #: The p ``significant`` was thresholded against — the paired t's, or the exact
+    #: sign-flip p where every case moved by one amount — and ``None`` on an
+    #: ``untested`` step. Carried for the same reason ``hedges_g`` is: a verdict
+    #: whose statistic is absent cannot be checked.
     p: float | None = None
     #: The TOST p an ``equivalent`` label was thresholded against — the larger of the
     #: two one-sided p's — or ``None`` wherever no equivalence t-test ran: no margin
