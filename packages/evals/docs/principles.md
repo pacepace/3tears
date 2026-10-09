@@ -120,8 +120,13 @@ would govern users that do not exist.
 
 **The eval system is meant to evaluate itself.**
 Its model-driven parts are subjects, and every chain of evaluation should end in a code check or a human
-label. The analysis writer has a kind, and a judge's self-agreement is measured by repeating its scores. Testing the statistics
-against simulated data with known answers is not yet in the suite ([open problems](open-problems.md)).
+label. The analysis writer has a kind, and a judge's self-agreement is measured by repeating its scores. The statistics
+are tested against seeded data with a known truth at the sample sizes the engine sees (2–15 cases, 1–5 repeats):
+the `test_simulated_*` files in `tests/`, on the generators and reference answers in `tests/simulation_support.py`.
+They check interval coverage, false-positive rates, power, family-wise error and estimator bias, and each
+property the engine misses stays in the suite as a strict `xfail` stating the measured rate against the nominal.
+A single reading's interval, pass^k, bars and the history read are not in it yet
+([open problems](open-problems.md)).
 
 **A run's memory should scale with its matrix, never with how much a cell produced.**
 How talkative a candidate is should not decide whether a run survives. Nothing measures this yet.
