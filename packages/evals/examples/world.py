@@ -1,4 +1,4 @@
-"""Does the model turn the light on when the room is dark, judged by the room it leaves rather than what it says?
+"""Does the model turn the light on when the room is dark, judged by what it does rather than what it says?
 
 Here the model acts: each case seeds a small world (a room's ``light`` and ``daylight``), the model changes
 it through the world's own tool, and the engine reads the room back after the model's last turn. Goal-state
