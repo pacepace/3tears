@@ -48,6 +48,15 @@ async def test_with_no_api_key_the_example_runs_offline_and_says_so(
         (lit_iff_dark, 6, 8),
         (never_needless, 8, 8),
     ]
+    # Neither check is proven (a quick run names no control), and a candidate that did nothing passes the second in
+    # every case: its 8/8 is printed as no measurement, never as an unqualified pass.
+    assert [(goal.proof, goal.did_nothing_passed, goal.did_nothing_cases) for goal in summary.goal_checks] == [
+        ("unproven", 2, 4),
+        ("unproven", 4, 4),
+    ]
+    goal_lines = [line for line in summary.render().splitlines() if "goal check" in line]
+    assert all(" — " in line for line in goal_lines), "an unproven check's pass count is never printed bare"
+    assert "passed 8/8 — NOT A MEASUREMENT" in goal_lines[1]
     assert summary.errors == []
     out = capsys.readouterr().out
     assert out.startswith("ANTHROPIC_API_KEY is not set: running OFFLINE")

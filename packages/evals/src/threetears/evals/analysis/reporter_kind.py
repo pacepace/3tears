@@ -48,7 +48,7 @@ from threetears.evals.analysis.generator import (
     user_message_digest,
 )
 from threetears.evals.analysis.numbers import format_number
-from threetears.evals.analysis.report.words import CONFIDENCE_WORDS, EVIDENCE_TIER_WORDS, arm_namer, positions
+from threetears.evals.analysis.report.words import CONFIDENCE_WORDS, arm_namer, positions, stands_on_words
 from threetears.evals.contracts.authored import NO_CHART
 from threetears.evals.contracts.campaign import (
     ConfidenceTier,
@@ -962,7 +962,7 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
             findings += ["", f"### {position + 1}. {_one_line(finding.title)}", ""]
             facts = [f"Confidence: {_confidence(finding.confidence)}."]
             if resolution is not None:
-                facts.append(f"Stands on: {EVIDENCE_TIER_WORDS[resolution.evidence_tier]}.")
+                facts.append(f"Stands on: {stands_on_words(analysis, resolution.evidence_tier)}.")
             if finding.axes:
                 facts.append(f"About: {', '.join(finding.axes)}.")
             if finding.invalidates:

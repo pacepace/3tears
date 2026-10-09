@@ -84,7 +84,11 @@ async def test_the_end_state_is_read_back_after_the_last_turn_and_the_goal_check
     )
     assert (summary.status, summary.n_scored) == ("completed", 2)
     assert [(goal.check, goal.passed, goal.n) for goal in summary.goal_checks] == [(LIT_IFF_DARK, 2, 2)]
-    assert f"goal check {LIT_IFF_DARK}: passed 2/2" in summary.render()
+    # A quick run names no control, so the check is unproven, and its do-nothing baseline is read off each case's seed:
+    # both cases start with the lamp wrong, so doing nothing passes neither.
+    (goal,) = summary.goal_checks
+    assert (goal.proof, goal.did_nothing_passed, goal.did_nothing_cases) == ("unproven", 0, 2)
+    assert f"goal check {LIT_IFF_DARK}: passed 2/2 — unproven" in summary.render()
     for (result, trace), case in zip(await stored(host, summary.run_id), CASES, strict=True):
         assert trace is not None
         # Both cases started wrong, so the stored end state is the candidate's, never the seed.
@@ -92,6 +96,21 @@ async def test_the_end_state_is_read_back_after_the_last_turn_and_the_goal_check
         assert [outcome.passed for outcome in result.goal_state_outcomes] == [True]
     (run,) = list_runs(host, SCOPE)
     assert run.world_placements == {"lamp": "representable", "dark": "representable"}
+    assert run.goal_check_proofs == {LIT_IFF_DARK: "unproven"}
+
+
+async def test_a_check_doing_nothing_passes_in_every_case_never_reads_as_a_measurement() -> None:
+    never_needless = 'all(it.to != variation.lamp for it in calls("room.switch"))'
+    summary = await run_eval(
+        CASES, sensible, world=room(), seed=start, goal_checks=[never_needless], scope_id=SCOPE, k=1
+    )
+    (goal,) = summary.goal_checks
+    assert (goal.passed, goal.n, goal.did_nothing_passed, goal.did_nothing_cases) == (2, 2, 2, 2)
+    (line,) = [line for line in summary.render().splitlines() if "goal check" in line]
+    assert line.endswith(
+        "passed 2/2 — NOT A MEASUREMENT: a candidate that did nothing passes it in 2 of 2 case(s), "
+        "so this pass rate does not beat doing nothing"
+    )
 
 
 async def test_a_call_that_succeeds_is_recorded_for_calls_and_one_the_world_refuses_is_not() -> None:

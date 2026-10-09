@@ -46,6 +46,7 @@ from threetears.evals.contracts import EvalStorage
 from threetears.evals.contracts.candidate_kind import CandidateOutput, CellSink, CellSpanWindow, VariantConfig
 from threetears.evals.contracts.cassettes import CellCassettes
 from threetears.evals.contracts.errors import ConflictError, StorageError, ValidationFailedError
+from threetears.evals.contracts.evidence_tiers import SEPARATION_MIN_RESULTS
 from threetears.evals.contracts.host.eval_host import EvalHost
 from threetears.evals.contracts.identity import resolve_variant_identity
 from threetears.evals.contracts.models import (
@@ -525,8 +526,19 @@ class TestWhatCannotBeReproducedIsRefusedBeforeAnySpend:
             await repeat_judge_scores(host, run_id, _SCOPE, out_of_run_cap_usd=1.0, result_ids=["elsewhere"])
 
 
-class TestTwentyAgreeingRepeatsSeparateTheJudge:
+class TestAgreeingRepeatsSeparateTheJudge:
     async def test_the_stored_repeats_decide_separation(self):
+        # Separation's floor: 120 results.
+        judge = _PricedJudge()
+        host, run_id = await _judged_run(judge, cases=SEPARATION_MIN_RESULTS)
+
+        await repeat_judge_scores(host, run_id, _SCOPE, out_of_run_cap_usd=3.0)
+
+        results = _results(host, run_id)
+        (tier,) = judge_evidence_tiers(judge_agreement([], results), judge_self_agreement(results), {_KEY})
+        assert (tier.separation.n, tier.separation.agreement, tier.tier) == (SEPARATION_MIN_RESULTS, 1.0, "separation")
+
+    async def test_twenty_agreeing_repeats_are_short_of_the_floor_and_say_by_how_much(self):
         judge = _PricedJudge()
         host, run_id = await _judged_run(judge, cases=20)
 
@@ -534,7 +546,8 @@ class TestTwentyAgreeingRepeatsSeparateTheJudge:
 
         results = _results(host, run_id)
         (tier,) = judge_evidence_tiers(judge_agreement([], results), judge_self_agreement(results), {_KEY})
-        assert (tier.separation.n, tier.separation.agreement, tier.tier) == (20, 1.0, "separation")
+        assert (tier.separation.agreement, tier.separation.state, tier.tier) == (1.0, "insufficient", "undetermined")
+        assert tier.separation.results_needed == SEPARATION_MIN_RESULTS - 20
 
     async def test_nineteen_repeats_do_not(self):
         judge = _PricedJudge()
@@ -564,15 +577,20 @@ class TestTwentyAgreeingRepeatsSeparateTheJudge:
 
     async def test_a_judge_declining_a_third_of_its_repeats_does_not(self):
         judge = _PricedJudge()
-        host, run_id = await _judged_run(judge, cases=30)
-        judge.cannot_tell_parties = set(range(10))
+        host, run_id = await _judged_run(judge, cases=SEPARATION_MIN_RESULTS)
+        judge.cannot_tell_parties = set(range(SEPARATION_MIN_RESULTS // 3))
 
-        report = await repeat_judge_scores(host, run_id, _SCOPE, out_of_run_cap_usd=1.0)
+        report = await repeat_judge_scores(host, run_id, _SCOPE, out_of_run_cap_usd=3.0)
 
-        assert (report.scores_repeated, report.scores_unanswered) == (20, 10)
+        third = SEPARATION_MIN_RESULTS // 3
+        assert (report.scores_repeated, report.scores_unanswered) == (SEPARATION_MIN_RESULTS - third, third)
         results = _results(host, run_id)
         read = judge_self_agreement(results)
         (dimension,) = read.dimensions
-        assert (dimension.n, dimension.results, dimension.n_cannot_tell) == (30, 30, 10)
+        assert (dimension.n, dimension.results, dimension.n_cannot_tell) == (
+            SEPARATION_MIN_RESULTS,
+            SEPARATION_MIN_RESULTS,
+            third,
+        )
         (tier,) = judge_evidence_tiers(judge_agreement([], results), read, {_KEY})
         assert (tier.separation.state, tier.tier) == ("not_met", "undetermined")

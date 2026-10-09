@@ -100,7 +100,11 @@ falls back to the failure's cause alone (``delivered_a_turn``). It, and the deci
 ``CellFacts.n_candidate_failed`` and ``n_no_turn`` (and their ``StratumFacts`` twins), None on an analysis
 frozen before them, are deliberate exceptions to v6's "no field is read as absent because older": requiring
 them would drop every stored document to learn counts the old ones never had, and their honest reading is
-"unknown", which None states.
+"unknown", which None states. ``EvalAnalysis.judged_tier_rule`` joined the same way: the rule its judged tiers
+were decided by, None on an analysis stored before tiers were decided on the agreement's interval — whose tiers
+were the point estimate against the bar, and are rendered as that, never as the interval rule's claim. And
+``EvalRun.goal_check_proofs``: whether each goal check was shown, at launch, to beat doing nothing; None on a run
+launched before it, read as unproven.
 """
 
 
@@ -445,6 +449,15 @@ class Precondition(EvalDocumentModel):
 #: grades something other than what its author meant.
 GoalCheckIntent = Literal["act", "hold"]
 
+#: Whether a goal check was shown, when its run launched, to tell its outcomes apart
+#: (:func:`threetears.evals.run.check_controls.goal_check_proofs`). ``proven``: the template names a control and
+#: the check gives the verdicts its intent requires on it and on the do-nothing control. ``unproven``: the
+#: template names no control for it — a template written past authoring, or a quick run's — so nothing shows
+#: its pass rate is not what a candidate that did nothing would score. ``refuted``: a control is named and the
+#: check does not tell it from doing nothing, or cannot be evaluated against it. Only ``proven`` reads as a
+#: measurement of the behaviour; the other two are marked wherever the check's pass rate is shown.
+GoalCheckProof = Literal["proven", "unproven", "refuted"]
+
 
 class ControlEndState(EvalDocumentModel):
     """An end state a template's author states, to prove its goal checks can tell outcomes apart.
@@ -540,8 +553,9 @@ class GoalCheckControls(EvalDocumentModel):
     that does not depend on what the candidate did. The do-nothing control needs no data: it is
     derived from the template's own seed.
 
-    Validated where a template is written (``threetears.evals.run.check_controls``); read by nothing
-    that runs a cell.
+    Validated where a template is written (``threetears.evals.run.check_controls``), and evaluated again
+    at launch, whose verdict per check the run freezes (``EvalRun.goal_check_proofs``); the run summary, the
+    analysis bundle and the report mark every check not proven. Read by nothing that runs a cell.
     """
 
     checks: list[GoalCheckControl] = Field(
@@ -1208,8 +1222,9 @@ class EvalTemplate(EvalDocumentModel):
     goal_state_checks: list[str] = Field(default_factory=list)
     # Authoring-time proof that each goal check discriminates (``GoalCheckControls``). Authoring
     # requires it for every check a template declares; a template written past authoring (saved
-    # straight to a store, or seeded before the seeder admitted templates through authoring) can lack it, and is shown as unproven wherever it is read
-    # rather than taken as proven.
+    # straight to a store, or seeded before the seeder admitted templates through authoring) can lack it.
+    # Its checks are then recorded unproven when it is launched (``EvalRun.goal_check_proofs``), and the run
+    # summary, the analysis bundle and the report mark each one beside its pass rate, never taking it as proven.
     goal_check_controls: GoalCheckControls | None = Field(
         default=None,
         description=(
@@ -1218,7 +1233,8 @@ class EvalTemplate(EvalDocumentModel):
             "control; a hold check must pass when the candidate did nothing and fail on its control. "
             "Checked where the template is written; required for every goal check a create or an "
             "update authors. Never shown to the candidate, the simulated user or the judge. Null on a "
-            "template written past authoring (saved straight to the store) — its checks are unproven, and say so."
+            "template written past authoring (saved straight to the store) or by the quick path — its checks are "
+            "recorded unproven at launch (`EvalRun.goal_check_proofs`) and marked so wherever their pass rates show."
         ),
     )
     rubric: list[RubricDim] = Field(default_factory=list)
@@ -2365,6 +2381,17 @@ class EvalRun(EvalDocumentModel):
             "nothing (a host assembling a run without its launch, which is where placements are "
             "derived), which is a different fact from ``{}``, the recording that this run placed no "
             "dimensions at all (a host that declares no world, or an empty registry)."
+        ),
+    )
+
+    goal_check_proofs: dict[str, GoalCheckProof] | None = Field(
+        default=None,
+        description=(
+            "Each goal check the run grades -> whether it was shown to tell its outcomes apart when the run "
+            "launched (`GoalCheckProof`), frozen for the reason `resolved_world_seed` is: the template's controls "
+            "are editable. Only `proven` reads as measuring the behaviour; every surface showing an `unproven` or "
+            "`refuted` check's pass rate marks it. None = NOT RECORDED: a run launched before proofs were frozen, "
+            "or assembled without a launch — read as unproven, never as proven. Optional within v8 for that reason."
         ),
     )
 
