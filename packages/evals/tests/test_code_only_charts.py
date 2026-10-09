@@ -2,15 +2,16 @@
 
 Three kinds of chart carried nothing and are not emitted:
 
-- **A label's F1**, which has no interval in any cell by construction, so its "chart" was only ever a
-  disclosure that every cell was left out — one per label. F1 stays in the tables.
+- **A classifier's per-label statistics.** Precision and recall were a chart per label and statistic, and
+  F1, which has no interval in any cell by construction, only ever a disclosure that every cell was left
+  out. All three are the per-label table (``test_compact_code_only_report.py``).
 - **``match`` beside ``accuracy``**, which is derived from it observation for observation.
 - **Cost no result observed.** A result with no usage row carrying dollars stores ``cost_usd`` 0.0 as the
   sum of nothing. The bundle reads it as no observation (:func:`spend_observed`), so a cell where nothing
   reported spend has no cost reading to chart or test, and the bundle says so in one sentence. A MEASURED
   $0 — a row carrying 0 dollars — is a reading like any other.
 
-Mutations that turn this file red: dropping the F1 or ``match`` filter in ``_chartable``; reading
+Mutations that turn this file red: dropping the per-label or ``match`` filter in ``_chartable``; reading
 ``cost_usd`` in ``_lineage_leaves`` whatever ``spend_observed`` says; listing a cell with a measured $0 in
 ``_cost_unmeasured``.
 """
@@ -20,7 +21,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from threetears.evals.analysis import ChartBlock, DisclosureBlock, inspect_campaign_bundle
+from threetears.evals.analysis import ChartBlock, DisclosureBlock, TableBlock, inspect_campaign_bundle
 from threetears.evals.contracts.models import RoleUsage
 from threetears.evals.contracts.usage_capture import spend_observed
 from threetears.evals.quick import Answer, Comparison, compare
@@ -82,13 +83,16 @@ def _cost_disclosures(comparison: Comparison) -> list[str]:
 
 
 class TestReadingsWithNoChart:
-    async def test_no_f1_chart_and_no_notice_for_one(self) -> None:
+    async def test_no_per_label_chart_and_no_notice_for_one(self) -> None:
         comparison = await _compare(right, guess)
         titles = _chart_titles(comparison)
-        assert not [title for title in titles if title.startswith("classifier:f1:")]
-        assert not [text for text in _disclosures(comparison) if "classifier:f1:" in text]
-        # Precision and recall carry intervals and keep their charts.
-        assert "classifier:precision:plant" in titles and "classifier:recall:plant" in titles
+        assert not [title for title in titles if title.startswith("classifier:")]
+        assert not [text for text in _disclosures(comparison) if "classifier:" in text]
+        # Precision, recall and F1 are the per-label table's, every label in it.
+        (table,) = [
+            block for block in comparison.report.blocks if isinstance(block, TableBlock) and block.name == "labels"
+        ]
+        assert {row["label"] for row in table.rows} == {"animal", "plant"}
 
     async def test_match_is_not_charted_beside_the_accuracy_derived_from_it(self) -> None:
         titles = _chart_titles(await _compare(right, guess))

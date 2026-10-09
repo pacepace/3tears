@@ -2,13 +2,15 @@
 
 Two defects drew these lines. A perfect rate's Wilson upper bound came out a hair under 1.0 — 4 of 4
 gave ``0.9999999999999999`` — so the drawn interval missed its own estimate by one ulp, the chart
-payload refused it, and every perfect label's precision and recall chart was dropped from the report.
+payload refused it, and every perfect label's precision and recall chart was dropped from the report
+(those figures are now the code-only report's per-label table, held here the same way).
 And ``accuracy``, a 0/1 measure derived from ``match``, took the symmetric t interval, so 8 of 10
 read ``[0.498, 1.102]`` while ``match`` over the same observations read its Wilson ``[0.490, 0.943]``.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -164,8 +166,14 @@ async def test_a_two_classifier_campaign_report_draws_every_interval_inside_its_
     markdown = report_markdown(campaign_report(host, campaign.id, SCOPE))
 
     assert "cannot be drawn" not in markdown
-    assert "**Chart: classifier:precision:negative**" in markdown
-    accuracy_chart = markdown.split("**Chart: accuracy**", 1)[1].split("**Chart:", 1)[0]
+    # Every label's precision and recall is in the per-label table with its interval, each inside [0, 1] and
+    # around its own rate — a perfect label's included.
+    per_label = markdown.split("**Per-label precision, recall and F1**", 1)[1].split("\n\n>", 1)[0]
+    negative = [row.split("|") for row in per_label.splitlines() if row.startswith("| negative |")]
+    assert len(negative) == 2 and all("[" in row[3] and "[" in row[4] for row in negative)
+    figures = re.findall(r"([\d.]+) \[([\d.]+), ([\d.]+)\]", per_label)
+    assert figures and all(0.0 <= float(low) <= float(rate) <= float(high) <= 1.0 for rate, low, high in figures)
+    accuracy_chart = markdown.split("**Chart: accuracy**", 1)[1].split("**Per-label", 1)[0]
     highs = [float(row.split("|")[4]) for row in accuracy_chart.splitlines() if row.startswith("| model=")]
     assert len(highs) == 2
     assert all(high <= 1.0 for high in highs)

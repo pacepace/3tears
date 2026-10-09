@@ -20,7 +20,7 @@ from threetears.evals.analysis.report.model import (
     TableBlock,
     TextBlock,
 )
-from threetears.evals.analysis.report.model import finding_number, report_byline, report_title
+from threetears.evals.analysis.report.model import chart_table_columns, finding_number, report_byline, report_title
 from threetears.evals.analysis.report.words import positions
 from threetears.evals.analysis.viz.intent import Cell
 from threetears.evals.analysis.viz.quantities import render_cell
@@ -83,14 +83,15 @@ def _chart(block: ChartBlock) -> list[str]:
     if block.intent is None:
         return [f"_A {block.viz_type} chart is stored for this finding and cannot be drawn: {block.error}_"]
     intent = block.intent
+    columns = chart_table_columns(intent)
     lines = [f"**Chart: {intent.title}** ({intent.type})"]
     if intent.caption.strip():
         lines += ["", _one_line(intent.caption)]
     lines += [
         "",
         *_rows(
-            [column.header for column in intent.columns],
-            [[row.get(column.key) for column in intent.columns] for row in intent.rows],
+            [column.header for column in columns],
+            [[row.get(column.key) for column in columns] for row in intent.rows],
         ),
     ]
     notes = [line for line in (intent.footnote, *intent.disclosures) if line]
