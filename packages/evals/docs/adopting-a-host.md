@@ -238,6 +238,12 @@ A cassette lets two arms face exactly the same tool answers: one run records wha
 later runs are served that recording instead of calling the tools live. You only need this if your
 candidate calls tools whose answers vary or cost money.
 
+**Without a host of your own,** `run_eval` and `compare` do the wiring below for you: declare the tools
+as plain functions (`tools={"search": search}`), write the candidate as `candidate(case, tools)`, and pass
+`cassette_mode="capture"`, then `"replay"` with `cassette_corpus_id=<the capture's run id>`, into one
+host and scope. `examples/cassettes.py` is that, end to end. The rest of this section is for a kind of
+your own.
+
 **Cassettes record and replay through seams the kind supplies.** Launch a run with
 `cassette_mode="capture"` to run its tools live and record what they answered into that run's own
 corpus, or `"replay"` with `cassette_corpus_id` naming a capture run to be served that corpus instead.

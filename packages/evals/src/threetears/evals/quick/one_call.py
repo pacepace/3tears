@@ -12,6 +12,12 @@ here, from the public roots, on the terms the engine already sets:
   ``confusion_cell`` as a classifier kind does, so the summary carries the confusion matrix and each
   label's precision, recall and F1, and the analysis derives ``accuracy``. An answer that is not a
   usable label lands under :data:`UNUSABLE_ANSWER`, a predicted label of its own.
+- **Tools** are plain functions the candidate calls, declared by handing ``run_eval`` them by name
+  (``tools=``); the candidate is then called with the case and its tools. Each cell adapts them to the
+  engine's cassette seams (:class:`~threetears.evals.quick.tools.CellTools`), so a run launched with
+  ``cassette_mode='capture'`` records what they answered and one with ``'replay'`` serves a capture's
+  recording in place of calling them — every arm facing the same tool answers. A candidate that
+  declares no tools runs with cassettes off, and a cassette run of one is refused.
 - **A judge** is a model grading each answer on a rubric, declared by handing ``run_eval`` a
   :class:`~threetears.evals.quick.judged.Judge`. The run is then of :data:`JUDGED_CALLABLE_KIND`, a
   document kind: the template carries the rubric, each cell renders the answer and its case as the
@@ -41,7 +47,7 @@ import json
 import math
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, cast
 
 from threetears.evals.contracts import (
     ACCURACY_MEASURE,
@@ -49,6 +55,7 @@ from threetears.evals.contracts import (
     DEFAULT_LAUNCH_K_RUNS,
     MATCH_MEASURE,
     CandidateOutput,
+    CassetteMode,
     CellCassettes,
     CellSink,
     CellSpanWindow,
@@ -68,6 +75,7 @@ from threetears.evals.contracts import (
 )
 from threetears.evals.contracts.host import (
     SHARED_CORE,
+    ApparatusError,
     EvalHost,
     HostProfile,
     KindContract,
@@ -91,6 +99,7 @@ from threetears.evals.run import (
     start_run,
 )
 from threetears.evals.quick.judged import Judge, judge_evidence
+from threetears.evals.quick.tools import CellTools, Tool, ToolUsingCandidate, refuse_unusable_tools
 from threetears.evals.storage import InMemoryDocumentStore
 
 #: The candidate under test: an async callable taking one case and returning its answer.
@@ -253,6 +262,7 @@ class _Prepared:
     """One cell's candidate, as ``prepare`` hands it to ``invoke``."""
 
     model: str
+    tools: CellTools | None = None
 
 
 class CallableKind:
@@ -266,17 +276,21 @@ class CallableKind:
     expected label its case carries, the answer counted as :data:`UNUSABLE_ANSWER` when it is no label.
     A judged kind is a document kind: every answer carries the evidence its judge reads
     (:func:`~threetears.evals.quick.judged.judge_evidence`), and the engine's judge scores it after ``invoke``.
+    A kind with tools hands the candidate each cell's own :class:`~threetears.evals.quick.tools.CellTools`,
+    wired to the cell's cassettes when it is handed any; a rig fault a tool call met excludes the cell even
+    when the candidate caught it.
     """
 
     judged_artifact = JudgedArtifact.UNJUDGED
 
     def __init__(
         self,
-        candidate: Candidate,
+        candidate: Candidate | ToolUsingCandidate,
         scorers: Sequence[Scorer],
         *,
         classifies: bool = False,
         judge: Judge | None = None,
+        tools: Mapping[str, Tool] | None = None,
     ) -> None:
         """Bind the candidate and its scorers.
 
@@ -285,12 +299,20 @@ class CallableKind:
             scorers: The grades, each reported under its own name.
             classifies: Whether the candidate is a classifier, whose every case carries its expected label.
             judge: The judge whose evidence each answer carries, or ``None`` for an unjudged kind.
+            tools: The tools the candidate is called with beside each case, or ``None`` for a candidate
+                called with the case alone.
         """
         self._candidate = candidate
+        self._tools = dict(tools) if tools is not None else None
         self._scorers = tuple(scorers)
         self._classifies = classifies
         self._judge = judge
         self.judged_artifact = JudgedArtifact.UNJUDGED if judge is None else JudgedArtifact.DOCUMENT
+
+    @property
+    def calls_tools(self) -> bool:
+        """Whether the candidate declares tools, which is what lets a run of this kind record or replay."""
+        return self._tools is not None
 
     async def prepare(
         self,
@@ -302,20 +324,24 @@ class CallableKind:
         cassettes: CellCassettes | None,
         world: WorldSession | None,
     ) -> _Prepared:
-        """Nothing to build: the candidate is already a callable. Records the arm's model label.
+        """Records the arm's model label, and builds the cell's tools, wired to its cassettes when it has any.
 
         Args:
             subject_snapshot: The run's subject, unused.
             variant_config: The cell's variant; its candidate model labels the arm.
             world_seed: The template's seed, which this kind has no world to write.
             span_window: The cell's trace windows, unused.
-            cassettes: Always ``None``: the launch declines cassettes for this kind.
+            cassettes: The cell's cassettes in a capture or replay run, which only a kind with tools is
+                launched with, and ``None`` with cassettes off.
             world: Unread — a callable has no world to seed, so the cell opens none.
 
         Returns:
             The prepared candidate.
         """
-        return _Prepared(model=variant_config.candidate_model)
+        tools = CellTools(self._tools) if self._tools is not None else None
+        if cassettes is not None and tools is not None:
+            cassettes.wire(tools)
+        return _Prepared(model=variant_config.candidate_model, tools=tools)
 
     async def invoke(self, instance: _Prepared, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
         """Run the candidate on one case, grade its answer, and report the grades.
@@ -331,7 +357,9 @@ class CallableKind:
         """
         case = test_case.host_payload[_CASE_KEY]
         try:
-            answer = await self._candidate(case)
+            answer = await _call_candidate(self._candidate, case, instance.tools)
+        except ApparatusError:
+            raise  # the rig's fault under the candidate — a replay miss — is the engine's to exclude the cell on
         # prawduct:ok-broad-except — the candidate is the caller's code under test: whatever it raises is its failure, recorded on the cell
         except Exception as raised:
             return CandidateOutput(candidate_errors=[f"the candidate raised {type(raised).__name__}: {raised}"])
@@ -370,6 +398,23 @@ class CallableKind:
                 )
             measures[name] = float(score)
         return CandidateOutput(output=trace, host_measures=measures, judge_evidence=evidence)
+
+
+async def _call_candidate(candidate: Candidate | ToolUsingCandidate, case: Any, tools: CellTools | None) -> Any:
+    """Call the candidate on one case — with its tools, when it declares any — and surface a rig fault it met.
+
+    Raises:
+        ApparatusError: A tool call met a rig fault, re-raised here even when the candidate caught it.
+    """
+    if tools is None:
+        return await cast(Candidate, candidate)(case)
+    try:
+        answer = await cast(ToolUsingCandidate, candidate)(case, tools.for_candidate())
+    except Exception:
+        tools.raise_any_fault()
+        raise
+    tools.raise_any_fault()
+    return answer
 
 
 def _as_stored(answer: Any) -> dict[str, Any]:
@@ -562,10 +607,13 @@ def _launch_host(
             KindWiring(kind_factory=lambda _cell: kind, subject=subject, test_cases=cases, judge=run_judge),
         )
 
-    # The judge pin is the one launch argument a judged kind honours: run_eval names its judge's model.
-    unhonoured: set[LaunchArgument] = {"simulator_model", "judge_config_ids", "cassette_mode", "n_variations"}
+    # The judge pin is the one launch argument a judged kind honours: run_eval names its judge's model. A
+    # cassette mode is honoured only by a kind whose candidate declares tools: there is nothing else to record.
+    unhonoured: set[LaunchArgument] = {"simulator_model", "judge_config_ids", "n_variations"}
     if judge is None:
         unhonoured.add("judge_model")
+    if not kind.calls_tools:
+        unhonoured.add("cassette_mode")
     launch_host = LaunchHost(
         eval_host=host,
         kinds={kind_name: LaunchableKind(launch=launch, unhonoured_launch_arguments=frozenset(unhonoured))},
@@ -578,7 +626,7 @@ def _launch_host(
 
 async def run_eval(
     cases: Sequence[Mapping[str, Any]],
-    candidate: Candidate,
+    candidate: Candidate | ToolUsingCandidate,
     scorers: Sequence[Scorer] = (),
     *,
     scope_id: str,
@@ -587,12 +635,16 @@ async def run_eval(
     host: EvalHost | None = None,
     k: int = DEFAULT_LAUNCH_K_RUNS,
     model: str | None = None,
+    tools: Mapping[str, Tool] | None = None,
+    cassette_mode: CassetteMode = "off",
+    cassette_corpus_id: str | None = None,
 ) -> EvalSummary:
     """Run ``candidate`` on every case ``k`` times, grade each answer with every scorer and the judge, and summarise.
 
     Args:
         cases: The cases, each a JSON object; the candidate and the scorers receive each one as given.
-        candidate: The async callable under test, called once per case and repeat.
+        candidate: The async callable under test, called once per case and repeat: with the case, or with
+            the case and its tools when ``tools`` is given (:data:`~threetears.evals.quick.tools.ToolUsingCandidate`).
         scorers: The grades. Each is reported as a measure named by its ``__name__``; ``True`` and
             ``False`` count as 1 and 0, and higher is better. None is needed when ``expected`` or
             ``judge`` is given.
@@ -615,6 +667,16 @@ async def run_eval(
         k: Repeats per case.
         model: The arm's label, stored as the run's candidate model and keyed into its variant;
             ``None`` takes the candidate's ``__name__``.
+        tools: The tools the candidate calls, by name: each a function of keyword arguments returning a
+            JSON value, sync or async (:data:`~threetears.evals.quick.tools.Tool`). The candidate is handed
+            them beside each case, as async functions, and they are what a cassette run records or replays.
+        cassette_mode: ``'off'`` (the default) calls the tools live; ``'capture'`` calls them live and records
+            what they answered into this run's corpus, named by its run id; ``'replay'`` serves the corpus
+            ``cassette_corpus_id`` names in place of calling them. A replay asked something its capture
+            never recorded is the rig's failure: that cell is excluded, never run live. Capture at ``k=1``:
+            the corpus keeps one session per case, the last to run.
+        cassette_corpus_id: For ``'replay'``, and only for it: the run id of a capture over the same cases
+            (and expected labels or rubric) in this host and scope.
 
     Returns:
         The finished run's summary, read back from the store.
@@ -626,8 +688,11 @@ async def run_eval(
             :data:`UNUSABLE_ANSWER` label, a given host that declares no callable-kind contract
             (or one with no seats, a seat in :data:`CALLABLE_UNSEATED`, overlays or a spec), a judged call on
             a given host whose judged-kind contract is missing or seats too much or no judge, a scorer
-            the given host declares no measure for, or no ``model`` for a candidate that has no ``__name__``.
-        ValidationFailedError: The launch refused: a ``k`` outside the run's bounds.
+            the given host declares no measure for, no ``model`` for a candidate that has no ``__name__``,
+            ``tools`` that are no non-empty mapping of identifier to function, or a capture or replay
+            of a candidate that declares no tools.
+        ValidationFailedError: The launch refused: a ``k`` outside the run's bounds, a replay naming no
+            corpus or one that is no capture of these cases in this scope, or a corpus named off replay.
     """
     plain_cases = _plain_cases(cases)
     if not scorers and expected is None and judge is None:
@@ -636,6 +701,7 @@ async def run_eval(
             "a run nothing grades measures nothing"
         )
     _refuse_unnamed_or_repeated(scorers)
+    refuse_unusable_tools(tools, cassette_mode)
     labels = None if expected is None else _expected_labels(plain_cases, expected)
     template_id = _template_id(plain_cases, labels, judge)
     if host is None:
@@ -671,7 +737,7 @@ async def run_eval(
     for test_case in test_cases:
         host.storage.save_test_case(test_case)
     subject = SubjectSnapshot(subject_id=model, subject_label=model, state={})
-    kind = CallableKind(candidate, scorers, classifies=labels is not None, judge=judge)
+    kind = CallableKind(candidate, scorers, classifies=labels is not None, judge=judge, tools=tools)
     launch_host = _launch_host(host, kind, subject, test_cases, judge)
     runs = await start_run(
         launch_host,
@@ -681,6 +747,8 @@ async def run_eval(
         k_runs=k,
         scope_id=scope_id,
         judge_model=judge.model if judge is not None else None,
+        cassette_mode=cassette_mode,
+        cassette_corpus_id=cassette_corpus_id,
     )
     try:
         await launch_host.job_manager.wait_for([run.id for run in runs])

@@ -33,10 +33,11 @@ from threetears.evals.analysis import (
     report_markdown,
     set_campaign_control,
 )
-from threetears.evals.contracts import DEFAULT_LAUNCH_K_RUNS
+from threetears.evals.contracts import DEFAULT_LAUNCH_K_RUNS, CassetteMode
 from threetears.evals.contracts.host import CANDIDATE_MODEL_LEVER, EvalHost
 from threetears.evals.ops.summary import EvalSummary
 from threetears.evals.quick.one_call import Candidate, ExpectedLabel, Scorer, callable_host, run_eval
+from threetears.evals.quick.tools import Tool, ToolUsingCandidate
 
 #: Who a :func:`compare` campaign and its control are recorded as created by, unless the caller says.
 COMPARE_CREATED_BY = "compare"
@@ -69,7 +70,7 @@ class Comparison:
         return report_markdown(self.report)
 
 
-def _refuse_unusable_arms(candidates: Mapping[str, Candidate], control: str) -> None:
+def _refuse_unusable_arms(candidates: Mapping[str, Candidate | ToolUsingCandidate], control: str) -> None:
     if isinstance(candidates, str) or not isinstance(candidates, Mapping):
         raise ValueError("compare needs its candidates as a mapping of arm name to candidate")
     if len(candidates) < 2:
@@ -82,7 +83,7 @@ def _refuse_unusable_arms(candidates: Mapping[str, Candidate], control: str) -> 
 
 async def compare(
     cases: Sequence[Mapping[str, Any]],
-    candidates: Mapping[str, Candidate],
+    candidates: Mapping[str, Candidate | ToolUsingCandidate],
     scorers: Sequence[Scorer] = (),
     *,
     control: str,
@@ -92,6 +93,9 @@ async def compare(
     k: int = DEFAULT_LAUNCH_K_RUNS,
     name: str | None = None,
     created_by: str = COMPARE_CREATED_BY,
+    tools: Mapping[str, Tool] | None = None,
+    cassette_mode: CassetteMode = "off",
+    cassette_corpus_id: str | None = None,
 ) -> Comparison:
     """Run each candidate over every case ``k`` times as one arm, test every arm against ``control``, and report.
 
@@ -108,6 +112,12 @@ async def compare(
         k: Repeats per case, per arm.
         name: The campaign's name, which titles its report; ``None`` names it by its arms, control first.
         created_by: Who the campaign and its control are recorded as created by.
+        tools: The tools every arm's candidate calls, as :func:`~threetears.evals.quick.run_eval` takes them.
+        cassette_mode: Every arm's cassette mode, as :func:`~threetears.evals.quick.run_eval` takes it. Replay
+            is what makes the arms comparable when the tools' answers vary: every arm is served the one
+            capture ``cassette_corpus_id`` names, so no difference between them is a difference in what
+            their tools said.
+        cassette_corpus_id: The capture every arm replays, made over the same cases in ``host`` and ``scope_id``.
 
     Returns:
         The comparison: every arm's summary, the campaign's id and its report.
@@ -123,7 +133,17 @@ async def compare(
     arms: dict[str, EvalSummary] = {}
     for arm, candidate in candidates.items():
         arms[arm] = await run_eval(
-            cases, candidate, scorers, scope_id=scope_id, expected=expected, host=host, k=k, model=arm
+            cases,
+            candidate,
+            scorers,
+            scope_id=scope_id,
+            expected=expected,
+            host=host,
+            k=k,
+            model=arm,
+            tools=tools,
+            cassette_mode=cassette_mode,
+            cassette_corpus_id=cassette_corpus_id,
         )
     ordered = [control, *(arm for arm in candidates if arm != control)]
     title = name or " vs ".join(ordered)
