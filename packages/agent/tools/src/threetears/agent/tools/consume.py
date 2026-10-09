@@ -201,9 +201,9 @@ async def resolve_object(object_id: UUID) -> "ObjectHandle":
     credential = scope.door_credential()
     if credential is None:
         raise ConsumeObjectError("the call context carries no identity_token; cannot authenticate the object resolve")
-    handle = await resolver.resolve(
-        object_id, customer_id=customer_id, identity_token=credential.token, holder_key=credential.holder_key
-    )
+    # the credential rides only when it proves, so a resolver written before it keeps working
+    proof = {"credential": credential} if credential.proves else {}
+    handle = await resolver.resolve(object_id, customer_id=customer_id, identity_token=credential.token, **proof)
     if not handle.s3_key.startswith(f"{customer_id}/"):
         # defense in depth, symmetric with the stream/deliver helpers: the hub's
         # lookup is customer-scoped + authoritative, but re-assert the resolved

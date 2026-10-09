@@ -6,9 +6,12 @@ import json
 import time
 from typing import Any
 
+import pytest
 from pydantic import BaseModel
 
 from threetears.core.security import (
+    DelegatedTokenError,
+    PopKey,
     build_jwks,
     generate_signing_keypair,
     jwk_thumbprint,
@@ -59,13 +62,17 @@ async def test_each_send_carries_its_own_verifiable_proof(monkeypatch: Any) -> N
     monkeypatch.setattr(query_client, "BUSY_BACKOFF_SECONDS", 0.0)
     token = _token()
     nats = _BusyOnce()
-    client = DatasourceQueryClient(nats, identity_token=lambda: token, holder_key=lambda: _AGENT)  # type: ignore[arg-type]
+    client = DatasourceQueryClient(nats, identity_token=lambda: token, pop_key=lambda: PopKey(_AGENT))  # type: ignore[arg-type]
     await client.query("warehouse", "SELECT 1")
     proofs = [
-        verify_door_request(sent, jwks=_JWKS, hub_issuer="hub", door="datasource").proof.jti for sent in nats.sent
+        verify_door_request(sent, jwks=_JWKS, hub_issuer="hub", door="datasource", op="warehouse.query").proof.jti
+        for sent in nats.sent
     ]
     assert len(proofs) == 2
     assert proofs[0] != proofs[1]
+    # bound to the datasource: a proof for one is refused at another
+    with pytest.raises(DelegatedTokenError):
+        verify_door_request(nats.sent[0], jwks=_JWKS, hub_issuer="hub", door="datasource", op="other.query")
 
 
 async def test_a_client_without_a_key_sends_the_token_alone() -> None:

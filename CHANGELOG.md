@@ -32,6 +32,49 @@ packages (bumped in lock-step).
 - Only the agent pod and tool pod are minted by the callout; the rest are the model the hub's static
   conf follows. No minted pod grant loses a subject any release uses.
 
+### Core: a door request proves its token with the key the token binds, for its door and operation
+
+- `threetears.core.security.door_request`. A caller sends `identity_proof` beside `identity_token`:
+  a proof of possession over the token, the request body (its canonical JSON, the proof left out),
+  and the door and operation it is sent to (`door_request_hash(body, door=, op=)`), so a proof for
+  `l3.tx.rollback` is refused at `l3.tx.commit` though the bodies are identical, and a proof for one
+  door is refused at another.
+  - `DoorCredential(token, holder_key)`: a key the token does not bind (its `cnf`) is dropped, so the
+    credential is bearer rather than a proof the door would refuse. `present(body, door=, op=)`,
+    `presented(model, door=, op=)`, `proves`, `own(token, PopKey)`, and
+    `for_tool_call(delegated_token=, identity_token=, key=)`.
+  - `PopKey` (the key a principal's own hub token binds) and `RegistrationKey` (a tool pod's
+    registration key, which the registry binds each call's delegated token to) are distinct types, so
+    neither can prove the other's token.
+  - The door: `DoorRequestDoor(switch=, jwks=EnvelopeJwksSource, hub_issuer=, replay_guard=,
+    accepts_delegated=)`, `admit(body, op=)` / `admit_message(data, op=)` -> `DoorVerdict`. A proof
+    is verified and its id spent (`door-proof|<agent>|<jti>`); the key set is refreshed once for an
+    unknown kid, and an empty one is refused as unavailable; without a proof the door's window judges;
+    a delegated token has no bearer form; refusals count on `door_request_refused{door,cause}`
+    (`absent`, `unverified`, `replayed`, `delegated`, `keys_unavailable`, `ledger_unavailable`,
+    `malformed`). Its ledger must remember an id for `DOOR_PROOF_REPLAY_TTL`: `ReplayGuard` and
+    `InProcessEnvelopeLedger` gain `retention` (the latter a `retention=` argument), checked at
+    construction (`DoorProofLedger`).
+  - Door and operation names: `APPROVAL_RECORD_DOOR`, `OBJECT_RESOLVE_OP`, `ENGAGEMENT_SCOPE_OP`,
+    `NAMESPACE_DISCOVER_OP`, `AUDIT_ANONYMIZE_OP`, `APPROVAL_RECORD_OP`, `datasource_query_op(name)`;
+    an `l3.*` request's operation is its subject's own part (`query`, `tx.commit`).
+- Callers. `NatsProxyL3Backend(pop_key=)` and `DatasourceQueryClient(pop_key=)` prove every request
+  (`current_pop_key()` lets a second pool borrow the provider); `request_audit_anonymization(pop_key=)`.
+  `ToolServer(door_key=)` takes one provider of a `PopKey` (an agent's in-process server) or a
+  `RegistrationKey` (a tool pod), and `ToolCallScope.credential` / `door_credential()` carry the call's
+  credential to its tools; `BuiltinToolPod` gives its `IdentityMinter.registration_key`.
+  `DynamicToolPod` holds no key of its own yet and forwards the caller's token.
+- Wire: `identity_proof` (optional) on `ObjectResolveRequestModel`, `EngagementScopeRequestModel`,
+  `NamespaceDiscoveryRequest`, `AuditAnonymizeRequest` and `DatasourceQueryRequest`.
+- **Consumers.** `ObjectResolver.resolve`, `EngagementScopeResolver.resolve` and
+  `NamespaceDiscoveryClient.discover` take an optional `credential: DoorCredential`; the tools pass
+  it only when it proves, so an implementer or fake written to the old signature keeps working for a
+  caller that holds no key, and must accept `credential=` before a key is given to its server.
+- `Subjects.l3_query`, `l3_batch` and `l3_tx` take an optional `namespace=`; the L3 backend builds
+  its subjects through them.
+- Rolling: every key is optional, and a caller without one sends the token alone, which each hub
+  door accepts until its dated window closes.
+
 ### Core: a call-scoped delegated token, and the door check on whoever presents a token
 
 - `threetears.core.security.delegated_token`: `mint_delegated_token` (the registry, per forwarded
@@ -40,7 +83,7 @@ packages (bumped in lock-step).
   `delegated+jwt`; at most an hour) / `verify_delegated_token` / `verify_door_caller` (a delegated
   token proven with the pod's key, or an agent's identity token proven with its own `cnf` key; the
   proof binds the token and the request body; `ProofAbsentError` leaves a bearer request to the
-  door's dated window). Additive: nothing mints or verifies them yet.
+  door's dated window).
 - The registry mints one per forwarded call (`CallProxy(delegated_signer=)`; the server reads the
   seed through `THREETEARS_REGISTRY_DELEGATED_TOKEN_SIGNING_KEY_REF`, default
   `env://THREETEARS_DELEGATED_TOKEN_SIGNING_KEY`: a key of its own, not the proxy-assertion key) into

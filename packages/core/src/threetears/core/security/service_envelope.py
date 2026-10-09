@@ -493,15 +493,33 @@ class InProcessEnvelopeLedger:
     identity generation, which a replayed refusal does not name.
     """
 
-    def __init__(self, *, clock: Callable[[], datetime] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], datetime] | None = None,
+        retention: timedelta = SERVICE_ENVELOPE_REPLAY_TTL,
+    ) -> None:
         """
         start with nothing spent.
 
         :param clock: the current time, timezone-aware; the system clock when ``None``
         :ptype clock: Callable[[], datetime] | None
+        :param retention: how long a spent id is remembered after its issue time; the envelope's
+            replay ttl unless a door's artifacts live longer
+        :ptype retention: timedelta
         """
         self._clock = clock if clock is not None else (lambda: datetime.now(UTC))
+        self._retention = retention
         self._spent: dict[str, datetime] = {}
+
+    @property
+    def retention(self) -> timedelta:
+        """how long a spent id is remembered after its issue time.
+
+        :return: the retention
+        :rtype: timedelta
+        """
+        return self._retention
 
     def require_covers(self, future_tolerance: timedelta) -> None:
         """accept any verifier tolerance up to the envelope's own leeway.
@@ -530,7 +548,7 @@ class InProcessEnvelopeLedger:
         """
         if issued_at.tzinfo is None:
             raise ValueError("InProcessEnvelopeLedger.record_unique requires a timezone-aware issued_at")
-        horizon = self._clock() - SERVICE_ENVELOPE_REPLAY_TTL
+        horizon = self._clock() - self._retention
         self._spent = {key: when for key, when in self._spent.items() if when >= horizon}
         fresh = nonce not in self._spent
         if fresh:

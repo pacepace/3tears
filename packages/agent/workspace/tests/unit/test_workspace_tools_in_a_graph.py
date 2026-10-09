@@ -50,7 +50,6 @@ class _Discovery:
         identity_token: str | None = None,
         user_identity_token: str | None = None,
         namespace_type: str | None = None,
-        holder_key: object | None = None,
     ) -> list[NamespaceDiscoverySummary]:
         """the fixed rows, recording the token.
 
@@ -62,8 +61,6 @@ class _Discovery:
         :ptype user_identity_token: str | None
         :param namespace_type: the namespace type filter
         :ptype namespace_type: str | None
-        :param holder_key: the key the token binds
-        :ptype holder_key: object | None
         :return: the rows
         :rtype: list[NamespaceDiscoverySummary]
         """

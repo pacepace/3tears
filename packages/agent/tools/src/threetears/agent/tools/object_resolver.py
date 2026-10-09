@@ -38,17 +38,15 @@ cross-tenant key.
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import TYPE_CHECKING, Protocol
+from typing import Protocol
 from uuid import UUID, uuid7
 
 from pydantic import BaseModel
 from threetears.media.contracts import ObjectHandle
-from threetears.core.security.door_request import DoorCredential
+from threetears.core.security.delegated_token import OBJECT_RESOLVE_DOOR
+from threetears.core.security.door_request import OBJECT_RESOLVE_OP, DoorCredential
 from threetears.nats import NatsClient, RequestError, Subjects
 from threetears.observe import get_logger
-
-if TYPE_CHECKING:
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 __all__ = [
     "HubObjectResolver",
@@ -183,7 +181,7 @@ class ObjectResolver(Protocol):
         *,
         customer_id: UUID,
         identity_token: str,
-        holder_key: Ed25519PrivateKey | None = None,
+        credential: DoorCredential | None = None,
     ) -> ObjectHandle:
         """resolve ``object_id`` to a handle carrying its stored key, or raise.
 
@@ -195,9 +193,11 @@ class ObjectResolver(Protocol):
         :param identity_token: the credential presented to the hub: the call's delegated token, or
             the caller's own identity token
         :ptype identity_token: str
-        :param holder_key: the key that credential binds, to prove possession of it over the
-            request; ``None`` from a caller that holds no key, which sends the token alone
-        :ptype holder_key: Ed25519PrivateKey | None
+        :param credential: the same token with the key it binds, to prove possession of it over the
+            request; the token alone when omitted. Pass it only when it proves
+            (:attr:`~threetears.core.security.DoorCredential.proves`), so an implementer written before
+            it keeps working for a caller that holds no key
+        :ptype credential: DoorCredential | None
         :return: a handle with the resolved ``s3_key`` / ``mime_type`` /
             ``size_bytes`` (``summary`` / ``category`` are ``None`` -- resolve
             returns only the storage-locating fields)
@@ -257,7 +257,7 @@ class HubObjectResolver:
         *,
         customer_id: UUID,
         identity_token: str,
-        holder_key: Ed25519PrivateKey | None = None,
+        credential: DoorCredential | None = None,
     ) -> ObjectHandle:
         """resolve ``object_id`` to a handle carrying its stored key, or raise.
 
@@ -273,9 +273,11 @@ class HubObjectResolver:
         :param identity_token: the credential presented to the hub: the call's delegated token, or
             the caller's own identity token
         :ptype identity_token: str
-        :param holder_key: the key that credential binds, to prove possession of it over the
-            request; ``None`` from a caller that holds no key, which sends the token alone
-        :ptype holder_key: Ed25519PrivateKey | None
+        :param credential: the same token with the key it binds, to prove possession of it over the
+            request; the token alone when omitted. Pass it only when it proves
+            (:attr:`~threetears.core.security.DoorCredential.proves`), so an implementer written before
+            it keeps working for a caller that holds no key
+        :ptype credential: DoorCredential | None
         :return: a handle with the resolved ``s3_key`` / ``mime_type`` /
             ``size_bytes``
         :rtype: ObjectHandle
@@ -285,12 +287,14 @@ class HubObjectResolver:
         cached = await self._remembered(customer_id, object_id)
         if cached is not None:
             return cached
-        request = DoorCredential(token=identity_token, holder_key=holder_key).presented(
+        request = _presented(identity_token, credential).presented(
             ObjectResolveRequestModel(
                 identity_token=identity_token,
                 correlation_id=uuid7(),
                 object_id=object_id,
-            )
+            ),
+            door=OBJECT_RESOLVE_DOOR,
+            op=OBJECT_RESOLVE_OP,
         )
         try:
             response = await self._nc.request(
@@ -369,3 +373,19 @@ class HubObjectResolver:
             oldest = next(iter(self._cache))
             del self._cache[oldest]
         self._cache[key] = handle
+
+
+def _presented(identity_token: str, credential: DoorCredential | None) -> DoorCredential:
+    """the credential a request is sent with: ``credential`` when it carries the request's token.
+
+    :param identity_token: the token the request carries
+    :ptype identity_token: str
+    :param credential: the caller's credential, if it passed one
+    :ptype credential: DoorCredential | None
+    :return: the credential to present
+    :rtype: DoorCredential
+    :raises ValueError: when ``credential`` carries another token than the request
+    """
+    if credential is not None and credential.token != identity_token:
+        raise ValueError("the credential carries another token than the request")
+    return credential if credential is not None else DoorCredential(token=identity_token)

@@ -8,8 +8,11 @@ from types import SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid7
 
+import pytest
 from threetears.core.security import (
     DoorCredential,
+    PopKey,
+    RegistrationKey,
     build_jwks,
     generate_signing_keypair,
     jwk_thumbprint,
@@ -18,13 +21,6 @@ from threetears.core.security import (
     verify_door_request,
 )
 from threetears.core.security.identity_token import IdentityClaims
-
-from threetears.agent.tools.call_scope import ToolCallScope, build_call_scope, enter_call_scope
-from threetears.agent.tools.consume import resolve_object
-from threetears.agent.tools.context_envelope import CallContext
-from threetears.agent.tools.engagement_resolver import EngagementScopeResponseModel, HubEngagementScopeResolver
-from threetears.agent.tools.namespace_discovery_client import NamespaceDiscoveryClient, NamespaceDiscoveryResponse
-from threetears.agent.tools.object_resolver import HubObjectResolver, ObjectResolveResponseModel
 from threetears.core.testing.replay_guard import FakeReplayGuard
 from threetears.media.contracts import ObjectHandle
 
@@ -35,6 +31,12 @@ from packages.agent.tools.tests.unit.tools.pod_auth import (
     recording_tool_server,
     signed_call_payload,
 )
+from threetears.agent.tools.call_scope import ToolCallScope, build_call_scope, enter_call_scope
+from threetears.agent.tools.consume import resolve_object
+from threetears.agent.tools.context_envelope import CallContext
+from threetears.agent.tools.engagement_resolver import EngagementScopeResponseModel, HubEngagementScopeResolver
+from threetears.agent.tools.namespace_discovery_client import NamespaceDiscoveryClient, NamespaceDiscoveryResponse
+from threetears.agent.tools.object_resolver import HubObjectResolver, ObjectResolveResponseModel
 
 _REGISTRY, _REGISTRY_PUB = generate_signing_keypair()
 _HUB, _HUB_PUB = generate_signing_keypair()
@@ -110,96 +112,168 @@ class _FakeResolver:
     """returns one handle, keeping the credential it was given."""
 
     def __init__(self) -> None:
-        self.presented: list[tuple[str, object | None]] = []
+        self.presented: list[tuple[str, DoorCredential | None]] = []
 
     async def resolve(
-        self, object_id: UUID, *, customer_id: UUID, identity_token: str, holder_key: object | None = None
+        self, object_id: UUID, *, customer_id: UUID, identity_token: str, credential: DoorCredential | None = None
     ) -> ObjectHandle:
-        self.presented.append((identity_token, holder_key))
+        self.presented.append((identity_token, credential))
         return ObjectHandle(
             object_id=object_id, s3_key=_KEY, mime_type="text/markdown", size_bytes=1, summary=None, category=None
         )
 
 
-async def test_a_tool_pods_scope_presents_the_delegated_token_with_the_pods_key() -> None:
-    token = _delegated("hub.object.resolve")
-    context = CallContext(customer_id=_CUSTOMER, identity_token="the-agents-own", delegated_token=token)
-    scope = await build_call_scope(context, principal_is_tool_pod=False, pod_key=_POD)
-    assert scope.door_credential() == DoorCredential(token=token, holder_key=_POD)
+class _ResolverWrittenBeforeProofs:
+    """an implementer of the protocol from before the credential existed."""
+
+    async def resolve(self, object_id: UUID, *, customer_id: UUID, identity_token: str) -> ObjectHandle:
+        return ObjectHandle(
+            object_id=object_id, s3_key=_KEY, mime_type="text/markdown", size_bytes=1, summary=None, category=None
+        )
 
 
-async def test_a_pod_without_its_key_still_forwards_the_callers_token() -> None:
-    context = CallContext(customer_id=_CUSTOMER, identity_token="the-agents-own", delegated_token=_delegated("l3"))
-    scope = await build_call_scope(context, principal_is_tool_pod=False)
-    assert scope.door_credential() == DoorCredential(token="the-agents-own")
+class TestTheScopesCredential:
+    """the server's one key decides which token is proven, by its type."""
+
+    async def test_a_tool_pods_registration_key_proves_the_delegation(self) -> None:
+        token = _delegated("hub.object.resolve")
+        context = CallContext(customer_id=_CUSTOMER, identity_token=_agent_token(), delegated_token=token)
+        scope = await build_call_scope(context, principal_is_tool_pod=False, door_key=RegistrationKey(_POD))
+        assert scope.door_credential() == DoorCredential(token=token, holder_key=_POD)
+
+    async def test_a_pod_without_its_key_still_forwards_the_callers_token(self) -> None:
+        agent = _agent_token()
+        context = CallContext(customer_id=_CUSTOMER, identity_token=agent, delegated_token=_delegated("l3"))
+        scope = await build_call_scope(context, principal_is_tool_pod=False)
+        assert scope.door_credential() == DoorCredential(token=agent)
+
+    async def test_an_in_process_servers_pop_key_proves_the_agents_own_token(self) -> None:
+        agent = _agent_token()
+        context = CallContext(customer_id=_CUSTOMER, identity_token=agent)
+        scope = await build_call_scope(context, principal_is_tool_pod=False, door_key=PopKey(_AGENT))
+        credential = scope.door_credential()
+        assert credential == DoorCredential(token=agent, holder_key=_AGENT)
+        assert credential is not None and credential.proves
+
+    async def test_a_registration_key_never_proves_the_agents_own_token(self) -> None:
+        agent = _agent_token()
+        scope = await build_call_scope(
+            CallContext(customer_id=_CUSTOMER, identity_token=agent),
+            principal_is_tool_pod=False,
+            door_key=RegistrationKey(_AGENT),
+        )
+        assert scope.door_credential() == DoorCredential(token=agent)
+
+    def test_a_hand_built_scope_presents_its_contexts_token_alone(self) -> None:
+        scope = ToolCallScope(context=CallContext(identity_token="the-agents-own"))
+        assert scope.door_credential() == DoorCredential(token="the-agents-own")
+        assert ToolCallScope().door_credential() is None
 
 
-async def test_an_in_process_server_proves_the_agents_own_token() -> None:
-    context = CallContext(customer_id=_CUSTOMER, identity_token="the-agents-own")
-    scope = await build_call_scope(context, principal_is_tool_pod=False, own_key=_AGENT)
-    assert scope.door_credential() == DoorCredential(token="the-agents-own", holder_key=_AGENT)
+class TestTheConsumeHelper:
+    """it passes the credential only when it proves, so an older resolver keeps working."""
+
+    async def test_it_presents_a_proving_credential(self) -> None:
+        token = _delegated("hub.object.resolve")
+        resolver = _FakeResolver()
+        context = CallContext(customer_id=_CUSTOMER, identity_token=_agent_token(), delegated_token=token)
+        scope = await build_call_scope(
+            context, principal_is_tool_pod=False, object_resolver=resolver, door_key=RegistrationKey(_POD)
+        )
+        async with enter_call_scope(scope):
+            await resolve_object(_OBJECT)
+        assert resolver.presented == [(token, DoorCredential(token=token, holder_key=_POD))]
+
+    async def test_a_resolver_written_before_proofs_still_resolves_a_bearer_call(self) -> None:
+        context = CallContext(customer_id=_CUSTOMER, identity_token=_agent_token())
+        scope = await build_call_scope(
+            context, principal_is_tool_pod=False, object_resolver=_ResolverWrittenBeforeProofs()
+        )
+        async with enter_call_scope(scope):
+            handle = await resolve_object(_OBJECT)
+        assert handle.s3_key == _KEY
 
 
-def test_a_hand_built_scope_presents_its_contexts_token_alone() -> None:
-    scope = ToolCallScope(context=CallContext(identity_token="the-agents-own"))
-    assert scope.door_credential() == DoorCredential(token="the-agents-own")
-    assert ToolCallScope().door_credential() is None
+class TestTheDoorClients:
+    """each client sends a request the door verifies for its own operation."""
+
+    async def test_the_object_resolver(self) -> None:
+        token = _delegated("hub.object.resolve")
+        nats = _RecordingNats(
+            ObjectResolveResponseModel(success=True, s3_key=_KEY, mime_type="text/markdown", size_bytes=1)
+        )
+        resolver = HubObjectResolver(nats, request_timeout_seconds=5.0)  # type: ignore[arg-type]
+        await resolver.resolve(
+            _OBJECT,
+            customer_id=_CUSTOMER,
+            identity_token=token,
+            credential=DoorCredential(token=token, holder_key=_POD),
+        )
+        caller = verify_door_request(
+            nats.sent[0], jwks=_JWKS, hub_issuer="hub", door="hub.object.resolve", op="resolve"
+        )
+        assert (caller.agent_id, caller.pod_id) == ("agent-1", "pod-1")
+
+    async def test_the_engagement_resolver(self) -> None:
+        token = _delegated("hub.engagement")
+        nats = _RecordingNats(EngagementScopeResponseModel(success=True, customer_id=_CUSTOMER, targets=[]))
+        resolver = HubEngagementScopeResolver(nats, request_timeout_seconds=5.0)  # type: ignore[arg-type]
+        await resolver.resolve(
+            uuid7(),
+            customer_id=_CUSTOMER,
+            identity_token=token,
+            credential=DoorCredential(token=token, holder_key=_POD),
+        )
+        caller = verify_door_request(nats.sent[0], jwks=_JWKS, hub_issuer="hub", door="hub.engagement", op="scope")
+        assert caller.pod_id == "pod-1"
+
+    async def test_namespace_discovery(self) -> None:
+        token = _agent_token()
+        nats = _RecordingRawNats(NamespaceDiscoveryResponse(items=[]).model_dump_json().encode())
+        client = NamespaceDiscoveryClient(nats, "test", timeout_seconds=1.0)
+        await client.discover(
+            correlation_id=uuid7(), identity_token=token, credential=DoorCredential(token=token, holder_key=_AGENT)
+        )
+        caller = verify_door_request(
+            nats.sent[0], jwks=_JWKS, hub_issuer="hub", door="namespace.discover", op="discover"
+        )
+        assert (caller.agent_id, caller.pod_id) == ("agent-1", None)
+
+    async def test_a_credential_for_another_token_is_refused_by_the_resolver(self) -> None:
+        nats = _RecordingNats(
+            ObjectResolveResponseModel(success=True, s3_key=_KEY, mime_type="text/markdown", size_bytes=1)
+        )
+        resolver = HubObjectResolver(nats, request_timeout_seconds=5.0)  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="another token"):
+            await resolver.resolve(
+                _OBJECT,
+                customer_id=_CUSTOMER,
+                identity_token="bearer",
+                credential=DoorCredential(token=_agent_token(), holder_key=_AGENT),
+            )
+
+    async def test_a_resolver_given_no_credential_sends_the_token_alone(self) -> None:
+        nats = _RecordingNats(
+            ObjectResolveResponseModel(success=True, s3_key=_KEY, mime_type="text/markdown", size_bytes=1)
+        )
+        resolver = HubObjectResolver(nats, request_timeout_seconds=5.0)  # type: ignore[arg-type]
+        await resolver.resolve(_OBJECT, customer_id=_CUSTOMER, identity_token="bearer")
+        assert nats.sent[0]["identity_token"] == "bearer"
+        assert nats.sent[0]["identity_proof"] is None
 
 
-async def test_the_consume_helper_presents_the_scopes_credential() -> None:
-    token = _delegated("hub.object.resolve")
-    resolver = _FakeResolver()
-    context = CallContext(customer_id=_CUSTOMER, identity_token="the-agents-own", delegated_token=token)
-    scope = await build_call_scope(context, principal_is_tool_pod=False, object_resolver=resolver, pod_key=_POD)
-    async with enter_call_scope(scope):
-        await resolve_object(_OBJECT)
-    assert resolver.presented == [(token, _POD)]
+async def test_the_tool_server_puts_its_key_on_each_calls_scope() -> None:
+    """the server's one key reaches every call's scope.
 
-
-async def test_the_object_resolver_sends_a_request_the_door_can_verify() -> None:
-    token = _delegated("hub.object.resolve")
-    nats = _RecordingNats(
-        ObjectResolveResponseModel(success=True, s3_key=_KEY, mime_type="text/markdown", size_bytes=1)
-    )
-    resolver = HubObjectResolver(nats, request_timeout_seconds=5.0)  # type: ignore[arg-type]
-    await resolver.resolve(_OBJECT, customer_id=_CUSTOMER, identity_token=token, holder_key=_POD)
-    caller = verify_door_request(nats.sent[0], jwks=_JWKS, hub_issuer="hub", door="hub.object.resolve")
-    assert (caller.agent_id, caller.pod_id) == ("agent-1", "pod-1")
-
-
-async def test_the_engagement_resolver_sends_a_request_the_door_can_verify() -> None:
-    token = _delegated("hub.engagement")
-    nats = _RecordingNats(EngagementScopeResponseModel(success=True, customer_id=_CUSTOMER, targets=[]))
-    resolver = HubEngagementScopeResolver(nats, request_timeout_seconds=5.0)  # type: ignore[arg-type]
-    await resolver.resolve(uuid7(), customer_id=_CUSTOMER, identity_token=token, holder_key=_POD)
-    caller = verify_door_request(nats.sent[0], jwks=_JWKS, hub_issuer="hub", door="hub.engagement")
-    assert caller.pod_id == "pod-1"
-
-
-async def test_namespace_discovery_sends_a_request_the_door_can_verify() -> None:
-    token = _agent_token()
-    nats = _RecordingRawNats(NamespaceDiscoveryResponse(items=[]).model_dump_json().encode())
-    client = NamespaceDiscoveryClient(nats, "test", timeout_seconds=1.0)
-    await client.discover(correlation_id=uuid7(), identity_token=token, holder_key=_AGENT)
-    caller = verify_door_request(nats.sent[0], jwks=_JWKS, hub_issuer="hub", door="namespace.discover")
-    assert (caller.agent_id, caller.pod_id) == ("agent-1", None)
-
-
-async def test_a_resolver_given_no_key_sends_the_token_alone() -> None:
-    nats = _RecordingNats(
-        ObjectResolveResponseModel(success=True, s3_key=_KEY, mime_type="text/markdown", size_bytes=1)
-    )
-    resolver = HubObjectResolver(nats, request_timeout_seconds=5.0)  # type: ignore[arg-type]
-    await resolver.resolve(_OBJECT, customer_id=_CUSTOMER, identity_token="bearer")
-    assert nats.sent[0]["identity_token"] == "bearer"
-    assert nats.sent[0]["identity_proof"] is None
-
-
-async def test_the_tool_server_puts_its_keys_on_each_calls_scope() -> None:
-    """a call with no delegated token: an agent's own key proves its token, a pod's key proves nothing."""
-    for keys, expected in (({"own_token_key": lambda: _AGENT}, _AGENT), ({"pod_key": lambda: _POD}, None)):
+    The calls in this harness carry a cnf-less forwarded token (pod_auth), so neither key binds it:
+    the credential is bearer whichever key the server holds. A key only proves the token it binds.
+    """
+    for key in (PopKey(_AGENT), RegistrationKey(_POD)):
         server, rec = recording_tool_server(
-            pod_id="door-pod", jwks_provider=jwks_provider, assertion_replay_guard=FakeReplayGuard(), **keys
+            pod_id="door-pod",
+            jwks_provider=jwks_provider,
+            assertion_replay_guard=FakeReplayGuard(),
+            door_key=lambda key=key: key,
         )
         tool = ScopeRecordingTool()
         server.register(tool)
@@ -209,4 +283,4 @@ async def test_the_tool_server_puts_its_keys_on_each_calls_scope() -> None:
         credential = scope.door_credential()
         assert credential is not None
         assert credential.token == scope.context.identity_token
-        assert credential.holder_key is expected
+        assert not credential.proves

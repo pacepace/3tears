@@ -56,14 +56,15 @@ from typing import TYPE_CHECKING, Any, ClassVar, Final
 from uuid import UUID, uuid7
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_serializer, field_validator, model_validator
-from threetears.core.security.door_request import DoorCredential
+from threetears.core.security.delegated_token import DATASOURCE_DOOR
+from threetears.core.security.door_request import DoorCredential, datasource_query_op
 from threetears.core.wire import TolerantWireModel
 from threetears.nats.errors import RequestError
 from threetears.nats.subjects import Subject, Subjects
 from threetears.observe import get_logger, traced
 
 if TYPE_CHECKING:
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from threetears.core.security.door_request import PopKey
     from threetears.nats import NatsClient
 
 __all__ = [
@@ -456,9 +457,9 @@ class DatasourceQueryClient:
     :ptype identity_token: Callable[[], str | None]
     :param timeout: how long one query may take before the client gives up
     :ptype timeout: timedelta | float
-    :param holder_key: zero-arg provider of the key the identity token binds; with it each request
+    :param pop_key: zero-arg provider of the key the identity token binds; with it each request
         carries a proof of possession over its body. ``None`` sends the token alone
-    :ptype holder_key: Callable[[], Ed25519PrivateKey | None] | None
+    :ptype pop_key: Callable[[], PopKey | None] | None
     """
 
     def __init__(
@@ -467,7 +468,7 @@ class DatasourceQueryClient:
         *,
         identity_token: Callable[[], str | None],
         timeout: timedelta | float = DEFAULT_QUERY_TIMEOUT_SECONDS,
-        holder_key: Callable[[], Ed25519PrivateKey | None] | None = None,
+        pop_key: Callable[[], PopKey | None] | None = None,
     ) -> None:
         """bind the transport, the identity provider and the deadline.
 
@@ -477,14 +478,14 @@ class DatasourceQueryClient:
         :ptype identity_token: Callable[[], str | None]
         :param timeout: per-query deadline; a number is seconds
         :ptype timeout: timedelta | float
-        :param holder_key: zero-arg provider of the key the identity token binds, read on every
+        :param pop_key: zero-arg provider of the key the identity token binds, read on every
             send; with it each request carries a proof of possession over its body
             (:mod:`threetears.core.security.door_request`). ``None`` sends the token alone
-        :ptype holder_key: Callable[[], Ed25519PrivateKey | None] | None
+        :ptype pop_key: Callable[[], PopKey | None] | None
         """
         self._nats_client = nats_client
         self._identity_token = identity_token
-        self._holder_key = holder_key
+        self._pop_key = pop_key
         self._timeout = timeout if isinstance(timeout, timedelta) else timedelta(seconds=float(timeout))
 
     def forwarded_identity_token(self) -> str:
@@ -511,7 +512,9 @@ class DatasourceQueryClient:
             )
         return token
 
-    async def _ask(self, subject: Subject, request: DatasourceQueryRequest) -> DatasourceQueryResponse:
+    async def _ask(
+        self, subject: Subject, request: DatasourceQueryRequest, *, datasource_name: str
+    ) -> DatasourceQueryResponse:
         """send the request, and ask again while the hub answers ``DATASOURCE_BUSY``, a bounded number of times.
 
         A busy refusal means nothing ran, so asking again is safe; the waits grow and are jittered so
@@ -521,6 +524,8 @@ class DatasourceQueryClient:
         :ptype subject: Subject
         :param request: the request
         :ptype request: DatasourceQueryRequest
+        :param datasource_name: the datasource the subject names, whose query the proof binds
+        :ptype datasource_name: str
         :return: the hub's answer
         :rtype: DatasourceQueryResponse
         :raises RequestError: when the bus fails to deliver or answer
@@ -528,7 +533,10 @@ class DatasourceQueryClient:
         wait = BUSY_BACKOFF_SECONDS
         attempts = 0
         response: DatasourceQueryResponse = await self._nats_client.request(
-            subject=subject, message=self._proven(request), response_type=DatasourceQueryResponse, timeout=self._timeout
+            subject=subject,
+            message=self._proven(request, datasource_name),
+            response_type=DatasourceQueryResponse,
+            timeout=self._timeout,
         )
         while response.error_code == DATASOURCE_BUSY and attempts < BUSY_RETRIES:
             attempts += 1
@@ -540,24 +548,28 @@ class DatasourceQueryClient:
             )
             response = await self._nats_client.request(
                 subject=subject,
-                message=self._proven(request),
+                message=self._proven(request, datasource_name),
                 response_type=DatasourceQueryResponse,
                 timeout=self._timeout,
             )
         return response
 
-    def _proven(self, request: DatasourceQueryRequest) -> DatasourceQueryRequest:
+    def _proven(self, request: DatasourceQueryRequest, datasource_name: str) -> DatasourceQueryRequest:
         """``request`` with a fresh proof of possession, when this client holds the token's key.
 
         Fresh per send: a proof is single-use at the door, so a request asked again carries a new one.
 
         :param request: the request, carrying the identity token
         :ptype request: DatasourceQueryRequest
+        :param datasource_name: the datasource it is sent to
+        :ptype datasource_name: str
         :return: the request to send
         :rtype: DatasourceQueryRequest
         """
-        key = self._holder_key() if self._holder_key is not None else None
-        return DoorCredential(token=request.identity_token.get_secret_value(), holder_key=key).presented(request)
+        key = self._pop_key() if self._pop_key is not None else None
+        return DoorCredential.own(request.identity_token.get_secret_value(), key).presented(
+            request, door=DATASOURCE_DOOR, op=datasource_query_op(datasource_name)
+        )
 
     @traced
     async def relation_fingerprint(
@@ -609,7 +621,7 @@ class DatasourceQueryClient:
         )
         subject = Subjects.datasource_query(datasource_name)
         try:
-            response = await self._ask(subject, request)
+            response = await self._ask(subject, request, datasource_name=datasource_name)
         except RequestError as exc:
             raise DatasourceQueryError("REQUEST_FAILED", f"relation fingerprint on {datasource_name!r}: {exc}") from exc
 
@@ -685,7 +697,7 @@ class DatasourceQueryClient:
             },
         )
         try:
-            response = await self._ask(subject, request)
+            response = await self._ask(subject, request, datasource_name=datasource_name)
         except RequestError as exc:
             log.warning(
                 "datasource query did not complete",

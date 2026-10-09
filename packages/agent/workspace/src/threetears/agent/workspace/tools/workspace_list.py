@@ -116,7 +116,8 @@ class WorkspaceListTool(TearsTool):
                     identity_token=identity_token,
                     user_identity_token=user_identity_token,
                     namespace_type="workspace",
-                    holder_key=None if credential is None else credential.holder_key,
+                    # the credential rides only when it proves, so a stand-in written before it keeps working
+                    **({"credential": credential} if credential is not None and credential.proves else {}),
                 )
                 # the ids stay UUIDs (or None) until the one border, json.dumps: an absent owner or
                 # customer becomes JSON null there, where a per-field str() rendered it "None".

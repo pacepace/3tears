@@ -200,8 +200,8 @@ _EMPTY_TOOL_NAMES: tuple[str, ...] = ()
 _UNHEALTHY_EXIT_THRESHOLD: int = 3
 
 if TYPE_CHECKING:
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from threetears.core.coordination.replay_anchor import ReplayAnchor
+    from threetears.core.security.door_request import PopKey, RegistrationKey
 
     from threetears.agent.tools.engagement_resolver import EngagementScopeResolver
     from threetears.agent.tools.object_resolver import ObjectResolver
@@ -1040,8 +1040,7 @@ class ToolServer:
         max_concurrent_calls: int | None = None,
         max_call_seconds: float | None = None,
         result_delivery_retry_seconds: float = _RESULT_DELIVERY_RETRY_SECONDS,
-        pod_key: "Callable[[], Ed25519PrivateKey | None] | None" = None,
-        own_token_key: "Callable[[], Ed25519PrivateKey | None] | None" = None,
+        door_key: "Callable[[], PopKey | RegistrationKey | None] | None" = None,
     ) -> None:
         """initialize tool server.
 
@@ -1189,16 +1188,15 @@ class ToolServer:
             result after a transient failure -- long enough for a reconnect to complete, short
             enough to fit every attempt inside a caller's timeout. Must be >= 0.
         :ptype result_delivery_retry_seconds: float
-        :param pod_key: zero-arg PROVIDER of this tool pod's own identity key, the key its verified
-            registration is signed with. With it, a tool reaching a platform door for a call presents
-            the registry's delegated token and proves it with this key, instead of forwarding the
-            caller's own bearer token. ``None`` for a pod that predates that, and for an agent's
-            in-process server
-        :ptype pod_key: Callable[[], Ed25519PrivateKey | None] | None
-        :param own_token_key: zero-arg PROVIDER of the key the calls' identity token binds, for an
-            agent's in-process server, which is the caller itself and proves its own token. Never a
-            tool pod's key
-        :ptype own_token_key: Callable[[], Ed25519PrivateKey | None] | None
+        :param door_key: zero-arg PROVIDER of the key a tool proves its door credential with
+            (:mod:`threetears.core.security.door_request`), read per call. A tool pod gives its
+            :class:`~threetears.core.security.RegistrationKey` -- the key its verified registration is
+            signed with, which the registry binds each call's delegated token to -- so a tool presents
+            that token, proven, instead of forwarding the caller's bearer token. An agent's in-process
+            server, which is the caller itself, gives its
+            :class:`~threetears.core.security.PopKey` and proves its own token. One provider, so a
+            server is in exactly one of those roles; ``None`` forwards the caller's token alone
+        :ptype door_key: Callable[[], PopKey | RegistrationKey | None] | None
         :param assertion_replay_anchor: the durable first-existence record for the
             self-provisioned assertion replay guard, so it can tell a first run from a wiped
             bucket. ``None`` for a pod with nowhere to record one, which leaves that guard
@@ -1288,9 +1286,8 @@ class ToolServer:
         # presented to NATS on connect INSTEAD of user/password AND re-minted for each registration
         # manifest so the registry-layer verifier always sees a fresh JWT. None -> static fallback.
         self._auth_token = auth_token
-        # the keys a call's door credential is proven with (ToolCallScope.credential), read per call
-        self._pod_key = pod_key
-        self._own_token_key = own_token_key
+        # the key a call's door credential is proven with (ToolCallScope.credential), read per call
+        self._door_key = door_key
         self._context_factory = context_factory
         self._customer_id = customer_id
         # defense-in-depth: the pod re-verifies the Hub identity token AND the proxy's body-bound
@@ -3775,8 +3772,7 @@ class ToolServer:
             object_store=self._object_store,
             object_resolver=self._object_resolver,
             engagement_resolver=self._engagement_resolver,
-            pod_key=self._pod_key() if self._pod_key is not None else None,
-            own_key=self._own_token_key() if self._own_token_key is not None else None,
+            door_key=self._door_key() if self._door_key is not None else None,
         )
 
     async def _heartbeat_loop(self) -> None:

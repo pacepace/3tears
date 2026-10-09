@@ -11,7 +11,7 @@ The code says what it does. This gate holds the two equal, in both directions:
   pods running OLDER releases too, so a subject the current code stopped using stays until no
   supported release uses it (expand, migrate, contract).
 - **every receiver in this repository is accounted for.** The sender-posture walker finds each place
-  3tears starts receiving; :data:`_RECEIVERS` says which principals run it and on which subjects, or
+  3tears starts receiving; :func:`_receivers` says which principals run it and on which subjects, or
   why it needs no grant of its own. A new receiver fails here until it is placed.
 - **dead-letters follow subscriptions.** ``NatsClient.subscribe`` and ``subscribe_typed`` republish a
   failed callback to ``{ns}.deadletter.<subscription subject>`` by default, so each principal may
@@ -25,8 +25,9 @@ acknowledged on the inbox. An answer to a request rides ``allow_responses`` and 
 
 Subjects built at runtime are built here through the same :class:`Subjects` builder the site calls,
 with the runtime tokens filled the way the site fills them. A site in this repository names its module
-and a piece of text the module must still contain, so a site that moves or goes fails here; a site in
-the SDK or the hub names its file and line as evidence, and is checked by that repository's own gate.
+and the builder call its code (not a comment) must still contain, so a site that moves or goes fails
+here. A site in the SDK or the hub names its file and line as the evidence it was placed on; nothing
+here checks that evidence, so it is a pointer for a reader, not a guarantee.
 
 :data:`Principal.HUB` is not gated: see :data:`_UNGATED`.
 """
@@ -38,7 +39,7 @@ import uuid
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal
 from uuid import UUID
 
 import pytest
@@ -187,9 +188,15 @@ def _l3() -> tuple[str, ...]:
     :return: query, batch and each transaction op
     :rtype: tuple[str, ...]
     """
-    ns = get_default_namespace()
-    ops = ("begin", "execute", "fetch", "fetchrow", "commit", "rollback")
-    return (f"{ns}.l3.query", f"{ns}.l3.batch", *(f"{ns}.l3.tx.{op}" for op in ops))
+    ops: tuple[Literal["begin", "execute", "fetch", "fetchrow", "commit", "rollback"], ...] = (
+        "begin",
+        "execute",
+        "fetch",
+        "fetchrow",
+        "commit",
+        "rollback",
+    )
+    return (str(Subjects.l3_query()), str(Subjects.l3_batch()), *(str(Subjects.l3_tx(op)) for op in ops))
 
 
 def _inbox_subjects(principal: Principal) -> tuple[str, ...]:
@@ -355,7 +362,7 @@ def _publish_sites() -> dict[Principal, tuple[_Site, ...]]:
     jwks = _here(
         "packages/core/src/threetears/core/security/jwks_provider.py", "Subjects.hub_jwks()", str(Subjects.hub_jwks())
     )
-    l3 = _here("packages/core/src/threetears/core/backends/nats_proxy.py", ".l3.tx.", *_l3())
+    l3 = _here("packages/core/src/threetears/core/backends/nats_proxy.py", "Subjects.l3_tx(", *_l3())
     server = "packages/agent/tools/src/threetears/agent/tools/server.py"
     audit = "packages/agent/audit/src/threetears/agent/audit/publish.py"
     inprocess = _inprocess_pod()
@@ -691,6 +698,19 @@ def test_every_receiver_here_is_placed() -> None:
     assert not placed - found, f"placements naming no receiver: {sorted(placed - found)}"
 
 
+def _code_of(path: Path) -> str:
+    """a module's text with its comment lines left out, so a needle cannot be found in a comment.
+
+    :param path: the module
+    :ptype path: Path
+    :return: its code lines
+    :rtype: str
+    """
+    return "\n".join(
+        line for line in path.read_text(encoding="utf-8").splitlines() if not line.lstrip().startswith("#")
+    )
+
+
 def test_every_site_here_still_exists() -> None:
     """each publish site in this repository still holds the text that makes it the site.
 
@@ -701,7 +721,7 @@ def test_every_site_here_still_exists() -> None:
         f"{site.where}: {site.needle!r}"
         for sites in _publish_sites().values()
         for site in sites
-        if site.needle and site.needle not in (_REPO_ROOT / site.where).read_text(encoding="utf-8")
+        if site.needle and site.needle not in _code_of(_REPO_ROOT / site.where)
     ]
     assert not missing, f"publish sites gone from their modules: {missing}"
 

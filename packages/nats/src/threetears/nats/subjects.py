@@ -2009,27 +2009,35 @@ class Subjects:
     # ------------------------------------------------------------------
 
     @classmethod
-    def l3_query(cls) -> Subject:
+    def l3_query(cls, *, namespace: str | None = None) -> Subject:
         """request/reply subject for agent -> L3 broker single-statement query.
 
+        :param namespace: the subject namespace, for a client built on an explicit one; the
+            process default when ``None``
+        :ptype namespace: str | None
         :return: subject ``{ns}.l3.query``
         :rtype: Subject
         """
-        return Subject(path=f"{_ns()}.l3.query", kind="point")
+        return Subject(path=f"{namespace or _ns()}.l3.query", kind="point")
 
     @classmethod
-    def l3_batch(cls) -> Subject:
+    def l3_batch(cls, *, namespace: str | None = None) -> Subject:
         """request/reply subject for agent -> L3 broker transactional batch.
 
+        :param namespace: the subject namespace, for a client built on an explicit one; the
+            process default when ``None``
+        :ptype namespace: str | None
         :return: subject ``{ns}.l3.batch``
         :rtype: Subject
         """
-        return Subject(path=f"{_ns()}.l3.batch", kind="point")
+        return Subject(path=f"{namespace or _ns()}.l3.batch", kind="point")
 
     @classmethod
     def l3_tx(
         cls,
         op: Literal["begin", "execute", "fetchrow", "fetch", "commit", "rollback"],
+        *,
+        namespace: str | None = None,
     ) -> Subject:
         """request/reply subject for L3 broker explicit-transaction operations.
 
@@ -2042,10 +2050,13 @@ class Subjects:
 
         :param op: transaction operation phase
         :ptype op: Literal["begin", "execute", "fetchrow", "fetch", "commit", "rollback"]
+        :param namespace: the subject namespace, for a client built on an explicit one; the
+            process default when ``None``
+        :ptype namespace: str | None
         :return: subject ``{ns}.l3.tx.{op}``
         :rtype: Subject
         """
-        return Subject(path=f"{_ns()}.l3.tx.{op}", kind="point")
+        return Subject(path=f"{namespace or _ns()}.l3.tx.{op}", kind="point")
 
     # ------------------------------------------------------------------
     # acl

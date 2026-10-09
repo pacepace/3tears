@@ -70,13 +70,14 @@ from typing import TYPE_CHECKING, Annotated, ClassVar, Final
 from uuid import UUID, uuid7
 
 from pydantic import BaseModel, Field, ValidationError
-from threetears.core.security.door_request import DoorCredential
+from threetears.core.security.delegated_token import AUDIT_ANONYMIZE_DOOR
+from threetears.core.security.door_request import AUDIT_ANONYMIZE_OP, DoorCredential
 from threetears.core.wire import TolerantWireModel
 from threetears.nats import RequestError, Subjects
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from threetears.core.security.door_request import PopKey
     from threetears.nats import NatsClient
 
 __all__ = [
@@ -251,7 +252,7 @@ async def request_audit_anonymization(
     agent_id: UUID,
     actor_user_ids: Collection[UUID],
     timeout_seconds: float = DEFAULT_ANONYMIZE_TIMEOUT_SECONDS,
-    holder_key: Ed25519PrivateKey | None = None,
+    pop_key: PopKey | None = None,
 ) -> AuditAnonymization:
     """ask the hub to anonymize the audit rows this agent published about ``actor_user_ids``.
 
@@ -272,9 +273,9 @@ async def request_audit_anonymization(
     :ptype actor_user_ids: Collection[UUID]
     :param timeout_seconds: seconds to wait for each batch's answer
     :ptype timeout_seconds: float
-    :param holder_key: the key ``identity_token`` binds, to prove possession of it over each
-        batch; ``None`` from a caller that holds no key, which sends the token alone
-    :ptype holder_key: Ed25519PrivateKey | None
+    :param pop_key: the key ``identity_token`` binds, to prove possession of it over each batch;
+        ``None``, or a key the token does not bind, sends the token alone
+    :ptype pop_key: PopKey | None
     :return: the rows matched and changed, summed over the batches
     :rtype: AuditAnonymization
     :raises AuditAnonymizeRefusedError: when the hub refuses a batch with ``INVALID_REQUEST``,
@@ -289,7 +290,7 @@ async def request_audit_anonymization(
         return AuditAnonymization(rows_matched=0, rows_changed=0)
     if not identity_token:
         raise AuditAnonymizeUnavailableError("audit anonymization has no identity token to present")
-    credential = DoorCredential(token=identity_token, holder_key=holder_key)
+    credential = DoorCredential.own(identity_token, pop_key)
     matched = changed = 0
     for start in range(0, len(actors), MAX_ANONYMIZE_ACTORS):
         reply = await _send(
@@ -300,7 +301,9 @@ async def request_audit_anonymization(
                     correlation_id=uuid7(),
                     agent_id=agent_id,
                     actor_user_ids=actors[start : start + MAX_ANONYMIZE_ACTORS],
-                )
+                ),
+                door=AUDIT_ANONYMIZE_DOOR,
+                op=AUDIT_ANONYMIZE_OP,
             ),
             timeout_seconds=timeout_seconds,
         )

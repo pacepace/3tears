@@ -69,7 +69,7 @@ __all__ = [
 ]
 
 if TYPE_CHECKING:
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from threetears.core.security.door_request import PopKey, RegistrationKey
 
     from threetears.agent.tools.context import ToolContextManager
     from threetears.agent.tools.engagement_resolver import EngagementScopeResolver
@@ -182,8 +182,7 @@ async def build_call_scope(
     object_store: ObjectStore | None = None,
     object_resolver: "ObjectResolver | None" = None,
     engagement_resolver: "EngagementScopeResolver | None" = None,
-    pod_key: "Ed25519PrivateKey | None" = None,
-    own_key: "Ed25519PrivateKey | None" = None,
+    door_key: "PopKey | RegistrationKey | None" = None,
 ) -> ToolCallScope:
     """the scope one tool call runs in: its identity, and the pod-level resources tools reach through it.
 
@@ -210,10 +209,9 @@ async def build_call_scope(
     :ptype object_resolver: ObjectResolver | None
     :param engagement_resolver: the pod's engagement-scope resolver
     :ptype engagement_resolver: EngagementScopeResolver | None
-    :param pod_key: a tool pod's own identity key, which proves a delegated token
-    :ptype pod_key: Ed25519PrivateKey | None
-    :param own_key: the key the context's identity token binds, for an agent's in-process server
-    :ptype own_key: Ed25519PrivateKey | None
+    :param door_key: the server's key -- a tool pod's registration key, which proves the call's
+        delegated token, or an agent's pop key, which proves its own token
+    :ptype door_key: PopKey | RegistrationKey | None
     :return: the scope
     :rtype: ToolCallScope
     """
@@ -231,8 +229,7 @@ async def build_call_scope(
         credential=DoorCredential.for_tool_call(
             delegated_token=identity.delegated_token,
             identity_token=identity.identity_token,
-            pod_key=pod_key,
-            own_key=own_key,
+            key=door_key,
         ),
     )
 

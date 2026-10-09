@@ -171,7 +171,8 @@ class WorkspaceCurrentTool(TearsTool):
             identity_token=identity_token,
             user_identity_token=user_identity_token,
             namespace_type="workspace",
-            holder_key=None if credential is None else credential.holder_key,
+            # the credential rides only when it proves, so a stand-in written before it keeps working
+            **({"credential": credential} if credential is not None and credential.proves else {}),
         )
         visible = any(item.id == workspace_id for item in items)
         if not visible:

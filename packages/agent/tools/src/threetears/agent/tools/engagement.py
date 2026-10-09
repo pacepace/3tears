@@ -111,9 +111,9 @@ async def resolve_engagement_scope() -> EngagementScope:
         raise EngagementScopeUnavailableError(
             "the call context carries no identity_token; cannot authenticate the engagement scope resolve"
         )
-    resolved = await resolver.resolve(
-        engagement_id, customer_id=customer_id, identity_token=credential.token, holder_key=credential.holder_key
-    )
+    # the credential rides only when it proves, so a resolver written before it keeps working
+    proof = {"credential": credential} if credential.proves else {}
+    resolved = await resolver.resolve(engagement_id, customer_id=customer_id, identity_token=credential.token, **proof)
     if resolved.customer_id != customer_id:
         # echoed-customer mismatch: the hub resolved against a DIFFERENT customer
         # than this call's verified one. never happens on a correct path (both

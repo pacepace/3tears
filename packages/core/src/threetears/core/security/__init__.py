@@ -130,8 +130,11 @@ from threetears.core.security.door_request import (
     DOOR_PROOF_REPLAY_TTL,
     DOOR_TOKEN_FIELD,
     DoorCredential,
+    DoorProofLedger,
     DoorRequestDoor,
     DoorVerdict,
+    PopKey,
+    RegistrationKey,
     door_request_hash,
     verify_door_request,
 )
@@ -194,8 +197,11 @@ __all__ = [
     "DOOR_PROOF_REPLAY_TTL",
     "DOOR_TOKEN_FIELD",
     "DoorCredential",
+    "DoorProofLedger",
     "DoorRequestDoor",
     "DoorVerdict",
+    "PopKey",
+    "RegistrationKey",
     "door_request_hash",
     "verify_door_request",
     # turn assertions

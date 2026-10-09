@@ -53,13 +53,9 @@ class _FakeResolver:
         self._scope = scope
         self._error = error
         self.calls: list[tuple[UUID, UUID, str]] = []
-        self.holder_keys: list[object | None] = []
 
-    async def resolve(
-        self, engagement_id: UUID, *, customer_id: UUID, identity_token: str, holder_key: object | None = None
-    ) -> EngagementScope:
+    async def resolve(self, engagement_id: UUID, *, customer_id: UUID, identity_token: str) -> EngagementScope:
         self.calls.append((engagement_id, customer_id, identity_token))
-        self.holder_keys.append(holder_key)
         if self._error is not None:
             raise self._error
         assert self._scope is not None

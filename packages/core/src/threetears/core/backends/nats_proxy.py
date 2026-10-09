@@ -21,7 +21,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, Literal, NoReturn
 from uuid import UUID, uuid7
 
 import asyncpg
@@ -33,7 +33,8 @@ from threetears.core.exceptions import (
     DataVersionSupersededError,
 )
 from threetears.core.namespaces import PLURAL_PREFIX_AGENT, build_namespace_name
-from threetears.core.security.door_request import DOOR_TOKEN_FIELD, DoorCredential
+from threetears.core.security.delegated_token import L3_DOOR
+from threetears.core.security.door_request import DOOR_TOKEN_FIELD, DoorCredential, PopKey
 
 # Subject comes from its own module, and NatsClient only under TYPE_CHECKING.
 # `threetears.core.collections` MUST import with nats-py absent -- that is the
@@ -42,12 +43,10 @@ from threetears.core.security.door_request import DOOR_TOKEN_FIELD, DoorCredenti
 # lazy loader and raises at import time on an L1-only install. `subjects` pulls in
 # no client, so it is safe eagerly; the annotation needs no runtime object because
 # this module has `from __future__ import annotations`.
-from threetears.nats.subjects import Subject
+from threetears.nats.subjects import Subject, Subjects
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-
     from threetears.nats import NatsClient
 
 __all__ = [
@@ -547,7 +546,7 @@ class NatsProxyL3Backend:
         timeout_ms: int | None = None,
         identity_token: Callable[[], str | None] | None = None,
         on_superseded: Callable[[DataVersionSupersededError], None] | None = None,
-        holder_key: Callable[[], Ed25519PrivateKey | None] | None = None,
+        pop_key: Callable[[], PopKey | None] | None = None,
     ) -> None:
         """initialize NatsProxyL3Backend.
 
@@ -616,12 +615,12 @@ class NatsProxyL3Backend:
             raises is logged and does not replace the error the caller receives. ``None`` means
             no one is told, and the error is still raised.
         :ptype on_superseded: Callable[[DataVersionSupersededError], None] | None
-        :param holder_key: zero-arg PROVIDER of the key the identity token binds (its ``cnf``), read
+        :param pop_key: zero-arg PROVIDER of the key the identity token binds (its ``cnf``), read
             per request like the token. When it answers a key, every request also carries a proof
             of possession over its body (:mod:`threetears.core.security.door_request`), so the token
             is useless to anyone who lifts it from the wire. ``None``, or a provider answering
             ``None``, sends the token alone, which the broker accepts until its window closes
-        :ptype holder_key: Callable[[], Ed25519PrivateKey | None] | None
+        :ptype pop_key: Callable[[], PopKey | None] | None
         :raises ValueError: when neither an agent id nor an owned namespace was
             supplied, so there is no namespace to send anything to
         """
@@ -645,7 +644,7 @@ class NatsProxyL3Backend:
         self.ns = namespace_prefix
         self.agent_id = agent_id
         self._identity_token = identity_token
-        self._holder_key = holder_key
+        self._pop_key = pop_key
         self._on_superseded = on_superseded
         self._superseded_reported = False
         self.default_namespace = resolved_namespace
@@ -890,7 +889,7 @@ class NatsProxyL3Backend:
             ],
             "transaction": transaction,
         }
-        subject = f"{self.ns}.l3.batch"
+        subject = Subjects.l3_batch(namespace=self.ns).path
         response = await self.nats_request(subject, payload)
 
         if not response.get("success", False):
@@ -940,7 +939,7 @@ class NatsProxyL3Backend:
         if customer_scope is not None:
             # convert at border: NATS l3.query request payload field.
             payload["conv_customer_id"] = str(customer_scope)
-        subject = f"{self.ns}.l3.query"
+        subject = Subjects.l3_query(namespace=self.ns).path
         response = await self.nats_request(subject, payload)
 
         if not response.get("success", False):
@@ -974,7 +973,7 @@ class NatsProxyL3Backend:
         :raises DataLayerUnavailableError: if NATS request times out,
             the broker returns malformed JSON, or the client is closed
         """
-        payload_bytes = self._encode(payload)
+        payload_bytes = self._encode(subject, payload)
         nats_timeout = (self.timeout_ms / 1000) + 2
 
         try:
@@ -989,33 +988,39 @@ class NatsProxyL3Backend:
 
         return result
 
-    def current_holder_key(self) -> Ed25519PrivateKey | None:
+    def current_pop_key(self) -> PopKey | None:
         """the key this backend's requests are proven with, read through its provider now.
 
         For a second backend over the same principal, which borrows this provider exactly as it
         borrows :meth:`forwarded_identity_token`.
 
         :return: the key, or ``None`` when the backend has none
-        :rtype: Ed25519PrivateKey | None
+        :rtype: PopKey | None
         """
-        return self._holder_key() if self._holder_key is not None else None
+        return self._pop_key() if self._pop_key is not None else None
 
-    def _encode(self, payload: dict[str, Any]) -> bytes:
+    def _encode(self, subject: str, payload: dict[str, Any]) -> bytes:
         """the request's wire bytes, proven with the holder key when this backend has one.
 
         The proof signs the body as the broker will parse it, so the body is first put through the
         same encoder the wire uses and read back as JSON values.
 
+        :param subject: the subject the request is sent on, whose own part the proof binds
+        :ptype subject: str
         :param payload: the request payload
         :ptype payload: dict[str, Any]
         :return: the encoded request
         :rtype: bytes
         """
         text = json.dumps(payload, default=json_default)
-        key = self.current_holder_key()
         token = payload.get(DOOR_TOKEN_FIELD)
-        if key is not None and isinstance(token, str) and token:
-            text = json.dumps(DoorCredential(token=token, holder_key=key).present(json.loads(text)))
+        if isinstance(token, str) and token:
+            credential = DoorCredential.own(token, self.current_pop_key())
+            if credential.proves:
+                # the operation is the subject's own part (``query``, ``tx.commit``): two subjects that
+                # take one body shape never share a proof
+                op = subject.removeprefix(f"{self.ns}.{L3_DOOR}.")
+                text = json.dumps(credential.present(json.loads(text), door=L3_DOOR, op=op))
         return text.encode("utf-8")
 
     def acquire(self) -> "_ProxyAcquireCM":
@@ -1272,7 +1277,7 @@ class _ProxyConnection:
             "query": query,
             "params": [_serialize_param(p) for p in params],
         }
-        subject = f"{self._backend.ns}.l3.tx.execute"
+        subject = Subjects.l3_tx("execute", namespace=self._backend.ns).path
         response = await self._backend.nats_request(subject, payload)
         if not response.get("success", False):
             self._backend.raise_for_failed_reply(response, "tx.execute")
@@ -1323,7 +1328,7 @@ class _ProxyConnection:
             "query": query,
             "params": [_serialize_param(p) for p in params],
         }
-        subject = f"{self._backend.ns}.l3.tx.fetchrow"
+        subject = Subjects.l3_tx("fetchrow", namespace=self._backend.ns).path
         response = await self._backend.nats_request(subject, payload)
         if not response.get("success", False):
             self._backend.raise_for_failed_reply(response, "tx.fetchrow")
@@ -1418,7 +1423,7 @@ class _ProxyConnection:
             "query": query,
             "params": [_serialize_param(p) for p in params],
         }
-        subject = f"{self._backend.ns}.l3.tx.fetch"
+        subject = Subjects.l3_tx("fetch", namespace=self._backend.ns).path
         response = await self._backend.nats_request(subject, payload)
         if not response.get("success", False):
             self._backend.raise_for_failed_reply(response, "tx.fetch")
@@ -1447,7 +1452,7 @@ class _ProxyConnection:
             "identity_token": self._backend.forwarded_identity_token(),
             "tx_id": str(tx_id),  # convert at border: NATS l3.tx.rollback request payload field
         }
-        subject = f"{self._backend.ns}.l3.tx.rollback"
+        subject = Subjects.l3_tx("rollback", namespace=self._backend.ns).path
         try:
             await self._backend.nats_request(subject, payload)
         finally:
@@ -1528,7 +1533,7 @@ class _ProxyTransaction:
             "namespace": effective_namespace,
             "statement_timeout_ms": self._backend.timeout_ms,
         }
-        subject = f"{self._backend.ns}.l3.tx.begin"
+        subject = Subjects.l3_tx("begin", namespace=self._backend.ns).path
         response = await self._backend.nats_request(subject, payload)
         if not response.get("success", False):
             self._backend.raise_for_failed_reply(response, "tx.begin")
@@ -1569,8 +1574,8 @@ class _ProxyTransaction:
             "identity_token": self._backend.forwarded_identity_token(),
             "tx_id": str(tx_id),  # convert at border: NATS l3.tx.commit/rollback request payload field
         }
-        action = "rollback" if exc_type is not None else "commit"
-        subject = f"{self._backend.ns}.l3.tx.{action}"
+        action: Literal["commit", "rollback"] = "rollback" if exc_type is not None else "commit"
+        subject = Subjects.l3_tx(action, namespace=self._backend.ns).path
         try:
             response = await self._backend.nats_request(subject, payload)
             if not response.get("success", False):

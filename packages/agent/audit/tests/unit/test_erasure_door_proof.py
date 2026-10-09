@@ -9,6 +9,7 @@ from typing import Any
 from uuid import UUID, uuid7
 
 from threetears.core.security import (
+    PopKey,
     build_jwks,
     generate_signing_keypair,
     jwk_thumbprint,
@@ -70,9 +71,9 @@ async def test_a_batch_is_proven_over_its_own_body() -> None:
         identity_token=_token(),
         agent_id=_AGENT,
         actor_user_ids=[uuid7()],
-        holder_key=_KEY,
+        pop_key=PopKey(_KEY),
     )
-    caller = verify_door_request(nats.sent[0], jwks=_JWKS, hub_issuer="hub", door="hub.audit.anonymize")
+    caller = verify_door_request(nats.sent[0], jwks=_JWKS, hub_issuer="hub", door="hub.audit.anonymize", op="anonymize")
     assert caller.agent_id == f"{_AGENT}"
 
 

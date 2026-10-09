@@ -41,16 +41,14 @@ A tool must never proceed on an unresolved or cross-tenant scope.
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import TYPE_CHECKING, Protocol
+from typing import Protocol
 from uuid import UUID, uuid7
 
 from pydantic import BaseModel
-from threetears.core.security.door_request import DoorCredential
+from threetears.core.security.delegated_token import ENGAGEMENT_DOOR
+from threetears.core.security.door_request import ENGAGEMENT_SCOPE_OP, DoorCredential
 from threetears.nats import NatsClient, RequestError, Subjects
 from threetears.observe import get_logger
-
-if TYPE_CHECKING:
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 __all__ = [
     "EngagementScope",
@@ -198,7 +196,7 @@ class EngagementScopeResolver(Protocol):
         *,
         customer_id: UUID,
         identity_token: str,
-        holder_key: Ed25519PrivateKey | None = None,
+        credential: DoorCredential | None = None,
     ) -> EngagementScope:
         """resolve ``engagement_id`` to its authorized scope, or raise.
 
@@ -211,9 +209,11 @@ class EngagementScopeResolver(Protocol):
         :param identity_token: the credential presented to the hub: the call's delegated token, or
             the caller's own identity token
         :ptype identity_token: str
-        :param holder_key: the key that credential binds, to prove possession of it over the
-            request; ``None`` from a caller that holds no key, which sends the token alone
-        :ptype holder_key: Ed25519PrivateKey | None
+        :param credential: the same token with the key it binds, to prove possession of it over the
+            request; the token alone when omitted. Pass it only when it proves
+            (:attr:`~threetears.core.security.DoorCredential.proves`), so an implementer written before
+            it keeps working for a caller that holds no key
+        :ptype credential: DoorCredential | None
         :return: the resolved engagement scope (verified customer + active targets)
         :rtype: EngagementScope
         :raises ResolveEngagementScopeError: transport failure, hub rejection, or a
@@ -252,7 +252,7 @@ class HubEngagementScopeResolver:
         *,
         customer_id: UUID,
         identity_token: str,
-        holder_key: Ed25519PrivateKey | None = None,
+        credential: DoorCredential | None = None,
     ) -> EngagementScope:
         """resolve ``engagement_id`` to its authorized scope, or raise.
 
@@ -270,20 +270,24 @@ class HubEngagementScopeResolver:
         :param identity_token: the credential presented to the hub: the call's delegated token, or
             the caller's own identity token
         :ptype identity_token: str
-        :param holder_key: the key that credential binds, to prove possession of it over the
-            request; ``None`` from a caller that holds no key, which sends the token alone
-        :ptype holder_key: Ed25519PrivateKey | None
+        :param credential: the same token with the key it binds, to prove possession of it over the
+            request; the token alone when omitted. Pass it only when it proves
+            (:attr:`~threetears.core.security.DoorCredential.proves`), so an implementer written before
+            it keeps working for a caller that holds no key
+        :ptype credential: DoorCredential | None
         :return: the resolved engagement scope
         :rtype: EngagementScope
         :raises ResolveEngagementScopeError: transport failure, hub rejection, or a
             malformed success reply
         """
-        request = DoorCredential(token=identity_token, holder_key=holder_key).presented(
+        request = _presented(identity_token, credential).presented(
             EngagementScopeRequestModel(
                 identity_token=identity_token,
                 correlation_id=uuid7(),
                 engagement_id=engagement_id,
-            )
+            ),
+            door=ENGAGEMENT_DOOR,
+            op=ENGAGEMENT_SCOPE_OP,
         )
         try:
             response = await self._nc.request(
@@ -318,3 +322,19 @@ class HubEngagementScopeResolver:
             },
         )
         return scope
+
+
+def _presented(identity_token: str, credential: DoorCredential | None) -> DoorCredential:
+    """the credential a request is sent with: ``credential`` when it carries the request's token.
+
+    :param identity_token: the token the request carries
+    :ptype identity_token: str
+    :param credential: the caller's credential, if it passed one
+    :ptype credential: DoorCredential | None
+    :return: the credential to present
+    :rtype: DoorCredential
+    :raises ValueError: when ``credential`` carries another token than the request
+    """
+    if credential is not None and credential.token != identity_token:
+        raise ValueError("the credential carries another token than the request")
+    return credential if credential is not None else DoorCredential(token=identity_token)
