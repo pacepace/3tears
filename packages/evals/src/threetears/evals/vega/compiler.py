@@ -106,8 +106,9 @@ DISPLAY_FIELD = "display"
 #:
 #: Its own key rather than the plotted row's value field, because the two are not
 #: always the same number: a bar's label is written at the bar's END, which is the
-#: value it states, while a distribution's estimate label is written at the MEAN and
-#: lifted above a mark that spans much further.
+#: value it states, while an interval's estimate label (``distribution``,
+#: ``null_result``) is written at the MEAN and lifted above a mark that spans much
+#: further.
 #:
 #: It once read "an interval's is written at the end of the interval and READS the centre",
 #: which described a defect rather than a design — a number drawn at
@@ -183,7 +184,9 @@ def point_radius(size: float) -> float:
     return math.sqrt(size) / 2
 
 
-def plot_size(rows: int, *, marginal: bool = False, label_above: bool = False) -> tuple[int, int]:
+def plot_size(
+    rows: int, *, marginal: bool = False, label_above: bool = False, value_above: bool = False
+) -> tuple[int, int]:
     """The plot area for a chart of ``rows`` categorical rows, in px.
 
     Height is driven by the row count and width is fixed, which is the only
@@ -209,6 +212,10 @@ def plot_size(rows: int, *, marginal: bool = False, label_above: bool = False) -
         marginal: Whether each row also carries a marginal, which needs the taller step.
         label_above: Whether the row's label is drawn on its own line inside the
             plot rather than in the gutter, which needs a taller step again.
+        value_above: Whether the row's VALUE is lifted onto a line above its mark —
+            a value anchored inside an interval, where the mark itself occupies the
+            row's centreline. The same line of text as ``label_above`` asks room for,
+            so it asks for the same step.
 
     Returns:
         ``(width, height)`` of the plot area — Vega-Lite's ``width``/``height``,
@@ -218,7 +225,7 @@ def plot_size(rows: int, *, marginal: bool = False, label_above: bool = False) -
     steps = [sizes["row_step"]]
     if marginal:
         steps.append(sizes["row_step_marginal"])
-    if label_above:
+    if label_above or value_above:
         steps.append(sizes["row_step_label_above"])
     height = max(rows * max(steps), sizes["plot_min_height"])
     return min(sizes["plot_width"], height * sizes["aspect_max"]), height
@@ -517,8 +524,15 @@ class _Categories:
             }
         return encoding
 
-    def label_layer(self) -> dict[str, Any] | None:
+    def label_layer(self, *, clearance_above: float | None = None) -> dict[str, Any] | None:
         """The text layer that draws the names, when they are not in the gutter.
+
+        Args:
+            clearance_above: How far above the row's centreline the row's own drawing
+                reaches, in px — the name is set clear of that. Half a bar by default,
+                the tallest MARK a row carries; an arm that lifts a value label onto
+                its own line above the mark states the top of that line instead, so
+                the name stacks above the number rather than being drawn through it.
 
         Returns:
             A layer to compose over the marks, or ``None`` in gutter placement.
@@ -526,16 +540,18 @@ class _Categories:
         if not self.above:
             return None
         sizes = geometry()
+        reach = sizes["bar_height"] / 2 if clearance_above is None else clearance_above
         return {
             "data": {"values": [{DISPLAY_FIELD: name} for name in self.drawn()]},
             "mark": {
                 "type": "text",
                 "align": "left",
                 "baseline": "bottom",
-                # Clear of the mark's own top edge, inside the row's band. Sized from
-                # the bar because it is the tallest mark a row carries; an interval's
-                # rule sits well inside the same clearance.
-                "dy": -(sizes["bar_height"] / 2 + 6),
+                # Clear of the row's own drawing, inside the row's band. Sized from
+                # the bar by default because it is the tallest mark a row carries; an
+                # interval's rule sits well inside the same clearance, and an arm whose
+                # value label rides above its mark says how high that label reaches.
+                "dy": -(reach + 6),
                 # The type scale's name step. The config's `text` style is set for
                 # values written ON a mark, which are a step larger — a category name
                 # is not a value.
@@ -583,16 +599,17 @@ class _Categories:
             "labelAnchor": "start",
         }
 
-    def plot_size(self, *, marginal: bool = False) -> tuple[int, int]:
+    def plot_size(self, *, marginal: bool = False, value_above: bool = False) -> tuple[int, int]:
         """The plot area for this figure, in px.
 
         Args:
             marginal: Whether each row also carries a marginal.
+            value_above: Whether each row's value is lifted onto a line above its mark.
 
         Returns:
             ``(width, height)`` of the plot area.
         """
-        return plot_size(len(self.ordering), marginal=marginal, label_above=self.above)
+        return plot_size(len(self.ordering), marginal=marginal, label_above=self.above, value_above=value_above)
 
     def figure_width(self) -> float:
         """How wide the whole figure draws, gutter included.
@@ -648,7 +665,7 @@ def _title_spec(title: str, limit: float, footnote: str = "") -> str | list[str]
     return {"text": text, "subtitle": footnote if len(subtitle) <= 1 else subtitle}
 
 
-def _composed(view: dict[str, Any], categories: _Categories) -> dict[str, Any]:
+def _composed(view: dict[str, Any], categories: _Categories, *, clearance_above: float | None = None) -> dict[str, Any]:
     """Add the category names to a chart's marks, where the placement calls for it.
 
     In gutter placement the names ride on the axis and there is nothing to compose,
@@ -660,11 +677,13 @@ def _composed(view: dict[str, Any], categories: _Categories) -> dict[str, Any]:
     Args:
         view: The assembled view — a single mark or an existing ``layer``.
         categories: The figure's resolved labels and placement.
+        clearance_above: How far above each row's centreline its drawing reaches, in
+            px, per :meth:`_Categories.label_layer`; ``None`` for the default.
 
     Returns:
         The view, layered with its label text where that placement applies.
     """
-    layer = categories.label_layer()
+    layer = categories.label_layer(clearance_above=clearance_above)
     if layer is None:
         return view
     if "layer" in view:
@@ -722,10 +741,9 @@ class MarkValue:
     **The arm knows and the clearance arithmetic does not, which is why this is a
     field rather than a derivation.** A bar has length under its inward label, so a
     value written there is on velvet and needs the knockout ink. A POINT, a bare
-    interval rule or a dumbbell's connector does not: `null_result` draws a 3px rule
-    and a point, `sweep_ranking`'s ranking panel draws points, and `delta_table` draws
-    a 3px connector under a point — inward of those marks there is nothing but the
-    chart surface.
+    interval rule or a dumbbell's connector does not: `sweep_ranking`'s ranking panel
+    draws points, and `delta_table` draws a 3px connector under a point — inward of
+    those marks there is nothing but the chart surface.
 
     Inferring it from ``room(end) < needed`` conflates "no space outside" with "there
     is a fill here", and on a cropped position axis those come apart: the outermost
@@ -1343,6 +1361,56 @@ def _label_lift(thickness: float, font_size: float) -> float:
     return thickness / 2 + font_size / 2 if thickness else 0.0
 
 
+def centred_value_placements(values: Sequence[MarkValue], axis: ValueAxis) -> dict[str, list[MarkValue]]:
+    """Group value labels anchored INSIDE a mark by the alignment that keeps each inside the plot.
+
+    For a label lifted onto its own line above the mark and anchored at the value it
+    names — an interval's mean, which is the middle of the mark rather than its end.
+    Both interval arms (``distribution`` and ``null_result``) draw their estimate this
+    way, and they share this so the two cannot disagree about where a number goes.
+
+    **A different question from :func:`_aligned_values`, which is why this does not
+    call it.** That one asks which side of a mark's END has room, because a bar's label
+    goes beside the bar. This label is anchored at an interior point and is lifted clear
+    of the mark rather than set beside it, so the only question left is whether the text
+    box fits the plot on both sides. Centred where it does; otherwise pushed to whichever
+    side the text has to grow into. Both are still bounded by ``value_label_max_marks``,
+    which is a statement about how many numbers a figure can carry rather than about
+    where they sit.
+
+    Without the push a label near the domain's edge overran the plot: a mean of 14.9 on
+    an axis ending at 15.0 printed past the right edge, overlapping its own interval cap
+    and making Vega grow the frame — the figure leaving its column for a label.
+
+    Args:
+        values: One entry per mark carrying a value, each anchored at the value it names.
+        axis: The value axis the marks are drawn against.
+
+    Returns:
+        ``center``/``left``/``right`` → the marks taking it, or an empty mapping where
+        no value is written at all.
+    """
+    sizes = geometry()
+    if not values or len(values) > sizes["value_label_max_marks"]:
+        return {}
+    size = font_sizes()["value"]
+    placed: dict[str, list[MarkValue]] = {}
+    for mark in values:
+        half = text_width(mark.text, size) / 2
+        from_left = axis.offset(mark.end)
+        from_right = axis.plot_span - from_left
+        if from_left >= half and from_right >= half:
+            placement = "center"
+        elif from_right < half:
+            # Not enough plot to the right, so the text grows LEFT from the anchor —
+            # which is what Vega calls a right alignment.
+            placement = "right"
+        else:
+            placement = "left"
+        placed.setdefault(placement, []).append(mark)
+    return placed
+
+
 __all__ = [
     "ANCHOR_FIELD",
     "DISPLAY_FIELD",
@@ -1357,6 +1425,7 @@ __all__ = [
     "MarkValue",
     "Placement",
     "ValueAxis",
+    "centred_value_placements",
     "compile_chart",
     "draw_intent",
     "plot_size",

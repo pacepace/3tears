@@ -38,11 +38,11 @@ from threetears.evals.vega.compiler import (
     _number,
     _title_spec,
     _value_axis,
+    centred_value_placements,
     value_label_mark,
 )
 from threetears.evals.analysis.viz.intent import ChartIntent
-from threetears.evals.vega.palette import font_sizes, font_weights, geometry
-from threetears.evals.vega.text_metrics import text_width
+from threetears.evals.vega.palette import font_weights, geometry
 
 #: How tall the cap at a known interval bound is drawn, in px.
 _CAP_HEIGHT = 12
@@ -144,7 +144,7 @@ def compile_distribution(intent: ChartIntent) -> dict[str, Any]:
         # to a mark that is an interval rather than a bar. Anchoring it at the far end
         # put every number at an x-position it did not name.
         estimates.append(MarkValue(display=drawn, end=mean, text=format_number(mean)))
-    for placement, marks in _estimate_label_placements(estimates, value_axis).items():
+    for placement, marks in centred_value_placements(estimates, value_axis).items():
         rows.extend(
             {
                 DISPLAY_FIELD: mark.display,
@@ -447,51 +447,6 @@ def _every_distribution_layer(axis: ValueAxis, layout: _RowLayout, band: float, 
             for placement in ("center", "left", "right")
         ),
     ]
-
-
-def _estimate_label_placements(values: Sequence[MarkValue], axis: ValueAxis) -> dict[str, list[MarkValue]]:
-    """Group each estimate label by the alignment that keeps it inside the plot.
-
-    **A different question from :func:`~threetears.evals.vega.compiler._aligned_values`,
-    which is why this does not call it.** That one asks which side of a mark's END has
-    room, because a bar's label goes beside the bar. This label is anchored at an
-    INTERIOR point — the mean — and is lifted clear of the mark rather than set beside
-    it, so the only question left is whether the text box fits the plot on both sides.
-    Centred where it does; otherwise pushed to whichever side the text has to grow
-    into. Both are still bounded by ``value_label_max_marks``, which is a statement
-    about how many numbers a figure can carry rather than about where they sit.
-
-    Without this a label near the domain's edge overran the plot: a mean of 14.9 on an
-    axis ending at 15.0 printed past the right edge, overlapping its own interval cap
-    and making Vega grow the frame — the figure leaving its column for a label.
-
-    Args:
-        values: One entry per group carrying an estimate, anchored at its mean.
-        axis: The shared value axis.
-
-    Returns:
-        ``center``/``left``/``right`` → the marks taking it, or an empty mapping
-        where no value is written at all.
-    """
-    sizes = geometry()
-    if not values or len(values) > sizes["value_label_max_marks"]:
-        return {}
-    size = font_sizes()["value"]
-    placed: dict[str, list[MarkValue]] = {}
-    for mark in values:
-        half = text_width(mark.text, size) / 2
-        from_left = axis.offset(mark.end)
-        from_right = axis.plot_span - from_left
-        if from_left >= half and from_right >= half:
-            placement = "center"
-        elif from_right < half:
-            # Not enough plot to the right, so the text grows LEFT from the anchor —
-            # which is what Vega calls a right alignment.
-            placement = "right"
-        else:
-            placement = "left"
-        placed.setdefault(placement, []).append(mark)
-    return placed
 
 
 def _of_kind(kind: str) -> list[dict[str, Any]]:

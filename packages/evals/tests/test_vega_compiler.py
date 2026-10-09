@@ -2684,6 +2684,81 @@ class TestValuesAreWrittenOnTheMarks:
         }
         assert placed == {row["label"]: format_number(row["mean"]) for row in chart.rows}
 
+    #: Three arms, so the plot's row count rather than its floor decides its height.
+    THREE_ARM_NULL = {
+        "groups": [
+            {
+                "label": f"arm{index}",
+                "ci": {
+                    "low": 14.4 + index,
+                    "high": 19.96 + index,
+                    "mean": 17.18 + index,
+                    "variability": "across the 12 cases",
+                    "level": 0.95,
+                },
+                "n": 12,
+            }
+            for index in range(3)
+        ],
+        "metric": "score",
+        "mechanism": "The batch never fills before the deadline at any setting.",
+    }
+
+    def _null_labels(self, chart):
+        """``display -> (anchor, text, mark)`` for every value label a null result writes."""
+        return {
+            row[DISPLAY_FIELD]: (row[ANCHOR_FIELD], row[VALUE_TEXT_FIELD], layer["mark"])
+            for layer in _mark_layers(chart.spec, "text")
+            for row in _layer_rows(chart.spec, layer)
+            if VALUE_TEXT_FIELD in row
+        }
+
+    def test_a_null_result_writes_each_arm_at_the_mean_it_names(self):
+        """#618: the label sat at the interval's HIGH end while printing the mean.
+
+        An arm with mean 17.18 over a 14.4-19.96 interval printed "17.18" beside
+        x≈19.96, so a reader mapped each number to a value it does not state.
+        """
+        chart = compile_chart("null_result", self.THREE_ARM_NULL)
+        labels = self._null_labels(chart)
+        assert labels.keys() == {group["label"] for group in self.THREE_ARM_NULL["groups"]}
+        for group in self.THREE_ARM_NULL["groups"]:
+            anchor, text, _ = labels[group["label"]]
+            assert text == format_number(group["ci"]["mean"])
+            assert anchor == pytest.approx(group["ci"]["mean"]), "the label is anchored at the mean it prints"
+            assert anchor != pytest.approx(group["ci"]["high"]), "and not at the interval's upper bound"
+
+    def test_a_null_results_label_is_lifted_clear_of_its_point_and_rule(self):
+        """Anchored at the mean, the label sits where the point and the rule are, so it is
+        lifted onto its own line: its lower edge clears the point's top by the value-label gap."""
+        chart = compile_chart("null_result", self.THREE_ARM_NULL)
+        size = font_sizes()["value"]
+        for _, _, mark in self._null_labels(chart).values():
+            assert mark["baseline"] == "middle"
+            lower_edge = -mark["dy"] - size / 2
+            assert lower_edge >= point_radius(70) + VALUE_LABEL_OFFSET - 1e-9, (
+                f"the label's lower edge is {lower_edge:.1f}px above the row's centre, on its own point"
+            )
+
+    def test_a_null_results_rows_grow_to_hold_the_value_line(self):
+        """The value's own line above the mark takes the taller row step, so it stays inside its row."""
+        chart = compile_chart("null_result", self.THREE_ARM_NULL)
+        sizes = geometry()
+        assert chart.spec["height"] == max(3 * sizes["row_step_label_above"], sizes["plot_min_height"])
+        size = font_sizes()["value"]
+        for _, _, mark in self._null_labels(chart).values():
+            assert -mark["dy"] + size / 2 <= sizes["row_step_label_above"] / 2, "the value line leaves its row"
+
+    def test_a_null_results_names_above_their_marks_stack_above_the_value_line(self):
+        """With the names moved out of the gutter, each name is set clear of the value line under it."""
+        chart = compile_chart("null_result", _renamed("null_result", _wide_names))
+        size = font_sizes()["value"]
+        [value_dy] = {mark["dy"] for _, _, mark in self._null_labels(chart).values()}
+        names = [layer for layer in _mark_layers(chart.spec, "text") if layer["mark"]["baseline"] == "bottom"]
+        assert names, "this fixture must put the names above their marks"
+        for layer in names:
+            assert -layer["mark"]["dy"] >= -value_dy + size / 2, "a name is drawn through the value line"
+
     def _probe(self, room):
         """A two-bar breakdown whose second bar leaves exactly `room` px clear."""
         top = 100.0
