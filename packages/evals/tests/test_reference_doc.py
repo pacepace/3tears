@@ -36,4 +36,3 @@ def test_the_committed_reference_is_what_the_package_generates() -> None:
         f"packages/evals/docs/reference.md is stale: the package changed under it. Regenerate it with "
         f"`{generator.REGENERATE}` and commit the result."
     )
-
