@@ -207,6 +207,18 @@ class RelationFingerprintRequest(BaseModel):
             raise ValueError(f"group_by {value!r} is not a plain SQL identifier")
         return value
 
+    @model_validator(mode="after")
+    def _set_filters_only_with_groups(self) -> "RelationFingerprintRequest":
+        """refuse set filters on an ungrouped ask: a hub answers ``where_in`` only beside ``group_by``.
+
+        :return: the request
+        :rtype: RelationFingerprintRequest
+        :raises ValueError: when ``where_in`` is set and ``group_by`` is not
+        """
+        if self.where_in and self.group_by is None:
+            raise ValueError("where_in is answered only by a grouped fingerprint; name group_by too")
+        return self
+
     @model_serializer(mode="wrap")
     def _omit_absent_grouping(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
         """leave ``group_by`` and ``where_in`` off the wire when they are not asked for.
