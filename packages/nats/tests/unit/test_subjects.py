@@ -333,7 +333,7 @@ def test_l3_subjects() -> None:
 
 
 def test_acl_subjects() -> None:
-    """acl invalidation subjects."""
+    """the retired acl invalidation subjects, still named for an agent pod's subscribe grant."""
     assert Subjects.acl_invalidate("membership").path == ("3tears.acl.membership.invalidate")
     assert Subjects.acl_invalidate("assignment").path == ("3tears.acl.assignment.invalidate")
     assert Subjects.acl_invalidate("role").path == "3tears.acl.role.invalidate"

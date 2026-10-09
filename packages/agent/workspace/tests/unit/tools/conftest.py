@@ -219,7 +219,6 @@ def permissive_acl_cache() -> AclCache:
     return AclCache(
         membership_loader=_EmptyMembershipLoader(),
         grant_loader=_EmptyGrantLoader(),
-        ttl_seconds=60,
     )
 
 

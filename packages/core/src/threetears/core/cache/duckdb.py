@@ -275,7 +275,7 @@ class DuckDBBackend:
         pk_cols = self._pk_columns(primary_key)
         schema = self._schema_info.get(table, {})
         # Only the table's own columns are written: the collection's pull-through
-        # injects keys (the L1 cache-age stamp among them) this backend declares no
+        # may inject keys (``date_created`` and the like) this backend declares no
         # column for. An unregistered table (no schema) writes every key named.
         columns = bulk_columns(rows, schema)
         # DuckDB refuses to touch one key twice in a statement; one by one, the last
@@ -591,13 +591,8 @@ class DuckDBBackend:
         entity_id: Any,
         primary_key: str | tuple[str, ...] = "id",
         columns: Sequence[str] | None = None,
-        *,
-        max_age_seconds: float | None = None,
-        now_monotonic: float | None = None,  # noqa: ARG002 - protocol parity; unused without expiry
     ) -> dict[str, Any] | None:
         """select single row by primary key with type deserialization.
-
-        Expiry is NOT supported here; passing ``max_age_seconds`` raises.
 
         :param table: target table name
         :ptype table: str
@@ -613,15 +608,7 @@ class DuckDBBackend:
         :rtype: dict[str, Any] | None
         :raises ValueError: if ``columns`` is empty, or names a column
             the table's registered schema does not have
-        :raises NotImplementedError: if ``max_age_seconds`` is given; this
-            backend injects no cache-age stamp, so it cannot honour a bound
         """
-        if max_age_seconds is not None:
-            raise NotImplementedError(
-                "DuckDBBackend does not implement L1 max-age expiry: it never injects the "
-                "cache-age stamp, so the request would silently never fire and the staleness "
-                "bound the caller asked for would not exist. Use SQLiteBackend."
-            )
         pk_cols = self._pk_columns(primary_key)
         pk_vals = self._pk_values(entity_id, pk_cols)
         select_clause = build_select_clause(self._schema_info.get(table), table, columns)
@@ -642,13 +629,8 @@ class DuckDBBackend:
         entity_ids: list[Any],
         primary_key: str | tuple[str, ...] = "id",
         columns: Sequence[str] | None = None,
-        *,
-        max_age_seconds: float | None = None,
-        now_monotonic: float | None = None,  # noqa: ARG002 - protocol parity; unused without expiry
     ) -> list[dict[str, Any]]:
         """select multiple rows by primary key with type deserialization.
-
-        Expiry is NOT supported here; passing ``max_age_seconds`` raises.
 
         :param table: target table name
         :ptype table: str
@@ -664,15 +646,7 @@ class DuckDBBackend:
         :rtype: list[dict[str, Any]]
         :raises ValueError: if ``columns`` is empty, or names a column
             the table's registered schema does not have
-        :raises NotImplementedError: if ``max_age_seconds`` is given; this
-            backend injects no cache-age stamp, so it cannot honour a bound
         """
-        if max_age_seconds is not None:
-            raise NotImplementedError(
-                "DuckDBBackend does not implement L1 max-age expiry: it never injects the "
-                "cache-age stamp, so the request would silently never fire and the staleness "
-                "bound the caller asked for would not exist. Use SQLiteBackend."
-            )
         if not entity_ids:
             return []
         select_clause = build_select_clause(self._schema_info.get(table), table, columns)

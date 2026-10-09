@@ -2072,9 +2072,13 @@ class Subjects:
         cls,
         kind: Literal["membership", "assignment", "role"],
     ) -> Subject:
-        """publish subject for ACL cache invalidation broadcasts.
+        """the retired ACL cache invalidation subjects; nothing publishes them.
 
-        :param kind: which ACL surface to invalidate
+        The access tables' row broadcasts and write generations replaced them (epoch-task-06,
+        contract). Kept only so an agent pod one release back, which still subscribes, is granted the
+        subscribe (``subject_permissions``); goes with that grant.
+
+        :param kind: which ACL surface it named
         :ptype kind: Literal["membership", "assignment", "role"]
         :return: subject ``{ns}.acl.{kind}.invalidate``
         :rtype: Subject
