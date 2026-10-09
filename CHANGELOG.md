@@ -6,22 +6,29 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-### Scoped snapshot: chunks no pointer serves are retired, and a full store recovers on its own
+### Scoped snapshot: chunks no pointer serves and no live write claims are retired, by state, never by age
 
 A tool pod's Object Store filled with chunks nothing served: a catch-up that failed part way (on a
 full store) retired the old chunks of none of the scopes it had moved, a write that never committed
-kept its stages above the pointers, and once the store was full every publish was refused, so
-nothing was ever retired again. Live, 40 MB of a 64 MiB store was unserved (one whole copy is 26 MB),
-and every refresh fell back to rebuilding the copy from L3.
+kept its stages, and once the store was full every publish was refused, so nothing was retired
+again.
 
+- **Changed, `_Sweeper.deletable`**: a chunk is kept while its scope's pointer names it or a live
+  write claims its epoch, and deleted otherwise. `stray_age` is gone, with every age-based rule: a
+  writer claims each epoch it writes chunks at (`{name}.w.{epoch}.{replica}` in the pointer bucket,
+  renewed while it lives, taken again if lost with its bucket) until a pointer names them.
 - **Changed, `ScopedSnapshot`**: a rebuild or catch-up retires each scope's older chunks as soon as
-  its pointer moves, not after the whole run; a chunk write the store refuses as full sweeps what no
-  pointer serves (`_Sweeper.deletable`, the one rule) and is tried once more.
-- **Added, `ScopedSnapshot.discard_staged(staged)`** (the writer of a write that will not commit gives
-  its stages back) and **`ScopedSnapshot.discard_epoch(epoch)`** (a writer taking over a dead write
-  retires that write's epoch; chunks a pointer names are kept).
-- **Added, `threetears.nats.ObjectStoreFullError`**, an `ObjectStoreError` raised for a write past the
-  store's `max_bytes`.
+  its pointer moves; a chunk write refused as full sweeps by the rule and is tried once more; a
+  staged publish, and a publish that found its chunk already written, never moves a pointer onto a
+  chunk that is not there (the scope is left to the catch-up); a same-epoch pointer of other columns
+  stays until a write moves the scope on.
+- **Added, `ScopedSnapshot.discard_staged(staged)`** and **`ScopedSnapshot.discard_epoch(epoch)`**.
+  A writer must call `discard_staged` when a write it staged will not commit; it may call
+  `discard_epoch` when it takes over a dead write. Without them, a dead write's stages go at the
+  next sweep once its claim has lapsed.
+- **Added, `threetears.nats.ObjectStoreFullError`** (`bucket`, `name`), an `ObjectStoreError` raised
+  for a store failure that reports its max bytes exceeded (JetStream 10077) and for insufficient
+  server resources (10047); any other store failure stays a plain `ObjectStoreError`.
 
 ### Core coordination: a fence on a producer's ready signal
 

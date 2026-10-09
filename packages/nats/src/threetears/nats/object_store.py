@@ -105,8 +105,15 @@ _JS_ERR_WRONG_LAST_SEQUENCE: Final[frozenset[int]] = frozenset({10071, 10164})
 #: JetStream's "stream name already in use with a different configuration".
 _JS_ERR_STREAM_NAME_IN_USE: Final[int] = 10058
 
-#: JetStream's refusal of a publish that would take the stream past its ``max_bytes``.
-_JS_ERR_STORE_FULL: Final[frozenset[int]] = frozenset({10047, 10077})
+#: JetStream's "insufficient resources": the server or account has no room for what the stream reserves.
+_JS_ERR_INSUFFICIENT_RESOURCES: Final = 10047
+
+#: JetStream's generic "stream store failed", which carries the store's own error: a write past the
+#: stream's ``max_bytes`` among others (message limits, a closed store), told apart by its description.
+_JS_ERR_STORE_FAILED: Final = 10077
+
+#: the store error a stream at its ``max_bytes`` reports, as the description of a store failure
+_MAX_BYTES_EXCEEDED: Final = "maximum bytes exceeded"
 
 #: how a JetStream request the server never answered arrives: our own deadline, nats-py's request
 #: timeout, or no responder. A request this principal is not granted is dropped unanswered, so each
@@ -485,10 +492,20 @@ class NatsObjectStore:
                     bucket=self._full_name,
                     name=name,
                 ) from exc
-            if code in _JS_ERR_STORE_FULL:
+            description = str(getattr(exc, "description", "") or "")
+            if code == _JS_ERR_STORE_FAILED and _MAX_BYTES_EXCEEDED in description.lower():
                 raise ObjectStoreFullError(
-                    f"object store {self._full_name} is full: writing {name!r} would pass its max_bytes. retire "
-                    f"objects no longer served, or raise the bucket's bound"
+                    f"object store {self._full_name} is full: writing {name!r} would pass its max_bytes "
+                    f"({description}). retire objects no longer served, or raise the bucket's bound",
+                    bucket=self._full_name,
+                    name=name,
+                ) from exc
+            if code == _JS_ERR_INSUFFICIENT_RESOURCES:
+                raise ObjectStoreFullError(
+                    f"writing {name!r} to {self._full_name} was refused: the server or account is out of the "
+                    f"storage it reserves ({description})",
+                    bucket=self._full_name,
+                    name=name,
                 ) from exc
             raise ObjectStoreError(f"writing object {name!r} to {self._full_name} failed: {exc}") from exc
         except _UNANSWERED as exc:

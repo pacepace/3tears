@@ -19,6 +19,7 @@ __all__ = [
     "ObjectExistsError",
     "ObjectNotFoundError",
     "ObjectStoreError",
+    "ObjectStoreFullError",
     "ObjectStoreNotFoundError",
     "OpLogError",
     "OpLogSequenceConflict",
@@ -257,17 +258,36 @@ class ObjectStoreError(NatsClientError):
     """raised when a JetStream Object Store operation fails.
 
     covers binding, declaring, putting, getting, listing and deleting objects. the narrower
-    subclasses name the outcomes a caller acts on: an absent bucket, an absent object, a name
-    already taken.
+    subclasses below name the outcomes a caller acts on.
     """
 
 
 class ObjectStoreFullError(ObjectStoreError):
-    """raised when a write would take an Object Store past its ``max_bytes``.
+    """raised when a write is refused for want of room: the store at its ``max_bytes``, or the server
+    or account out of the storage it reserves.
 
-    the store holds what it holds until objects are deleted: a writer that can name the objects no
-    longer served (superseded, or written by a write that never committed) retires them and tries again.
+    the store holds what it holds until objects are deleted, so room comes from deleting what is no
+    longer served, or from a larger bound.
+
+    :ivar bucket: the fully-qualified bucket name
+    :ivar name: the object whose write was refused
     """
+
+    def __init__(self, message: str, *, bucket: str, name: str) -> None:
+        """build the error, carrying the bucket and object names on the instance.
+
+        :param message: human-readable explanation, naming the server's own description
+        :ptype message: str
+        :param bucket: the fully-qualified bucket name
+        :ptype bucket: str
+        :param name: the object
+        :ptype name: str
+        :return: nothing
+        :rtype: None
+        """
+        super().__init__(message)
+        self.bucket = bucket
+        self.name = name
 
 
 class ObjectStoreNotFoundError(ObjectStoreError):
