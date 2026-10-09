@@ -54,9 +54,11 @@ class MeasureSummary(EvalDocumentModel):
     population: MeasurePopulation = Field(
         description=(
             "Which observations this summary was computed over: `scored` left out the ones the harness faulted, "
-            "`all_observed` kept them. The measure's declared population when it declares one; otherwise the "
-            "population of the surface it sits on. Two summaries of one name over different populations are "
-            "different figures."
+            "`all_observed` kept them, and `delivered` kept only the turns the candidate took — leaving out the "
+            "faulted ones and the failures that took no turn (a call the model refused or errored on). A cost or "
+            "latency measure, and `cost_usd`, is read over `delivered` on every surface unless it declares "
+            "`all_observed`; any other measure over its declared population, otherwise the population of the "
+            "surface it sits on. Two summaries of one name over different populations are different figures."
         )
     )
     n: int = Field(ge=0, description="Observations contributing to this measure.")
@@ -214,6 +216,12 @@ class BarVerdict(EvalDocumentModel):
     reading a broken transcript, a check evaluated over a world the harness never seeded, a spend or
     a wall-clock the fault itself produced — so a bar is never cleared or failed on one, and how many
     were left out is stated beside the value rather than folded into it.
+
+    **A bar on a turn's time or spend reads fewer**: the turns the candidate took (population
+    ``delivered``, the cell's own reading of the measure), so a call its model refused straight away is
+    in neither its value nor its ``n``. Its ``n_infra_excluded`` still counts only the faults; the
+    failures left out are the cell's ``n_no_turn``. A cell where no result took a turn carries no value,
+    and its verdict is ``no data``, never a clearance on a refusal's round trip.
     """
 
     variant_key: str = Field(

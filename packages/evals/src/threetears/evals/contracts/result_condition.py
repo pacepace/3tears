@@ -61,6 +61,7 @@ __all__ = [
     "counted_goal_verdicts",
     "counted_rubric_scores",
     "counted_score",
+    "delivered_a_turn",
     "resolve_result_condition",
 ]
 
@@ -184,6 +185,51 @@ def classify_result(result: EvalResult) -> ResultOutcome:
     if result.infra_error or result.judge_error:
         return ResultOutcome.INFRA_EXCLUDE
     return ResultOutcome.OK
+
+
+#: How a cell ends when its time ran out under it — its deadline, or a cancel — rather than with the cell's
+#: own work done. A model that failed then was cut off mid-call after the clock ran, not refused at once.
+_CUT_OFF: frozenset[CellTermination] = frozenset({"cell_timeout", "cancelled"})
+
+
+def delivered_a_turn(result: EvalResult) -> bool:
+    """Whether ``result`` is a turn the candidate took — the one population a cost or latency reading is over.
+
+    The predicate behind :data:`~threetears.evals.contracts.metrics.MeasurePopulation`'s ``delivered``, asked
+    by every reader that means a turn's time or spend: the measure walk (cells, strata, bars, comparisons,
+    run summaries, the telemetry rollup, the scope divergences), the frontier's ranked latency and cost, the
+    trend series and a run's summary. Defined once, here, so no two of them can disagree about which results
+    a "mean latency" averages.
+
+    A result is OUT of it when either:
+
+    - **the harness faulted it** (:func:`harness_faulted`) — its clock and its spend measured the rig; or
+    - **the candidate's model failed before taking a turn** — ``candidate_failure_cause`` is ``model_failed``
+      (a refusal, a provider or model error, recorded in ``candidate_error``) and the cell was not cut off by
+      its deadline or a cancel. The call came straight back: its round trip is not a turn's latency, and an
+      arm whose every call was refused read as the fastest and cheapest on the surface when it was averaged in.
+
+    Every other candidate failure STAYS in, because it took a turn and the turn's time and spend are the
+    arm's real cost of failing: a turn the host's budget ended (``turn_budget``) ran until the budget did, an
+    answer the output cap cut (``output_cap``) was generated up to the cap, and a model call the cell's
+    deadline struck while pending ran until the deadline. Leaving those out would rank an arm whose slowest,
+    costliest turns all failed as fast and cheap — the same defect from the other side. All of them still
+    count against the arm wherever it is graded; this predicate decides only what a turn's time and spend
+    are averaged over.
+
+    The stored record cannot say how many turns preceded a model failure in a multi-turn conversation, so a
+    conversation whose model failed on a later turn is read as having delivered none; its earlier turns'
+    time and spend are then left out with it.
+
+    Args:
+        result: The result.
+
+    Returns:
+        True when the result's time and spend describe a turn the candidate took.
+    """
+    if harness_faulted(result):
+        return False
+    return not (candidate_failure_cause(result) == "model_failed" and result.termination not in _CUT_OFF)
 
 
 def harness_faulted(result: EvalResult) -> bool:

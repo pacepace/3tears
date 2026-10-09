@@ -6,33 +6,51 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-### 3tears-evals: an arm whose every result failed reads as failed, not as the fastest and cheapest
+### 3tears-evals: an arm whose calls were refused reads as failed, not as the fastest and cheapest
 
-- **A cost or latency reading is over the results the candidate delivered.** `MeasurePopulation` gains
-  `delivered`: the non-faulted results less the candidate's failures (a refusal, a model error, a turn its budget
-  ended, an answer its output cap cut). A measure on the cost or latency axis (`DELIVERED_AXES`), and the engine's
-  blended `cost_usd`, that would be read over `scored` is read over `delivered` instead (`summary_population`, the
-  one answer the measure walk, the bars, the comparisons and a run's summary ask). A failure still counts against
-  its arm in every rate, bar and judged score; its round trip and its spend are no delivered result's. An explicit
-  `all_observed` declaration is not narrowed. Before, a classifier arm whose every call was refused read 53 ms and
-  $0 on the decision surface, averaged from the refusals.
-- **`CellFacts.n_candidate_failed`** and **`StratumFacts.n_candidate_failed`** (`int | None`) count the failures,
-  and the strata add up to the cell. `None` on an analysis frozen before the count was kept, whose cost and latency
-  were read over failed results too — never 0 for a count nobody took. `CellFacts.all_failed` and
-  `StratumFacts.all_failed` (derived, not stored) say the candidate failed every counted result.
-- **A cell whose every result failed says so.** It carries no cost or latency reading. The decision surface reads
-  `no successful results` under its cost and latency columns (`NO_SUCCESSFUL_RESULTS`, `SurfaceRow.all_failed`) and
-  its replication counts the failures; the table carries `all_failed_disclosure`, which both reports state beside
-  it, naming the arms when only some failed. The strata table says the same of a stratum. The bundle names the cells
-  (`all_failed_cells`, with the sentence `all_failed`), and the generator prompt points the writer at both and at
-  `n_candidate_failed`.
-- **`cost_unmeasured_cells` reads the delivered results too**, the population `cost_usd` is read over: a billed
-  refusal no longer makes a cell whose deliveries reported no spend look measured, and a cell that delivered
-  nothing is listed in `all_failed_cells` rather than as unmeasured.
-- **A run's summary reads a cost or latency measure the same way**: over the results the candidate delivered, with
-  how many it left out (`MeasureSummary.n_undelivered`), and `no successful results` for a run that delivered none.
-- Bundle `schema_version` 42 -> 43. A stored analysis still reads: its cells carry `n_candidate_failed: null`, and
-  the report shape (`schema.json`) is unchanged.
+- **One predicate decides what a turn's time and spend are averaged over: `delivered_a_turn(result)`**
+  (`threetears.evals.contracts`). It is False for a result the harness faulted, and for a candidate failure that
+  took no turn — `candidate_failure_cause` is `model_failed` (a refusal, a model or provider error) and the cell
+  was not cut off by its deadline or a cancel. Every other failure took a turn and STAYS in cost and latency: a
+  turn the host's budget ended, an answer the output cap cut, a model call the deadline struck while pending.
+  Their time and spend are what failing cost the arm. A model failure after earlier turns of a multi-turn
+  conversation is read as no turn, because the record cannot say how many came before it.
+- **`MeasurePopulation` gains `delivered`**, the results `delivered_a_turn` keeps. A cost or latency measure
+  (`DELIVERED_AXES`), and the engine's blended `cost_usd`, is read over it on EVERY surface unless it declares
+  `all_observed` (`summary_population`, `reads_turns`). That covers the decision surface's cells, strata and bars,
+  the comparisons, the run summaries, the telemetry rollup and the scope divergences. The frontier's ranked latency
+  and the trend series' `total_ms` ask the same predicate. Their cost leaves out the failures that took no turn
+  and keeps a faulted cell's dollars, as it always did. A run summary's `prod_cost_usd` is read over the turns.
+  `MetricDescriptor` refuses `population="delivered"` on any other measure.
+  Before, a classifier arm whose every call was refused read 53 ms and $0 on the decision surface, and the
+  frontier marked the control dominated by it.
+- **A classifier's refusal is a miss.** `accuracy` counts a candidate failure as 0 whatever its `match` says.
+  The quick callable kind lands `match` False and the expected label's confusion cell under `UNUSABLE_ANSWER`
+  when its candidate raises, so precision and recall count it. The bundle reads a failure of a host's
+  classifying kind that landed no `match` as `match` False, without writing it back. Before, a half-refusing arm
+  read more accurate than the control, and an all-refusing one had no accuracy to compare.
+- **`CellFacts` and `StratumFacts` gain `n_candidate_failed` and `n_no_turn`** (`int | None`, kept together):
+  every failure, and the ones among them that took no turn, which cost and latency leave out. The strata add up
+  to the cell. Both are `None` on an analysis frozen before they were kept, whose cost and latency were read over
+  every non-faulted result. `all_failed` (derived, not stored) means no counted result took a turn. A cell whose
+  every result failed but whose turns ran (its budget ended them) is not `all_failed`: it has those turns' cost
+  and latency, and `n_candidate_failed` says they all failed.
+- **A cell where no result took a turn says so.** It carries no cost or latency reading. The decision surface
+  reads `no successful results` under its cost, latency and unreadable bar columns (`NO_SUCCESSFUL_RESULTS`,
+  `SurfaceRow.all_failed`), and so does the strata table for such a stratum. Its replication counts the failures
+  and those with no turn taken. The table carries `all_failed_disclosure`, which both reports state beside it.
+  The bundle names the cells (`all_failed_cells`, with the sentence `all_failed`), and the generator prompt points
+  the writer at them and at `n_no_turn`. A latency contrast against such a cell is untested because every result
+  failed. A bar no cell could read says the same. Its frontier point counts the refusals (`FrontierPoint.n_no_turn`)
+  and dominates nothing.
+- **`cost_unmeasured_cells` is read over the turns taken**, the population `cost_usd` is read over. A billed
+  refusal no longer makes a cell whose turns reported no spend look measured. A cell where no result took a turn
+  is listed in `all_failed_cells`, not as unmeasured.
+- **A run's summary reads a cost or latency measure over the turns taken**, with what it left out named by kind
+  (`MeasureSummary.n_no_turn`, `n_faulted`). It reads `no successful results` only when every result carrying the
+  measure took no turn, and "excluded" when they were faults of the rig.
+- Bundle `schema_version` 42 -> 43. A stored analysis still reads: its cells carry the two counts as null, and the
+  report shape (`schema.json`) is unchanged.
 
 ### 3tears-evals: a swept lever is checked against the mechanism it acts on; a divergent reasoning share qualifies a model comparison (#577, #576)
 

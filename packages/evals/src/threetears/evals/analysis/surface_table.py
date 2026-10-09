@@ -72,10 +72,11 @@ _VERDICT_OF: dict[bool | None, SurfaceVerdict] = {True: "clears", False: "misses
 #: value as ``verdict_word`` so no render keeps its own copy of the vocabulary.
 VERDICT_WORDS: dict[SurfaceVerdict, str] = {"clears": "clears", "misses": "misses", "no_data": "no data"}
 
-#: Said under a cost or latency column — and under a bar that read nothing — for a cell whose every result the
-#: candidate failed. Not a blank: a blank reads as "not measured", and this arm was measured — every result
-#: failed, which its rates and bars count. Never a number: a failed call's round trip and its empty spend are
-#: what read as a fast, free arm.
+#: Said under a cost or latency column — and under a bar that read nothing — for a cell where no result took a
+#: turn (:attr:`~threetears.evals.contracts.surface.CellFacts.all_failed`), and by the strata table for such a
+#: stratum. Not a blank: a blank reads as "not measured", and this arm was measured — every result failed,
+#: which its rates and bars count. Never a number: a refused call's round trip and its empty spend are what
+#: read as a fast, free arm.
 NO_SUCCESSFUL_RESULTS = "no successful results"
 
 #: The sentence stated above the table: where its numbers came from. Served as ``provenance`` on every
@@ -143,7 +144,7 @@ class SurfaceValue(EvalDocumentModel):
         default=None,
         description=(
             "The number, in the column's unit. None under a bar whose verdict read no observation, and under a cost "
-            "or latency column for a cell whose every result failed — whose `text` then says so."
+            "or latency column for a cell where no result took a turn — whose `text` then says so."
         ),
     )
     sem: float | None = Field(default=None, description="Its standard error, in the column's unit. None below n=2.")
@@ -155,8 +156,8 @@ class SurfaceValue(EvalDocumentModel):
         min_length=1,
         description=(
             "The value as a reader sees it, without the verdict word: `value ± sem (n=N)` under every column, bar or "
-            "cost or latency, the `±` only where a sem exists — or `no successful results` where the cell's every "
-            "result failed and there is no value. Spelled once here so the surfaces cannot disagree on a number."
+            "cost or latency, the `±` only where a sem exists — or `no successful results` where no result of the "
+            "cell took a turn and there is no value. Spelled once here so the surfaces cannot disagree on a number."
         ),
     )
 
@@ -231,13 +232,15 @@ class SurfaceRow(EvalDocumentModel):
         min_length=1,
         description=(
             "How many observations the cell pooled and how they were drawn — cases lead, since they are the draws — "
-            "then how many the harness faulted and how many the candidate failed, when any."
+            "then how many the harness faulted and how many the candidate failed, with how many of those took no "
+            "turn, when any."
         ),
     )
     all_failed: bool = Field(
         default=False,
         description=(
-            "Whether the candidate failed every result of the cell the harness did not fault. Its cost and latency "
+            "Whether no result of the cell the harness did not fault took a turn — the candidate's model refused or "
+            "errored on every call. Its cost and latency "
             "columns then read `no successful results`, never a number, and the table's `all_failed_disclosure` "
             "names it."
         ),
@@ -253,8 +256,8 @@ class SurfaceRow(EvalDocumentModel):
         default_factory=list,
         description=(
             "One entry per column, in column order. None where the cell has nothing to state there: a cost or "
-            "latency measure it did not carry, or a bar the server wrote no verdict on for it. A cell whose every "
-            "result failed states `no successful results` under a cost or latency column instead of nothing."
+            "latency measure it did not carry, or a bar the server wrote no verdict on for it. A cell where no "
+            "result took a turn states `no successful results` under a cost or latency column instead of nothing."
         ),
     )
 
@@ -298,7 +301,7 @@ class SurfaceTable(EvalDocumentModel):
     all_failed_disclosure: str | None = Field(
         default=None,
         description=(
-            "The sentence stated beside the table when some row's every result failed — that there is no cost or "
+            "The sentence stated beside the table when no result of some row took a turn — that there is no cost or "
             "latency to read there, and the failures count against the arm — naming those rows' arms unless every "
             "row failed. Set exactly when some row is `all_failed`."
         ),
@@ -364,8 +367,8 @@ def _replication(cell: CellFacts) -> str:
 
     Returns:
         ``{n} obs over {cases} cases × {repeats}``, with the faulted count beside it when any, and the
-        failed count after that — the observations a cost or latency column did not read, and the ones
-        every rate and bar counted against the arm.
+        failed count after that — the observations every rate and bar counted against the arm — with how
+        many of them took no turn, the ones a cost or latency column did not read.
     """
     if cell.n_cases is None:
         text = f"{cell.n_observations} obs, cases unrecorded"
@@ -382,6 +385,8 @@ def _replication(cell: CellFacts) -> str:
         text += f", {cell.n_infra_excluded} faulted, excluded"
     if cell.n_candidate_failed:
         text += f", {cell.n_candidate_failed} failed by the candidate"
+        if cell.n_no_turn:
+            text += f" ({cell.n_no_turn} with no turn taken, left out of cost and latency)"
     return text
 
 
@@ -467,8 +472,8 @@ def _bar_value(bar: BarAdjudication, cell: CellFacts, factor: float) -> SurfaceV
     if verdict is None:
         return None
     value, sem = _scaled(verdict.value, factor), _scaled(verdict.sem, factor)
-    # A bar that read nothing on a cell whose every result failed read nothing because nothing was delivered —
-    # a latency bar's measure leaves the failures out — and says that rather than a blank number.
+    # A bar that read nothing on a cell where no result took a turn read nothing because there was no turn —
+    # a latency bar's measure leaves those failures out — and says that rather than a blank number.
     text = NO_SUCCESSFUL_RESULTS if value is None and cell.all_failed else _value_text(value, sem, verdict.n)
     return SurfaceValue(value=value, sem=sem, n=verdict.n, verdict=_VERDICT_OF[verdict.cleared], text=text)
 
@@ -494,9 +499,9 @@ def _merit_value(cell: CellFacts, name: str, factor: float) -> SurfaceValue | No
     The mean, its sem and its n are read off ONE summary, so the spread and sample a reader is shown
     are the ones behind the mean beside them.
 
-    **A cell whose every result failed states that, never a blank.** Its cost and latency are read over
-    the results the candidate delivered, of which it has none, so it carries no summary to state — and a
-    blank beside its neighbours' figures reads as "not measured", when the arm was measured and failed.
+    **A cell where no result took a turn states that, never a blank.** Its cost and latency are read over
+    the turns the candidate took, of which it has none, so it carries no summary to state — and a blank
+    beside its neighbours' figures reads as "not measured", when the arm was measured and failed.
     """
     summary = _summary_of(cell, name)
     if summary is None or summary.mean is None:
@@ -585,7 +590,7 @@ def surface_table_of(surface: DecisionSurface, variant_index: Sequence[VariantIn
 
 
 def _all_failed_disclosure(rows: list[SurfaceRow]) -> str | None:
-    """The sentence stated beside the table when some row's every result failed, naming those arms when not all.
+    """The sentence stated beside the table when no result of some row took a turn, naming those arms when not all.
 
     Args:
         rows: The table's rows.

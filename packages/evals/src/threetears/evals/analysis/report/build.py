@@ -354,7 +354,7 @@ def _arm_blocks(table: ArmTable) -> list[ReportBlock]:
 def _surface_blocks(table: SurfaceTable, *, provenance: bool = True) -> list[ReportBlock]:
     """The decision surface laid out, its provenance, its all-failed arms, and every bar no cell could be read against.
 
-    The all-failed sentence follows the table directly, on the analysis's report and the code-only one alike:
+    An all-failed arm is one where no result took a turn. The all-failed sentence follows the table directly, on the analysis's report and the code-only one alike:
     it is the table's own (``all_failed_disclosure``), derived from the frozen surface, so a stored analysis
     says it without the bundle it was written from.
 
@@ -533,8 +533,8 @@ def _measure_rows(
     """One row per measure the cell or any of its strata holds — every one but a text measure, which is never summarised.
 
     A row says :data:`~threetears.evals.analysis.surface_table.NO_SUCCESSFUL_RESULTS` under the pool or a
-    stratum whose every result failed and which carries no figure of it — a cost or latency reading, which
-    leaves failures out — as the decision surface's own columns do, rather than a blank that reads as "not
+    stratum where no result took a turn and which carries no figure of it — a cost or latency reading, which
+    leaves those failures out — as the decision surface's own columns do, rather than a blank that reads as "not
     measured" beside the figures of the strata that delivered.
     """
     pooled = {summary.name: summary for summary in cell.measures.measures}
