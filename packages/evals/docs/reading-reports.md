@@ -43,7 +43,8 @@ or, when it has none, a **code-only report** of its evidence (`build_code_only_r
 A code-only report has `basis="code_only"` and no author's words — no headline, no findings, no text block,
 which the published schema and the model both refuse. It holds:
 
-- the arm table (every arm unresolved, since nothing decided);
+- the arm table: each arm and every lever it ran, with no status column (every arm is unresolved, since
+  nothing decided) and no finding column (there are no findings);
 - the decision surface;
 - the contrasts the evidence tested against the control;
 - a distribution chart per measure and judged dimension;

@@ -585,13 +585,15 @@ class TestACampaignWithNoAnalysisIsReportedFromItsEvidence:
     def test_it_lays_out_the_arms_and_the_surface_through_the_analysis_reports_builders(
         self, code_only: tuple[EvalHost, Report]
     ) -> None:
-        """Every arm is unresolved — a verdict is a decision's, and nothing decided — and the control is marked."""
+        """Every arm is unresolved and rests on no finding — a verdict is a decision's, and nothing decided — so
+        the arm table has neither a status nor a finding column, and its rows are in the arms' order alone."""
         _, report = code_only
         tables = {block.name: block for block in report.blocks if isinstance(block, TableBlock)}
         assert {"arms", "surface"} <= set(tables)
         arms = tables["arms"]
-        assert arms.rows and {row["status"] for row in arms.rows} == {"unresolved"}
-        assert not any(row["findings"] for row in arms.rows)
+        assert arms.rows and [column.key for column in arms.columns] == ["arm", "levers"]
+        assert all(set(row) == {"arm", "levers"} for row in arms.rows)
+        assert arms.order == "by arm"
         assert tables["surface"].rows
 
     def test_it_draws_a_distribution_per_measure_the_surface_can_draw(self, code_only: tuple[EvalHost, Report]) -> None:
@@ -623,7 +625,9 @@ class TestACampaignWithNoAnalysisIsReportedFromItsEvidence:
         assert report.source.campaign_name
         assert markdown.startswith(f"# Campaign {report.source.campaign_name}: its evidence, with no analysis\n")
         assert f"Code-only report of campaign {report.source.campaign_id}" in markdown.splitlines()[2]
-        assert "No analysis was generated." in markdown and "(blank headline)" not in markdown
+        # Said once, by the summary's line, and not again by the byline above it.
+        assert "No analysis was generated" not in markdown.splitlines()[2]
+        assert markdown.count("No analysis was generated") == 1 and "(blank headline)" not in markdown
         page = report_html(report)
         assert 'data-basis="code_only"' in page and 'data-chart-type="distribution"' in page
 

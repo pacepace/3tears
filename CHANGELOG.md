@@ -18,8 +18,13 @@ packages (bumped in lock-step).
   `unknown — interval only` (`SHAPE_UNKNOWN`, `chart_table_columns`). The chart intent keeps it.
 - **The decision-surface table has a `notes` column only when some row has a run note.** On a code-only report
   the surface also drops its "no number here was written by the model" sentence, which the opening line says.
+- **The arms table has a `status` column only when some arm's status is other than unresolved, and a `findings`
+  column only when some arm rests on a finding** (Markdown and HTML alike, since the table carries the columns).
+  A code-only report has neither: nothing decided and there are no findings. With no status column the caption
+  reads "by arm" in place of the order by status. An analysis report whose arms have verdicts keeps both.
 - **`NO_ANALYSIS` is one sentence**: "No analysis was generated: everything below was computed by code from the
-  campaign's evidence." What an analysis would add is in `docs/reading-reports.md`.
+  campaign's evidence." What an analysis would add is in `docs/reading-reports.md`. The code-only byline
+  (`report_byline`) no longer repeats "No analysis was generated."
 - `REPORT_VERSION` 3 -> 4 (a table added, the per-label charts removed); `schema.json` regenerated. No field or
   block kind changed shape.
 

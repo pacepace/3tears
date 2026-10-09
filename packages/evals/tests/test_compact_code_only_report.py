@@ -11,11 +11,16 @@ an analysis would add. Each is held here through the public report path:
 - **No empty Shape column** in Markdown or HTML, while the intent keeps the shape for a renderer — and a
   chart whose shape IS known for one group prints the column.
 - **No empty Run notes column**, and the column back as soon as one row has a note.
-- **One line** where the paragraph was, and no provenance sentence on a code-only surface.
+- **No Status or Rests on finding column** in the arms table when every arm is unresolved and none rests
+  on a finding — always so on a code-only report — and both back on an analysis report whose arms have a
+  verdict and the findings it rests on.
+- **One line** where the paragraph was, no provenance sentence on a code-only surface, and no second
+  "no analysis was generated" in the byline.
 
 Mutations that turn this file red: charting ``classifier:`` measures again in ``_chartable``; dropping
 ``_label_blocks`` from ``build_code_only_report``; printing ``intent.columns`` in either serializer;
-keying ``notes`` unconditionally in ``_surface_blocks``; restoring the long ``NO_ANALYSIS``.
+keying ``notes`` unconditionally in ``_surface_blocks``; keying ``status`` or ``findings`` unconditionally
+in ``_arm_blocks``; restoring the long ``NO_ANALYSIS`` or the byline's repeat of it.
 """
 
 from __future__ import annotations
@@ -40,6 +45,7 @@ from threetears.evals.analysis.surface_table import SURFACE_PROVENANCE
 from threetears.evals.analysis.viz.intent import chart_intent
 from threetears.evals.analysis.viz.intents.distribution import SHAPE_UNKNOWN
 from threetears.evals.contracts.analysis_measures import MeasureSummary
+from threetears.evals.contracts.authored import AuthoredAnalysis
 from threetears.evals.contracts.metrics import classifier_label_of
 from threetears.evals.quick import Comparison, compare
 from packages.evals.tests.test_surface_table import CANDIDATE, analysis, key, two_arm_surface
@@ -232,6 +238,50 @@ class TestNoColumnThatSaysNothing:
         assert sorted(row["notes"] or "" for row in table.rows) == ["", "short (run-a): measured 3 of 5"]
 
 
+class TestTheArmsTableHasNoColumnNothingFilled:
+    async def test_a_code_only_report_has_no_status_and_no_finding_column(self) -> None:
+        report = (await _classifier()).report
+        arms = _table(report, "arms")
+        assert arms is not None
+        assert [column.key for column in arms.columns] == ["arm", "levers"]
+        assert [row["arm"] for row in arms.rows] == ["model=candidate", CONTROL_ARM]
+        # With no status to order by, the caption names the order the rows are in, not one by status.
+        assert arms.order == "by arm"
+
+        markdown = report_markdown(report)
+        assert "**Arms** (by arm)\n\n| Arm | Every lever it ran |\n" in markdown
+        assert "| Status |" not in markdown and "Rests on finding" not in markdown and "unresolved" not in markdown
+        page = report_html(report)
+        assert '<th scope="col">Arm</th><th scope="col">Every lever it ran</th>' in page
+        assert '<th scope="col">Status</th>' not in page and "Rests on finding" not in page
+        assert "winner, then ruled out" not in markdown + page
+
+    def test_an_analysis_report_whose_arms_have_verdicts_keeps_both_columns(self) -> None:
+        report = build_report(analysis(two_arm_surface()))
+        arms = _table(report, "arms")
+        assert arms is not None
+        assert [column.key for column in arms.columns] == ["arm", "status", "findings", "levers"]
+        assert arms.order == "winner, then ruled out, then replaced incumbent, then unresolved"
+        by_status = {row["status"]: row["findings"] for row in arms.rows}
+        # The winner rests on the decision's finding; the incumbent it replaced rests on none, a dash.
+        assert by_status == {"winner": "1", "replaced incumbent": None}
+
+        markdown = report_markdown(report)
+        assert "| Arm | Status | Rests on finding | Every lever it ran |" in markdown
+        page = report_html(report)
+        assert '<th scope="col">Status</th><th scope="col">Rests on finding</th>' in page
+
+    def test_the_rule_is_the_tables_not_the_reports_basis(self) -> None:
+        """An analysis that decided nothing about its arms has an arms table as bare as a code-only one."""
+        decided = analysis(two_arm_surface())
+        document = decided.document.model_dump()
+        document["decisions"][0] |= {"disposition": "deferred", "revisit_when": "a k=5 pass"}
+        report = build_report(analysis(two_arm_surface(), document=AuthoredAnalysis.model_validate(document)))
+        arms = _table(report, "arms")
+        assert arms is not None
+        assert [column.key for column in arms.columns] == ["arm", "levers"] and arms.order == "by arm"
+
+
 class TestTheOpeningIsOneLine:
     async def test_the_summary_is_one_sentence_and_the_surface_does_not_repeat_it(self) -> None:
         report = (await _classifier()).report
@@ -246,6 +296,14 @@ class TestTheOpeningIsOneLine:
         assert not [
             block for block in report.blocks if isinstance(block, DisclosureBlock) and block.text == SURFACE_PROVENANCE
         ]
+
+    async def test_the_byline_does_not_repeat_it(self) -> None:
+        report = (await _classifier()).report
+        markdown, page = report_markdown(report), report_html(report)
+        byline = markdown.splitlines()[2]
+        assert byline.startswith("_Code-only report of campaign ") and "No analysis was generated" not in byline
+        assert markdown.count("No analysis was generated") == 1
+        assert page.count("No analysis was generated") == 1
 
     def test_an_analysis_report_keeps_the_provenance_sentence(self) -> None:
         report = build_report(analysis(two_arm_surface()))

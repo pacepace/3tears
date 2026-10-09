@@ -66,7 +66,9 @@ from threetears.evals.contracts.prose import ModelProse
 #:
 #: 4: the ``labels`` table added (a classifier's per-label precision, recall and F1, every arm's, on a code-only
 #: report), in place of the code-only report's distribution chart per label and statistic, which it no longer
-#: carries; the ``surface`` table's ``notes`` column is present only when some row has a run note.
+#: carries; the ``surface`` table's ``notes`` column is present only when some row has a run note, and the ``arms``
+#: table's ``status`` column only when some arm's status is other than unresolved and its ``findings`` column only
+#: when some arm rests on a finding.
 REPORT_VERSION: Literal[4] = 4
 
 #: What a report is of: a generated analysis, or the campaign's evidence alone with no analysis.
@@ -469,6 +471,9 @@ def report_title(report: Report) -> str:
 def report_byline(report: Report) -> str:
     """What the report is of and how it was made, as every serializer prints it under the title.
 
+    A code-only report's byline does not say that no analysis was generated: the summary's one line
+    (``NO_ANALYSIS``) says it, directly below.
+
     Args:
         report: The report.
 
@@ -479,7 +484,7 @@ def report_byline(report: Report) -> str:
     if report.basis == "code_only":
         return (
             f"Code-only report of campaign {source.campaign_id} — {source.behavior}; computed from its evidence on "
-            f"{source.generated_at}. No analysis was generated."
+            f"{source.generated_at}."
         )
     return (
         f"Analysis {source.analysis_id} of campaign {source.campaign_id} — {source.behavior}; generated "

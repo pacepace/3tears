@@ -286,16 +286,23 @@ def _arm_blocks(table: ArmTable) -> list[ReportBlock]:
 
     The one place an arm's full lever set is stated: every other block names the arm by its label, which
     carries only what tells it from the other arms.
+
+    The ``Status`` column is there only when some arm has a status other than ``unresolved``, and the ``Rests
+    on finding`` column only when some arm rests on a finding: on a code-only report nothing decided and
+    there are no findings, so each would be the same word or an em dash in every row. With no status column
+    the rows are in the arms' order alone, and the caption says so rather than naming an order by status.
     """
-    rows: list[dict[str, Cell]] = [
-        {
-            "arm": f"{row.label} (control)" if row.is_control else row.label,
-            "status": ARM_STATUS_WORDS[row.status],
-            "findings": positions([int(finding) for finding in row.finding_ids]) or None,
-            "levers": "; ".join(f"{level.axis_id}={level.display}" for level in row.settings) or None,
-        }
-        for row in table.rows
-    ]
+    decided = any(row.status != "unresolved" for row in table.rows)
+    founded = any(row.finding_ids for row in table.rows)
+    rows: list[dict[str, Cell]] = []
+    for row in table.rows:
+        cells: dict[str, Cell] = {"arm": f"{row.label} (control)" if row.is_control else row.label}
+        if decided:
+            cells["status"] = ARM_STATUS_WORDS[row.status]
+        if founded:
+            cells["findings"] = positions([int(finding) for finding in row.finding_ids]) or None
+        cells["levers"] = "; ".join(f"{level.axis_id}={level.display}" for level in row.settings) or None
+        rows.append(cells)
     blocks: list[ReportBlock] = [
         TableBlock(
             section="arms",
@@ -303,12 +310,12 @@ def _arm_blocks(table: ArmTable) -> list[ReportBlock]:
             title="Arms",
             columns=[
                 TableColumn(key="arm", header="Arm"),
-                TableColumn(key="status", header="Status"),
-                TableColumn(key="findings", header="Rests on finding"),
+                *([TableColumn(key="status", header="Status")] if decided else []),
+                *([TableColumn(key="findings", header="Rests on finding")] if founded else []),
                 TableColumn(key="levers", header="Every lever it ran"),
             ],
             rows=rows,
-            order="winner, then ruled out, then replaced incumbent, then unresolved",
+            order="winner, then ruled out, then replaced incumbent, then unresolved" if decided else "by arm",
             total_rows=len(rows),
         )
     ]
@@ -643,8 +650,8 @@ def build_code_only_report(
 ) -> Report:
     """Lay a campaign's assembled evidence out as a report, when no analysis exists to report through.
 
-    Everything here is code's: the arm table (every arm ``unresolved``, since a verdict is a decision's
-    and none was made), the decision surface, the contrasts the bundle tested against the control, one
+    Everything here is code's: the arm table (every arm and the levers it ran, with no status or finding
+    column: every arm is ``unresolved``, since a verdict is a decision's and none was made), the decision surface, the contrasts the bundle tested against the control, one
     distribution chart per measure and judged dimension the surface can draw, a classifier's per-label
     precision, recall and F1 as one table, and every disclosure the bundle carries. No
     :class:`~threetears.evals.analysis.report.model.TextBlock` is built — the report model refuses one on a
