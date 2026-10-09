@@ -107,9 +107,11 @@ from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
     clustered_standard_error,
     composite_significance,
+    difference_interval,
     holm_adjust,
     interval_clears,
     observed_mean_interval,
+    paired_equivalence,
     proportion_interval,
 )
 from threetears.evals.contracts.analysis_measures import BarAdjudication, BarVerdict, MeasureCollection, MeasureSummary
@@ -272,6 +274,10 @@ _PER_RESULT = "result"
 
 # The result's blended spend, as a measure — the one lineage leaf that is read only where it was observed.
 _COST_MEASURE = "cost_usd"
+
+#: The spend belonging to the roles production runs — the candidate's cost, without the judge's. The one cost
+#: a contrast between arms is tested on (:func:`_per_case_values`); ``cost_usd`` is what it cost to measure.
+_CANDIDATE_SPEND = "production_replicating_cost"
 
 # The distinguishing clause of each reason a cross-scope difference is withheld. The reason
 # reaches the generator as a SENTENCE (see ``ScopeDivergence.unattributed_withheld``), and that
@@ -1456,9 +1462,10 @@ class VerdictOrder(EvalDocumentModel):
     )
 
 
-#: What one comparison in a family came to, read off its ADJUSTED p. ``untested`` = no test could
-#: run (fewer than two cases a side), which is neither a separation nor its absence.
-ComparisonVerdict = Literal["improved", "regressed", "not_separated", "untested"]
+#: What one comparison in a family came to, read off its ADJUSTED p's. ``equivalent`` = shown inside the
+#: measure's declared margin by an equivalence test; ``untested`` = no test could run (fewer than two cases a
+#: side), which is neither a separation nor its absence.
+ComparisonVerdict = Literal["improved", "regressed", "equivalent", "not_separated", "untested"]
 
 
 class ComparedCell(EvalDocumentModel):
@@ -1473,7 +1480,21 @@ class ComparedCell(EvalDocumentModel):
             "is paired, every case carrying the reading otherwise."
         ),
     )
-    mean: float | None = Field(default=None, description="Mean of those per-case values. None when n_cases is 0.")
+    mean: float | None = Field(
+        default=None,
+        description=(
+            "Mean of those per-case values — over the cases the test read, which is not the cell's own mean when "
+            "`n_left_out` is above 0. None when n_cases is 0."
+        ),
+    )
+    n_left_out: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Cases this side carried the reading on that the test did not read, because the other side did not run "
+            "them: a paired test reads only the cases both ran. 0 when the test read every case this side has."
+        ),
+    )
 
 
 class FamilyComparison(EvalDocumentModel):
@@ -1486,13 +1507,34 @@ class FamilyComparison(EvalDocumentModel):
     contrast: ComparedCell = Field(description="The contrast arm's cell under the same rig.")
     delta: float | None = Field(
         default=None,
-        description="contrast mean minus control mean, in the reading's unit. None when either side is empty.",
+        description=(
+            "contrast mean minus control mean, in the reading's unit, over the cases the test read (each side's "
+            "`mean`). None when either side is empty."
+        ),
+    )
+    interval: tuple[float, float] | None = Field(
+        default=None,
+        description=(
+            "The interval on `delta` at the family's `interval_level`, from the same test as `p_raw`: simultaneous "
+            "over the family, so every interval in it covers its true difference together at least 95% of the time. "
+            "One that excludes zero always comes with a separation; a separation Holm's later steps found can still "
+            "touch zero. None when no test could run."
+        ),
+    )
+    hedges_g: float | None = Field(
+        default=None,
+        description=(
+            "The standardized effect, Hedges' g (bias-corrected Cohen's d): over the SD of the per-case differences "
+            "when paired, the pooled SD when not. None when no test ran, and at two paired cases, where no unbiased "
+            "estimate exists."
+        ),
     )
     test: Literal["paired", "unpaired"] | None = Field(
         default=None,
         description=(
-            "`paired` = a paired t-test over the cases both cells ran; `unpaired` = Welch's t-test over each cell's "
-            "per-case values, when they share fewer than two cases. None when neither could run."
+            "`paired` = a paired t-test over the cases both cells ran; `unpaired` = Welch's t statistic on Hsu's "
+            "conservative min(n) − 1 degrees of freedom over each cell's per-case values, when they share fewer "
+            "than two cases. None when neither could run."
         ),
     )
     p_raw: float | None = Field(
@@ -1504,12 +1546,32 @@ class FamilyComparison(EvalDocumentModel):
     )
     p_adjusted: float | None = Field(
         default=None,
-        description="The Holm-adjusted p within this comparison's family — the one figure a verdict rests on.",
+        description="The Holm-adjusted p within this comparison's family — the one figure a separation rests on.",
+    )
+    equivalence_margin: float | None = Field(
+        default=None,
+        description=(
+            "The measure's declared margin (`materiality_threshold`) the equivalence test ran against, in its unit. "
+            "None when it declares none, for a judged dimension, and for an unpaired test: then no equivalence test "
+            "ran and the verdict cannot be `equivalent`."
+        ),
+    )
+    equivalence_p_raw: float | None = Field(
+        default=None,
+        description=(
+            "The paired TOST p against ± `equivalence_margin` (the larger one-sided p), before correction. Kept for "
+            "audit and withheld from the writer, as `p_raw` is. None when no equivalence test ran."
+        ),
+    )
+    equivalence_p_adjusted: float | None = Field(
+        default=None,
+        description="The TOST p adjusted within the family — the one figure an `equivalent` verdict rests on.",
     )
     verdict: ComparisonVerdict = Field(
         description=(
-            "Read off `p_adjusted` against the family's alpha: improved or regressed when it is below it, in the "
-            "direction `delta` moved on this reading; not_separated otherwise; untested when no test could run."
+            "improved or regressed when `p_adjusted` is below the family's alpha, in the direction `delta` moved "
+            "on this reading; else equivalent when `equivalence_p_adjusted` is below it; else not_separated, which "
+            "says nothing about whether the arms differ; untested when no test could run."
         )
     )
     untested_reason: str | None = Field(
@@ -1546,8 +1608,8 @@ class ComparisonFamily(EvalDocumentModel):
         min_length=1,
         description=(
             "The live declared question this family serves. None for the campaign-wide family a campaign declaring no "
-            "question gets: every comparison it holds, on every reading, corrected as one — so a chance difference is "
-            "no more a finding for a campaign that asked nothing than for one that asked."
+            "question gets: every comparison it holds, on every reading on a merit axis, corrected as one — so a "
+            "chance difference is no more a finding for a campaign that asked nothing than for one that asked."
         ),
     )
     merit_axes: list[MeritAxis] = Field(
@@ -1560,7 +1622,26 @@ class ComparisonFamily(EvalDocumentModel):
     alpha: float = Field(default=SIGNIFICANCE_ALPHA, description="The family-wise error rate the verdicts hold.")
     family_size: int = Field(
         ge=0,
-        description="How many comparisons carried a p and were corrected together — the m the adjustment divided by.",
+        description=(
+            "How many comparisons carried a separation p and were corrected together — the m the adjustment "
+            "divides by, and the most hypotheses that can be true at once when equivalence tests join them."
+        ),
+    )
+    n_equivalence_tests: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Equivalence tests corrected in the same family, one per paired comparison on a measure that declares "
+            "a margin. A comparison's difference is either zero or at least its margin, never both, so the two "
+            "tests of one comparison cannot both be wrong and the family's error stays at alpha over every verdict."
+        ),
+    )
+    interval_level: float | None = Field(
+        default=None,
+        description=(
+            "The level of each comparison's `interval`: 1 − alpha / family_size, Bonferroni's, so the family's "
+            "intervals hold together at 1 − alpha. None when no comparison carried a p."
+        ),
     )
     n_untested: int = Field(ge=0, description="Comparisons in the family that could run no test, so carry no p.")
     comparisons: list[FamilyComparison] = Field(
@@ -6689,7 +6770,7 @@ def _verdict_order(adjudications: list[BarAdjudication], design: CampaignDesign 
 #: Opens the campaign-wide family's disclosure, where the campaign declares no question.
 _NO_QUESTION_FAMILY = (
     "This campaign declares no live question, so every comparison it holds — each contrast against the control, "
-    "on every reading — is corrected as one family."
+    "on every reading on a merit axis — is corrected as one family."
 )
 _NO_CONTROL_TO_COMPARE_AGAINST = (
     "No control resolved, so there is no arm for a contrast to be tested against and no separation between arms is "
@@ -6724,6 +6805,22 @@ def _per_case_values(
         for summary in _measure_collection(by_case[case_id], profile=profile, undeclared="scored").measures:
             if summary.mean is not None:
                 values[("measure", summary.name)][case_id] = summary.mean
+        # The candidate's own spend, which no cell walk yields: the run summary reads it
+        # (:func:`_measured_prod_costs`), and a contrast on cost reads it here, over the turns the candidate
+        # took and only where a result measured it — cost_usd sums the judge's spend too.
+        spend = [
+            cost
+            for result in by_case[case_id]
+            if _in_population("delivered", result)
+            and (
+                cost := production_replicating_cost(
+                    result.usage, substituted_deliveries=count_substituted_deliveries(result)
+                )
+            )
+            is not None
+        ]
+        if spend and case_id not in values[("measure", _CANDIDATE_SPEND)]:
+            values[("measure", _CANDIDATE_SPEND)][case_id] = sum(spend) / len(spend)
     scores: dict[tuple[str, str], list[float]] = defaultdict(list)
     for result in _non_faulted(members):
         for dimension, record in _judged_values(judged_rows.get(result.id, [])):
@@ -6742,7 +6839,12 @@ def _family_readings(
     A measure qualifies when it has a better end (a reading with none cannot improve or regress) and
     sits on one of the axes; a per-label classifier statistic does not, because it is computed from a
     whole cell's confusion counts and has no per-case value to test. A judged dimension sits on the
-    quality axis. An unscoped question (no axes) asks about every axis.
+    quality axis. An unscoped question (no axes) asks about every axis — every axis, not every measure:
+    a measure that serves no merit axis contributes to no verdict (:data:`MeritAxis`), scoped or not.
+    That is how the measuring apparatus's own readings stay out of a contrast between candidates: the
+    judge phase's time (``judge_ms``), the drain wait, and ``cost_usd`` and ``program_cost``, which sum the
+    judge's spend — what it cost to MEASURE an arm. The candidate's spend is ``production_replicating_cost``,
+    on the cost axis.
 
     Args:
         axes: The question's merit axes; empty for an unscoped question.
@@ -6756,12 +6858,21 @@ def _family_readings(
     for name, descriptor in catalog.items():
         if descriptor.higher_is_better is None or classifier_label_of(name) is not None:
             continue
-        if not axes or descriptor.merit_axis in axes:
+        if descriptor.merit_axis is not None and (not axes or descriptor.merit_axis in axes):
             readings[("measure", name)] = descriptor.higher_is_better
     if not axes or "quality" in axes:
         for measure in judged_measures:
             readings[("judged", measure.name)] = measure.higher_is_better
     return readings
+
+
+class _Tested(NamedTuple):
+    """One comparison before its family's correction: the comparison, the p's it carries, and its samples."""
+
+    comparison: FamilyComparison
+    p_raw: float | None
+    equivalence_p_raw: float | None
+    samples: tuple[list[float], list[float]]
 
 
 def _compare(
@@ -6772,11 +6883,15 @@ def _compare(
     *,
     threshold: float | None,
     no_turn: tuple[str, ...] = (),
-) -> tuple[FamilyComparison, float | None]:
+) -> _Tested:
     """Test one contrast against the control on one reading, before correction.
 
     Paired over the cases both cells ran when they share at least two — far more powerful, and the
-    design a fixed case set exists for — else Welch's test over each side's per-case values.
+    design a fixed case set exists for — else the unpaired test over each side's per-case values
+    (:func:`~threetears.evals.analysis.stats.composite_significance`). The means, the counts and the delta
+    are all over the cases the test read, and each side says how many of its own it left out, so the
+    figures a reader sees are the figures the test saw. A paired comparison on a measure with a declared
+    margin also runs the paired equivalence test (TOST) against it.
 
     Args:
         reading: The reading's kind and name.
@@ -6784,22 +6899,22 @@ def _compare(
         control: The control cell and its per-case values.
         contrast: The contrast cell and its per-case values.
         threshold: The measure's declared materiality threshold, which labels the delta through the one
-            predicate every surface uses (:func:`~threetears.evals.contracts.metrics.materiality`); None for a
-            measure that declared none and for a judged dimension.
+            predicate every surface uses (:func:`~threetears.evals.contracts.metrics.materiality`) and is the
+            equivalence test's margin; None for a measure that declared none and for a judged dimension.
         no_turn: Which sides (``"control"``, ``"arm"``) have no turn to read a turn's time or spend over —
             every result there failed with no turn taken — so an untested comparison says that, the reason,
             rather than that too few cases carried the reading.
 
     Returns:
-        The comparison with its adjusted p and verdict still unset, and its raw p (None when the test
-        produced none) for the family's correction.
+        The comparison with its adjusted p's, interval and verdict still unset, its raw p's (None where no
+        test produced one) for the family's correction, and the samples the test read, for the interval.
     """
     (control_key, control_values), (contrast_key, contrast_values) = control, contrast
     shared = sorted(set(control_values) & set(contrast_values))
     paired = len(shared) >= 2
     a = [control_values[case] for case in shared] if paired else list(control_values.values())
     b = [contrast_values[case] for case in shared] if paired else list(contrast_values.values())
-    _, significant, p_raw = composite_significance(a, b, paired=paired)
+    hedges_g, significant, p_raw = composite_significance(a, b, paired=paired)
     mean_a = sum(a) / len(a) if a else None
     mean_b = sum(b) / len(b) if b else None
     untested_reason = None
@@ -6817,41 +6932,127 @@ def _compare(
             untested_reason = "every shared case moved by the same amount, so the differences have no spread to test"
         else:
             untested_reason = "each side's values are constant, so there is no spread to test"
+    # The equivalence test only where the separation test produced a p, so each equivalence hypothesis has
+    # its comparison's separation hypothesis beside it in the family (see holm_adjust's max_true).
+    margin = threshold if paired and threshold and p_raw is not None else None
+    _, equivalence_p_raw = paired_equivalence([y - x for x, y in zip(a, b)], margin)
     delta = None if mean_a is None or mean_b is None else mean_b - mean_a
     comparison = FamilyComparison(
         reading=reading[0],
         name=reading[1],
         higher_is_better=higher_is_better,
         control=ComparedCell(
-            variant_key=control_key[0], apparatus_class_id=control_key[1], n_cases=len(a), mean=mean_a
+            variant_key=control_key[0],
+            apparatus_class_id=control_key[1],
+            n_cases=len(a),
+            mean=mean_a,
+            n_left_out=len(control_values) - len(a),
         ),
         contrast=ComparedCell(
-            variant_key=contrast_key[0], apparatus_class_id=contrast_key[1], n_cases=len(b), mean=mean_b
+            variant_key=contrast_key[0],
+            apparatus_class_id=contrast_key[1],
+            n_cases=len(b),
+            mean=mean_b,
+            n_left_out=len(contrast_values) - len(b),
         ),
         delta=delta,
+        hedges_g=hedges_g if significant is not None else None,
         test=None if significant is None else ("paired" if paired else "unpaired"),
         p_raw=p_raw,
+        equivalence_margin=margin,
+        equivalence_p_raw=equivalence_p_raw,
         verdict="untested" if significant is None else "not_separated",
         untested_reason=untested_reason,
         materiality=None if delta is None else materiality(threshold, delta),
     )
-    return comparison, p_raw
+    return _Tested(comparison, p_raw, equivalence_p_raw, (a, b))
 
 
-def _family_disclosure(family_size: int, n_untested: int, alpha: float, *, campaign_wide: bool = False) -> str:
+def _family_disclosure(
+    family_size: int, n_untested: int, alpha: float, *, n_equivalence: int = 0, campaign_wide: bool = False
+) -> str:
     """The sentence a writer quotes about one family, composed from what the family holds."""
     asked = "the campaign holds" if campaign_wide else "this question asks about"
     if family_size == 0:
         sentence = f"No comparison {asked} carried a p, so it supports no separation between arms."
     else:
+        equivalence = (
+            f", with {n_equivalence} equivalence test{'s' if n_equivalence != 1 else ''} against a declared margin,"
+            if n_equivalence
+            else ""
+        )
         sentence = (
             f"{family_size} comparison{'s' if family_size != 1 else ''} {asked} carried a p and "
-            f"{'were' if family_size != 1 else 'was'} corrected together by Holm's method at "
-            f"α={format_number(alpha)}; a separation stands only where the adjusted p is below it."
+            f"{'were' if family_size != 1 else 'was'}{equivalence} corrected together by Holm's method at "
+            f"α={format_number(alpha)}; a separation stands only where the adjusted p is below it. Each interval "
+            f"is at {format_number(100 * (1 - alpha / family_size))}%, so the family's intervals hold together at "
+            f"{format_number(100 * (1 - alpha))}%."
         )
     if n_untested:
         sentence += f" {n_untested} more could not be tested; each says why."
     return f"{_NO_QUESTION_FAMILY} {sentence}" if campaign_wide else sentence
+
+
+def _corrected_family(question_id: str | None, axes: list[MeritAxis], tested: list[_Tested]) -> ComparisonFamily:
+    """Correct one family's tests together, and read each comparison's verdict and interval off the result.
+
+    Every separation p and every equivalence p is Holm-adjusted as one family, capped at the separation
+    count (:func:`~threetears.evals.analysis.stats.holm_adjust`'s ``max_true``): a comparison's two
+    hypotheses — no difference, a difference of at least the margin — cannot both be true, so the family's
+    error stays at α over every verdict it can reach. Each interval is at ``1 − α/m`` (Bonferroni over the
+    ``m`` separations), which holds the family's intervals together at ``1 − α`` and keeps them consistent
+    with the verdicts: one that excludes zero has ``m · p_raw < α`` and so a separation; one inside the margin
+    has a TOST p below ``α/2m`` and so an equivalence.
+
+    Args:
+        question_id: The question the family serves, or None for the campaign-wide family.
+        axes: The question's merit axes.
+        tested: The family's comparisons, tested and uncorrected.
+
+    Returns:
+        The corrected family.
+    """
+    family_size = sum(1 for one in tested if one.p_raw is not None)
+    n_equivalence = sum(1 for one in tested if one.equivalence_p_raw is not None)
+    raw = [p for one in tested for p in (one.p_raw, one.equivalence_p_raw) if p is not None]
+    adjusted = iter(holm_adjust(raw, max_true=family_size) if raw else [])
+    interval_level = 1.0 - SIGNIFICANCE_ALPHA / family_size if family_size else None
+    comparisons = []
+    for one in tested:
+        comparison = one.comparison
+        if one.p_raw is not None and interval_level is not None:
+            p_adjusted = next(adjusted)
+            equivalence_p_adjusted = next(adjusted) if one.equivalence_p_raw is not None else None
+            verdict: ComparisonVerdict = "not_separated"
+            if p_adjusted < SIGNIFICANCE_ALPHA and comparison.delta:
+                verdict = "improved" if (comparison.delta > 0) == comparison.higher_is_better else "regressed"
+            elif equivalence_p_adjusted is not None and equivalence_p_adjusted < SIGNIFICANCE_ALPHA:
+                verdict = "equivalent"
+            control_sample, contrast_sample = one.samples
+            comparison = comparison.model_copy(
+                update={
+                    "p_adjusted": p_adjusted,
+                    "equivalence_p_adjusted": equivalence_p_adjusted,
+                    "interval": difference_interval(
+                        control_sample, contrast_sample, paired=comparison.test == "paired", confidence=interval_level
+                    ),
+                    "verdict": verdict,
+                }
+            )
+        comparisons.append(comparison)
+    n_untested = sum(1 for comparison in comparisons if comparison.verdict == "untested")
+    return ComparisonFamily(
+        question_id=question_id,
+        merit_axes=axes,
+        family_size=family_size,
+        n_equivalence_tests=n_equivalence,
+        interval_level=interval_level,
+        n_untested=n_untested,
+        comparisons=comparisons,
+        disclosure=_family_disclosure(
+            family_size, n_untested, SIGNIFICANCE_ALPHA, n_equivalence=n_equivalence, campaign_wide=question_id is None
+        ),
+    )
 
 
 def _multiple_comparisons(
@@ -6901,6 +7102,8 @@ def _multiple_comparisons(
     for record in records:
         judged_rows.setdefault(record.result_id, []).append(record)
     values = {key: _per_case_values(members, judged_rows, profile=profile) for key, members in results_by_cell.items()}
+    if any(("measure", _CANDIDATE_SPEND) in cell_values for cell_values in values.values()):
+        catalog = {**catalog, _CANDIDATE_SPEND: describe_reported_measure(_CANDIDATE_SPEND, profile.measures)}
     pairs = [
         (control_key, contrast_key)
         for control_key in sorted(values)
@@ -6920,14 +7123,14 @@ def _multiple_comparisons(
     families = []
     for question_id, axes in scopes:
         readings = _family_readings(axes, catalog, judged_measures)
-        tested: list[tuple[FamilyComparison, float | None]] = []
+        tested: list[_Tested] = []
         for reading in sorted(readings):
             for control_key, contrast_key in sorted(pairs, key=lambda pair: (pair[0][1], pair[1][0])):
                 control_values = values[control_key].get(reading, {})
                 contrast_values = values[contrast_key].get(reading, {})
                 if not control_values and not contrast_values:
                     continue
-                comparison, p_raw = _compare(
+                one = _compare(
                     reading,
                     readings[reading],
                     (control_key, control_values),
@@ -6941,38 +7144,11 @@ def _multiple_comparisons(
                         and _took_no_turn(results_by_cell[key])
                     ),
                 )
+                confounds = pair_confounds[(control_key, contrast_key)]
                 tested.append(
-                    (
-                        comparison.model_copy(
-                            update={"mechanism_confounds": pair_confounds[(control_key, contrast_key)]}
-                        ),
-                        p_raw,
-                    )
+                    one._replace(comparison=one.comparison.model_copy(update={"mechanism_confounds": confounds}))
                 )
-        adjusted = iter(holm_adjust([p for _, p in tested if p is not None]))
-        comparisons = []
-        for comparison, p_raw in tested:
-            if p_raw is not None:
-                p_adjusted = next(adjusted)
-                verdict: ComparisonVerdict = "not_separated"
-                if p_adjusted < SIGNIFICANCE_ALPHA and comparison.delta:
-                    verdict = "improved" if (comparison.delta > 0) == comparison.higher_is_better else "regressed"
-                comparison = comparison.model_copy(update={"p_adjusted": p_adjusted, "verdict": verdict})
-            comparisons.append(comparison)
-        family_size = sum(1 for _, p in tested if p is not None)
-        n_untested = sum(1 for comparison in comparisons if comparison.verdict == "untested")
-        families.append(
-            ComparisonFamily(
-                question_id=question_id,
-                merit_axes=axes,
-                family_size=family_size,
-                n_untested=n_untested,
-                comparisons=comparisons,
-                disclosure=_family_disclosure(
-                    family_size, n_untested, SIGNIFICANCE_ALPHA, campaign_wide=question_id is None
-                ),
-            )
-        )
+        families.append(_corrected_family(question_id, axes, tested))
     return MultipleComparisons(families=families)
 
 

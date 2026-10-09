@@ -2,8 +2,9 @@
 
 ``compare_two_prompts.py`` changed the prompt; this keeps the prompt and changes the model, so accuracy is
 weighed against cost. Each candidate returns an ``Answer``, as ``llm_judge.py``'s did: its label plus the tokens
-and dollars the call spent. New here: each arm's summary prints its spend, and the report tests the arms'
-``cost_usd`` against the control as it tests their accuracy. How spend is counted: ``docs/cost-and-budgets.md``.
+and dollars the call spent. New here: each arm's summary prints its spend, and the report tests the arms' spend
+(``production_replicating_cost``, the candidate's own, never a judge's) against the control as it tests their
+accuracy. How spend is counted: ``docs/cost-and-budgets.md``.
 
 Run it with ``python packages/evals/examples/compare_two_models.py``. With ``ANTHROPIC_API_KEY`` set it
 calls Claude 48 times (12 emails, 2 repeats, 2 models) for well under a cent; without it, keyword
@@ -140,7 +141,7 @@ async def main() -> Comparison:
     for arm, summary in comparison.arms.items():
         print(f"--- {arm} ---\n{summary.render()}\n")
 
-    # The verdict on accuracy and on cost_usd. A cheaper arm whose accuracy is "not separated from the
+    # The verdict on accuracy and on spend. A cheaper arm whose accuracy is "not separated from the
     # control" is the case for switching, once there are enough hard cases.
     for row in comparison.contrasts():
         arm, control = (row[key].removeprefix("model=") for key in ("contrast", "control"))

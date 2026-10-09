@@ -88,6 +88,7 @@ COMPARISON_VERDICT_WORDS = worded(
     {
         "improved": "improved on the control",
         "regressed": "regressed from the control",
+        "equivalent": "equivalent to the control, within the measure's margin",
         "not_separated": "not separated from the control",
         "untested": "untested",
     },
