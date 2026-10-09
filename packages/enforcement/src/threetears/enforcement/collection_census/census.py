@@ -91,29 +91,16 @@ def _qualified(cls: type) -> str:
 
 
 def _table_of(cls: type) -> str | None:
-    """the table a class names without being built, or ``None``.
+    """the table a class names without being built, or ``None``: core's one derivation of it.
 
     :param cls: a collection class
     :ptype cls: type
     :return: the table name, or ``None`` when it is named per instance or not at all
     :rtype: str | None
     """
-    schema = getattr(cls, "schema", None)
-    name = getattr(schema, "name", None)
-    if isinstance(name, str):
-        return name
-    prop = inspect.getattr_static(cls, "table_name", None)
-    if isinstance(prop, property) and prop.fget is not None:
-        try:
-            # the class stands in for an instance: a literal or a class attribute answers, and a
-            # table named per instance raises, which is what "not readable off the class" means
-            answer: Any = prop.fget(cls)
-        # prawduct:allow prawduct/broad-except -- any failure means the table is not readable off the class
-        except Exception:  # noqa: BLE001
-            # NOSILENT: a getter that raises for the class standing in for an instance is the answer
-            return None
-        return answer if isinstance(answer, str) else None
-    return None
+    from threetears.core.collections.base import table_named_by_class
+
+    return table_named_by_class(cls)
 
 
 def _declaration(cls: type) -> tuple[str, str | None]:

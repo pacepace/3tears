@@ -32,7 +32,6 @@ from threetears.core.backends.broker_generation import (
     GENERATION_UNAVAILABLE_ERROR_CODE,
     GENERATIONS_FAILED_REPLY_FIELD,
     GENERATIONS_REPLY_FIELD,
-    take_committed_generation,
 )
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 from threetears.core.cache.sqlite import SQLiteBackend
@@ -40,14 +39,20 @@ from threetears.core.collections import (
     WRITE_GENERATION,
     BaseCollection,
     CacheInvalidationMessage,
+    CallerTransaction,
     CollectionRegistry,
     tables_with_write_generation,
 )
 from threetears.core.collections.schema_backed import STRING_TYPE, SchemaBackedCollection, TableSchema
 from threetears.core.collections.schema_backed import Column as SchemaColumn
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.coordination.revocation import RevocationGuard
 from threetears.core.entities.base import BaseEntity
-from threetears.core.exceptions import DataLayerUnavailableError, GenerationUnavailableError
+from threetears.core.exceptions import (
+    DataLayerUnavailableError,
+    GenerationNotCommittedError,
+    GenerationUnavailableError,
+)
 from threetears.core.testing.kv import FakeNatsClient
 
 _TABLE = "group_members"
@@ -141,7 +146,30 @@ class TestNothingIsHandedOutForWhatDidNotCommit:
             async with proxy.transaction():
                 raise RuntimeError("the body failed")
         assert broker.subjects[-1] == "test.l3.tx.rollback"
-        with pytest.raises(GenerationUnavailableError):
+        with pytest.raises(GenerationNotCommittedError, match="rolled back"):
+            await BrokerGenerationSource().advance(_TABLE)
+
+    async def test_a_transaction_left_open_in_acquire_hands_out_no_earlier_token(self) -> None:
+        # the acquire exit's safety net rolls back a transaction its body never ended
+        broker = _Broker(_wrote("inc:1"), {"success": True, "tx_id": _TX_ID}, {"success": True})
+        proxy = broker.proxy()
+        await proxy.execute("UPDATE group_members SET member_id = $1", "p")
+        async with proxy.acquire() as conn:
+            await conn.transaction().__aenter__()
+        assert broker.subjects[-1] == "test.l3.tx.rollback"
+        with pytest.raises(GenerationNotCommittedError):
+            await BrokerGenerationSource().advance(_TABLE)
+
+    async def test_a_commit_that_got_no_reply_hands_out_no_earlier_token(self) -> None:
+        broker = _Broker(_wrote("inc:1"), {"success": True, "tx_id": _TX_ID})
+        proxy = broker.proxy()
+        await proxy.execute("UPDATE group_members SET member_id = $1", "p")
+        # the third request, the commit, finds no scripted reply: the transport fails
+        with pytest.raises(DataLayerUnavailableError):
+            async with proxy.transaction():
+                pass
+        assert broker.subjects[-1] == "test.l3.tx.commit"
+        with pytest.raises(GenerationNotCommittedError, match="no reply"):
             await BrokerGenerationSource().advance(_TABLE)
 
     async def test_a_refused_commit_hands_out_no_earlier_token(self) -> None:
@@ -155,20 +183,27 @@ class TestNothingIsHandedOutForWhatDidNotCommit:
         with pytest.raises(DataLayerUnavailableError):
             async with proxy.transaction():
                 pass
-        with pytest.raises(GenerationUnavailableError):
+        with pytest.raises(GenerationNotCommittedError, match="refused"):
             await BrokerGenerationSource().advance(_TABLE)
 
-    async def test_a_token_is_handed_out_once(self) -> None:
+    async def test_one_commits_token_is_handed_to_every_advance_of_its_table(self) -> None:
         await _Broker(_wrote("inc:2")).proxy().execute("DELETE FROM group_members")
         source = BrokerGenerationSource()
-        assert await source.advance(_TABLE) == "inc:2"
-        with pytest.raises(GenerationUnavailableError):
-            await source.advance(_TABLE)
+        assert [await source.advance(_TABLE) for _ in range(3)] == ["inc:2", "inc:2", "inc:2"]
+
+    async def test_a_later_commit_of_the_table_replaces_its_token(self) -> None:
+        broker = _Broker(_wrote("inc:2"), _wrote("inc:3"))
+        proxy = broker.proxy()
+        await proxy.execute("DELETE FROM group_members")
+        await proxy.execute("DELETE FROM group_members")
+        assert await BrokerGenerationSource().advance(_TABLE) == "inc:3"
 
     async def test_a_table_the_commit_did_not_advance_has_no_token(self) -> None:
         await _Broker(_wrote("inc:2", table="roles")).proxy().execute("DELETE FROM roles")
-        with pytest.raises(GenerationUnavailableError, match="group_members"):
+        with pytest.raises(GenerationUnavailableError, match="group_members") as raised:
             await BrokerGenerationSource().advance(_TABLE)
+        # named nothing is not the same as rolled back: the cause it gives is the broker's
+        assert not isinstance(raised.value, GenerationNotCommittedError)
         assert await BrokerGenerationSource().advance("roles") == "inc:2"
 
 
@@ -199,11 +234,11 @@ class TestAFailedAdvanceAfterACommittedWrite:
         async with broker.proxy().transaction():
             pass
         with pytest.raises(GenerationUnavailableError):
-            take_committed_generation(_TABLE)
+            await BrokerGenerationSource().advance(_TABLE)
         reply = {**_advance_failed(), "results": [{"success": True}]}
         await _Broker(reply).proxy().execute_batch([{"query": "DELETE FROM group_members", "params": []}])
         with pytest.raises(GenerationUnavailableError):
-            take_committed_generation(_TABLE)
+            await BrokerGenerationSource().advance(_TABLE)
 
 
 class TestEachTaskIsHandedItsOwnCommit:
@@ -226,21 +261,18 @@ class TestEachTaskIsHandedItsOwnCommit:
         # CallerTransaction settles under asyncio.shield, which runs in a task of its own
         await _Broker(_wrote("inc:3")).proxy().execute("DELETE FROM group_members")
         assert await asyncio.shield(BrokerGenerationSource().advance(_TABLE)) == "inc:3"
-        with pytest.raises(GenerationUnavailableError):
-            await BrokerGenerationSource().advance(_TABLE)
+        assert await BrokerGenerationSource().advance(_TABLE) == "inc:3"
 
     async def test_a_task_that_writes_does_not_add_to_the_record_it_inherited(self) -> None:
         await _Broker(_wrote("inc:3")).proxy().execute("DELETE FROM group_members")
 
-        async def child() -> str:
-            await _Broker(_wrote("r:1", table="roles")).proxy().execute("DELETE FROM roles")
-            return await BrokerGenerationSource().advance("roles")
+        async def child() -> None:
+            # the same table, and a token the child never takes
+            await _Broker(_wrote("inc:9")).proxy().execute("DELETE FROM group_members")
 
-        assert await asyncio.create_task(child()) == "r:1"
+        await asyncio.create_task(child())
         # the writer's own token is still its own
         assert await BrokerGenerationSource().advance(_TABLE) == "inc:3"
-        with pytest.raises(GenerationUnavailableError):
-            await BrokerGenerationSource().advance("roles")
 
 
 class _Reader:
@@ -384,3 +416,50 @@ class TestTheBrokerKnowsASwitchedOnTableFromItsClass:
         assert {"census_on_table", "census_absences_table", _TABLE} <= tables
         assert "census_off_table" not in tables
         del _On, _Off, _Absences, _PerInstance
+
+
+class TestOneCommitAdvancedManyTimes:
+    async def test_one_update_then_an_eviction_per_row_all_carry_its_token(self) -> None:
+        # the shape of a bulk counter bump: one statement, then one invalidate_cache per row
+        bus = FakeNatsClient()
+        members = _pod(_SwitchedOnBrokeredMembers, _Broker(), bus)
+        await _Broker(_wrote("inc:5")).proxy().execute("UPDATE group_members SET n = n + 1 WHERE id = ANY($1)", ["a"])
+        await members.invalidate_cache("m1")
+        await members.invalidate_cache("m2")
+        assert [(m.ids, m.generation) for m in _messages(bus)] == [(["m1"], "inc:5"), (["m2"], "inc:5")]
+
+    async def test_two_collections_of_one_table_settling_one_transaction(self) -> None:
+        bus = FakeNatsClient()
+        first = _pod(_SwitchedOnBrokeredMembers, _Broker(), bus)
+        second = _pod(_SwitchedOnBrokeredMembers, _Broker(), bus)
+        broker = _Broker({"success": True, "tx_id": _TX_ID}, _wrote("inc:6"))
+        async with broker.proxy().acquire() as conn, CallerTransaction(conn) as transaction:
+            transaction.enroll(first, "m1")
+            transaction.enroll(second, "m2")
+        assert broker.subjects[-1] == "test.l3.tx.commit"
+        assert sorted((m.ids[0], m.generation) for m in _messages(bus)) == [("m1", "inc:6"), ("m2", "inc:6")]
+
+
+class TestASourceThatCannotReadLeavesAbsenceCachingOff:
+    """a pod's reader-less source advances through the broker and caches no absence."""
+
+    @staticmethod
+    def _guard(source: BrokerGenerationSource | None) -> Exception | RevocationGuard:
+        registry = CollectionRegistry()
+        registry.configure(l2_client=FakeNatsClient(), l3_pool=object(), kv_key_scope="pod")  # type: ignore[arg-type]
+        if source is not None:
+            registry.set_generation_source(source)
+        assert (registry.readable_generation_source is not None) == (source is not None and source.reads_generations)
+        try:
+            return RevocationGuard(registry, purpose="test", ttl_seconds=60)
+        except ValueError as exc:
+            return exc
+
+    def test_revocations_are_wired_exactly_as_with_no_source(self) -> None:
+        without = self._guard(None)
+        reader_less = self._guard(BrokerGenerationSource())
+        assert isinstance(without, ValueError) and isinstance(reader_less, ValueError)
+        assert type(without) is type(reader_less)
+
+    def test_a_source_that_reads_caches_absences(self) -> None:
+        assert isinstance(self._guard(BrokerGenerationSource(_Reader("inc:1"))), RevocationGuard)

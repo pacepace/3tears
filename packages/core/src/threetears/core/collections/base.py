@@ -21,6 +21,7 @@ import inspect
 import random
 import re
 import time
+import weakref
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from contextlib import asynccontextmanager, contextmanager
@@ -57,6 +58,7 @@ from threetears.core.entities.base import BaseEntity, derive_addressing_id
 from threetears.core.exceptions import (
     ConcurrentModificationError,
     CorruptCacheEntry,
+    GenerationNotCommittedError,
     GenerationUnavailableError,
     L2EpochRegressedError,
     L2ScopeNotConfiguredError,
@@ -77,6 +79,7 @@ __all__ = [
     "CasMutation",
     "EntityT",
     "NoL2",
+    "table_named_by_class",
     "tables_with_write_generation",
 ]
 
@@ -191,11 +194,17 @@ _NO_BUMP: Final = _Bump()
 #: every collection class defined in this process whose committed writes advance its table's write
 #: generation: switched on (``write_generation = WRITE_GENERATION``), or caching absences. Appended
 #: by :meth:`BaseCollection.__init_subclass__`, read by :func:`tables_with_write_generation`.
-_GENERATION_CLASSES: list[type[BaseCollection[Any]]] = []
+_GENERATION_CLASSES: weakref.WeakSet[type[BaseCollection[Any]]] = weakref.WeakSet()
 
 
-def _table_named_by_class(cls: type) -> str | None:
+def table_named_by_class(cls: type) -> str | None:
     """the table a collection class names without being built, or ``None``.
+
+    The one derivation of "which table does this class name": the hub's broker reads it, through
+    :func:`tables_with_write_generation`, to decide which tables to advance, and the
+    one-class-per-table census (``threetears.enforcement.collection_census``) reads it to prove
+    there is one class per table. Two copies could disagree on a class, and the census would then
+    pass a layout the broker reads differently.
 
     :param cls: a collection class
     :ptype cls: type
@@ -232,7 +241,7 @@ def tables_with_write_generation() -> frozenset[str]:
     :return: the table names
     :rtype: frozenset[str]
     """
-    return frozenset(name for name in map(_table_named_by_class, list(_GENERATION_CLASSES)) if name is not None)
+    return frozenset(name for name in map(table_named_by_class, list(_GENERATION_CLASSES)) if name is not None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -623,7 +632,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                 f"remove an expired absent-marker; got {cls.negative_cache_sweep_batch}"
             )
         if isinstance(cls.write_generation, WriteGeneration) or cls.negative_cache_max_age is not None:
-            _GENERATION_CLASSES.append(cls)
+            _GENERATION_CLASSES.add(cls)
 
     # datasource-task-06 DS-06-04: per-concrete-class memo of table
     # names that have already emitted the "nats_client missing"
@@ -696,11 +705,12 @@ class BaseCollection(ABC, Generic[EntityT]):
             )
         if not self._negative_cache_writes_advance:
             return
-        if self._registry.generation_source is None:
+        if self._registry.readable_generation_source is None:
             raise ValueError(
                 f"{type(self).__name__} opts into negative caching but its registry has no generation "
-                f"source: nothing could invalidate a recorded absence when a write lands. wire "
-                f"registry.set_generation_source(...) before constructing it"
+                f"source it can read: nothing could invalidate a recorded absence when a write lands. "
+                f"wire registry.set_generation_source(...) with a source that reads before "
+                f"constructing it"
             )
         if self._declares_deferred_l3_writes:
             raise ValueError(
@@ -1467,7 +1477,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         return (
             self._negative_cache_writes_advance
             and self._nats_client is not None
-            and self._registry.generation_source is not None
+            and self._registry.readable_generation_source is not None
         )
 
     async def _current_generation(self) -> str | None:
@@ -1478,7 +1488,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         :return: the generation token, or ``None``
         :rtype: str | None
         """
-        source = self._registry.generation_source
+        source = self._registry.readable_generation_source
         if source is None:
             return None
         try:
@@ -1507,7 +1517,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         # in runs none of this path however it was assembled. L2 is deliberately not part of it.
         if not self._negative_cache_writes_advance:
             return None
-        source = self._registry.generation_source
+        # a source that cannot read leaves absence caching off, so there is no absence to invalidate
+        source = self._registry.readable_generation_source
         if source is None:
             return None
         try:
@@ -1556,6 +1567,13 @@ class BaseCollection(ABC, Generic[EntityT]):
         assert source is not None  # narrow: _write_generation_on
         try:
             token = await source.advance(self.table_name)
+        except GenerationNotCommittedError as exc:
+            # the commit did not land (a rolled-back transaction settling): nothing to advance
+            log.info(
+                "no write generation to advance: the commit these rows were written in did not land",
+                extra={"extra_data": {"table": self.table_name, "rows": rows, "error": str(exc)}},
+            )
+            return _Bump(failure=exc)
         except GenerationUnavailableError as exc:
             log.error(
                 "write generation could not be advanced after a committed write; a pod following "

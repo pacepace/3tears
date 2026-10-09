@@ -1435,7 +1435,7 @@ class _ProxyConnection:
         }
         subject = f"{self._backend.ns}.l3.tx.rollback"
         # nothing the session wrote landed, so no collection settling it may be handed a token
-        forget_reply_generations()
+        forget_reply_generations("its transaction was rolled back")
         try:
             await self._backend.nats_request(subject, payload)
         finally:
@@ -1561,9 +1561,14 @@ class _ProxyTransaction:
         subject = f"{self._backend.ns}.l3.tx.{action}"
         if action == "rollback":
             # nothing the session wrote lands, so no collection settling it may be handed a token
-            forget_reply_generations()
+            forget_reply_generations("its transaction was rolled back")
         try:
-            response = await self._backend.nats_request(subject, payload)
+            try:
+                response = await self._backend.nats_request(subject, payload)
+            except BaseException:
+                # no reply, so the commit's outcome is unknown: hand out no earlier commit's token
+                forget_reply_generations(f"its {action} got no reply")
+                raise
             if response.get("success", False) and action == "commit":
                 record_reply_generations(response)
             if not response.get("success", False):
@@ -1572,7 +1577,7 @@ class _ProxyTransaction:
                 # commit path so the caller learns the DB did not
                 # persist their work.
                 if action == "commit":
-                    forget_reply_generations()
+                    forget_reply_generations("its commit was refused")
                     self._backend.raise_for_failed_reply(response, "tx.commit")
                 _logger.warning(
                     "proxy tx.rollback reported failure: %s",

@@ -15,19 +15,32 @@ that did not already.
 
 - **Added, `threetears.core.backends.BrokerGenerationSource`**: a pod's generation source.
   `advance(table)` returns the token the broker's reply named for the commit this task just made,
-  once, and raises `GenerationUnavailableError` when the reply named none or listed the table as
-  not advanced. `current` reads through an optional `GenerationReader` (such as
+  the same token to every advance of that table for that commit, and raises
+  `GenerationUnavailableError` when the reply named none or listed the table as not advanced.
+  `current` reads through an optional `GenerationReader` (such as
   `threetears.epoch.EpochGenerationReader`) and raises with none, or for a table with no generation
-  yet: a pod cannot mint one.
-- **Changed, `NatsProxyL3Backend`**: every successful reply that ends a commit (`l3.query`,
-  `l3.batch`, `l3.tx.commit`) has its generations kept for the calling task; a rolled-back or
-  refused transaction drops the task's unclaimed ones. A reply that names none changes nothing.
+  yet: a pod cannot mint one. Without a reader it says so (`reads_generations = False`).
+- **Changed, `NatsProxyL3Backend`**: every reply that ends a commit (a successful `l3.query` or
+  `l3.tx.commit`, and every `l3.batch` reply, a partly failed statement-by-statement batch
+  included) has its generations kept for the calling task until a later reply names the same
+  table. A rolled-back transaction, a refused commit and a commit whose request got no reply drop
+  them all; a later advance then raises `GenerationNotCommittedError`. A reply that names none
+  changes nothing.
+- **Added, `threetears.core.exceptions.GenerationNotCommittedError`**, a `GenerationUnavailableError`
+  for an advance asked of a commit that landed nothing; a collection logs it at INFO.
+- **Added, reading as a capability of its own**: `GenerationSource` implementations may declare
+  `reads_generations = False`; `threetears.core.collections.generation.source_reads` and
+  `CollectionRegistry.readable_generation_source` read it. Absence caching (and the refusal to build
+  an absence-caching collection without a source) needs a source that reads, so a registry wired
+  with a reader-less source caches no absences, exactly as with no source.
 - **Added, wire names** in `threetears.core.backends.broker_generation`:
   `GENERATIONS_REPLY_FIELD` (`generations`), `GENERATIONS_FAILED_REPLY_FIELD`
   (`generations_failed`) and `GENERATION_UNAVAILABLE_ERROR_CODE` (`GENERATION_UNAVAILABLE`, on a
   reply that is still a success, because the write committed and must not be retried).
 - **Added, `threetears.core.collections.tables_with_write_generation()`**: the tables named on
-  every imported collection class that is switched on or caches absences. What the broker reads.
+  every live imported collection class that is switched on or caches absences. What the broker
+  reads. `threetears.core.collections.base.table_named_by_class` is the one derivation of a class's
+  table, shared with the census.
 - **Changed, `build_tool_pod_collection_stack`** (so `ToolServerBootstrap.install_collection_stack`)
   wires `BrokerGenerationSource()` on the pod's registry.
 - **Added, `threetears.enforcement.collection_census`** (`run_census`, `find_census_problems`):
