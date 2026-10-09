@@ -64,8 +64,9 @@ reading's interval is still computed over trials and says "interval too narrow" 
 Each contrast against the control is `improved`, `regressed`, `not_separated` or `untested`, read off a
 Holm-adjusted p within one family: one per declared question, or one campaign-wide. Twenty uncorrected
 tests find a chance "winner" more often than not. False-discovery control across a history of campaigns and
-sequential testing stay out. The two-run change helper still calls a sub-threshold move `flat`
-([open problems](open-problems.md)); the figures behind these rules are in
+sequential testing stay out. The run-history read follows the same rule: a step that misses significance is
+`not_separated`, and "no meaningful change" (`equivalent`) is claimed only by an equivalence test (TOST)
+against the measure's declared margin, its materiality threshold. The figures behind these rules are in
 [measuring soundly](measuring-soundly.md).
 
 **Trust in a judge is measured, not asserted, and nothing waits for calibration.**
@@ -120,7 +121,8 @@ would govern users that do not exist.
 **The eval system is meant to evaluate itself.**
 Its model-driven parts are subjects, and every chain of evaluation should end in a code check or a human
 label. The analysis writer has a kind, and a judge's self-agreement is measured by repeating its scores. Testing the statistics
-against simulated data with known answers is not yet in the suite ([open problems](open-problems.md)).
+against simulated data with known answers covers the run-history change read so far, and no other statistic
+([open problems](open-problems.md)).
 
 **A run's memory should scale with its matrix, never with how much a cell produced.**
 How talkative a candidate is should not decide whether a run survives. Nothing measures this yet.

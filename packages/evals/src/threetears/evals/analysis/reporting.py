@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple, get_args
 from pydantic import Field, model_validator
 
 from threetears.evals.analysis.numbers import format_number
+from threetears.evals.analysis.stats import ChangeLabel
 from threetears.evals.contracts.base import EvalBaseModel, VerbatimText
 from threetears.evals.contracts.hashing import canonical_digest, canonical_json
 from threetears.evals.contracts.host.profile import HostProfile
@@ -4665,9 +4666,14 @@ class RegressionFlag(EvalBaseModel):
     Descriptive, never an alert: it discloses the ``test`` it ran and the
     thresholds it applied, so the label can never be read as a calibrated
     judgement — automated alerting stays gated behind judge calibration. ``label``
-    is one of ``regressed`` / ``improved`` / ``flat`` / ``inconclusive``, and a
-    move earns a directional label only when it is both statistically significant
-    and over a magnitude threshold (a joint gate).
+    is one of ``regressed`` / ``improved`` / ``equivalent`` / ``below_threshold`` /
+    ``not_separated`` / ``inconclusive`` (:class:`~threetears.evals.analysis.stats.ChangeVerdict`
+    defines each). A move earns a directional label only when it is both
+    statistically significant and over a magnitude threshold (a joint gate). A move
+    that misses significance reads ``not_separated``, never "no change": the one label
+    claiming no meaningful change is ``equivalent``, and it needs an equivalence test
+    against the measure's declared margin (``equivalence_margin``) to pass. With no
+    margin declared, no step can read ``equivalent``.
 
     ``crosses_epoch`` warns that the two runs span a suite-version boundary: the
     paired test then rests only on the cases the two still share, and the
@@ -4691,7 +4697,7 @@ class RegressionFlag(EvalBaseModel):
     it would be the reading this flag exists to prevent.
     """
 
-    label: str
+    label: ChangeLabel
     delta: float | None = None
     relative_delta: float | None = None
     significant: bool | None = None
@@ -4702,6 +4708,13 @@ class RegressionFlag(EvalBaseModel):
     #: whose statistic is absent cannot be checked, and a reader must be able to
     #: tell a label a test produced from one reasoned around an undefined test.
     p: float | None = None
+    #: The TOST p an ``equivalent`` label was thresholded against — the larger of the
+    #: two one-sided p's — or ``None`` wherever no equivalence t-test ran: no margin
+    #: declared, too few pairs, or a zero-spread difference reasoned rather than tested.
+    equivalence_p: float | None = None
+    #: The margin that test ran against, in the measure's units: the measure's declared
+    #: materiality threshold, or ``None`` when it declares none.
+    equivalence_margin: float | None = None
     n_pairs: int = 0
     crosses_epoch: bool = False
     crosses_cassette_mode: bool = False
@@ -4763,7 +4776,7 @@ class SeriesPoint(EvalBaseModel):
     #: this one can attribute the shortfall exactly — and it needs to most: the point
     #: sits on a time series beside complete runs and is handed a regression verdict
     #: against its neighbour, so a run that measured 2 of its 4 cells contributes a
-    #: ``flat`` or ``regressed`` label computed over a denominator the comparison does
+    #: ``not_separated`` or ``regressed`` label computed over a denominator the comparison does
     #: not share. Derived from the run's completeness record rather than its status: a
     #: ``completed`` run with an infra-excluded cell is short too.
     completeness_disclosure: str | None = None
@@ -4807,7 +4820,9 @@ class HistoryResult(EvalBaseModel):
     carries the measure's direction so a reader knows which way is a regression.
     ``min_absolute_change`` / ``min_relative_change`` echo the caller's regression
     gate (the thresholds are the caller's, disclosed, never invented), and the
-    per-flag ``test`` names the statistic. ``attribution_disclosure`` is the same
+    per-flag ``test`` names the statistic. ``equivalence_margin`` is the host's
+    declared margin on the measure, the only thing that lets a step read
+    ``equivalent``; ``None`` when it declares none. ``attribution_disclosure`` is the same
     obligation one rung up: on a measure whose verdicts cannot name a cause, it says so
     once for the answer. ``exclusions`` and the ``n_*`` counts keep
     an all-excluded corpus from rendering as an empty one, exactly as
@@ -4821,6 +4836,7 @@ class HistoryResult(EvalBaseModel):
     higher_is_better: bool | None = None
     min_absolute_change: float
     min_relative_change: float
+    equivalence_margin: float | None = None
     series: list[MeasureSeries] = []
     n_results: int = 0
     n_filtered_out: int = 0
@@ -5003,8 +5019,9 @@ def compute_history(
     reads as an epoch boundary rather than a mysterious jump. Between adjacent
     points the change is classified by a paired test on the cases they share plus
     ``min_*_change`` magnitude thresholds (:func:`~threetears.evals.analysis.stats.paired_change`),
-    and the test and thresholds ride on every flag — descriptive, never an alert,
-    until judge calibration lands.
+    and, where the measure declares a materiality threshold, an equivalence test
+    against it; the tests and thresholds ride on every flag — descriptive, never an
+    alert, until judge calibration lands.
 
     **On a scenario-bound measure the flag fires and withholds attribution.** Its value
     is defined by the scenario, whose externals no series can hold still between runs, so
@@ -5060,7 +5077,12 @@ def compute_history(
             before any row is read, so a typo cannot return an empty series that
             reads like a measure nobody recorded.
     """
-    from threetears.evals.analysis.stats import PAIRED_TEST_NAME, paired_change, standard_error_of_mean
+    from threetears.evals.analysis.stats import (
+        EQUIVALENCE_TEST_NAME,
+        PAIRED_TEST_NAME,
+        paired_change,
+        standard_error_of_mean,
+    )
 
     # A series point is a mean over cases, so the catalog name for what this returns
     # is `mean_composite` / `mean_cost_usd` / `mean_total_ms` — accepted here beside
@@ -5082,6 +5104,10 @@ def compute_history(
     # series still says what its verdicts would have withheld — the empty-guard swallow the
     # sibling disclosures on this surface are already assembled ahead of.
     attribution_withheld = _attribution_withheld(descriptor)
+    # The host's declared margin on the measure — the one margin a bar is read against too. Only it
+    # licenses an `equivalent` step; the caller's gate never does.
+    margin = descriptor.materiality_threshold
+    flag_test = PAIRED_TEST_NAME if margin is None else f"{PAIRED_TEST_NAME}; {EQUIVALENCE_TEST_NAME}"
 
     placed, exclusions = place_results(
         runs, results, known_run_ids, source="history", archived_run_ids=archived_run_ids
@@ -5152,6 +5178,7 @@ def compute_history(
                     min_absolute_change=min_absolute_change,
                     min_relative_change=min_relative_change,
                     higher_is_better=direction,
+                    equivalence_margin=margin,
                 )
                 regression = RegressionFlag(
                     label=verdict.label,
@@ -5161,6 +5188,8 @@ def compute_history(
                     exceeds_threshold=verdict.exceeds_threshold,
                     cohens_d=verdict.cohens_d,
                     p=verdict.p_value,
+                    equivalence_p=verdict.equivalence_p,
+                    equivalence_margin=verdict.equivalence_margin,
                     n_pairs=verdict.n_pairs,
                     crosses_epoch=boundary,
                     crosses_cassette_mode=crosses_cassette,
@@ -5168,7 +5197,7 @@ def compute_history(
                     # pair — and carried per flag for the reason `test` and the thresholds
                     # beside it are: a verdict read on its own must declare its own posture.
                     attribution_withheld=attribution_withheld,
-                    test=PAIRED_TEST_NAME,
+                    test=flag_test,
                     min_absolute_change=min_absolute_change,
                     min_relative_change=min_relative_change,
                 )
@@ -5248,6 +5277,7 @@ def compute_history(
         higher_is_better=descriptor.higher_is_better,
         min_absolute_change=min_absolute_change,
         min_relative_change=min_relative_change,
+        equivalence_margin=margin,
         series=series,
         n_results=n_considered,
         n_filtered_out=n_filtered_out,

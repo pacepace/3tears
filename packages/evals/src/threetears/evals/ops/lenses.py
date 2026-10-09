@@ -754,6 +754,13 @@ def history_text(result: HistoryResult) -> str:
         f"formula: {result.formula}",
         f"regression thresholds: min absolute change {format_number(result.min_absolute_change)}, "
         f"min relative change {format_number(result.min_relative_change)}",
+        (
+            "equivalence margin: none declared for this measure, so no step can read equivalent; "
+            "not_separated says the data cannot tell a move from noise, never that nothing changed"
+            if result.equivalence_margin is None
+            else f"equivalence margin: ±{format_number(result.equivalence_margin)} (the measure's declared "
+            "materiality threshold); a step reads equivalent only when shown inside it"
+        ),
     ]
     if result.attribution_disclosure:
         lines.append(result.attribution_disclosure)

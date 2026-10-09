@@ -30,8 +30,8 @@ pooled SD.
 from __future__ import annotations
 
 import math
-from statistics import NormalDist
 from collections.abc import Sequence
+from statistics import NormalDist
 from typing import Final, Literal, NamedTuple
 
 # Two-sided p-value below which a composite delta is called significant.
@@ -68,6 +68,12 @@ PAIRED_TEST_NAME = f"paired two-sided t-test on shared per-case values, α={SIGN
 # unable to tell a powerful within-case comparison from a weak between-case one,
 # and that difference is most of what a small eval arm's verdict rests on.
 UNPAIRED_TEST_NAME = f"Welch's unequal-variance two-sided t-test on unpaired per-case values, α={SIGNIFICANCE_ALPHA}"
+
+# The equivalence test the change classifier runs beside the paired test, named for
+# the same reason: an `equivalent` label names the statistics it rests on.
+EQUIVALENCE_TEST_NAME = (
+    f"two one-sided paired t-tests (TOST) against ± the measure's declared margin, α={SIGNIFICANCE_ALPHA}"
+)
 
 
 def _sample_std(values: list[float]) -> float:
@@ -163,6 +169,16 @@ def _student_t_two_sided_p(t: float, df: float) -> float:
     if df <= 0.0:
         return float("nan")
     return _betai(0.5 * df, 0.5, df / (df + t * t))
+
+
+def _student_t_upper_tail(t: float, df: float) -> float:
+    """One-tailed ``P(T > t)`` on ``df`` degrees of freedom, from the two-sided closed form.
+
+    The t distribution is symmetric, so the upper tail is half the two-sided p above zero and one
+    minus that half below it.
+    """
+    half = 0.5 * _student_t_two_sided_p(t, df)
+    return half if t >= 0.0 else 1.0 - half
 
 
 def t_critical_two_sided(confidence: float, df: float) -> float:
@@ -542,6 +558,10 @@ def composite_significance(
     return SignificanceResult(cohens_d, p_value < SIGNIFICANCE_ALPHA, p_value)
 
 
+#: What a change between two paired samples reads as — see :class:`ChangeVerdict`.
+ChangeLabel = Literal["improved", "regressed", "equivalent", "below_threshold", "not_separated", "inconclusive"]
+
+
 class ChangeVerdict(NamedTuple):
     """Whether the change between two paired samples is a real regression/improvement.
 
@@ -552,15 +572,28 @@ class ChangeVerdict(NamedTuple):
     numbers are carried so a surface can disclose the test and thresholds beside
     the label rather than presenting a bare verdict (descriptive, not an alert).
 
+    **A move that misses significance is not "no change".** At two to six cases almost
+    nothing is significant, so a label claiming stability there would be the default
+    claim and a false one. "No meaningful change" is a claim of its own, made only by an
+    equivalence test (TOST, Lakens 2017) against the measure's declared margin, and never
+    without one.
+
     ``label`` is one of:
 
     - ``"regressed"`` — significant, over threshold, in the worse direction.
     - ``"improved"`` — significant, over threshold, in the better direction.
-    - ``"flat"`` — measured, but not significant or not over threshold.
+    - ``"equivalent"`` — no directional label, and the move is shown to lie inside ± the
+      measure's declared margin: both one-sided tests reject at α, which is the 90% interval
+      on the paired difference sitting inside the margin. The one label that claims no
+      meaningful change.
+    - ``"below_threshold"`` — significant, but under the caller's magnitude gate, and not
+      shown equivalent: a real move too small to flag, never a claim of no change.
+    - ``"not_separated"`` — not significant and not shown equivalent: the data cannot tell
+      this move from noise, in either direction. Says nothing about whether it changed.
     - ``"inconclusive"`` — too few paired observations to run the test (< 2 pairs).
     """
 
-    label: str
+    label: ChangeLabel
     delta: float | None
     relative_delta: float | None
     significant: bool | None
@@ -572,6 +605,46 @@ class ChangeVerdict(NamedTuple):
     #: when no t-test was evaluated — including the deterministic-gap case below,
     #: where the label is reasoned from the zero variance rather than from a t.
     p_value: float | None = None
+    #: The margin the equivalence test ran against, in the measure's units — the
+    #: measure's declared materiality threshold. ``None`` when none was declared, and
+    #: then no equivalence test ran and no label claims one.
+    equivalence_margin: float | None = None
+    #: The TOST p: the larger of the two one-sided p's, thresholded at α. ``None``
+    #: wherever no equivalence t-test was evaluated — no margin, fewer than two
+    #: pairs, or a zero-spread difference whose reading is reasoned rather than tested.
+    equivalence_p: float | None = None
+
+
+def _equivalence(diffs: list[float], margin: float | None) -> tuple[bool | None, float | None]:
+    """The paired TOST against ``± margin``: whether the mean difference is shown inside it, and its p.
+
+    Two one-sided t-tests on the paired differences, each at :data:`SIGNIFICANCE_ALPHA`: H0 ``δ ≤ −margin``
+    and H0 ``δ ≥ margin``. Equivalence is claimed only when both reject — the larger of the two p's
+    below α. A zero-spread difference has no t; it is read under the same pair floor the deterministic
+    gap is (:data:`_MIN_PAIRS_FOR_DETERMINISTIC_GAP`), for the same reason: a perfectly consistent
+    pattern over fewer pairs is a coincidence of a coarse scale, not a finding.
+
+    Args:
+        diffs: The paired differences, current minus baseline.
+        margin: The declared margin, or None.
+
+    Returns:
+        ``(equivalent, p)``. ``equivalent`` is None when no test could run (no positive margin, fewer
+        than two pairs); ``p`` is None wherever no t was evaluated.
+    """
+    n = len(diffs)
+    if margin is None or margin <= 0.0 or n < 2:
+        return None, None
+    mean = sum(diffs) / n
+    sd = _sample_std(diffs)
+    if sd == 0.0:
+        return n >= _MIN_PAIRS_FOR_DETERMINISTIC_GAP and abs(mean) < margin, None
+    se = sd / math.sqrt(n)
+    df = float(n - 1)
+    p_above_lower = _student_t_upper_tail((mean + margin) / se, df)
+    p_below_upper = _student_t_upper_tail((margin - mean) / se, df)
+    p = max(p_above_lower, p_below_upper)
+    return p < SIGNIFICANCE_ALPHA, p
 
 
 def paired_change(
@@ -581,15 +654,19 @@ def paired_change(
     min_absolute_change: float,
     min_relative_change: float,
     higher_is_better: bool,
+    equivalence_margin: float | None = None,
 ) -> ChangeVerdict:
-    """Classify the change from ``baseline`` to ``current`` as regression / improvement / flat.
+    """Classify the change from ``baseline`` to ``current``: a direction, equivalence, or not separated.
 
     The two samples are paired one-to-one (same case order), so pass the per-case
     values aligned on the cases the two runs share. A regression is a significant
     paired move in the *worse* direction that also clears a magnitude threshold;
-    an improvement is the same in the better direction. Below either gate the
-    change is ``"flat"`` — real noise, not a finding — and fewer than two pairs is
-    ``"inconclusive"`` because the test is undefined, never silently ``"flat"``.
+    an improvement is the same in the better direction. A move that earns neither
+    reads ``"equivalent"`` only when the equivalence test shows it inside ± the
+    declared margin; otherwise ``"below_threshold"`` when it was significant but
+    under the gate, and ``"not_separated"`` when it was not — which claims nothing
+    about whether the measure changed. Fewer than two pairs is ``"inconclusive"``
+    because the test is undefined.
 
     The magnitude gate passes when any *active* threshold is cleared: the absolute
     change clearing ``min_absolute_change`` OR the relative change (against the
@@ -599,6 +676,13 @@ def paired_change(
     relative one. With both off the gate imposes no magnitude floor and
     significance alone flags — honest because the thresholds ride on every answer,
     so a reader sees whether a magnitude floor was applied.
+
+    The gate and the margin are different things on purpose. The gate is the
+    caller's, per request: how large a move must be before this read flags it.
+    The margin is the host's declaration about the measure: the difference too
+    small to act on (:attr:`~threetears.evals.contracts.metrics.MetricDescriptor.materiality_threshold`),
+    the same margin a bar's verdict is read against. Only the margin licenses a
+    claim of no meaningful change.
 
     Args:
         baseline: Earlier run's per-case values.
@@ -610,13 +694,17 @@ def paired_change(
             baseline a nonzero move reads as an unbounded change and clears it.
         higher_is_better: The measure's direction — ``True`` for quality (a decline
             is the regression), ``False`` for cost/latency (an increase is).
+        equivalence_margin: The measure's declared margin, in its own unit, or None
+            when it declares none — then no equivalence test runs and no label
+            claims one.
 
     Returns:
         A :class:`ChangeVerdict`. ``delta``/``relative_delta`` are ``None`` only
         when there are no pairs; ``significant`` is ``None`` below two pairs.
         ``p_value`` is the p the label was thresholded against, and is ``None``
         wherever the t-test was not evaluated — so a reader can tell a label that
-        came from a test from one reasoned around it.
+        came from a test from one reasoned around it. ``equivalence_p`` is the same
+        for the equivalence test.
 
     Raises:
         ValueError: The samples are not the same length — they must be pre-aligned
@@ -629,7 +717,7 @@ def paired_change(
     b = [float(x) for x in current]
     n_pairs = len(a)
     if n_pairs == 0:
-        return ChangeVerdict("inconclusive", None, None, None, None, None, 0)
+        return ChangeVerdict("inconclusive", None, None, None, None, None, 0, None, equivalence_margin)
 
     mean_a = sum(a) / n_pairs
     mean_b = sum(b) / n_pairs
@@ -652,12 +740,13 @@ def paired_change(
     active_gates = [gate for gate in (absolute_gate, relative_gate) if gate is not None]
     exceeds = any(active_gates) if active_gates else True
 
+    diffs = [y - x for x, y in zip(a, b)]
     tested = composite_significance(a, b, paired=True)
     cohens_d, significant, p_value = tested
     if (
         significant is None
         and n_pairs >= _MIN_PAIRS_FOR_DETERMINISTIC_GAP
-        and _sample_std([y - x for x, y in zip(a, b)]) == 0.0
+        and _sample_std(diffs) == 0.0
         and delta != 0.0
     ):
         # A deterministic gap: every case moved by the same amount. The paired
@@ -677,26 +766,44 @@ def paired_change(
         # rubric), which makes "every case moved by exactly the same amount" an
         # ordinary coincidence at small n rather than a finding.
         significant = True
+    equivalent, equivalence_p = _equivalence(diffs, equivalence_margin)
+
+    def verdict(label: ChangeLabel) -> ChangeVerdict:
+        return ChangeVerdict(
+            label,
+            delta,
+            relative,
+            significant,
+            exceeds,
+            cohens_d,
+            n_pairs,
+            p_value,
+            equivalence_margin,
+            equivalence_p,
+        )
+
     if significant is None:
-        # Genuinely untestable — fewer than two pairs. Report the measured delta if
-        # there is one, but never a directional label from a test that did not run.
-        return ChangeVerdict("inconclusive", delta, relative, None, exceeds, cohens_d, n_pairs, p_value)
-
-    if not (significant and exceeds):
-        return ChangeVerdict("flat", delta, relative, significant, exceeds, cohens_d, n_pairs, p_value)
-
-    improved = (delta > 0) == higher_is_better
-    return ChangeVerdict(
-        "improved" if improved else "regressed", delta, relative, significant, exceeds, cohens_d, n_pairs, p_value
-    )
+        # Genuinely untestable — fewer than two pairs, or a uniform move below the
+        # pair floor. Report the measured delta if there is one, but never a
+        # directional label from a test that did not run, and never equivalence.
+        return ChangeVerdict(
+            "inconclusive", delta, relative, None, exceeds, cohens_d, n_pairs, p_value, equivalence_margin
+        )
+    if significant and exceeds:
+        return verdict("improved" if (delta > 0) == higher_is_better else "regressed")
+    if equivalent:
+        return verdict("equivalent")
+    return verdict("below_threshold" if significant else "not_separated")
 
 
 __all__ = [
+    "EQUIVALENCE_TEST_NAME",
     "INTERVAL_LEVEL",
     "MULTIPLE_COMPARISON_CORRECTION",
     "PAIRED_TEST_NAME",
     "SIGNIFICANCE_ALPHA",
     "UNPAIRED_TEST_NAME",
+    "ChangeLabel",
     "ChangeVerdict",
     "SignificanceResult",
     "ci_half_width",

@@ -331,9 +331,11 @@ class MetricDescriptor(EvalBaseModel):
         ge=0.0,
         description=(
             "The magnitude, in this measure's own units, below which a difference in it is too small to act on. "
-            "A difference below it is labelled immaterial wherever the engine states one (`materiality`). None "
-            "means the host declared none, and every difference is then material — silence stays conservative, "
-            "and the cost of not declaring one is paid in attention rather than banked as a permanent banner."
+            "A difference below it is labelled immaterial wherever the engine states one (`materiality`). It is "
+            "also the measure's declared equivalence margin: a run-history step reads `equivalent` only when an "
+            "equivalence test shows the move inside it. None means the host declared none, and every difference is "
+            "then material — no step can read `equivalent`. Silence stays conservative, and the cost of not "
+            "declaring one is paid in attention rather than banked as a permanent banner."
         ),
     )
     formula: str | None = Field(

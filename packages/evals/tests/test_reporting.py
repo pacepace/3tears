@@ -6170,7 +6170,11 @@ class TestHistory:
         assert flag.n_pairs == len(cases)
 
     def test_a_change_below_threshold_is_not_flagged(self):
-        """The joint gate at the surface: significant but tiny reads as flat."""
+        """The joint gate at the surface: significant but tiny reads below_threshold, never "no change" (#592).
+
+        ``cost_usd`` is an engine-core measure, which declares no margin and which a host cannot give
+        one, so no equivalence test runs and the answer says so.
+        """
         cases = ["c1", "c2", "c3", "c4", "c5", "c6"]
         run_a, res_a = _hist_run(cases=cases, cost=0.100, created_at="2026-07-01T00:00:00Z")
         run_b, res_b = _hist_run(cases=cases, cost=0.101, created_at="2026-07-02T00:00:00Z")
@@ -6183,7 +6187,12 @@ class TestHistory:
         assert flag is not None
         assert flag.significant is True  # a deterministic +0.001 move is consistent
         assert flag.exceeds_threshold is False
-        assert flag.label == "flat"
+        assert flag.label == "below_threshold"
+        assert out.equivalence_margin is None
+        assert flag.equivalence_margin is None and flag.equivalence_p is None
+        from threetears.evals.analysis.stats import PAIRED_TEST_NAME
+
+        assert flag.test == PAIRED_TEST_NAME
 
     def test_flags_carry_their_test_and_thresholds(self):
         run_a, res_a = _hist_run(cases=["c1", "c2"], score=5, created_at="2026-07-01T00:00:00Z")
