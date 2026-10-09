@@ -18,6 +18,7 @@ from threetears.core.collections.versioned_answers import VersionedAnswers
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.coordination.lease import KVLease
 from threetears.nats import NatsClient, set_default_namespace
+from threetears.nats.collection_key_requests import purge_scoped_keys
 
 pytestmark = pytest.mark.integration
 
@@ -94,3 +95,44 @@ class TestTwoReplicas:
         await a.answer("v3", "kept-or-not", again, order=3)
         await a.answer("v3", "kept-or-not", again, order=3)
         assert recomputed == ["x", "x"]
+
+
+async def _subjects(nats: NatsClient, version: str) -> dict[str, int]:
+    """every subject of ``version``'s answers and index left in the stream, with its message count."""
+    js = nats.jetstream_context()
+    info = await js.stream_info("KV_3tears-collections", subjects_filter=f"$KV.3tears-collections.{_SCOPE}.>")
+    return {s: n for s, n in (info.state.subjects or {}).items() if f".{version}_" in s or f".{version}." in s}
+
+
+class TestARetiredVersionLeavesNothing:
+    async def test_deleting_alone_would_leave_a_marker_per_key(self, replicas: tuple[NatsClient, NatsClient]) -> None:
+        a = _answers(replicas[0], "replica-a")
+
+        async def old() -> str:
+            return "old"
+
+        await a.answer("v20", "marked", old, order=20)
+        await a.retire_older_than(21)
+        assert await _subjects(replicas[0], "v20") != {}  # no purger: the delete markers stay
+
+    async def test_a_purged_version_leaves_zero_messages(self, replicas: tuple[NatsClient, NatsClient]) -> None:
+        admin = replicas[1]
+
+        async def purger(keys: list[str]) -> int:
+            # the hub's half, as its responder runs it for this scope
+            return await purge_scoped_keys(
+                admin.jetstream_context(), bucket="3tears-collections", scope=_SCOPE, keys=keys
+            )
+
+        registry = CollectionRegistry()
+        registry.configure(l1_backend=None, l2_client=replicas[0], l3_pool=None, kv_key_scope=_SCOPE)
+        a = VersionedAnswers(registry, DefaultCoreConfig(), replicas[0], table_name="answers_it", purger=purger)
+
+        async def old() -> str:
+            return "old"
+
+        for request in ("one", "two", "three"):
+            await a.answer("v30", request, old, order=30)
+        assert await _subjects(replicas[0], "v30") != {}
+        await a.retire_older_than(31)
+        assert await _subjects(replicas[0], "v30") == {}

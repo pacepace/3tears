@@ -36,9 +36,15 @@ keyed by ``(version, request digest)`` whose value is the answer gzip-compressed
   unreachable, contention past the retry budget) answers the read uncached and writes no entry, so
   nothing unindexed is ever stored.
 
-**Not bounded here: delete markers.** A KV delete writes a marker, and every answer's key is new, so
-the bucket accumulates one marker per retired answer until the bucket's owner purges them; the
-retirement keeps the answers themselves from accumulating, not their markers.
+- **Nothing left behind.** A KV delete writes a marker message, which at history 1 is the key's one
+  message from then on, so a retirement that only deleted would leave one marker per retired answer
+  forever. Once a version is retired (its answers and shards deleted by compare-and-set, the version
+  forgotten), every key it touched is PURGED by the owner's ``purger``: a stream purge filtered to the
+  key's exact subject, which leaves nothing. A pod holds no purge verb, so its purger asks the hub
+  (:func:`threetears.nats.collection_key_requests.purge_pod_collection_keys`). With no purger, or one
+  that cannot be reached (a hub older than the request), the markers stay and the miss is logged once:
+  space, never a wrong answer. Purging happens only after the compare-and-set delete, on keys of a
+  version below the floor, which no writer may record again.
 """
 
 from __future__ import annotations
@@ -60,6 +66,7 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import CoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import ConcurrentModificationError
+from threetears.nats.collection_key_requests import MAX_PURGED_KEYS, CollectionKeysRequestError
 from threetears.nats.errors import KvError
 from threetears.observe import get_logger
 
@@ -81,6 +88,15 @@ _VERSIONS: Final = "versions"
 _INDEX_ERRORS: Final = (KvError, ConcurrentModificationError)
 
 _Action = tuple[Literal["upsert", "delete", "noop"], dict[str, Any] | None]
+
+#: purges keys (relative to the owner's scope) so they leave no marker; returns how many it purged
+KeyPurger = Callable[[list[str]], Awaitable[int]]
+
+#: what a purger can raise: the hub's refusal or absence, or transport
+_PURGE_ERRORS: Final = (CollectionKeysRequestError, KvError)
+
+#: the shards of each version's digest index
+_SHARDS: Final = "0123456789abcdef"
 
 
 class AnswerNotComputable(LookupError):
@@ -214,6 +230,9 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
     :ptype table_name: str
     :param build_lock: the cross-pod build lock; a tool pod passes a ``LeaseBuildLock``
     :ptype build_lock: BuildLock | None
+    :param purger: purges retired keys so they leave no marker; a tool pod passes one asking the hub.
+        None keeps the markers (logged once)
+    :ptype purger: KeyPurger | None
     """
 
     primary_key_column: str | tuple[str, ...] = ("version", "request")
@@ -231,8 +250,11 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         *,
         table_name: str,
         build_lock: BuildLock | None = None,
+        purger: KeyPurger | None = None,
     ) -> None:
         self._table_name = table_name
+        self._purger = purger
+        self._markers_kept_logged = False
         super().__init__(registry, config, nats_client, None, build_lock=build_lock)
         # L2 alone: no durable tier to pull through (a miss computes)
         self.l3_pool = None
@@ -359,9 +381,14 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         await self._index.l2_cas_mutate(_VERSIONS, raise_floor)
         deleted = 0
         for version, older in sorted(taken.items()):
-            for shard in "0123456789abcdef":
-                deleted += await self._empty_shard(f"{version}.{shard}")
+            touched: list[str] = []
+            for shard in _SHARDS:
+                name = f"{version}.{shard}"
+                deleted += await self._empty_shard(name, touched)
+                touched.append(self._relative(self._index.l2_key(name)))
             await self._index.l2_cas_mutate(_VERSIONS, _forget(version, older))
+            # the version is retired and below the floor: nothing writes its keys again, so they go whole
+            await self._purge(touched)
         if deleted:
             log.info("retired old answers: table=%s below=%d deleted=%d", self.table_name, order, deleted)
         return deleted
@@ -422,7 +449,11 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
             if floor is not None and versions is not None and versions["members"].get(version, floor) <= floor:
                 await self.l2_cas_mutate((version, digest), _delete_present)
                 shard = f"{version}.{digest[0]}"
-                await self._index.l2_cas_mutate(shard, _remove_member(shard, digest))
+                removed = await self._index.l2_cas_mutate(shard, _remove_member(shard, digest))
+                taken_back = [self._relative(self.l2_key((version, digest)))]
+                if removed.action == "deleted":
+                    taken_back.append(self._relative(self._index.l2_key(shard)))
+                await self._purge(taken_back)
         except _INDEX_ERRORS as exc:
             # NOSILENT: the one window left open is this replica's own answer outliving its version
             log.warning(
@@ -432,11 +463,13 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
                 exc,
             )
 
-    async def _empty_shard(self, name: str) -> int:
+    async def _empty_shard(self, name: str, touched: list[str]) -> int:
         """delete every answer a shard names, then the shard, re-reading whatever arrived meanwhile.
 
         :param name: the shard's name, ``{version}.{digit}``
         :ptype name: str
+        :param touched: the keys deleted, relative to the owner's scope, to purge once the version is gone
+        :ptype touched: list[str]
         :return: how many answers were deleted
         :rtype: int
         """
@@ -448,6 +481,7 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
             for digest in sorted(seen):
                 outcome = await self.l2_cas_mutate((version, digest), _delete_present)
                 deleted += outcome.action == "deleted"
+                touched.append(self._relative(self.l2_key((version, digest))))
             emptied = False
 
             def drop_if_unchanged(current: dict[str, Any] | None, seen: frozenset[str] = seen) -> _Action:
@@ -459,6 +493,41 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
             if emptied:
                 break
         return deleted
+
+    def _relative(self, key: str) -> str:
+        """a key of this owner's, without the scope that leads it: what a purge names.
+
+        :param key: the full key, ``{scope}.{rest}``
+        :ptype key: str
+        :return: ``{rest}``
+        :rtype: str
+        """
+        return key.removeprefix(f"{self._registry.kv_key_scope}.")
+
+    async def _purge(self, keys: list[str]) -> None:
+        """purge deleted keys so they leave no marker; keep the markers (logged once) when it cannot.
+
+        :param keys: the keys, relative to the owner's scope
+        :ptype keys: list[str]
+        :return: nothing
+        :rtype: None
+        """
+        if not keys:
+            return
+        try:
+            if self._purger is None:
+                raise CollectionKeysRequestError("no purger: this owner keeps the delete markers")
+            for start in range(0, len(keys), MAX_PURGED_KEYS):
+                await self._purger(keys[start : start + MAX_PURGED_KEYS])
+        except _PURGE_ERRORS as exc:
+            # NOSILENT: a marker left is space, never a wrong answer; said once, not per retirement
+            if not self._markers_kept_logged:
+                self._markers_kept_logged = True
+                log.warning(
+                    "retired answers' keys could not be purged; their delete markers stay: table=%s error=%s",
+                    self.table_name,
+                    exc,
+                )
 
     async def _retire_until_current(self) -> None:
         """retire below the highest order asked for, until it is reached or a retirement fails.

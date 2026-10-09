@@ -22,7 +22,17 @@ packages (bumped in lock-step).
   version. A computing replica records before it computes and takes its answer back if the version
   was retired meanwhile; retirement raises the floor, then empties each shard by compare-and-set; so
   no answer outlives its index under any interleaving. An index that cannot be written answers the
-  read uncached and stores nothing. Delete markers are not bounded here (the bucket's owner purges).
+  read uncached and stores nothing. A retired version leaves nothing behind: once retired, every key
+  it touched (answers and index shards) is purged by the owner's `purger` (a stream purge filtered
+  to the key's exact subject, which leaves no marker); with none, or one unreachable, the delete
+  markers stay and the miss is logged once.
+- **Added, `threetears.nats.collection_key_requests`** and `Subjects.hub_collection_keys_purge`
+  (`{ns}.hub.collection_keys.purge`): a tool pod asks the hub to purge keys it retired, named
+  relative to its own scope (`purge_pod_collection_keys`); the hub composes each subject under the
+  VERIFIED scope and purges exactly it (`purge_scoped_keys`; a key is literal tokens, never a
+  wildcard or an empty token). Every tool pod may publish the request and the hub subscribes it; no
+  KV or stream grant changes. A hub older than the request does not answer, and the pod keeps the
+  markers.
 - **Added, `BaseCollection.caches_in_l1`**: `False` declares a collection that takes no L1 backend,
   whatever the registry offers.
 

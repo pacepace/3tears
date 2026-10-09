@@ -1237,6 +1237,22 @@ class Subjects:
         return Subject(path=f"{_ns()}.hub.object_store.retire", kind="point")
 
     @classmethod
+    def hub_collection_keys_purge(cls) -> Subject:
+        """request/reply subject for a tool pod asking the hub to purge keys it retired from the collections bucket.
+
+        A KV delete leaves a marker message, and on the shared ``{ns}-collections`` bucket nothing
+        else removes it; a filtered stream purge leaves nothing, but it is a management verb only the
+        hub holds. The pod names the keys RELATIVE to its own scope
+        (``threetears.nats.collection_key_requests.purge_pod_collection_keys``) and forwards its
+        ``identity_token``; the hub composes each subject under the VERIFIED pod's scope, so the
+        request buys reach and never authority.
+
+        :return: subject ``{ns}.hub.collection_keys.purge``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.collection_keys.purge", kind="point")
+
+    @classmethod
     def hub_channel_engagement_default_resolve(cls) -> Subject:
         """request/reply subject for resolving a channel's default engagement.
 

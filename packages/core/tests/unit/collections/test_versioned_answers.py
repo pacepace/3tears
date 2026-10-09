@@ -18,6 +18,7 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.versioned_answers import AnswerNotComputable, VersionedAnswers
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.testing.kv import FakeKvBucket, FakeNatsClient
+from threetears.nats.collection_key_requests import CollectionKeysRequestUnavailableError
 from threetears.nats.errors import KvError
 
 _SCOPE = "tool_pod-answersunit"
@@ -334,3 +335,43 @@ def test_the_request_is_digested_into_the_key() -> None:
     version, digest = _replica(FakeNatsClient()).key_of("v1", "rows|contest|state=VA & county=Loudoun")
     assert version == "v1"
     assert len(digest) == 64 and all(c in "0123456789abcdef" for c in digest)
+
+
+class TestRetiredKeysArePurged:
+    async def test_every_key_a_retired_version_touched_is_purged_relative_to_the_scope(self) -> None:
+        purged: list[str] = []
+
+        async def purger(keys: list[str]) -> int:
+            purged.extend(keys)
+            return len(keys)
+
+        nats = FakeNatsClient()
+        registry = CollectionRegistry()
+        registry.configure(l1_backend=None, l2_client=nats, l3_pool=None, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+        answers = VersionedAnswers(registry, DefaultCoreConfig(), nats, table_name=_TABLE, purger=purger)
+        await answers.answer("v1", "a", _Computer("old"), order=1)
+        await answers.answer("v2", "a", _Computer("new"), order=2)
+        await answers.retire_older_than(2)
+        digest = answers.key_of("v1", "a")[1]
+        assert f"{_TABLE}.v1_{digest}" in purged
+        assert {f"{_TABLE}_index.v1.{shard}" for shard in "0123456789abcdef"} <= set(purged)
+        assert not any(key.startswith(_SCOPE) or "v2" in key for key in purged)
+
+    async def test_a_purger_that_cannot_be_reached_keeps_the_markers_and_says_so_once(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        async def unreachable(keys: list[str]) -> int:
+            raise CollectionKeysRequestUnavailableError("no hub answers this request")
+
+        nats = FakeNatsClient()
+        registry = CollectionRegistry()
+        registry.configure(l1_backend=None, l2_client=nats, l3_pool=None, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+        answers = VersionedAnswers(registry, DefaultCoreConfig(), nats, table_name=_TABLE, purger=unreachable)
+        for order in (1, 2, 3):
+            await answers.answer(f"v{order}", "a", _Computer("x"), order=order)
+        await answers.retire_older_than(2)
+        await answers.retire_older_than(3)
+        bucket = await _bucket(nats)
+        assert (_entry_keys(bucket, "v1"), _entry_keys(bucket, "v2"), len(_entry_keys(bucket, "v3"))) == ([], [], 1)
+        said = [r for r in caplog.records if "could not be purged" in r.getMessage()]
+        assert len(said) == 1
