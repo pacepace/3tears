@@ -181,6 +181,10 @@ class TestEachArmDisclosesOneIdeaPerLine:
     def test_sweep_ranking_names_columns_spread_ramp_and_inference_apart(self):
         assert chart_intent("sweep_ranking", SWEEP_RANKING).disclosures == [
             "Columns, left to right: chunk_size, extractor_model.",
+            (
+                "Rows are ordered by their point value of field_accuracy; the order is not a tested ranking, and "
+                "neighbouring rows may not differ beyond their noise."
+            ),
             "cost per invoice runs from 0.009 usd to 0.015 usd and is not held — the ranking is not controlled for it.",
             "chunk_size draws as a light-to-dark ramp.",
             "Whether chunk_size, extractor_model are ordered was inferred from the levels rather than declared.",

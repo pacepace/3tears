@@ -263,6 +263,11 @@ def _disclosures(
         sentence
         for sentence in (
             f"Columns, left to right: {', '.join(order)}.",
+            # The order is the point values' and nothing tested it: two neighbouring rows may not differ at all.
+            (
+                f"Rows are ordered by their point value of {payload.ranked.measure}; the order is not a tested "
+                "ranking, and neighbouring rows may not differ beyond their noise."
+            ),
             f"{spread}.",
             f"{', '.join(ramped)} draw{'s' if len(ramped) == 1 else ''} as a light-to-dark ramp." if ramped else "",
             (
