@@ -23,6 +23,10 @@ from threetears.evals.analysis.viz.quantities import (
 #: What a panel of pre-binned counts is measuring, where those counts are the whole chart.
 COUNT_TITLE = "observations"
 
+#: A group's ``shape`` in the values table when it reported only an interval: no observation and no bin says
+#: what lies between the ends, so the table says so rather than leave a reader to supply a bell.
+SHAPE_UNKNOWN = "unknown — interval only"
+
 
 def distribution_intent(payload: DistributionPayload) -> ChartIntent:
     """Decide a per-group distribution: each group's estimate and observations as positions on one axis.
@@ -214,7 +218,7 @@ def _distribution_row(group: DistributionGroup, scale: float) -> dict[str, Any]:
         shape = "; ".join(f"{bucket.range}: {bucket.count}" for bucket in buckets)
     else:
         # Said out loud: a reader shown only a band will supply a bell the data never stated.
-        shape = "unknown — interval only"
+        shape = SHAPE_UNKNOWN
     row: dict[str, Any] = {"label": group.label, "n": group.n, "shape": shape}
     if group.ci is not None:
         row |= {"mean": group.ci.mean * scale, "low": group.ci.low * scale, "high": group.ci.high * scale}
@@ -231,5 +235,6 @@ def _group_values(group: DistributionGroup) -> list[float]:
 
 __all__ = [
     "COUNT_TITLE",
+    "SHAPE_UNKNOWN",
     "distribution_intent",
 ]

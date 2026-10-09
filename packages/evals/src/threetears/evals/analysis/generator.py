@@ -71,14 +71,15 @@ from typing import TYPE_CHECKING, Any, TypeIs, get_args
 from pydantic import BaseModel, Field, ValidationError
 
 from threetears.evals.analysis import viz_refs
-from threetears.evals.analysis.arms import writer_arms
+from threetears.evals.analysis.arms import arm_names, writer_arms
 from threetears.evals.analysis.bundle import (
     AnalysisContextBundle,
+    FamilyComparison,
     LeverCoverageInput,
     RunSummary,
     bundle_decision_surface,
 )
-from threetears.evals.analysis.cells import cell_ref
+from threetears.evals.analysis.cells import cell_ref, variant_of_cell_ref
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal, UnresolvableReference
 from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
 from threetears.evals.analysis.numbers import format_number
@@ -766,7 +767,8 @@ def _assemble_and_validate(
     Raises:
         GenerationError: The provider cut the call short (not repaired).
         SoundnessRefusal: The output does not match the contract, a position or reading points
-            nowhere, or the question answers do not match the declaration (repaired once).
+            nowhere, the question answers do not match the declaration, or a decision adopts an arm
+            no reading separated from the control (repaired once).
     """
     _reject_incomplete_generation(result)
     payload = _parse_payload(result)
@@ -799,9 +801,11 @@ def _resolved_analysis(
         The stored analysis and the insights it mints.
 
     Raises:
-        SoundnessRefusal: A cell, reading or position points nowhere (repaired once).
+        SoundnessRefusal: A cell, reading or position points nowhere, or a decision adopts an arm no
+            reading separated from the control (repaired once).
     """
     document = _with_cell_refs(document, surface)
+    _reject_unseparated_adoptions(document, bundle)
     document = render_prose_figures(document, surface)
     resolutions = [
         _resolution_of(finding, surface, bundle.variant_index, where=f"findings[{index}]", measures=measures)
@@ -914,6 +918,78 @@ def _reject_mismatched_question_answers(document: AuthoredAnalysis, bundle: Anal
                 else "; it declares none, so `questions` is empty"
             )
         )
+
+
+def _reject_unseparated_adoptions(document: AuthoredAnalysis, bundle: AnalysisContextBundle) -> None:
+    """Refuse a decision that adopts an arm no reading separated from the control in its favour.
+
+    An ``adopted`` decision makes the arm it names the winner (:func:`~threetears.evals.analysis.arms.arm_table`),
+    so it is a claim that the arm beat what it replaces, and ``multiple_comparisons`` is where the bundle
+    says whether it did. The arm a decision names is read as the arm table reads it, off each cell's
+    variant (:func:`~threetears.evals.analysis.cells.variant_of_cell_ref`), and matched to the
+    comparisons whose contrast is that variant, under any rig and in any family.
+
+    One ``improved`` verdict is enough. A trade-off is a legitimate decision: an arm that is cheaper
+    and not separated on accuracy, or better on one reading and worse on another, passes. What is
+    refused is an adoption with no separated upside: every tested reading ``not_separated``, or
+    separated only by ``regressed``, which is evidence against the arm rather than for it. An arm no
+    test could reach — the bundle withholds every family, no comparison names it, or each one naming
+    it is ``untested`` — has no separation to adopt on either, and is refused saying so, since a
+    reader of the arm table cannot tell an adoption resting on nothing from one resting on a test.
+
+    Adopting the declared control (keeping what is there) needs no separation, and a ``rejected`` or
+    ``deferred`` decision, or one naming no cell, is not checked. Runs after cells are translated
+    from aliases, so it reads full refs; the refusal names them, and the repair round renders them
+    back into the writer's aliases.
+
+    Raises:
+        SoundnessRefusal: An adopted decision names a non-control arm with no ``improved`` reading.
+    """
+    control = bundle.declared_design.control if bundle.declared_design else None
+    comparisons = bundle.multiple_comparisons
+    names = arm_names(bundle.variant_index)
+    remedy = "mark it `deferred` with what would settle it in `revisit_when`" + (
+        ", or adopt the control" if comparisons.families else ""
+    )
+    for index, decision in enumerate(document.decisions):
+        if decision.disposition != "adopted":
+            continue
+        arms: dict[str, str] = {}
+        for cell in decision.cells:
+            variant = variant_of_cell_ref(cell)
+            if variant is not None and variant != control:
+                arms.setdefault(variant, cell)
+        for variant, cell in arms.items():
+            arm = f"the arm at cell {cell}" + (f" ({names[variant]})" if variant in names else "")
+            against = [
+                comparison
+                for family in comparisons.families
+                for comparison in family.comparisons
+                if comparison.contrast.variant_key == variant
+            ]
+            if any(comparison.verdict == "improved" for comparison in against):
+                continue
+            why = _no_separation(against, withheld=comparisons.withheld)
+            raise SoundnessRefusal(f"decisions[{index}] adopts {arm}, but {why}; {remedy}")
+
+
+def _no_separation(against: list[FamilyComparison], *, withheld: str | None) -> str:
+    """Say why an arm's comparisons against the control give an adoption nothing to rest on."""
+    if withheld is not None:
+        return f"the bundle tested no comparison against a control ({withheld.rstrip('.')}), so no test was possible"
+    if not against:
+        return "no comparison in `multiple_comparisons` tests it against the control, so no test was possible"
+    tested = [comparison for comparison in against if comparison.verdict != "untested"]
+    if not tested:
+        reasons = sorted({comparison.untested_reason or "no reason recorded" for comparison in against})
+        return f"no test against the control was possible on any reading ({'; '.join(reasons)})"
+    regressed = sorted({comparison.name for comparison in tested if comparison.verdict == "regressed"})
+    if regressed:
+        return (
+            f"it separated from the control only by being worse ({', '.join(regressed)} regressed) "
+            "and improved on no reading"
+        )
+    return "no reading separated it from the control (every tested comparison is `not_separated`)"
 
 
 def _resolution_of(

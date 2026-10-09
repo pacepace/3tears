@@ -621,8 +621,10 @@ class LaunchGroup:
     report as a confound of the comparison the launch existed to make.
 
     **Two runs of one arm are refused before the group forms**: the launch names each model once
-    (:func:`start_run` refuses a repeat), and every run of one launch carries the same overlays, so
-    no two members can be one arm under two names.
+    (:func:`start_run` refuses a repeat), and every run one :func:`start_run` call launches carries the
+    same overlays, so no two of its members can be one arm under two names. A caller composing one group
+    from several calls (``launch_group=``), each at its own overlays — the arms of a factorial, which differ
+    in them — holds its arms distinct itself.
 
     Attributes:
         id: The group's id, stamped on every member run.

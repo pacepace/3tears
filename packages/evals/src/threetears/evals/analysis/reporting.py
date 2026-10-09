@@ -4151,7 +4151,7 @@ def _frontier_point(
         if c is not None
     ]
     n_cost = len(observed_costs)
-    prod_cost = round(sum(observed_costs) / n_cost, 6) if n_cost else None
+    prod_cost = math.fsum(observed_costs) / n_cost if n_cost else None
     cost_is_partial = 0 < n_cost < len(results)
     # What that mean is made of. The frontier RANKS on cost, so a contestant whose run
     # priced its search calls against one whose run did not is a comparison of conventions
@@ -5112,7 +5112,7 @@ def compute_history(
             run = runs_in_series[run_id]
             per_case, n_observations = _per_case_means(rows_by_run[run_id], value_of)
             case_means = list(per_case.values())
-            value = round(sum(case_means) / len(case_means), 6) if case_means else None
+            value = math.fsum(case_means) / len(case_means) if case_means else None
             sem = standard_error_of_mean(case_means)
 
             epoch_key = _suite_epoch_key(run)
@@ -5157,9 +5157,7 @@ def compute_history(
 
             if index == 0:
                 baseline_value = value
-            delta_from_baseline = (
-                round(value - baseline_value, 6) if (value is not None and baseline_value is not None) else None
-            )
+            delta_from_baseline = value - baseline_value if (value is not None and baseline_value is not None) else None
 
             points.append(
                 SeriesPoint(

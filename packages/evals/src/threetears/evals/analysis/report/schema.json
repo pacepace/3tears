@@ -934,6 +934,20 @@
           "title": "Campaign Id",
           "type": "string"
         },
+        "campaign_name": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The campaign's name, which a code-only report's title reads by; None where the report was built without it, and the title then names the campaign by its id.",
+          "title": "Campaign Name"
+        },
         "generated_at": {
           "description": "When the analysis was generated (ISO-8601); on a code-only report, when the evidence was assembled for it.",
           "minLength": 1,
@@ -1018,7 +1032,7 @@
           "type": "string"
         },
         "name": {
-          "description": "Which table this is: `evidence`, `arms`, `surface`, `unadjudicated_bars`, `comparisons` (the contrasts against the control, as code tested them), `questions` (the declared questions, on a code-only report) or `strata` (each arm's figures per stratum of its cases, beside its pooled figure, when its cases declare strata).",
+          "description": "Which table this is: `evidence`, `arms`, `surface`, `unadjudicated_bars`, `comparisons` (the contrasts against the control, as code tested them), `questions` (the declared questions, on a code-only report), `strata` (each arm's figures per stratum of its cases, beside its pooled figure, when its cases declare strata) or `labels` (a classifier's per-label precision, recall and F1, a row per label and arm, on a code-only report).",
           "minLength": 1,
           "title": "Name",
           "type": "string"
@@ -1390,8 +1404,8 @@
       "type": "string"
     },
     "report_version": {
-      "const": 3,
-      "default": 3,
+      "const": 4,
+      "default": 4,
       "description": "This shape's version.",
       "title": "Report Version",
       "type": "integer"

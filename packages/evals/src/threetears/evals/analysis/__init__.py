@@ -192,6 +192,7 @@ from threetears.evals.analysis.arms import ArmLevel, ArmMeasurement, ArmRow, Arm
 from threetears.evals.analysis.bundle import (
     ArmMechanismReading,
     CampaignReadStore,
+    CellCoordinate,
     ComparedCell,
     ComparisonFamily,
     ComparisonVerdict,
@@ -334,6 +335,7 @@ __all__ = [
     "CampaignStore",
     "CaseSetIdentity",
     "Cell",
+    "CellCoordinate",
     "ComparedCell",
     "ComparisonColumns",
     "ComparisonFamily",

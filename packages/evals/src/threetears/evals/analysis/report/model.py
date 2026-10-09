@@ -19,9 +19,9 @@ model's own dump), Markdown (the agent-facing form) and HTML that reads without 
 **A report is of an analysis, or of the evidence alone — and it says which** (:attr:`Report.basis`). A
 campaign with a generated analysis is reported through it (``analysis``). A campaign with none — no
 analyst has run, and the package ships no keyless one — is still reported (``code_only``): the arm
-table, the decision surface, the contrasts against the control, a chart per measure and every
-disclosure the evidence carries, all computed by code, with NO text block at all, and a disclosure
-stating plainly that no analysis was generated and what one would add. The shape refuses a code-only
+table, the decision surface, the contrasts against the control, a chart per measure, a classifier's
+per-label table and every disclosure the evidence carries, all computed by code, with NO text block at
+all, and a disclosure stating plainly that no analysis was generated. The shape refuses a code-only
 report carrying an author's words, and an analysis report missing its analysis.
 
 **Who wrote what is part of the shape.** A ``text`` block holds what the analysis's author wrote, and
@@ -47,7 +47,8 @@ from typing import Annotated, Literal, Self, get_args
 
 from pydantic import ConfigDict, Field, model_validator
 
-from threetears.evals.analysis.viz.intent import Cell, ChartIntent, ChartType
+from threetears.evals.analysis.viz.intent import Cell, ChartColumn, ChartIntent, ChartType
+from threetears.evals.analysis.viz.intents.distribution import SHAPE_UNKNOWN
 from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts.prose import ModelProse
 
@@ -62,7 +63,13 @@ from threetears.evals.contracts.prose import ModelProse
 #:
 #: 3: the ``strata`` table added (each arm's figures per stratum of its cases, beside the pooled figure) and
 #: the ``strata`` disclosure source (a stratum too small to read on its own).
-REPORT_VERSION: Literal[3] = 3
+#:
+#: 4: the ``labels`` table added (a classifier's per-label precision, recall and F1, every arm's, on a code-only
+#: report), in place of the code-only report's distribution chart per label and statistic, which it no longer
+#: carries; the ``surface`` table's ``notes`` column is present only when some row has a run note, and the ``arms``
+#: table's ``status`` column only when some arm's status is other than unresolved and its ``findings`` column only
+#: when some arm rests on a finding.
+REPORT_VERSION: Literal[4] = 4
 
 #: What a report is of: a generated analysis, or the campaign's evidence alone with no analysis.
 ReportBasis = Literal["analysis", "code_only"]
@@ -193,9 +200,10 @@ class TableBlock(_Block):
         min_length=1,
         description=(
             "Which table this is: `evidence`, `arms`, `surface`, `unadjudicated_bars`, `comparisons` (the contrasts "
-            "against the control, as code tested them), `questions` (the declared questions, on a code-only report) "
-            "or `strata` (each arm's figures per stratum of its cases, beside its pooled figure, when its cases "
-            "declare strata)."
+            "against the control, as code tested them), `questions` (the declared questions, on a code-only report), "
+            "`strata` (each arm's figures per stratum of its cases, beside its pooled figure, when its cases "
+            "declare strata) or `labels` (a classifier's per-label precision, recall and F1, a row per label and "
+            "arm, on a code-only report)."
         ),
     )
     title: str = Field(min_length=1, description="The table's heading.")
@@ -292,6 +300,14 @@ class ReportSource(EvalBaseModel):
         default=None, min_length=1, description="The analysis the report renders; None on a code-only report."
     )
     campaign_id: str = Field(min_length=1, description="The campaign the analysis is of.")
+    campaign_name: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The campaign's name, which a code-only report's title reads by; None where the report was built "
+            "without it, and the title then names the campaign by its id."
+        ),
+    )
     scope_id: str = Field(min_length=1, description="The scope both live in.")
     subject_id: str = Field(min_length=1, description="The analysed subject.")
     subject_kind: str = Field(description="The subject's kind; empty when the campaign declared none.")
@@ -366,7 +382,7 @@ class Report(EvalBaseModel):
         }
     )
 
-    report_version: Literal[3] = Field(default=REPORT_VERSION, description="This shape's version.")
+    report_version: Literal[4] = Field(default=REPORT_VERSION, description="This shape's version.")
     basis: ReportBasis = Field(
         description=(
             "`analysis` when the report renders a generated analysis; `code_only` when no analysis exists and the "
@@ -438,6 +454,9 @@ class Report(EvalBaseModel):
 def report_title(report: Report) -> str:
     """The report's title, as every serializer prints it: the author's headline, or what a code-only report is.
 
+    A code-only report is titled by its campaign's name when the report carries one, and by its id when
+    not; the byline names the id either way.
+
     Args:
         report: The report.
 
@@ -445,12 +464,15 @@ def report_title(report: Report) -> str:
         The title, one line before escaping.
     """
     if report.basis == "code_only":
-        return f"Campaign {report.source.campaign_id}: its evidence, with no analysis"
+        return f"Campaign {report.source.campaign_name or report.source.campaign_id}: its evidence, with no analysis"
     return report.headline.strip() or "(blank headline)"
 
 
 def report_byline(report: Report) -> str:
     """What the report is of and how it was made, as every serializer prints it under the title.
+
+    A code-only report's byline does not say that no analysis was generated: the summary's one line
+    (``NO_ANALYSIS``) says it, directly below.
 
     Args:
         report: The report.
@@ -462,12 +484,31 @@ def report_byline(report: Report) -> str:
     if report.basis == "code_only":
         return (
             f"Code-only report of campaign {source.campaign_id} — {source.behavior}; computed from its evidence on "
-            f"{source.generated_at}. No analysis was generated."
+            f"{source.generated_at}."
         )
     return (
         f"Analysis {source.analysis_id} of campaign {source.campaign_id} — {source.behavior}; generated "
         f"{source.generated_at} by {source.generator_model}."
     )
+
+
+def chart_table_columns(intent: ChartIntent) -> list[ChartColumn]:
+    """The columns of a chart's values table as every serializer prints it: the intent's, less a shape no row knows.
+
+    A distribution's ``shape`` column reads :data:`SHAPE_UNKNOWN` in every row when every group reported only
+    an interval, and printed beside a table that shows each group's interval and nothing between its ends, it
+    tells the reader nothing the table does not. It is printed as soon as one row's shape is known, and the
+    intent keeps it either way, for a renderer that draws the band.
+
+    Args:
+        intent: The chart's intent.
+
+    Returns:
+        The columns to print, in display order.
+    """
+    if intent.rows and all(row.get("shape") == SHAPE_UNKNOWN for row in intent.rows):
+        return [column for column in intent.columns if column.key != "shape"]
+    return list(intent.columns)
 
 
 __all__ = [
@@ -487,6 +528,7 @@ __all__ = [
     "TableColumn",
     "TextBlock",
     "TextRole",
+    "chart_table_columns",
     "finding_number",
     "report_byline",
     "report_title",

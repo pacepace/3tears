@@ -34,6 +34,7 @@ a provider the engine assumed.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
@@ -411,7 +412,7 @@ class RoleUsageLedger:
                     prompt_tokens=totals.prompt_tokens,
                     completion_tokens=totals.completion_tokens,
                     reasoning_tokens=totals.reasoning_tokens,
-                    cost_usd=round(totals.cost_usd, 6) if totals.cost_observed and not totals.cost_unpriced else None,
+                    cost_usd=totals.cost_usd if totals.cost_observed and not totals.cost_unpriced else None,
                     price_source=price_source if totals.cost_observed and not totals.cost_unpriced else None,
                     call_count=totals.call_count,
                     provider=provider,
@@ -504,12 +505,33 @@ def blended_cost(usage: list[RoleUsage], cost_roles: Collection[UsageRole]) -> f
         cost_roles: The roles the total sums (``EvalResult.cost_roles``).
 
     Returns:
-        The total, rounded to six places, or ``None`` when a model call in those roles went unpriced.
+        The total at full float precision, or ``None`` when a model call in those roles went unpriced.
     """
     rows = [row for row in usage if row.role in cost_roles]
     if any(row.cost_usd is None and row.role != "external" for row in rows):
         return None
-    return round(sum(row.cost_usd for row in rows if row.cost_usd is not None), 6)
+    return math.fsum(row.cost_usd for row in rows if row.cost_usd is not None)
+
+
+def spend_observed(usage: list[RoleUsage], cost_roles: Collection[UsageRole]) -> bool:
+    """Whether a row in ``cost_roles`` carries dollars — whether :func:`blended_cost` summed anything at all.
+
+    :func:`blended_cost` sums an empty list to 0.0, so a result whose candidate reported nothing — a quick
+    ``run_eval`` candidate that returns a plain value rather than an ``Answer``, a kind whose calls no client
+    priced into a row — stores ``cost_usd`` 0.0 exactly as a result that spent a reported $0 does. The two are
+    not one fact. A row carrying a cost, ``0.0`` included, is a measurement; no such row means the engine never
+    saw the spend, and the stored zero says only that nothing was reported. A reader that pools ``cost_usd``
+    asks this first, on the rule :func:`production_replicating_cost` already keeps: a zero nobody observed,
+    averaged in, ranks the least-measured configuration the cheapest.
+
+    Args:
+        usage: The result's rows.
+        cost_roles: The roles its total sums (``EvalResult.cost_roles``).
+
+    Returns:
+        True when at least one row in those roles carries a ``cost_usd``.
+    """
+    return any(row.role in cost_roles and row.cost_usd is not None for row in usage)
 
 
 def cell_cost(
@@ -551,7 +573,7 @@ def cell_cost(
 def _sum_costs(rows: list[RoleUsage]) -> float | None:
     """Total the observed costs, or ``None`` when no row observed one."""
     observed = [row.cost_usd for row in rows if row.cost_usd is not None]
-    return round(sum(observed), 6) if observed else None
+    return math.fsum(observed) if observed else None
 
 
 def production_replicating_cost(usage: list[RoleUsage], *, substituted_deliveries: int) -> float | None:
@@ -814,4 +836,5 @@ __all__ = [
     "production_replicating_cost",
     "program_cost",
     "resolve_result_usage",
+    "spend_observed",
 ]

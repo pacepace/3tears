@@ -5,9 +5,20 @@ functions, builds what a host would — a kind over the callable, a profile with
 scorer, the in-memory reference store — launches through the engine's own launch path, and returns
 an :class:`EvalSummary`. Handed each case's expected label (``expected=``), it grades the candidate as a
 classifier, and the summary carries its confusion matrix (:class:`ConfusionCount`) and each label's
-precision, recall and F1 (:class:`LabelStatistics`). :func:`run_cli` is ``python -m threetears.evals``: ``run``, ``ls`` and
-``report`` over a host named ``module:factory``, or mounted under a product's own CLI with its host
-factory and any subcommands of its own (:class:`HostCommand`).
+precision, recall and F1 (:class:`LabelStatistics`). Handed a :class:`Judge`, it also grades each answer
+with a model against a rubric. A candidate that calls a paid model returns an :class:`Answer` to report
+what each answer spent, which the summary and the results' ``cost_usd`` carry. :func:`compare` runs two or
+more candidates over one case list the same way, each as one arm, and returns a :class:`Comparison` whose
+campaign report tests every arm against the one named the control; keyed by their level of each of several
+factors (``factors=``), its arms are the cells of a factorial design, each factor a lever of its own. A candidate that calls tools declares them (``tools=``, each a
+:data:`Tool`) and is handed them beside each case (:data:`ToolUsingCandidate`); a run with
+``cassette_mode='capture'`` records what they answered, and ``'replay'`` serves that recording to every arm
+in place of calling them. Handed a :class:`World`, each case's starting state and goal-state checks,
+:func:`run_eval` seeds every cell's world, hands the candidate :class:`WorldTools` that act on it, and
+grades the state it leaves (:class:`GoalCheckSummary`).
+:func:`run_cli` is ``python -m threetears.evals``: ``run``, ``ls``, ``report``, ``bundle`` and ``spend`` over
+a host named ``module:factory``, or mounted under a product's own CLI with its host factory and any
+subcommands of its own (:class:`HostCommand`).
 
 This package composes the others and is composed by nothing: it may import ``contracts``, ``run``,
 ``analysis`` and ``storage``, and no package of the engine imports it.
@@ -19,6 +30,7 @@ and only the names in ``__all__``.
 from __future__ import annotations
 
 from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics
+from threetears.evals.quick.answer import Answer
 from threetears.evals.quick.cli import (
     DEFAULT_PROG,
     ENGINE_COMMANDS,
@@ -31,18 +43,26 @@ from threetears.evals.quick.cli import (
     build_parser,
     run_cli,
 )
+from threetears.evals.quick.compare import ArmKey, Comparison, compare
 from threetears.evals.quick.one_call import (
     CALLABLE_KIND,
     CALLABLE_KIND_CONTRACT,
     CALLABLE_UNSEATED,
+    JUDGED_CALLABLE_KIND,
+    JUDGED_CALLABLE_KIND_CONTRACT,
+    JUDGED_CALLABLE_UNSEATED,
     UNUSABLE_ANSWER,
     Candidate,
     ExpectedLabel,
     Scorer,
     callable_host,
+    callable_kind_contracts,
     run_eval,
 )
-from threetears.evals.ops.summary import EvalSummary, MeasureSummary, summarize_run
+from threetears.evals.quick.judged import CaseMaterial, Judge
+from threetears.evals.quick.tools import CandidateTools, Tool, ToolUsingCandidate
+from threetears.evals.quick.world import CaseSeed, Dimension, ToolRefused, World, WorldCandidate, WorldTool, WorldTools
+from threetears.evals.ops.summary import DimensionSummary, EvalSummary, GoalCheckSummary, MeasureSummary, summarize_run
 
 __all__ = [
     "CALLABLE_KIND",
@@ -54,18 +74,40 @@ __all__ = [
     "EXIT_OK",
     "EXIT_REFUSED",
     "EXIT_RUN_DID_NOT_COMPLETE",
+    "JUDGED_CALLABLE_KIND",
+    "JUDGED_CALLABLE_KIND_CONTRACT",
+    "JUDGED_CALLABLE_UNSEATED",
     "UNUSABLE_ANSWER",
+    "Answer",
+    "ArmKey",
     "Candidate",
+    "CandidateTools",
+    "CaseMaterial",
+    "CaseSeed",
+    "Comparison",
     "ConfusionCount",
+    "Dimension",
+    "DimensionSummary",
     "EvalSummary",
     "ExpectedLabel",
+    "GoalCheckSummary",
     "HostCommand",
     "HostFactory",
+    "Judge",
     "LabelStatistics",
     "MeasureSummary",
     "Scorer",
+    "Tool",
+    "ToolUsingCandidate",
+    "ToolRefused",
+    "World",
+    "WorldCandidate",
+    "WorldTool",
+    "WorldTools",
     "build_parser",
     "callable_host",
+    "callable_kind_contracts",
+    "compare",
     "run_cli",
     "run_eval",
     "summarize_run",

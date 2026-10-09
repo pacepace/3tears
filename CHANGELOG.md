@@ -48,6 +48,42 @@ packages (bumped in lock-step).
 - Bundle `schema_version` 40 -> 41. Bundles are never stored, so nothing stored needs reading; an analysis generated
   before carries a fingerprint over the older shape.
 
+### 3tears-evals: spend kept at full precision, and an unobserved cost is not a reading
+
+- **Spend is stored and summed at full precision** (`math.fsum`), rounded only where text is rendered for a person:
+  a cheap model's call is a few hundred-thousandths of a dollar, and six fixed decimals stored it with about two
+  significant figures, or as $0. A run summary shows spend to three significant figures below a cent.
+- **A cost no result observed is no reading.** A result whose usage rows carry no dollar amount in its cost roles
+  (`spend_observed`) does not count its stored `cost_usd` of 0 as a measurement, so the bundle neither charts nor
+  tests cost for it, and names the cells it went unmeasured in (`cost_unmeasured_cells`, `cost_unmeasured`). A
+  measured $0 is still a reading. A quick candidate reports its spend by returning an `Answer`.
+- **An `adopted` decision needs a reading that separated.** The analysis generator refuses, into its one repair, a
+  decision that adopts an arm with no comparison against the control verdicted `improved`; trade-offs pass, and
+  adopting the control always does. The generator prompt states the rule (rule 11).
+- Bundle `schema_version` 41 -> 42.
+
+### 3tears-evals: the code-only report says each thing once
+
+- **A classifier's per-label precision, recall and F1 are one `labels` table** on the code-only report: a row
+  per label and arm, precision and recall with their 95% Wilson intervals, F1 with none, each with its n. It
+  replaces a distribution chart per label and statistic (eight blocks for four labels), which the report no
+  longer carries; accuracy and every other single reading keep their chart. One disclosure under the table
+  says what the figures are counted over, and now says when repeats of one case make the interval narrower
+  than the clustering supports, which the per-label charts never did.
+- **A chart's values table leaves out its `Shape` column** in Markdown and HTML when every row reads
+  `unknown — interval only` (`SHAPE_UNKNOWN`, `chart_table_columns`). The chart intent keeps it.
+- **The decision-surface table has a `notes` column only when some row has a run note.** On a code-only report
+  the surface also drops its "no number here was written by the model" sentence, which the opening line says.
+- **The arms table has a `status` column only when some arm's status is other than unresolved, and a `findings`
+  column only when some arm rests on a finding** (Markdown and HTML alike, since the table carries the columns).
+  A code-only report has neither: nothing decided and there are no findings. With no status column the caption
+  reads "by arm" in place of the order by status. An analysis report whose arms have verdicts keeps both.
+- **`NO_ANALYSIS` is one sentence**: "No analysis was generated: everything below was computed by code from the
+  campaign's evidence." What an analysis would add is in `docs/reading-reports.md`. The code-only byline
+  (`report_byline`) no longer repeats "No analysis was generated."
+- `REPORT_VERSION` 3 -> 4 (a table added, the per-label charts removed); `schema.json` regenerated. No field or
+  block kind changed shape.
+
 ### 3tears-evals: the host states how long one request can take; the wall-clock ceilings count requests (breaking)
 
 - **`generation_ceiling_s`, `judge_phase_ceiling_s` and `reporter_cell_timeout_s` take `request_s:

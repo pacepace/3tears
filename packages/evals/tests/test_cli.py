@@ -119,9 +119,10 @@ def test_report_of_a_campaign_with_no_analysis_is_the_code_only_report(capsys: p
     campaign = asyncio.run(run_courier_campaign(host))
     assert run_cli(["report", campaign.id, "--scope", COURIER_SCOPE], host_factory=lambda: host) == 0
     out = capsys.readouterr().out
-    assert out.startswith(f"# Campaign {campaign.id}: its evidence, with no analysis\n")
-    assert "No analysis was generated." in out.splitlines()[2]
-    assert f"> {NO_ANALYSIS}" in out
+    assert out.startswith(f"# Campaign {campaign.name}: its evidence, with no analysis\n")
+    assert f"Code-only report of campaign {campaign.id}" in out.splitlines()[2]
+    assert "No analysis was generated" not in out.splitlines()[2], "the summary says it; the byline does not repeat it"
+    assert f"> {NO_ANALYSIS}" in out and out.count("No analysis was generated") == 1
     assert "## Arms" in out and "## Decision surface" in out
 
 

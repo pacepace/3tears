@@ -137,6 +137,9 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
     # mechanism that diverged between their levels, and each arm carries its reasoning share; the apparatus
     # partition is unchanged.
     ((41, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
+    # 42/10: a cost no result observed is no reading, and the bundle names the cells it went unmeasured in; the
+    # apparatus partition is unchanged.
+    ((42, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
 )
 
 

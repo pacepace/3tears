@@ -1,0 +1,228 @@
+"""``run_eval(world=, seed=, goal_checks=)``: each cell seeds its world, the candidate acts on it, code grades the end.
+
+The world example (``test_world_example.py``) is the happy path read from outside. These pin the
+mechanism: the seed lands before the candidate's first turn, every cell starts from its own case's
+state, the end state is read back after the last turn, a tool call that succeeds is recorded where
+``calls(...)`` reads it and one the world refuses is not, the goal checks grade the result — and a
+world-less call is exactly what it was.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any
+
+import pytest
+
+from threetears.evals.contracts import RecordedCall
+from threetears.evals.quick import Dimension, ToolRefused, World, WorldTool, WorldTools, callable_host, run_eval
+from threetears.evals.run import get_result_trace, list_results, list_runs, list_templates
+
+SCOPE = "run-eval-world-tests"
+
+
+def switch(room: dict[str, Any], to: str) -> str:
+    """Turn the lamp on or off."""
+    room["lamp"] = to
+    return f"lamp {to}"
+
+
+def broken(room: dict[str, Any]) -> str:
+    """A tool whose own code fails."""
+    raise RuntimeError("the relay is stuck")
+
+
+def room() -> World:
+    return World(
+        "room",
+        [
+            Dimension("lamp", {"enum": ["on", "off"]}, "What the candidate switches."),
+            Dimension("dark", {"type": "boolean"}, "Whether the lamp is needed."),
+        ],
+        tools=[WorldTool(switch, to={"enum": ["on", "off"]}), WorldTool(broken)],
+    )
+
+
+CASES = [{"lamp": "off", "dark": True}, {"lamp": "on", "dark": False}]
+LIT_IFF_DARK = '(state.lamp == "on") == state.dark'
+
+
+def start(case: Mapping[str, Any]) -> Mapping[str, Any]:
+    return {"lamp": case["lamp"], "dark": case["dark"]}
+
+
+async def sensible(case: Mapping[str, Any], tools: WorldTools) -> str:
+    seen = await tools.view()
+    wanted = "on" if seen["dark"] else "off"
+    return "kept" if wanted == seen["lamp"] else await tools["switch"](to=wanted)
+
+
+async def stored(host: Any, run_id: str) -> list[Any]:
+    """Each result with its trace, in case order."""
+    pairs = [(result, get_result_trace(host.storage, result)) for result in list_results(host.storage, run_id, SCOPE)]
+    return sorted(pairs, key=lambda pair: pair[0].test_case_id)
+
+
+async def test_the_seed_lands_before_the_first_turn_and_every_cell_starts_from_its_own_case() -> None:
+    first_sight: list[dict[str, Any]] = []
+
+    async def meddling(case: Mapping[str, Any], tools: WorldTools) -> str:
+        assert list(tools) == ["switch", "broken"]  # the mapping a tool-using candidate is handed
+        first_sight.append(await tools.view())
+        await tools.call("switch", to="on")  # every cell leaves the lamp on; the next must not inherit it
+        return "done"
+
+    await run_eval(CASES, meddling, world=room(), seed=start, goal_checks=[LIT_IFF_DARK], scope_id=SCOPE, k=2)
+    assert sorted(map(str, first_sight)) == sorted(map(str, [start(case) for case in CASES] * 2))
+
+
+async def test_the_end_state_is_read_back_after_the_last_turn_and_the_goal_check_grades_it() -> None:
+    world = room()
+    host = callable_host(world=world)
+    summary = await run_eval(
+        CASES, sensible, host=host, world=world, seed=start, goal_checks=[LIT_IFF_DARK], scope_id=SCOPE, k=1
+    )
+    assert (summary.status, summary.n_scored) == ("completed", 2)
+    assert [(goal.check, goal.passed, goal.n) for goal in summary.goal_checks] == [(LIT_IFF_DARK, 2, 2)]
+    assert f"goal check {LIT_IFF_DARK}: passed 2/2" in summary.render()
+    for (result, trace), case in zip(await stored(host, summary.run_id), CASES, strict=True):
+        assert trace is not None
+        # Both cases started wrong, so the stored end state is the candidate's, never the seed.
+        assert trace.end_state == {"lamp": "on" if case["dark"] else "off", "dark": case["dark"]} != start(case)
+        assert [outcome.passed for outcome in result.goal_state_outcomes] == [True]
+    (run,) = list_runs(host, SCOPE)
+    assert run.world_placements == {"lamp": "representable", "dark": "representable"}
+
+
+async def test_a_call_that_succeeds_is_recorded_for_calls_and_one_the_world_refuses_is_not() -> None:
+    async def sloppy(case: Mapping[str, Any], tools: WorldTools) -> str:
+        with pytest.raises(ToolRefused, match="dim"):
+            await tools.call("switch", to="dim")
+        with pytest.raises(ToolRefused, match="no tool 'shout'"):
+            await tools.call("shout")
+        await tools.call("switch", to="on")
+        return await tools.call("switch", to="on")
+
+    world = room()
+    host = callable_host(world=world)
+    once = 'call_count("room.switch") <= 1'
+    summary = await run_eval(
+        CASES[:1], sloppy, host=host, world=world, seed=start, goal_checks=[once], scope_id=SCOPE, k=1
+    )
+    ((result, trace),) = await stored(host, summary.run_id)
+    assert trace is not None and trace.call_ledger is not None
+    assert trace.call_ledger.calls == [RecordedCall(tool="room", action="switch", params={"to": "on"})] * 2
+    assert [(outcome.expression, outcome.passed) for outcome in result.goal_state_outcomes] == [(once, False)]
+
+
+async def test_a_tool_that_raises_excludes_the_cell_as_the_rigs_fault() -> None:
+    async def presses(case: Mapping[str, Any], tools: WorldTools) -> str:
+        return await tools.call("broken")
+
+    summary = await run_eval(
+        CASES[:1], presses, world=room(), seed=start, goal_checks=[LIT_IFF_DARK], scope_id=SCOPE, k=1
+    )
+    assert (summary.n_scored, summary.n_candidate_failed, summary.n_excluded) == (0, 0, 1)
+    assert "the tool broken raised RuntimeError: the relay is stuck" in summary.errors[0]
+    assert summary.goal_checks == []
+
+
+async def test_scorers_grade_a_world_candidates_answer_beside_its_goal_checks() -> None:
+    def answered(case: Mapping[str, Any], answer: Any) -> bool:
+        return isinstance(answer, str) and bool(answer)
+
+    summary = await run_eval(
+        CASES, sensible, [answered], world=room(), seed=start, goal_checks=[LIT_IFF_DARK], scope_id=SCOPE, k=1
+    )
+    assert [(m.name, m.mean) for m in summary.measures] == [("answered", 1.0)]
+    assert summary.goal_checks[0].passed == 2
+
+
+async def test_a_world_runs_starting_states_and_checks_are_part_of_its_case_set() -> None:
+    world = room()
+    host = callable_host(world=world)
+
+    def all_off(case: Mapping[str, Any]) -> Mapping[str, Any]:
+        return {"lamp": "off", "dark": case["dark"]}
+
+    kwargs: dict[str, Any] = {"host": host, "world": world, "scope_id": SCOPE, "k": 1}
+    first = await run_eval(CASES, sensible, seed=start, goal_checks=[LIT_IFF_DARK], **kwargs)
+    again = await run_eval(CASES, sensible, seed=start, goal_checks=[LIT_IFF_DARK], **kwargs)
+    reseeded = await run_eval(CASES, sensible, seed=all_off, goal_checks=[LIT_IFF_DARK], **kwargs)
+    rechecked = await run_eval(CASES, sensible, seed=start, goal_checks=['state.lamp == "on"'], **kwargs)
+    assert first.template_id == again.template_id
+    assert len({first.template_id, reseeded.template_id, rechecked.template_id}) == 3
+
+
+async def test_a_world_less_call_is_unchanged_it_opens_no_world_and_keeps_no_ledger() -> None:
+    async def double(case: Mapping[str, Any]) -> int:
+        return int(case["n"]) * 2
+
+    def even(case: Mapping[str, Any], answer: Any) -> bool:
+        return answer % 2 == 0
+
+    host = callable_host([even])
+    summary = await run_eval([{"n": 1}], double, [even], host=host, scope_id=SCOPE, k=1)
+    assert summary.goal_checks == [] and "goal check" not in summary.render()
+    ((result, trace),) = await stored(host, summary.run_id)
+    assert trace is not None
+    assert (trace.end_state, trace.call_ledger, result.goal_state_outcomes) == (None, None, [])
+    assert host.profile.world is None and list_runs(host, SCOPE)[0].world_placements == {}
+
+
+# --- refusals: each made before anything is stored ------------------------------------------------
+
+
+#: Stands in for the test's own world in a parametrized case, which cannot build one per test itself.
+WORLD = object()
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "said"),
+    [
+        ({"seed": start, "goal_checks": [LIT_IFF_DARK]}, r"pass the world they read \(world=\)"),
+        ({"goal_checks": [LIT_IFF_DARK]}, r"pass the world they read \(world=\)"),
+        ({"world": WORLD, "goal_checks": [LIT_IFF_DARK]}, "pass seed="),
+        ({"world": WORLD, "seed": lambda case: {"lamp": "off"}, "goal_checks": [LIT_IFF_DARK]}, "gave case 0 no dark"),
+        (
+            {"world": WORLD, "seed": lambda case: {"lamp": "dim", "dark": True}, "goal_checks": [LIT_IFF_DARK]},
+            "case 0 a starting state the world",
+        ),
+        (
+            {"world": WORLD, "seed": lambda case: case["nope"], "goal_checks": [LIT_IFF_DARK]},
+            "seed= raised on case 0: KeyError",
+        ),
+        ({"world": WORLD, "seed": start, "goal_checks": ["state.colour == 1"]}, "reads state.colour"),
+        ({"world": WORLD, "seed": start, "goal_checks": ['call_count("room.dim") == 0']}, "names room.dim"),
+        ({"world": room(), "seed": start, "goal_checks": [LIT_IFF_DARK]}, "does not declare world 'room'"),
+        (
+            {"world": WORLD, "seed": start, "goal_checks": [LIT_IFF_DARK], "tools": {"switch": lambda to: to}},
+            "pass no tools= beside world=",
+        ),
+        (
+            {"world": WORLD, "seed": start, "goal_checks": [LIT_IFF_DARK], "cassette_mode": "capture"},
+            "no cassette_mode",
+        ),
+    ],
+    ids=[
+        "seed with no world",
+        "goal checks with no world",
+        "a world with no seed",
+        "a seed leaving a dimension unset",
+        "a seed the schema refuses",
+        "a seed that raises",
+        "a check reading undeclared state",
+        "a check naming an unknown tool",
+        "a host that does not declare the world",
+        "generic tools beside a world",
+        "a cassette mode on a world run",
+    ],
+)
+async def test_an_incoherent_world_run_is_refused_before_anything_is_stored(kwargs: dict[str, Any], said: str) -> None:
+    world = room()
+    host = callable_host(world=world)
+    if kwargs.get("world") is WORLD:
+        kwargs = kwargs | {"world": world}
+    with pytest.raises(ValueError, match=said):
+        await run_eval(CASES, sensible, host=host, scope_id=SCOPE, **kwargs)
+    assert list_templates(host.storage, SCOPE) == []

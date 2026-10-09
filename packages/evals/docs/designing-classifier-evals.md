@@ -230,7 +230,8 @@ Read a sample of what the generator wrote before you trust a run over it. A para
 another label is a wrong case, and the model that "got it wrong" was right.
 
 Generated cases are priced before they are written and charged outside the runs' own cost caps; see
-[Generating cases at launch](../README.md#adopting-it-the-host-the-scope-and-the-kind) in the README.
+[Spend outside any run](cost-and-budgets.md#spend-outside-any-run) in Cost and budgets, and
+[Generating cases at launch](adopting-a-host.md#generating-cases-at-launch) for the launcher's side.
 
 ## 7. Reading the results
 
@@ -310,7 +311,7 @@ stratum yet, so strata need cases stored as test cases, as a classifier kind's a
 
 ### Rung zero
 
-`run_eval` ([Rung zero](../README.md#rung-zero-one-call) in the README) runs a classifier function over a
+`run_eval` ([Your first eval](../README.md#your-first-eval) in the README) runs a classifier function over a
 list of cases in one call. Pass `expected=`, a function that returns the label a case expects, and `run_eval`
 grades the function as a classifier:
 
@@ -354,7 +355,7 @@ comparable, only when they expect the same labels.
 ### A classifier kind
 
 For the full set of classifier readings, write a kind
-([the README's "A kind is what you are evaluating"](../README.md#adopting-it-the-host-the-scope-and-the-kind)).
+(["The kind: what you are evaluating"](adopting-a-host.md#the-kind-what-you-are-evaluating) in Adopting the engine).
 Its `invoke` calls your production classifier on the test case and lands two core measures on
 `CandidateOutput.host_measures`:
 
