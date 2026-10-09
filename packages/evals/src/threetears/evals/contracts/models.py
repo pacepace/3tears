@@ -126,6 +126,10 @@ read the old key under the new name, value unchanged.
 **Within v8, not a bump**: ``RubricDimTombstone`` joined as a new stored type — the record a rubric dim delete
 leaves so the definition seed does not write the key back. A store written before it holds none, which reads as
 "no key was deleted since": a dim deleted before then is still written back at the next seed, as it was then.
+``JudgeConfigTombstone`` joined the same way, for a judge config's slot; a config deleted before it is written
+back at the next seed. ``EvalRun`` gained ``goal_check_proof_rules`` (None on a run stored before it, read as rules
+1, so its ``proven`` checks read unproven) and ``refused_goal_checks`` (None, not recorded), and ``EvalResult``
+gained ``judge_cannot_tell_boundary`` (empty, its can't-tells read as capability) — all optional within v8.
 """
 
 
@@ -1602,6 +1606,36 @@ class RubricDimTombstone(EvalDocumentModel):
         """Reject documents loaded into the wrong model class."""
         if v != "rubric_dim_tombstone":
             raise ValueError(f"doc_type must be 'rubric_dim_tombstone', got '{v}'")
+        return v
+
+
+class JudgeConfigTombstone(EvalDocumentModel):
+    """The record that a judge config slot was deleted, so a seed never writes it back.
+
+    :class:`RubricDimTombstone`'s mechanism for the seed's judge-config slot, ``(rubric_dim_id, name)``: a
+    delete empties the slot when it takes the last record under it, and without this the next boot wrote the
+    seeded config again while archiving one kept it retired.
+    :func:`~threetears.evals.run.authoring.delete_judge_config` writes one for the slot it deletes from, and
+    the seeder treats a tombstoned slot as decided: it is not written, and is reported as deleted. Authoring a
+    config into the slot again is unaffected (``create_judge_config`` does not read tombstones).
+    """
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid7()))
+    doc_type: Literal["judge_config_tombstone"] = "judge_config_tombstone"
+    schema_version: SchemaVersion = EVAL_SCHEMA_VERSION
+    scope_id: str = Field(min_length=1)
+
+    rubric_dim_id: str = Field(min_length=1, description="The dim the deleted config scored — half the seed's slot.")
+    name: str = Field(min_length=1, description="The deleted config's name — the other half of the seed's slot.")
+    deleted_config_id: str = Field(min_length=1, description="The id of the record whose delete wrote this.")
+    deleted_at: str = Field(default_factory=utc_now_iso)
+
+    @field_validator("doc_type")
+    @classmethod
+    def check_doc_type(cls, v: str) -> str:
+        """Reject documents loaded into the wrong model class."""
+        if v != "judge_config_tombstone":
+            raise ValueError(f"doc_type must be 'judge_config_tombstone', got '{v}'")
         return v
 
 
@@ -4503,6 +4537,7 @@ __all__ = [
     "ProposedTemplate",
     "RubricDim",
     "RubricDimTombstone",
+    "JudgeConfigTombstone",
     "RubricProposal",
     "RepeatedScore",
     "RubricScore",

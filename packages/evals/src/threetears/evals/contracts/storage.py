@@ -55,6 +55,7 @@ from threetears.evals.contracts.models import (
     EvalTrace,
     JudgeConfig,
     RubricDimTombstone,
+    JudgeConfigTombstone,
     eval_trace_doc_id,
 )
 from threetears.evals.contracts.out_of_run import OutOfRunPurpose, OutOfRunSpend, OutOfRunSpendStore
@@ -105,6 +106,7 @@ EVAL_DOC_TYPES = (
     "judge_config",
     "rubric_dim",
     "rubric_dim_tombstone",
+    "judge_config_tombstone",
     "eval_campaign",
     "eval_analysis",
     "eval_analysis_attempt",
@@ -403,6 +405,14 @@ class DefinitionStore(Protocol):
         """See :meth:`EvalStorage.delete_judge_config`."""
         ...
 
+    def save_judge_config_tombstone(self, tombstone: JudgeConfigTombstone, /) -> None:
+        """See :meth:`EvalStorage.save_judge_config_tombstone`."""
+        ...
+
+    def query_judge_config_tombstones(self, scope_id: str, /) -> list[JudgeConfigTombstone]:
+        """See :meth:`EvalStorage.query_judge_config_tombstones`."""
+        ...
+
 
 class CassetteStore(Protocol):
     """The recordings a capture run made and a replay run is served."""
@@ -612,6 +622,17 @@ class EvalStorage:
     def delete_judge_config(self, config_id: str, scope_id: str) -> bool:
         """Delete a judge config by id within a scope."""
         return self._store.delete(config_id, scope_id)
+
+    def save_judge_config_tombstone(self, tombstone: JudgeConfigTombstone) -> None:
+        """Persist the record that a judge config slot was deleted, in the scope it names."""
+        self._save(tombstone.to_dict())
+
+    def query_judge_config_tombstones(self, scope_id: str) -> list[JudgeConfigTombstone]:
+        """Every judge config tombstone in a scope, newest first — the slots a seed must not write back."""
+        return self._hydrate_all(
+            JudgeConfigTombstone,
+            self._store.by_doc_type("judge_config_tombstone", scope_id, order_by="deleted_at", descending=True),
+        )
 
     # =========================================================================
     # CatalogRubricDim — shared, versioned, reusable rubric dimensions
