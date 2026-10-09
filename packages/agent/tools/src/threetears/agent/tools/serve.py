@@ -355,7 +355,7 @@ class _BuiltinToolBootstrap(ToolServerBootstrap):
             auth_token=lambda: minter.mint(pod_id, customer_id=customer_id),
             # the key the pod's registration is signed with, which the registry binds each call's
             # delegated token to: a tool proves that token with it at a platform door
-            door_key=lambda: minter.registration_key,
+            registration_key=lambda: minter.registration_key,
         )
 
     async def register_tools(self, server: ToolServer) -> None:

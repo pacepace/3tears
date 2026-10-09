@@ -53,7 +53,9 @@ __all__ = [
     "ProofAbsentError",
     "is_delegated_token",
     "mint_delegated_token",
+    "pod_audience",
     "verify_delegated_token",
+    "verify_delegation_at_pod",
     "verify_door_caller",
 ]
 
@@ -66,7 +68,7 @@ DELEGATED_TOKEN_ISSUER: Final[str] = "registry"
 #: the longest a delegated token may claim: a tool call's own deadline never exceeds this.
 DELEGATED_TOKEN_MAX_LIFETIME: Final[timedelta] = timedelta(hours=1)
 
-#: the doors a tool pod reaches as its caller, each named as a delegated token's ``aud`` names it.
+#: the platform doors, each named as a door request's proof and a delegated token's ``aud`` name it.
 L3_DOOR: Final[str] = "l3"
 DATASOURCE_DOOR: Final[str] = "datasource"
 OBJECT_RESOLVE_DOOR: Final[str] = "hub.object.resolve"
@@ -74,9 +76,11 @@ NAMESPACE_DISCOVER_DOOR: Final[str] = "namespace.discover"
 ENGAGEMENT_DOOR: Final[str] = "hub.engagement"
 AUDIT_ANONYMIZE_DOOR: Final[str] = "hub.audit.anonymize"
 
-#: the doors a forwarded tool call may reach, until a tool declares narrower ones.
+#: the doors a tool pod reaches AS ITS CALLER: the audience of every delegated token, and the doors that
+#: take one (the hub's door registry reads this set). A pod reaches ``l3``, ``datasource`` and audit
+#: anonymize on its own token, so a delegation names none of them.
 DEFAULT_DELEGATED_DOORS: Final[frozenset[str]] = frozenset(
-    {L3_DOOR, DATASOURCE_DOOR, OBJECT_RESOLVE_DOOR, NAMESPACE_DISCOVER_DOOR, ENGAGEMENT_DOOR, AUDIT_ANONYMIZE_DOOR}
+    {OBJECT_RESOLVE_DOOR, NAMESPACE_DISCOVER_DOOR, ENGAGEMENT_DOOR}
 )
 
 log = get_logger(__name__)
@@ -189,9 +193,11 @@ def mint_delegated_token(
     :raises ValueError: when the deadline is not after now, or further than the maximum, or no door is named
     """
     issued = int(time.time()) if now is None else now
-    audience = sorted(set(doors))
-    if not audience:
+    if not set(doors):
         raise ValueError("a delegated token names at least one door")
+    # the doors, and the pod itself: a pod that receives the delegation in place of the agent's
+    # token verifies it as addressed to it (:func:`verify_delegation_at_pod`)
+    audience = sorted({*doors, pod_audience(pod_id)})
     if not issued < deadline <= issued + int(DELEGATED_TOKEN_MAX_LIFETIME.total_seconds()):
         raise ValueError(f"a delegated token lives past now and at most {DELEGATED_TOKEN_MAX_LIFETIME}")
     payload: dict[str, Any] = {
@@ -337,6 +343,78 @@ def verify_delegated_token(token: str, *, jwks: Mapping[str, Any], door: str) ->
         raise DelegatedTokenError(f"the delegated token does not verify ({type(exc).__name__})") from exc
     if int(payload["exp"]) - int(payload["iat"]) > DELEGATED_TOKEN_MAX_LIFETIME.total_seconds():
         raise DelegatedTokenError("the delegated token claims a longer life than the maximum")
+    user = payload.get("user_id")
+    return DelegatedClaims(
+        agent_id=str(payload["sub"]),
+        pod_id=str(payload["act"]),
+        customer_id=str(payload["customer_id"]),
+        user_id=str(user) if user is not None else None,
+        holder_jkt=str(payload["cnf"]),
+        correlation_id=str(payload["corr"]),
+    )
+
+
+def pod_audience(pod_id: str) -> str:
+    """the audience a delegated token names its pod under, beside the doors it may reach.
+
+    Prefixed so no door name can be taken for a pod and no pod for a door.
+
+    :param pod_id: the pod the call goes to
+    :ptype pod_id: str
+    :return: the audience
+    :rtype: str
+    """
+    return f"tool-pod:{pod_id}"
+
+
+def verify_delegation_at_pod(
+    token: str, *, jwks: Mapping[str, Any], pod_id: str, correlation_id: str
+) -> DelegatedClaims:
+    """verify ``token`` as the delegation for this call to this pod, where the pod receives the call.
+
+    A pod that declares it proves (its registration manifest's ``proves_delegation``) is sent the
+    call's delegated token in place of the agent's own token, and takes the caller from it: the
+    registry signed the agent, customer and user from the caller's verified token. The token must
+    be addressed to this pod (:func:`pod_audience`), name it as its actor, and name this call's
+    correlation id.
+
+    :param token: the compact JWS
+    :ptype token: str
+    :param jwks: the hub JWKS, which publishes the registry's delegated-token key
+    :ptype jwks: Mapping[str, Any]
+    :param pod_id: this pod's id, which the token's ``act`` must name
+    :ptype pod_id: str
+    :param correlation_id: the call's correlation id, which the token's ``corr`` must name
+    :ptype correlation_id: str
+    :return: the verified claims
+    :rtype: DelegatedClaims
+    :raises DelegatedTokenError: naming the check that failed
+    """
+    try:
+        header = jwt.get_unverified_header(token)
+    except jwt.PyJWTError as exc:
+        raise DelegatedTokenError(f"malformed delegated token header ({type(exc).__name__})") from exc
+    kid = header.get("kid")
+    if header.get("alg") != _ALG or header.get("typ") != DELEGATED_TOKEN_TYPE or not isinstance(kid, str) or not kid:
+        raise DelegatedTokenError("not an EdDSA delegated token with a kid")
+    try:
+        payload = jwt.decode(
+            token,
+            key=_public_key(jwks, kid),
+            algorithms=["EdDSA"],  # literal pin -- never widen
+            issuer=DELEGATED_TOKEN_ISSUER,
+            audience=pod_audience(pod_id),
+            leeway=int(ISSUE_TIME_FUTURE_TOLERANCE.total_seconds()),
+            options={"require": list(_REQUIRED)},
+        )
+    except jwt.PyJWTError as exc:
+        raise DelegatedTokenError(f"the delegated token does not verify ({type(exc).__name__})") from exc
+    if int(payload["exp"]) - int(payload["iat"]) > DELEGATED_TOKEN_MAX_LIFETIME.total_seconds():
+        raise DelegatedTokenError("the delegated token claims a longer life than the maximum")
+    if payload.get("act") != pod_id:
+        raise DelegatedTokenError("the delegated token names another pod as its actor")
+    if payload.get("corr") != correlation_id:
+        raise DelegatedTokenError("the delegated token was minted for another call")
     user = payload.get("user_id")
     return DelegatedClaims(
         agent_id=str(payload["sub"]),

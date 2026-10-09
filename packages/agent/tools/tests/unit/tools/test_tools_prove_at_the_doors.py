@@ -268,12 +268,12 @@ async def test_the_tool_server_puts_its_key_on_each_calls_scope() -> None:
     The calls in this harness carry a cnf-less forwarded token (pod_auth), so neither key binds it:
     the credential is bearer whichever key the server holds. A key only proves the token it binds.
     """
-    for key in (PopKey(_AGENT), RegistrationKey(_POD)):
+    for keys in ({"pop_key": lambda: PopKey(_AGENT)}, {"registration_key": lambda: RegistrationKey(_POD)}):
         server, rec = recording_tool_server(
             pod_id="door-pod",
             jwks_provider=jwks_provider,
             assertion_replay_guard=FakeReplayGuard(),
-            door_key=lambda key=key: key,
+            **keys,
         )
         tool = ScopeRecordingTool()
         server.register(tool)
@@ -284,3 +284,118 @@ async def test_the_tool_server_puts_its_key_on_each_calls_scope() -> None:
         assert credential is not None
         assert credential.token == scope.context.identity_token
         assert not credential.proves
+
+
+async def test_the_tool_server_proves_a_calls_delegation_with_its_registration_key() -> None:
+    """the server's registration key reaches each call's scope and proves the call's delegation.
+
+    Fails if the server drops its door key, or does not hand it to the call scope.
+    """
+    server, rec = recording_tool_server(
+        pod_id="door-pod",
+        jwks_provider=jwks_provider,
+        assertion_replay_guard=FakeReplayGuard(),
+        registration_key=lambda: RegistrationKey(_POD),
+    )
+    tool = ScopeRecordingTool()
+    server.register(tool)
+    payload = signed_call_payload(pod_id="door-pod", customer_id=_CUSTOMER)
+    payload["context"]["delegated_token"] = _delegated("hub.object.resolve")
+    await deliver_call(server, payload, pod_id="door-pod")
+    assert rec.last_reply[1].success is True, rec.last_reply[1].error
+    (scope,) = tool.scopes
+    credential = scope.door_credential()
+    assert credential is not None
+    assert credential.proves
+    assert credential == DoorCredential(token=payload["context"]["delegated_token"], holder_key=_POD)
+
+
+class TestADeclaringPodTakesItsCallerFromTheDelegation:
+    """Chunk 10e, per pod: a pod given the delegation in place of the agent's token verifies it itself."""
+
+    @staticmethod
+    def _payload(*, pod_id: str, act: str, corr: str | None = None) -> dict[str, Any]:
+        payload = signed_call_payload(pod_id=pod_id, customer_id=_CUSTOMER)
+        context = payload["context"]
+        now = int(time.time())
+        context["delegated_token"] = mint_delegated_token(
+            signing_key=_REGISTRY,
+            kid="registry-1",
+            agent_id="06ac4016-baf3-7422-8000-31513802654e",
+            pod_id=act,
+            customer_id=f"{_CUSTOMER}",
+            user_id=None,
+            doors=("hub.object.resolve",),
+            holder_jkt=jwk_thumbprint(_POD_PUB),
+            correlation_id=corr if corr is not None else context["correlation_id"],
+            deadline=now + 60,
+            now=now,
+        )
+        del context["identity_token"]
+        return payload
+
+    @staticmethod
+    def _server(*, declares: bool) -> tuple[Any, Any, ScopeRecordingTool]:
+        keys = {"keys": [*jwks_provider()["keys"], *build_jwks({"registry-1": _REGISTRY_PUB})["keys"]]}
+        server, rec = recording_tool_server(
+            pod_id="door-pod",
+            jwks_provider=lambda: keys,
+            assertion_replay_guard=FakeReplayGuard(),
+            registration_key=(lambda: RegistrationKey(_POD)) if declares else None,
+        )
+        tool = ScopeRecordingTool()
+        server.register(tool)
+        return server, rec, tool
+
+    async def test_the_call_runs_as_the_agent_the_delegation_names(self) -> None:
+        server, rec, tool = self._server(declares=True)
+        await deliver_call(server, self._payload(pod_id="door-pod", act="door-pod"), pod_id="door-pod")
+        assert rec.last_reply[1].success is True, rec.last_reply[1].error
+        (scope,) = tool.scopes
+        assert scope.context.agent_id == UUID("06ac4016-baf3-7422-8000-31513802654e")
+        assert scope.context.customer_id == _CUSTOMER
+        assert scope.context.identity_token is None
+        assert scope.door_credential() == DoorCredential(token=scope.context.delegated_token, holder_key=_POD)
+
+    @pytest.mark.parametrize(("act", "corr"), [("another-pod", None), ("door-pod", "another-call")])
+    async def test_a_delegation_for_another_pod_or_call_is_refused(self, act: str, corr: str | None) -> None:
+        server, rec, tool = self._server(declares=True)
+        await deliver_call(server, self._payload(pod_id="door-pod", act=act, corr=corr), pod_id="door-pod")
+        assert rec.last_reply[1].success is False
+        assert tool.scopes == []
+
+    async def test_a_pod_that_does_not_declare_refuses_a_call_without_the_agents_token(self) -> None:
+        server, rec, tool = self._server(declares=False)
+        await deliver_call(server, self._payload(pod_id="door-pod", act="door-pod"), pod_id="door-pod")
+        assert rec.last_reply[1].success is False
+        assert tool.scopes == []
+
+    async def test_a_declaring_pod_announces_it_in_its_manifest(self) -> None:
+        from unittest.mock import AsyncMock  # noqa: PLC0415
+
+        from threetears.agent.tools.server import RegistrationManifest, ToolServer  # noqa: PLC0415
+
+        for declares in (True, False):
+            nc = AsyncMock()
+            server = ToolServer(
+                nats_client=nc,
+                pod_id="door-pod",
+                registration_key=(lambda: RegistrationKey(_POD)) if declares else None,
+            )
+            server.register(ScopeRecordingTool())
+            await server.publish_registration()
+            manifest = nc.publish.await_args.kwargs["message"]
+            assert isinstance(manifest, RegistrationManifest)
+            assert manifest.proves_delegation is declares
+
+
+def test_a_server_is_a_pod_or_an_in_process_server_never_both() -> None:
+    """two key providers would leave which token a key proves to the order of a branch."""
+    from threetears.agent.tools.server import ToolServer  # noqa: PLC0415
+
+    with pytest.raises(ValueError, match="never both"):
+        ToolServer(
+            nats_url="nats://test:4222",
+            registration_key=lambda: RegistrationKey(_POD),
+            pop_key=lambda: PopKey(_AGENT),
+        )

@@ -71,6 +71,9 @@ from threetears.core.security.identity_token import (
     principal_from_claims,
     verify_identity_token,
 )
+from threetears.core.security.delegated_token import DelegatedTokenError, verify_delegation_at_pod
+from threetears.core.security.door_request import RegistrationKey
+from threetears.core.security.identity_token import PLATFORM_CUSTOMER_SENTINEL
 from threetears.core.security.proxy_assertion import verify_proxy_assertion
 from threetears.nats import (
     SYNC_REPLY_BUDGET_SECONDS,
@@ -201,7 +204,7 @@ _UNHEALTHY_EXIT_THRESHOLD: int = 3
 
 if TYPE_CHECKING:
     from threetears.core.coordination.replay_anchor import ReplayAnchor
-    from threetears.core.security.door_request import PopKey, RegistrationKey
+    from threetears.core.security.door_request import PopKey
 
     from threetears.agent.tools.engagement_resolver import EngagementScopeResolver
     from threetears.agent.tools.object_resolver import ObjectResolver
@@ -426,6 +429,11 @@ class RegistrationManifest(BaseModel):
     :param customer_id: owning-customer UUID for agent-spun pods;
         ``None`` for platform-built-in pods
     :ptype customer_id: UUID | None
+    :param proves_delegation: whether this pod proves a call's delegated token with its
+        registration key (``ToolServer(registration_key=)`` gives one): the registry then sends it the
+        delegation in place of the agent's own token, which it never holds. A registry that predates
+        the field ignores it and keeps sending both
+    :ptype proves_delegation: bool
     """
 
     pod_id: str
@@ -433,6 +441,7 @@ class RegistrationManifest(BaseModel):
     bootstrap_token: str | None = None
     owner_agent_id: UUID | None = None
     customer_id: UUID | None = None
+    proves_delegation: bool = False
 
 
 class RefusedTool(BaseModel):
@@ -1040,7 +1049,8 @@ class ToolServer:
         max_concurrent_calls: int | None = None,
         max_call_seconds: float | None = None,
         result_delivery_retry_seconds: float = _RESULT_DELIVERY_RETRY_SECONDS,
-        door_key: "Callable[[], PopKey | RegistrationKey | None] | None" = None,
+        registration_key: "Callable[[], RegistrationKey | None] | None" = None,
+        pop_key: "Callable[[], PopKey | None] | None" = None,
     ) -> None:
         """initialize tool server.
 
@@ -1188,15 +1198,14 @@ class ToolServer:
             result after a transient failure -- long enough for a reconnect to complete, short
             enough to fit every attempt inside a caller's timeout. Must be >= 0.
         :ptype result_delivery_retry_seconds: float
-        :param door_key: zero-arg PROVIDER of the key a tool proves its door credential with
-            (:mod:`threetears.core.security.door_request`), read per call. A tool pod gives its
-            :class:`~threetears.core.security.RegistrationKey` -- the key its verified registration is
-            signed with, which the registry binds each call's delegated token to -- so a tool presents
-            that token, proven, instead of forwarding the caller's bearer token. An agent's in-process
-            server, which is the caller itself, gives its
-            :class:`~threetears.core.security.PopKey` and proves its own token. One provider, so a
-            server is in exactly one of those roles; ``None`` forwards the caller's token alone
-        :ptype door_key: Callable[[], PopKey | RegistrationKey | None] | None
+        :param registration_key: a TOOL POD's provider of its registration key -- the key its verified
+            registration is signed with, which the registry binds each call's delegated token to. With
+            it a tool presents that token, proven, instead of forwarding the caller's bearer token, and
+            the pod declares ``proves_delegation`` so the registry stops sending it the agent's token
+        :ptype registration_key: Callable[[], RegistrationKey | None] | None
+        :param pop_key: an agent's IN-PROCESS server's provider of the key the agent's own token binds;
+            its calls carry that token, which a tool proves with it
+        :ptype pop_key: Callable[[], PopKey | None] | None
         :param assertion_replay_anchor: the durable first-existence record for the
             self-provisioned assertion replay guard, so it can tell a first run from a wiped
             bucket. ``None`` for a pod with nowhere to record one, which leaves that guard
@@ -1287,7 +1296,13 @@ class ToolServer:
         # manifest so the registry-layer verifier always sees a fresh JWT. None -> static fallback.
         self._auth_token = auth_token
         # the key a call's door credential is proven with (ToolCallScope.credential), read per call
-        self._door_key = door_key
+        if registration_key is not None and pop_key is not None:
+            raise ValueError(
+                "a ToolServer is a tool pod (registration_key) or an agent's in-process server (pop_key), never both"
+            )
+        self._door_key: Callable[[], PopKey | RegistrationKey | None] | None = (
+            registration_key if registration_key is not None else pop_key
+        )
         self._context_factory = context_factory
         self._customer_id = customer_id
         # defense-in-depth: the pod re-verifies the Hub identity token AND the proxy's body-bound
@@ -2394,6 +2409,7 @@ class ToolServer:
             bootstrap_token=manifest_token,
             owner_agent_id=self._manifest_owner_agent_id,
             customer_id=self._customer_id,
+            proves_delegation=self._proves_delegation(),
         )
 
         subject = Subjects.tools_register()
@@ -2694,6 +2710,13 @@ class ToolServer:
         :rtype: tuple[CallRequest, str | None, bool]
         """
         context = request.context
+        if (
+            context is not None
+            and context.identity_token is None
+            and context.delegated_token
+            and self._proves_delegation()
+        ):
+            return await self._verify_delegation(request, context)
         # shared across the handshake + user-assertion verifications so the reactive Hub refresh (on
         # a kid-not-in-cache miss) fires at most ONCE per dispatch, not once per token.
         refreshed = [False]
@@ -2812,6 +2835,71 @@ class ToolServer:
             }
         )
         return request.model_copy(update={"context": verified_context}), None, principal.is_tool_pod
+
+    def _proves_delegation(self) -> bool:
+        """whether this server proves a call's delegated token: its door key is a registration key.
+
+        Declared on every registration manifest, so the registry sends a call to this pod the
+        delegation in place of the agent's own token.
+
+        :return: whether it declares
+        :rtype: bool
+        """
+        return isinstance(self._door_key() if self._door_key is not None else None, RegistrationKey)
+
+    async def _verify_delegation(
+        self, request: CallRequest, context: CallContext
+    ) -> tuple[CallRequest, str | None, bool]:
+        """verify a declaring pod's call by its delegation, and re-stamp the caller from it.
+
+        The registry sends a pod that declared ``proves_delegation`` the call's delegated token in
+        place of the agent's own token and user assertion. The delegation must be the registry's,
+        name this pod as its actor and this call's correlation id; the caller is then the agent,
+        customer and user it names, exactly as :meth:`_verify_identity` re-stamps them from the
+        agent's token. Fail-closed: on any failure the call is rejected.
+
+        :param request: the parsed inbound call request
+        :ptype request: CallRequest
+        :param context: its context, carrying the delegation and no identity token
+        :ptype context: CallContext
+        :return: ``(request, reason, principal_is_tool_pod)``, as :meth:`_verify_identity` answers
+        :rtype: tuple[CallRequest, str | None, bool]
+        """
+        token = context.delegated_token or ""
+        correlation = str(context.correlation_id) if context.correlation_id is not None else ""
+        result: tuple[CallRequest, str | None, bool]
+        try:
+            if self._jwks_provider is None:
+                raise IdentityTokenError("no JWKS provider configured for pod identity verification")
+            try:
+                claims = verify_delegation_at_pod(
+                    token, jwks=self._load_pod_jwks(request.tool_name), pod_id=self._pod_id, correlation_id=correlation
+                )
+            except DelegatedTokenError:
+                # a registry re-key, or a stale cache: refresh once (debounced there) and verify again
+                if self._jwks_refresh is not None:
+                    await self._jwks_refresh()
+                claims = verify_delegation_at_pod(
+                    token, jwks=self._load_pod_jwks(request.tool_name), pod_id=self._pod_id, correlation_id=correlation
+                )
+            customer = None if claims.customer_id == PLATFORM_CUSTOMER_SENTINEL else UUID(claims.customer_id)
+            verified_context = context.model_copy(
+                update={
+                    "agent_id": UUID(claims.agent_id),
+                    "user_id": UUID(claims.user_id) if claims.user_id is not None else None,
+                    "customer_id": customer,
+                }
+            )
+        except (DelegatedTokenError, IdentityTokenError, ValueError) as exc:
+            reason = type(exc).__name__
+            log.warning(
+                "pod delegation verification failed; rejecting call",
+                extra={"extra_data": {"reason": reason, "detail": str(exc), "tool_name": request.tool_name}},
+            )
+            result = (request, f"delegation verification failed ({reason})", False)
+        else:
+            result = (request.model_copy(update={"context": verified_context}), None, False)
+        return result
 
     async def _verify_proxy_assertion(self, request: CallRequest) -> _AssertionGateRefusal | None:
         """verify the registry proxy's body-bound assertion (the pod's PRIMARY identity gate).

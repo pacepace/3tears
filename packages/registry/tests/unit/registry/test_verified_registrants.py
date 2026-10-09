@@ -554,3 +554,32 @@ class TestTheVerifiedPodsKeyIsRemembered:
         entry = catalog.get("pentest.sqlmap@1.0.0")
         copy = entry.get_endpoint(_PENTEST_POD) if entry is not None else None
         assert copy is not None and copy.holder_jkt == "jkt-1"
+
+    @pytest.mark.asyncio
+    async def test_a_declaration_is_honoured_only_for_a_verified_pod_with_a_known_key(self) -> None:
+        """Chunk 10e, per pod: the registry strips the agent's token only for a pod it can bind."""
+        import json  # noqa: PLC0415
+
+        def declaring(raw: bytes) -> bytes:
+            body = json.loads(raw)
+            body["proves_delegation"] = True
+            return json.dumps(body).encode()
+
+        for holder, expected in (("jkt-1", True), (None, False)):
+            directory = _default_directory()
+            directory.set_pod(
+                "pentest-token",
+                ToolPodAuth(
+                    pod_entity_id=_PENTEST_POD,
+                    name="pentest-tool-server",
+                    owned_namespaces=["pentest"],
+                    holder_jkt=holder,
+                ),
+            )
+            handler, catalog, nc = await _started(directory)
+            await _register(
+                handler, nc, declaring(_manifest(_PENTEST_POD, ("pentest.sqlmap", "sqlmap"), token="pentest-token"))
+            )
+            entry = catalog.get("pentest.sqlmap@1.0.0")
+            copy = entry.get_endpoint(_PENTEST_POD) if entry is not None else None
+            assert copy is not None and copy.proves_delegation is expected

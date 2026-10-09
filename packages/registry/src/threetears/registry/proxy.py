@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid7
@@ -1860,15 +1860,39 @@ class CallProxy:
             )
         return result
 
+    def _hub_publishes_delegation_key(self) -> bool:
+        """whether the hub JWKS publishes this registry's delegated-token key, so a pod can verify it.
+
+        A pod sent the delegation in place of the agent's token verifies it against the hub JWKS; a
+        registry whose key the hub does not publish yet (the seed rolled out before the hub's pin)
+        keeps sending the agent's token beside it, so no call fails for the order the two roll in.
+
+        :return: whether the hub publishes it
+        :rtype: bool
+        """
+        published = False
+        if self._delegated_signer is not None and self._jwks_provider is not None:
+            try:
+                published = self._delegated_signer.kid in _published_kids(self._jwks_provider())
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- a provider failure keeps the agent's token on the call, the safe side; logged
+                log.warning(
+                    "hub JWKS unreadable; the agent's token stays on the call",
+                    extra={"extra_data": {"detail": str(exc)}},
+                )
+        return published
+
     def _with_delegation(
         self, request: ProxyCallRequest, pod_id: str, principal: VerifiedPrincipal, effective_timeout: float
     ) -> ProxyCallRequest:
         """``request`` with a delegated token for ``pod_id`` on its context, when one can be minted.
 
         Minted only for a call with a context, a signer, and a pod whose key the registry learned
-        from its verified registration; otherwise the request goes as it came. The proxy assertion
-        is minted over the call body, which the context does not enter, so adding the token changes
-        nothing it signs.
+        from its verified registration; otherwise the request goes as it came. A pod that declared it
+        proves the delegation (``proves_delegation`` on its verified registration) is sent the
+        delegation in place of the agent's own token and user assertion, so it never holds either;
+        any other pod gets the delegation beside them, as before. The proxy assertion is minted over
+        the call body, which the context does not enter, so changing the context changes nothing it
+        signs.
 
         :param request: the verified call request
         :ptype request: ProxyCallRequest
@@ -1896,8 +1920,22 @@ class CallProxy:
                 correlation_id=str(context.correlation_id) if context.correlation_id is not None else "",
                 lifetime=timedelta(seconds=effective_timeout),
             )
-            result = request.model_copy(update={"context": context.model_copy(update={"delegated_token": token})})
+            forwarded: dict[str, str | None] = {"delegated_token": token}
+            if endpoint is not None and endpoint.proves_delegation and self._hub_publishes_delegation_key():
+                forwarded |= {"identity_token": None, "user_identity_token": None}
+            result = request.model_copy(update={"context": context.model_copy(update=forwarded)})
         return result
+
+
+def _published_kids(jwks: Mapping[str, Any]) -> set[str]:
+    """the key ids a JWKS publishes.
+
+    :param jwks: the JWKS
+    :ptype jwks: Mapping[str, Any]
+    :return: its kids
+    :rtype: set[str]
+    """
+    return {str(key.get("kid")) for key in jwks.get("keys", ()) if isinstance(key, Mapping)}
 
 
 def _identity_refused(context: CallContext) -> ProxyCallResponse:

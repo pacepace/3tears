@@ -41,22 +41,29 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import BaseModel
 
 from threetears.nats.errors import KvError
-from threetears.nats.subjects import sanitize_subject_segment
+from threetears.nats.subjects import Subject
 from threetears.observe import get_logger
-from threetears.observe.metrics import counter
 
 from threetears.core.security.delegated_token import (
+    L3_DOOR,
     DelegatedTokenError,
     DoorCaller,
     ProofAbsentError,
     is_delegated_token,
     verify_door_caller,
 )
-from threetears.core.security.door_proof import DoorProofSwitch, ProofOutcome
+from threetears.core.security.door_proof import DoorProofSwitch
+from threetears.core.security.door_skeleton import (
+    DoorAccounting,
+    KeysUnavailableError,
+    json_object,
+    keys_naming,
+    window_admits,
+)
 from threetears.core.security.freshness import DEFAULT_PROOF_MAX_AGE, ISSUE_TIME_FUTURE_TOLERANCE
 from threetears.core.security.identity_token import jwk_thumbprint
 from threetears.core.security.pop import access_token_hash, make_pop_proof
-from threetears.core.security.service_envelope import EnvelopeJwksSource, ServiceEnvelopeError
+from threetears.core.security.service_envelope import EnvelopeJwksSource
 
 __all__ = [
     "APPROVAL_RECORD_DOOR",
@@ -76,6 +83,7 @@ __all__ = [
     "RegistrationKey",
     "datasource_query_op",
     "door_request_hash",
+    "l3_request_op",
     "verify_door_request",
 ]
 
@@ -107,18 +115,41 @@ AUDIT_ANONYMIZE_OP: Final[str] = "anonymize"
 APPROVAL_RECORD_OP: Final[str] = "record"
 
 
-def datasource_query_op(datasource_name: str) -> str:
-    """the operation a query to one datasource is proven for, so a proof never reaches another.
+def l3_request_op(subject: str) -> str:
+    """the operation an ``l3.*`` request is proven for: its subject's own part (``query``, ``tx.commit``).
 
-    The datasource is named as its subject names it (the sanitised segment), so the door, which
-    reads it off the subject, signs the same text.
+    The one derivation the L3 client signs with and the broker verifies with, from the subject each
+    sends or receives on.
 
-    :param datasource_name: the datasource's name
-    :ptype datasource_name: str
+    :param subject: the request's concrete subject, ``{ns}.l3.<op>``
+    :ptype subject: str
     :return: the operation
     :rtype: str
+    :raises ValueError: when the subject is not an ``l3`` subject
     """
-    return f"{sanitize_subject_segment(datasource_name)}.query"
+    _, separator, op = subject.rpartition(f".{L3_DOOR}.")
+    if not separator or not op:
+        raise ValueError(f"{subject!r} is not an l3 request subject")
+    return op
+
+
+def datasource_query_op(subject: Subject) -> str:
+    """the operation a query to one datasource is proven for, read off the subject it is sent on.
+
+    From :meth:`~threetears.nats.Subjects.datasource_query`'s subject, ``{ns}.datasource.<name>.query``:
+    the client and the hub door both derive it from the subject itself, so they sign one text and a
+    proof never reaches another datasource.
+
+    :param subject: the datasource query subject
+    :ptype subject: Subject
+    :return: the operation, ``<name>.query``
+    :rtype: str
+    :raises ValueError: when the subject is not a datasource query subject
+    """
+    tokens = subject.path.split(".")
+    if len(tokens) < 4 or tokens[-3] != "datasource" or tokens[-1] != "query" or not tokens[-2]:
+        raise ValueError(f"{subject.path!r} is not a datasource query subject")
+    return ".".join(tokens[-2:])
 
 
 def door_request_hash(body: Mapping[str, Any], *, door: str, op: str) -> str:
@@ -136,7 +167,9 @@ def door_request_hash(body: Mapping[str, Any], *, door: str, op: str) -> str:
     :raises TypeError: when the body holds a value that is not JSON
     """
     content = {key: value for key, value in body.items() if key != DOOR_PROOF_FIELD}
-    text = f"{door}:{op}\n" + json.dumps(content, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    # length-prefixed, so no door or operation, whatever it holds, can be read as another split
+    frame = f"{len(door)}:{door}{len(op)}:{op}\n"
+    text = frame + json.dumps(content, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     digest = hashlib.sha256(text.encode("utf-8")).digest()
     # str(bytes, "ascii"), as canonical_call_hash: the alg-pin enforcement reads every ``.decode(``
     return str(base64.urlsafe_b64encode(digest).rstrip(b"="), "ascii")
@@ -265,6 +298,22 @@ class DoorCredential:
         elif identity_token:
             credential = cls(token=identity_token, holder_key=key.key if isinstance(key, PopKey) else None)
         return credential
+
+    @classmethod
+    def for_request(cls, identity_token: str, credential: DoorCredential | None) -> DoorCredential:
+        """the credential a request carrying ``identity_token`` is sent with: ``credential`` when given.
+
+        :param identity_token: the token the request carries
+        :ptype identity_token: str
+        :param credential: the caller's credential, if it passed one
+        :ptype credential: DoorCredential | None
+        :return: the credential to present
+        :rtype: DoorCredential
+        :raises ValueError: when ``credential`` carries another token than the request
+        """
+        if credential is not None and credential.token != identity_token:
+            raise ValueError("the credential carries another token than the request")
+        return credential if credential is not None else cls(token=identity_token)
 
     @classmethod
     def own(cls, token: str, key: PopKey | None) -> DoorCredential:
@@ -468,6 +517,12 @@ class DoorRequestDoor:
             )
         self._switch = switch
         self._jwks = jwks
+        self._accounting = DoorAccounting(
+            door=switch.door,
+            counter_name=_REFUSED_COUNTER,
+            description="door requests refused for their proof of possession",
+            message="door request refused",
+        )
         self._hub_issuer = hub_issuer
         self._replay_guard = replay_guard
         self._accepts_delegated = accepts_delegated
@@ -501,10 +556,9 @@ class DoorRequestDoor:
             # a delegated token is useless without its pod's key; there is no bearer form of one
             verdict = self._refused("absent", "a delegated token arrived without its proof", op=op)
         else:
-            outcome = self._switch.judge(presented=False, claimed_sender=claimed_sender)
             verdict = (
                 DoorVerdict(admitted=True)
-                if outcome is ProofOutcome.ACCEPTED_WITHOUT_PROOF
+                if window_admits(self._switch, claimed_sender=claimed_sender)
                 else self._refused("absent", "the door requires a proof of possession", op=op)
             )
         return verdict
@@ -524,13 +578,10 @@ class DoorRequestDoor:
         :return: the verdict; a body that is not a JSON object is refused
         :rtype: DoorVerdict
         """
-        try:
-            body = json.loads(data)
-        except ValueError, UnicodeDecodeError:
-            body = None
+        body = json_object(data)
         verdict = (
             await self.admit(body, op=op, claimed_sender=claimed_sender)
-            if isinstance(body, dict)
+            if body is not None
             else self._refused("malformed", "the request is not a JSON object", op=op)
         )
         return verdict
@@ -552,7 +603,7 @@ class DoorRequestDoor:
             fresh = await self._replay_guard.record_unique(
                 f"door-proof|{caller.agent_id}|{caller.proof.jti}", issued_at=caller.proof.issued_at
             )
-        except ServiceEnvelopeError as exc:
+        except KeysUnavailableError as exc:
             verdict = self._refused("keys_unavailable", f"{exc}", op=op)
         except ProofAbsentError as exc:
             verdict = self._refused("absent", f"{exc}", op=op)
@@ -577,7 +628,7 @@ class DoorRequestDoor:
         :ptype token: Any
         :return: the key set
         :rtype: Mapping[str, Any]
-        :raises ServiceEnvelopeError: when no key set is loaded
+        :raises KeysUnavailableError: when no key set is loaded
         """
         kid: Any = None
         if isinstance(token, str):
@@ -585,12 +636,7 @@ class DoorRequestDoor:
                 kid = jwt.get_unverified_header(token).get("kid")
             except jwt.PyJWTError:
                 kid = None
-        jwks = await self._jwks.get_jwks()
-        if not any(isinstance(key, Mapping) and key.get("kid") == kid for key in jwks.get("keys", ())):
-            jwks = await self._jwks.get_jwks(refresh=True)
-        if not jwks.get("keys"):
-            raise ServiceEnvelopeError("the hub key set is not loaded")
-        return jwks
+        return await keys_naming(self._jwks, kid)
 
     def _refused(self, cause: str, reason: str, *, op: str) -> DoorVerdict:
         """log and count a refusal, and answer it.
@@ -604,13 +650,5 @@ class DoorRequestDoor:
         :return: a refusing verdict
         :rtype: DoorVerdict
         """
-        counter(
-            _REFUSED_COUNTER,
-            description="door requests refused for their proof of possession",
-            label_names=("door", "cause"),
-        ).labels(door=self.door, cause=cause).inc()
-        log.warning(
-            "door request refused",
-            extra={"extra_data": {"door": self.door, "op": op, "cause": cause, "reason": reason}},
-        )
+        self._accounting.refused(cause, reason, op=op)
         return DoorVerdict(admitted=False)

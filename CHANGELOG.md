@@ -32,6 +32,16 @@ packages (bumped in lock-step).
 - Only the agent pod and tool pod are minted by the callout; the rest are the model the hub's static
   conf follows. No minted pod grant loses a subject any release uses.
 
+### Registry: a pod that declares it proves never receives the agent's own token
+
+- `RegistrationManifest.proves_delegation` (default `False`): a `ToolServer` whose `door_key` is a
+  `RegistrationKey` declares it. For a verified pod whose key the registry knows
+  (`ToolEndpoint.proves_delegation`), the registry sends a call the delegated token in place of the
+  agent's own `identity_token` and `user_identity_token`, and the pod takes the caller from the
+  delegation (`verify_delegation_at_pod`: the registry's key, this pod as actor, this call's
+  correlation id). A pod that does not declare, a registry that predates the field, and an
+  unprovisioned delegated-token key all keep sending both, as before.
+
 ### Core: a door request proves its token with the key the token binds, for its door and operation
 
 - `threetears.core.security.door_request`. A caller sends `identity_proof` beside `identity_token`:
@@ -56,12 +66,20 @@ packages (bumped in lock-step).
     `InProcessEnvelopeLedger` gain `retention` (the latter a `retention=` argument), checked at
     construction (`DoorProofLedger`).
   - Door and operation names: `APPROVAL_RECORD_DOOR`, `OBJECT_RESOLVE_OP`, `ENGAGEMENT_SCOPE_OP`,
-    `NAMESPACE_DISCOVER_OP`, `AUDIT_ANONYMIZE_OP`, `APPROVAL_RECORD_OP`, `datasource_query_op(name)`;
-    an `l3.*` request's operation is its subject's own part (`query`, `tx.commit`).
+    `NAMESPACE_DISCOVER_OP`, `AUDIT_ANONYMIZE_OP`, `APPROVAL_RECORD_OP`; `l3_request_op(subject)` and
+    `datasource_query_op(subject)` derive an `l3.*` or datasource request's operation from its subject,
+    the one derivation the client signs with and the door verifies with. The frame is length-prefixed.
+  - `threetears.core.security.door_skeleton`: the window judgement, the key lookup (refreshed once,
+    an empty set refused as unavailable), the byte-exact parse and the refusal accounting that
+    `DoorRequestDoor` and `ServiceEnvelopeDoor` share. `ServiceEnvelopeDoor` now counts a message that
+    is not a JSON object (`malformed`) and an empty key set (`keys_unavailable`) by their own cause.
+  - `DEFAULT_DELEGATED_DOORS` is the doors a tool pod reaches AS ITS CALLER (object resolve, namespace
+    discovery, engagement scope), the set the hub takes a delegation at; a delegated token's audience
+    also names its pod (`pod_audience`).
 - Callers. `NatsProxyL3Backend(pop_key=)` and `DatasourceQueryClient(pop_key=)` prove every request
   (`current_pop_key()` lets a second pool borrow the provider); `request_audit_anonymization(pop_key=)`.
-  `ToolServer(door_key=)` takes one provider of a `PopKey` (an agent's in-process server) or a
-  `RegistrationKey` (a tool pod), and `ToolCallScope.credential` / `door_credential()` carry the call's
+  `ToolServer(registration_key=)` (a tool pod) or `ToolServer(pop_key=)` (an agent's in-process
+  server), never both, and `ToolCallScope.credential` / `door_credential()` carry the call's
   credential to its tools; `BuiltinToolPod` gives its `IdentityMinter.registration_key`.
   `DynamicToolPod` holds no key of its own yet and forwards the caller's token.
 - Wire: `identity_proof` (optional) on `ObjectResolveRequestModel`, `EngagementScopeRequestModel`,

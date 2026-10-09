@@ -280,7 +280,7 @@ class HubEngagementScopeResolver:
         :raises ResolveEngagementScopeError: transport failure, hub rejection, or a
             malformed success reply
         """
-        request = _presented(identity_token, credential).presented(
+        request = DoorCredential.for_request(identity_token, credential).presented(
             EngagementScopeRequestModel(
                 identity_token=identity_token,
                 correlation_id=uuid7(),
@@ -322,19 +322,3 @@ class HubEngagementScopeResolver:
             },
         )
         return scope
-
-
-def _presented(identity_token: str, credential: DoorCredential | None) -> DoorCredential:
-    """the credential a request is sent with: ``credential`` when it carries the request's token.
-
-    :param identity_token: the token the request carries
-    :ptype identity_token: str
-    :param credential: the caller's credential, if it passed one
-    :ptype credential: DoorCredential | None
-    :return: the credential to present
-    :rtype: DoorCredential
-    :raises ValueError: when ``credential`` carries another token than the request
-    """
-    if credential is not None and credential.token != identity_token:
-        raise ValueError("the credential carries another token than the request")
-    return credential if credential is not None else DoorCredential(token=identity_token)

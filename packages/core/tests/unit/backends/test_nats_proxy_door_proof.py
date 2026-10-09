@@ -123,3 +123,12 @@ def test_a_second_backend_borrows_the_key_provider() -> None:
     backend, _ = _backend(lambda: key)
     assert backend.current_pop_key() is key
     assert _backend(None)[0].current_pop_key() is None
+
+
+async def test_an_unproven_backend_says_so_once(caplog: pytest.LogCaptureFixture) -> None:
+    """a backend sending its token alone logs it once, not on every request."""
+    backend, _request_raw = _backend(None)
+    with caplog.at_level("WARNING"):
+        await backend.fetch("SELECT 1")
+        await backend.fetch("SELECT 2")
+    assert sum("without the token's proof" in record.getMessage() for record in caplog.records) == 1

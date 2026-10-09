@@ -486,6 +486,7 @@ class DatasourceQueryClient:
         self._nats_client = nats_client
         self._identity_token = identity_token
         self._pop_key = pop_key
+        self._unproven_logged = False
         self._timeout = timeout if isinstance(timeout, timedelta) else timedelta(seconds=float(timeout))
 
     def forwarded_identity_token(self) -> str:
@@ -512,9 +513,7 @@ class DatasourceQueryClient:
             )
         return token
 
-    async def _ask(
-        self, subject: Subject, request: DatasourceQueryRequest, *, datasource_name: str
-    ) -> DatasourceQueryResponse:
+    async def _ask(self, subject: Subject, request: DatasourceQueryRequest) -> DatasourceQueryResponse:
         """send the request, and ask again while the hub answers ``DATASOURCE_BUSY``, a bounded number of times.
 
         A busy refusal means nothing ran, so asking again is safe; the waits grow and are jittered so
@@ -524,8 +523,6 @@ class DatasourceQueryClient:
         :ptype subject: Subject
         :param request: the request
         :ptype request: DatasourceQueryRequest
-        :param datasource_name: the datasource the subject names, whose query the proof binds
-        :ptype datasource_name: str
         :return: the hub's answer
         :rtype: DatasourceQueryResponse
         :raises RequestError: when the bus fails to deliver or answer
@@ -534,7 +531,7 @@ class DatasourceQueryClient:
         attempts = 0
         response: DatasourceQueryResponse = await self._nats_client.request(
             subject=subject,
-            message=self._proven(request, datasource_name),
+            message=self._proven(request, subject),
             response_type=DatasourceQueryResponse,
             timeout=self._timeout,
         )
@@ -548,28 +545,33 @@ class DatasourceQueryClient:
             )
             response = await self._nats_client.request(
                 subject=subject,
-                message=self._proven(request, datasource_name),
+                message=self._proven(request, subject),
                 response_type=DatasourceQueryResponse,
                 timeout=self._timeout,
             )
         return response
 
-    def _proven(self, request: DatasourceQueryRequest, datasource_name: str) -> DatasourceQueryRequest:
+    def _proven(self, request: DatasourceQueryRequest, subject: Subject) -> DatasourceQueryRequest:
         """``request`` with a fresh proof of possession, when this client holds the token's key.
 
         Fresh per send: a proof is single-use at the door, so a request asked again carries a new one.
 
         :param request: the request, carrying the identity token
         :ptype request: DatasourceQueryRequest
-        :param datasource_name: the datasource it is sent to
-        :ptype datasource_name: str
+        :param subject: the datasource query subject it is sent on, whose datasource the proof binds
+        :ptype subject: Subject
         :return: the request to send
         :rtype: DatasourceQueryRequest
         """
         key = self._pop_key() if self._pop_key is not None else None
-        return DoorCredential.own(request.identity_token.get_secret_value(), key).presented(
-            request, door=DATASOURCE_DOOR, op=datasource_query_op(datasource_name)
-        )
+        credential = DoorCredential.own(request.identity_token.get_secret_value(), key)
+        if not credential.proves and not self._unproven_logged:
+            self._unproven_logged = True
+            log.warning(
+                "datasource queries go without the token's proof of possession: this client holds no key the "
+                "token binds; the hub accepts that only until the datasource door's dated window closes"
+            )
+        return credential.presented(request, door=DATASOURCE_DOOR, op=datasource_query_op(subject))
 
     @traced
     async def relation_fingerprint(
@@ -621,7 +623,7 @@ class DatasourceQueryClient:
         )
         subject = Subjects.datasource_query(datasource_name)
         try:
-            response = await self._ask(subject, request, datasource_name=datasource_name)
+            response = await self._ask(subject, request)
         except RequestError as exc:
             raise DatasourceQueryError("REQUEST_FAILED", f"relation fingerprint on {datasource_name!r}: {exc}") from exc
 
@@ -697,7 +699,7 @@ class DatasourceQueryClient:
             },
         )
         try:
-            response = await self._ask(subject, request, datasource_name=datasource_name)
+            response = await self._ask(subject, request)
         except RequestError as exc:
             log.warning(
                 "datasource query did not complete",

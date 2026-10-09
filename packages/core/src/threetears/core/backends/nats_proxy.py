@@ -34,7 +34,7 @@ from threetears.core.exceptions import (
 )
 from threetears.core.namespaces import PLURAL_PREFIX_AGENT, build_namespace_name
 from threetears.core.security.delegated_token import L3_DOOR
-from threetears.core.security.door_request import DOOR_TOKEN_FIELD, DoorCredential, PopKey
+from threetears.core.security.door_request import DOOR_TOKEN_FIELD, DoorCredential, PopKey, l3_request_op
 
 # Subject comes from its own module, and NatsClient only under TYPE_CHECKING.
 # `threetears.core.collections` MUST import with nats-py absent -- that is the
@@ -645,6 +645,7 @@ class NatsProxyL3Backend:
         self.agent_id = agent_id
         self._identity_token = identity_token
         self._pop_key = pop_key
+        self._unproven_logged = False
         self._on_superseded = on_superseded
         self._superseded_reported = False
         self.default_namespace = resolved_namespace
@@ -999,6 +1000,22 @@ class NatsProxyL3Backend:
         """
         return self._pop_key() if self._pop_key is not None else None
 
+    def _note_unproven(self, credential: DoorCredential) -> None:
+        """log, once per backend, that its token goes to the L3 door without its proof.
+
+        :param credential: the credential about to be presented
+        :ptype credential: DoorCredential
+        :return: nothing
+        :rtype: None
+        """
+        if not credential.proves and not self._unproven_logged:
+            self._unproven_logged = True
+            _logger.warning(
+                "L3 requests go without the token's proof of possession: this backend holds no key the token "
+                "binds; the broker accepts that only until the l3 door's dated window closes",
+                extra={"extra_data": {"namespace": self.default_namespace}},
+            )
+
     def _encode(self, subject: str, payload: dict[str, Any]) -> bytes:
         """the request's wire bytes, proven with the holder key when this backend has one.
 
@@ -1016,10 +1033,11 @@ class NatsProxyL3Backend:
         token = payload.get(DOOR_TOKEN_FIELD)
         if isinstance(token, str) and token:
             credential = DoorCredential.own(token, self.current_pop_key())
+            self._note_unproven(credential)
             if credential.proves:
                 # the operation is the subject's own part (``query``, ``tx.commit``): two subjects that
                 # take one body shape never share a proof
-                op = subject.removeprefix(f"{self.ns}.{L3_DOOR}.")
+                op = l3_request_op(subject)
                 text = json.dumps(credential.present(json.loads(text), door=L3_DOOR, op=op))
         return text.encode("utf-8")
 

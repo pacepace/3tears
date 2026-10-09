@@ -287,7 +287,7 @@ class HubObjectResolver:
         cached = await self._remembered(customer_id, object_id)
         if cached is not None:
             return cached
-        request = _presented(identity_token, credential).presented(
+        request = DoorCredential.for_request(identity_token, credential).presented(
             ObjectResolveRequestModel(
                 identity_token=identity_token,
                 correlation_id=uuid7(),
@@ -373,19 +373,3 @@ class HubObjectResolver:
             oldest = next(iter(self._cache))
             del self._cache[oldest]
         self._cache[key] = handle
-
-
-def _presented(identity_token: str, credential: DoorCredential | None) -> DoorCredential:
-    """the credential a request is sent with: ``credential`` when it carries the request's token.
-
-    :param identity_token: the token the request carries
-    :ptype identity_token: str
-    :param credential: the caller's credential, if it passed one
-    :ptype credential: DoorCredential | None
-    :return: the credential to present
-    :rtype: DoorCredential
-    :raises ValueError: when ``credential`` carries another token than the request
-    """
-    if credential is not None and credential.token != identity_token:
-        raise ValueError("the credential carries another token than the request")
-    return credential if credential is not None else DoorCredential(token=identity_token)

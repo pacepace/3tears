@@ -123,6 +123,7 @@ from threetears.core.security.delegated_token import (
     is_delegated_token,
     mint_delegated_token,
     verify_delegated_token,
+    verify_delegation_at_pod,
     verify_door_caller,
 )
 from threetears.core.security.door_request import (
@@ -137,6 +138,7 @@ from threetears.core.security.door_request import (
     RegistrationKey,
     datasource_query_op,
     door_request_hash,
+    l3_request_op,
     verify_door_request,
 )
 from threetears.core.security.turn_assertion import (
@@ -192,6 +194,7 @@ __all__ = [
     "is_delegated_token",
     "mint_delegated_token",
     "verify_delegated_token",
+    "verify_delegation_at_pod",
     "verify_door_caller",
     # door requests
     "DOOR_PROOF_FIELD",
@@ -205,6 +208,7 @@ __all__ = [
     "RegistrationKey",
     "datasource_query_op",
     "door_request_hash",
+    "l3_request_op",
     "verify_door_request",
     # turn assertions
     "TURN_ASSERTION_AUDIENCE",

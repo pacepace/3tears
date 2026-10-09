@@ -457,7 +457,12 @@ class RegistrationHandler:
             return
 
         try:
-            registered = await self._register_tools(manifest.pod_id, verdict.admitted, verdict.standing)
+            registered = await self._register_tools(
+                manifest.pod_id,
+                verdict.admitted,
+                verdict.standing,
+                proves_delegation=manifest.proves_delegation,
+            )
         except Exception as exc:  # noqa: BLE001 -- a catalog failure is answered, never left as a dropped reply
             await self._answer_catalog_unavailable(msg, manifest, verdict, exc)
             return
@@ -939,6 +944,8 @@ class RegistrationHandler:
         pod_id: str,
         tools: list[ToolManifestEntry],
         standing: PublisherStanding,
+        *,
+        proves_delegation: bool = False,
     ) -> list[str]:
         """register each admitted tool as this pod's copy, carrying the definition it announced.
 
@@ -958,6 +965,9 @@ class RegistrationHandler:
         :ptype tools: list[ToolManifestEntry]
         :param standing: the publisher's verified standing, recorded on each copy
         :ptype standing: PublisherStanding
+        :param proves_delegation: whether the manifest declared that the pod proves a call's
+            delegated token; honoured only for a verified pod whose key the registry knows
+        :ptype proves_delegation: bool
         :return: list of full_name values registered
         :rtype: list[str]
         """
@@ -985,6 +995,7 @@ class RegistrationHandler:
                 date_last_heartbeat=now,
                 verified_publisher=standing.verified,
                 holder_jkt=standing.holder_jkt,
+                proves_delegation=proves_delegation and standing.verified and bool(standing.holder_jkt),
             )
             # output_schema is not carried on the manifest today, so every copy announces none.
             endpoint.announce(

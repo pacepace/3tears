@@ -37,9 +37,15 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,
 from pydantic import BaseModel
 from threetears.nats.errors import KvError
 from threetears.observe import get_logger
-from threetears.observe.metrics import counter
 
-from threetears.core.security.door_proof import DoorWindow, ProofOutcome
+from threetears.core.security.door_skeleton import (
+    DoorAccounting,
+    KeysUnavailableError,
+    json_object,
+    keys_naming,
+    window_admits,
+)
+from threetears.core.security.door_proof import DoorWindow
 from threetears.core.security.identity_token import build_jwks, jwk_thumbprint
 from threetears.core.security.freshness import ISSUE_TIME_FUTURE_TOLERANCE
 from threetears.core.security.secret_refs import SecretResolutionError, resolve_secret
@@ -678,6 +684,12 @@ class ServiceEnvelopeDoor:
             raise ValueError("a service envelope door without a switch needs a name")
         self._switch: DoorProofSwitch | None = switch
         self._name: str = name
+        self._accounting = DoorAccounting(
+            door=name,
+            counter_name=_REFUSED_COUNTER,
+            description="service envelopes a door refused",
+            message="service envelope refused",
+        )
         self._issuer = issuer
         self._audience = audience
         self._jwks = jwks
@@ -739,9 +751,7 @@ class ServiceEnvelopeDoor:
         elif self._switch is None:
             admitted = self._refused(op=op, cause="absent", reason="the door requires an envelope")
         else:
-            admitted = (
-                self._switch.judge(presented=False, claimed_sender=self._issuer) is ProofOutcome.ACCEPTED_WITHOUT_PROOF
-            )
+            admitted = window_admits(self._switch, claimed_sender=self._issuer)
         return admitted
 
     async def admit_message(self, data: bytes, *, op: str) -> bool:
@@ -758,11 +768,12 @@ class ServiceEnvelopeDoor:
         :return: ``True`` to act, ``False`` to refuse; a body that is not a JSON object is refused
         :rtype: bool
         """
-        try:
-            body = json.loads(data)
-        except ValueError, UnicodeDecodeError:
-            body = None
-        return isinstance(body, dict) and await self.admit(body, op=op)
+        body = json_object(data)
+        return (
+            await self.admit(body, op=op)
+            if body is not None
+            else self._refused(op=op, cause="malformed", reason="the message is not a JSON object")
+        )
 
     async def _verified(self, envelope: str, *, body: Mapping[str, Any], op: str) -> bool:
         """verify and spend ``envelope``, logging and counting a refusal.
@@ -788,6 +799,8 @@ class ServiceEnvelopeDoor:
                 body=body,
                 replay_guard=self._replay_guard,
             )
+        except KeysUnavailableError as exc:
+            cause, reason = "keys_unavailable", str(exc)
         except ServiceEnvelopeError as exc:
             cause, reason = "unverified", str(exc)
         except KvError as exc:
@@ -807,15 +820,7 @@ class ServiceEnvelopeDoor:
         :return: ``False``
         :rtype: bool
         """
-        counter(
-            _REFUSED_COUNTER,
-            description="service envelopes a door refused",
-            label_names=("door", "cause"),
-        ).labels(door=self.door, cause=cause).inc()
-        log.warning(
-            "service envelope refused",
-            extra={"extra_data": {"door": self.door, "op": op, "cause": cause, "reason": reason}},
-        )
+        self._accounting.refused(cause, reason, op=op)
         return False
 
     async def _jwks_naming(self, envelope: str) -> Mapping[str, Any]:
@@ -825,13 +830,11 @@ class ServiceEnvelopeDoor:
         :ptype envelope: str
         :return: the JWKS
         :rtype: Mapping[str, Any]
-        :raises ServiceEnvelopeError: when the header is malformed or no key set is available
+        :raises ServiceEnvelopeError: when the header is malformed
+        :raises KeysUnavailableError: when no key set is loaded
         """
         try:
             kid = jwt.get_unverified_header(envelope).get("kid")
         except jwt.PyJWTError as exc:
             raise ServiceEnvelopeError(f"malformed envelope header ({type(exc).__name__})") from exc
-        jwks = await self._jwks.get_jwks()
-        if not any(isinstance(key, Mapping) and key.get("kid") == kid for key in jwks.get("keys", ())):
-            jwks = await self._jwks.get_jwks(refresh=True)
-        return jwks
+        return await keys_naming(self._jwks, kid)

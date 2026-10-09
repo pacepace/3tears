@@ -359,10 +359,79 @@ class TestTheDoor:
             _door(ledger=InProcessEnvelopeLedger(retention=DOOR_PROOF_REPLAY_TTL - timedelta(seconds=1)))
 
 
-def test_a_datasource_operation_is_named_as_its_subject_names_it() -> None:
-    """the door reads the datasource off its subject, so the operation uses the subject's segment."""
+def test_a_datasource_operation_is_read_off_its_subject() -> None:
+    """the client and the door derive it from the subject itself, the sanitised segment included."""
     from threetears.core.security import datasource_query_op
-    from threetears.nats.subjects import sanitize_subject_segment
+    from threetears.nats import Subjects, set_default_namespace
 
-    assert datasource_query_op("central.reporting") == f"{sanitize_subject_segment('central.reporting')}.query"
-    assert datasource_query_op("warehouse") == "warehouse.query"
+    set_default_namespace("test")
+    assert datasource_query_op(Subjects.datasource_query("warehouse")) == "warehouse.query"
+    dotted = Subjects.datasource_query("central.reporting")
+    assert datasource_query_op(dotted) == f"{dotted.path.split('.')[-2]}.query"
+
+
+class TestTheHashFrameIsInjective:
+    """no door or operation, whatever characters it holds, hashes as another split of the same text."""
+
+    @pytest.mark.parametrize(
+        ("one", "other"),
+        [(("a:b", "c"), ("a", "b:c")), (("l3", "tx.commit"), ("l3:tx", "commit")), (("a", "1:b"), ("a1", "b"))],
+    )
+    def test_two_splits_never_share_a_hash(self, one: tuple[str, str], other: tuple[str, str]) -> None:
+        from threetears.core.security import door_request_hash
+
+        assert door_request_hash(_TX, door=one[0], op=one[1]) != door_request_hash(_TX, door=other[0], op=other[1])
+
+
+class _RecordingLedger(InProcessEnvelopeLedger):
+    """keeps the ids it was asked to spend."""
+
+    def __init__(self) -> None:
+        super().__init__(retention=DOOR_PROOF_REPLAY_TTL)
+        self.spent: list[str] = []
+
+    async def record_unique(self, nonce: str, *, issued_at: datetime) -> bool:
+        self.spent.append(nonce)
+        return await super().record_unique(nonce, issued_at=issued_at)
+
+
+async def test_a_proof_is_spent_under_its_door_proof_and_agent_namespace() -> None:
+    """the ledger key cannot collide with another kind of id or another principal's proof."""
+    ledger = _RecordingLedger()
+    sent = DoorCredential(token=_agent_token(), holder_key=_AGENT).present(_BODY, door="l3", op="query")
+    assert (await _door(ledger=ledger).admit(sent, op="query")).admitted
+    (spent,) = ledger.spent
+    assert spent.startswith("door-proof|agent-1|")
+    assert spent.removeprefix("door-proof|agent-1|")
+
+
+@pytest.mark.parametrize("token", ["a.!!!.c", "a." + "e30" + ".c", "a.bm90LWpzb24.c", "only.two"])
+def test_a_token_whose_payload_does_not_parse_binds_no_key(token: str) -> None:
+    """a malformed or claim-less token makes a bearer credential, never an exception."""
+    assert not DoorCredential(token=token, holder_key=_AGENT).proves
+
+
+def test_an_l3_operation_is_its_subjects_own_part() -> None:
+    """the L3 client and the broker read the operation off the subject the same way."""
+    from threetears.core.security import l3_request_op
+
+    assert l3_request_op("test.l3.query") == "query"
+    assert l3_request_op("test.l3.tx.commit") == "tx.commit"
+    with pytest.raises(ValueError, match="not an l3"):
+        l3_request_op("test.datasource.warehouse.query")
+
+
+def test_a_subject_that_is_not_a_datasource_query_has_no_operation() -> None:
+    """a door never signs or verifies a made-up operation such as ``None.query``."""
+    from threetears.core.security import datasource_query_op
+    from threetears.nats import Subject
+
+    with pytest.raises(ValueError, match="not a datasource query"):
+        datasource_query_op(Subject.raw("test.l3.query"))
+
+
+def test_a_delegation_names_only_the_doors_a_pod_reaches_as_its_caller() -> None:
+    """the registry's default audience is the set the hub takes a delegation at: one source."""
+    from threetears.core.security import DEFAULT_DELEGATED_DOORS
+
+    assert frozenset({"hub.object.resolve", "namespace.discover", "hub.engagement"}) == DEFAULT_DELEGATED_DOORS

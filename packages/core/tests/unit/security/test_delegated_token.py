@@ -128,3 +128,35 @@ def test_minting_past_the_maximum_or_for_no_door_is_refused() -> None:
         _delegated(now=now, deadline=now + 7200)
     with pytest.raises(ValueError, match="at least one door"):
         _delegated(doors=())
+
+
+class TestThePodVerifiesItsOwnDelegation:
+    """a declaring pod takes the caller from the call's delegation, for itself and this call only."""
+
+    def test_it_names_the_caller(self) -> None:
+        from threetears.core.security import verify_delegation_at_pod
+
+        claims = verify_delegation_at_pod(_delegated(), jwks=_JWKS, pod_id="pod-1", correlation_id="corr-1")
+        assert (claims.agent_id, claims.customer_id, claims.user_id) == ("agent-1", "cust-1", "user-1")
+
+    @pytest.mark.parametrize(
+        ("pod_id", "correlation_id", "match"),
+        [("pod-2", "corr-1", "does not verify"), ("pod-1", "corr-2", "another call")],
+    )
+    def test_another_pod_or_call_is_refused(self, pod_id: str, correlation_id: str, match: str) -> None:
+        from threetears.core.security import verify_delegation_at_pod
+
+        with pytest.raises(DelegatedTokenError, match=match):
+            verify_delegation_at_pod(_delegated(), jwks=_JWKS, pod_id=pod_id, correlation_id=correlation_id)
+
+    def test_an_identity_token_is_not_a_delegation(self) -> None:
+        from threetears.core.security import verify_delegation_at_pod
+
+        now = int(time.time())
+        token = sign_identity_token(
+            IdentityClaims(sub="agent-1", customer_id="cust-1", sid="s", pod_id="p", iss="hub", iat=now, exp=now + 60),
+            signing_key=_HUB,
+            kid="hub-1",
+        )
+        with pytest.raises(DelegatedTokenError, match="not an EdDSA delegated token"):
+            verify_delegation_at_pod(token, jwks=_JWKS, pod_id="pod-1", correlation_id="corr-1")

@@ -332,8 +332,10 @@ class TestTheForwardedCallCarriesADelegatedToken:
     """Chunk 10b: the tool pod gets a call-scoped token bound to its own key, not just the caller's."""
 
     @staticmethod
-    async def _forward(*, pod_key: Ed25519PrivateKey | None) -> tuple[_ProxyNats, Any, Any]:
-        from threetears.core.security import DelegatedTokenSigner  # noqa: PLC0415
+    async def _forward(
+        *, pod_key: Ed25519PrivateKey | None, declares: bool = False, hub_publishes_key: bool = True
+    ) -> tuple[_ProxyNats, Any, Any, _ScopeRecordingTool]:
+        from threetears.core.security import DelegatedTokenSigner, RegistrationKey  # noqa: PLC0415
 
         hub_priv, hub_pub = generate_signing_keypair()
         seed = base64.urlsafe_b64encode(Ed25519PrivateKey.generate().private_bytes_raw()).decode("ascii")
@@ -360,6 +362,7 @@ class TestTheForwardedCallCarriesADelegatedToken:
                         pod_id=_SERVING_POD,
                         status="available",
                         holder_jkt=jwk_thumbprint(pod_key.public_key()) if pod_key is not None else None,
+                        proves_delegation=declares,
                     )
                 ],
                 timeout_seconds=5.0,
@@ -372,6 +375,7 @@ class TestTheForwardedCallCarriesADelegatedToken:
             pod_id=_SERVING_POD,
             jwks_provider=lambda: jwks,
             assertion_replay_guard=FakeReplayGuard(),
+            registration_key=(lambda: RegistrationKey(pod_key)) if declares and pod_key is not None else None,
         )
         server.register(tool)
         proxy = CallProxy(
@@ -380,7 +384,7 @@ class TestTheForwardedCallCarriesADelegatedToken:
             FakeReplayGuard(),
             limit_guard=AllowAllLimitGuard(),
             namespace=_NS,
-            jwks_provider=lambda: {"keys": build_jwks({"kid-1": hub_pub})["keys"]},
+            jwks_provider=lambda: jwks if hub_publishes_key else {"keys": build_jwks({"kid-1": hub_pub})["keys"]},
             proxy_signer=proxy_signer,
             delegated_signer=delegated,
         )
@@ -396,7 +400,7 @@ class TestTheForwardedCallCarriesADelegatedToken:
             pop_signer=_Signer(caller_key),
         )
         await client.call(_TOOL, _VERSION, {"text": "hi"})
-        return hop, jwks, caller
+        return hop, jwks, caller, tool
 
     @pytest.mark.asyncio
     async def test_the_pod_can_act_as_its_caller_only_with_its_own_key(self) -> None:
@@ -409,7 +413,7 @@ class TestTheForwardedCallCarriesADelegatedToken:
         from threetears.core.security.pop import access_token_hash  # noqa: PLC0415
 
         pod_key = Ed25519PrivateKey.generate()
-        hop, jwks, caller = await self._forward(pod_key=pod_key)
+        hop, jwks, caller, _tool = await self._forward(pod_key=pod_key)
         delegated = hop.forwarded[0].context.delegated_token  # type: ignore[union-attr]
         assert delegated
         body = canonical_call_hash("l3.query", {"sql": "select 1"}, None)
@@ -423,14 +427,51 @@ class TestTheForwardedCallCarriesADelegatedToken:
                 iat=int(time.time()),
             )
 
-        door = verify_door_caller(delegated, _proof(pod_key), jwks=jwks, hub_issuer="hub", door="l3", body_hash=body)
+        door = verify_door_caller(delegated, _proof(pod_key), jwks=jwks, hub_issuer="hub", door="hub.object.resolve", body_hash=body)
         assert (door.agent_id, door.pod_id) == (f"{caller}", _SERVING_POD)
         with pytest.raises(DelegatedTokenError):
             verify_door_caller(
-                delegated, _proof(Ed25519PrivateKey.generate()), jwks=jwks, hub_issuer="hub", door="l3", body_hash=body
+                delegated, _proof(Ed25519PrivateKey.generate()), jwks=jwks, hub_issuer="hub", door="hub.object.resolve", body_hash=body
             )
 
     @pytest.mark.asyncio
     async def test_a_pod_whose_key_the_registry_does_not_know_gets_no_delegated_token(self) -> None:
-        hop, _jwks, _caller = await self._forward(pod_key=None)
+        hop, _jwks, _caller, _tool = await self._forward(pod_key=None)
         assert hop.forwarded[0].context.delegated_token is None  # type: ignore[union-attr]
+
+    @pytest.mark.asyncio
+    async def test_a_declaring_pod_runs_the_call_as_its_caller_without_the_token(self) -> None:
+        """Chunk 10e, per pod: a pod that declares it proves gets the delegation in place of the agent's token."""
+        pod_key = Ed25519PrivateKey.generate()
+        hop, _jwks, caller, tool = await self._forward(pod_key=pod_key, declares=True)
+        forwarded = hop.forwarded[0].context
+        assert forwarded is not None
+        assert forwarded.delegated_token
+        assert forwarded.identity_token is None
+        assert forwarded.user_identity_token is None
+        (context,) = tool.contexts
+        assert context.agent_id == caller
+        assert context.identity_token is None
+
+    @pytest.mark.asyncio
+    async def test_a_pod_that_does_not_declare_is_unchanged(self) -> None:
+        pod_key = Ed25519PrivateKey.generate()
+        hop, _jwks, _caller, tool = await self._forward(pod_key=pod_key)
+        forwarded = hop.forwarded[0].context
+        assert forwarded is not None
+        assert forwarded.delegated_token
+        assert forwarded.identity_token
+        (context,) = tool.contexts
+        assert context.identity_token
+
+    @pytest.mark.asyncio
+    async def test_a_declaring_pod_keeps_the_token_while_the_hub_does_not_publish_the_key(self) -> None:
+        """a registry whose delegation key the hub does not publish yet sends the agent's token beside it."""
+        pod_key = Ed25519PrivateKey.generate()
+        hop, _jwks, _caller, tool = await self._forward(pod_key=pod_key, declares=True, hub_publishes_key=False)
+        forwarded = hop.forwarded[0].context
+        assert forwarded is not None
+        assert forwarded.delegated_token
+        assert forwarded.identity_token
+        (context,) = tool.contexts
+        assert context.identity_token

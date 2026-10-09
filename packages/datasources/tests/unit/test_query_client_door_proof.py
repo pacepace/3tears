@@ -70,7 +70,7 @@ async def test_each_send_carries_its_own_verifiable_proof(monkeypatch: Any) -> N
     ]
     assert len(proofs) == 2
     assert proofs[0] != proofs[1]
-    # bound to the datasource: a proof for one is refused at another
+    # bound to the datasource, read off the subject: a proof for one is refused at another
     with pytest.raises(DelegatedTokenError):
         verify_door_request(nats.sent[0], jwks=_JWKS, hub_issuer="hub", door="datasource", op="other.query")
 
