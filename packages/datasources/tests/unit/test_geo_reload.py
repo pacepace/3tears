@@ -77,7 +77,7 @@ class TestRequest:
         assert _TOKEN not in repr(request)
         assert _TOKEN in request.model_dump_json()
 
-    @pytest.mark.parametrize("generations", [{}, {_LAYER: 0}, {"": 2}])
+    @pytest.mark.parametrize("generations", [{}, {_LAYER: 0}, {"": 2}, {"census.tracts": 2}, {"x" * 129: 2}])
     async def test_a_report_out_of_bounds_is_refused_as_invalid_and_sends_nothing(
         self, generations: dict[str, int]
     ) -> None:
@@ -90,6 +90,11 @@ class TestRequest:
     def test_a_generation_below_one_is_refused_by_the_model(self) -> None:
         with pytest.raises(ValidationError):
             GeoLayersReloadedRequest(identity_token=_TOKEN, correlation_id=uuid7(), generations={_LAYER: 0})
+
+    @pytest.mark.parametrize("name", ["census.tracts", "tracts*", "a b"])
+    def test_a_layer_name_no_layer_may_have_is_refused_by_the_model(self, name: str) -> None:
+        with pytest.raises(ValidationError, match="layer_name_fits"):
+            GeoLayersReloadedRequest(identity_token=_TOKEN, correlation_id=uuid7(), generations={name: 1})
 
     def test_too_many_layers_are_refused_by_the_model(self) -> None:
         many = {f"layer_{i}": 1 for i in range(MAX_RELOADED_LAYERS + 1)}
