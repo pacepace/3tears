@@ -6,6 +6,44 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Datasources: a warehouse export, read from S3 and proven whole
+
+A relation too large to page over the bus quickly can be exported by the warehouse itself and read
+from the export bucket. Granted apart from reads by the hub; nothing changes for a datasource with no
+export configured.
+
+- **Added, `threetears.datasources.export`**: `ExportConfig` (bucket, prefix, the role the warehouse
+  writes as) on `RedshiftConnectionConfig.export`; the one `UNLOAD` an export runs
+  (`redshift_unload_statement`: the caller's `SELECT` quoted as a literal, parquet, a verbose
+  manifest, the configured role, never `ALLOWOVERWRITE`); a destination grammar that cannot leave
+  the configured prefix; a `SELECT` or value holding a backslash or a NUL refused
+  (`ExportRefusedError`).
+- **Added, `Driver.unload`**: concrete and refusing (`DriverExportUnsupportedError`) on every
+  driver; `RedshiftDriver` runs the `UNLOAD` when its datasource has an export configured and counts
+  it with `pg_last_unload_count()` on the same session.
+- **Added, the export ask on the datasource wire**: `DatasourceQueryRequest.export`
+  (`DatasourceExportRequest`: a `SELECT` with no bind parameters and a relative destination),
+  answered in `DatasourceQueryResponse.export` (`DatasourceExportResult`), and
+  `DatasourceQueryClient.export`. A request that is not an export leaves the field off the wire, so
+  an older hub (which forbids unknown fields) still reads every query and fingerprint.
+- **Added, `threetears.datasources.export_read`** (the `export` extra, pyarrow): `export_part`
+  fingerprints a part, exports it, fingerprints it again and reads the parquet the manifest lists
+  through an object store the caller built, refusing (`IncompleteExportError`) a part that moved,
+  counts that disagree (warehouse, manifest, files, fingerprint), an answer at another destination
+  than the one asked for, or a manifest naming any file outside the export.
+- **Added, delete after load** (Pace's ruling, 2026-10-09): once a part is proven, `export_part` asks
+  the hub to delete every version under its destination (`DatasourceExportDeleteRequest`, the
+  `export_delete` ask, `DatasourceQueryClient.delete_export`); the hub deletes with a delete-only
+  grant (`ExportConfig.cleanup_access_key_ref`/`cleanup_secret_key_ref`, or its own role), so the
+  reader's keys stay read-only. A delete that fails raises `ExportNotDeletedError`; a refused export
+  is left for an operator. No timer and no lifecycle rule.
+- **Added, `S3ObjectStore.delete_versions(prefix)`**: every version and delete marker under a
+  non-empty prefix, by version id, raising any S3 refused.
+- **Added, `Driver.export_config`**, and one frozen `ExportResult` (with `ExportLocation`) that
+  `Driver.unload` returns and the wire carries (`DatasourceExportResult` is it). The refusal codes
+  `EXPORT_NOT_GRANTED`, `EXPORT_UNSUPPORTED` and `EXPORT_REFUSED` are published constants. Every
+  export grammar is matched whole, so a trailing newline is refused.
+
 ### Agent acl, core, epoch, nats, registry and agent tools: the access tables are switched on (switch-on stage)
 
 Stage 3 of `docs/epoch-task-06-collection-generations-by-default.md`. Additive: the `acl.*`
