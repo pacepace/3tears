@@ -88,7 +88,8 @@ async def test_the_example_runs_and_its_summary_reads_what_it_measured(capsys: p
     out = capsys.readouterr().out
     assert summary.render() in out
     assert "positive → neutral: 2" in out
-    assert "neutral: precision 0.5 (2/4, 95% CI" in out
+    # k=2: the four neutral predictions are two cases, each answered twice, and the count says so.
+    assert "neutral: precision 0.5 (2/4 over 2 cases, 95% CI" in out
 
 
 def test_the_example_stays_under_sixty_lines() -> None:

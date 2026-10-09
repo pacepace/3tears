@@ -809,7 +809,10 @@ class TestPerDimensionRows:
                 WEIGHTING_EQUAL_PER_SCENARIO,
                 "the dispersion is over test-case means — a BASIS pooling does not change, though the means themselves do",
             ),
-            (WEIGHTING_SAMPLE_WEIGHTED, "and so is the dispersion"),
+            (
+                WEIGHTING_SAMPLE_WEIGHTED,
+                "the dispersion is clustered by test case, so the rows of one case are not independent draws",
+            ),
         ],
     )
     def test_the_pooled_caveat_names_the_dispersion_basis_the_weighting_actually_uses(self, weighting, expected):

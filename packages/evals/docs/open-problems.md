@@ -7,19 +7,6 @@ and the outside sources in [prior art](prior-art.md).
 
 ## Measurement
 
-### A reading's interval ignores clustering
-
-Tracked in [#590](https://github.com/pacepace/3tears/issues/590).
-
-A single reading's interval is a t-interval over every observation, so `k` repeats of one case count as
-`k` independent draws. The reading says `N obs over M cases, interval too narrow`
-(`analysis/references.py`) instead of computing the right width. Comparisons between arms already use
-per-case means. In simulation a raw-observation 95% interval covered the
-truth 70% of the time, against 94% for one computed over case means. Fix: the standard error over case means
-with `n_cases − 1` degrees of freedom, or Miller's cluster-robust form, and drop the disclosure.
-
-*Evidence:* simulation, 5 cases × k=3, between-case σ 1.0 and repeat σ 0.3, 2026-09, coverage 70.3% vs 94.3%.
-
 ### pass^k is the all-pass indicator, stored under the opposite name
 
 Tracked in [#591](https://github.com/pacepace/3tears/issues/591).

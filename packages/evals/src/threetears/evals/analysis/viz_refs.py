@@ -205,35 +205,34 @@ def cell_arm_labels(surface: DecisionSurface, variant_index: list[VariantIndexEn
 # --- Shared readers --------------------------------------------------------------------------------
 
 
-def _variability(reading: ResolvedReading) -> str:
-    """What a code-filled interval varies over — worded without the count, so equal sources compare equal.
-
-    The compiler states one sentence when every interval names the same source and a "not
-    comparable" warning when they differ, so a per-cell count in this text would make every chart
-    read as incomparable. Clustering is the difference that DOES change what a width means.
-    """
-    if reading.n_cases is not None and reading.n_cases < reading.n:
-        return "the cell's observations, repeats of one case counted as independent (narrower than the clustering supports)"
-    return "the cell's observations"
+#: What every code-filled interval varies over — worded without the count, so equal sources compare equal.
+#:
+#: The compiler states one sentence when every interval names the same source and a "not comparable"
+#: warning when they differ, so a per-cell count in this text would make every chart read as
+#: incomparable. Every reading's interval is computed over its cell's cases, a case's repeats clustered
+#: (:func:`threetears.evals.analysis.stats.clustered_standard_error`), so a cell run once per case and
+#: one run three times per case draw widths that mean the same thing, and one wording is the truth.
+_VARIABILITY = "the cell's cases (repeats of one case clustered)"
 
 
 def _interval(reading: ResolvedReading) -> dict[str, Any]:
     """A reading's interval in the payload's ``ci`` shape, or a refusal when it has none.
 
     Raises:
-        UnresolvableReference: The reading has no interval (fewer than two observations).
+        UnresolvableReference: The reading has no interval (fewer than two observations, or one case).
     """
     if reading.ci_low is None or reading.ci_high is None:
         raise UnresolvableReference(
             f"reference names {reading.measure_id!r} at cell {reading.cell_ref!r}, which has no interval "
-            f"({reading.dispersion}) — this chart draws intervals, so name a cell with at least 2 observations of it"
+            f"({reading.dispersion}) — this chart draws intervals, so name a cell with at least 2 observations of it, "
+            "over at least 2 cases"
         )
     return {
         "low": reading.ci_low,
         "high": reading.ci_high,
         "mean": reading.mean,
         "level": stats.INTERVAL_LEVEL,
-        "variability": _variability(reading),
+        "variability": _VARIABILITY,
     }
 
 

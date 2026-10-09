@@ -3026,10 +3026,11 @@ def _effective_formula(metric: str, weighting: str, *, scoped: bool = True) -> s
         # over — so claiming the dispersion
         # rides on rows would send an operator reconstructing an interval to `n`
         # instead of the case count and hand them one too narrow by ~sqrt(n/n_cases).
-        # Only `sample_weighted` takes its SEM over the flat observations.
+        # `sample_weighted` averages the flat rows, but its SEM is clustered by test case
+        # (`_aggregate`), so its dispersion does not ride on rows either.
         formula += f"; n and the outcome counts are over (result x {row_noun}) rows here, not results"
         if weighting == WEIGHTING_SAMPLE_WEIGHTED:
-            formula += ", and so is the dispersion"
+            formula += "; the dispersion is clustered by test case, so the rows of one case are not independent draws"
         else:
             formula += "; the dispersion is over test-case means — a BASIS pooling does not change, though the means themselves do"
     return formula
@@ -3044,15 +3045,19 @@ def _aggregate(values_by_case: dict[str, list[float]], weighting: str) -> tuple[
 
     Returns:
         ``(value, sem)``. The SEM is over whatever the value averages, so the
-        two always describe the same estimate.
+        two always describe the same estimate, and it counts cases, not observations:
+        under ``sample_weighted`` the flat mean takes the cluster-robust SEM over the
+        cases (:func:`~threetears.evals.analysis.stats.clustered_standard_error`), since
+        a case's repeats are not independent draws.
     """
-    from threetears.evals.analysis.stats import standard_error_of_mean
+    from threetears.evals.analysis.stats import clustered_standard_error, standard_error_of_mean
 
     if weighting == WEIGHTING_EQUAL_PER_SCENARIO:
         case_means = [sum(vals) / len(vals) for vals in values_by_case.values()]
         return sum(case_means) / len(case_means), standard_error_of_mean(case_means)
     flat = [v for vals in values_by_case.values() for v in vals]
-    return sum(flat) / len(flat), standard_error_of_mean(flat)
+    cases = [case for case, vals in values_by_case.items() for _ in vals]
+    return sum(flat) / len(flat), clustered_standard_error(flat, cases)
 
 
 def _simpsons_flags(

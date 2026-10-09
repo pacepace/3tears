@@ -284,7 +284,8 @@ class TestEveryIntervalIsAtTheOneLevel:
         monkeypatch.setattr(stats, "INTERVAL_LEVEL", 0.80)
         at_80 = _measure(_bundle().cell_measures[0], "total_ms")
 
-        half = stats.t_critical_two_sided(0.80, at_80.n - 1) * at_80.sem
+        # The interval is read on the cell's cases, not its observations (#590).
+        half = stats.t_critical_two_sided(0.80, at_80.n_independent - 1) * at_80.sem
         assert at_80.ci_high - at_80.mean == pytest.approx(half)
         assert at_80.ci_high - at_80.ci_low < at_95.ci_high - at_95.ci_low
 

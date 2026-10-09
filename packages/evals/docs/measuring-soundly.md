@@ -20,11 +20,11 @@ one anchored on an observable order reproduced exactly, and one judging "the rig
 *Evidence:* retrieval sub-agent, 6 models, k=1 then k=3 over 3 cases, 2026-07, one model's two leading dimensions fell from 3.3 to 1.4, single campaign.
 
 **Add cases before repeats.** k measures consistency and cases measure coverage, so five cases at k=3 are not
-fifteen independent draws. The engine's interval is computed over observations, so it is too narrow when
-they cluster by case. It says so (`ResolvedReading.dispersion`), and you should read the case count. At n=5 a
+fifteen independent draws. The engine computes every reading's interval over the cases, so five cases at
+k=3 get the width of five draws, not fifteen; repeats narrow it only as far as they steady each case. At n=5 a
 paired test resolves only d_z ≈ 1.25, so "not significant" there says almost nothing. Size the bank from a
 measured effect: for d_z ≈ 0.74 about 16 cases reach 80% power, and 32 cases detect about 0.50.
-*Evidence:* agent with tools, two independent arm pairs at n=5, 2026-08, pass^k 0.2 → 0.8 gave p=0.174 and p=0.629, replicated; in simulation (2026-09) a 95% interval over observations from 5 cases × k=3 covered the truth 70.3% of the time, against 94.3% over case means.
+*Evidence:* agent with tools, two independent arm pairs at n=5, 2026-08, pass^k 0.2 → 0.8 gave p=0.174 and p=0.629, replicated; in simulation (2026-09) a 95% interval over observations from 5 cases × k=3 covered the truth 70.3% of the time, against 94.3% over case means; from 2 to 15 cases at k=1 to 5 the engine's interval over cases covered 95% on average for a mean, every configuration within Monte-Carlo error, and at least 96% for a rate, against as little as 51% and 67% over observations (`tests/test_sim_reading_intervals.py`, 2026-10).
 
 **A small bank flatters.** Widening it lowers the score and improves the measurement. See
 [How many cases](designing-classifier-evals.md#4-how-many-cases).
