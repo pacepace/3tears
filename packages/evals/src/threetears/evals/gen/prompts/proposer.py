@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from threetears.evals.contracts.prompts.seed import SeedSection, SeedTemplate
 
+#: The seeded default ``eval_proposer`` template: drafts a capability rubric and the variation axes that stress it.
 EVAL_PROPOSER_TEMPLATE_DEFAULT = SeedTemplate(
     template_name="default",
     template_type="eval_proposer",

@@ -367,7 +367,9 @@ async def test_a_callers_host_that_has_not_declared_the_judged_kinds_rig_is_refu
 
 
 async def test_a_host_seating_the_judge_by_its_pins_is_accepted() -> None:
-    pins = frozenset({"judge_model", "judge_request_settings", "judge_dim_divergence", "judge_config_ids"})
+    pins = frozenset(
+        {"judge_model", "judge_temperature", "judge_request_settings", "judge_dim_divergence", "judge_config_ids"}
+    )
     host = _host_whose_judged_contract_is(KindContract(JUDGED_CALLABLE_KIND, seats=pins))
     summary = await run_eval(CASES, answer, judge=_judge(_FakeJudgeClient()), scope_id=SCOPE, host=host, k=1)
     assert summary.status == "completed"

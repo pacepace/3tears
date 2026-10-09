@@ -21,6 +21,8 @@ from __future__ import annotations
 
 from threetears.evals.contracts.prompts.seed import SeedSection, SeedTemplate
 
+#: The seeded default ``eval_boundary_gen`` template: drafts a battery of simulated actors that pressure a
+#: subject's boundaries, and the refusal dimensions they are scored on.
 EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT = SeedTemplate(
     template_name="default",
     template_type="eval_boundary_gen",

@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from threetears.evals.contracts.models import (
+    DEFAULT_JUDGE_TEMPERATURE,
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
     GoalStateOutcome,
@@ -380,8 +381,10 @@ async def test_default_axes_use_builtin_instructions_and_default_client():
 
     assert "DECISION QUALITY" in client.systems[0]  # transcript built-in
     assert "ACHIEVED THE USER'S INTENT" in client.systems[1]  # outcome built-in
-    # Both axes default config → same (None, None) client key → factory called once.
-    assert calls == [(None, None)]
+    # Both axes default config → same (None, DEFAULT_JUDGE_TEMPERATURE) client key → factory called once. Never
+    # the provider's default: a dim with no config is sampled at the temperature a config defaults to (#633).
+    assert calls == [(None, DEFAULT_JUDGE_TEMPERATURE)]
+    assert DEFAULT_JUDGE_TEMPERATURE == JudgeConfig.model_fields["temperature"].default == 0.0
 
 
 # =============================================================================

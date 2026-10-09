@@ -112,6 +112,7 @@ log = get_logger(__name__)
 # the raw per-observation judge score under that exact name — and it still maps to
 # `mean_score` in the aggregation layer, because the mapping is about what a CELL holds,
 # never about whether the row name resolves.
+#: The observation-level measure holding a result's composite quality score.
 METRIC_COMPOSITE = "composite"
 METRIC_COST_USD = "cost_usd"
 
@@ -137,6 +138,7 @@ METRIC_COST_USD = "cost_usd"
 #    meanings. Stated as the direction it is: no dotted dim name exists in the
 #    tree today, and this reason holds the shape open for one rather than
 #    describing one.
+#: The observation-level measure holding one judged rubric dimension's score: one row per dimension.
 METRIC_SCORE = "score"
 
 # The per-result wall-clock, read straight off `EvalResult.latency` rather than
@@ -160,20 +162,22 @@ METRIC_TOTAL_MS = "total_ms"
 # question wants: their DIVERGENCE is what the catalog says separates a worse agent from
 # a changed world, and a divergence between two metrics is one pivot rather than two
 # levels of a coordinate.
+#: The observation-level measure holding the dual-score transcript axis.
 METRIC_TRANSCRIPT = TRANSCRIPT_DIM_ID
+#: The observation-level measure holding the dual-score outcome axis.
 METRIC_OUTCOME = OUTCOME_DIM_ID
 # One row per goal-state check a result evaluated, keyed by `ScoreRecord.goal_check`: 1.0 passed, 0.0 not.
 # A projected metric because this projection is the one producer behind export, pivot and every pooled
 # read, and a code-graded verdict a reader cannot key by check is one they cannot act on.
 METRIC_GOAL_STATE = "goal_state"
 
-# Every measure `project_score_records` can emit. Unlike the factor set, this one
-# is genuinely CLOSED — the projection is the only producer of score records, so
-# a name outside it can only be a typo. That distinction is why an unknown metric
-# is refused while an unknown dotted axis is not: a mistyped axis names a key a
-# run might not have set, but a mistyped metric names nothing that exists, and
-# answering it with an empty grid is indistinguishable from an empty scope.
-# A metric added to the projection adds itself here, in the same edit.
+#: Every measure `project_score_records` can emit. Unlike the factor set, this one
+#: is genuinely CLOSED — the projection is the only producer of score records, so
+#: a name outside it can only be a typo. That distinction is why an unknown metric
+#: is refused while an unknown dotted axis is not: a mistyped axis names a key a
+#: run might not have set, but a mistyped metric names nothing that exists, and
+#: answering it with an empty grid is indistinguishable from an empty scope.
+#: A metric added to the projection adds itself here, in the same edit.
 PROJECTED_METRICS = frozenset(
     {METRIC_COMPOSITE, METRIC_COST_USD, METRIC_SCORE, METRIC_TRANSCRIPT, METRIC_OUTCOME, METRIC_GOAL_STATE}
 )
@@ -191,8 +195,8 @@ SCOPED_METRICS: dict[str, tuple[str, str, str]] = {
     METRIC_GOAL_STATE: ("goal_check", "goal-state check", "check"),
 }
 
-# How each scoped metric must be read, in one sentence per metric, for every surface's help text (REST and MCP
-# alike) — rendered from the table rather than written beside it, so no surface can describe a subset.
+#: How each scoped metric must be read, in one sentence per metric, for every surface's help text (REST and MCP
+#: alike) — rendered from the table rather than written beside it, so no surface can describe a subset.
 SCOPED_METRICS_HELP = " ".join(
     f"'{metric}' has one row per {noun}: put '{field}' on an axis, or each cell pools every {noun}."
     for metric, (field, noun, _row) in SCOPED_METRICS.items()
@@ -2628,9 +2632,12 @@ def compute_comparison_sets(
 # labeled toggle — it is the right answer when the question really is "what did
 # the whole population do", and the cost of the default (a thin scenario gets an
 # equal vote) is exactly what the per-cell `n` is displayed to expose.
+#: Weighting mode: every scenario (case) gets an equal vote in a cell's number, however many observations it has.
 WEIGHTING_EQUAL_PER_SCENARIO = "equal_per_scenario"
+#: Weighting mode: every observation gets an equal vote, so a case with more repeats counts for more.
 WEIGHTING_SAMPLE_WEIGHTED = "sample_weighted"
 WEIGHTINGS = (WEIGHTING_EQUAL_PER_SCENARIO, WEIGHTING_SAMPLE_WEIGHTED)
+#: The weighting a pivot uses when none is named: equal per scenario.
 DEFAULT_WEIGHTING = WEIGHTING_EQUAL_PER_SCENARIO
 
 # A cell's three states, which a renderer must keep visually distinct.
@@ -2648,13 +2655,16 @@ DEFAULT_WEIGHTING = WEIGHTING_EQUAL_PER_SCENARIO
 # instead produced the exact collapse the first paragraph forbids, one state
 # over — the cell fell to the empty-cell branch and claimed nobody tried a
 # combination that was tried and failed in the harness.
+#: A pivot cell state: observations landed here and carried a value for the measure.
 CELL_MEASURED = "measured"
+#: A pivot cell state: no observation landed here — the combination was never run, which is not a zero.
 CELL_NOT_RUN = "not_run"
+#: A pivot cell state: observations landed here, but none carried a value for the measure.
 CELL_UNMEASURED = "unmeasured"
-# A fourth state, and not a kind of the other three: the cell HAS measured observations, and its
-# mean is withheld because it would pool two quantities that are not one distribution — today a
-# cost cell pooling replayed results with live ones (#658). `PivotCell.withheld` says why, and
-# `n` / `n_cases` / `outcomes` still say what the cell held, so withheld never reads as empty.
+#: A fourth state, and not a kind of the other three: the cell HAS measured observations, and its
+#: mean is withheld because it would pool two quantities that are not one distribution — today a
+#: cost cell pooling replayed results with live ones (#658). `PivotCell.withheld` says why, and
+#: `n` / `n_cases` / `outcomes` still say what the cell held, so withheld never reads as empty.
 CELL_WITHHELD = "withheld"
 
 # Observation-level metric name -> the registry name of the AGGREGATE that an
@@ -5238,6 +5248,7 @@ def compute_frontier(
 # `PROJECTED_METRICS` that stay refused are the SCOPED ones (`SCOPED_METRICS`): each row is one
 # dimension or one check, so there is no single per-run value to plot, while each axis above is
 # one value per result.
+#: The measures `history` can series; any other is refused rather than answered with an empty series.
 HISTORY_METRICS = frozenset({METRIC_COMPOSITE, METRIC_COST_USD, METRIC_TOTAL_MS, METRIC_TRANSCRIPT, METRIC_OUTCOME})
 
 if set(_METRIC_GLOSS) != PROJECTED_METRICS | HISTORY_METRICS:  # pragma: no cover - import-time invariant
@@ -6355,10 +6366,10 @@ def compute_orphaned_runs(
 # Export — the projection's flat rows, as CSV or JSON
 # =============================================================================
 
-# The two on-demand serializations. Parquet is deferred: pyarrow is not a current
-# dependency and the dependency-manifest rule governs — CSV covers DuckDB/pandas
-# ingestion, which is the stated need. A format outside this set is refused rather
-# than defaulted, so a typo'd `format=jsom` is a visible error, not a silent CSV.
+#: The two on-demand serializations. Parquet is deferred: pyarrow is not a current
+#: dependency and the dependency-manifest rule governs — CSV covers DuckDB/pandas
+#: ingestion, which is the stated need. A format outside this set is refused rather
+#: than defaulted, so a typo'd `format=jsom` is a visible error, not a silent CSV.
 ExportFormat = Literal["csv", "json"]
 
 #: :data:`ExportFormat`'s values, in the order a refusal lists them.
@@ -6590,6 +6601,7 @@ def export_projection(projection: ScoreProjection, *, fmt: str) -> ScoreExport:
 # Below this the cell reports its point estimate and no band, and the surfaces say in
 # words why; three observations is the smallest sample whose spread rests on more than one
 # difference.
+#: The fewest past observations a cost estimate publishes a band from; below it, the point estimate alone.
 COST_ESTIMATE_MIN_BASIS = 3
 
 #: What every band assumes about its observations, stated on each band (:attr:`CostEstimateCell.band_basis`).

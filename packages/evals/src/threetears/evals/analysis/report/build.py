@@ -1444,6 +1444,15 @@ def _evidence_disclosures(bundle: AnalysisContextBundle) -> list[ReportBlock]:
     for dimension in unverified:
         reason = bundle.confound_catalog[dimension]
         say("comparisons", reason[:1].upper() + reason[1:] + ".")
+    # An arm keyed by a floating alias can pool numbers from more than one model; a code-only report has no
+    # writer to read `arm_served_models`, so the mixture is said here, once per arm.
+    for reading in bundle.arm_served_models:
+        if reading.state == "pooled":
+            say(
+                "measurement",
+                f"Arm {short_digest(reading.variant_key)} asked for one model and its candidate was answered by "
+                f"{_listed(reading.served_models)}, so its numbers mix those models.",
+            )
     for merge in bundle.refused_merges:
         dimensions = f" on {_listed(merge.dimensions)}" if merge.dimensions else ""
         say(

@@ -139,7 +139,7 @@ from threetears.evals.contracts.declaration import (
     resolve_bar_name,
 )
 from threetears.evals.contracts.hashing import canonical_digest, canonical_json
-from threetears.evals.contracts.host.profile import CANDIDATE_MODEL_LEVER, HostProfile
+from threetears.evals.contracts.host.profile import CANDIDATE_MODEL_LEVER, UNSEATED_LEVEL, HostProfile
 from threetears.evals.contracts.host.values import SweepableValue
 from threetears.evals.contracts.identity import IDENTITY_VERSION, resolve_variant_identity
 from threetears.evals.contracts.metrics import (
@@ -560,12 +560,12 @@ class Confound(EvalDocumentModel):
     dimension: str = Field(
         min_length=1,
         description=(
-            "What varied — a lever name, a run attribute, an observed mechanism (`observed:<covariate>`), or a "
-            "resolved surface folded into its knob without a check (`unverified_fold:<surface>`); key into "
-            "confound_catalog."
+            "What varied — a lever name, a run attribute, an observed mechanism (`observed:<covariate>`), a "
+            "resolved surface folded into its knob without a check (`unverified_fold:<surface>`), or the model that "
+            "answered one requested model id (`served_model:candidate`); key into confound_catalog."
         ),
     )
-    kind: Literal["swept_lever", "apparatus", "observed_mechanism", "unverified_fold"] = Field(
+    kind: Literal["swept_lever", "apparatus", "observed_mechanism", "unverified_fold", "served_model"] = Field(
         description=(
             "swept_lever = another knob this campaign deliberately tuned. apparatus = the measuring rig moved "
             "under the comparison, which is the more serious of the two because nothing intended it. "
@@ -575,7 +575,11 @@ class Confound(EvalDocumentModel):
             "unverified_fold = a resolved surface the host records beside the knob written into it moved with "
             "that knob and is reported as the same change, but every level of the knob here was run by one arm "
             "only, so nothing in these runs could have shown the surface moving apart from the knob: the fold is "
-            "an assumption these runs did not test, never a checked non-confound."
+            "an assumption these runs did not test, never a checked non-confound. "
+            "served_model = the runs asked for one candidate model id and the provider's responses named more than "
+            "one model as having answered it (a floating alias that moved, within an arm or between arms), so the "
+            "numbers under that id are a mixture of models; undecided when some response named no model, so which "
+            "model answered cannot be established."
         )
     )
     status: Literal["varied", "undecided"] = Field(
@@ -627,6 +631,8 @@ class Confound(EvalDocumentModel):
                 f"an unverified_fold confound names its surface as {UNVERIFIED_FOLD_PREFIX}<surface>, and is always "
                 "varied"
             )
+        if (self.kind == "served_model") != self.dimension.startswith(SERVED_MODEL_PREFIX):
+            raise ValueError(f"a served_model confound, and only one, names its role as {SERVED_MODEL_PREFIX}<role>")
         return self
 
 
@@ -639,6 +645,23 @@ OBSERVED_MECHANISM_PREFIX = "observed:"
 #: Prefixed for the same reason: the surface is a lever name too, and where some other cohort does not fold
 #: it, it is named there as a confound of its own with its own reason, which a bare name would overwrite.
 UNVERIFIED_FOLD_PREFIX = "unverified_fold:"
+
+#: The prefix a served-model confound's dimension carries — the role whose served model it names follows it.
+#: Prefixed for the reason the two above are: it shares ``confound_catalog`` with lever names, and a host
+#: may name a lever anything.
+SERVED_MODEL_PREFIX = "served_model:"
+
+#: The one served-model confound the engine raises today: the candidate's. The judge's served model is
+#: an apparatus input (``judge_model``) and confounds as one.
+CANDIDATE_SERVED_MODEL_CONFOUND = f"{SERVED_MODEL_PREFIX}candidate"
+
+#: Why the candidate's served model moving under one requested id clouds a comparison, in the catalog's words.
+_SERVED_MODEL_CONFOUNDS = (
+    "the candidate was asked for one model id and the provider's responses named more than one model as having "
+    "answered it — a floating alias (a 'latest' pointer) resolves on the provider's side and can move between "
+    "runs or within one — so the numbers recorded under that id are a mixture of models, and a difference between "
+    "arms may belong to which model answered rather than to anything the arms set"
+)
 
 #: How far apart two levels' mean reasoning share (``reasoning_ratio``, absolute) must be before a
 #: comparison between them is disclosed as confounded by it. A reasoning effort is sent to a provider
@@ -790,6 +813,63 @@ class ArmMechanismReading(EvalDocumentModel):
     n_results: int = Field(ge=0, description="The arm's results in all.")
 
 
+class ArmServedModel(EvalDocumentModel):
+    """Which model answered one arm's candidate calls, as the provider's responses named it.
+
+    An arm is keyed by the model id its launch ASKED for, and a floating alias is resolved on the
+    provider's side, so two runs of one arm months apart can have been answered by different models and
+    still pool as one arm. Only the response names the model that answered (``RoleUsage.served_model``),
+    so this reads that and nothing else: never the requested id standing in for a response that named
+    none.
+    """
+
+    variant_key: str = Field(min_length=1, description="The arm, as `arms` and `design` key it.")
+    served_models: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Every distinct model the provider's responses named as having answered this arm's candidate calls, "
+            "sorted. Never the requested id: a call whose response named no model adds nothing here and is "
+            "counted in n_unrecorded."
+        ),
+    )
+    n_results: int = Field(ge=1, description="The arm's results whose candidate calls left a usage row.")
+    n_unrecorded: int = Field(
+        ge=0,
+        description=(
+            "Of those, the results with at least one candidate call whose response named no model — or stored "
+            "before served models were recorded. Not recorded, never a match with the requested id."
+        ),
+    )
+    state: Literal["one", "pooled", "unrecorded"] = Field(
+        description=(
+            "one = every candidate call named one and the same model. pooled = the arm pooled observations "
+            "answered by two or more models (served_models), so its numbers are a mixture, and every comparison "
+            "involving it names the served_model confound. unrecorded = at most one model was named and some call "
+            "named none, so whether the arm was answered by one model cannot be established."
+        )
+    )
+
+    @model_validator(mode="after")
+    def _state_follows_the_counts(self) -> ArmServedModel:
+        """The state is the one the served models and the unrecorded count imply, never a second opinion.
+
+        Raises:
+            ValueError: ``state`` disagrees with ``served_models`` and ``n_unrecorded``.
+        """
+        expected = (
+            "pooled"
+            if len(self.served_models) > 1
+            else "one"
+            if self.served_models and not self.n_unrecorded
+            else "unrecorded"
+        )
+        if self.state != expected or self.n_unrecorded > self.n_results:
+            raise ValueError(
+                f"an arm with these served models and unrecorded calls is {expected!r}, not {self.state!r}"
+            )
+        return self
+
+
 class DesignArm(EvalDocumentModel):
     """One arm of the campaign, the runs that measured it, and what it moved off the control.
 
@@ -833,9 +913,11 @@ class DesignArm(EvalDocumentModel):
     mechanism_confounds: list[Confound] = Field(
         default_factory=list,
         description=(
-            "Observed mechanisms that diverged between the two sides of this arm and the control arm, when they ran different "
-            "candidate models: each names the covariate, the threshold it crossed and both models' values. It "
-            "qualifies the contrast and suppresses nothing. Empty on the control, and when the sides share a model or nothing diverged."
+            "What was observed, not set, to differ under this arm and the control arm: each observed mechanism that "
+            "diverged when they ran different candidate models (the covariate, the threshold it crossed and both "
+            "models' values), and the served_model confound when one requested model id was answered by more than "
+            "one model across the two. It qualifies the contrast and suppresses nothing. Empty on the control, and "
+            "when neither applies."
         ),
     )
 
@@ -1024,8 +1106,9 @@ class ScopeDivergence(EvalDocumentModel):
     confounded_by: list[Confound] = Field(
         default_factory=list,
         description=(
-            "Everything NOT held fixed across the two cohorts being compared — other swept levers, and "
-            "run attributes that moved on their own. This is a marginal comparison, not a controlled "
+            "Everything NOT held fixed across the two cohorts being compared — other swept levers, "
+            "run attributes that moved on their own, observed mechanisms that diverged, and a requested candidate "
+            "model answered by more than one model. This is a marginal comparison, not a controlled "
             "one: some of the movement may belong to these. Empty means the comparison is clean."
         ),
     )
@@ -1394,7 +1477,8 @@ class LeverCoverageInput(EvalDocumentModel):
         default_factory=list,
         description=(
             "Everything else that varied across the runs behind this lever — other swept levers, run "
-            "attributes that moved on their own, and observed mechanisms that diverged between its levels. A "
+            "attributes that moved on their own, observed mechanisms that diverged between its levels, and a "
+            "requested candidate model answered by more than one model. A "
             "comparison on this lever is marginal, not controlled, for each of these. Empty means nothing else "
             "moved."
         ),
@@ -1694,9 +1778,11 @@ class FamilyComparison(EvalDocumentModel):
     mechanism_confounds: list[Confound] = Field(
         default_factory=list,
         description=(
-            "Observed mechanisms that diverged between the two sides of this contrast, when they ran different "
-            "candidate models: each names the covariate, the threshold it crossed and both models' values. It "
-            "qualifies the contrast and suppresses nothing. Empty when the sides share a model or nothing diverged."
+            "What was observed, not set, to differ between the two sides of this contrast: each observed mechanism "
+            "that diverged when they ran different candidate models (the covariate, the threshold it crossed and "
+            "both models' values), and the served_model confound when one requested model id was answered by more "
+            "than one model across the two. It qualifies the contrast and suppresses nothing. Empty when neither "
+            "applies."
         ),
     )
 
@@ -2197,6 +2283,17 @@ class AnalysisContextBundle(EvalDocumentModel):
             "share, `reasoning_ratio`), sorted by arm then covariate. An arm whose results measured none of it is "
             "listed with a null mean — said, not omitted. A run whose observations resolved no arm is in no entry. "
             "Where two levels of a comparison diverge in it, the comparison's `confounded_by` names it."
+        ),
+    )
+    arm_served_models: list[ArmServedModel] = Field(
+        default_factory=list,
+        description=(
+            "Which model the provider's responses named as having answered each arm's candidate calls, sorted by "
+            "arm. An arm is keyed by the model id it ASKED for, and a floating alias can be answered by different "
+            "models; a `pooled` arm's numbers are a mixture of models, and an `unrecorded` one cannot be said to "
+            "be one model. An arm whose candidate left no usage row is absent. Wherever one requested id was "
+            "answered by more than one model across a comparison's runs, the comparison names the "
+            "`served_model:candidate` confound."
         ),
     )
     cell_model_version: int = Field(
@@ -4837,36 +4934,32 @@ def _design_with_mechanism_confounds(
     results_by_run: Mapping[str, list[EvalResult]],
     observations: _MechanismObservations,
     *,
+    served: _ServedModels,
     profile: HostProfile,
 ) -> RealizedDesign:
-    """The design with each contrast arm's observed-mechanism confounds against the control arm.
+    """The design with each contrast arm's observed confounds against the control arm.
 
     Args:
         design: The derived design.
         results_by_run: Each run's results.
         observations: The campaign's mechanism observations.
+        served: Which model answered each result's candidate calls, from :func:`_served_models`.
         profile: The host whose declaration of the model lever names its mechanism.
 
     Returns:
-        The design, its contrasts qualified where they ran another model and a mechanism diverged; unchanged
-        when no control resolved.
+        The design, its contrasts qualified where they ran another model and a mechanism diverged, and where
+        one requested model id was answered by more than one model across the two arms; unchanged when no
+        control resolved.
     """
     if design.control_arm is None:
         return design
     control = [result for run_id in design.control_arm.run_ids for result in results_by_run.get(run_id, [])]
-    contrasts = [
-        arm.model_copy(
-            update={
-                "mechanism_confounds": _model_contrast_confounds(
-                    control,
-                    [result for run_id in arm.run_ids for result in results_by_run.get(run_id, [])],
-                    observations,
-                    profile=profile,
-                )
-            }
-        )
-        for arm in design.contrasts
-    ]
+    contrasts = []
+    for arm in design.contrasts:
+        side = [result for run_id in arm.run_ids for result in results_by_run.get(run_id, [])]
+        confounds = _model_contrast_confounds(control, side, observations, profile=profile)
+        confounds += _served_model_confounds((result.id for result in (*control, *side)), served)
+        contrasts.append(arm.model_copy(update={"mechanism_confounds": confounds}))
     return design.model_copy(update={"contrasts": contrasts})
 
 
@@ -4898,6 +4991,118 @@ def _arm_mechanisms(
                     n_results=len(result_ids),
                 )
             )
+    return readings
+
+
+@dataclass(frozen=True)
+class _ServedReading:
+    """What one result's candidate calls say about which model answered them.
+
+    Attributes:
+        requested: The model id the result's run asked for (``EvalResult.model``).
+        served: The models the provider's responses named, over every candidate usage row.
+        unrecorded: Some candidate row names no served model — a response that named none, or a row
+            stored before served models were recorded.
+    """
+
+    requested: str
+    served: frozenset[str]
+    unrecorded: bool
+
+
+#: Result id -> what its candidate calls say about the model that answered them. A result whose candidate
+#: left no usage row is absent: nothing was called, so nothing answered, and no claim is made about it.
+_ServedModels = dict[str, _ServedReading]
+
+
+def _served_models(results: Iterable[EvalResult]) -> _ServedModels:
+    """Read which model answered each result's candidate calls, off its candidate usage rows.
+
+    ``RoleUsage.served_model`` only — what the provider's response named — and never ``RoleUsage.model``
+    or the run's ``candidate_model``, which are what the launch asked for and, for a floating alias, name
+    the pointer rather than the model behind it.
+
+    Args:
+        results: The campaign's results.
+
+    Returns:
+        Each result's reading, for the results whose candidate left a usage row.
+    """
+    readings: _ServedModels = {}
+    for result in results:
+        rows = [row for row in result.usage if row.role == "candidate"]
+        if rows:
+            readings[result.id] = _ServedReading(
+                requested=result.model,
+                served=frozenset(row.served_model for row in rows if row.served_model),
+                unrecorded=any(not row.served_model for row in rows),
+            )
+    return readings
+
+
+def _served_model_confounds(result_ids: Iterable[str], served: _ServedModels) -> list[Confound]:
+    """Name the candidate's served model as a confound where one requested id was answered by more than one model.
+
+    The served model is EXPECTED to move with the requested one — a comparison between two model ids is
+    a comparison between the models that answered them — so a difference between arms that asked for
+    different ids is the lever, not a confound. What is a confound is one requested id answered by two
+    models across the runs compared: within one arm, its numbers are a mixture; between two arms that
+    asked for the same id, the arms differ by a model nobody set. The rule is the fold the engine applies
+    to a resolved surface (:class:`_SurfaceFolds`): the served model folds into the requested one where it
+    is constant within each requested id, and only there.
+
+    Args:
+        result_ids: The results under comparison, every side together.
+        served: The campaign's readings, from :func:`_served_models`.
+
+    Returns:
+        One ``served_model`` confound, ``varied`` where some requested id was answered by two or more named
+        models, ``undecided`` where none was but some candidate call named no model — which model answered
+        cannot be established there, and unknown is never read as one model. Empty otherwise, including where
+        no result under comparison called its candidate.
+    """
+    by_requested: dict[str, set[str]] = {}
+    unrecorded = False
+    for result_id in result_ids:
+        if (reading := served.get(result_id)) is not None:
+            by_requested.setdefault(reading.requested, set()).update(reading.served)
+            unrecorded = unrecorded or reading.unrecorded
+    if any(len(models) > 1 for models in by_requested.values()):
+        return [Confound(dimension=CANDIDATE_SERVED_MODEL_CONFOUND, kind="served_model")]
+    if unrecorded:
+        return [Confound(dimension=CANDIDATE_SERVED_MODEL_CONFOUND, kind="served_model", status="undecided")]
+    return []
+
+
+def _arm_served_models(
+    arms: _CampaignArms, results_by_run: Mapping[str, list[EvalResult]], served: _ServedModels
+) -> list[ArmServedModel]:
+    """Each arm's served models, as the provider's responses named them.
+
+    Args:
+        arms: The campaign's arms. A run that resolved no arm is in none, and so in no reading.
+        results_by_run: Each run's results.
+        served: The campaign's readings, from :func:`_served_models`.
+
+    Returns:
+        One reading per arm whose candidate left a usage row, sorted by arm.
+    """
+    readings: list[ArmServedModel] = []
+    for variant_key, members in sorted(arms.keyed.items()):
+        own = [served[result.id] for run in members for result in results_by_run.get(run.id, []) if result.id in served]
+        if not own:
+            continue
+        models = sorted(set().union(*(reading.served for reading in own)))
+        n_unrecorded = sum(1 for reading in own if reading.unrecorded)
+        readings.append(
+            ArmServedModel(
+                variant_key=variant_key,
+                served_models=models,
+                n_results=len(own),
+                n_unrecorded=n_unrecorded,
+                state="pooled" if len(models) > 1 else "one" if models and not n_unrecorded else "unrecorded",
+            )
+        )
     return readings
 
 
@@ -4971,6 +5176,8 @@ def _confound_catalog(bundle: AnalysisContextBundle, *, profile: HostProfile) ->
             reason = unverified_reasons[confound.dimension]
         elif confound.kind == "observed_mechanism":
             reason = _OBSERVED_MECHANISMS[confound.dimension.removeprefix(OBSERVED_MECHANISM_PREFIX)].reason
+        elif confound.kind == "served_model":
+            reason = _SERVED_MODEL_CONFOUNDS
         else:
             reason = surface_reasons.get(confound.dimension, _SWEPT_LEVER_CONFOUNDS)
         catalog[confound.dimension] = (
@@ -5266,6 +5473,7 @@ def _scope_divergences(
     *,
     folds: _SurfaceFolds,
     observations: _MechanismObservations,
+    served: _ServedModels,
     profile: HostProfile,
 ) -> tuple[list[ScopeDivergence], int, _DivergenceCount]:
     """Find the lever changes where the whole run moved by a different amount than the part under test.
@@ -5304,6 +5512,7 @@ def _scope_divergences(
             so every divergence it produced would restate one a member already reports.
         observations: The campaign's mechanism observations, compared across each divergence's two levels
             for the observed-mechanism confounds it names.
+        served: Which model answered each result's candidate calls, for the served-model confound.
         profile: The host whose vocabulary this reads.
 
     Returns:
@@ -5351,6 +5560,7 @@ def _scope_divergences(
                 ) + _observed_mechanism_confounds(
                     lever, {level: result_ids[level] for level in (level_a, level_b)}, observations, profile=profile
                 )
+                confounded += _served_model_confounds(result_ids[level_a] | result_ids[level_b], served)
                 at_a, at_b = per_case[level_a], per_case[level_b]
                 for unit, e_a, _e_b, s_a, _s_b in _comparable_pairs(
                     collections[level_a], collections[level_b], catalog
@@ -5739,6 +5949,7 @@ def _coverage_map(
     *,
     folds: _SurfaceFolds,
     observations: _MechanismObservations,
+    served: _ServedModels,
     arms: _CampaignArms | None = None,
     profile: HostProfile,
 ) -> list[LeverCoverageInput]:
@@ -5799,6 +6010,7 @@ def _coverage_map(
             dropped this way: the completeness check needs its row whatever it resolved to.
         observations: The campaign's mechanism observations, which each row's ``mechanism`` check and its
             observed-mechanism confounds compare across the row's levels.
+        served: Which model answered each result's candidate calls, for the served-model confound.
         arms: :func:`_campaign_arms`'s answer, when the caller already has it; derived otherwise.
         profile: The host whose vocabulary this reads.
 
@@ -5886,13 +6098,57 @@ def _coverage_map(
                 confounded_by=_uncontrolled_dimensions(
                     lever, sorted(cohort), lever_levels, apparatus_levels, folds=folds, profile=profile
                 )
-                + _observed_mechanism_confounds(lever, result_ids_by_level, observations, profile=profile),
+                + _observed_mechanism_confounds(lever, result_ids_by_level, observations, profile=profile)
+                + _served_model_confounds(chain.from_iterable(result_ids_by_level.values()), served),
                 mechanism=_mechanism_check(
                     declared_lever.acts_on if declared_lever is not None else None, result_ids_by_level, observations
                 ),
             )
         )
     return coverage
+
+
+#: Apparatus dimensions that joined the rig after cells were minted under ids that never digested them, each
+#: mapped to the dimension whose seat it shares. Such a dimension stays out of a class's id at the levels that
+#: say nothing about it the class does not already say: UNRECORDED (``None``) — every run stored before the
+#: dimension existed — or the unseated level where its owner reads unseated too. At any recorded level it is
+#: digested like every other dimension. So a stored run's cell keeps the id a stored analysis cites, and a run
+#: that recorded the dimension gets a cell of its own, which never pools with the unrecorded one: the class
+#: still lists the dimension (``unknown_dimensions``), so the merge rule refuses the pair, and the confound scan
+#: reads it ``undecided``.
+#:
+#: **Why no two different classes can share an id.** Within one bundle every class is built over one dimension
+#: set, so a class's unknown set is fixed by its recorded map, and two classes the id cannot tell apart differ
+#: only in this dimension's level, which is neutral in both. Unrecorded beside unrecorded is the same class.
+#: Unrecorded beside unseated cannot happen with the owner agreeing: unseated here needs the owner unseated
+#: (the condition below), while unrecorded here means the run filled the seat, so its owner reads a recorded or
+#: an unrecorded level, never unseated — the owner's own level tells the two classes apart. A dimension's
+#: unseated level paired with a recorded owner (a run that filled no judge seat yet recorded a judge, which
+#: :meth:`~threetears.evals.contracts.host.profile.HostProfile.omits_apparatus` reports as a contradiction) is
+#: therefore digested, not neutral.
+CELL_ID_NEUTRAL: Mapping[str, str] = {"judge_temperature": "judge_model"}
+
+
+def _cell_id_neutral(run_id: str, apparatus_levels: dict[str, dict[str, str | None]]) -> frozenset[str]:
+    """The :data:`CELL_ID_NEUTRAL` dimensions this run's class id leaves out, at the levels where it says nothing new.
+
+    Args:
+        run_id: The run.
+        apparatus_levels: Dimension → run id → level key, from :func:`_apparatus_levels`.
+
+    Returns:
+        The dimensions to leave out of the run's class id; empty when every one is recorded, or absent from the
+        bundle's apparatus altogether.
+    """
+    unseated = canonical_json(UNSEATED_LEVEL)
+    neutral: set[str] = set()
+    for dimension, owner in CELL_ID_NEUTRAL.items():
+        if dimension not in apparatus_levels:
+            continue
+        level = apparatus_levels[dimension].get(run_id)
+        if level is None or (level == unseated and apparatus_levels.get(owner, {}).get(run_id) == unseated):
+            neutral.add(dimension)
+    return frozenset(neutral)
 
 
 def _apparatus_classes(
@@ -5920,6 +6176,7 @@ def _apparatus_classes(
         run.id: apparatus_class_of(
             {dim: apparatus_levels.get(dim, {}).get(run.id) for dim in dimensions},
             dimensions=dimensions,
+            id_neutral=_cell_id_neutral(run.id, apparatus_levels),
             # Read off the run, never assumed: the launch path stamps `commissioned`, and a host
             # capturing traffic it did not control writes `witnessed`. It enters the class id, so a
             # captured session beside a launched arm of the same variant is two cells everywhere.
@@ -6298,6 +6555,9 @@ def assemble_context_bundle(
     # Every mechanism a lens compares across levels, read once so the coverage rows, the divergences
     # and the arm readings report one set of values.
     mechanisms = _mechanism_observations(results, profile=profile)
+    # Which model answered each result's candidate calls, read once so every lens that names the served
+    # model as a confound and the per-arm readings agree about it.
+    served = _served_models(results)
     design = _campaign_design(
         runs,
         control_variant,
@@ -6308,7 +6568,7 @@ def assemble_context_bundle(
         folds=folds,
         profile=profile,
     )
-    design = _design_with_mechanism_confounds(design, results_by_run, mechanisms, profile=profile)
+    design = _design_with_mechanism_confounds(design, results_by_run, mechanisms, served=served, profile=profile)
     # Built before the run summaries, because `RunSummary.config` names the levers this map
     # names. Both read `_effective_config`, so without that the two disagreed the moment the
     # registry became the vocabulary: a summary would carry every contestant property the host
@@ -6323,6 +6583,7 @@ def assemble_context_bundle(
         campaign.declared_design,
         folds=folds,
         observations=mechanisms,
+        served=served,
         arms=arms,
         profile=profile,
     )
@@ -6416,6 +6677,7 @@ def assemble_context_bundle(
         # underneath it reports that fact nowhere at all.
         apparatus_confounds=_apparatus_confounds(run_ids, apparatus_levels, profile=profile),
         arm_mechanisms=_arm_mechanisms(arms, results_by_run, mechanisms),
+        arm_served_models=_arm_served_models(arms, results_by_run, served),
         cells=cells,
         variant_index=variant_index,
         refused_merges=refused_merges,
@@ -6512,6 +6774,7 @@ def assemble_context_bundle(
         catalog=bundle.measure_catalog,
         judged_measures=bundle.judged_measures,
         observations=mechanisms,
+        served=served,
         profile=profile,
     )
     bundle.reading_scope = _reading_scope(campaign.declared_design, bundle.measure_catalog, bundle.judged_measures)
@@ -6531,6 +6794,7 @@ def assemble_context_bundle(
         design,
         folds=folds,
         observations=mechanisms,
+        served=served,
         profile=profile,
     )
     bundle.divergences_tested, bundle.divergences_untested = divergence_count
@@ -7529,6 +7793,7 @@ def _multiple_comparisons(
     catalog: dict[str, MetricDescriptor],
     judged_measures: list[JudgedMeasure],
     observations: _MechanismObservations,
+    served: _ServedModels,
     profile: HostProfile,
 ) -> tuple[MultipleComparisons, GuardrailReadings]:
     """Test each contrast against the control, per live question — or campaign-wide — and decide every guardrail.
@@ -7550,6 +7815,7 @@ def _multiple_comparisons(
         catalog: The bundle's measure catalog — direction and axis per measure.
         judged_measures: The bundle's judged measures.
         observations: The campaign's mechanism observations, read for each contrast between two models.
+        served: Which model answered each result's candidate calls, read for every contrast.
         profile: The host whose vocabulary this reads.
 
     Returns:
@@ -7592,6 +7858,7 @@ def _multiple_comparisons(
         pair: _model_contrast_confounds(
             results_by_cell[pair[0]], results_by_cell[pair[1]], observations, profile=profile
         )
+        + _served_model_confounds((result.id for key in pair for result in results_by_cell[key]), served)
         for pair in pairs
     }
     families = []

@@ -514,13 +514,16 @@ def toyhost_measurements(
             # candidate row, which is what the result's `cost_usd` is derived from and what makes
             # it an observed spend rather than the sum of nothing — and it carried no phase timings
             # and only the covariates the caller names. The row names no model: one it named would be an observed candidate
-            # model, a lever of its own on the coverage map, which the corpus holds fixed by `model`.
+            # model, a lever of its own on the coverage map, which the corpus holds fixed by `model`. It does name the
+            # model the toy provider's response said answered — the run's own, since the toy provider resolves no
+            # alias — as a conforming host's completions do; a row naming none reads as not recorded.
             termination="completed",
             cost_roles=["candidate"],
             usage=[
                 RoleUsage(
                     role="candidate",
                     model=None,
+                    served_model=batch.candidate_model,
                     cost_usd=_document_cost(cost_usd, document),
                     call_count=1,
                 )

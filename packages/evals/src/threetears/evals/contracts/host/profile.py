@@ -108,7 +108,8 @@ log = get_logger(__name__)
 UNSEATED_LEVEL = "(none — this run's rig has no such seat)"
 
 #: The apparatus inputs a run's own record empties when it names no ``judge_model``: the run was not judged,
-#: so it had no judge pin, no judge request settings, no per-dim judge attribution and no judge-config seat.
+#: so it had no judge pin, no judge temperature, no judge request settings, no per-dim judge attribution and no
+#: judge-config seat.
 #: A BLANK in one of these on an unjudged run reads as no such seat (:data:`UNSEATED_LEVEL`), never
 #: ``undecided``; a value the run did record is still its level, because :meth:`HostProfile.apparatus_level`
 #: substitutes only for a blank. That matters for ``judge_config_ids``, which a code grader or a person can
@@ -116,7 +117,7 @@ UNSEATED_LEVEL = "(none — this run's rig has no such seat)"
 #: Not the whole judge role: a host's grader nominated into the role is filled by whoever grades, so its
 #: own value says whether the run had one.
 _UNJUDGED_RUN_HAS_NO: frozenset[str] = frozenset(
-    {"judge_model", "judge_request_settings", "judge_dim_divergence", "judge_config_ids"}
+    {"judge_model", "judge_temperature", "judge_request_settings", "judge_dim_divergence", "judge_config_ids"}
 )
 
 if TYPE_CHECKING:

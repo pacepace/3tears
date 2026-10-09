@@ -36,6 +36,7 @@ from threetears.evals.contracts.host.values import SweepableValue
 from threetears.evals.contracts.hashing import canonical_digest
 from threetears.evals.contracts.identity import IDENTITY_VERSION
 from threetears.evals.contracts.models import (
+    DEFAULT_JUDGE_TEMPERATURE,
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
     ActorPolicy,
@@ -184,7 +185,7 @@ def make_eval_run(**overrides: Any) -> EvalRun:
     so a run carrying the pin without them is a shape production cannot produce. Pass
     ``effective_judges=None`` or ``judge_config_ids=None`` explicitly to model a run whose writer
     recorded no attribution. A run given a ``judge_model`` or ``simulator_model`` likewise gets that role's recorded
-    request settings, and a replay run names a corpus — a run cannot replay without naming the capture it serves.
+    request settings (a judged one, the judge temperature too), and a replay run names a corpus — a run cannot replay without naming the capture it serves.
 
     See the module docstring for the subject, payload and world-placement defaults.
     """
@@ -212,6 +213,8 @@ def make_eval_run(**overrides: Any) -> EvalRun:
         defaults.setdefault("judge_config_provenance", {})
     if defaults.get("judge_model") is not None and "judge_request_settings" not in overrides:
         defaults["judge_request_settings"] = RECORDED_REQUEST_SETTINGS
+    if defaults.get("judge_model") is not None and "judge_temperature" not in overrides:
+        defaults["judge_temperature"] = DEFAULT_JUDGE_TEMPERATURE
     if defaults.get("simulator_model") is not None and "simulator_request_settings" not in overrides:
         defaults["simulator_request_settings"] = RECORDED_REQUEST_SETTINGS
     if defaults.get("cassette_mode") == "replay" and "cassette_corpus_id" not in overrides:

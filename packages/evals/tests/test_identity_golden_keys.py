@@ -44,7 +44,7 @@ from packages.evals.tests.fixtures.toyhost.run import (
 )
 
 #: The ``IDENTITY_VERSION`` every golden below was derived under.
-PINNED_IDENTITY_VERSION = 23
+PINNED_IDENTITY_VERSION = 24
 
 #: The toy host's context, shared by both its arms: one condition, two contestants.
 _TOY_CONTEXT = {

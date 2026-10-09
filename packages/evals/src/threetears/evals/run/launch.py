@@ -46,6 +46,7 @@ from threetears.evals.contracts.errors import NotFoundError, ValidationFailedErr
 from threetears.evals.contracts.host.sweepables import CORE_SWEEPABLES
 from threetears.evals.contracts.identity import derive_context_identity, variant_levers_of_run
 from threetears.evals.contracts.models import (
+    DEFAULT_JUDGE_TEMPERATURE,
     DEFAULT_LAUNCH_K_RUNS,
     GOAL_CHECK_PROOF_RULES,
     ApparatusSettingValue,
@@ -2869,6 +2870,9 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                 # builder applies to it, and only for a role this kind ran: a resolved model is
                 # recorded exactly when the role ran, so it is the predicate here too.
                 judge_request_settings=JUDGE_REQUEST_SETTINGS if judge is not None else None,
+                # What a dim with no JudgeConfig is requested at — the judge service's own default, so the
+                # stamp and the requests cannot disagree. Part of the measurement context (#633).
+                judge_temperature=DEFAULT_JUDGE_TEMPERATURE if judge is not None else None,
                 simulator_request_settings=SIMULATOR_REQUEST_SETTINGS if wiring.simulator_model is not None else None,
                 max_cost_usd=EvalRunCostCap.resolve_effective_ceiling(
                     max_cost_usd,

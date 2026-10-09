@@ -47,6 +47,7 @@ from threetears.evals.contracts.host.eval_host import EvalHost
 from threetears.evals.contracts.host.traces import CellTrace
 from threetears.evals.contracts.identity import resolve_variant_identity
 from threetears.evals.contracts.models import (
+    DEFAULT_JUDGE_TEMPERATURE,
     ConversationStopCause,
     EvalResult,
     EvalRun,
@@ -176,6 +177,7 @@ def stamp_witnessed_judge(
             "judge_config_ids": judge.config_ids,
             "judge_config_provenance": judge.config_provenance,
             "judge_request_settings": JUDGE_REQUEST_SETTINGS,
+            "judge_temperature": DEFAULT_JUDGE_TEMPERATURE,
             "rubric_scales": {dim.name: dim.scale for dim in template.rubric},
             "max_cost_usd": EvalRunCostCap.resolve_effective_ceiling(
                 max_cost_usd,

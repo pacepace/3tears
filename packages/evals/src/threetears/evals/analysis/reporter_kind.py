@@ -33,7 +33,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -76,7 +76,7 @@ from threetears.evals.contracts.provider import (
     describe_failure,
     log_provider_failure,
 )
-from threetears.evals.contracts.usage_capture import RoleUsageLedger
+from threetears.evals.contracts.usage_capture import CallUsage, RoleUsageLedger
 from threetears.observe import get_logger
 
 log = get_logger(__name__)
@@ -168,6 +168,7 @@ def reporter_cell_timeout_s(
     return generation_s + judging_s
 
 
+#: Where a person reading a memo places it on a rubric dimension, low to high.
 LabelDirection = Literal["low", "low_mid", "mid", "mid_high", "high"]
 
 #: The 1-5 judge scores each label direction agrees with, inclusive. A calibration read counts a
@@ -731,14 +732,10 @@ class _RecordingClient:
         """
         ledger = RoleUsageLedger(role="candidate")
         for result in self.results:
-            ledger.add(
-                model=getattr(result, "model", None) or bound_model,
-                prompt_tokens=getattr(result, "input_tokens", None),
-                completion_tokens=getattr(result, "output_tokens", None),
-                reasoning_tokens=getattr(result, "reasoning_tokens", None),
-                cost_usd=getattr(result, "cost_usd", None),
-                price_source=getattr(result, "price_source", None),
-            )
+            read = CallUsage.of(result)
+            # The bound model stands in for an unnamed ``model`` only, which attributes spend; the
+            # served model stays what the response said, unrecorded when it said nothing.
+            ledger.add_llm_result(replace(read, model=read.model or bound_model))
         return CandidateTelemetry(usage=ledger.rows(), turns_delivered=len(self.results))
 
     def progress(self, bound_model: str) -> Callable[[], CandidateOutput]:

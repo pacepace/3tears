@@ -46,7 +46,9 @@ SLOT_BUDGET = 40
 #: The chart type meaning "this finding has no chart" — a value, not an absence, so no union is needed.
 NO_CHART = "none"
 
+#: How sure the author is of a finding or a decision.
 Confidence = Literal["very_high", "high", "medium", "low"]
+#: What a piece of evidence reads: a ``measure``, or a ``judged`` dimension.
 Reading = Literal["measure", "judged"]
 
 

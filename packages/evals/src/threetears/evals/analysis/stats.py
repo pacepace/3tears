@@ -74,8 +74,8 @@ def _min_pairs_for_sign_flip(alpha: float) -> int:
 #: consistent move could reject at that alpha, so the claim would outrun the data.
 _MIN_PAIRS_FOR_DETERMINISTIC_GAP = _min_pairs_for_sign_flip(SIGNIFICANCE_ALPHA)
 
-# The paired test the change classifier discloses, so a regression flag names the
-# statistics it rests on rather than presenting a bare verdict.
+#: The paired test the change classifier discloses, so a regression flag names the
+#: statistics it rests on rather than presenting a bare verdict.
 PAIRED_TEST_NAME = (
     "paired two-sided t-test on shared per-case values (the exact sign-flip test where every difference is one "
     f"amount), α={SIGNIFICANCE_ALPHA}"
@@ -91,8 +91,8 @@ UNPAIRED_TEST_NAME = (
     f"min(n_a, n_b) − 1 degrees of freedom, α={SIGNIFICANCE_ALPHA}"
 )
 
-# The equivalence test the change classifier runs beside the paired test, named for
-# the same reason: an `equivalent` label names the statistics it rests on.
+#: The equivalence test the change classifier runs beside the paired test, named for
+#: the same reason: an `equivalent` label names the statistics it rests on.
 EQUIVALENCE_TEST_NAME = (
     f"two one-sided paired t-tests (TOST) against ± the measure's declared margin, α={SIGNIFICANCE_ALPHA}"
 )

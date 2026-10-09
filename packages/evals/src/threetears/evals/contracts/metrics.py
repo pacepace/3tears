@@ -197,8 +197,12 @@ GradedBy = Literal["code", "judge"]
 
 _FAMILY_NAME_PATTERN = r"^[a-z][a-z0-9_]*$"
 
+#: How far a measure's meaning carries, loosest to strictest: ``mechanical`` is measured the same way everywhere,
+#: ``judge_mediated`` is comparable only under the same judge configuration, ``scenario_bound`` means nothing
+#: outside its scenario.
 TransferabilityClass = Literal["mechanical", "judge_mediated", "scenario_bound"]
 
+#: Whether a measure isolates one ``subsystem`` or reflects the whole ``end_to_end`` run.
 AttributionScope = Literal["subsystem", "end_to_end"]
 
 #: The merit axes a measure can serve. **Engine-owned and closed**; which axis a given measure
@@ -1770,6 +1774,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
 _SEED = _SEED + _compare_trio("pass_hat_k", "Reliability (pass^k at the shared depth k)", "scenario_bound")
 _SEED = _SEED + _compare_trio("composite", "Mean composite quality", "judge_mediated")
 
+#: The engine's own measures, each one's descriptor keyed by its name.
 METRIC_DESCRIPTORS: dict[str, MetricDescriptor] = {d.name: d for d in _SEED}
 
 # Guard against a copy-paste duplicate silently winning the dict comprehension above.

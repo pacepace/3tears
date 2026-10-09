@@ -419,7 +419,15 @@ if TYPE_CHECKING:
 #:   ``roles`` pre-image with the rest of its judge inputs: a run naming no judge has no judge-config seat
 #:   (``HostProfile.seats``), so ``{}`` there no longer hashes apart from ``None`` — two unjudged runs that
 #:   both recorded no config were one condition split in two. A config such a run did record still hashes.
-IDENTITY_VERSION: int = 23
+#: - **v24** — the ``roles`` component composes the temperature a judged run's dims with no ``JudgeConfig``
+#:   were requested at (``EvalRun.judge_temperature``, #633). A config's temperature rides its config id, but
+#:   an unconfigured dim was judged at the provider's default (around 1.0 on some) while a configured one was
+#:   judged at its 0.0, and nothing hashed the difference; every judge call now asks for
+#:   ``DEFAULT_JUDGE_TEMPERATURE`` (0) unless a config says otherwise, and the run records it. A run launched
+#:   before this recorded none, so on a judged run the roles component drops and its context reads *partial*
+#:   — v5's treatment of an unrecorded judge input — and it never pools with a run judged at 0. An unjudged
+#:   run's judge inputs leave the pre-image as before. Variant keys are unchanged.
+IDENTITY_VERSION: int = 24
 """Version of the key-derivation predicate below.
 
 Bump whenever the hashed inputs of *any* key change — adding a factor, removing
@@ -547,6 +555,7 @@ def compute_context_components(
     simulator_model: str | None,
     effective_judges: dict[str, str] | None,
     judge_config_ids: dict[str, str] | None,
+    judge_temperature: float | None,
     cassette_mode: str,
     cassette_corpus_id: str | None,
     tools_allowed: list[str] | None,
@@ -612,6 +621,12 @@ def compute_context_components(
             difference a judge A/B exists to create. ``{}`` is a value here, not an
             absence: it records that no scored dim carried a config. ``None`` is
             the absence, and drops the component.
+        judge_temperature: The temperature every dim with no ``JudgeConfig`` was requested at. Folded in
+            from v24 (#633): a config's temperature already rides its config id, but an unconfigured dim's
+            did not, so a run judged at the provider's default and one judged at 0 hashed alike while their
+            judges sampled differently. The REQUEST, as ``judge_model`` is the pin: what each call was sent
+            at is on its score, and with the model pinned beside it the request decides what is sent. ``None``
+            on a judged run is an absence (launched before it was recorded) and drops the component.
         simulator_model: The RESOLVED simulator model.
         cassette_mode: Whether tool output was live, captured, or replayed.
         cassette_corpus_id: The corpus a replay run serves — ``None`` for a capture run, whose tools ran
@@ -694,7 +709,9 @@ def compute_context_components(
         ),
         roles=(
             canonical_digest(
-                _roles_payload(judge_model, simulator_model, effective_judges, judge_config_ids, omitted_roles)
+                _roles_payload(
+                    judge_model, simulator_model, effective_judges, judge_config_ids, judge_temperature, omitted_roles
+                )
             )
             if include_roles
             else None
@@ -719,6 +736,7 @@ def _roles_payload(
     simulator_model: str | None,
     effective_judges: dict[str, str] | None,
     judge_config_ids: dict[str, str] | None,
+    judge_temperature: float | None,
     omitted: Collection[str] = (),
 ) -> dict[str, Any]:
     """Compose the roles pre-image, refusing to build a partial one.
@@ -736,6 +754,7 @@ def _roles_payload(
         effective_judges: Per-dim attribution, ``recorded`` provenance only.
         judge_config_ids: The pinned config set. An empty dict is a value and
             hashes; only ``None`` is absent.
+        judge_temperature: The temperature unconfigured dims were requested at.
         omitted: The declared dimensions this host does not have. Their entries leave the
             pre-image rather than hashing as ``None``, and are exempt from the refusal above:
             an input a host never had is not an input it failed to record, and the two must not
@@ -770,6 +789,7 @@ def _roles_payload(
             "judge_config_ids",
             None if judge_config_ids is None else dict(sorted(judge_config_ids.items())),
         ),
+        ("judge_temperature", "judge_temperature", judge_temperature),
     )
     present: dict[str, Any] = {key: value for dimension, key, value in declared if dimension not in omitted}
     if absent := sorted(key for key, value in present.items() if value is None):
@@ -801,6 +821,7 @@ def _roles_payload(
 _ROLE_INPUT_DEPENDENCIES: Mapping[str, str] = {
     "judge_dim_divergence": "judge_model",
     "judge_config_ids": "judge_model",
+    "judge_temperature": "judge_model",
 }
 
 
@@ -1021,6 +1042,9 @@ def derive_context_identity(run: EvalRun, profile: HostProfile) -> DerivedContex
         # declaring this input away.
         ("judge_dim_divergence", hashable_judges),
         ("judge_config_ids", run.judge_config_ids),
+        # What a dim with no config was requested at. Named by the apparatus dimension that reads what each
+        # call was SENT at, so a kind leaving the judge unseated takes it out with the rest of the judge.
+        ("judge_temperature", run.judge_temperature),
     )
     # An unjudged run has no judge, whatever its host declares: the runner refuses to execute a
     # judged run that names none (``execute_run``), so this blank is a recorded fact about the run
@@ -1066,6 +1090,7 @@ def derive_context_identity(run: EvalRun, profile: HostProfile) -> DerivedContex
         simulator_model=run.simulator_model,
         effective_judges=hashable_judges if has_roles else None,
         judge_config_ids=run.judge_config_ids if has_roles else None,
+        judge_temperature=run.judge_temperature if has_roles else None,
         cassette_mode=run.cassette_mode,
         cassette_corpus_id=run.cassette_corpus_id,
         # No ``is not None`` gate, and this is the one field in this call where that would be

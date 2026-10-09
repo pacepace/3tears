@@ -176,7 +176,7 @@ class TextBlock(_Block):
         }
     )
 
-    kind: Literal["text"] = "text"
+    kind: Literal["text"] = Field(default="text", description="Which kind of block this is.")
     role: TextRole = Field(description="What the author wrote it as.")
     body: ModelProse = Field(
         description="The author's words, Markdown allowed; empty where the author left a required field blank."
@@ -216,7 +216,7 @@ class TableColumn(EvalBaseModel):
 class TableBlock(_Block):
     """A table code laid out — its columns, its rows in their stated order, and how much of it is shown."""
 
-    kind: Literal["table"] = "table"
+    kind: Literal["table"] = Field(default="table", description="Which kind of block this is.")
     name: str = Field(
         min_length=1,
         description=(
@@ -275,7 +275,7 @@ class ChartBlock(_Block):
         }
     )
 
-    kind: Literal["chart"] = "chart"
+    kind: Literal["chart"] = Field(default="chart", description="Which kind of block this is.")
     viz_type: ChartType = Field(description="The chart type the finding carries.")
     intent: ChartIntent | None = Field(
         default=None, description="What the chart draws and must say; None when it cannot be drawn."
@@ -305,7 +305,7 @@ class ChartBlock(_Block):
 class DisclosureBlock(_Block):
     """Something code must tell the reader that no author wrote — one idea."""
 
-    kind: Literal["disclosure"] = "disclosure"
+    kind: Literal["disclosure"] = Field(default="disclosure", description="Which kind of block this is.")
     source: DisclosureSource = Field(description="What the disclosure speaks for.")
     text: str = Field(min_length=1, description="The disclosure, one sentence or a few.")
 

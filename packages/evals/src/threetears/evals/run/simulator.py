@@ -620,14 +620,7 @@ class TurnDriver:
 
 def _call_usage(response: Any) -> CallUsage:
     """The spend one simulator-role response reports; a field the client did not report stays ``None``."""
-    return CallUsage(
-        model=getattr(response, "model", None) or None,
-        input_tokens=getattr(response, "input_tokens", None),
-        output_tokens=getattr(response, "output_tokens", None),
-        reasoning_tokens=getattr(response, "reasoning_tokens", None),
-        cost_usd=getattr(response, "cost_usd", None),
-        price_source=getattr(response, "price_source", None),
-    )
+    return CallUsage.of(response)
 
 
 # =============================================================================

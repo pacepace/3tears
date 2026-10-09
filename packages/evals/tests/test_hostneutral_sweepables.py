@@ -154,10 +154,15 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
     # comparison family, and the readings no declared question asks about are labelled exploratory; the apparatus
     # partition is unchanged.
     ((46, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
-    # 47/10: the decision surface's cells are laid out control first, as the reference, then every other arm
-    # alphabetically by name (#645); the declaration's `controls` is renamed `held_fixed`, and the bundle's
-    # `controls_reading` with it (`held_fixed_reading`) — one bump for both; the apparatus partition is unchanged.
-    ((47, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
+    # 47/11: one bundle bump and one cell-model bump for everything this release changed. The decision surface's
+    # cells are laid out control first, as the reference, then every other arm alphabetically by name (#645); the
+    # declaration's `controls` is renamed `held_fixed`, and the bundle's `controls_reading` with it
+    # (`held_fixed_reading`); the bundle names the candidate's served model per arm and as a confound where one
+    # requested id was answered by more than one model (#684). The temperature each judge call was actually sent
+    # at joins the judge's apparatus (#633), so the cell model moves: an observation that recorded one no longer
+    # pools with one that did not. A cell whose runs recorded none keeps the id it had (CELL_ID_NEUTRAL), so a
+    # stored analysis's cell references still resolve.
+    ((47, 11), _CORE_V24 | {"judge_request_settings", "simulator_request_settings", "judge_temperature"}),
 )
 
 
