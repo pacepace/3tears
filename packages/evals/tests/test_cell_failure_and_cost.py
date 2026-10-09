@@ -897,3 +897,46 @@ def test_the_analysis_bundle_counts_unpriced_results_and_never_reads_their_rows_
     assert summary.n_cost_unpriced == 2
     assert summary.cost_usd == 0.0
     assert "cost_usd" not in {measure.name for measure in bundle.telemetry.measures.measures}
+
+
+def test_a_judged_cell_states_what_the_arm_costs_apart_from_what_measuring_it_cost():
+    """$0.02 of candidate and $0.05 of judge a result: the arm costs $0.02, and the cost column says so."""
+    from threetears.evals.analysis.bundle import bundle_decision_surface
+    from threetears.evals.analysis.surface_table import surface_table_of
+    from threetears.evals.contracts.models import RoleUsage as Row
+
+    run = make_eval_run(status="completed")
+    results = [
+        make_eval_result(
+            eval_run_id=run.id,
+            test_case_id=f"tc-{i}",
+            cost_usd=0.07,
+            usage=[
+                Row(role="candidate", model="m", cost_usd=0.02, price_source="p"),
+                Row(role="judge", model="j", cost_usd=0.05, price_source="p"),
+            ],
+        )
+        for i in range(3)
+    ]
+    campaign = EvalCampaign(
+        scope_id=run.scope_id,
+        name="c",
+        subject_id=run.subject_snapshot.subject_id,
+        subject_kind="s",
+        behavior="b",
+        run_ids=[run.id],
+        created_by="test:fixture",
+    )
+
+    bundle = assemble_context_bundle(
+        campaign, storage=ToyhostStorage([run], {run.id: results}), profile=toyhost_profile()
+    )
+    surface = bundle_decision_surface(bundle)
+
+    (cell,) = surface.cells
+    means = {measure.name: measure.mean for measure in cell.measures.measures}
+    assert means["production_replicating_cost"] == pytest.approx(0.02)
+    assert means["cost_usd"] == pytest.approx(0.07)
+    assert surface.measures["production_replicating_cost"].merit_axis == "cost"
+    cost_columns = [c for c in surface_table_of(surface, bundle.variant_index).columns if c.axis == "cost"]
+    assert [c.measure_id for c in cost_columns] == ["production_replicating_cost"]

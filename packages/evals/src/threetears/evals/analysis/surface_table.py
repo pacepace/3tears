@@ -46,7 +46,7 @@ from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.viz.quantities import display_scale
 from threetears.evals.contracts.analysis_measures import BarAdjudication, BarDecision, BarVerdict, MeasureSummary
 from threetears.evals.contracts.campaign import EvalAnalysis, VariantIndexEntry
-from threetears.evals.contracts.metrics import MeritAxis
+from threetears.evals.contracts.metrics import MeritAxis, measure_title
 from threetears.evals.contracts.base import EvalDocumentModel
 from threetears.evals.contracts.surface import CellFacts, DecisionSurface, all_failed_sentence
 
@@ -509,7 +509,9 @@ def _merit_columns(surface: DecisionSurface, cells: list[CellFacts]) -> list[tup
                 continue
             means = [s.mean for cell in cells if (s := _summary_of(cell, name)) is not None and s.mean is not None]
             factor, unit = display_scale(means, facts.unit)
-            header = f"{name} ({unit})" if unit else name
+            # A measuring-spend measure stood here only on a surface frozen before it left the cost axis; it is
+            # labelled for what it is, never as what the arm costs.
+            header = f"{measure_title(name)} ({unit})" if unit else measure_title(name)
             columns.append((SurfaceColumn(kind="merit", measure_id=name, unit=unit, header=header, axis=axis), factor))
     return columns
 

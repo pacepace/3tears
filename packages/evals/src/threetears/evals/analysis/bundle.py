@@ -3036,6 +3036,14 @@ def _lineage_leaves(result: EvalResult, *, profile: HostProfile) -> Iterator[tup
         if name == _COST_MEASURE and not observed:
             continue
         yield name, value, describe_measure(name, profile.measures)
+    # The candidate's own spend, where the result measured one: what the arm costs, beside ``cost_usd``, what
+    # it cost to measure (the judge's and simulator's spend included). Derived here rather than stored, so every
+    # slicing the walk serves — a cell, a run, a case, a stratum — reads the one figure a contrast on cost tests.
+    candidate_spend = production_replicating_cost(
+        result.usage, substituted_deliveries=count_substituted_deliveries(result)
+    )
+    if candidate_spend is not None:
+        yield _CANDIDATE_SPEND, candidate_spend, describe_measure(_CANDIDATE_SPEND, profile.measures)
 
 
 def _open_map_leaves(
@@ -6949,25 +6957,12 @@ def _per_case_values(
         by_case[result.test_case_id].append(result)
     values: dict[tuple[ReadingKind, str], dict[str, float]] = defaultdict(dict)
     for case_id in sorted(by_case):
+        # The candidate's own spend among them (``production_replicating_cost``, which the walk yields over the
+        # turns the candidate took and only where a result measured it): a contrast on cost tests it, never
+        # ``cost_usd``, which sums the judge's spend too.
         for summary in _measure_collection(by_case[case_id], profile=profile, undeclared="scored").measures:
             if summary.mean is not None:
                 values[("measure", summary.name)][case_id] = summary.mean
-        # The candidate's own spend, which no cell walk yields: the run summary reads it
-        # (:func:`_measured_prod_costs`), and a contrast on cost reads it here, over the turns the candidate
-        # took and only where a result measured it — cost_usd sums the judge's spend too.
-        spend = [
-            cost
-            for result in by_case[case_id]
-            if _in_population("delivered", result)
-            and (
-                cost := production_replicating_cost(
-                    result.usage, substituted_deliveries=count_substituted_deliveries(result)
-                )
-            )
-            is not None
-        ]
-        if spend and case_id not in values[("measure", _CANDIDATE_SPEND)]:
-            values[("measure", _CANDIDATE_SPEND)][case_id] = sum(spend) / len(spend)
     scores: dict[tuple[str, str], list[float]] = defaultdict(list)
     for result in _non_faulted(members):
         for dimension, record in _judged_values(judged_rows.get(result.id, [])):
@@ -7249,8 +7244,6 @@ def _multiple_comparisons(
     for record in records:
         judged_rows.setdefault(record.result_id, []).append(record)
     values = {key: _per_case_values(members, judged_rows, profile=profile) for key, members in results_by_cell.items()}
-    if any(("measure", _CANDIDATE_SPEND) in cell_values for cell_values in values.values()):
-        catalog = {**catalog, _CANDIDATE_SPEND: describe_reported_measure(_CANDIDATE_SPEND, profile.measures)}
     pairs = [
         (control_key, contrast_key)
         for control_key in sorted(values)

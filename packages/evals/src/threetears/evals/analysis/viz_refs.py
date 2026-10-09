@@ -52,12 +52,21 @@ from threetears.evals.contracts.authored import Chart
 from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts.campaign import ReadingKind, VariantIndexEntry
 from threetears.evals.contracts.host.measures import MeasureRegistry
-from threetears.evals.contracts.metrics import describe_reported_measure, materiality, remainder_withheld_reason
+from threetears.evals.contracts.metrics import (
+    MEASURING_SPEND_MEASURES,
+    describe_reported_measure,
+    materiality,
+    measure_title,
+    remainder_withheld_reason,
+)
 from threetears.evals.contracts.surface import CellFacts, DecisionSurface, TimePosition
 
 #: The dimension a sweep row gains when one arm was measured under more than one rig. Without it
 #: the two cells carry identical levels and draw as one configuration holding two ranks.
 _RIG_DIMENSION = "rig"
+
+#: The candidate's own spend — what an arm costs, the measure a frontier's cost axis names by default.
+_CANDIDATE_SPEND = "production_replicating_cost"
 
 #: The only unit a frontier's latency field is stated in — the payload names it ``latency_ms``.
 _LATENCY_UNIT = "ms"
@@ -344,7 +353,7 @@ def _distribution(ref: DistributionRef, surface: DecisionSurface, labels: dict[s
         "unit": readings[0].unit,
         # The value axis is the reading drawn, named — without it every distribution titles itself
         # "Distribution", and two on one page cannot be told apart.
-        "x_label": f"{ref.measure_id} (judged)" if ref.reading == "judged" else ref.measure_id,
+        "x_label": f"{ref.measure_id} (judged)" if ref.reading == "judged" else measure_title(ref.measure_id),
     }
 
 
@@ -480,6 +489,12 @@ def _frontier(ref: FrontierRef, surface: DecisionSurface, labels: dict[str, str]
     cells = _cells_or_all(surface, ref.cells, "frontier")
     cost_id = ref.cost_measure_id or _axis_default(surface, "cost", required=True)
     latency_id = ref.latency_measure_id or _axis_default(surface, "latency", required=False)
+    if cost_id in MEASURING_SPEND_MEASURES:
+        # A frontier's x is what shipping the arm costs; a measuring-spend measure adds the judge's bill to it.
+        raise UnresolvableReference(
+            f"frontier places cost on x as what each arm costs, and {cost_id!r} is measuring spend — every role, the "
+            f"judge's included; name the candidate's own spend, {_CANDIDATE_SPEND!r}, or another cost-axis measure"
+        )
 
     qualities = [_read(surface, cell, ref.quality) for cell in cells]
     _require_higher_is_better(qualities[0], "quality", "frontier")
@@ -624,7 +639,8 @@ def _quality_bar(surface: DecisionSurface, quality: ReadingRef) -> float | None:
 
 
 def _titled(name: str, unit: str | None) -> str:
-    return f"{name} ({unit})" if unit else name
+    """An axis title: the measure, labelled measuring spend where it is one, and its unit."""
+    return f"{measure_title(name)} ({unit})" if unit else measure_title(name)
 
 
 def _sweep_ranking(

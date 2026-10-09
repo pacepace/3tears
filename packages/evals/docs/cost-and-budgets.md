@@ -124,7 +124,12 @@ value and the call becomes the cell's `candidate` usage row: `value` is graded a
 would be, the result's `cost_usd` is derived from the row, the summary prints `candidate spend: $... over N
 call(s)`, and `compare`'s report tests the arms' spend against the control like any other reading. The
 contrast is on `production_replicating_cost`, the spend of the roles production runs: `cost_usd` and
-`program_cost` also sum what a judge spent, which is measuring cost and is never tested between arms. A
+`program_cost` also sum what a judge spent, which is measuring cost and is never tested between arms.
+Every surface that states what an arm costs reads the same figure: each cell of an analysis's decision
+surface carries `production_replicating_cost`, its table's cost column and a frontier chart's cost axis are
+that measure (a frontier refuses `cost_usd` there), and wherever `cost_usd` or `program_cost` is drawn it is
+labelled measuring spend. An analysis stored before cells carried the candidate's spend froze `cost_usd` on the
+cost axis; its table still shows that column, now labelled measuring spend. A
 field left `None` is unreported, not zero, so an `Answer` with no `cost_usd` leaves its result's cost
 unknown. A candidate that returns anything else reports no spend, as before.
 `examples/compare_two_models.py` prices each Claude call this way.

@@ -66,12 +66,41 @@ INDEX = [VariantIndexEntry(variant_key=KEYS[name], levers=levers) for name, leve
 
 #: Per arm: total/llm/tool latency (ms), cost (usd), pass rate, tokens, grounding (judged).
 VALUES = {
-    "A": {"total_ms": 1200.0, "llm_ms": 800.0, "tool_ms": 400.0, "cost_usd": 0.02, "pass_rate": 0.7, "tokens": 900.0},
-    "B": {"total_ms": 1000.0, "llm_ms": 650.0, "tool_ms": 350.0, "cost_usd": 0.01, "pass_rate": 0.9, "tokens": 700.0},
-    "C": {"total_ms": 1100.0, "llm_ms": 700.0, "tool_ms": 400.0, "cost_usd": 0.05, "pass_rate": 0.95, "tokens": 800.0},
+    "A": {
+        "total_ms": 1200.0,
+        "llm_ms": 800.0,
+        "tool_ms": 400.0,
+        "production_replicating_cost": 0.02,
+        "pass_rate": 0.7,
+        "tokens": 900.0,
+    },
+    "B": {
+        "total_ms": 1000.0,
+        "llm_ms": 650.0,
+        "tool_ms": 350.0,
+        "production_replicating_cost": 0.01,
+        "pass_rate": 0.9,
+        "tokens": 700.0,
+    },
+    "C": {
+        "total_ms": 1100.0,
+        "llm_ms": 700.0,
+        "tool_ms": 400.0,
+        "production_replicating_cost": 0.05,
+        "pass_rate": 0.95,
+        "tokens": 800.0,
+    },
 }
 GROUNDING = {"A": 3.5, "B": 4.0, "C": 4.5}
-POLARITY = {"total_ms": False, "llm_ms": False, "tool_ms": False, "cost_usd": False, "pass_rate": True, "tokens": False}
+POLARITY = {
+    "cost_usd": False,
+    "total_ms": False,
+    "llm_ms": False,
+    "tool_ms": False,
+    "production_replicating_cost": False,
+    "pass_rate": True,
+    "tokens": False,
+}
 SCOPE = {"llm_ms": "subsystem", "tool_ms": "subsystem"}
 STOPS = {
     "A": {"end_turn": 5, "max_tokens": 2, "tool_use": 1},
@@ -142,7 +171,7 @@ def measure_facts(latency_axis: tuple[str, ...] = ("total_ms", "llm_ms", "tool_m
         "total_ms": MeasureFacts(unit="ms", merit_axis=None, higher_is_better=False),
         "llm_ms": MeasureFacts(unit="ms", merit_axis=None, higher_is_better=False),
         "tool_ms": MeasureFacts(unit="ms", merit_axis=None, higher_is_better=False),
-        "cost_usd": MeasureFacts(unit="usd", merit_axis="cost", higher_is_better=False),
+        "production_replicating_cost": MeasureFacts(unit="usd", merit_axis="cost", higher_is_better=False),
         "pass_rate": MeasureFacts(unit=None, merit_axis="quality", higher_is_better=True),
         "tokens": MeasureFacts(unit="tokens", merit_axis=None, higher_is_better=False),
         "stop_reason": MeasureFacts(),
@@ -281,8 +310,8 @@ VALID: dict[str, Chart] = {
     ),
     "breakdown": chart("breakdown", [ref("A")], ["stop_reason"]),
     "attribution": chart("attribution", [ref("A"), ref("B")], ["total_ms", "llm_ms"]),
-    "frontier": chart("frontier", [], ["pass_rate", "cost_usd", "total_ms"]),
-    "sweep_ranking": chart("sweep_ranking", [], ["pass_rate", "cost_usd"]),
+    "frontier": chart("frontier", [], ["pass_rate", "production_replicating_cost", "total_ms"]),
+    "sweep_ranking": chart("sweep_ranking", [], ["pass_rate", "production_replicating_cost"]),
     "timeseries": chart("timeseries", [], ["total_ms"]),
 }
 
@@ -319,8 +348,8 @@ def test_every_referenceable_type_builds_a_payload_that_parses_and_compiles(viz_
         chart("breakdown", [ref("A")], ["llm_ms", "tool_ms"]),
         chart("attribution", [ref("A"), ref("B")], ["llm_ms", "tool_ms"]),
         chart("distribution", [ref("A"), ref("C")], [("reply.grounding", "judged")]),
-        chart("frontier", [ref("A"), ref("B")], ["pass_rate", "cost_usd", "total_ms"]),
-        chart("sweep_ranking", [ref("A"), ref("C")], ["pass_rate", "cost_usd"]),
+        chart("frontier", [ref("A"), ref("B")], ["pass_rate", "production_replicating_cost", "total_ms"]),
+        chart("sweep_ranking", [ref("A"), ref("C")], ["pass_rate", "production_replicating_cost"]),
     ],
     ids=[
         "numeric-breakdown",
@@ -355,7 +384,7 @@ def test_each_position_is_read_into_the_field_the_type_reads_it_as():
     frontier = reference_from_chart(VALID["frontier"])
     assert (frontier.quality.measure_id, frontier.cost_measure_id, frontier.latency_measure_id) == (
         "pass_rate",
-        "cost_usd",
+        "production_replicating_cost",
         "total_ms",
     )
     assert frontier.cells is None, "an empty `cells` means every cell"
@@ -648,7 +677,7 @@ def test_a_surface_frozen_before_standings_states_no_domination():
 def test_a_frontiers_axis_titles_are_computed_from_its_measures():
     """The authored chart carries no label, so each title is the measure's name and, when it has one, its unit."""
     payload = build(VALID["frontier"])
-    assert (payload["cost_label"], payload["quality_label"]) == ("cost_usd (usd)", "pass_rate")
+    assert (payload["cost_label"], payload["quality_label"]) == ("production_replicating_cost (usd)", "pass_rate")
 
     tokens = build(chart("frontier", [], ["pass_rate", "tokens"]), surface(latency_axis=()))
     assert tokens["cost_label"] == "tokens (tokens)"
@@ -668,7 +697,7 @@ def test_a_frontier_with_no_latency_measure_draws_none():
 
 
 def test_a_cell_that_never_priced_is_unplaced_not_free():
-    cells = [_cell("A"), _cell("B"), _cell("C", drop=("cost_usd",))]
+    cells = [_cell("A"), _cell("B"), _cell("C", drop=("production_replicating_cost",))]
     payload = build(VALID["frontier"], surface(cells))
 
     c = next(point for point in payload["points"] if point["label"] == LABEL["C"])
@@ -678,7 +707,9 @@ def test_a_cell_that_never_priced_is_unplaced_not_free():
 
 
 def test_a_judged_quality_draws_no_bar():
-    payload = build(valid("frontier", measures=[("reply.grounding", "judged"), "cost_usd", "total_ms"]))
+    payload = build(
+        valid("frontier", measures=[("reply.grounding", "judged"), "production_replicating_cost", "total_ms"])
+    )
 
     assert payload["bar"] is None
     assert payload["quality_label"] == "reply.grounding"
@@ -705,7 +736,7 @@ def test_a_sweep_ranks_descending_and_reads_its_configuration_off_the_variant_in
     assert payload["dimensions"] == [{"name": "max_rounds", "ordered": True}, {"name": "model", "ordered": False}]
     assert (payload["ranked"], payload["secondary"]) == (
         {"measure": "pass_rate", "unit": None},
-        {"measure": "cost_usd", "unit": "usd"},
+        {"measure": "production_replicating_cost", "unit": "usd"},
     )
     # Every configuration is drawn, unconstrained: the authored chart names no limit and no held value.
     assert "omitted" not in payload and "held_fixed" not in payload
@@ -840,7 +871,7 @@ CHART_REFUSALS = [
         id="frontier-judged-cost",
     ),
     pytest.param(
-        chart("sweep_ranking", [ref("A")], ["pass_rate", "cost_usd"]),
+        chart("sweep_ranking", [ref("A")], ["pass_rate", "production_replicating_cost"]),
         r"got 1 cell — name two or more, or none",
         id="sweep-one-cell",
     ),
@@ -920,14 +951,15 @@ def test_an_ambiguous_cost_default_names_the_candidates():
     facts["tokens"] = facts["tokens"].model_copy(update={"merit_axis": "cost"})
 
     with pytest.raises(
-        UnresolvableReference, match=r"cost axis \(cost_usd, tokens\) — name one as the chart's second measure"
+        UnresolvableReference,
+        match=r"cost axis \(production_replicating_cost, tokens\) — name one as the chart's second measure",
     ):
         build(chart("frontier", [], ["pass_rate"]), surface(facts=facts))
 
 
 def test_a_frontier_with_no_cost_measure_asks_for_one():
     facts = measure_facts(("total_ms",))
-    facts["cost_usd"] = facts["cost_usd"].model_copy(update={"merit_axis": None})
+    facts["production_replicating_cost"] = facts["production_replicating_cost"].model_copy(update={"merit_axis": None})
 
     with pytest.raises(UnresolvableReference, match=r"no measure on the cost axis"):
         build(chart("frontier", [], ["pass_rate"]), surface(facts=facts))
@@ -945,12 +977,12 @@ def test_a_lower_is_better_ranked_reading_is_refused():
     with pytest.raises(
         UnresolvableReference, match=r"ranked reading must be higher-is-better.*'total_ms' is lower-is-better"
     ):
-        build(chart("sweep_ranking", [], ["total_ms", "cost_usd"]))
+        build(chart("sweep_ranking", [], ["total_ms", "production_replicating_cost"]))
 
 
 def test_a_lower_is_better_frontier_quality_is_refused():
     with pytest.raises(UnresolvableReference, match=r"quality reading must be higher-is-better"):
-        build(valid("frontier", measures=["tokens", "cost_usd", "total_ms"]))
+        build(valid("frontier", measures=["tokens", "production_replicating_cost", "total_ms"]))
 
 
 def test_a_higher_is_better_cost_is_refused():
@@ -960,7 +992,7 @@ def test_a_higher_is_better_cost_is_refused():
 
 def test_a_latency_not_in_ms_is_refused():
     with pytest.raises(UnresolvableReference, match=r"states latency in ms, and 'tokens' is in tokens"):
-        build(valid("frontier", measures=["pass_rate", "cost_usd", "tokens"]))
+        build(valid("frontier", measures=["pass_rate", "production_replicating_cost", "tokens"]))
 
 
 def test_a_numeric_measure_named_as_categorical_points_at_the_other_form():
@@ -999,8 +1031,8 @@ def test_a_categorical_measure_cannot_be_a_numeric_part():
 @pytest.mark.parametrize(
     "authored",
     [
-        chart("breakdown", [ref("A")], ["llm_ms", "cost_usd"]),
-        chart("attribution", [ref("A"), ref("B")], ["total_ms", "cost_usd"]),
+        chart("breakdown", [ref("A")], ["llm_ms", "production_replicating_cost"]),
+        chart("attribution", [ref("A"), ref("B")], ["total_ms", "production_replicating_cost"]),
     ],
     ids=["breakdown", "attribution"],
 )
@@ -1073,3 +1105,29 @@ def test_a_measure_absent_at_a_named_cell_is_refused_naming_what_it_holds():
 
     with pytest.raises(UnresolvableReference, match=r"measured no such measure"):
         build(valid("delta_table", measures=["tokens"]), surface(cells))
+
+
+def _with_measuring_spend() -> DecisionSurface:
+    """The default surface with ``cost_usd`` beside the candidate's spend: the judge's bill, $0.03 a cell."""
+    cells = [
+        cell.model_copy(
+            update={
+                "measures": MeasureCollection(
+                    measures=sorted([*cell.measures.measures, _numeric("cost_usd", 0.03, 8, 8)], key=lambda m: m.name)
+                )
+            }
+        )
+        for cell in (_cell(arm) for arm in ("A", "B", "C"))
+    ]
+    facts = measure_facts() | {"cost_usd": MeasureFacts(unit="usd", merit_axis=None, higher_is_better=False)}
+    return surface(cells, facts=facts)
+
+
+def test_a_frontier_refuses_measuring_spend_as_what_an_arm_costs():
+    with pytest.raises(UnresolvableReference, match="'cost_usd' is measuring spend"):
+        build(valid("frontier", measures=["pass_rate", "cost_usd", "total_ms"]), _with_measuring_spend())
+
+
+def test_measuring_spend_is_labelled_as_such_wherever_it_is_drawn():
+    payload = build(chart("distribution", [ref("A"), ref("B")], ["cost_usd"]), _with_measuring_spend())
+    assert payload["x_label"] == "cost_usd, measuring spend"
