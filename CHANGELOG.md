@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Core: a derived collection takes its cross-pod build lock, so a tool pod can run one
+
+- **Added, `DerivedCollection(..., build_lock=)`** and `BuildLock` (`holding(key)`, raising
+  `BuildLockHeld` when another pod has the key). The default is unchanged: `NatsBuildLock` on
+  `build_lock_bucket`, which DECLARES its bucket, so only an infrastructure identity may use it. A
+  tool pod holds no stream-management verb and was refused at its first miss; it passes
+  `LeaseBuildLock(KVLease(nats, bucket_name="leases", create_if_missing=False, key_scope=...))`,
+  a fail-fast lease in the hub-declared bucket under its own key scope (a key outside the KV grammar
+  is hashed). Without a NATS client and no lock, a miss derives under the in-process gate alone, as
+  before.
+
 ### Agent tools: a large answer crosses the bus compressed for a caller that reads it so, and one too large is refused aloud
 
 - **Added, `CallContext.accept_encoding`**: the encoding the caller reads a result in, `"gzip"` or

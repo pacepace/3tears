@@ -22,9 +22,10 @@ from typing import Any
 
 import pytest
 
-from threetears.core.collections.derived import DerivedCollection
+from threetears.core.collections.derived import DerivedCollection, LeaseBuildLock
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.coordination.lease import KVLease
 from threetears.core.entities.base import BaseEntity
 from threetears.nats import NatsClient, set_default_namespace
 
@@ -203,3 +204,37 @@ class TestCrossPodSingleFlight:
         assert sorted(store.derivations) == [(1,), (2,)]
         # serialized would be ~2x the delay; concurrent is ~1x.
         assert elapsed < _PodCollection.derive_delay * 2
+
+
+def _make_leased_pod(store: _SharedStore, nats_client: NatsClient, pod_id: str) -> _PodCollection:
+    """a pod whose build lock is a lease in a bucket it binds, under one key scope shared by its replicas."""
+    registry = CollectionRegistry()
+    registry.configure(l1_backend=None, l2_client=None, l3_pool=None)
+    lease = KVLease(nats_client, bucket_name="derived-leases-it", pod_id=pod_id, key_scope="tool_pod-derivedit")
+    return _PodCollection(
+        registry, DefaultCoreConfig(), nats_client, None, store=store, build_lock=LeaseBuildLock(lease, ttl_seconds=30)
+    )
+
+
+class TestCrossPodSingleFlightOverALease:
+    """the lease-backed lock a tool pod takes, which binds a bucket the hub declared, single-flights the same."""
+
+    async def test_two_replicas_racing_one_key_derive_once(self, nats_clients: tuple[NatsClient, NatsClient]) -> None:
+        store = _SharedStore()
+        replica_a = _make_leased_pod(store, nats_clients[0], "replica-a")
+        replica_b = _make_leased_pod(store, nats_clients[1], "replica-b")
+        results = await asyncio.gather(replica_a.fetch_from_store((8,)), replica_b.fetch_from_store((8,)))
+        assert store.derivations == [(8,)], f"expected exactly one derivation, got {store.derivations}"
+        assert all(row is not None and row["value"] == "derived-8" for row in results)
+
+    async def test_the_lease_is_released_for_the_next_key_derivation(
+        self, nats_clients: tuple[NatsClient, NatsClient]
+    ) -> None:
+        store = _SharedStore()
+        replica_a = _make_leased_pod(store, nats_clients[0], "replica-a")
+        await replica_a.fetch_from_store((12,))
+        store.rows.clear()
+        replica_b = _make_leased_pod(store, nats_clients[1], "replica-b")
+        # the same key again: the first holder released it, so this derives at once rather than waiting
+        await replica_b.fetch_from_store((12,))
+        assert store.derivations == [(12,), (12,)]

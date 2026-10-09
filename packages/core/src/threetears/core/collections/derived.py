@@ -23,9 +23,8 @@ this class supplies the two things that quantization needs and
 - a **compute-on-miss** :meth:`fetch_from_store`, because a derived value has
   no row waiting in L3 the first time it is asked for. the miss path is
   single-flighted twice over: an in-process :class:`asyncio.Lock` so
-  concurrent tasks on one pod compute once, and
-  :func:`~threetears.nats.nats_distributed_lock` so concurrent *pods* compute
-  once. derivation is typically the expensive step -- if it were cheap there
+  concurrent tasks on one pod compute once, and a cross-pod :class:`BuildLock`
+  so concurrent *pods* compute once. derivation is typically the expensive step -- if it were cheap there
   would be no reason to cache it -- so an unguarded miss on a popular key is a
   stampede.
 
@@ -46,15 +45,125 @@ cached value outlives the inputs that justified it.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import re
 from abc import abstractmethod
-from typing import Any, ClassVar, Generic
+from collections.abc import AsyncIterator
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Protocol
 
 from threetears.core.collections.base import BaseCollection, EntityT
 from threetears.observe import get_logger, traced
 
-__all__ = ["DerivedCollection"]
+if TYPE_CHECKING:
+    from threetears.core.coordination.lease import KVLease
+    from threetears.nats.kv import KvCapable
+
+__all__ = ["BuildLock", "BuildLockHeld", "DerivedCollection", "LeaseBuildLock", "NatsBuildLock"]
 
 log = get_logger(__name__)
+
+#: the JetStream KV key grammar; a lease key outside it is hashed
+_KV_KEY_GRAMMAR: Final = re.compile(r"^[-/_=.a-zA-Z0-9]+$")
+
+
+class BuildLockHeld(Exception):
+    """another pod holds the build lock on this key: wait for its value rather than derive it too."""
+
+
+class BuildLock(Protocol):
+    """the cross-pod build lock: held while one pod derives a key, so the others wait for its value."""
+
+    def holding(self, key: str) -> AbstractAsyncContextManager[None]:
+        """hold the lock on ``key`` for the body.
+
+        :param key: the lock key (:meth:`DerivedCollection.build_lock_key`)
+        :ptype key: str
+        :return: a context manager holding the lock while it is entered
+        :rtype: AbstractAsyncContextManager[None]
+        :raises BuildLockHeld: on entry, when another holder has it
+        """
+        ...
+
+
+class NatsBuildLock:
+    """the build lock on a bucket of its own (:func:`~threetears.nats.nats_distributed_lock`), declared on first use.
+
+    The default, for an infrastructure identity that may declare a bucket. A tool pod may not -- its
+    grant holds no stream-management verb -- so a pod's collection takes a :class:`LeaseBuildLock` over
+    a bucket the hub declared.
+
+    :param client: the connected NATS client
+    :ptype client: KvCapable
+    :param bucket_name: the lock bucket's suffix; it pins one TTL for every key in it
+    :ptype bucket_name: str
+    """
+
+    def __init__(self, client: KvCapable, bucket_name: str) -> None:
+        self._client = client
+        self._bucket_name = bucket_name
+
+    @asynccontextmanager
+    async def holding(self, key: str) -> AsyncIterator[None]:
+        """hold ``key`` for the body.
+
+        :param key: the lock key
+        :ptype key: str
+        :return: an iterator yielding once, while the lock is held
+        :rtype: AsyncIterator[None]
+        :raises BuildLockHeld: when another holder has it
+        """
+        from threetears.nats import LockHeld, nats_distributed_lock
+
+        try:
+            # cancel_on_loss=False: the build lock only stops a stampede of identical
+            # derivations; losing it mid-build costs one duplicate compute, and interrupting
+            # the build would fail the read that is waiting on it. LockHeld is raised only on
+            # entry: the body is a derivation, which takes no lock of this kind.
+            async with nats_distributed_lock(self._client, key, bucket_name=self._bucket_name, cancel_on_loss=False):
+                yield
+        except LockHeld as exc:
+            raise BuildLockHeld(key) from exc
+
+
+class LeaseBuildLock:
+    """the build lock as a lease (:class:`~threetears.core.coordination.lease.KVLease`) in a bucket another identity declared.
+
+    What a tool pod's derived collection takes: the pod binds the hub-declared ``leases`` bucket
+    (``create_if_missing=False``) under its own key scope, so replicas of one pod contend for one key
+    and no other pod can see or release it. The lease is never renewed: a build outliving
+    ``ttl_seconds`` lets one more pod derive the same value, which is what the lock exists to make
+    rare, not impossible. A key outside the KV grammar is hashed.
+
+    :param lease: the lease factory, bound to its bucket and key scope
+    :ptype lease: KVLease
+    :param ttl_seconds: how long a holder that died keeps the others waiting
+    :ptype ttl_seconds: int
+    """
+
+    def __init__(self, lease: KVLease, *, ttl_seconds: int = 60) -> None:
+        self._lease = lease
+        self._ttl_seconds = ttl_seconds
+
+    @asynccontextmanager
+    async def holding(self, key: str) -> AsyncIterator[None]:
+        """hold ``key`` for the body, refusing at once when it is held.
+
+        :param key: the lock key
+        :ptype key: str
+        :return: an iterator yielding once, while the lease is held
+        :rtype: AsyncIterator[None]
+        :raises BuildLockHeld: when another holder has it
+        """
+        from threetears.core.coordination.lease import LeaseUnavailable
+
+        name = key if _KV_KEY_GRAMMAR.match(key) else hashlib.sha256(key.encode("utf-8")).hexdigest()
+        try:
+            handle = await self._lease.acquire(name, ttl_seconds=self._ttl_seconds, max_wait_seconds=0)
+        except LeaseUnavailable as exc:
+            raise BuildLockHeld(key) from exc
+        async with handle:
+            yield
 
 
 class DerivedCollection(BaseCollection[EntityT], Generic[EntityT]):
@@ -80,8 +189,21 @@ class DerivedCollection(BaseCollection[EntityT], Generic[EntityT]):
     #: a fast peer releases the waiter promptly.
     peer_poll_interval: ClassVar[float] = 0.1
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
+    def __init__(self, *args: Any, build_lock: BuildLock | None = None, **kwargs: Any) -> None:
+        """build the collection as :class:`BaseCollection` does, with the cross-pod build lock.
+
+        :param args: :class:`BaseCollection`'s positional arguments
+        :ptype args: Any
+        :param build_lock: the cross-pod build lock; ``None`` takes a :class:`NatsBuildLock` on
+            :attr:`build_lock_bucket` when there is a NATS client, and none without one
+        :ptype build_lock: BuildLock | None
+        :param kwargs: :class:`BaseCollection`'s keyword arguments
+        :ptype kwargs: Any
+        """
         super().__init__(*args, **kwargs)
+        if build_lock is None and self._nats_client is not None:
+            build_lock = NatsBuildLock(self._nats_client, self.build_lock_bucket)
+        self._build_lock = build_lock
         # per-key in-process gate, dropped once nobody holds or awaits it, so
         # this does not grow with the number of keys ever seen. the lock's own
         # ``locked()`` is the liveness signal -- a separate reference count
@@ -217,31 +339,17 @@ class DerivedCollection(BaseCollection[EntityT], Generic[EntityT]):
     async def _derive_cross_pod(self, key: tuple[Any, ...]) -> dict[str, Any] | None:
         """hold the cross-pod build lock, then derive and persist.
 
-        with no NATS client there is no peer pod to coordinate with: the
+        with no build lock there is no peer pod to coordinate with: the
         in-process gate the caller holds is the whole single-flight, so the
-        value is derived directly and the lock -- which needs the optional NATS
-        client, core's ``nats`` extra -- is never imported. a deployment with a
-        NATS client derives under the lock and so needs the extra.
+        value is derived directly.
         """
-        if self._nats_client is None:
+        if self._build_lock is None:
             return await self._derive_and_save(key)
-
-        from threetears.nats import LockHeld, nats_distributed_lock
-
-        lock_key = self.build_lock_key(key)
         try:
-            # cancel_on_loss=False: the build lock only stops a stampede of identical
-            # derivations; losing it mid-build costs one duplicate compute, and interrupting
-            # the build would fail the read that is waiting on it.
-            async with nats_distributed_lock(
-                self._nats_client,
-                lock_key,
-                bucket_name=self.build_lock_bucket,
-                cancel_on_loss=False,
-            ):
+            async with self._build_lock.holding(self.build_lock_key(key)):
                 # a peer POD may have derived it while we queued.
                 return await self._derive_and_save(key)
-        except LockHeld:
+        except BuildLockHeld:
             return await self._await_peer_derivation(key)
 
     async def _derive_and_save(self, key: tuple[Any, ...]) -> dict[str, Any] | None:
