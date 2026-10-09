@@ -299,7 +299,13 @@ from threetears.evals.contracts.declaration import (
 from threetears.evals.contracts.dsl import ExtractedPaths
 from threetears.evals.contracts.identity import DerivedContextIdentity, DerivedVariantIdentity, LeverCoordinateError
 from threetears.evals.contracts.judge_attribution import JudgeAttributionState
-from threetears.evals.contracts.metrics import MeasurePopulation, MeritAxis, MetricDataType, TransferabilityClass
+from threetears.evals.contracts.metrics import (
+    MeasurePopulation,
+    MeasureScale,
+    MeritAxis,
+    MetricDataType,
+    TransferabilityClass,
+)
 from threetears.evals.contracts.models import (
     ApparatusProvenance,
     AsyncExternalSpend,
@@ -514,6 +520,7 @@ __all__ = [
     "MeasureCollection",
     "MeasureFacts",
     "MeasurePopulation",
+    "MeasureScale",
     "MeasureRef",
     "MeasureSummary",
     "MeritAxis",

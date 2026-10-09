@@ -135,6 +135,7 @@ from threetears.evals.contracts.metrics import (
     AttributionScope,
     ClassifierStatistic,
     MeasurePopulation,
+    MeasureScale,
     MeritAxis,
     MetricDescriptor,
     classifier_label_measure,
@@ -1079,6 +1080,10 @@ class JudgedMeasure(EvalDocumentModel):
         description="The registry family — `rubric` for a template dimension, `dual_axis` for a reserved axis.",
     )
     value_range: tuple[float, float] | None = Field(default=None, description="The scale the scores are on.")
+    scale: MeasureScale | None = Field(
+        default=None,
+        description="`interval` for a 1-5 score (only differences mean anything), `ratio` for a pass rate.",
+    )
     higher_is_better: bool = Field(default=True, description="Which end of the scale is better.")
     off_ranking_reason: str = Field(
         default=JUDGED_OFF_RANKING_REASON,
@@ -6301,6 +6306,7 @@ def _judged_measures(
                 name=dimension,
                 family=str(descriptor.family),
                 value_range=descriptor.value_range,
+                scale=descriptor.scale,
                 higher_is_better=bool(descriptor.higher_is_better),
                 bar_threshold=bars.get(dimension),
                 arms=arms,
@@ -7489,6 +7495,7 @@ def cell_measure_facts(bundle: AnalysisContextBundle) -> dict[str, MeasureFacts]
             higher_is_better=bundle.measure_catalog[name].higher_is_better,
             materiality_threshold=bundle.measure_catalog[name].materiality_threshold,
             population=bundle.measure_catalog[name].population,
+            scale=bundle.measure_catalog[name].scale,
         )
         for name in names
     }
@@ -7513,7 +7520,9 @@ def cell_dimension_facts(bundle: AnalysisContextBundle) -> dict[str, JudgedDimen
     names = sorted({reading.dimension for cell in bundle.cell_measures for reading in cell.judged})
     return {
         name: JudgedDimensionFacts(
-            higher_is_better=described[name].higher_is_better, value_range=described[name].value_range
+            higher_is_better=described[name].higher_is_better,
+            value_range=described[name].value_range,
+            scale=described[name].scale,
         )
         for name in names
     }

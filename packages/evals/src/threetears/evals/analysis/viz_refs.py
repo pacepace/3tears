@@ -303,6 +303,10 @@ def _delta_table(ref: DeltaTableRef, surface: DecisionSurface, labels: dict[str,
         # A measure's threshold is frozen on the surface; a judged dimension declares none, so its
         # every difference is material.
         facts = surface.measures.get(reading_ref.measure_id) if reading_ref.reading == "measure" else None
+        # Whether a relative change means anything: frozen beside the measure or the dimension. A 1-5 score's
+        # zero is below its scale, so its rows state the points moved and no percent.
+        dimension = surface.dimensions.get(reading_ref.measure_id) if reading_ref.reading == "judged" else None
+        scale = facts.scale if facts is not None else dimension.scale if dimension is not None else None
         rows.append(
             {
                 "metric": reading_ref.measure_id,
@@ -312,6 +316,7 @@ def _delta_table(ref: DeltaTableRef, surface: DecisionSurface, labels: dict[str,
                 "unit": a.unit,
                 "delta": b.mean - a.mean,
                 "materiality": materiality(facts.materiality_threshold if facts else None, b.mean - a.mean),
+                "scale": scale,
                 # The smaller arm bounds any test the pair could support; the bundle carries no
                 # paired statistic, so no test was run and the row says so through `significant`.
                 "n": min(a.n, b.n),

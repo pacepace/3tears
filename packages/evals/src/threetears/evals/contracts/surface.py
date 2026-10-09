@@ -33,7 +33,7 @@ from typing import Literal
 from pydantic import Field, field_validator, model_validator
 
 from threetears.evals.contracts.analysis_measures import BarAdjudication, MeasureCollection
-from threetears.evals.contracts.metrics import MeasurePopulation, MeritAxis
+from threetears.evals.contracts.metrics import MeasurePopulation, MeasureScale, MeritAxis
 from threetears.evals.contracts.base import EvalDocumentModel
 from threetears.evals.contracts.evidence_tiers import JudgedEvidenceTier
 from threetears.evals.contracts.models import DimName
@@ -103,6 +103,13 @@ class MeasureFacts(EvalDocumentModel):
             "it was actually computed over."
         ),
     )
+    scale: MeasureScale | None = Field(
+        default=None,
+        description=(
+            "`interval` when the measure's zero is arbitrary, so a chart states no relative change in it; `ratio` "
+            "when it is none of it; None when undeclared — and on a surface frozen before the field existed."
+        ),
+    )
 
 
 class JudgedDimensionFacts(EvalDocumentModel):
@@ -117,6 +124,13 @@ class JudgedDimensionFacts(EvalDocumentModel):
     higher_is_better: bool = Field(default=True, description="Which end of the scale is better.")
     value_range: tuple[float, float] | None = Field(
         default=None, description="The scale the scores are on, when declared."
+    )
+    scale: MeasureScale | None = Field(
+        default=None,
+        description=(
+            "`interval` for a 1-5 score, whose zero is below the scale, so no chart states a relative change in "
+            "it; `ratio` for a pass rate. None on a surface frozen before the field existed."
+        ),
     )
 
 
