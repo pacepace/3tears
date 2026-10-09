@@ -381,13 +381,26 @@ class TestCostAndLatencyAreReadOverTurnsTaken:
         # The 53 ms refusals are not turns: the latency is the two answered turns', not (2×400 + 2×53) / 4.
         latency = summaries["total_ms"]
         assert (latency.mean, latency.n, latency.population) == (400.0, 2, "delivered")
-        # The billed refusals observed spend, and are still no turn's cost.
-        for spend in ("cost_usd", _TURN_COST):
-            assert (summaries[spend].mean, summaries[spend].n, summaries[spend].population) == (
-                0.002,
-                2,
-                "delivered",
-            )
+        # The billed refusals observed spend, and are still no turn's cost on the cost axis.
+        turn = summaries[_TURN_COST]
+        assert (turn.mean, turn.n, turn.population) == (0.002, 2, "delivered")
+        # `cost_usd` is measuring spend, so every dollar billed counts — the refusals' too, as the pivot, the
+        # history series and a run summary's program total read it.
+        spend = summaries["cost_usd"]
+        assert (spend.mean, spend.n, spend.population) == (
+            pytest.approx((2 * 0.002 + 2 * 0.0001) / 4),
+            4,
+            "all_observed",
+        )
+
+    def test_a_cell_s_measuring_spend_is_the_run_summary_s_program_mean(self) -> None:
+        """One population for `cost_usd` on every surface: the cell, the run summary, the pivot and history."""
+        from threetears.evals.contracts.scoring import compute_cost_summary
+
+        arms = _three_arms()
+        spend = _summaries(_cell(_bundle(arms), _FLAKY))["cost_usd"]
+        (program,) = compute_cost_summary(arms[_FLAKY]).values()
+        assert (spend.mean, spend.n) == (pytest.approx(program["mean_cost_usd"]), program["n_cost_usd"])
 
     def test_the_failures_still_count_against_the_arm_in_its_pass_rate(self) -> None:
         rate = _summaries(_cell(_bundle(), _FLAKY))[_CHECK_RATE]
@@ -790,7 +803,9 @@ class TestUnmeasuredCostIsReadOverTurnsTaken:
         bundle = _bundle(arms)
         flaky = _cell(bundle, _FLAKY)
         assert [cell.variant_key for cell in bundle.cost_unmeasured_cells] == [flaky.variant_key]
-        assert "cost_usd" not in _summaries(flaky)
+        # Measuring spend states what was billed and over how many: the two refusals, never the unpriced turns.
+        spend = _summaries(flaky)["cost_usd"]
+        assert (spend.mean, spend.n) == (pytest.approx(0.0001), 2)
 
 
 # =============================================================================

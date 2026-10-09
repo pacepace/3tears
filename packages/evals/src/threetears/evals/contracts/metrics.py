@@ -243,15 +243,17 @@ MeasureScale = Literal["ratio", "interval"]
 #: took — and are therefore read over ``delivered`` unless the measure declares otherwise.
 DELIVERED_AXES: frozenset[MeritAxis] = frozenset({"cost", "latency"})
 
-#: The engine's blended spend, read over ``delivered`` like a cost-axis measure though it serves no axis. It
-#: serves none only because it sums the judge's spend beside the candidate's — what it cost to MEASURE a
-#: result, not what the candidate costs — and that does not make a refused call's spend a turn's.
-_DELIVERED_SPEND = "cost_usd"
+#: The engine's blended spend: what it cost to MEASURE a result, the judge's and simulator's spend beside the
+#: candidate's. It is measuring spend, not a turn's, so it is read over every result (``all_observed``) on every
+#: surface — the cells, bars and comparisons alike, as the pivot, the history series and a run summary's program
+#: total read it — because a refused call and a faulted cell were still billed. What an arm COSTS is
+#: ``production_replicating_cost``, a cost-axis measure read over the turns taken (#619).
+_BLENDED_SPEND = "cost_usd"
 
 #: The engine's spend measures that sum every role — the judge's and simulator's beside the candidate's: what it
 #: cost to MEASURE an arm, never what the arm costs. The candidate's own spend is ``production_replicating_cost``,
 #: the cost axis's measure (see ``docs/cost-and-budgets.md``).
-MEASURING_SPEND_MEASURES: frozenset[str] = frozenset({_DELIVERED_SPEND, "program_cost"})
+MEASURING_SPEND_MEASURES: frozenset[str] = frozenset({_BLENDED_SPEND, "program_cost"})
 
 
 def measure_title(name: str) -> str:
@@ -271,12 +273,13 @@ def measure_title(name: str) -> str:
 
 
 def reads_turns(descriptor: MetricDescriptor) -> bool:
-    """Whether a measure describes a turn's time or spend — a cost or latency axis, or ``cost_usd``.
+    """Whether a measure describes a turn's time or spend — a cost or latency axis.
 
     The one membership test for the measures ``delivered`` is for: :func:`summary_population` reads them over
-    it, and :class:`MetricDescriptor` refuses ``delivered`` declared on any other.
+    it, and :class:`MetricDescriptor` refuses ``delivered`` declared on any other. ``cost_usd`` is not one: it is
+    measuring spend, which every surface reads over every result (:data:`_BLENDED_SPEND`).
     """
-    return descriptor.merit_axis in DELIVERED_AXES or descriptor.name == _DELIVERED_SPEND
+    return descriptor.merit_axis in DELIVERED_AXES
 
 
 # Loosest to strictest. `strictest_class` relies on this ordering, and the lint that
@@ -723,6 +726,9 @@ _SEED: tuple[MetricDescriptor, ...] = (
         attribution_scope="end_to_end",
         higher_is_better=False,
         unit="usd",
+        # Measuring spend keeps every dollar billed, a refused call's and a faulted cell's included: the rule the
+        # pivot, the history series and a run summary's program total read it by (see _BLENDED_SPEND).
+        population="all_observed",
         description=(
             "Blended program spend for the result. Authoritative for spend; the per-role rows decompose "
             "it but never re-total it. WHAT IT SUMS VARIES: metered third-party spend is included only for a "
