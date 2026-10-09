@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis import TableBlock, report_markdown, variant_key_of_run
+from threetears.evals.analysis import DisclosureBlock, TableBlock, report_markdown, variant_key_of_run
 from threetears.evals.contracts.host import CANDIDATE_MODEL_LEVER
 from threetears.evals.quick import Comparison, callable_host, compare
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
@@ -148,6 +148,22 @@ async def test_the_arms_share_a_host_the_caller_hands_over() -> None:
     comparison = await _compare(host=host)
     assert comparison.host is host
     assert host.storage.load_campaign(comparison.campaign_id, SCOPE) is not None
+
+
+async def test_every_arm_is_started_in_one_launch_so_the_report_discloses_no_separate_starts() -> None:
+    """The arms are one launch group, started together, so their runs interleave and no timing disclosure fires.
+
+    Run one after another, each arm was its own launch over its own window, and the code-only report said
+    so twice: the runs "were not started as one launch", and they "were measured over non-overlapping spans".
+    """
+    comparison = await _compare()
+    runs = [comparison.host.storage.load_eval_run(summary.run_id, SCOPE) for summary in comparison.arms.values()]
+    groups = {run.launch_group_id for run in runs if run is not None}
+    assert len(groups) == 1 and None not in groups
+    disclosures = [block.text for block in comparison.report.blocks if isinstance(block, DisclosureBlock)]
+    assert disclosures
+    assert not [text for text in disclosures if "not started as one launch" in text]
+    assert not [text for text in disclosures if "non-overlapping spans" in text]
 
 
 @pytest.mark.parametrize(

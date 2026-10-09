@@ -4,9 +4,12 @@ The second rung of adopting the engine. :func:`~threetears.evals.quick.run_eval`
 a newcomer's next question is whether a changed prompt or a different model does better, and that is a
 campaign with a control. Everything here is the engine's own path, composed:
 
-- **Each arm is one** :func:`~threetears.evals.quick.run_eval` **run**, labelled by its arm name, all into
-  one host and one scope. The arm name is the run's candidate model, so it is what the variant key is
-  built from: two arms with different names are two variants, over one content-addressed case set.
+- **Each arm is one run**, as :func:`~threetears.evals.quick.run_eval` makes it, labelled by its arm name,
+  all into one host and one scope. The arm name is the run's candidate model, so it is what the variant key
+  is built from: two arms with different names are two variants, over one content-addressed case set.
+- **Every arm is started in one launch.** The arms' runs are one launch group, every one prepared (every
+  refusal made) before any starts and all started together, so they are measured side by side rather than
+  one after another, and a refusal on the last arm leaves none run.
 - **The campaign declares its design** — one axis, the candidate-model lever, at a level per arm; a
   controlled stimulus, since every arm saw the same cases; a commissioned apparatus, since the runs were
   launched for it; and the repeats each arm ran — through
@@ -48,7 +51,15 @@ from threetears.evals.contracts import DEFAULT_LAUNCH_K_RUNS, CassetteMode
 from threetears.evals.contracts.host import CANDIDATE_MODEL_LEVER, EvalHost
 from threetears.evals.ops.summary import EvalSummary
 from threetears.evals.quick.levers import refuse_unusable_lever_names
-from threetears.evals.quick.one_call import CALLABLE_KIND, Candidate, ExpectedLabel, Scorer, callable_host, run_eval
+from threetears.evals.quick.one_call import (
+    CALLABLE_KIND,
+    Candidate,
+    ExpectedLabel,
+    Scorer,
+    _Arm,
+    _run_arms,
+    callable_host,
+)
 from threetears.evals.quick.tools import Tool, ToolUsingCandidate
 from threetears.evals.quick.world import CaseSeed, World, WorldCandidate
 
@@ -340,26 +351,32 @@ async def compare(
     levers = tuple(factor for factor in named if factor != CANDIDATE_MODEL_LEVER)
     if host is None:
         host = callable_host(scorers, levers=levers, world=world)
-    arms: dict[ArmKey, EvalSummary] = {}
-    for arm, candidate in arms_given.items():
-        coordinates = _coordinates(arm, named)
-        arms[arm] = await run_eval(
-            cases,
-            candidate,
-            scorers,
-            scope_id=scope_id,
-            expected=expected,
-            host=host,
-            k=k,
-            model=coordinates[CANDIDATE_MODEL_LEVER],
-            levers={lever: coordinates[lever] for lever in levers} or None,
-            tools=tools,
-            cassette_mode=cassette_mode,
-            cassette_corpus_id=cassette_corpus_id,
-            world=world,
-            seed=seed,
-            goal_checks=goal_checks,
-        )
+    coordinates = {arm: _coordinates(arm, named) for arm in arms_given}
+    # Every arm in ONE launch, started together, so the arms are measured side by side rather than one after
+    # another: what differs between their runs is their settings, not when they ran.
+    summaries = await _run_arms(
+        cases,
+        [
+            _Arm(
+                candidate,
+                model=coordinates[arm][CANDIDATE_MODEL_LEVER],
+                levers={lever: coordinates[arm][lever] for lever in levers} or None,
+            )
+            for arm, candidate in arms_given.items()
+        ],
+        scorers,
+        scope_id=scope_id,
+        expected=expected,
+        host=host,
+        k=k,
+        tools=tools,
+        cassette_mode=cassette_mode,
+        cassette_corpus_id=cassette_corpus_id,
+        world=world,
+        seed=seed,
+        goal_checks=goal_checks,
+    )
+    arms: dict[ArmKey, EvalSummary] = dict(zip(arms_given, summaries, strict=True))
     if name is None:
         if named == _MODEL_ONLY:
             name = " vs ".join(_label(arm, named) for arm in [control, *(arm for arm in arms if arm != control)])
