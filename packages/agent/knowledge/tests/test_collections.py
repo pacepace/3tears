@@ -465,3 +465,22 @@ class TestTheScannedTablesAreSwitchedOn:
 
         assert set(KNOWLEDGE_SCAN_TABLES) == {"concepts", "playbook_entries", "datasources", "datasource_tables"}
         assert set(KNOWLEDGE_SCAN_TABLES) <= tables_with_write_generation()
+
+
+class TestAScanIsDroppedWhenAnAccessTableItDependsOnChanges:
+    """the broker narrows a knowledge read through the roles a grant holds, so a role change must reach the scan."""
+
+    @pytest.mark.parametrize("table", ["roles", "groups", "group_members", "role_assignments", "namespaces"])
+    @pytest.mark.parametrize("kind", ["concepts", "entries"])
+    async def test_a_change_to_the_table_drops_the_cached_scan(self, table: str, kind: str) -> None:
+        cache = ScanCache(SQLiteBackend(db_name=f"scan-{uuid7().hex}"), trusted=lambda _tables: True)
+        rows = [_concept_row()] if kind == "concepts" else [_entry_row()]
+        pool = _StubPool(rows)
+        registry = _registry_with_scan_cache(cache, pool)
+        cls = ConceptCollection if kind == "concepts" else PlaybookEntryCollection
+        coll = cls(registry=registry, config=_config(), nats_client=None)
+        user_id, customer_scope = uuid7(), uuid7()
+
+        await coll.list_visible_to_user(user_id, customer_scope=customer_scope)
+
+        assert cache.drop_for_table(table) == 1, f"a change to {table} left the cached scan in place"

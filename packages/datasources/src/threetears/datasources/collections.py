@@ -35,10 +35,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, ClassVar
 from uuid import UUID
 
-from threetears.core.collections import WRITE_GENERATION
+from threetears.core.collections import WRITE_GENERATION, DeleteCascade
 from threetears.core.backends import L3Backend, parse_rowcount
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.schema_backed import (
@@ -1432,6 +1432,12 @@ class TableTemplateCollection(BaseCollection[TableTemplateEntity]):
     from ``table_template_columns.template_id`` is ``ON DELETE
     CASCADE`` so the per-template column list goes with it.
     """
+
+    # datasource_tables.template_id is ON DELETE SET NULL: a bound table's cached row would keep
+    # naming the deleted template, so every delete announces the tables it unbinds
+    delete_cascades: ClassVar[tuple[DeleteCascade, ...]] = (
+        DeleteCascade("datasource_tables", "template_id", "SET NULL"),
+    )
 
     @property
     def table_name(self) -> str:

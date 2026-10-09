@@ -53,11 +53,13 @@ see "What Must Already Be Deployed Everywhere" in the note.
   own collections after (`threetears.core.collections.delete_cascade.read_delete_cascade` /
   `announce_delete_cascade`, which a raw-SQL delete calls itself); a reached table with no
   collection here is advanced with no rows. `NamespaceCollection` declares its grants'
-  (`role_assignments.scope_namespace_id`).
+  (`role_assignments.scope_namespace_id`) and `TableTemplateCollection` the tables it unbinds
+  (`datasource_tables.template_id`).
 - **Added:** `BaseCollection.scan_ticket()` and `write_to_cache_sync(..., read_since=)`
   (`ScanReadTicket`): a row a scan read is cached in L1 only while nothing of the collection was
   written or evicted since the ticket was taken, so a scan can no longer cache a row older than a
-  write it overlapped. Every scan in the framework passes it, and an enforcement test holds every
+  write it overlapped. A `write_to_cache_sync` with no ticket (a row the process decided, such as
+  an upsert's) is recorded as a change, so no read in flight caches its older row over it. Every scan in the framework passes it, and an enforcement test holds every
   `async` method to it.
 - **Switched on:** `concepts`, `playbook_entries` (`threetears.agent.knowledge`), `datasources` and
   `datasource_tables` (`threetears.datasources`). A process caching knowledge scans follows them

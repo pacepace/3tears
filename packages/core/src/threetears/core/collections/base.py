@@ -1811,7 +1811,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         :ptype primary_key: str | tuple[str, ...] | None
         :param read_since: for a row a read returned, the :meth:`scan_ticket` taken before that
             read; the row is cached only while nothing of this collection changed since.
-            ``None`` for a row this process decided itself, which is newest by construction.
+            ``None`` for a row this process decided itself, which is newest by construction and is
+            recorded as a change, so no read in flight caches the row it read over it.
         :ptype read_since: ScanReadTicket | None
         :return: ``True`` on successful write, ``False`` when L1 is absent or the read was overtaken
         :rtype: bool
@@ -1821,6 +1822,11 @@ class BaseCollection(ABC, Generic[EntityT]):
         if read_since is not None and not self._l1_fence.scan_still_newest(read_since):
             return False
         pk: str | tuple[str, ...] = primary_key if primary_key is not None else self.primary_key_columns
+        if read_since is None:
+            # a row this process decided: every read in flight, a scan's included, read it as it
+            # was before, so none of them may cache what it read over this one
+            columns = (pk,) if isinstance(pk, str) else pk
+            self._l1_fence.changed(tuple(str(data.get(column)) for column in columns))
         self._l1_upsert(data, pk)
         return True
 

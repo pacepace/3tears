@@ -1505,6 +1505,18 @@ class TestAScanCachesOnlyWhatIsStillNewest:
         later = coll.scan_ticket()
         assert coll.write_to_cache_sync({"id": "e1", "name": "After", "score": 2}, read_since=later) is True
 
+    def test_a_row_this_process_decided_during_the_scan_is_not_overwritten_by_it(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        """a write that caches its own row with no ticket (an upsert's RETURNING) still reaches the fence."""
+        coll = StubCollection(registry, config_always)
+        ticket = coll.scan_ticket()  # the scan's L3 read sees the old row
+        assert coll.write_to_cache_sync({"id": "e1", "name": "Decided", "score": 2}) is True
+        assert coll.write_to_cache_sync({"id": "e1", "name": "Old", "score": 1}, read_since=ticket) is False
+        row = coll.get_row_sync("e1")
+        assert row is not None
+        assert row["name"] == "Decided"
+
     @pytest.mark.asyncio
     async def test_a_write_in_flight_or_begun_during_the_scan_refuses_its_rows(
         self, registry: CollectionRegistry, config_always: DefaultCoreConfig

@@ -25,7 +25,7 @@ import json
 from typing import Any
 from uuid import UUID
 
-from threetears.agent.acl import three_scope_visibility_clause
+from threetears.agent.acl import ACCESS_TABLES, three_scope_visibility_clause
 from threetears.core.collections import WRITE_GENERATION
 from threetears.core.collections.scan_cache import ScanCacheKey
 from threetears.core.collections.schema_backed import (
@@ -47,24 +47,19 @@ from threetears.knowledge import (
 )
 
 
-#: Every table the concept visibility scan reads. The RBAC tables are not optional:
-#: the visibility clause JOINs ``role_assignments``, ``group_members`` and ``namespaces``,
-#: so a REVOKED GRANT must evict the cached result. Declaring only the data table would
-#: turn a staleness window into an authorization one. ``datasources`` is read by the
-#: origin-link subquery of a datasource-scoped scan, so linking or unlinking a datasource
-#: evicts the widened (or narrowed) knowledge set. Nothing here ages: a scan is cached
-#: only while every one of these tables is followed (``ScanCache``).
-_CONCEPT_SCAN_DEPENDS_ON = (
-    "concepts",
-    "datasource_tables",
-    "datasources",
-    "role_assignments",
-    "group_members",
-    "namespaces",
-)
+#: Every table the concept visibility scan reads, and every table the access decision that narrows
+#: it reads. The access tables are not optional: the visibility clause JOINs role_assignments,
+#: group_members and namespaces, and the broker narrows an agent's read through the roles
+#: its grants hold (roles, reached through groups), so a revoked grant or a role that lost a
+#: permission must evict the cached result. Declaring only the data table would turn a staleness
+#: window into an authorization one. datasources is read by the origin-link subquery of a
+#: datasource-scoped scan, so linking or unlinking a datasource evicts the widened (or narrowed)
+#: knowledge set. Nothing here ages: a scan is cached only while every one of these tables is
+#: followed (ScanCache).
+_CONCEPT_SCAN_DEPENDS_ON: tuple[str, ...] = ("concepts", "datasource_tables", "datasources", *ACCESS_TABLES)
 
 #: Same, for the entry scan.
-_ENTRY_SCAN_DEPENDS_ON = ("playbook_entries", "datasources", "role_assignments", "group_members", "namespaces")
+_ENTRY_SCAN_DEPENDS_ON: tuple[str, ...] = ("playbook_entries", "datasources", *ACCESS_TABLES)
 
 #: the tables beyond the access tables that a knowledge scan depends on: a process that caches
 #: these scans follows them (``threetears.agent.acl.generation_follow.follow_tables``) beside the
