@@ -1743,6 +1743,10 @@ class ContextComponents(EvalDocumentModel):
 # =============================================================================
 
 
+#: ``budget_stopped`` is a budget the run was launched under binding — its cost cap or its wall-clock
+#: budget, ``EvalRun.budget_stop_reason`` says which: a designed stop that keeps what the run delivered,
+#: never ``failed``.
+#:
 #: ``exhausted`` is the account-side twin of ``budget_stopped``: the provider account paying for the
 #: run refused a candidate call (out of credit, or the key refused), so every later cell would be
 #: refused the same way. The run stops, keeps what it delivered, and names the account — not the
@@ -2129,10 +2133,11 @@ class EvalRun(EvalDocumentModel):
     the exact set captured here.  That's the idempotency property that lets
     run-vs-run comparison subtract the same denominator.
 
-    ``budget_stopped`` is a run the per-run cost cap stopped GRACEFULLY
-    mid-flight once its accumulated spend exceeded the cap, with its already-delivered
-    results preserved. That is an honest terminal outcome, not an infra failure, so it
-    is its own status rather than ``failed``.
+    ``budget_stopped`` is a run a budget it was launched under stopped GRACEFULLY
+    mid-flight, with its already-delivered results preserved: the per-run cost cap, once
+    its accumulated spend exceeded the cap, or the job's wall-clock budget (sized to the
+    matrix), once it ran out. ``budget_stop_reason`` says which. That is an honest terminal
+    outcome, not an infra failure, so it is its own status rather than ``failed``.
     """
 
     @property
@@ -2644,24 +2649,29 @@ class EvalRun(EvalDocumentModel):
     budget_stop_reason: str | None = Field(
         default=None,
         description=(
-            "Why the per-run cost cap stopped this run, when it did. Its own channel rather than an "
-            "``error_details`` entry, for the same reason ``cancellation_reason`` is: a cap the "
+            "Why a budget the run was launched under stopped it, when one did: the per-run cost cap "
+            "(the reason names the dollars spent against the cap) or the job's wall-clock budget (the "
+            "reason opens with ``wall-clock budget``). Its own channel rather than an "
+            "``error_details`` entry, for the same reason ``cancellation_reason`` is: a bound the "
             "operator configured doing exactly what it was configured to do is a designed terminal "
             "outcome, not a fault, and filing it beside genuine harness errors made every capped run "
             "that bound contribute a phantom to the error count operators scan for real breakage. "
             "Every run has a cap (an omitted ``max_cost_usd`` inherits "
             "the host's configured default), so that was not a rare miscount. Says nothing "
             "about whether the run's data is usable — that is ``completeness``'s answer. None on a "
-            "run the cap never stopped."
+            "run no budget stopped. A run whose wall-clock budget fired under 3tears-evals 0.66.0 or "
+            "earlier is stored ``failed`` with a ``Job timed out after Ns`` entry in ``error_details``; "
+            "it is not rewritten, so that entry is how such a run reads."
         ),
     )
     error_details: list[str] = Field(
         default_factory=list,
         description=(
             "Things that BROKE — the run-terminal failure channel, written only by the job "
-            "manager's failure branches (harness exception, job timeout). The two designed stops "
-            "each have their own channel (``cancellation_reason``, ``budget_stop_reason``), so a "
-            "non-empty list means a fault, and its length is a count an operator can triage on."
+            "manager's failure branches (a harness exception, an exhausted provider account). The "
+            "designed stops each have their own channel (``cancellation_reason`` for a cancel, "
+            "``budget_stop_reason`` for the cost cap and the wall-clock budget), so a non-empty list "
+            "means a fault, and its length is a count an operator can triage on."
         ),
     )
     created_at: str = Field(default_factory=utc_now_iso)

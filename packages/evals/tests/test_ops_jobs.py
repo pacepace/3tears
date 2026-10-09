@@ -101,6 +101,25 @@ async def test_a_run_reading_running_with_no_live_job_is_lost_and_cancel_repairs
     assert (cancelled.state, cancelled.status) == ("cancelled", "cancelled")
 
 
+async def test_a_run_its_wall_clock_budget_stopped_reads_stopped_and_says_why() -> None:
+    """Every reader of a run's status names the clock stop as a stop, never as a failure."""
+    fixture = ops_fixture()
+    storage = fixture.host.eval_host.storage
+    run = storage.load_eval_run(fixture.campaign.run_ids[0], TOYHOST_SCOPE)
+    assert run is not None
+    reason = "wall-clock budget reached — the run's 660s time budget ran out after 660s"
+    storage.save_eval_run(run.model_copy(update={"status": "budget_stopped", "budget_stop_reason": reason}))
+
+    status = await job_poll(fixture.host, run_job_id(run.id), TOYHOST_SCOPE)
+    assert (status.state, status.status, status.done) == ("stopped", "budget_stopped", True)
+    assert status.detail == reason
+
+    summary = run_get(fixture.host.eval_host, run.id, TOYHOST_SCOPE)
+    assert summary.stopped_because == reason
+    assert f"  stopped: {reason}" in summary.render().splitlines()
+    assert not [error for error in summary.errors if "wall-clock" in error], "a stop is not among the faults"
+
+
 async def test_cancelling_a_run_that_has_ended_is_refused() -> None:
     fixture = ops_fixture()
     with pytest.raises(ValidationFailedError, match="is completed — only pending/running runs can be cancelled"):

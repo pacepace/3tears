@@ -28,6 +28,14 @@ mid-flight ends `budget_stopped`, with the results it already delivered kept: an
 an infrastructure failure. A conversing kind's loop checks the cap before every paid simulator call (see
 [conversations](adopting-a-host.md#what-the-judge-reads-and-conversations)).
 
+**The wall-clock budget.** Each run's job also runs under a time budget sized to its matrix (cases × k ×
+the cell timeout, plus a margin, clamped between a floor and an 8-hour cap). When it binds, the run ends
+`budget_stopped` too, not `failed`: like the cost cap, it is a bound someone set doing its job, and the
+results already delivered are kept and counted in the run's completeness record. `budget_stop_reason` tells
+the two apart (a clock stop's reason opens with `wall-clock budget`), and `error_details` stays empty,
+because that list counts faults. A run whose time budget fired under 0.66.0 or earlier is stored `failed`
+with `Job timed out after Ns` in `error_details`, and is not rewritten.
+
 **The out-of-run cap** is `LaunchSettings.max_out_of_run_cost_usd`. It bounds every call the engine makes
 outside a run (below).
 

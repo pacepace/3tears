@@ -20,6 +20,8 @@ import pytest
 
 from threetears.evals.contracts.errors import ConflictError
 from threetears.evals.contracts.models import EvalRun
+from threetears.evals.contracts.scoring import CellSummary
+from threetears.evals.run.lifecycle import record_completeness
 from threetears.evals.run.jobs import (
     JOB_TIMEOUT_CAP_S,
     JOB_TIMEOUT_FLOOR_S,
@@ -28,7 +30,7 @@ from threetears.evals.run.jobs import (
     adaptive_job_timeout_s,
     default_job_timeout,
 )
-from packages.evals.tests.factories import make_eval_run
+from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.job_support import InMemoryRunStore, blocked_work, cancelled, settled, start_tracked
 
 
@@ -225,7 +227,7 @@ async def test_a_terminal_branch_other_than_cancel_records_the_empty_matrix() ->
     await settled(manager, run.id, timeout=2)
 
     persisted = storage.runs[run.id]
-    assert persisted.status == "failed"
+    assert persisted.status == "budget_stopped"
     assert persisted.completeness is not None, (
         "a terminal run with no record reads as one whose record write was refused"
     )
@@ -311,10 +313,9 @@ def test_adaptive_job_timeout_caps_pathological_matrices() -> None:
 async def test_start_job_enforces_passed_timeout() -> None:
     """A per-job ``job_timeout_s`` reaches real enforcement, not just the manager's field.
 
-    Work that outlives the budget is cancelled and the run recorded ``failed``
-    with a timeout message — the same path a too-small fixed cap took, now
-    driven by the passed value, through whichever timeout context the manager
-    was built with (here the engine default).
+    Work that outlives the budget is cancelled and the run recorded ``budget_stopped``
+    with a reason naming the clock, driven by the passed value, through whichever
+    timeout context the manager was built with (here the engine default).
     """
     storage = InMemoryRunStore()
     manager = EvalJobManager(storage)
@@ -327,8 +328,42 @@ async def test_start_job_enforces_passed_timeout() -> None:
     await settled(manager, run.id, timeout=2)
 
     persisted = storage.runs[run.id]
-    assert persisted.status == "failed"
-    assert any("timed out" in e.lower() for e in persisted.error_details)
+    assert persisted.status == "budget_stopped"
+    assert (persisted.budget_stop_reason or "").startswith("wall-clock budget reached")
+
+
+async def test_a_run_its_wall_clock_budget_stops_is_a_designed_stop_with_its_partial_matrix_counted() -> None:
+    """The clock binding is a stop the operator's bound made, not a fault of the rig.
+
+    It used to land ``failed`` with ``Job timed out after Ns`` among the errors, so a run that
+    measured part of its matrix inside the budget it was given read as broken, and its cells were
+    easy to discard as noise. Driven through the real timeout path: the work delivers one cell of
+    three, outlives its budget, and records its completeness from its ``finally`` as the timeout
+    unwinds it, as a launch's work function does.
+    """
+    storage = InMemoryRunStore()
+    manager = EvalJobManager(storage)
+    run = make_eval_run(candidate_model="m1", k_runs=1, test_case_ids=["tc-1", "tc-2", "tc-3"])
+
+    async def work(progress: Any) -> None:
+        cells = [CellSummary.from_result(make_eval_result(eval_run_id=run.id, test_case_id="tc-1"), persisted=True)]
+        try:
+            await progress({"completed": 1, "total": 3})
+            await asyncio.sleep(5)
+        finally:
+            record_completeness(storage, run.id, run.scope_id, cells)
+
+    await manager.start_group([(run, work, 0.05)])
+    await settled(manager, run.id, timeout=2)
+
+    persisted = storage.runs[run.id]
+    assert persisted.status == "budget_stopped"
+    assert persisted.error_details == [], "a time budget doing its job is not a fault the run recorded"
+    assert (persisted.budget_stop_reason or "").startswith("wall-clock budget reached — the run's 0s time budget")
+    assert persisted.completed_at is not None
+    assert persisted.completeness is not None
+    assert (persisted.completeness.expected_cells, persisted.completeness.produced_cells) == (3, 1)
+    assert persisted.completeness.degraded is True
 
 
 async def test_start_job_completes_within_generous_timeout() -> None:
@@ -574,8 +609,9 @@ async def test_a_manager_built_with_no_factory_uses_the_engine_default() -> None
     await settled(manager, run.id, timeout=2)
 
     persisted = storage.runs[run.id]
-    assert persisted.status == "failed"
-    assert persisted.error_details == ["Job timed out after 0s"]
+    assert persisted.status == "budget_stopped"
+    assert persisted.error_details == []
+    assert (persisted.budget_stop_reason or "").startswith("wall-clock budget reached")
     await manager.shutdown()
 
 

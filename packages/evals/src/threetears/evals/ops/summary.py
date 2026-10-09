@@ -236,6 +236,10 @@ class EvalSummary(BaseModel):
         candidate_cost_usd: What those calls cost, as the candidate priced them; ``None`` when any went
             unpriced, and for a run whose candidate reported no spend.
         errors: Each failed or excluded result's error, prefixed by its case, then the run's own.
+        stopped_because: Why a designed stop ended the run short, as the run records it: the reason an
+            operator gave for a cancel, or which budget stopped it (its cost cap, or its wall-clock budget).
+            ``None`` for a run nothing stopped, and for a cancel given no reason. A stop is never one of
+            :attr:`errors`, which are faults.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -263,6 +267,7 @@ class EvalSummary(BaseModel):
     intent: str | None = None
     intent_source: str | None = None
     errors: list[str]
+    stopped_because: str | None = None
 
     def render(self) -> str:
         """The summary as a few lines of text for a terminal.
@@ -275,6 +280,8 @@ class EvalSummary(BaseModel):
             f"  {self.n_results} result(s): {self.n_scored} scored, {self.n_candidate_failed} failed by the "
             f"candidate, {self.n_excluded} excluded",
         ]
+        if self.stopped_because is not None:
+            lines.append(f"  stopped: {self.stopped_because}")
         for measure in self.measures:
             left_out = _left_out(measure)
             if measure.n == 0 and measure.n_no_turn:
@@ -476,6 +483,7 @@ def summarize_run(host: EvalHost, run_id: str, scope_id: str) -> EvalSummary:
         # Templates are edited in place: one edited since the launch no longer holds what the judge read.
         intent=template.intent if template is not None and template.updated_at <= run.created_at else None,
         errors=errors,
+        stopped_because=run.cancellation_reason or run.budget_stop_reason,
     )
 
 

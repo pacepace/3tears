@@ -110,10 +110,11 @@ class EvalJobTimeout(Exception):
     """A job outlived the wall-clock budget its timeout context was enforcing.
 
     Engine-owned on purpose. The manager needs one type to branch on, so that a
-    breached budget records ``failed`` with a timeout message instead of falling
-    through to the boundary that catches everything — and the context manager
-    enforcing the budget comes from the host. A type the host owned would make
-    the engine name a module it cannot be installed without.
+    breached budget records the designed ``budget_stopped`` with :attr:`stop_reason`
+    instead of falling through to the boundary that catches everything and
+    records ``failed`` — and the context manager enforcing the budget comes from
+    the host. A type the host owned would make the engine name a module it cannot
+    be installed without.
 
     Attributes:
         budget_s: The budget that was breached, in seconds.
@@ -131,6 +132,19 @@ class EvalJobTimeout(Exception):
         self.budget_s = budget_s
         self.elapsed_s = elapsed_s
         self.attribution = attribution
+
+    @property
+    def stop_reason(self) -> str:
+        """Why the run stopped, as ``EvalRun.budget_stop_reason`` records it.
+
+        Opens with ``wall-clock budget`` so a reader tells it from the cost cap's reason, which names
+        dollars, without a second field: both are a budget the run was launched under doing its job.
+        """
+        named = f"; the host named {self.attribution!r} as running when it fired" if self.attribution else ""
+        return (
+            f"wall-clock budget reached — the run's {self.budget_s:.0f}s time budget ran out after "
+            f"{self.elapsed_s:.0f}s{named}; the cells it delivered are kept and its completeness record counts them"
+        )
 
 
 class JobTimeoutFactory(Protocol):
@@ -154,7 +168,7 @@ class JobTimeoutFactory(Protocol):
       its work function started, and a budget rejected after the body had begun
       would make that derivation lie.
     * Raise :class:`EvalJobTimeout` when the budget is breached, so the manager
-      records a timeout rather than a generic failure.
+      records the designed ``budget_stopped`` rather than a generic failure.
     * Let everything else through untouched, cancellation included — an operator
       cancelling a job is not a timeout and must reach its own branch.
 
@@ -414,8 +428,9 @@ class EvalJobManager:
                 on every progress update — typically wired to a WebSocket
                 broadcast.
             job_timeout_s: The wall-clock budget, in seconds, for a launch-group
-                member that carries none of its own; jobs that exceed it are
-                cancelled and recorded as failed.
+                member that carries none of its own; a job that exceeds its
+                budget is cancelled and recorded ``budget_stopped``, its reason
+                naming the clock.
             job_timeout_factory: Builds the context manager each job runs
                 inside, called with that job's resolved budget. Defaults to
                 :func:`default_job_timeout`, which is asyncio and nothing else;
@@ -951,16 +966,28 @@ class EvalJobManager:
             log.warning("Job %s stopped: %s", run_id, exhausted)
             await self._set_status(run_id, scope_id, "exhausted", error=str(exhausted))
         except EvalJobTimeout as timed_out:
+            # A designed stop, on the cost cap's terms: the budget is sized to the run's matrix
+            # (``adaptive_job_timeout_s``, clamped to a cap an operator sets), and when it binds the
+            # run measured what it could inside a bound someone chose. Filed as ``failed`` it read as
+            # a broken rig, and its partial matrix was easy to discard as noise. So it takes the same
+            # status and channel as the cost cap — ``budget_stopped``, with the reason naming the
+            # clock — and ``error_details`` stays the count of faults. Completeness is recorded as
+            # for any stop: the work function's ``finally`` writes the loop's tally as the timeout
+            # unwinds it, and ``_set_status`` stamps an empty matrix when the work never started.
+            #
             # Keyed `attribution=` and not `inner_op=`, which is what every other timeout line in
             # this app emits. The value here is "the innermost operation the host's timeout
             # layer could name, falling back to the operation that fired" — those emitters'
             # `inner_op` is empty in exactly the case this one reads `eval_job`, so borrowing the
             # key would answer their grep with a value none of them can produce. Nothing is lost:
             # a host whose layer logs its own breach line has already emitted one.
-            log.error(
-                "Job %s timed out after %.0fs (attribution=%s)", run_id, timed_out.elapsed_s, timed_out.attribution
+            log.warning(
+                "Job %s timed out: its wall-clock budget stopped it after %.0fs (attribution=%s)",
+                run_id,
+                timed_out.elapsed_s,
+                timed_out.attribution,
             )
-            await self._set_status(run_id, scope_id, "failed", error=f"Job timed out after {timed_out.budget_s:.0f}s")
+            await self._set_status(run_id, scope_id, "budget_stopped", budget_stop_reason=timed_out.stop_reason)
         except (
             Exception
         ) as exc:  # prawduct:ok-broad-except — top-level job boundary; must catch all to set failed status
@@ -985,7 +1012,8 @@ class EvalJobManager:
         ``error``, ``cancellation_reason`` and ``budget_stop_reason`` are separate
         channels and the caller picks one, at the boundary where it knows which
         outcome it is handling: a harness failure is an error, an operator's cancel
-        is not, a cost cap doing its configured job is not either, and a single
+        is not, a cost cap or a wall-clock budget doing its configured job is not
+        either, and a single
         parameter routed by status would put that decision here — away from the
         `except` clause that actually knows. The two designed stops therefore leave
         ``error_details`` empty, which is what makes its length a count worth
