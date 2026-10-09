@@ -63,6 +63,19 @@ ruled permanently unanswerable.
 
 *Evidence:* agent with tools, one before/after pair, 2026-07, 2.7→4.4 on the changed judge vs −0.3 to +0.5 on unchanged ones, single campaign.
 
+### The judge temperature policy is not measured
+
+Tracked in [#633](https://github.com/pacepace/3tears/issues/633).
+
+Every judge call now asks for temperature 0 unless a config says otherwise (owner ruling), and the temperature
+sent is part of the judge's identity, so the split the issue found is gone. What was not done is the measurement
+the issue asked the policy to rest on: borderline-case score variance across repeats at each setting, which
+`repeat_judge_scores` can produce for a judge at 0 and one at the provider's default. Until it is run, how much
+temperature moves a judge's scores is unknown; what is known is that the two are never pooled.
+
+*Evidence:* one probe, Discodon, 2026-09: scores stable across attempts at the provider default (a refusal scored
+5, a detailed answer 4); says nothing about borderline cases.
+
 ### Human labels and judge scores are not combined
 
 Tracked in [#598](https://github.com/pacepace/3tears/issues/598).

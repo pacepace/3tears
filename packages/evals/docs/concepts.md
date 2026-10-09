@@ -161,8 +161,8 @@ arm adds observations to the same arm rather than creating a new one. *Example:*
 #### Apparatus, rig
 The **rig** is the measuring setup around the thing under test; each of its inputs is an **apparatus**
 sweepable (role `apparatus`). It is supposed to hold still, and when it moves, a comparison stops being
-about the lever. The engine's own: the judge model and its settings, the judge configs, the simulator model
-and its settings, and the per-run cost ceiling (`max_cost_usd`). *Example:* the v1 runs were judged by
+about the lever. The engine's own: the judge model and its settings, the temperature each judge call was sent
+at, the judge configs, the simulator model and its settings, and the per-run cost ceiling (`max_cost_usd`). *Example:* the v1 runs were judged by
 judge-a and the v2 runs by judge-b: the rig moved, so the report will not pool them as one condition.
 
 #### Apparatus class
@@ -273,7 +273,9 @@ A model the engine asks to score a result against a rubric, reading only the evi
 #### Judged dimension (rubric dimension)
 One subjective quality a judge scores (`RubricDim`): a name, a description and a scoring guide. *Example:*
 "does the auto-reply sound polite", for a variant that also drafts a reply. A **judge config**
-(`JudgeConfig`) is a versioned prompt, model and settings for one dimension.
+(`JudgeConfig`) is a versioned prompt, model and settings for one dimension. Every judge call is requested at
+temperature 0 (`DEFAULT_JUDGE_TEMPERATURE`) unless a config states another, whether or not the dimension has a
+config; a model that refuses a temperature is sent none, and each score records what was sent.
 
 #### Guardrail
 Something the candidate must not do: leak data, take a destructive action, break policy. A judged dimension

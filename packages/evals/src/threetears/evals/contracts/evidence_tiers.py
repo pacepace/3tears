@@ -89,7 +89,7 @@ import math
 from pydantic import Field, computed_field, model_validator
 
 from threetears.evals.contracts.base import EvalDocumentModel
-from threetears.evals.contracts.models import DimName, RubricScale
+from threetears.evals.contracts.models import DimName, JudgeTemperature, RubricScale
 
 #: The least judge–human agreement (weighted kappa; kappa on pass/fail) a dimension's judge must reach
 #: to be ``calibrated`` on it. Owner ruling, 2026-10-06.
@@ -270,6 +270,14 @@ class JudgeEvidenceTier(EvalDocumentModel):
             "The versioned JudgeConfig that asked for the scores; None = the built-in prompt. Part of the judge's "
             "identity: a changed judge prompt is a different judge, so its readings get their own tier."
         )
+    )
+    judge_temperature: JudgeTemperature | None = Field(
+        default=None,
+        description=(
+            "The temperature the scores' calls were sent at ('model_default' = sent none, the model refusing one). "
+            "Part of the judge's identity too: a judge sampled at another temperature gets its own tier. None = not "
+            "recorded, never a match for a recorded one."
+        ),
     )
     tier: JudgedEvidenceTier = Field(description="The tier the two criteria decide — see `tier_of`.")
     calibration: TierCriterion = Field(description="The judge's agreement with people's ratings of the same results.")

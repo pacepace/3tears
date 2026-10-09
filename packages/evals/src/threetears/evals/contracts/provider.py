@@ -133,6 +133,18 @@ class CompletionResult(Protocol):
         ...
 
     @property
+    def temperature(self) -> float | None:
+        """The sampling temperature the request was actually SENT with, or ``None`` when it was sent with none.
+
+        ``None`` is the model's own default applying: a model that refuses a temperature (some reasoning
+        models do) is sent none whatever the caller asked for, and only the client that built the request
+        knows it did that. The judge records this on every score as part of the judge's identity, so an
+        implementation that reports the requested value when it dropped it makes two different judges
+        compare equal.
+        """
+        ...
+
+    @property
     def stop_reason(self) -> StopReason:
         """Why the completion stopped, mapped onto the engine's vocabulary."""
         ...

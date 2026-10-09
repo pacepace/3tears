@@ -360,8 +360,21 @@ Every distinct result weighs 1, split across the raters that measured it, so the
 floor counts, distinct results, never pairs: neither a small rater nor many raters re-measuring a few
 shared results (five annotators on the same three anchors; one result repeated thirty times) can carry it,
 or the floor, over the bar. A repeat that answers "can't tell" where the judge had scored is a
-disagreement, never set aside. A judge is a served model and a judge config, so a tier measured under one
-prompt never sets another's.
+disagreement, never set aside. A judge is a served model, a judge config and the temperature its calls were
+sent at, so a tier measured under one prompt or one temperature never sets another's.
+
+**What temperature a judge samples at (#633, owner ruling).** Every judge call is requested at
+`DEFAULT_JUDGE_TEMPERATURE` (0) unless the dimension's `JudgeConfig` states another; a dimension with no config
+is no longer judged at the provider's default (around 1.0 on some) beside configured ones at 0, a split nobody
+chose. A model that refuses a temperature (some reasoning models do) is sent none, and the client reports that on
+its completion (`CompletionResult.temperature`, `None`), so the score records `model_default` rather than the 0
+nobody sent. Each score records what its call was actually sent at (`RubricScore.judge_temperature`), and that is
+part of the judge's identity everywhere: agreement groups and tiers are keyed by it, the `judge_temperature`
+apparatus input compares runs on it, a repeat sent at another temperature is unpaired (`temperature_changed`), and
+a judged run records what its unconfigured dimensions were requested at (`EvalRun.judge_temperature`) in its
+measurement context. A score or run stored before this recorded none and reads as not recorded: its judge is
+unknown, never a match for one at 0, and such a run is not re-judged or repeated under today's request
+(`recorded_judge_pins` refuses it).
 
 **Where tiers appear.** The bundle lists each judge's tier per dimension with both criteria
 (`judge_evidence_tiers`); a finding stands on the weakest tier among its rows

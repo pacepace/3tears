@@ -154,6 +154,10 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
     # comparison family, and the readings no declared question asks about are labelled exploratory; the apparatus
     # partition is unchanged.
     ((46, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
+    # 47/11: the temperature each judge call was actually sent at joins the judge's apparatus (#633), so every
+    # rig names it and the cell model moves; the same bundle shape names the candidate's served model per arm
+    # and as a confound where one requested id was answered by more than one model (#684).
+    ((47, 11), _CORE_V24 | {"judge_request_settings", "simulator_request_settings", "judge_temperature"}),
 )
 
 

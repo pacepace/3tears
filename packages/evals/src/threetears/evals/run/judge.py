@@ -29,7 +29,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from threetears.evals.contracts.models import PASS_FAIL_SCORES, SCALES, ClientRequestSettings
+from threetears.evals.contracts.models import (
+    MODEL_DEFAULT_TEMPERATURE,
+    PASS_FAIL_SCORES,
+    SCALES,
+    ClientRequestSettings,
+    JudgeTemperature,
+)
 from threetears.evals.contracts.provider import (
     JSON_OBJECT_RESPONSE_FORMAT,
     ProviderFailureDescriber,
@@ -321,7 +327,7 @@ async def run_judge_llm(
     Returns:
         Parsed result dict with ``criteria_scores`` (normalised to 0-1),
         ``criteria_ordinal_scores`` (the stored integers: 1-5, or 1/0 for pass/fail), ``criteria_names``,
-        ``reasoning``, ``judge_served_model`` (see below), and ``judge_usage``; or
+        ``reasoning``, ``judge_served_model`` and ``judge_temperature`` (see below), and ``judge_usage``; or
         ``{"error": "...", "response_preview": "..."}`` on failure. ``judge_usage`` is on every
         return that made a call: the cumulative spend of every attempt, parsed or not, whose
         ``cost_usd`` is ``None`` when any attempt reported no price — the dim's dollars are then
@@ -333,6 +339,8 @@ async def run_judge_llm(
         composites the per-dimension scores itself (``judge_service`` across its
         single-dim calls, a host's own scorer however it composites), so this path returns
         the raw normalized scores and no composite of its own.
+
+        ``judge_temperature`` is what that same attempt was sent at (:func:`sent_temperature`).
 
         ``judge_served_model`` is the model the provider's response named for the attempt whose
         scores are returned — that attempt, not the last one to report a model, because it is the
@@ -484,6 +492,9 @@ async def run_judge_llm(
             # which a host may fill from the request, and not ``judge_model`` above, which is the
             # last attempt to report anything and exists to attribute spend.
             parsed["judge_served_model"] = result.served_model or None
+            # And the temperature that attempt was sent at, as the client reports it — the rest of the
+            # scorer's identity, since a model that refuses a temperature is sent none.
+            parsed["judge_temperature"] = sent_temperature(result)
             return parsed
 
         last_preview = (getattr(result, "content", "") or "")[:200]
@@ -498,4 +509,26 @@ async def run_judge_llm(
     }
 
 
-__all__ = ["CANNOT_TELL", "run_judge_llm"]
+def sent_temperature(completion: Any) -> JudgeTemperature | None:
+    """The temperature a judge completion was actually sent at, as its client reports it (#633).
+
+    Read off :attr:`~threetears.evals.contracts.provider.CompletionResult.temperature`, which the client
+    sets to what its request carried — ``None`` when it sent none, as it must for a model that refuses a
+    temperature. The engine asks every judge call for :data:`~threetears.evals.contracts.models.DEFAULT_JUDGE_TEMPERATURE`
+    unless a config says otherwise, and never assumes the request was honoured.
+
+    Args:
+        completion: The judge call's completion.
+
+    Returns:
+        The number sent; :data:`~threetears.evals.contracts.models.MODEL_DEFAULT_TEMPERATURE` when the client
+        sent none; ``None`` when the completion reports nothing about it (a client predating the attribute, or
+        a test double) — not recorded, which every comparison reads as unknown.
+    """
+    if not hasattr(completion, "temperature"):
+        return None
+    sent = completion.temperature
+    return MODEL_DEFAULT_TEMPERATURE if sent is None else float(sent)
+
+
+__all__ = ["CANNOT_TELL", "run_judge_llm", "sent_temperature"]

@@ -31,10 +31,11 @@ double-weights. ``results`` is the distinct results the pooled kappa covers, and
 floor counts (:mod:`threetears.evals.contracts.evidence_tiers`).
 
 **One group per dimension, scale and judge** (:class:`JudgeKey`). The judge is the model that served the
-score (:attr:`~threetears.evals.contracts.models.RubricScore.served_model`) AND the versioned judge config
-that asked for it (the result's ``judge_config_ids``; ``None`` = the built-in prompt), so a campaign sweeping
-its judge — model or prompt — reads each judge's agreement separately: pooling them would credit one judge
-with the other's calibration, which is the comparison a judge swap is decided on. A dimension rated on a
+score (:attr:`~threetears.evals.contracts.models.RubricScore.served_model`), the versioned judge config
+that asked for it (the result's ``judge_config_ids``; ``None`` = the built-in prompt) AND the temperature the
+call was sent at (:attr:`~threetears.evals.contracts.models.RubricScore.judge_temperature`), so a campaign
+sweeping its judge — model, prompt or sampling — reads each judge's agreement separately: pooling them would
+credit one judge with the other's calibration, which is the comparison a judge swap is decided on. A dimension rated on a
 scale it was later moved off is two groups for the same reason.
 
 **A rating that cannot be paired is named, never dropped.** Its result may have been deleted, or
@@ -77,7 +78,7 @@ from threetears.evals.contracts.evidence_tiers import (
     tier_of,
     weakest_judged_tier,
 )
-from threetears.evals.contracts.models import SCALES, RubricScale
+from threetears.evals.contracts.models import MODEL_DEFAULT_TEMPERATURE, SCALES, JudgeTemperature, RubricScale
 
 if TYPE_CHECKING:
     from threetears.evals.contracts.models import CalibrationRating, EvalResult
@@ -88,16 +89,19 @@ UnpairedReason = Literal["result_unresolved", "dimension_unscored", "scale_chang
 
 
 class JudgeKey(NamedTuple):
-    """Who judged a reading: the dimension, its scale, the model that served the score and the config that asked.
+    """Who judged a reading: the dimension, its scale, the model that served the score, the config that asked and
+    the temperature the call was sent at.
 
     The one key both agreements group by, the tiers are listed by, and a reading looks its tier up by — so a
-    measurement of one judge can never stand in for another's.
+    measurement of one judge can never stand in for another's. A temperature nobody recorded is ``None``, its own
+    group: never a match for a recorded one.
     """
 
     rubric_dim: str
     scale: RubricScale
     judge_model: str | None
     judge_config_id: str | None
+    judge_temperature: JudgeTemperature | None = None
 
 
 def judge_key(result: EvalResult, dim: str) -> JudgeKey | None:
@@ -108,17 +112,31 @@ def judge_key(result: EvalResult, dim: str) -> JudgeKey | None:
         dim: The dimension, as its score spells it.
 
     Returns:
-        The key: the score's scale and served model, and the config the result records as having scored the dim.
+        The key: the score's scale, served model and temperature, and the config the result records as having
+        scored the dim.
     """
     score = result.judge_score(dim)
     if score is None:
         return None
-    return JudgeKey(dim, score.scale, score.served_model, result.judge_config_ids.get(dim))
+    return JudgeKey(dim, score.scale, score.served_model, result.judge_config_ids.get(dim), score.judge_temperature)
 
 
-def _sort_key(key: JudgeKey) -> tuple[str, str, str, str]:
-    """Order keys by dimension, scale, judge and config, an unnamed judge or the built-in prompt first."""
-    return (key.rubric_dim, key.scale, key.judge_model or "", key.judge_config_id or "")
+def _sort_key(key: JudgeKey) -> tuple[str, str, str, str, str]:
+    """Order keys by dimension, scale, judge, config and temperature, an unnamed judge, the built-in prompt or an
+    unrecorded temperature first."""
+    temperature = key.judge_temperature
+    return (
+        key.rubric_dim,
+        key.scale,
+        key.judge_model or "",
+        key.judge_config_id or "",
+        "" if temperature is None else str(temperature),
+    )
+
+
+def _key_of(entry: DimensionAgreement | SelfAgreementDimension | JudgeEvidenceTier) -> JudgeKey:
+    """The judge an agreement row or a tier was measured for, read back off its fields."""
+    return JudgeKey(entry.rubric_dim, entry.scale, entry.judge_model, entry.judge_config_id, entry.judge_temperature)
 
 
 class DimensionAgreement(EvalDocumentModel):
@@ -134,6 +152,13 @@ class DimensionAgreement(EvalDocumentModel):
     )
     judge_config_id: str | None = Field(
         description="The versioned JudgeConfig that asked for the scores; None = the built-in prompt."
+    )
+    judge_temperature: JudgeTemperature | None = Field(
+        default=None,
+        description=(
+            "The temperature the judge's calls were sent at ('model_default' = sent none, the model refusing one); "
+            "None = not recorded, a judge nobody observed the sampling of, never read as a match for a recorded one."
+        ),
     )
     n: int = Field(
         ge=1,
@@ -273,6 +298,7 @@ def judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[Eval
                 scale=key.scale,
                 judge_model=key.judge_model,
                 judge_config_id=key.judge_config_id,
+                judge_temperature=key.judge_temperature,
                 n=numbers.n,
                 results=numbers.results,
                 raters=numbers.raters,
@@ -552,9 +578,12 @@ def _pooled_kappa(per_rater: Sequence[tuple[float | None, Sequence[_Pair]]]) -> 
 #: infrastructure fault, which says nothing about the judge. ``judge_changed``: a different model
 #: served the repeat than served the first score, so the pair would measure two judges' agreement, not
 #: one judge's. ``config_changed``: a different judge config answered the repeat than scored the first
-#: score — a different prompt is a different judge for the same reason. (A repeat answering "can't
-#: tell" IS paired: declining to score what it once scored is the judge disagreeing with itself.)
-UnrepeatedReason = Literal["repeat_failed", "judge_changed", "config_changed"]
+#: score — a different prompt is a different judge for the same reason. ``temperature_changed``: the
+#: repeat was sent at a different temperature than the first score, or only one of the two recorded one — a
+#: different (or unknown) sampling is a different judge too; two that both recorded none pair under an
+#: unrecorded temperature, as two unnamed models pair under an unnamed judge. (A repeat answering "can't tell" IS paired:
+#: declining to score what it once scored is the judge disagreeing with itself.)
+UnrepeatedReason = Literal["repeat_failed", "judge_changed", "config_changed", "temperature_changed"]
 
 
 class SelfAgreementDimension(EvalDocumentModel):
@@ -570,6 +599,13 @@ class SelfAgreementDimension(EvalDocumentModel):
     )
     judge_config_id: str | None = Field(
         description="The versioned JudgeConfig that asked both times; None = the built-in prompt."
+    )
+    judge_temperature: JudgeTemperature | None = Field(
+        default=None,
+        description=(
+            "The temperature the judge's calls were sent at ('model_default' = sent none, the model refusing one); "
+            "None = not recorded, a judge nobody observed the sampling of, never read as a match for a recorded one."
+        ),
     )
     n: int = Field(
         ge=1, description='First-score/repeat pairs read: one per repeated score, a "can\'t tell" repeat included.'
@@ -681,12 +717,20 @@ def judge_self_agreement(results: Iterable[EvalResult]) -> JudgeSelfAgreement:
                     reason = "judge_changed"
                 elif repeat.judge_config_ids.get(entry.dim) != entry.first_judge_config_id:
                     reason = "config_changed"
+                elif entry.repeat is not None and entry.repeat.judge_temperature != entry.first_judge_temperature:
+                    reason = "temperature_changed"
                 if reason is not None:
                     unpaired.append(
                         UnrepeatedScore(result_id=result.id, rubric_dim=entry.dim, round=round_name, reason=reason)
                     )
                     continue
-                key = JudgeKey(entry.dim, entry.scale, entry.first_served_model, entry.first_judge_config_id)
+                key = JudgeKey(
+                    entry.dim,
+                    entry.scale,
+                    entry.first_served_model,
+                    entry.first_judge_config_id,
+                    entry.first_judge_temperature,
+                )
                 again = entry.repeat.score if entry.repeat is not None else None
                 groups.setdefault(key, []).append(_Pair(entry.first_score, again, round_name, result.id))
     dimensions = []
@@ -698,6 +742,7 @@ def judge_self_agreement(results: Iterable[EvalResult]) -> JudgeSelfAgreement:
                 scale=key.scale,
                 judge_model=key.judge_model,
                 judge_config_id=key.judge_config_id,
+                judge_temperature=key.judge_temperature,
                 n=numbers.n,
                 results=numbers.results,
                 n_cannot_tell=numbers.cannot_tell,
@@ -735,8 +780,8 @@ def judge_evidence_tiers(
     Returns:
         The tiers, ordered by dimension, scale, judge and judge config.
     """
-    calibrations = {JudgeKey(d.rubric_dim, d.scale, d.judge_model, d.judge_config_id): d for d in agreement.dimensions}
-    repeats = {JudgeKey(d.rubric_dim, d.scale, d.judge_model, d.judge_config_id): d for d in self_agreement.dimensions}
+    calibrations = {_key_of(d): d for d in agreement.dimensions}
+    repeats = {_key_of(d): d for d in self_agreement.dimensions}
     keys = {*(JudgeKey(*key) for key in judged), *calibrations, *repeats}
     tiers = []
     for key in sorted(keys, key=_sort_key):
@@ -760,6 +805,7 @@ def judge_evidence_tiers(
                 scale=key.scale,
                 judge_model=key.judge_model,
                 judge_config_id=key.judge_config_id,
+                judge_temperature=key.judge_temperature,
                 tier=tier_of(calibration, separation),
                 calibration=calibration,
                 separation=separation,
@@ -771,7 +817,7 @@ def judge_evidence_tiers(
 def tier_for_judges(tiers: Iterable[JudgeEvidenceTier], judges: Iterable[JudgeKey]) -> JudgedEvidenceTier:
     """The tier a reading stands on when ``judges`` served its scores: the weakest of theirs.
 
-    Looked up by the whole :class:`JudgeKey` — dimension, scale, served model and config — so a reading
+    Looked up by the whole :class:`JudgeKey` — dimension, scale, served model, config and temperature — so a reading
     can only ever carry the tier measured for the very judge behind it. A cell whose scores were served by
     two judges pools two judges' readings, and the composite can bear only what the weaker can. A judge
     with no entry is ``undetermined``: nothing measured it.
@@ -783,9 +829,7 @@ def tier_for_judges(tiers: Iterable[JudgeEvidenceTier], judges: Iterable[JudgeKe
     Returns:
         The tier; ``undetermined`` when no judge is named — a reading with no score behind it has no judge.
     """
-    by_judge = {
-        JudgeKey(tier.rubric_dim, tier.scale, tier.judge_model, tier.judge_config_id): tier.tier for tier in tiers
-    }
+    by_judge = {_key_of(tier): tier.tier for tier in tiers}
     found: list[JudgedEvidenceTier] = [by_judge.get(JudgeKey(*key), "undetermined") for key in set(judges)]
     return weakest_judged_tier(found) if found else "undetermined"
 
@@ -797,12 +841,20 @@ def tier_sentence(tier: JudgeEvidenceTier) -> str:
         tier: The tier as decided.
 
     Returns:
-        The sentence, naming the judge (and its config, when one asked), the tier and each criterion's
+        The sentence, naming the judge (its config, when one asked, and its temperature), the tier and each criterion's
         agreement, pairs and results against its bar.
     """
     judge = tier.judge_model or "an unnamed judge"
     if tier.judge_config_id is not None:
         judge = f"{judge}, config {tier.judge_config_id}"
+    temperature = tier.judge_temperature
+    judge += (
+        ", temperature not recorded"
+        if temperature is None
+        else ", sent no temperature"
+        if temperature == MODEL_DEFAULT_TEMPERATURE
+        else f", temperature {format_number(temperature)}"
+    )
     return (
         f"{tier.rubric_dim} ({judge}): {tier.tier} — agreement with people "
         f"{_criterion_words(tier.calibration)}; with its own repeats {_criterion_words(tier.separation)}."

@@ -60,7 +60,7 @@ from threetears.evals.contracts.models import ApparatusProvenance
 #: cell pools or says changes — a dimension joining the apparatus or world coordinate (one moved
 #: through a host declaration counts, though no line here changes), or a renamed count. Why each
 #: earlier version moved is in this file's history.
-CELL_MODEL_VERSION: int = 10
+CELL_MODEL_VERSION: int = 11
 
 
 class ApparatusClass(EvalDocumentModel):

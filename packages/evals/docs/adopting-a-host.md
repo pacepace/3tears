@@ -55,7 +55,9 @@ pass it to every entrypoint. It holds:
   "unreported" in silence. Check your completion type in your own suite with
   `threetears.evals.testing.check_completion_conformance(an_instance)`, which fails naming the attribute.
   `served_model` must be the model the provider's RESPONSE named, never the request: it is how a candidate
-  launched on a floating alias records which model answered it;
+  launched on a floating alias records which model answered it. `temperature` must be what the request
+  carried: the judge asks for 0 unless a config says otherwise, and a client whose model refuses a temperature
+  sends none and reports `None`, which the score records as `model_default`;
 - your `failure_describer` — how a raised provider call reads. It is the only thing that can say a call
   was refused for the calling account, which stops a run rather than excluding its cells;
   `withhold_failure_detail` is the honest one for an app with no error types of its own;

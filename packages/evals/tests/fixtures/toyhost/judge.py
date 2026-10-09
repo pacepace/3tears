@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Self
 
 from threetears.evals.contracts import (
+    DEFAULT_JUDGE_TEMPERATURE,
     CompletionClient,
     EvalTemplate,
     RubricDim,
@@ -97,21 +98,28 @@ class ToyJudgeCompletion:
     reasoning_tokens: int | None = None
     stop_reason: StopReason = "end_turn"
     served_model: str | None = None
+    #: What the request was sent at; ``None`` is a request sent with none, the model's own default applying.
+    temperature: float | None = DEFAULT_JUDGE_TEMPERATURE
 
 
 class ScriptedJudgeClient:
     """A judge client satisfying :class:`~threetears.evals.contracts.CompletionClient`, scoring from its prompt."""
 
-    def __init__(self, *, reports_token_counts: bool = True) -> None:
+    def __init__(
+        self, *, reports_token_counts: bool = True, temperature: float | None = DEFAULT_JUDGE_TEMPERATURE
+    ) -> None:
         """Start with no calls recorded.
 
         Args:
             reports_token_counts: ``False`` is a provider that reports its price but omits the token
                 counts, which the engine must carry as unknown rather than as zero.
+            temperature: What every request is sent at, as each completion reports it; ``None`` is a model
+                that refuses a temperature and is sent none.
         """
         #: Every ``(system, user)`` prompt pair the client was sent, in call order.
         self.calls: list[tuple[str, str]] = []
         self._reports_token_counts = reports_token_counts
+        self._temperature = temperature
 
     async def generate(
         self, *, system: str, user: str, response_format: dict[str, str] | None = None
@@ -149,6 +157,7 @@ class ScriptedJudgeClient:
             cost_usd=TOY_JUDGE_COST_USD,
             price_source=TOY_JUDGE_PRICE_SOURCE,
             model=TOY_JUDGE_MODEL,
+            temperature=self._temperature,
         )
 
     async def aclose(self) -> None:

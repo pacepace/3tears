@@ -37,6 +37,7 @@ from threetears.evals.contracts.candidate_kind import (
 )
 from threetears.evals.contracts.host import ApparatusError, EvalHost, SubjectSnapshot, WorldRegistry
 from threetears.evals.contracts.models import (
+    DEFAULT_JUDGE_TEMPERATURE,
     CassetteKey,
     EvalTemplate,
     EvalTestCase,
@@ -181,6 +182,7 @@ def _drive(
             "effective_judges": run_judge.effective_judges,
             "judge_config_ids": {dim: config.id for dim, config in run_judge.configs.items()},
             "judge_request_settings": JUDGE_REQUEST_SETTINGS,
+            "judge_temperature": DEFAULT_JUDGE_TEMPERATURE,
         }
     run = toyhost_run(model=RUN_MODELS[0], template=template, kind=kind, world=world).model_copy(update=run_fields)
     host.storage.save_eval_run(run)

@@ -117,6 +117,12 @@ response named as having answered the row's calls, which for a candidate launche
 only record of which model produced its numbers. A row stored before it carries None and reads as "not
 recorded", never as the alias in ``model``: the analysis names such an arm's served model unknown rather than
 the one requested.
+
+**Within v8, not a bump**: the judge's temperature joined as OPTIONAL fields (#633) — ``RubricScore.judge_temperature``
+(what the call was sent at), ``EvalRun.judge_temperature`` (what a dimension with no config was requested at) and
+``RepeatedScore.first_judge_temperature``. A document stored before them carries None and reads as not recorded:
+its unconfigured dimensions were requested at the provider's default, which is not today's 0, so such a run's
+roles component is not composable, its scores' judge reads unknown, and nothing pools it with a run judged at 0.
 """
 
 
@@ -848,6 +854,20 @@ class PreconditionOutcome(EvalDocumentModel):
     detail: str = Field(default="", description="What the world actually held; e.g. 'queue.length=0 fails >= 3'.")
 
 
+#: The temperature every judge call is requested at unless a :class:`JudgeConfig` for its dimension says
+#: otherwise, and that config's own default (#633). A judge sampled at a provider's default (around 1.0 on
+#: some) and one at 0 are two judges: before this, a dimension with a config was judged at its 0.0 and one
+#: without at the provider default, in one run, because nobody chose otherwise.
+DEFAULT_JUDGE_TEMPERATURE: float = 0.0
+
+#: A judge call SENT with no temperature, because its model refuses one (some reasoning models do): the
+#: model's own default applied. Recorded as this word rather than as a number nobody sent.
+MODEL_DEFAULT_TEMPERATURE: Literal["model_default"] = "model_default"
+
+#: The temperature a judge call was actually sent at: a number, or :data:`MODEL_DEFAULT_TEMPERATURE`.
+JudgeTemperature = float | Literal["model_default"]
+
+
 class RubricScore(EvalDocumentModel):
     """Outcome of one rubric judge dimension.
 
@@ -881,6 +901,17 @@ class RubricScore(EvalDocumentModel):
             "``~vendor/model-latest`` names a different model from one month to the next. None = the "
             "response named no model, so nobody observed which model scored, and comparisons read it "
             "as unknown, never as a match."
+        ),
+    )
+    judge_temperature: JudgeTemperature | None = Field(
+        default=None,
+        description=(
+            "The sampling temperature the call that produced this score was actually SENT at, as the completion "
+            "reported it: a number, or 'model_default' when the model refuses a temperature and was sent none. "
+            "Part of the judge's identity beside served_model: a different temperature is a different judge, and "
+            "never pools with this one. None = not recorded (a client that reports no temperature, or a score "
+            "judged before temperatures were recorded, when a dimension without a JudgeConfig was requested at the "
+            "provider's default); compared as unknown, never as a match."
         ),
     )
 
@@ -1419,7 +1450,16 @@ class JudgeConfig(EvalDocumentModel):
             "default, so configuring a dim's prompt cannot silently change which model scores it."
         ),
     )
-    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    temperature: float = Field(
+        default=DEFAULT_JUDGE_TEMPERATURE,
+        ge=0.0,
+        le=2.0,
+        description=(
+            "The temperature this dim's judge calls are requested at — the same default a dim with no config is "
+            "judged at, so configuring a dim's prompt never changes how it is sampled. A model that refuses a "
+            "temperature is sent none; each score records what was actually sent (RubricScore.judge_temperature)."
+        ),
+    )
 
     archived: bool = Field(default=False)
     created_at: str = Field(default_factory=utc_now_iso)
@@ -2482,6 +2522,20 @@ class EvalRun(EvalDocumentModel):
             "apparatus beside ``judge_model``: the same judge model at a different reasoning budget grades "
             "differently. None = no judge was pinned (a code-graded kind), or the run's writer recorded no "
             "settings — then a comparison reads them as unrecorded, never as equal to today's values."
+        ),
+    )
+    judge_temperature: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=2.0,
+        description=(
+            "The temperature this run's judge calls were requested at for every dimension with no JudgeConfig "
+            "(a config states its own, and its id is already part of the judge's identity). Stamped at launch, and "
+            "part of the measurement context's roles: a run judged at another temperature is judged by another "
+            "judge and never pools with this one. What each call was actually sent at — none, for a model that "
+            "refuses a temperature — is on each score. None = no judge was pinned, or the run was launched before "
+            "this was recorded, when such dimensions were requested at the provider's default; its roles component "
+            "is then not composable, never equal to today's."
         ),
     )
     simulator_request_settings: ClientRequestSettings | None = Field(
@@ -3588,6 +3642,14 @@ class RepeatedScore(EvalDocumentModel):
             "a different judge, and is not paired."
         ),
     )
+    first_judge_temperature: JudgeTemperature | None = Field(
+        default=None,
+        description=(
+            "The temperature the first score was sent at, as it recorded it; None when it recorded none. A repeat "
+            "sent at another temperature — or beside a first score that recorded none — measures a different (or "
+            "an unknown) judge, and is not paired."
+        ),
+    )
     repeat: RubricScore | None = Field(
         default=None, description="The repeat's score, when the judge scored the dimension again."
     )
@@ -4260,7 +4322,10 @@ __all__ = [
     "ApparatusSettingValue",
     "MeteredCallOrigin",
     "CANDIDATE_SPEAKER",
+    "DEFAULT_JUDGE_TEMPERATURE",
     "EVAL_SCHEMA_VERSION",
+    "MODEL_DEFAULT_TEMPERATURE",
+    "JudgeTemperature",
     "NON_TERMINAL_RUN_STATUSES",
     "OUTCOME_DIM_ID",
     "ROUND_DONE",
