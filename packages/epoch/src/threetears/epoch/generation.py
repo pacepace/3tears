@@ -1,7 +1,14 @@
 """collection write generations over the epoch bucket.
 
-Implements :class:`threetears.core.collections.generation.GenerationSource`, which a collection that
-caches absences stamps every recorded absence with.
+:class:`EpochGenerationSource` implements
+:class:`threetears.core.collections.generation.GenerationSource`: a collection that caches absences
+stamps every recorded absence with the table's generation, and a collection switched on to carry a
+write generation advances it once per commit and stamps the token on that commit's row broadcasts.
+It reads and writes the bucket, so it is for a principal granted both -- the hub, the gateway.
+
+:class:`EpochGenerationReader` is the other half, for a pod that only FOLLOWS: it binds the bucket,
+reads a table's generation or watches its key, and never writes. A pod holds a read on the bucket
+and no write, so that it cannot fake an advance the fleet acts on.
 
 **One value per table, holding both halves of the answer: ``"{incarnation}:{count}"``.** The count
 moves on with every committed write. The incarnation is minted when the value is first created, so
@@ -16,7 +23,9 @@ from __future__ import annotations
 
 import asyncio
 import random
-from typing import TYPE_CHECKING, Final
+from collections.abc import AsyncGenerator
+from contextlib import aclosing
+from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.nats.errors import KvError
@@ -29,7 +38,7 @@ from threetears.epoch.client import _EPOCH_BUCKET, _key_for
 if TYPE_CHECKING:
     from threetears.nats.kv import KvBucketLike, KvCapable
 
-__all__ = ["EpochGenerationSource"]
+__all__ = ["EpochGenerationReader", "EpochGenerationSource", "generation_kv_key"]
 
 log = get_logger(__name__)
 
@@ -39,6 +48,27 @@ _MAX_CAS_ATTEMPTS: Final = 30
 
 #: full-jitter backoff bound between compare-and-swap retries, seconds.
 _CAS_RETRY_BACKOFF_SECONDS: Final = 0.02
+
+
+def generation_kv_key(table_name: str) -> str:
+    """the key in the epoch bucket holding ``table_name``'s write generation.
+
+    The one derivation the source, the reader and a grant for either all use: a principal that
+    follows a table is granted a read of exactly this key.
+
+    :param table_name: the collection's table
+    :ptype table_name: str
+    :return: the KV key
+    :rtype: str
+    """
+    return _key_for(Subjects.collection_generation_epoch(table_name))
+
+
+@runtime_checkable
+class _KeyWatchable(Protocol):
+    """a bucket whose single keys can be watched; the real bucket and the shipped in-memory one are."""
+
+    def watch_key(self, *, key: str) -> AsyncGenerator[Any]: ...
 
 
 def _parse(table_name: str, raw: bytes) -> tuple[str, int]:
@@ -88,7 +118,7 @@ class EpochGenerationSource:
         :rtype: str
         :raises GenerationUnavailableError: when the generation cannot be read or established
         """
-        key = _key_for(Subjects.collection_generation_epoch(table_name))
+        key = generation_kv_key(table_name)
         try:
             bucket = await self._bucket()
             raw = await bucket.get(key=key)
@@ -120,7 +150,7 @@ class EpochGenerationSource:
         :raises GenerationUnavailableError: when the generation cannot be advanced within the retry
             budget, or the store is unreachable
         """
-        key = _key_for(Subjects.collection_generation_epoch(table_name))
+        key = generation_kv_key(table_name)
         try:
             bucket = await self._bucket()
             for _ in range(_MAX_CAS_ATTEMPTS):
@@ -145,3 +175,97 @@ class EpochGenerationSource:
         raise GenerationUnavailableError(
             f"write generation for {table_name!r} lost {_MAX_CAS_ATTEMPTS} compare-and-swap rounds to concurrent writes"
         )
+
+
+class EpochGenerationReader:
+    """reads and watches collection write generations in the epoch bucket, and never writes them.
+
+    What a pod that follows a table holds. It binds the bucket the hub declared rather than
+    creating it, and where :meth:`EpochGenerationSource.current` mints a generation for a table
+    that has none, this reports that there is none: a follower has no write to mint one with, and
+    "no generation yet" is itself something its mark records.
+    """
+
+    def __init__(self, nats_client: KvCapable, *, create_if_missing: bool = False) -> None:
+        """capture the client; no I/O.
+
+        :param nats_client: connected client able to open the epoch bucket
+        :ptype nats_client: KvCapable
+        :param create_if_missing: whether opening the bucket may create it. ``False``, the default,
+            binds only, which is all a pod's grant allows; ``True`` is for a principal that also
+            declares the bucket and follows through the same reader
+        :ptype create_if_missing: bool
+        :return: nothing
+        :rtype: None
+        """
+        self._nats = nats_client
+        self._create_if_missing = create_if_missing
+
+    async def _bucket(self) -> KvBucketLike:
+        """the epoch bucket, opened as :class:`EpochGenerationSource` opens it but bound, not created.
+
+        :return: the bucket
+        :rtype: KvBucketLike
+        """
+        return await self._nats.kv_bucket(name=_EPOCH_BUCKET, ttl=None, create_if_missing=self._create_if_missing)
+
+    async def read(self, table_name: str) -> str | None:
+        """the table's current write generation, or ``None`` when the bucket holds none for it.
+
+        :param table_name: the collection's table
+        :ptype table_name: str
+        :return: the generation token ``incarnation:count``, or ``None``
+        :rtype: str | None
+        :raises GenerationUnavailableError: when the bucket cannot be read, or holds a value that
+            is not a generation
+
+        A read is a get of the key, which the whole-bucket read an agent pod holds admits. A
+        principal granted single keys only (``JsCapability.KV_KEY_READ``) reaches them through
+        :meth:`watch` instead: that grant's get is the direct one, which the epoch bucket is not
+        declared for.
+        """
+        key = generation_kv_key(table_name)
+        try:
+            bucket = await self._bucket()
+            raw = await bucket.get(key=key)
+        except KvError as exc:
+            raise GenerationUnavailableError(f"write generation for {table_name!r} could not be read: {exc}") from exc
+        if raw is None:
+            return None
+        _parse(table_name, raw)
+        return raw.decode("utf-8")
+
+    async def watch(self, table_name: str) -> AsyncGenerator[str | None]:
+        """the table's write generation as it stands, then each value it takes, until the caller stops.
+
+        Pushed by the broker through one named consumer on the table's key
+        (:meth:`threetears.nats.NatsKvBucket.watch_key`), which a grant narrowed to that one key
+        admits. The first value yielded is the key's latest, so a watcher that starts, or restarts
+        after the broker did, needs no separate read; a key that has never been written yields
+        nothing until it is. A value that is not a generation is yielded as it is: it compares
+        unequal to every mark, which is what makes a follower drop the table for it.
+
+        Close it by stopping iteration.
+
+        :param table_name: the collection's table
+        :ptype table_name: str
+        :return: the generation tokens, in order; ``None`` when the key was deleted
+        :rtype: AsyncGenerator[str | None]
+        :raises GenerationUnavailableError: when the bucket cannot be opened or cannot watch a key
+        :raises KvError: when the connection closes, so nothing can ever be delivered again
+        """
+        key = generation_kv_key(table_name)
+        try:
+            bucket = await self._bucket()
+        except KvError as exc:
+            raise GenerationUnavailableError(
+                f"write generation for {table_name!r} could not be watched: {exc}"
+            ) from exc
+        if not isinstance(bucket, _KeyWatchable):
+            raise GenerationUnavailableError(
+                f"write generation for {table_name!r} could not be watched: {type(bucket).__name__} has no watch_key"
+            )
+        async with aclosing(bucket.watch_key(key=key)) as updates:
+            async for update in updates:
+                value: bytes | None = update.value
+                yield None if value is None else value.decode("utf-8", errors="replace")
