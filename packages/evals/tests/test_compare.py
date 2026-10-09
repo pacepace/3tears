@@ -12,6 +12,7 @@ campaign's name, with its id in the byline.
 from __future__ import annotations
 
 import importlib.util
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from types import ModuleType
@@ -225,7 +226,8 @@ async def test_the_example_runs_offline_and_prints_the_verdict(
     assert "(offline)" in comparison.name
     accuracy = {row["reading"]: row for row in _comparisons(comparison).rows}["accuracy"]
     assert (accuracy["contrast"], accuracy["verdict"]) == ("model=candidate", "improved on the control")
-    assert comparison.render() in out
+    assert re.search(r"\ncandidate vs baseline on accuracy: \+0\.42 \(p=[\d.e-]+\): improved on the control\n", out)
+    assert comparison.render() not in out
 
 
 def test_the_example_reaches_the_engine_only_through_public_roots() -> None:

@@ -1,13 +1,14 @@
-"""Does the better prompt help on both models, or only on one?
+"""What does changing the prompt do on each model?
 
-Two factors vary at once, the prompt and the model: four arms, one per combination, each named in the report
+Two things vary at once, the prompt and the model: four arms, one per combination, each named in the report
 by both (``callable.prompt=v2, model=...``). Arms are tested against one control, so the prompt's effect on the
 second model is read against a second control over the same runs. New here: ``factors=``, which keys each arm
-by its level of each factor, and ``Comparison.against``. Levers and arms: ``docs/concepts.md``.
+by its level of each thing varied, and ``Comparison.against``. Levers and arms: ``docs/concepts.md``.
 
 Run it with ``python packages/evals/examples/prompt_x_model.py``. With ``ANTHROPIC_API_KEY`` set it calls
 Claude 112 times for about two US cents; without it, keyword stand-ins play each combination and say nothing
-about Claude.
+about Claude. The stand-ins are built to differ; live, current models may already get every ticket right, and
+then "not separated" is the correct answer: these cases cannot tell the arms apart, and harder ones are needed.
 """
 
 import asyncio
@@ -42,7 +43,7 @@ CASES = [
 ]
 
 # -----------------------------------------------------------------------------
-# 2. The two factors: these two prompts, and the two models in MODELS.
+# 2. The two things varied: these two prompts, and the two models in MODELS.
 # -----------------------------------------------------------------------------
 
 PROMPTS = {
@@ -131,14 +132,15 @@ async def main() -> Comparison:
         scope_id="prompt-x-model",
         k=2,
     )
-    print(comparison.render())
 
     # Against (OLD, v1), v2 on OLD is the prompt's effect there. Its effect on NEW needs v1 on NEW as the
     # control: against() reads the same runs that way, running nothing again.
-    print("\nDoes v2 beat v1?")
+    print("What v2 changes against v1, on each model:")
     for model, read in ((OLD, comparison), (NEW, comparison.against((NEW, "v1")))):
         row = next(r for r in read.contrasts("accuracy") if r["contrast"] == f"callable.prompt=v2, model={model}")
-        print(f"  on {model}: accuracy {row['delta']:+.2f}, {row['verdict']}")
+        p = "" if row["p_adjusted"] is None else f" (p={row['p_adjusted']:.2g})"  # none when nothing varied
+        print(f"  {model}: v2 vs v1 on {row['reading']}: {row['delta']:+.2g}{p}: {row['verdict']}")
+    print("\nThe full report: comparison.render(), or reports.py to write it to files.")
     return comparison
 
 

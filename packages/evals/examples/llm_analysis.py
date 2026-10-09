@@ -2,8 +2,10 @@
 
 A model writes the analysis from one input, the campaign's **analysis bundle**: every number code computed,
 frozen into one JSON file with a sha256 fingerprint. The model never types a figure: it names a reading, code
-fills the number in, and a reading the bundle lacks is refused. New here: ``generate_analysis``, and a bundle
-saved, reloaded and written over again with another prompt. The bundle: ``docs/concepts.md#analysis-bundle``.
+fills the number in, and a reading the bundle lacks is refused. Only the cited readings are checked, not the
+prose around them, so a conclusion can still overclaim: compare each analysis's with the code's verdict, printed
+first. New here: ``generate_analysis``, and a bundle saved, reloaded and written over again with another prompt.
+The bundle: ``docs/concepts.md#analysis-bundle``.
 
 Run it with ``python packages/evals/examples/llm_analysis.py``; it writes ``./eval-analysis/bundle.json``.
 With ``ANTHROPIC_API_KEY`` set, Claude writes two analyses for about a cent; without it, a scripted stand-in
@@ -161,6 +163,12 @@ async def main(out_dir: Path = Path("eval-analysis")) -> list[EvalAnalysis]:
     )
     profile, assembled_at = comparison.host.profile, datetime.now(UTC).isoformat()
 
+    # The verdict code reached; nothing an analysis writes changes it.
+    for row in comparison.contrasts("accuracy"):
+        arm, control = (row[key].removeprefix("model=") for key in ("contrast", "control"))
+        p = "" if row["p_adjusted"] is None else f" (p={row['p_adjusted']:.2g})"  # none when nothing varied
+        print(f"Code's verdict: {arm} vs {control} on {row['reading']}: {row['delta']:+.2g}{p}: {row['verdict']}\n")
+
     # Freeze: assemble the bundle once and save it. The fingerprint is a sha256 of its canonical JSON.
     bundle = inspect_campaign_bundle(comparison.host, comparison.campaign_id, comparison.scope_id).bundle
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -181,7 +189,7 @@ async def main(out_dir: Path = Path("eval-analysis")) -> list[EvalAnalysis]:
         made = analysis.generation  # provenance: the bundle it read, the prompt's version, the cost, any repair
         print(f"\n# {analysis.document.headline}")
         for finding in analysis.document.findings:
-            print(f"- {finding.title}: {finding.body}")  # every figure in the body was filled in by code
+            print(f"- {finding.title.rstrip('.')}: {finding.body}")  # every figure in the body was filled in by code
         print(f"  bundle {made.bundle_fingerprint[:12]}, prompt {made.prompt_version[:12]}, ${made.token_cost:.4f}")
         refused = (made.repaired_refusal or "nothing").split(". ")[0]
         print(f"  repairs {made.repair_attempts}, after the check refused: {refused}")

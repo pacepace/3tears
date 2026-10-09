@@ -1,4 +1,4 @@
-"""Is the new prompt better than the old one, or is the difference noise?
+"""What does the new prompt change, and is the difference real or noise?
 
 Two versions of a support-ticket classifier, differing only in their prompt, run over the same tickets,
 and the engine tests the new one against the old one, the control, and gives a verdict. New here:
@@ -6,6 +6,8 @@ and the engine tests the new one against the old one, the control, and gives a v
 
 Run it with ``python packages/evals/examples/compare_two_prompts.py``. With ``ANTHROPIC_API_KEY`` set it calls
 Claude 48 times for well under a cent; without it, keyword stand-ins play the prompts and say nothing about Claude.
+The stand-ins are built to differ; live, a current model may already get every ticket right, and then "not
+separated" is the correct answer: these cases cannot tell the prompts apart, and harder ones are needed.
 """
 
 import asyncio
@@ -142,9 +144,12 @@ async def main() -> Comparison:
     for arm, summary in comparison.arms.items():
         print(f"--- {arm} ---\n{summary.render()}\n")
 
-    # "Contrasts against the control" is the verdict: the difference, its Holm-adjusted p, and whether it separated.
-    # Cost is not measured here: a plain candidate reports no spend. compare_two_models.py shows how to report it.
-    print(comparison.render())
+    # The verdict: each arm against the control, the difference, its Holm-adjusted p, and whether it separated.
+    for row in comparison.contrasts():
+        arm, control = (row[key].removeprefix("model=") for key in ("contrast", "control"))
+        p = "" if row["p_adjusted"] is None else f" (p={row['p_adjusted']:.2g})"  # none when nothing varied
+        print(f"{arm} vs {control} on {row['reading']}: {row['delta']:+.2g}{p}: {row['verdict']}")
+    print("\nThe full report: comparison.render(), or reports.py to write it to files.")
     return comparison
 
 

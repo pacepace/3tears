@@ -7,6 +7,7 @@ not on the newer one. The model ids are read from the example, never spelled her
 from __future__ import annotations
 
 import importlib.util
+import re
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -62,11 +63,14 @@ async def test_offline_the_example_runs_four_arms_keyed_by_both_factors(
 
     out = capsys.readouterr().out
     assert out.startswith("ANTHROPIC_API_KEY is not set: running OFFLINE, with keyword stand-ins")
-    assert comparison.render() in out
-    assert out.rstrip().endswith(
-        f"Does v2 beat v1?\n  on {old}: accuracy +0.50, improved on the control\n"
-        f"  on {new}: accuracy +0.07, not separated from the control"
+    # The verdict lines, and a pointer to the full report rather than the report itself.
+    assert comparison.render() not in out
+    assert re.search(
+        rf"What v2 changes against v1, on each model:\n  {old}: v2 vs v1 on accuracy: \+0\.5 \(p=[\d.e-]+\): improved on the control\n"
+        rf"  {new}: v2 vs v1 on accuracy: \+0\.071 \(p=[\d.e-]+\): not separated from the control\n",
+        out,
     )
+    assert out.rstrip().endswith("The full report: comparison.render(), or reports.py to write it to files.")
 
 
 def test_the_example_reaches_the_engine_only_through_public_roots() -> None:

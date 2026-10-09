@@ -14,7 +14,8 @@ deliberate mistake so that a check fails, and its numbers say nothing about Clau
 import asyncio
 import os
 
-from threetears.evals.quick import Dimension, EvalSummary, World, WorldTool, WorldTools, run_eval
+from threetears.evals.quick import Dimension, EvalSummary, World, WorldTool, WorldTools, callable_host, run_eval
+from threetears.evals.run import get_result_trace, list_results
 
 MODEL = "claude-haiku-5-5"
 
@@ -58,6 +59,8 @@ LIGHT_ENDS_ON_IFF_DARK = '(state.light == "on") == (state.daylight == "dark")'
 # ``variation.light`` is the case's starting light, so this is "never switched to where it already was".
 NEVER_SWITCHED_NEEDLESSLY = 'all(it.to != variation.light for it in calls("room.switch_light"))'
 GOAL_CHECKS = [LIGHT_ENDS_ON_IFF_DARK, NEVER_SWITCHED_NEEDLESSLY]
+# How main() names a check in the line for a cell that failed it.
+FAILED_AS = {LIGHT_ENDS_ON_IFF_DARK: "wrong light", NEVER_SWITCHED_NEEDLESSLY: "needless switch"}
 
 # -----------------------------------------------------------------------------
 # 4. The candidates: Claude in a tool-use loop, or the offline stand-in.
@@ -105,7 +108,7 @@ async def offline_assistant(case: dict, room: WorldTools) -> str:
 
 
 # -----------------------------------------------------------------------------
-# 5. Seed every case's room, let the candidate act on it twice, grade how each room ended, and print it.
+# 5. Seed every case's room, let the candidate act on it twice, grade how each room ended, and print each cell.
 # -----------------------------------------------------------------------------
 
 
@@ -116,9 +119,11 @@ async def main() -> EvalSummary:
     else:
         print("ANTHROPIC_API_KEY is not set: running OFFLINE, with a rule-based stand-in for the model.\n")
 
+    host = callable_host(world=ROOM)  # kept, so each cell's trace can be read back below
     summary = await run_eval(
         CASES,
         claude_assistant if online else offline_assistant,
+        host=host,
         world=ROOM,  # the state each cell seeds and the engine reads back
         seed=lambda case: {"light": case["light"], "daylight": case["daylight"]},  # each case's starting room
         goal_checks=GOAL_CHECKS,  # graded against the room the candidate left
@@ -128,6 +133,17 @@ async def main() -> EvalSummary:
     )
     # Each "goal check" line says in how many cells the room ended as the check requires.
     print(summary.render())
+
+    # Each cell: the room it started in, the calls the model made, the room it left, and the checks it failed.
+    print()
+    seeds = {case.id: case.host_payload["seed"] for case in host.storage.query_test_cases(summary.scope_id)}
+    results = list_results(host.storage, summary.run_id, summary.scope_id)
+    for result in sorted(results, key=lambda result: (result.test_case_id, result.k_iteration)):
+        trace, seed = get_result_trace(host.storage, result), seeds[result.test_case_id]
+        start, end = f"{seed['daylight']}, light {seed['light']}", f"light {trace.end_state['light']}"
+        calls = ", ".join(f"{call.action}(to={call.params['to']})" for call in trace.call_ledger.calls) or "no call"
+        failed = ", ".join(FAILED_AS[it.expression] for it in result.goal_state_outcomes if not it.passed) or "ok"
+        print(f"  {start:<17} -> {calls:<20} -> {end:<9}  {failed}")
     return summary
 
 

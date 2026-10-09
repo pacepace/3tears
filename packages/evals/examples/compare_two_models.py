@@ -140,9 +140,13 @@ async def main() -> Comparison:
     for arm, summary in comparison.arms.items():
         print(f"--- {arm} ---\n{summary.render()}\n")
 
-    # "Contrasts against the control" holds the verdict on accuracy and on cost_usd. A cheaper arm whose
-    # accuracy is "not separated from the control" is the case for switching, once there are enough hard cases.
-    print(comparison.render())
+    # The verdict on accuracy and on cost_usd. A cheaper arm whose accuracy is "not separated from the
+    # control" is the case for switching, once there are enough hard cases.
+    for row in comparison.contrasts():
+        arm, control = (row[key].removeprefix("model=") for key in ("contrast", "control"))
+        p = "" if row["p_adjusted"] is None else f" (p={row['p_adjusted']:.2g})"  # none when nothing varied
+        print(f"{arm} vs {control} on {row['reading']}: {row['delta']:+.2g}{p}: {row['verdict']}")
+    print("\nThe full report: comparison.render(), or reports.py to write it to files.")
     return comparison
 
 

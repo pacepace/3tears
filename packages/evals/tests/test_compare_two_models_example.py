@@ -10,6 +10,7 @@ written here.
 from __future__ import annotations
 
 import importlib.util
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -66,7 +67,11 @@ async def test_with_no_api_key_the_example_runs_offline_and_weighs_accuracy_agai
     out = capsys.readouterr().out
     assert out.startswith("ANTHROPIC_API_KEY is not set: running OFFLINE")
     assert "candidate spend: $" in out
-    assert comparison.render() in out
+    # The verdict, one line per reading, and a pointer to the full report rather than the report itself.
+    arms = f"{module.CHEAPER} vs {module.CONTROL}"
+    assert re.search(rf"\n{arms} on accuracy: -0\.17 \(p=[\d.e-]+\): not separated from the control\n", out)
+    assert re.search(rf"\n{arms} on cost_usd: -[\d.e-]+ \(p=[\d.e-]+\): improved on the control\n", out)
+    assert comparison.render() not in out
 
 
 def test_the_example_reaches_the_engine_only_through_public_roots() -> None:

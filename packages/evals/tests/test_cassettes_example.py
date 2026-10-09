@@ -8,6 +8,7 @@ no model, so it runs here exactly as it runs for a reader.
 from __future__ import annotations
 
 import importlib.util
+import re
 from pathlib import Path
 from types import ModuleType
 
@@ -66,7 +67,11 @@ async def test_the_example_captures_once_and_replays_one_recording_to_both_arms(
     # Reading the newest page never does worse than trusting the top one on the same results.
     means = {arm: summary.measures[0].mean for arm, summary in comparison.arms.items()}
     assert means["newest_hit"] >= means["top_hit"]
-    assert comparison.render() in out
+    # The verdict, one line per contrast, and a pointer to the full report rather than the report itself.
+    assert re.search(
+        r"\nnewest_hit vs top_hit on correct: \+0\.5 \(p=[\d.e-]+\): not separated from the control\n", out
+    )
+    assert comparison.render() not in out
 
 
 def test_the_offline_search_drifts_between_calls_and_repeats_across_runs() -> None:

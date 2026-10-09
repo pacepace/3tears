@@ -52,14 +52,22 @@ async def test_with_no_api_key_the_example_runs_offline_and_says_so(
     out = capsys.readouterr().out
     assert out.startswith("ANTHROPIC_API_KEY is not set: running OFFLINE")
     assert summary.render() in out
+    # Then each cell, in case order: where the room started, what was called, where it ended, what failed.
+    cells = [line.split() for line in out.split(summary.render())[1].strip().splitlines()]
+    assert [" ".join(cell) for cell in cells[::2]] == [
+        "dark, light off -> switch_light(to=on) -> light on ok",
+        "dark, light on -> no call -> light on ok",
+        "bright, light off -> switch_light(to=on) -> light on wrong light",
+        "bright, light on -> switch_light(to=off) -> light off ok",
+    ]
+    assert cells[::2] == cells[1::2]  # the stand-in does the same thing on both repeats
 
 
 async def test_each_room_is_seeded_from_its_case_and_read_back_as_the_stand_in_left_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = _load()
-    host = callable_host(world=module.ROOM)
-    monkeypatch.setattr(module, "run_eval", _with_host(module.run_eval, host))
+    host = _host_of(module, monkeypatch)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     summary = await module.main()
     cases = {case.id: case for case in host.storage.query_test_cases(summary.scope_id)}
@@ -89,11 +97,11 @@ async def test_each_room_is_seeded_from_its_case_and_read_back_as_the_stand_in_l
     assert sorted(seen, key=str) == sorted(expected * 2, key=str)
 
 
-def _with_host(run_eval: Any, host: Any) -> Any:
-    async def run(*args: Any, **kwargs: Any) -> Any:
-        return await run_eval(*args, host=host, **kwargs)
-
-    return run
+def _host_of(module: ModuleType, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """The host the example will build and run in, made here so the test can read the cells back from it."""
+    host = callable_host(world=module.ROOM)
+    monkeypatch.setattr(module, "callable_host", lambda **kwargs: host)
+    return host
 
 
 def test_the_example_reaches_the_engine_only_through_public_roots() -> None:
@@ -144,9 +152,8 @@ async def test_the_claude_candidate_runs_the_tool_loop_against_sdk_replies(monke
 
     monkeypatch.setattr(anthropic, "AsyncAnthropic", Client)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    host = callable_host(world=module.ROOM)
+    host = _host_of(module, monkeypatch)
     monkeypatch.setattr(module, "CASES", module.CASES[:1])  # dark, light off, about to read
-    monkeypatch.setattr(module, "run_eval", _with_host(module.run_eval, host))
     summary = await module.main()
 
     assert len(sent) == 3 * summary.k_runs
