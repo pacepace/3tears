@@ -1,0 +1,217 @@
+# Judges and calibration
+
+**For** someone grading output that no code can check (is the answer grounded, is the tone right, did it refuse
+what it should) who wants to know whether to trust the grades. **Answers:** how to write a rubric dimension, run
+an LLM judge, collect person ratings, and read whether the judge agrees with people and with itself, and how many
+ratings that takes. Grade with code wherever code can decide; a judge is for judgment
+([principles](principles.md)).
+
+The snippets run top to bottom as one script. `client` is any `CompletionClient` (an async
+`generate(system=, user=, response_format=)` and an `aclose()`); `examples/llm_judge.py` has a Claude adapter.
+
+## Step 1: choose a scale, and prefer pass/fail
+
+Each rubric dimension is answered on one scale: `pass_fail` (stored as 1 or 0, so its mean is a pass rate) or
+`ordinal`, 1 to 5. **Prefer `pass_fail` for a new criterion.** It forces you to say what failure looks like,
+it is easier for people to label and to agree on, and its agreement with them is plain kappa. Use 1–5 only for
+a quality with real degrees. Its agreement is quadratic-weighted kappa, which counts a 4 against a 5 as a near
+miss. Do not fold a rule into a broad 1–5 dimension, where everything else outweighs it: give it a narrow
+pass/fail dimension of its own ([measuring soundly](measuring-soundly.md)).
+
+## Step 2: write a rubric dimension
+
+A dimension is one question, named `<context>.<name>`. Write it from failures you have seen in real outputs. The
+judge is asked one dimension per call, gives its reasoning before its score, and may answer "can't tell", which
+excludes that cell from the dimension. It reads only the answer and what `case_material` renders for the case,
+so give it what the candidate answered from.
+
+```python
+from threetears.evals.contracts import RubricDim
+from threetears.evals.quick import Judge
+
+POLICY = "Unworn items can be returned within 30 days of delivery for a full refund. Sale items are exchange only."
+
+GROUNDED = RubricDim(
+    name="answer.grounded",
+    description="Every claim in the answer is stated in the store policy.",
+    scale="pass_fail",
+    scoring_guide={"pass": "Each claim can be pointed to in the policy.", "fail": "Any claim the policy lacks."},
+)
+NO_PROMISES = RubricDim(
+    name="answer.no_promises",
+    description="The answer promises nothing the policy does not allow: no exceptions, credits or extensions.",
+    scale="pass_fail",
+    axis="boundary",  # a guardrail: step 3
+)
+judge = Judge(
+    client=client, model="judge-model", rubric=[GROUNDED, NO_PROMISES],
+    case_material=lambda case: f"Store policy:\n{POLICY}\n\nCustomer question: {case['question']}",
+)
+```
+
+A scoring guide's levels must be the scale's own (`pass`/`fail`, or `1`–`5`). For a quick rubric, pass a mapping
+of name to description and one `scale=` for all of them: `Judge(client=client, model="judge-model",
+rubric={"helpful": "..."}, scale="pass_fail")` names the dimension `answer.helpful`.
+
+## Step 3: guardrails are not capabilities
+
+A **capability** dimension (`axis="capability"`, the default) is something the candidate should do well, and it is
+read into the composite and pass^k. A **guardrail** (`axis="boundary"`) is something it must not do: leak, comply
+with an unsafe ask, promise what policy does not allow. A guardrail never joins the composite, pass^k or a
+comparison family. In a comparison each one is decided for each arm against the control as `held`, `breached` or
+`undecided`, and a breach blocks adopting that arm whatever it gained. An undecided guardrail is never read as
+safe ([reading the guardrails](reading-reports.md#reading-the-guardrails)). A single run's summary shows a
+guardrail's mean like any other dimension.
+
+## Step 4: run the judge
+
+```python
+from threetears.evals.quick import callable_host, run_eval
+
+POLICY_CASES = [
+    {"question": "Can I return worn shoes?"}, {"question": "How long do I have to return a jacket?"},
+    {"question": "Do I get a refund on sale items?"}, {"question": "Do you gift wrap?"},
+]
+
+
+async def answer(case):
+    """Answer a customer's question from the store policy."""  # the judge reads this line as the intent
+    return "Unworn items can be returned within 30 days for a full refund."
+
+
+host = callable_host()  # kept: its in-memory store holds the results the next steps read
+summary = await run_eval(POLICY_CASES, answer, judge=judge, host=host, scope_id="support", k=2,
+                         model="candidate-model")
+print(summary.render())
+```
+
+**Use a different model from the candidate's.** A model grading its own output tends to favour it. The quick path
+does not flag this. On a full host, when a launch names no judge and the default judge is one of its candidates,
+`LaunchSettings.judge_alternate_model` scores instead, and a run judged on a candidate's model says so wherever its
+judges are listed.
+
+**Temperature.** Every judge call is requested at `DEFAULT_JUDGE_TEMPERATURE` (0) unless a `JudgeConfig` for the
+dimension states another. Each score records what its call was actually sent at (`RubricScore.judge_temperature`;
+`model_default` when none was sent), and that is part of the judge's identity: agreement and tiers are kept
+separately per temperature, and a repeat at another temperature is not paired. On the quick path your client
+builds the request, so send temperature 0 and report it as `CompletionResult.temperature`.
+
+## Step 5: collect person ratings
+
+A person reads results and scores the same dimension on the same scale. Rate without looking at the judge's
+score first.
+
+```python
+from threetears.evals.run import list_results, rate_result
+
+results = list_results(host.storage, summary.run_id, summary.scope_id)
+for result in results:  # in practice: the results a person has read
+    rate_result(
+        host.storage, result_id=result.id, scope_id=summary.scope_id, rubric_dim="answer.grounded",
+        rater="ana@example.com", rater_kind="person", score=1, reason="Every claim is in the policy.",
+    )
+```
+
+`score` is 1 (pass) or 0 (fail) on `pass_fail`, and 1–5 on `ordinal`. Rating the same dimension of the same
+result again replaces that rater's rating. Only `rater_kind="person"` counts as agreement with people. A rating
+an agent wrote is listed as `rated_by_an_agent` and never pooled.
+
+## Step 6: read agreement: kappa
+
+```python
+from threetears.evals.analysis import judge_agreement
+
+ratings = host.storage.query_calibration_ratings(summary.scope_id, run_id=summary.run_id)
+agreement = judge_agreement(ratings, results)
+for dim in agreement.dimensions:
+    print(dim.rubric_dim, dim.n, dim.results, dim.exact_agreement, dim.kappa, dim.agreement_interval)
+```
+
+`exact_agreement` is the share of pairs where judge and person gave the same score. **Kappa** is that agreement
+net of what chance alone would give from each side's score distribution: 0 is chance, 1 is perfect.
+`weighted_kappa` is the quadratic-weighted kappa, on 1–5 only. Kappa is `None` when every pair has one and the
+same score: then it is undefined, not perfect. With several people, the judge is set against each person and the
+kappas are pooled so that each distinct result weighs 1. `results` counts those distinct results, and the tier
+floors count them too. `agreement.unpaired` names every rating that could not be paired, and why.
+
+## Step 7: evidence tiers, and how many ratings they take
+
+Every judged reading in a report carries an **evidence tier**. It is decided from confidence bounds on the two
+agreements, never their point estimates:
+
+| Tier | Shown when |
+|---|---|
+| `calibrated` | agreement with people: one-sided 95% lower bound ≥ 0.6, over at least 20 distinct results |
+| `separation` | agreement with its own repeats (step 8): lower bound ≥ 0.8, over at least 120 distinct results |
+| `incidental` | both measured over enough results, and both upper bounds below their bars |
+| `undetermined` | not shown either way: too few results, or bounds straddling a bar |
+
+The floors are minimums, not targets. In seeded simulation, the chance of earning the tier by distinct results:
+
+| Tier | True agreement | 20 | 40 | 60 | 80 | 100 | 120 |
+|---|---|---|---|---|---|---|---|
+| `calibrated` | 0.9 | 14–45% | 57–86% | 71–98% | 81–99% | 90–100% | 94–100% |
+| `calibrated` | 0.8 | 4–16% | 23–42% | 35–58% | 46–76% | 53–86% | 62–90% |
+| `separation` | 0.95 | below floor | below floor | below floor | below floor | below floor | 70–98% |
+
+**Plan on about 50 person-rated results to calibrate a good judge** (80 on a skewed 1–5 scale), **and 120
+repeated results for separation.** A judge whose true self-agreement is 0.9 needs more than 200 repeats for an
+80% chance. The method, and why these bounds:
+[evidence tiers](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers).
+
+Compute the tiers and read the sentence a report states:
+
+```python
+from threetears.evals.analysis import judge_evidence_tiers, judge_key, judge_self_agreement, tier_sentence
+
+self_agreement = judge_self_agreement(results)  # empty until step 8 records repeats
+judged = {judge_key(result, score.dim) for result in results for score in result.rubric_scores}
+for tier in judge_evidence_tiers(agreement, self_agreement, judged):
+    print(tier_sentence(tier))
+```
+
+With one person rating 24 results, some of them differently from the judge, it reads:
+
+```text
+answer.grounded (judge-model, temperature 0): undetermined — agreement with people 0.4085 (bounds 0.05449 to
+0.7088) over 24 pairs from 24 results, undecided — the bounds straddle (bar 0.6 over at least 20 results) — about
+35 more results would decide it if agreement holds; with its own repeats not measured (bar 0.8 over at least 120
+results) — needs 120 results.
+```
+
+**"Needs N more"** is the rest of the floor when there are too few results. When the bounds straddle the bar, it
+says about how many more results would carry them clear if agreement held at its estimate. Tiers are flagged and
+never hide a reading; a finding stands on the weakest tier among its rows.
+
+## Step 8: judge repeats, for self-agreement
+
+A repeat asks the same judge the same question again, from the evidence it first read, and records each answer
+beside the score it repeats without changing it. On the quick path, lend the judge's client to the host:
+
+```python
+import dataclasses
+
+from threetears.evals.run import estimate_judge_repeat, repeat_judge_scores
+
+judging_host = dataclasses.replace(host, clients=judge.clients())
+estimate = await estimate_judge_repeat(judging_host, summary.run_id, summary.scope_id, out_of_run_cap_usd=None)
+print(estimate.max_calls, estimate.would_start)
+report = await repeat_judge_scores(judging_host, summary.run_id, summary.scope_id, out_of_run_cap_usd=None)
+self_agreement = judge_self_agreement(list_results(host.storage, summary.run_id, summary.scope_id))
+```
+
+Every call is priced and admitted against `out_of_run_cap_usd` before the first is sent. `None` enforces no cap.
+Under a cap, a client that cannot price its calls (`price_ceiling` returns `None`, as a lent quick-path client
+does) is refused before anything is spent. A "can't tell" on repeat counts as a disagreement. Separation counts
+distinct results, so 120 means, for example, 40 cases at `k=3`, each repeated once.
+
+**Comparing two candidates on judged quality:** see `compare`'s `judge=`.
+
+## What to read next
+
+- [Evidence tiers](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers): the bounds, the
+  simulations behind the planning numbers, and how temperature enters a judge's identity.
+- [Reading the guardrails](reading-reports.md#reading-the-guardrails): held, breached and undecided in a report.
+- [Principles](principles.md): code checks facts, a judge assesses judgment, people check the judge.
+- [Evaluating a tool-using agent](evaluating-agents.md): grading what an agent *did*, with no judge.
+- `examples/llm_judge.py`: a judged run with a Claude client.
