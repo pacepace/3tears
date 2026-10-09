@@ -25,12 +25,14 @@ keyed by ``(version, request digest)`` whose value is the answer gzip-compressed
   below which no version is recorded any more) and, per version, sixteen shards of request digests
   (``{version}.{first hex digit}``), so no one value is rewritten by every request.
 - **Race-free by one ordering.** A computing replica records its version (refused at or below the
-  floor) and its digest before it computes, and after its entry lands it reads the floor again: a
-  version retired meanwhile has its entry and digest removed by the replica that wrote them.
-  Retirement raises the floor first, then empties each shard by compare-and-set (re-reading whatever
-  arrived since it read), then forgets the version. So every entry is either reachable from the index
-  or removed by its own writer; a retirement interrupted part way leaves the version listed below the
-  floor, and the next one finishes it.
+  floor) and its digest before it computes, and writes its answer while it holds the key's build lock.
+  Retirement raises the floor first, then, for each digest a shard names, deletes the answer -- or,
+  when there is none yet, drops the digest only if it can pause the key's derivation (no writer holds
+  the lock); a digest whose writer is still at work stays, and with it the version, for the next
+  retirement. So an answer that is ever written is named by its digest until a retirement deletes it,
+  whether its writer finishes, is cancelled or dies (its lease lapses and the next retirement takes
+  the digest). A writer that finishes after its version was retired also takes its answer back at
+  once. A version is forgotten only once every shard is empty.
 - **A failure is never cached, and bookkeeping never fails a read.** ``compute`` raising (a conflict,
   a refusal, data not ready) reaches the caller and leaves nothing behind. The index failing (L2
   unreachable, contention past the retry budget) answers the read uncached and writes no entry, so
@@ -55,13 +57,13 @@ import gzip
 import hashlib
 import json
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, ClassVar, Final, Literal
 
 from threetears.core.collections.base import NATS_CLIENT_FROM_REGISTRY, BaseCollection
-from threetears.core.collections.derived import BuildLock, DerivedCollection
+from threetears.core.collections.derived import BuildLock, BuildLockHeld, DerivedCollection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import CoreConfig
 from threetears.core.entities.base import BaseEntity
@@ -78,9 +80,6 @@ log = get_logger(__name__)
 #: parts with it) or ``.`` (a shard's name is ``{version}.{digit}``)
 _VERSION: Final = re.compile(r"^[-=a-zA-Z0-9]+$")
 
-#: rounds of re-reading a shard that changed while it was being emptied
-_SHARD_ROUNDS: Final = 8
-
 #: the name of the index row holding each version's order and the floor
 _VERSIONS: Final = "versions"
 
@@ -92,8 +91,6 @@ _Action = tuple[Literal["upsert", "delete", "noop"], dict[str, Any] | None]
 #: purges keys (relative to the owner's scope) so they leave no marker; returns how many it purged
 KeyPurger = Callable[[list[str]], Awaitable[int]]
 
-#: what a purger can raise: the hub's refusal or absence, or transport
-_PURGE_ERRORS: Final = (CollectionKeysRequestError, KvError)
 
 #: the shards of each version's digest index
 _SHARDS: Final = "0123456789abcdef"
@@ -255,6 +252,7 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         self._table_name = table_name
         self._purger = purger
         self._markers_kept_logged = False
+        self._background: set[asyncio.Task[None]] = set()
         super().__init__(registry, config, nats_client, None, build_lock=build_lock)
         # L2 alone: no durable tier to pull through (a miss computes)
         self.l3_pool = None
@@ -319,6 +317,18 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
             await self._confirm(version, key[1])
         return base64.b64decode(row["body"])
 
+    def _in_background(self, work: Coroutine[Any, Any, None]) -> None:
+        """run ``work`` off the read path, keeping a reference until it ends.
+
+        :param work: the coroutine
+        :ptype work: Coroutine[Any, Any, None]
+        :return: nothing
+        :rtype: None
+        """
+        task = asyncio.get_running_loop().create_task(work)
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+
     def key_of(self, version: str, request: str) -> tuple[str, str]:
         """the key of ``request``'s answer at ``version``.
 
@@ -382,12 +392,15 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         deleted = 0
         for version, older in sorted(taken.items()):
             touched: list[str] = []
+            emptied = True
             for shard in _SHARDS:
-                name = f"{version}.{shard}"
-                deleted += await self._empty_shard(name, touched)
-                touched.append(self._relative(self._index.l2_key(name)))
-            await self._index.l2_cas_mutate(_VERSIONS, _forget(version, older))
-            # the version is retired and below the floor: nothing writes its keys again, so they go whole
+                answers, shard_emptied = await self._clear_shard(f"{version}.{shard}", touched)
+                deleted += answers
+                emptied = emptied and shard_emptied
+            if emptied:
+                # every digest is accounted for: the version is forgotten; otherwise the next retirement
+                # finishes it, once the writers still at work have written or gone
+                await self._index.l2_cas_mutate(_VERSIONS, _forget(version, older))
             await self._purge(touched)
         if deleted:
             log.info("retired old answers: table=%s below=%d deleted=%d", self.table_name, order, deleted)
@@ -436,6 +449,10 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
     async def _confirm(self, version: str, digest: str) -> None:
         """after this replica's answer landed: if its version was retired meanwhile, take the answer back.
 
+        A floor that cannot be read counts as retired: the answer was already returned to its caller,
+        and taking back an answer still wanted costs one recompute, while keeping one retired would
+        outlive its version. The purge of what was taken back runs off the read path.
+
         :param version: the version
         :ptype version: str
         :param digest: the request's digest
@@ -446,53 +463,86 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         try:
             versions = await self._index.ensure(_VERSIONS)
             floor = versions.get("floor") if versions else None
-            if floor is not None and versions is not None and versions["members"].get(version, floor) <= floor:
+            retired = versions is None or floor is not None and versions["members"].get(version, floor) <= floor
+            if retired:
                 await self.l2_cas_mutate((version, digest), _delete_present)
                 shard = f"{version}.{digest[0]}"
                 removed = await self._index.l2_cas_mutate(shard, _remove_member(shard, digest))
                 taken_back = [self._relative(self.l2_key((version, digest)))]
                 if removed.action == "deleted":
                     taken_back.append(self._relative(self._index.l2_key(shard)))
-                await self._purge(taken_back)
+                self._in_background(self._purge(taken_back))
         except _INDEX_ERRORS as exc:
-            # NOSILENT: the one window left open is this replica's own answer outliving its version
+            # NOSILENT: the digest stays in its shard, so the next retirement deletes this answer
             log.warning(
-                "answer landed on a retired version and could not be taken back: table=%s version=%s error=%s",
+                "answer landed on a retired version and could not be taken back now: table=%s version=%s error=%s",
                 self.table_name,
                 version,
                 exc,
             )
 
-    async def _empty_shard(self, name: str, touched: list[str]) -> int:
-        """delete every answer a shard names, then the shard, re-reading whatever arrived meanwhile.
+    async def _clear_shard(self, name: str, touched: list[str]) -> tuple[int, bool]:
+        """delete every answer a shard names and drop the digests accounted for; keep those still being written.
 
         :param name: the shard's name, ``{version}.{digit}``
         :ptype name: str
-        :param touched: the keys deleted, relative to the owner's scope, to purge once the version is gone
+        :param touched: the keys deleted, relative to the owner's scope, to purge
         :ptype touched: list[str]
-        :return: how many answers were deleted
-        :rtype: int
+        :return: how many answers were deleted, and whether the shard is gone
+        :rtype: tuple[int, bool]
         """
         version = name.split(".", 1)[0]
+        row = await self._index.ensure(name)
         deleted = 0
-        for _ in range(_SHARD_ROUNDS):
-            row = await self._index.ensure(name)
-            seen = frozenset(row["members"]) if row else frozenset()
-            for digest in sorted(seen):
-                outcome = await self.l2_cas_mutate((version, digest), _delete_present)
-                deleted += outcome.action == "deleted"
-                touched.append(self._relative(self.l2_key((version, digest))))
-            emptied = False
+        handled: set[str] = set()
+        for digest in sorted(row["members"]) if row else ():
+            settled, answered = await self._clear_answer(version, digest, touched)
+            deleted += answered
+            if settled:
+                handled.add(digest)
+        emptied = False
 
-            def drop_if_unchanged(current: dict[str, Any] | None, seen: frozenset[str] = seen) -> _Action:
-                nonlocal emptied
-                emptied = current is None or frozenset(current["members"]) <= seen
-                return ("delete", None) if emptied else ("noop", None)
+        def drop_handled(current: dict[str, Any] | None) -> _Action:
+            nonlocal emptied
+            members = [member for member in current["members"] if member not in handled] if current else []
+            emptied = not members
+            if current is None or len(members) == len(current["members"]) and members:
+                return ("noop", None)
+            return ("delete", None) if emptied else ("upsert", {"name": name, "members": members})
 
-            await self._index.l2_cas_mutate(name, drop_if_unchanged)
-            if emptied:
-                break
-        return deleted
+        outcome = await self._index.l2_cas_mutate(name, drop_handled)
+        if outcome.action == "deleted":
+            touched.append(self._relative(self._index.l2_key(name)))
+        return deleted, emptied
+
+    async def _clear_answer(self, version: str, digest: str, touched: list[str]) -> tuple[bool, bool]:
+        """delete one digest's answer, or learn that its writer is still at work.
+
+        :param version: the version
+        :ptype version: str
+        :param digest: the digest
+        :ptype digest: str
+        :param touched: the keys deleted, relative to the owner's scope
+        :ptype touched: list[str]
+        :return: whether the digest is accounted for (its answer deleted, or none and no writer at
+            work), and whether an answer was deleted
+        :rtype: tuple[bool, bool]
+        """
+        key = (version, digest)
+        outcome = await self.l2_cas_mutate(key, _delete_present)
+        answered = outcome.action == "deleted"
+        settled = answered
+        if not answered:
+            try:
+                # no answer yet: only a writer holding the key's build lock can still write one
+                async with self.derivation_paused(key):
+                    answered = (await self.l2_cas_mutate(key, _delete_present)).action == "deleted"
+                    settled = True
+            except BuildLockHeld:
+                settled = False
+        if answered:
+            touched.append(self._relative(self.l2_key(key)))
+        return settled, answered
 
     def _relative(self, key: str) -> str:
         """a key of this owner's, without the scope that leads it: what a purge names.
@@ -519,8 +569,8 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
                 raise CollectionKeysRequestError("no purger: this owner keeps the delete markers")
             for start in range(0, len(keys), MAX_PURGED_KEYS):
                 await self._purger(keys[start : start + MAX_PURGED_KEYS])
-        except _PURGE_ERRORS as exc:
-            # NOSILENT: a marker left is space, never a wrong answer; said once, not per retirement
+        except Exception as exc:  # noqa: BLE001 -- a purge never fails a read nor wedges a retirement: a marker left is space, never a wrong answer
+            # NOSILENT: said once, not per retirement
             if not self._markers_kept_logged:
                 self._markers_kept_logged = True
                 log.warning(
@@ -539,7 +589,7 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
             target = self._wanted
             try:
                 await self.retire_older_than(target)
-            except _INDEX_ERRORS as exc:
+            except Exception as exc:  # noqa: BLE001 -- a retirement that fails for any reason must be tried again, not wedge the next ones
                 # NOSILENT: the old answers wait for the next call, which tries again
                 log.warning("retiring old answers failed: table=%s below=%d error=%s", self.table_name, target, exc)
                 self._wanted = self._retired_below
@@ -593,7 +643,10 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         return {"version": version, "request": digest, "body": base64.b64encode(body).decode("ascii")}
 
     async def save_to_store(self, data: dict[str, Any], original_timestamp: Any = None, *, conn: Any = None) -> int:
-        """nothing: L2 is the only tier, and the read that computed the row seeds it there.
+        """write the answer to L2 while the computing replica still holds the key's build lock.
+
+        L2 is the only tier. Written here, under the lock, rather than by the read's seed after it, so
+        a retirement that finds no answer and can take the lock knows none is still coming.
 
         :param data: the row
         :ptype data: dict[str, Any]
@@ -601,11 +654,12 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         :ptype original_timestamp: Any
         :param conn: unused
         :ptype conn: Any
-        :return: ``0``
+        :return: ``1``
         :rtype: int
         """
-        del data, original_timestamp, conn
-        return 0
+        del original_timestamp, conn
+        await self.l2_cas_mutate((data["version"], data["request"]), lambda _row: ("upsert", data))
+        return 1
 
     async def delete_from_store(self, entity_id: Any) -> None:
         """nothing: there is no durable tier; retirement deletes from L2.

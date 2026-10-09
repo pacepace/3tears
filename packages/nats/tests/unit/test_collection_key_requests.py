@@ -17,7 +17,7 @@ from threetears.nats.collection_key_requests import (
     purge_scoped_keys,
 )
 from threetears.nats.errors import RequestError, RequestTimeoutError
-from threetears.nats.subjects import Subject
+from threetears.nats.subjects import Subject, Subjects, set_default_namespace
 
 
 class _JetStream:
@@ -38,9 +38,11 @@ class _Hub:
         self.reply = reply
         self.error = error
         self.asked: list[CollectionKeysPurgeRequest] = []
+        self.subjects: list[str] = []
 
     async def request_raw(self, *, subject: Subject, payload: bytes, timeout: timedelta) -> bytes:
-        del subject, timeout
+        del timeout
+        self.subjects.append(subject.path)
         request = CollectionKeysPurgeRequest.model_validate_json(payload)
         self.asked.append(request)
         if self.error is not None:
@@ -84,6 +86,7 @@ class TestThePodsAsk:
         purged = await purge_pod_collection_keys(hub, identity_token="tok", keys=["t.a_1", "t.a_2"])  # type: ignore[arg-type]
         assert purged == 2
         assert hub.asked[0].keys == ["t.a_1", "t.a_2"]
+        assert hub.subjects == [Subjects.hub_collection_keys_purge().path]
 
     @pytest.mark.parametrize("error", [RequestTimeoutError("no answer"), RequestError("no responders")])
     async def test_a_hub_that_does_not_know_the_request_is_unavailable(self, error: Exception) -> None:
@@ -99,3 +102,8 @@ class TestThePodsAsk:
         request = CollectionKeysPurgeRequest(identity_token="secret-token", correlation_id=uuid4(), keys=["t.k"])  # type: ignore[arg-type]
         assert "secret-token" not in repr(request)
         assert "secret-token" in request.model_dump_json()
+
+
+@pytest.fixture(autouse=True)
+def _namespace() -> None:
+    set_default_namespace("3tears")

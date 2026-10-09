@@ -354,7 +354,7 @@ class TestRetiredKeysArePurged:
         await answers.retire_older_than(2)
         digest = answers.key_of("v1", "a")[1]
         assert f"{_TABLE}.v1_{digest}" in purged
-        assert {f"{_TABLE}_index.v1.{shard}" for shard in "0123456789abcdef"} <= set(purged)
+        assert f"{_TABLE}_index.v1.{digest[0]}" in purged  # the one shard v1 held, deleted then purged
         assert not any(key.startswith(_SCOPE) or "v2" in key for key in purged)
 
     async def test_a_purger_that_cannot_be_reached_keeps_the_markers_and_says_so_once(
@@ -375,3 +375,127 @@ class TestRetiredKeysArePurged:
         assert (_entry_keys(bucket, "v1"), _entry_keys(bucket, "v2"), len(_entry_keys(bucket, "v3"))) == ([], [], 1)
         said = [r for r in caplog.records if "could not be purged" in r.getMessage()]
         assert len(said) == 1
+
+
+def _with_purger(nats: FakeNatsClient, purger: Callable[[list[str]], Awaitable[int]]) -> VersionedAnswers:
+    registry = CollectionRegistry()
+    registry.configure(l1_backend=None, l2_client=nats, l3_pool=None, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+    return VersionedAnswers(registry, DefaultCoreConfig(), nats, table_name=_TABLE, purger=purger)
+
+
+async def _eventually(condition: Callable[[], bool], seconds: float = 2.0) -> bool:
+    deadline = asyncio.get_running_loop().time() + seconds
+    while not condition() and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.01)
+    return condition()
+
+
+class TestAWriterRetiredWhileComputing:
+    async def test_its_taken_back_answer_and_emptied_shard_are_purged(self) -> None:
+        purged: list[str] = []
+
+        async def recording(keys: list[str]) -> int:
+            purged.extend(keys)
+            return len(keys)
+
+        nats = FakeNatsClient()
+        writer, retirer = _with_purger(nats, recording), _replica(nats)
+        hold = asyncio.Event()
+        compute = _Computer("late", hold=hold)
+        computing = asyncio.create_task(writer.answer("v1", "a", compute, order=1))
+        await compute.started.wait()
+        await retirer.retire_older_than(2)  # the writer holds the key's lock: its digest is kept
+        hold.set()
+        assert _text(await computing) == "late"
+        digest = writer.key_of("v1", "a")[1]
+        taken_back = {f"{_TABLE}.v1_{digest}", f"{_TABLE}_index.v1.{digest[0]}"}
+        assert await _eventually(lambda: taken_back <= set(purged))
+        bucket = await _bucket(nats)
+        assert (_entry_keys(bucket, "v1"), _shard_keys(bucket, "v1")) == ([], [])
+
+    async def test_a_writer_cancelled_after_its_answer_landed_leaves_it_for_the_next_retirement(self) -> None:
+        nats = FakeNatsClient()
+        writer, retirer = _replica(nats), _replica(nats)
+        hold = asyncio.Event()
+        compute = _Computer("written, then the writer went", hold=hold)
+        computing = asyncio.create_task(writer.answer("v1", "a", compute, order=1))
+        await compute.started.wait()
+        await retirer.retire_older_than(2)  # the digest is kept: its writer holds the lock
+        bucket = await _bucket(nats)
+        entry = f"{_SCOPE}.{_TABLE}.v1_{writer.key_of('v1', 'a')[1]}"
+        landed = asyncio.Event()
+        original = bucket.create
+
+        async def lands_then_signals(*args: Any, **kwargs: Any) -> Any:
+            written = await original(*args, **kwargs)
+            if kwargs.get("key") == entry:
+                landed.set()
+                await asyncio.sleep(3600)  # the writer dies here, after its answer landed, before its check
+            return written
+
+        bucket.create = lands_then_signals  # type: ignore[method-assign]
+        hold.set()
+        await landed.wait()
+        computing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await computing
+        bucket.create = original  # type: ignore[method-assign]
+        assert _entry_keys(bucket, "v1") != []  # written, and its writer gone without taking it back
+        await retirer.retire_older_than(2)  # the next retirement: no writer holds the lock now
+        assert (_entry_keys(bucket, "v1"), _shard_keys(bucket, "v1")) == ([], [])
+
+    async def test_an_unreadable_floor_takes_the_answer_back_and_still_answers(self) -> None:
+        nats = FakeNatsClient()
+        bucket = await _bucket(nats)
+        hold = asyncio.Event()
+        compute = _Computer("answered", hold=hold)
+        answers = _replica(nats)
+        computing = asyncio.create_task(answers.answer("v1", "a", compute, order=1))
+        await compute.started.wait()
+
+        def unreadable(original: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
+            async def read(*args: Any, **kwargs: Any) -> Any:
+                if str(kwargs.get("key")).endswith("_index.versions"):
+                    raise KvError("broker unreachable")
+                return await original(*args, **kwargs)
+
+            return read
+
+        bucket.get_latest = unreadable(bucket.get_latest)  # type: ignore[method-assign]
+        bucket.get_entry = unreadable(bucket.get_entry)  # type: ignore[method-assign]
+        hold.set()
+        assert _text(await computing) == "answered"
+        assert _entry_keys(bucket, "v1") == []  # unknown counts as retired: never kept
+
+
+class TestAPurgeNeverFailsAReadNorWedgesARetirement:
+    async def test_a_purger_raising_anything_leaves_retirement_working(self) -> None:
+        async def broken(keys: list[str]) -> int:
+            raise RuntimeError("anything at all")
+
+        nats = FakeNatsClient()
+        answers = _with_purger(nats, broken)
+        for order in (1, 2, 3):
+            await answers.answer(f"v{order}", "a", _Computer("x"), order=order)
+        answers.current_version("v2", 2)
+        answers.current_version("v3", 3)
+        bucket = await _bucket(nats)
+        assert await _eventually(lambda: _entry_keys(bucket, "v1") == [] and _entry_keys(bucket, "v2") == [])
+        assert len(_entry_keys(bucket, "v3")) == 1
+
+    async def test_the_take_back_purge_does_not_hold_the_read(self) -> None:
+        never = asyncio.Event()
+
+        async def hangs(keys: list[str]) -> int:
+            await never.wait()
+            return 0
+
+        nats = FakeNatsClient()
+        writer, retirer = _with_purger(nats, hangs), _replica(nats)
+        hold = asyncio.Event()
+        compute = _Computer("late", hold=hold)
+        computing = asyncio.create_task(writer.answer("v1", "a", compute, order=1))
+        await compute.started.wait()
+        await retirer.retire_older_than(2)
+        hold.set()
+        assert _text(await asyncio.wait_for(computing, timeout=2.0)) == "late"

@@ -25,7 +25,14 @@ packages (bumped in lock-step).
   read uncached and stores nothing. A retired version leaves nothing behind: once retired, every key
   it touched (answers and index shards) is purged by the owner's `purger` (a stream purge filtered
   to the key's exact subject, which leaves no marker); with none, or one unreachable, the delete
-  markers stay and the miss is logged once.
+  markers stay and the miss is logged once. An answer is written to L2 while its writer holds the
+  key's build lock, and retirement drops a digest with no answer only when it can pause the key's
+  derivation (`DerivedCollection.derivation_paused`), so an answer whose writer is cancelled or dies
+  after writing it is still named, and the next retirement deletes it. A writer's take-back purge runs
+  off the read path; an unreadable floor counts as retired; no purger error fails a read or wedges a
+  retirement.
+- **Added, `DerivedCollection.derivation_paused(key)`**: holds off any derivation of a key for its body
+  (the in-process gate and the cross-pod build lock), raising `BuildLockHeld` when one is running.
 - **Added, `threetears.nats.collection_key_requests`** and `Subjects.hub_collection_keys_purge`
   (`{ns}.hub.collection_keys.purge`): a tool pod asks the hub to purge keys it retired, named
   relative to its own scope (`purge_pod_collection_keys`); the hub composes each subject under the

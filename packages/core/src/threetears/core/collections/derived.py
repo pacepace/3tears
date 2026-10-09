@@ -398,6 +398,30 @@ class DerivedCollection(BaseCollection[EntityT], Generic[EntityT]):
             await self.save_to_store(derived)
         return derived
 
+    @asynccontextmanager
+    async def derivation_paused(self, entity_id: Any) -> AsyncIterator[None]:
+        """hold off any derivation of ``entity_id`` for the body, or refuse when one is running.
+
+        For a caller that must act on a key's derived value knowing no derivation of it is in flight
+        -- one deciding a value that is absent will stay absent. Holds this pod's in-process gate and
+        the cross-pod build lock, so a derivation on any pod either finished before or starts after.
+
+        :param entity_id: pk value or tuple of pk values
+        :ptype entity_id: Any
+        :return: an iterator yielding once, while no derivation of the key can run
+        :rtype: AsyncIterator[None]
+        :raises BuildLockHeld: when a derivation of the key is running, here or on another pod
+        """
+        key = self.normalize_pk(entity_id)
+        gate = self._inflight.get(key)
+        if gate is not None and gate.locked():
+            raise BuildLockHeld(self.build_lock_key(key))
+        if self._build_lock is None:
+            yield
+        else:
+            async with self._build_lock.holding(self.build_lock_key(key)):
+                yield
+
     def build_lock_key(self, entity_id: Any) -> str:
         """cross-pod lock key for one derived key.
 
