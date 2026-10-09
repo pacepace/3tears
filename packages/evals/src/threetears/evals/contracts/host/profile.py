@@ -617,19 +617,24 @@ class HostProfile:
             )
 
     def _refuse_an_unknown_mechanism_measure(self) -> None:
-        """Refuse a lever's ``acts_on`` that names no numeric measure the engine or this host declares.
+        """Refuse a lever's ``acts_on`` unless it names a numeric measure each result carries as one value.
 
         Checked here because the name is a measure and the declaration is a sweepable, and this is the
-        only place both registries are in hand. A misspelled mechanism would be observed on no result,
-        so every bundle would report the lever ``unchecked`` with nothing to say the declaration was
-        the cause — a declaration that reads as live and checks nothing.
+        only place both registries are in hand. A misspelled mechanism would be observed on no result, and
+        so would a name recorded per row or only per run. Every bundle would then report the lever
+        ``unchecked`` with nothing to say the declaration was the cause — a declaration that reads as live
+        and checks nothing, while the reason it gives blames the data.
 
         Raises:
-            ProfileRegistrationError: An ``acts_on`` names no declared measure, or a non-numeric one.
+            ProfileRegistrationError: An ``acts_on`` names no declared measure, a non-numeric one, or one
+                no result carries as a single value.
         """
-        # Imported here: the metrics module imports the models module, which imports this package.
+        # Imported here: both modules import the models module, which imports this package.
+        from threetears.evals.contracts.covariates import REASONING_RATIO_KEY
+        from threetears.evals.contracts.declaration import mechanism_measure_names
         from threetears.evals.contracts.metrics import METRIC_DESCRIPTORS
 
+        readable = mechanism_measure_names(self.measures)
         defects: list[str] = []
         for declared in self.sweepables.declarations:
             if declared.acts_on is None:
@@ -643,7 +648,15 @@ class HostProfile:
             elif descriptor.data_type != "numeric":
                 defects.append(
                     f"{declared.name} acts on {declared.acts_on!r}, a {descriptor.data_type} measure — the check "
-                    "compares per-level means, which only a numeric measure has"
+                    "compares levels' values, which only a numeric measure has"
+                )
+            elif declared.acts_on not in readable:
+                defects.append(
+                    f"{declared.name} acts on {declared.acts_on!r}, which no result carries as one value — it is "
+                    "recorded per row (per role, per delivery) or only over a whole run, so the check would read "
+                    "nothing and blame the data. Declare a measure each result carries once instead: the "
+                    f"engine's covariate {REASONING_RATIO_KEY!r} for how much a candidate reasoned, or a host "
+                    "measure the kind reports per result (the calls one case used against a cap, say)"
                 )
         if defects:
             raise ProfileRegistrationError(

@@ -6,30 +6,41 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-### 3tears-evals: a swept lever is checked against the mechanism it acts on; a divergent reasoning share qualifies a comparison (#577, #576)
+### 3tears-evals: a swept lever is checked against the mechanism it acts on; a divergent reasoning share qualifies a model comparison (#577, #576)
 
-- **`Sweepable.acts_on`** (optional): the measure or covariate a `lever` is supposed to move, by its registered
-  name. The profile refuses a name neither the engine's catalogue nor the host's measure registry declares, and a
-  non-numeric one (`ProfileRegistrationError`); the registry refuses it blank, on an apparatus or label input, or on
-  an open family (`RegistrationError`). It is declaration metadata and enters no variant key or measurement context.
-- **`LeverCoverageInput.mechanism`** (`MechanismCheck`, required): per coverage row, over the row's cohort,
-  `moved` (two levels' means of the declared measure differ), `inert` (observed at every level, identical means,
-  compared exactly) or `unchecked` with `reason` `not_declared` / `not_swept` / `levels_unobserved`. The per-level
-  means and the levels that observed none are beside the state. The measure is read per result (a covariate, a host
-  measure, or one of the result's own per-result measures); a per-role usage-row count is not read.
-- **`Confound.kind` gains `observed_mechanism`**, with `level_values` and `threshold`: a comparison (a coverage row,
-  a scope divergence) whose levels' mean reasoning share (`reasoning_ratio`) is at least `REASONING_SHARE_DIVERGENCE`
-  (0.20, absolute) apart names it, under the dimension `observed:reasoning_ratio`, with its reason in
-  `confound_catalog`. It qualifies the comparison and suppresses nothing. A level that measured none of the share is
-  left out rather than read as zero. The check is written over a covariate name; `reasoning_ratio` is the only one
-  registered.
+- **`Sweepable.acts_on`** (optional), and **`ActsOn(measure)`** for a kind contract's overlay field (beside
+  `Ordinal` and `Interval`): the measure or covariate a `lever` is supposed to move, by its registered name. The
+  profile refuses a name neither the engine's catalogue nor the host's measure registry declares, a non-numeric
+  one, and one no result carries as a single value — a per-row field such as `reasoning_tokens` (declare
+  `reasoning_ratio`) or a run-level statistic such as `p95_total_ms` (`ProfileRegistrationError`, naming what to
+  declare instead). The registry refuses it blank, on an apparatus or label input, or on an open family
+  (`RegistrationError`); a kind refuses `ActsOn` on a map field or twice on one field (`KindContractError`). It is
+  declaration metadata and enters no variant key or measurement context. `declaration.mechanism_measure_names`
+  is the per-result name set the profile checks against.
+- **`LeverCoverageInput.mechanism`** (`MechanismCheck`, required): per coverage row, over the row's cohort, the
+  declared measure's per-case means tested across the lever's levels by the family comparisons' own test
+  (`composite_significance`, paired over shared cases else Welch's, Holm-corrected across the lever's pairs).
+  `moved` = some pair separates (a nonzero gap with no spread counts); `inert` = every level observed, every pair
+  testable, none separates — no measurable evidence the lever acted on its mechanism; `unchecked` with `reason`
+  `not_declared` / `not_swept` / `levels_unobserved` / `too_few_observations`. `level_means`, `level_n` (cases)
+  and `unobserved_levels` sit beside the state.
+- **`Confound.kind` gains `observed_mechanism`**, with `level_values` and `threshold`, raised only on comparisons
+  across candidate models: the `model` coverage row and its scope divergences, whose levels' mean reasoning share
+  (`reasoning_ratio`) is at least `REASONING_SHARE_DIVERGENCE` (0.20, absolute) apart, under the dimension
+  `observed:reasoning_ratio` with its reason in `confound_catalog`. Never raised on another lever, where the share
+  moving is that lever's effect, nor for a covariate equal to the lever's own `acts_on`. It qualifies the
+  comparison and suppresses nothing; a level that measured none of the share is left out rather than read as zero.
+  Written over a covariate name; `reasoning_ratio` is the only one registered.
+- **`DesignArm.mechanism_confounds`** and **`FamilyComparison.mechanism_confounds`**: the same confound on each
+  pairwise contrast against the control whose two arms ran different models, keyed by the two models, so a
+  campaign of three or more models says which pair diverged.
 - **`AnalysisContextBundle.arm_mechanisms`** (`list[ArmMechanismReading]`): each arm's mean reasoning share with how
   many of its results measured it; a null mean says it went unmeasured.
 - **`REASONING_RATIO_KEY`** (`threetears.evals.contracts`) names the covariate.
-- **The generator prompt** (rules 4 and 7) reads both: an `inert` lever never took effect and is not reported as a
-  null effect, an `unchecked` lever's null is mechanism-unverified, and an `observed_mechanism` confound means one
-  reasoning-effort setting did not hold reasoning constant. A deployment whose stored `eval_analysis_gen` preset
-  predates this keeps its own text until an operator updates it.
+- **The generator prompt** (rules 4 and 7) reads both: `inert` is reported as no measurable evidence the lever
+  acted on its mechanism, never as a null effect of the lever; an `unchecked` lever's null is mechanism-unverified;
+  an `observed_mechanism` confound means one reasoning-effort setting did not hold reasoning constant across models.
+  A deployment whose stored `eval_analysis_gen` preset predates this keeps its own text until an operator updates it.
 - Bundle `schema_version` 40 -> 41. Bundles are never stored, so nothing stored needs reading; an analysis generated
   before carries a fingerprint over the older shape.
 

@@ -390,19 +390,29 @@ renderer, and the core ships no charting library.
 
 A lever that changed nothing and a lever that never took effect read alike in every outcome measure. A
 `Sweepable` lever may name the measure or covariate it is supposed to move — `acts_on="context_tokens_in"` on a
-chunk-width lever, say — and each coverage row of the analysis bundle then carries a `mechanism` check over its
-levels: `moved`, `inert` (that measure had the same mean at every level, compared exactly: the lever never took
-effect) or `unchecked` with the reason (`not_declared`, `not_swept`, `levels_unobserved`). Each level's mean is
-beside the state. The name must be a numeric measure the engine or your measure registry declares, or the profile
-refuses it; it is read off each result, and it enters no variant key. A lever naming none reads `unchecked`, never
-as having taken effect.
+chunk-width lever, say; a kind's overlay field does the same with `ActsOn(...)` beside `Ordinal()` and
+`Interval(...)`. Each coverage row of the analysis bundle then tests that measure across the lever's levels with
+the same separation test the contrasts against the control use (per-case means, paired where the levels share
+cases, Holm-corrected across the lever's pairs): `moved` when some pair separates; `inert` when every level was
+observed, every pair could be tested and none separates — no measurable evidence the lever acted on its mechanism;
+otherwise `unchecked` with the reason (`not_declared`, `not_swept`, `levels_unobserved`, `too_few_observations`).
+Each level's mean and its number of cases sit beside the state.
 
-A comparison can also differ in what its arms did while no setting differed. A reasoning effort is a word each
-vendor maps to its own budget, so two models at one effort setting can reason very differently. The bundle reads
-each arm's mean reasoning share (`reasoning_ratio`) into `arm_mechanisms`, and a comparison whose levels' shares
-are at least `REASONING_SHARE_DIVERGENCE` (0.20) apart names an `observed_mechanism` confound in `confounded_by`,
-carrying the threshold and each level's value. The confound qualifies the comparison; it never hides it. A share
-nothing measured is said to be unmeasured and names no confound.
+The profile accepts only a numeric measure that each result carries as a single value: a covariate, a measure
+your kind reports per result, or one of the result's own fields. It refuses anything else where you declare it,
+including a quantity recorded per usage row (`reasoning_tokens`: declare `reasoning_ratio`) or only over a whole
+run (`p95_total_ms`). For a call cap, report the calls each case used as a host measure and name that. The
+declaration enters no variant key. A lever naming no mechanism reads `unchecked`, never as having taken effect.
+
+A comparison across candidate models can also differ in what the models did while no setting differed. A
+reasoning effort is a word each vendor maps to its own budget, so two models at one effort setting can reason very
+differently. The bundle reads each arm's mean reasoning share (`reasoning_ratio`) into `arm_mechanisms`. Where two
+models' shares are at least `REASONING_SHARE_DIVERGENCE` (0.20) apart, the comparison names an
+`observed_mechanism` confound carrying the threshold and both models' values: on the model coverage row and its
+divergences (`confounded_by`), and on each pairwise contrast against the control (`mechanism_confounds` on the
+design's contrast arms and on each family comparison). On any other lever the share moving is what the lever did,
+so it is never named there. The confound qualifies the comparison; it never hides it. A share nothing measured is
+said to be unmeasured and names no confound.
 
 ### Results by kind of case: strata
 

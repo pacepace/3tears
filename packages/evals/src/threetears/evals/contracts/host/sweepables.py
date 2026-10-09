@@ -257,15 +257,17 @@ class Sweepable:
     What lets the analysis tell "the lever made no difference" from "the lever never took effect".
     Those read alike in every outcome measure and lead to opposite actions: a knob swept on a model
     that ignores it, or a cap set above anything the candidate ever reached, is not evidence that
-    the knob does not matter. Naming the mechanism lets the bundle check, per swept lever, whether
-    that measure itself moved across the lever's levels — ``moved``, ``inert`` or ``unchecked`` on
-    the lever's coverage row (``MechanismCheck``).
+    the knob does not matter. Naming the mechanism lets the bundle test, per swept lever, whether
+    that measure itself separated across the lever's levels — ``moved``, ``inert`` or ``unchecked``
+    on the lever's coverage row (``MechanismCheck``).
 
-    The name must be a measure the engine's catalogue or this host's measure registry declares,
-    and a numeric one: the check compares per-level means. Both are refused at profile
-    construction, where the measure registry is in hand. It is read off each RESULT — a covariate,
-    a host measure, or one of the result's own per-result measures — so a quantity carried only as
-    one row per role (``usage[]``) is never observed, and a lever naming one reads ``unchecked``.
+    The name must be a numeric measure the engine's catalogue or this host's measure registry
+    declares, and one each result carries as a single value — a covariate, a host measure, or one of
+    the result's own per-result measures. Anything else is refused at profile construction, where the
+    measure registry is in hand: a quantity recorded once per row (``reasoning_tokens``, one per usage
+    role) or only over a whole run (``p95_total_ms``) has no per-result value to compare, so accepting
+    it would leave the check reading nothing. A kind's overlay field declares the same thing with the
+    :class:`~threetears.evals.contracts.host.kinds.ActsOn` marker.
 
     Declaration metadata about what to CHECK, never a value a run ran under: it enters no variant
     key and no measurement context. ``None`` — the normal case — is reported as ``unchecked``, never
