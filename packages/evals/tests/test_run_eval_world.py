@@ -264,3 +264,91 @@ async def test_a_well_formed_quick_world_passes_the_engine_s_own_conformance_kit
     assert failed == []
     ab = {result.dimension: result.outcome for result in report.results if result.check == "perception_ab"}
     assert ab == {"lamp": "passed", "dark": "passed"}
+
+
+def note(room: dict[str, Any], text: str) -> str:
+    """Leave a note by the lamp."""
+    room["note"] = text
+    return "noted"
+
+
+def noting_room() -> World:
+    return World(
+        "room",
+        [
+            Dimension("lamp", {"enum": ["on", "off"]}, "What the candidate switches."),
+            Dimension("dark", {"type": "boolean"}, "Whether the lamp is needed."),
+            Dimension("note", {"type": "string"}, "What the candidate wrote down."),
+        ],
+        tools=[WorldTool(switch, to={"enum": ["on", "off"]}), WorldTool(note, text={"type": "string"})],
+    )
+
+
+def noting_start(case: Mapping[str, Any]) -> Mapping[str, Any]:
+    return {**start(case), "note": ""}
+
+
+async def test_a_string_match_over_a_free_text_tool_parameter_is_refused_before_anything_runs() -> None:
+    """Authoring refuses it, so the quick path does: a free string is what the model wrote, not structure."""
+    ran: list[str] = []
+
+    async def candidate(case: Mapping[str, Any], tools: WorldTools) -> str:
+        ran.append("ran")
+        return "x"
+
+    with pytest.raises(ValueError, match=r"room.note's text is free text"):
+        await run_eval(
+            CASES,
+            candidate,
+            world=noting_room(),
+            seed=noting_start,
+            goal_checks=['any(it.text == "lamp fixed" for it in calls("room.note"))'],
+            scope_id=SCOPE,
+        )
+    assert ran == [], "refused up front, never graded"
+
+
+async def test_a_comparison_over_an_enum_closed_tool_parameter_is_accepted_and_graded() -> None:
+    """The quick world describes its tools' parameters from their schemas, so authoring's closure rule admits it."""
+    summary = await run_eval(
+        CASES,
+        sensible,
+        world=noting_room(),
+        seed=noting_start,
+        goal_checks=['any(it.to == "on" for it in calls("room.switch"))'],
+        scope_id=SCOPE,
+        k=1,
+    )
+    assert summary.status == "completed"
+    (goal,) = summary.goal_checks
+    assert (goal.passed, goal.n) == (1, 2), "only the dark case switches the lamp on"
+
+
+async def test_a_check_the_grammar_refuses_is_refused_by_the_quick_path() -> None:
+    with pytest.raises(ValueError, match=r"intersects\(\) over variation.p"):
+        await run_eval(
+            [{"p": "on", **case} for case in CASES],
+            sensible,
+            world=room(),
+            seed=start,
+            goal_checks=['intersects(["on"], variation.p)'],
+            scope_id=SCOPE,
+        )
+
+
+def test_authoring_on_a_quick_world_host_closes_its_tools_parameters_from_their_schemas() -> None:
+    """The quick host described no tool parameters, so authoring refused even an enum-closed comparison on it."""
+    from threetears.evals.contracts import EvalTemplate, ValidationFailedError
+    from threetears.evals.run.authoring import refuse_unsupplied_world
+
+    world = noting_room()
+    profile = callable_host(world=world).profile
+
+    def template(check: str) -> EvalTemplate:
+        return EvalTemplate(scope_id=SCOPE, name="t", intent="i", candidate_kind="callable", goal_state_checks=[check])
+
+    refuse_unsupplied_world(template('any(it.to == "on" for it in calls("room.switch"))'), profile=profile)
+    with pytest.raises(ValidationFailedError, match="room.note's text is free text"):
+        refuse_unsupplied_world(template('calls("room.note")[0].text == "x"'), profile=profile)
+    with pytest.raises(ValidationFailedError, match="names calls this host does not define"):
+        refuse_unsupplied_world(template('calls("room.paint").length > 0'), profile=profile)

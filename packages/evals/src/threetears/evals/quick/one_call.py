@@ -117,6 +117,8 @@ from threetears.evals.run import (
     launch_run,
     start_run,
 )
+from threetears.evals.run.authoring import refuse_unsupplied_world
+from threetears.evals.contracts.errors import ValidationFailedError
 from threetears.evals.quick.answer import unwrap_answer
 from threetears.evals.quick.judged import Judge, judge_evidence
 from threetears.evals.quick.levers import CallableLevers, levers_model
@@ -309,6 +311,10 @@ def callable_host(
             measures=MeasureRegistry(scorer_measure(scorer) for scorer in scorers),
             kinds=callable_kind_contracts(levers),
             world=None if world is None else world.registry,
+            # The world's tools described from their own schemas, so the goal-check gate closes a parameter the
+            # way the candidate's calls are held to: an enum-closed one may be compared, a free string may not.
+            action_parameters=None if world is None else world.action_parameters,
+            tool_actions=None if world is None else world.tool_actions,
         ),
         storage=EvalStorage(InMemoryDocumentStore()),
         failure_describer=withhold_failure_detail,
@@ -908,7 +914,9 @@ async def run_eval(
             Required with ``world``.
         goal_checks: Goal-state checks over the world the candidate left and the calls it made
             (``state.<dimension>``, ``calls("<world>.<tool>")``), each reported as passed or failed per cell.
-            Requires ``world``.
+            Requires ``world``. Held to the gate a template's authoring applies, before anything runs: a
+            string comparison over a tool parameter is accepted only where the tool's schema closes it
+            (``enum``, ``const`` or ``pattern``), since a free string is what the model wrote.
 
     Returns:
         The finished run's summary, read back from the store.
@@ -1073,6 +1081,14 @@ async def run_arms(
         )
         for index, case in enumerate(plain_cases)
     ]
+    if world is not None:
+        # The authoring gate itself, before anything is stored or run: the grammar, the paths, a string match
+        # over model prose, a text comparison over a call parameter its schema does not close, and calls or
+        # firings the world cannot produce. A quick run is authored here, so it is held to what authoring holds.
+        try:
+            refuse_unsupplied_world(template, profile=host.profile)
+        except ValidationFailedError as refused:
+            raise ValueError(refused.message) from refused
     host.storage.save_template(template)
     for test_case in test_cases:
         host.storage.save_test_case(test_case)

@@ -260,6 +260,37 @@ class World:
                 passes[outcome.expression] += outcome.passed
         return passes
 
+    def action_parameters(self, tool: str, action: str) -> Mapping[str, Any] | None:
+        """The parameter schema the candidate is shown for ``<tool>.<action>``, or None for a call this world lacks.
+
+        The host's :attr:`~threetears.evals.contracts.host.HostProfile.action_parameters` reader for a quick world,
+        so the goal-check gate reads a tool's parameters from the very schema each call is held to: a comparison
+        over an ``enum``-, ``const``- or ``pattern``-closed parameter is a check of structure, and one over a free
+        string is a reading of what the model wrote, refused as authoring refuses it.
+
+        Args:
+            tool: The carrier a check names, this world's name for one of its tools.
+            action: The tool's name.
+
+        Returns:
+            The tool's ``input_schema``, or None.
+        """
+        declared = self.tools.get(action) if tool == self.name else None
+        return None if declared is None else declared.input_schema
+
+    def tool_actions(self, tool: str) -> frozenset[str]:
+        """The actions ``tool`` offers: this world's tools under its own name, none under any other.
+
+        The host's :attr:`~threetears.evals.contracts.host.HostProfile.tool_actions` reader for a quick world.
+
+        Args:
+            tool: The carrier a check names.
+
+        Returns:
+            The tools' names; empty for a carrier that is not this world.
+        """
+        return frozenset(self.tools) if tool == self.name else frozenset()
+
     def refuse_unreadable(self, checks: Sequence[str]) -> None:
         """Refuse a goal check reading state this world does not declare or calling a tool it does not have.
 
