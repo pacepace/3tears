@@ -26,7 +26,7 @@ from datetime import datetime, timedelta
 from typing import Any, ClassVar, Literal
 
 import pytest
-from sqlalchemy import Column, DateTime, MetaData, String, Table
+from sqlalchemy import BigInteger, Column, DateTime, MetaData, String, Table
 
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections import (
@@ -42,6 +42,13 @@ from threetears.core.collections import (
     flush_pending,
 )
 from threetears.core.collections.generation import GenerationSource
+from threetears.core.collections.schema_backed import (
+    DATETIMETZ_TYPE,
+    STRING_TYPE,
+    TableSchema,
+    collection_for_schema,
+)
+from threetears.core.collections.schema_backed import Column as SchemaColumn
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import GenerationUnavailableError
@@ -570,3 +577,296 @@ class TestConcurrentCommitsEachAdvance:
             ("inc:1", 1),
             ("inc:2", 1),
         ]
+
+
+def _cas_metadata() -> MetaData:
+    """the table with the order columns a compare-and-swap's row carries."""
+    metadata = MetaData()
+    Table(
+        _TABLE,
+        metadata,
+        Column("id", String(255), primary_key=True),
+        Column("member_type", String(255)),
+        Column("member_id", String(255)),
+        Column("date_created", DateTime(timezone=True)),
+        Column("date_updated", DateTime(timezone=True)),
+        Column("l2_epoch", DateTime(timezone=True)),
+        Column("l2_revision", BigInteger),
+    )
+    return metadata
+
+
+class _CasMembers(_SwitchedOnMembers):
+    """a switched-on collection whose rows a compare-and-swap orders, persisted fenced on that order."""
+
+    datetime_columns: ClassVar[frozenset[str]] = frozenset({"date_created", "date_updated", "l2_epoch"})
+
+    @property
+    def persists_l2_order(self) -> bool:
+        return True
+
+    async def save_ordered_to_store(self, data: dict[str, Any], *, conn: Any = None) -> int:
+        self._rows[str(data["id"])] = dict(data)
+        return 1
+
+
+class _WriteBehindCasMembers(_CasMembers):
+    l3_write_policy: ClassVar[Literal["synchronous", "write_behind"] | None] = "write_behind"
+
+
+def _cas_pod(
+    cls: type[_Members],
+    bus: FakeNatsClient,
+    rows: dict[str, dict[str, Any]],
+    source: _CountingSource,
+    *,
+    l3: bool = True,
+    write_buffer: WriteBuffer | None = None,
+) -> tuple[CollectionRegistry, _Members]:
+    """one registry on the bus with a counting source, with or without an L3 behind it."""
+    l1 = SQLiteBackend(db_name=f"write_generation_cas_{uuid.uuid4().hex[:8]}")
+    l1.initialize(_cas_metadata())
+    registry = CollectionRegistry()
+    registry.configure(l1_backend=l1, l2_client=bus, l3_pool=object() if l3 else None, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+    registry.set_generation_source(source)
+    return registry, cls(registry, rows, write_buffer=write_buffer)
+
+
+def _upsert(member_id: str) -> Any:
+    def mutate(row: dict[str, Any] | None) -> tuple[Literal["upsert"], dict[str, Any]]:
+        del row
+        return "upsert", {"id": "c1", "member_type": "user", "member_id": member_id}
+
+    return mutate
+
+
+def _delete(row: dict[str, Any] | None) -> tuple[Literal["delete"], None]:
+    del row
+    return "delete", None
+
+
+class TestAWonCompareAndSwapIsOneCommit:
+    async def test_a_synchronous_swap_advances_once_and_names_the_advance(
+        self, bus: FakeNatsClient, source: _CountingSource
+    ) -> None:
+        rows: dict[str, dict[str, Any]] = {}
+        _, members = _cas_pod(_CasMembers, bus, rows, source)
+        await members.l2_cas_mutate("c1", _upsert("person-1"))
+        assert rows["c1"]["member_id"] == "person-1"
+        assert source.counts == {_TABLE: 1}
+        (message,) = _messages(bus)
+        assert (message.generation, message.bump_rows) == ("inc:1", 1)
+        assert message.l2_current_scope == _SCOPE
+        assert message.columns == {"member_type": "user", "member_id": "person-1"}
+
+    async def test_a_swap_with_no_l3_is_its_own_commit_and_advances(
+        self, bus: FakeNatsClient, source: _CountingSource
+    ) -> None:
+        _, members = _cas_pod(_SwitchedOnMembers, bus, {}, source, l3=False)
+        await members.l2_cas_mutate("c1", _upsert("person-1"))
+        await members.l2_cas_mutate("c1", _delete)
+        assert source.counts == {_TABLE: 2}
+        assert [(message.generation, message.bump_rows) for message in _messages(bus)] == [
+            ("inc:1", 1),
+            ("inc:2", 1),
+        ]
+
+    async def test_a_write_behind_swap_advances_nothing_until_the_flush(
+        self, bus: FakeNatsClient, source: _CountingSource
+    ) -> None:
+        rows: dict[str, dict[str, Any]] = {}
+        buffer = WriteBuffer()
+        registry, members = _cas_pod(_WriteBehindCasMembers, bus, rows, source, write_buffer=buffer)
+        await members.l2_cas_mutate("c1", _upsert("person-1"))
+        assert source.counts == {}, "the swap's row is not in L3 until the flush"
+        assert [message.generation for message in _messages(bus)] == [None]
+        bus.published.clear()
+
+        assert await flush_pending(buffer, registry) == 1
+
+        assert rows["c1"]["member_id"] == "person-1"
+        assert source.counts == {_TABLE: 1}
+        (message,) = _messages(bus)
+        assert (message.generation, message.bump_rows) == ("inc:1", 1)
+
+    async def test_a_failed_advance_raises_after_the_swap_landed_and_was_announced(
+        self, bus: FakeNatsClient, source: _CountingSource
+    ) -> None:
+        rows: dict[str, dict[str, Any]] = {}
+        _, members = _cas_pod(_CasMembers, bus, rows, source)
+        source.failing = True
+        with pytest.raises(GenerationUnavailableError):
+            await members.l2_cas_mutate("c1", _upsert("person-1"))
+        assert rows["c1"]["member_id"] == "person-1"
+        (message,) = _messages(bus)
+        assert message.ids == ["c1"]
+        assert message.generation is None
+
+    async def test_a_failed_advance_raises_after_a_swap_with_no_l3(
+        self, bus: FakeNatsClient, source: _CountingSource
+    ) -> None:
+        _, members = _cas_pod(_SwitchedOnMembers, bus, {}, source, l3=False)
+        source.failing = True
+        with pytest.raises(GenerationUnavailableError):
+            await members.l2_cas_mutate("c1", _upsert("person-1"))
+        (message,) = _messages(bus)
+        assert message.generation is None
+
+
+class _FlakyMembers(_SwitchedOnMembers):
+    """a switched-on collection whose L3 write can fail, be kept out, or commit and not read back."""
+
+    def __init__(self, registry: CollectionRegistry, rows: dict[str, dict[str, Any]], **kwargs: Any) -> None:
+        super().__init__(registry, rows, **kwargs)
+        self.mode = "ok"
+
+    async def save_to_store(
+        self, data: dict[str, Any], original_timestamp: datetime | None = None, *, conn: Any = None
+    ) -> int:
+        if self.mode == "raise":
+            raise ConnectionError("L3 unreachable")
+        if self.mode == "kept":
+            return 0
+        return await super().save_to_store(data, original_timestamp, conn=conn)
+
+    def columns_decided_by_store(self, data: dict[str, Any]) -> tuple[str, ...]:
+        return ("member_id",) if self.mode == "unreadable" else ()
+
+    async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
+        if self.mode == "unreadable":
+            return None
+        return await super().fetch_from_store(entity_id)
+
+
+class TestASubscriptWriteWithdrawnFromTheCaches:
+    """a row a subscript write cannot cache leaves L1 and L2 and is announced; it advances only if it committed."""
+
+    async def _assigned(self, bus: FakeNatsClient, source: _CountingSource, mode: str) -> _FlakyMembers:
+        members = _Pod(_FlakyMembers, bus, {}, source=source).collection
+        assert isinstance(members, _FlakyMembers)
+        await _save(members, "m1")
+        bus.published.clear()
+        members.mode = mode
+        members["m1", "member_id"] = "person-2"
+        await _background_writes()
+        return members
+
+    async def _l2_holds(self, bus: FakeNatsClient, members: _Members, entity_id: str) -> bool:
+        return await (await bus.kv_bucket(name="collections")).get(key=members.l2_key(entity_id)) is not None
+
+    @pytest.mark.parametrize("mode", ["raise", "kept"])
+    async def test_a_write_that_did_not_land_is_withdrawn_and_advances_nothing(
+        self, bus: FakeNatsClient, source: _CountingSource, mode: str
+    ) -> None:
+        members = await self._assigned(bus, source, mode)
+        assert source.counts == {_TABLE: 1}, "only the first save committed"
+        assert not members.exists_in_cache_sync("m1")
+        assert not await self._l2_holds(bus, members, "m1")
+        (message,) = _messages(bus)
+        assert message.ids == ["m1"]
+        assert (message.generation, message.bump_rows) == (None, None)
+
+    async def test_a_committed_write_that_cannot_be_read_back_is_withdrawn_and_advances_once(
+        self, bus: FakeNatsClient, source: _CountingSource
+    ) -> None:
+        members = await self._assigned(bus, source, "unreadable")
+        assert source.counts == {_TABLE: 2}
+        assert not members.exists_in_cache_sync("m1")
+        assert not await self._l2_holds(bus, members, "m1")
+        (message,) = _messages(bus)
+        assert (message.generation, message.bump_rows) == ("inc:2", 1)
+        assert message.columns == {"member_type": "user", "member_id": "person-2"}
+
+    async def test_a_public_eviction_withdraws_the_same_way_and_advances(
+        self, bus: FakeNatsClient, source: _CountingSource
+    ) -> None:
+        members = _Pod(_SwitchedOnMembers, bus, {}, source=source).collection
+        await _save(members, "m1")
+        bus.published.clear()
+        await members.invalidate_cache("m1")
+        assert not members.exists_in_cache_sync("m1")
+        assert not await self._l2_holds(bus, members, "m1")
+        (message,) = _messages(bus)
+        assert (message.generation, message.bump_rows) == ("inc:2", 1)
+
+
+class _InMemoryStore:
+    """a durable store keyed by table and pk, that a caller's transaction writes through."""
+
+    def __init__(self) -> None:
+        self.tables: dict[str, dict[tuple[Any, ...], dict[str, Any]]] = {}
+
+    async def fetch_one(self, table: str, pk: Any, *, conn: Any = None) -> dict[str, Any] | None:
+        row = self.tables.get(table, {}).get(tuple(pk.values()))
+        return dict(row) if row is not None else None
+
+    async def upsert(
+        self,
+        table: str,
+        row: Any,
+        *,
+        pk: Any = None,
+        on_conflict: str = "update",
+        cas: datetime | None = None,
+        conn: Any = None,
+    ) -> int:
+        self.tables.setdefault(table, {})[tuple(row[c] for c in pk)] = dict(row)
+        return 1
+
+    async def delete(self, table: str, pk: Any, *, conn: Any = None) -> None:
+        self.tables.get(table, {}).pop(tuple(pk.values()), None)
+
+    async def scan(self, table: str, filters: Any = None) -> list[dict[str, Any]]:
+        return list(self.tables.get(table, {}).values())
+
+
+_RESULTS = TableSchema(
+    name="results",
+    primary_key=("office_key", "geo_id"),
+    columns=[
+        SchemaColumn("office_key", STRING_TYPE),
+        SchemaColumn("geo_id", STRING_TYPE),
+        SchemaColumn("candidate", STRING_TYPE, nullable=True),
+        SchemaColumn("date_created", DATETIMETZ_TYPE, immutable=True),
+        SchemaColumn("date_updated", DATETIMETZ_TYPE),
+    ],
+)
+
+
+class _ResultRow(BaseEntity):
+    primary_key_field = "geo_id"
+
+
+class _Results(collection_for_schema(_RESULTS, entity_class=_ResultRow)):  # type: ignore[misc]
+    write_generation = WRITE_GENERATION
+    invalidation_columns: ClassVar[tuple[str, ...]] = ("candidate",)
+
+
+class TestABulkDeleteCarriesTheRowsItRemoved:
+    async def test_each_message_names_the_deleted_rows_columns(
+        self, bus: FakeNatsClient, source: _CountingSource
+    ) -> None:
+        store = _InMemoryStore()
+        store.tables["results"] = {
+            ("sn_NC1", "00001"): {"office_key": "sn_NC1", "geo_id": "00001", "candidate": "ada"},
+            ("sn_NC1", "00002"): {"office_key": "sn_NC1", "geo_id": "00002", "candidate": "grace"},
+        }
+        registry = CollectionRegistry()
+        registry.configure(l2_client=bus, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+        registry.set_generation_source(source)
+        results = _Results(registry, DefaultCoreConfig())
+        results.l3_pool = store
+        conn = _Conn()
+        async with CallerTransaction(conn):
+            await results.delete_rows([("sn_NC1", "00001"), ("sn_NC1", "00002"), ("sn_NC1", "00003")], conn=conn)
+
+        assert store.tables["results"] == {}
+        assert source.counts == {"results": 1}
+        published = {tuple(message.ids): message for message in _messages(bus)}
+        assert {key: message.columns for key, message in published.items()} == {
+            ("sn_NC1", "00001"): {"candidate": "ada"},
+            ("sn_NC1", "00002"): {"candidate": "grace"},
+            # no row held that key, so there was nothing to say whose it was
+            ("sn_NC1", "00003"): None,
+        }
+        assert {(message.generation, message.bump_rows) for message in published.values()} == {("inc:1", 3)}
