@@ -75,6 +75,8 @@ class _Pointers:
         self.update_fails: Exception | None = None
         # the per-key TTL each key was last written with
         self.ttls: dict[str, timedelta | None] = {}
+        # keys whose writer is dead: nothing it sends reaches the bucket any more
+        self.dead_keys: set[str] = set()
 
     def end_watch(self) -> None:
         """end the pointer watch, as a lost connection does, while the bucket's reads and writes still answer."""
@@ -100,6 +102,8 @@ class _Pointers:
         return self.entries.get(key)
 
     async def create(self, *, key: str, value: bytes, ttl: timedelta | None = None) -> int | None:
+        if key in self.dead_keys:
+            raise ConnectionError(f"the writer of {key} is dead")
         if key in self.entries:
             return None
         self.ttls[key] = ttl
@@ -108,6 +112,8 @@ class _Pointers:
     async def update(self, *, key: str, value: bytes, revision: int, ttl: timedelta | None = None) -> int | None:
         if self.update_fails is not None:
             raise self.update_fails
+        if key in self.dead_keys:
+            raise ConnectionError(f"the writer of {key} is dead")
         entry = self.entries.get(key)
         if entry is None or entry[1] != revision:
             return None
@@ -1472,7 +1478,15 @@ async def _fill_and_sweep(snapshot: ScopedSnapshot, store: _BoundedStore, l3: _L
 
 
 def _writer_died(pointers: _Pointers) -> None:
-    """a writer's write claims lapse, as its lease does once it stops renewing."""
+    """the writer holding every write claim now is dead: nothing it sends lands any more, so its
+    claims lapse (their per-key TTL runs out) and are never renewed or taken back."""
+    for key in [k for k in pointers.entries if k.startswith("enr.w.")]:
+        pointers.dead_keys.add(key)
+        del pointers.entries[key]
+
+
+def _bucket_lost_the_claims(pointers: _Pointers) -> None:
+    """the bucket lost every write claim (NATS lost it) while their writers still live and renew."""
     for key in [k for k in pointers.entries if k.startswith("enr.w.")]:
         del pointers.entries[key]
 
@@ -1621,9 +1635,139 @@ async def test_a_write_claim_lost_while_its_writer_lives_is_taken_again() -> Non
     await _started(snapshot, pointers)
     staged = await snapshot.stage("TX", 3, _TX_ROWS)
 
-    _writer_died(pointers)  # gone with its bucket, while this writer still writes
+    _bucket_lost_the_claims(pointers)
     await _until(lambda: bool(_write_claims(pointers)), what="the lost write claim taken again", timeout=3)
 
     await snapshot.discard_staged([staged])
     assert _write_claims(pointers) == []
+    await snapshot.stop()
+
+
+async def test_a_dead_writers_claims_stay_gone_past_its_renewals() -> None:
+    snapshot, pointers, _, _ = _snapshot(claim_ttl=timedelta(seconds=1))
+    await _started(snapshot, pointers)
+    await snapshot.stage("TX", 3, _TX_ROWS)
+
+    _writer_died(pointers)
+    await asyncio.sleep(0.8)  # past two of its renewals
+
+    assert _write_claims(pointers) == [], "a dead writer's claim came back"
+    await snapshot.stop()
+
+
+async def test_publishing_stages_lets_their_claims_go() -> None:
+    snapshot, pointers, _, l3 = _retiring_snapshot()
+    await _started(snapshot, pointers)
+    staged = await snapshot.stage("TX", 2, _TX_ROWS)
+    l3.epochs["TX"] = 2
+
+    moved, _ = await snapshot.publish_staged([staged], carry_at={"TX": 1})
+
+    assert moved == ["TX"]
+    assert _write_claims(pointers) == [], "a published stage's claim was kept"
+    await snapshot.stop()
+
+
+async def test_a_publish_of_stages_that_fails_still_lets_their_claims_go() -> None:
+    snapshot, pointers, _, l3 = _retiring_snapshot()
+    await _started(snapshot, pointers)
+    staged = await snapshot.stage("TX", 2, _TX_ROWS)
+    l3.epochs["TX"] = 2
+    pointers.update_fails = ConnectionError("no route to NATS")  # the pointer cannot move
+
+    with pytest.raises(ConnectionError):
+        await snapshot.publish_staged([staged], carry_at={"TX": 1})
+
+    pointers.update_fails = None
+    assert _write_claims(pointers) == [], "a failed publish left its stages' claims renewing"
+    await snapshot.stop()
+
+
+async def test_stopping_ends_the_claim_of_a_stage_its_writer_dropped() -> None:
+    snapshot, pointers, _, _ = _retiring_snapshot()
+    await _started(snapshot, pointers)
+    await snapshot.stage("TX", 2, _TX_ROWS)  # dropped: never published, never discarded
+    assert _write_claims(pointers)
+
+    await snapshot.stop()
+
+    assert _write_claims(pointers) == [], "a dropped stage's claim outlived its snapshot"
+
+
+def _another_writer_took(pointers: _Pointers, key: str) -> None:
+    """another holder's entry is on ``key``: the claim held there is lost, and is not taken back."""
+    now = datetime.now(UTC)
+    pointers.put_now(
+        key,
+        json.dumps(
+            {
+                "holder": "another-writer",
+                "expires_at": (now + timedelta(minutes=5)).isoformat(),
+                "acquired_at": now.isoformat(),
+            }
+        ).encode(),
+    )
+
+
+async def test_a_stage_whose_claim_was_lost_moves_no_pointer() -> None:
+    snapshot, pointers, _, l3 = _snapshot(claim_ttl=timedelta(seconds=1))
+    await _started(snapshot, pointers)
+    before = pointers.entries["enr.s.TX"][0]
+    staged = await snapshot.stage("TX", 2, _TX_ROWS)
+    (claim_key,) = _write_claims(pointers)
+    _another_writer_took(pointers, claim_key)
+    assert staged.claim is not None
+    await _until(staged.claim.lost.is_set, what="the stage's claim lost", timeout=3)
+    l3.epochs["TX"] = 2
+
+    moved, skipped = await snapshot.publish_staged([staged], carry_at={"TX": 1})
+
+    assert (moved, skipped) == ([], ["TX"]), "a stage whose claim was lost was published"
+    assert pointers.entries["enr.s.TX"][0] == before
+    await snapshot.stop()
+
+
+async def test_a_publish_whose_claim_is_lost_mid_write_moves_no_pointer() -> None:
+    snapshot, pointers, store, _ = _snapshot(claim_ttl=timedelta(seconds=1))
+    await _started(snapshot, pointers)
+    before = pointers.entries["enr.s.TX"][0]
+    real_put = store.put
+
+    async def put_while_the_claim_is_taken(name: str, data: bytes) -> None:
+        for key in _write_claims(pointers):
+            _another_writer_took(pointers, key)
+        await asyncio.sleep(0.8)  # past the claim's next renewal, which finds another holder
+        await real_put(name, data)
+
+    store.put = put_while_the_claim_is_taken  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="was lost"):
+        await snapshot.publish("TX", 2, {"results": [{"county": "c1", "state": "TX", "votes": 9}]})
+
+    assert pointers.entries["enr.s.TX"][0] == before, "a pointer moved after its write claim was lost"
+    await snapshot.stop()
+
+
+async def test_stopping_ends_a_rebuild_claim_still_held() -> None:
+    snapshot, pointers, _, _ = _snapshot()
+    await _started(snapshot, pointers)
+    async with snapshot.holding_rebuilds() as held:
+        assert held and "enr.rebuild" in pointers.entries
+        await snapshot.stop()
+        assert "enr.rebuild" not in pointers.entries, "a stopped snapshot still holds the rebuild claim"
+
+
+async def test_a_lost_rebuild_claim_is_said_and_never_deleted_from_its_new_holder(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    snapshot, pointers, _, _ = _snapshot(claim_ttl=timedelta(seconds=1))
+    await _started(snapshot, pointers)
+    caplog.set_level(logging.WARNING)
+    async with snapshot.holding_rebuilds() as held:
+        assert held
+        _another_writer_took(pointers, "enr.rebuild")
+        await asyncio.sleep(0.8)  # past its next renewal, which finds another holder
+
+    assert "the rebuild claim was lost" in caplog.text
+    assert b"another-writer" in pointers.entries["enr.rebuild"][0], "the new holder's claim was deleted"
     await snapshot.stop()

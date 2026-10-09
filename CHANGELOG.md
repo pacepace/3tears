@@ -15,12 +15,23 @@ packages (bumped in lock-step).
   For buckets whose readers test whether a key exists. The bucket must allow per-key TTLs.
 - **Added, `KVLease.hold(retake=True)`** (and `LeaseHandle.retake`): a renewal that finds the entry
   gone (lost with its bucket, or lapsed through an outage) takes it again instead of reporting the
-  lease lost; another holder on the entry still loses it. For keys that name their holder alone.
-- **Changed, scoped snapshot write claims**: each write holds its own claim, a `KVLease` hold on the
+  lease lost, and one that finds its own entry at a revision it never saw (its write landed, its
+  reply did not) renews from it (`LeaseHandle.refresh(adopt_own_revision=True)`); another holder on
+  the entry still loses it. For keys that name their holder alone.
+- **Added, `KVLease.close()`**: ends every hold the factory handed out that is still renewing, each
+  deleting its entry while still its own; for an owner stopping while callers may hold leases.
+- **Added, `KVLease.hold(name=, renew_failure_level=)`**: what a lease is called in its log lines, and
+  the level a renewal failed inside its TTL is logged at (INFO by default).
+- **Fixed, a value `KVLease` cannot read** (another format) is treated as another holder's: never an
+  error, never reclaimed, refreshed or deleted.
+- **Changed, scoped snapshot claims**: each write holds its own claim, a `KVLease` hold on the
   pointer bucket (`{name}.w.{epoch}.{writer}`, the grammar `is_write_claim_key` reads, unchanged), its
-  caller's to release; a stage's claim rides on its `StagedScope` (`claim`) until `publish_staged` or
-  `discard_staged`. No per-process claim table and no renewal loop of the snapshot's own remain, and
-  `ScopedSnapshot.stop` no longer ends the claims of stages a writer still holds.
+  caller's to release; a stage's claim rides on its `StagedScope` (`claim`) until `publish_staged`
+  (on every way out, raised or returned) or `discard_staged`, and `ScopedSnapshot.stop` ends any a
+  writer dropped. A write whose claim is lost writes no more chunks under it and moves no pointer.
+  The rebuild claim is a `KVLease` hold too, never taken back once lost; a rebuild that lost it says
+  so and skips the store sweep. No per-process claim table and no renewal loop of the snapshot's
+  own remain in the module.
 
 ### Datasources: a relation read by parts in bulk, through one export or pages read side by side
 
