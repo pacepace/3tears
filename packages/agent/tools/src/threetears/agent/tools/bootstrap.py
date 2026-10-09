@@ -56,6 +56,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from sqlalchemy import MetaData
+from threetears.core.backends import BrokerGenerationSource
 from threetears.core.collections import bind_collections_bucket
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
@@ -341,6 +342,11 @@ async def build_tool_pod_collection_stack(
         kv_key_scope=scope,
         l2_create_if_missing=False,
     )
+    # epoch-task-06: the pod may not write the epoch bucket, so the hub's L3 broker advances each
+    # switched-on table's write generation after committing the pod's write and names the token in
+    # its reply; this source hands it to the collection. It reads none (no reader): a collection
+    # caching absences on a tool pod trusts none, rather than one no advance can invalidate.
+    registry.set_generation_source(BrokerGenerationSource())
     await registry.start_invalidation_listener(nats_client)
     log.info(
         "tool pod collection stack wired",

@@ -6,6 +6,36 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Core, agent tools and enforcement: a pod's writes move its tables' write generations (migrate-writers stage)
+
+Stage 2 of `docs/epoch-task-06-collection-generations-by-default.md`. A pod may not write the epoch
+bucket, so the hub's L3 broker advances each switched-on table a pod's commit wrote and names the
+token in its reply; this release is the pod's half. No table is switched on, so nothing advances
+that did not already.
+
+- **Added, `threetears.core.backends.BrokerGenerationSource`**: a pod's generation source.
+  `advance(table)` returns the token the broker's reply named for the commit this task just made,
+  once, and raises `GenerationUnavailableError` when the reply named none or listed the table as
+  not advanced. `current` reads through an optional `GenerationReader` (such as
+  `threetears.epoch.EpochGenerationReader`) and raises with none, or for a table with no generation
+  yet: a pod cannot mint one.
+- **Changed, `NatsProxyL3Backend`**: every successful reply that ends a commit (`l3.query`,
+  `l3.batch`, `l3.tx.commit`) has its generations kept for the calling task; a rolled-back or
+  refused transaction drops the task's unclaimed ones. A reply that names none changes nothing.
+- **Added, wire names** in `threetears.core.backends.broker_generation`:
+  `GENERATIONS_REPLY_FIELD` (`generations`), `GENERATIONS_FAILED_REPLY_FIELD`
+  (`generations_failed`) and `GENERATION_UNAVAILABLE_ERROR_CODE` (`GENERATION_UNAVAILABLE`, on a
+  reply that is still a success, because the write committed and must not be retried).
+- **Added, `threetears.core.collections.tables_with_write_generation()`**: the tables named on
+  every imported collection class that is switched on or caches absences. What the broker reads.
+- **Changed, `build_tool_pod_collection_stack`** (so `ToolServerBootstrap.install_collection_stack`)
+  wires `BrokerGenerationSource()` on the pod's registry.
+- **Added, `threetears.enforcement.collection_census`** (`run_census`, `find_census_problems`):
+  the one-class-per-table census, shipped so a product repository runs it over its own trees with
+  the framework's classes joined (`framework=True`). Replaces `tests/enforcement/_collection_census.py`.
+- **Wire:** additive. A pod built before this ignores the reply fields; a reply without them is read
+  as before.
+
 ### Core, epoch and nats: a table can carry a write generation a pod follows (expand stage)
 
 A row broadcast is at most once, and a pod that misses one serves its cached row until it

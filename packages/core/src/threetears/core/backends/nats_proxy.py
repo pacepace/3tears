@@ -12,6 +12,11 @@ forwards. a refusal on the pod's data version raises one of two subclasses of
 space's target and must exit) or :class:`DataVersionNotReadyError` (the pod is at the target and
 the upgrade has not finished; wait). every other failed reply -- a broker refusal, a timeout, an
 exhausted pool, an unreachable broker -- raises :class:`DataLayerUnavailableError`.
+
+a reply that ends a commit may name the write generation the broker advanced for each switched-on
+table the commit wrote, or the tables it could not advance; the proxy keeps them for the collection
+that made the request (:mod:`threetears.core.backends.broker_generation`), and a reply that names
+none changes nothing.
 """
 
 from __future__ import annotations
@@ -26,6 +31,13 @@ from uuid import UUID, uuid7
 
 import asyncpg
 
+from threetears.core.backends.broker_generation import (
+    GENERATION_UNAVAILABLE_ERROR_CODE,
+    GENERATIONS_FAILED_REPLY_FIELD,
+    GENERATIONS_REPLY_FIELD,
+    forget_reply_generations,
+    record_reply_generations,
+)
 from threetears.core.backends.protocol import L3_RAIL_ROW_CAP
 from threetears.core.backends.schema_sql import json_default
 from threetears.core.exceptions import (
@@ -52,6 +64,9 @@ __all__ = [
     "CONSTRAINT_VIOLATION_ERROR_CODE",
     "DATA_VERSION_NOT_READY_ERROR_CODE",
     "DATA_VERSION_SUPERSEDED_ERROR_CODE",
+    "GENERATIONS_FAILED_REPLY_FIELD",
+    "GENERATIONS_REPLY_FIELD",
+    "GENERATION_UNAVAILABLE_ERROR_CODE",
     "LOCK_NOT_AVAILABLE_ERROR_CODE",
     "NatsProxyL3Backend",
 ]
@@ -886,6 +901,9 @@ class NatsProxyL3Backend:
         }
         subject = f"{self.ns}.l3.batch"
         response = await self.nats_request(subject, payload)
+        # before the success check: a batch run statement by statement commits each one that ran,
+        # and the broker names the generations it advanced for them even when another failed.
+        record_reply_generations(response)
 
         if not response.get("success", False):
             self.raise_for_failed_reply(response, "batch query")
@@ -940,6 +958,9 @@ class NatsProxyL3Backend:
         if not response.get("success", False):
             self.raise_for_failed_reply(response, "L3 query")
 
+        # a statement that wrote a switched-on table names the generation the broker advanced for
+        # it, whether it was sent to execute or, with ``RETURNING``, to fetch; a read names none.
+        record_reply_generations(response)
         return response
 
     async def nats_request(
@@ -1413,6 +1434,8 @@ class _ProxyConnection:
             "tx_id": str(tx_id),  # convert at border: NATS l3.tx.rollback request payload field
         }
         subject = f"{self._backend.ns}.l3.tx.rollback"
+        # nothing the session wrote landed, so no collection settling it may be handed a token
+        forget_reply_generations()
         try:
             await self._backend.nats_request(subject, payload)
         finally:
@@ -1536,14 +1559,20 @@ class _ProxyTransaction:
         }
         action = "rollback" if exc_type is not None else "commit"
         subject = f"{self._backend.ns}.l3.tx.{action}"
+        if action == "rollback":
+            # nothing the session wrote lands, so no collection settling it may be handed a token
+            forget_reply_generations()
         try:
             response = await self._backend.nats_request(subject, payload)
+            if response.get("success", False) and action == "commit":
+                record_reply_generations(response)
             if not response.get("success", False):
                 # swallow the failure on the rollback path (we already
                 # have an exception in flight) but surface it on the
                 # commit path so the caller learns the DB did not
                 # persist their work.
                 if action == "commit":
+                    forget_reply_generations()
                     self._backend.raise_for_failed_reply(response, "tx.commit")
                 _logger.warning(
                     "proxy tx.rollback reported failure: %s",
