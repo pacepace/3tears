@@ -160,7 +160,9 @@ class TestCompositeSignificance:
         assert p is not None
         assert t_critical_two_sided(1 - p, n - 1) == pytest.approx(t_stat, rel=1e-6)
         assert sig is (p < SIGNIFICANCE_ALPHA)
-        assert d == pytest.approx(mean_diff / sd)
+        # Hedges' g_z: d_z times J(n - 1), the exact small-sample factor.
+        j = math.exp(math.lgamma((n - 1) / 2) - math.lgamma((n - 2) / 2)) / math.sqrt((n - 1) / 2)
+        assert d == pytest.approx(j * mean_diff / sd)
 
     def test_the_unpaired_path_reports_its_p_too(self) -> None:
         """Welch's arm must not be the one that quietly drops the statistic."""
@@ -201,7 +203,7 @@ class TestCompositeSignificance:
         assert composite_significance(sample_a, sample_b, paired=paired).p_value is None
 
     def test_effect_sign_follows_direction(self) -> None:
-        """B worse than A → negative Cohen's d."""
+        """B worse than A → negative Hedges' g."""
         d, _sig, _p = composite_significance([0.70, 0.80, 0.75, 0.90], [0.20, 0.30, 0.25, 0.28], paired=False)
         assert d is not None and d < 0
 
@@ -349,7 +351,7 @@ class TestPairedChange:
         assert verdict.significant is None
         assert verdict.label == "inconclusive"
         assert verdict.p_value is None
-        assert verdict.cohens_d is None
+        assert verdict.hedges_g is None
 
     def test_the_pair_floor_is_the_smallest_n_an_exact_sign_flip_test_could_reject_at(self) -> None:
         """The floor is derived from alpha, not chosen — pin the derivation, not the number.

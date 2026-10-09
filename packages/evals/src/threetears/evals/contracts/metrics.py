@@ -1287,13 +1287,20 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     # ---- Significance (stats.py) --------------------------------------------
     _d(
-        name="cohens_d",
+        name="hedges_g",
         data_type="numeric",
         family="composite",
         transferability_class="judge_mediated",
         attribution_scope="end_to_end",
-        formula="paired mean(diff)/sd(diff), else pooled-SD Cohen's d; signed B minus A",
-        description="Effect size of a composite difference between two runs. Unbounded and signed; None when undefined.",
+        formula=(
+            "J(df) x paired mean(diff)/sd(diff) (g_z, df = pairs - 1), else J(df) x pooled-SD standardized difference "
+            "(g, df = n_a + n_b - 2); J is Hedges' small-sample factor; signed B minus A"
+        ),
+        description=(
+            "Effect size of a composite difference between two runs: Hedges' g, Cohen's d with its small-sample "
+            "upward bias removed. Unbounded and signed; None when undefined, including at two pairs, where no "
+            "unbiased estimate exists."
+        ),
     ),
     _d(
         name="significant",

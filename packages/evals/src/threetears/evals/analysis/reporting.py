@@ -338,6 +338,11 @@ NOT_TESTED_LABEL = "not tested"
 # is the more persuasive of the two possible errors.
 PAIRED_EFFECT_LABEL = "d_z"
 UNPAIRED_EFFECT_LABEL = "d"
+# The same two, bias-corrected (Hedges' g): what the engine's own tests report since the change from
+# Cohen's d — ``compare_two_runs``' ``hedges_g`` and a regression flag's. A different number from d at the
+# sample sizes an eval runs (0.5 against d's 0.88 at three pairs), so it is never printed under d's name.
+PAIRED_HEDGES_LABEL = "g_z"
+UNPAIRED_HEDGES_LABEL = "g"
 
 
 def significance_read(*, significant: bool | None, p: float | None = None, effect: float | None = None) -> str:
@@ -382,6 +387,7 @@ def format_significance(
     p: float | None = None,
     effect: float | None = None,
     n: int | None = None,
+    hedges: bool = False,
 ) -> str:
     """The read plus the statistics behind it, as one cell a surface prints verbatim.
 
@@ -413,11 +419,16 @@ def format_significance(
         p: The p-value the verdict was thresholded against.
         effect: The effect size.
         n: The sample size the test would have run over.
+        hedges: Whether ``effect`` is Hedges' g (the engine's tests, ``hedges_g``) rather than Cohen's d (a
+            stored delta-table row's historical ``d_z``). Decides the name with ``paired``.
 
     Returns:
         e.g. ``"significant (p=0.0123, d_z=1.42, n=8)"`` or ``"not tested (n=1)"``.
     """
-    effect_label = PAIRED_EFFECT_LABEL if paired else UNPAIRED_EFFECT_LABEL
+    if hedges:
+        effect_label = PAIRED_HEDGES_LABEL if paired else UNPAIRED_HEDGES_LABEL
+    else:
+        effect_label = PAIRED_EFFECT_LABEL if paired else UNPAIRED_EFFECT_LABEL
     # The one number rule, not a fixed spelling of their own. A p-value is not
     # read against a column of its peers the way pass^k is — it is checked
     # against one threshold (α=0.05 vs p=0.04998), which the rule's four
@@ -4762,9 +4773,10 @@ class RegressionFlag(EvalBaseModel):
     relative_delta: float | None = None
     significant: bool | None = None
     exceeds_threshold: bool | None = None
-    cohens_d: float | None = None
+    #: Hedges' g_z of the paired move — bias-corrected, so not comparable with a Cohen's d.
+    hedges_g: float | None = None
     #: The p ``significant`` was thresholded against; ``None`` wherever no t-test
-    #: was evaluated. Carried for the same reason ``cohens_d`` is: a verdict
+    #: was evaluated. Carried for the same reason ``hedges_g`` is: a verdict
     #: whose statistic is absent cannot be checked, and a reader must be able to
     #: tell a label a test produced from one reasoned around an undefined test.
     p: float | None = None
@@ -5246,7 +5258,7 @@ def compute_history(
                     relative_delta=verdict.relative_delta,
                     significant=verdict.significant,
                     exceeds_threshold=verdict.exceeds_threshold,
-                    cohens_d=verdict.cohens_d,
+                    hedges_g=verdict.hedges_g,
                     p=verdict.p_value,
                     equivalence_p=verdict.equivalence_p,
                     equivalence_margin=verdict.equivalence_margin,
@@ -6415,6 +6427,7 @@ __all__ = [
     "NOT_SIGNIFICANT_LABEL",
     "NOT_TESTED_LABEL",
     "PAIRED_EFFECT_LABEL",
+    "PAIRED_HEDGES_LABEL",
     "PARTITION_TOLERANCE_MS",
     "PROJECTED_METRICS",
     "RECONSTRUCTED_COUNTS_CLAUSE",
@@ -6425,6 +6438,7 @@ __all__ = [
     "SUBSTITUTING_CASSETTE_MODE",
     "UNCOMPUTABLE_GAP_CLAUSE",
     "UNPAIRED_EFFECT_LABEL",
+    "UNPAIRED_HEDGES_LABEL",
     "WEIGHTINGS",
     "WEIGHTING_EQUAL_PER_SCENARIO",
     "WEIGHTING_SAMPLE_WEIGHTED",

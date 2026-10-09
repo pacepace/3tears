@@ -286,10 +286,10 @@ class TestTheBundleAppliesTheRule:
             ),
             (
                 "one shared case, so unpaired",
-                5,
+                8,
                 3,
                 0.35,
-                {"contrast-one": range(4, 9)},
+                {"contrast-one": range(7, 13)},
                 ("contrast-one", "unpaired", "improved"),
             ),
         ],
