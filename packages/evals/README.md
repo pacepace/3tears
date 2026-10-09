@@ -235,6 +235,9 @@ result = await compare(
 print(result.render())  # "Contrasts against the control": each difference, its interval, a Holm-adjusted p, a verdict
 ```
 
+The report names each arm `candidate=<name>`, and each row of `result.contrasts()` carries your key as `arm`.
+When the arms are models, pass `factors=("model",)` and each name becomes its run's model (`model=<name>`).
+
 Each row of that table is one arm against the control on one reading, and says:
 
 - **Delta**: the arm's mean minus the control's, over the cases the test read. The test is a **paired

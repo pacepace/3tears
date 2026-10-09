@@ -417,6 +417,9 @@ class EvalSummary(BaseModel):
         scope_id: The scope it is stored in.
         template_id: The template it ran; ``None`` for an ad-hoc run of explicit cases.
         candidate_model: The arm's candidate model.
+        arm: The arm's name, where a comparison named its arms apart from their model
+            (:func:`~threetears.evals.quick.compare`, every arm at one shared model); ``None`` elsewhere, and for a
+            summary read back from the store.
         status: How the run ended, as stored (``completed``, ``failed``, ``cancelled``, ...).
         k_runs: Repeats per case.
         n_cases: Cases in the run's frozen case set.
@@ -475,6 +478,7 @@ class EvalSummary(BaseModel):
     scope_id: str
     template_id: str | None
     candidate_model: str
+    arm: str | None = None
     status: str
     k_runs: int
     n_cases: int
@@ -541,7 +545,9 @@ class EvalSummary(BaseModel):
             The text, without a trailing newline.
         """
         lines = [
-            f"run {self.run_id} {self.status}: {self.candidate_model} over {self.n_cases} case(s) x k={self.k_runs}",
+            f"run {self.run_id} {self.status}: "
+            + (self.candidate_model if self.arm is None else f"arm {self.arm} (model {self.candidate_model})")
+            + f" over {self.n_cases} case(s) x k={self.k_runs}",
             f"  {self.n_results} result(s): {self.n_scored} scored, {self.n_candidate_failed} failed by the "
             f"candidate, {self.n_excluded} excluded",
         ]

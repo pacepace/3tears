@@ -5,12 +5,16 @@ a newcomer's next question is whether a changed prompt or a different model does
 campaign with a control. Everything here is the engine's own path, composed:
 
 - **Each arm is one run**, as :func:`~threetears.evals.quick.run_eval` makes it, labelled by its arm name,
-  all into one host and one scope. The arm name is the run's candidate model, so it is what the variant key
-  is built from: two arms with different names are two variants, over one content-addressed case set.
+  all into one host and one scope. The arm name is the run's level of the host's arm lever
+  (:data:`~threetears.evals.quick.one_call.ARM_LEVER`, ``candidate``), every arm at one shared candidate model,
+  so the report calls the arm ``candidate=<name>`` and it is what the variant key is built from: two arms with
+  different names are two variants, over one content-addressed case set. Arms that ARE models are keyed with
+  ``factors=("model",)``, and their names are then the runs' candidate models (``model=<name>``); a host of the
+  caller's own that declares no arm lever names arms that way too.
 - **Every arm is started in one launch.** The arms' runs are one launch group, every one prepared (every
   refusal made) before any starts and all started together, so they are measured side by side rather than
   one after another, and a refusal on the last arm leaves none run.
-- **The campaign declares its design** — one axis, the candidate-model lever, at a level per arm; a
+- **The campaign declares its design** — one axis, the arm lever (or the candidate-model lever), at a level per arm; a
   controlled stimulus, since every arm saw the same cases; a commissioned apparatus, since the runs were
   launched for it; and the repeats each arm ran — through
   :func:`~threetears.evals.analysis.create_campaign`, which gates the declaration against the host's
@@ -56,7 +60,9 @@ from threetears.evals.ops.summary import CaseResult, EvalSummary, self_judging_t
 from threetears.evals.quick.judged import Judge
 from threetears.evals.quick.levers import refuse_unusable_lever_names
 from threetears.evals.quick.one_call import (
+    ARM_LEVER,
     CALLABLE_KIND,
+    SHARED_ARM_MODEL,
     JUDGED_CALLABLE_KIND,
     Candidate,
     ExpectedLabel,
@@ -79,6 +85,13 @@ ArmKey = str | tuple[str, ...]
 #: The one factor of a :func:`compare` named no ``factors``: the candidate model, which each arm's name is.
 _MODEL_ONLY = (CANDIDATE_MODEL_LEVER,)
 
+#: The one factor of a :func:`compare` named no ``factors`` on a host declaring the arm lever: the arm's name,
+#: stated on its run as :data:`~threetears.evals.quick.one_call.ARM_LEVER`, every arm at one shared model.
+_NAMED_ARMS = (ARM_LEVER,)
+
+#: The factors that are levers of the engine or the host, never of the callable kind: no kind prefix names them.
+_UNPREFIXED = frozenset({CANDIDATE_MODEL_LEVER, ARM_LEVER})
+
 
 @dataclass(frozen=True)
 class Comparison:
@@ -92,8 +105,8 @@ class Comparison:
         arms: Each arm's run summary, by arm key, in the order the arms were given.
         report: The campaign's report, as :func:`~threetears.evals.analysis.campaign_report` read it.
         host: The host the runs and the campaign are stored in, for reading them further.
-        factors: The factors each arm key names a level of, in key order: ``("model",)`` when the arms
-            are keyed by name.
+        factors: The factors each arm key names a level of, in key order: ``("candidate",)`` when the arms
+            are keyed by name on the arm lever, ``("model",)`` when they are keyed by name as models.
     """
 
     campaign_id: str
@@ -220,7 +233,7 @@ def _label(arm: ArmKey, factors: tuple[str, ...]) -> str:
 
 def _coordinates(arm: ArmKey, factors: tuple[str, ...]) -> dict[str, str]:
     """An arm's level of each factor, by factor."""
-    return {CANDIDATE_MODEL_LEVER: arm} if isinstance(arm, str) else dict(zip(factors, arm, strict=True))
+    return {factors[0]: arm} if isinstance(arm, str) else dict(zip(factors, arm, strict=True))
 
 
 def _refuse_an_unknown_control(arms: Mapping[ArmKey, Any], control: ArmKey, *, said: str = "control") -> None:
@@ -255,7 +268,7 @@ def _refuse_unusable_arms(
         raise ValueError("compare needs its candidates as a mapping of arm name to candidate")
     if len(candidates) < 2:
         raise ValueError(f"compare needs at least two candidates to compare, and was given {len(candidates)}")
-    if factors == _MODEL_ONLY and all(isinstance(arm, str) for arm in candidates):
+    if len(factors) == 1 and all(isinstance(arm, str) for arm in candidates):
         if blank := [repr(arm) for arm in candidates if not str(arm).strip()]:
             raise ValueError(f"an arm's name labels its run and its variant, and {', '.join(blank)} is blank")
     elif misshapen := [
@@ -299,11 +312,11 @@ def _declare(
         levels = list(dict.fromkeys(_coordinates(arm, factors)[factor] for arm in ordered))
         axes.append(
             {
-                "axis_id": factor if factor == CANDIDATE_MODEL_LEVER else f"{prefix}.{factor}",
+                "axis_id": factor if factor in _UNPREFIXED else f"{prefix}.{factor}",
                 "values": [{"content": level, "display": level} for level in levels],
                 "rationale": (
                     f"does any arm do better than {control}"
-                    if factors == _MODEL_ONLY
+                    if len(factors) == 1
                     else f"does moving {factor} change what the arms score, against {_label(control, factors)}"
                 ),
             }
@@ -417,8 +430,11 @@ async def compare(
             :func:`~threetears.evals.quick.run_eval` names it.
         candidates: The arms. Keyed by name when no ``factors`` are given: each name labels its run and is
             the level its arm is declared at, so it is what :meth:`Comparison.contrasts` calls the arm (its
-            ``arm`` key) and what :meth:`Comparison.results` takes; the report, which names every arm by the
-            levers it ran, calls it ``model=<name>``, since the name is stored as the run's candidate model.
+            ``arm`` key) and what :meth:`Comparison.results` takes. The report names it ``candidate=<name>``:
+            the name is stated on the run as the arm lever, every arm at the one candidate model
+            :data:`~threetears.evals.quick.one_call.SHARED_ARM_MODEL`. On a ``host`` of the caller's own that
+            declares no arm lever (``callable_host(arms=True)`` does), the name is the run's candidate model
+            and the report calls it ``model=<name>``, as it does with ``factors=("model",)``.
             With ``factors``, keyed by a tuple of the arm's level of each, in order
             (``("model-a", "v2")``): the ``model`` level is the run's candidate model, and every other
             level is stated on the run as that factor's lever (``callable.<factor>=<level>``).
@@ -443,7 +459,8 @@ async def compare(
             by its factors.
         created_by: Who the campaign and its control are recorded as created by.
         factors: The factors the arms are keyed by, ``model`` among them (``("model", "prompt")``); each is one
-            axis of the campaign's declared design. ``None`` keys the arms by name, on the model axis alone.
+            axis of the campaign's declared design. ``None`` keys the arms by name, on the arm lever alone;
+            ``("model",)`` keys them by name as models, each name the run's candidate model.
         tools: The tools every arm's candidate calls, as :func:`~threetears.evals.quick.run_eval` takes them.
         cassette_mode: Every arm's cassette mode, as :func:`~threetears.evals.quick.run_eval` takes it. Replay
             is what makes the arms comparable when the tools' answers vary: every arm is served the one
@@ -472,15 +489,18 @@ async def compare(
         ValidationFailedError: The launch refused, or the host refuses the campaign's declaration.
     """
     named = _factors(factors)
+    if factors is None and (host is None or host.profile.host_sweepables.get(ARM_LEVER) is not None):
+        # The arms' names are not models: each is stated as the arm lever's level, every arm at one model.
+        named = _NAMED_ARMS
     arms_given: Mapping[ArmKey, Candidate | ToolUsingCandidate | WorldCandidate] = candidates  # type: ignore[assignment]
     _refuse_unusable_arms(arms_given, control, named)
     if max_cost_usd is not None and (
         isinstance(max_cost_usd, bool) or not isinstance(max_cost_usd, int | float) or not max_cost_usd > 0
     ):
         raise ValueError(f"max_cost_usd= is a spend ceiling in US dollars: a positive number, not {max_cost_usd!r}")
-    levers = tuple(factor for factor in named if factor != CANDIDATE_MODEL_LEVER)
+    levers = tuple(factor for factor in named if factor not in _UNPREFIXED)
     if host is None:
-        host = callable_host(scorers, levers=levers, world=world)
+        host = callable_host(scorers, levers=levers, world=world, arms=named == _NAMED_ARMS)
     coordinates = {arm: _coordinates(arm, named) for arm in arms_given}
     # Every arm in ONE launch, started together, so the arms are measured side by side rather than one after
     # another: what differs between their runs is their settings, not when they ran.
@@ -489,8 +509,9 @@ async def compare(
         [
             CallableArm(
                 candidate,
-                model=coordinates[arm][CANDIDATE_MODEL_LEVER],
+                model=coordinates[arm].get(CANDIDATE_MODEL_LEVER, SHARED_ARM_MODEL),
                 levers={lever: coordinates[arm][lever] for lever in levers} or None,
+                arm=coordinates[arm].get(ARM_LEVER),
             )
             for arm, candidate in arms_given.items()
         ],
@@ -511,7 +532,7 @@ async def compare(
     )
     arms: dict[ArmKey, EvalSummary] = dict(zip(arms_given, summaries, strict=True))
     if name is None:
-        if named == _MODEL_ONLY:
+        if len(named) == 1:
             name = " vs ".join(_label(arm, named) for arm in [control, *(arm for arm in arms if arm != control)])
         else:
             name = " × ".join(named)

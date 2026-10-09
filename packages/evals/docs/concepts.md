@@ -341,7 +341,7 @@ read as data. Everything they read is below, with the way to state it outright i
 | What | Which part | Who reads it | To state it instead |
 |---|---|---|---|
 | A candidate's docstring | its first line | The [template](#template)'s intent, which a [judge](#judge) reads beside every answer, so rewording it can move judged scores. With several arms, it is read only when every arm's docstring shares that first line. | `intent=` on `run_eval` or `compare`; a judged run's `summary.render()` prints the intent and where it came from. |
-| A candidate's `__name__` | the whole name | The arm's label: the run's candidate model, keyed into its variant. | `model=` on `run_eval`; `compare` labels each arm by its key. |
+| A candidate's `__name__` | the whole name | The arm's label: the run's candidate model, keyed into its variant. | `model=` on `run_eval`. `compare` names each arm by its key on the `candidate` lever, every arm at one model; with `factors=("model",)` the key is the model. |
 | A scorer's `__name__` | the whole name | The [measure](#measure)'s name, in the summary, reports and the analysis bundle. | Rename the function. |
 | A scorer's docstring | its first line | The measure's description, in the analysis bundle's `measure_catalog`, which a model writing an [analysis](#analysis) reads for what the measure means. | Declare the measure, with its description, on a [host](#host) of your own (`host=`). |
 | A `WorldTool`'s function: `__name__` and docstring | the name, and the docstring's first line | The tool's name and description, which the model is shown, as in any tool-use API. | None: the function's name and docstring are the tool's. |

@@ -45,12 +45,14 @@ from threetears.evals.quick.cli import (
 )
 from threetears.evals.quick.compare import ArmKey, Comparison, compare
 from threetears.evals.quick.one_call import (
+    ARM_LEVER,
     CALLABLE_KIND,
     CALLABLE_KIND_CONTRACT,
     CALLABLE_UNSEATED,
     JUDGED_CALLABLE_KIND,
     JUDGED_CALLABLE_KIND_CONTRACT,
     JUDGED_CALLABLE_UNSEATED,
+    SHARED_ARM_MODEL,
     UNUSABLE_ANSWER,
     Candidate,
     ExpectedLabel,
@@ -74,6 +76,7 @@ from threetears.evals.ops.summary import (
 )
 
 __all__ = [
+    "ARM_LEVER",
     "CALLABLE_KIND",
     "CALLABLE_KIND_CONTRACT",
     "CALLABLE_UNSEATED",
@@ -86,6 +89,7 @@ __all__ = [
     "JUDGED_CALLABLE_KIND",
     "JUDGED_CALLABLE_KIND_CONTRACT",
     "JUDGED_CALLABLE_UNSEATED",
+    "SHARED_ARM_MODEL",
     "UNUSABLE_ANSWER",
     "Answer",
     "ArmKey",

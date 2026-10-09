@@ -21,8 +21,7 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis import DisclosureBlock, TableBlock, report_markdown, variant_key_of_run
-from threetears.evals.contracts.host import CANDIDATE_MODEL_LEVER
-from threetears.evals.quick import Comparison, callable_host, compare
+from threetears.evals.quick import ARM_LEVER, SHARED_ARM_MODEL, Comparison, callable_host, compare
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
 
 #: The example under test.
@@ -82,8 +81,14 @@ def _comparisons(comparison: Comparison) -> TableBlock:
 async def test_each_candidate_runs_as_one_arm_labelled_by_its_name() -> None:
     comparison = await _compare()
     assert list(comparison.arms) == ["hasty", "careful"]
-    assert comparison.arms["careful"].candidate_model == "careful"
-    assert comparison.arms["hasty"].candidate_model == "hasty"
+    # The names are arms, not models: each is stated on its run as the arm lever, every arm at one model.
+    assert {summary.candidate_model for summary in comparison.arms.values()} == {SHARED_ARM_MODEL}
+    assert [summary.arm for summary in comparison.arms.values()] == ["hasty", "careful"]
+    assert (
+        comparison.arms["careful"]
+        .render()
+        .startswith(f"run {comparison.arms['careful'].run_id} completed: arm careful (model {SHARED_ARM_MODEL})")
+    )
     by_arm = {arm: {m.name: m.mean for m in summary.measures} for arm, summary in comparison.arms.items()}
     assert by_arm["careful"]["match"] == pytest.approx(1.0)
     assert by_arm["hasty"]["match"] == pytest.approx(0.5)
@@ -102,7 +107,7 @@ async def test_the_control_resolves_to_the_variant_the_control_arm_ran() -> None
         storage.query_eval_results_by_run(comparison.arms["careful"].run_id, SCOPE)
     )
     (axis,) = design.axes
-    assert axis.axis_id == CANDIDATE_MODEL_LEVER
+    assert axis.axis_id == ARM_LEVER
     assert [value.display for value in axis.values] == ["hasty", "careful"]
     assert design.intended_repetitions == 2
     assert sorted(campaign.run_ids) == sorted(summary.run_id for summary in comparison.arms.values())
@@ -113,14 +118,14 @@ async def test_every_other_arm_is_tested_against_the_control_and_the_better_one_
     rows = _comparisons(comparison).rows
     by_reading = {row["reading"]: row for row in rows}
     accuracy = by_reading["accuracy"]
-    assert (accuracy["contrast"], accuracy["control"]) == ("model=careful", "model=hasty")
+    assert (accuracy["contrast"], accuracy["control"]) == ("candidate=careful", "candidate=hasty")
     assert accuracy["verdict"] == "improved on the control"
     assert accuracy["delta"] == pytest.approx(0.5)
-    assert {row["control"] for row in rows} == {"model=hasty"}
+    assert {row["control"] for row in rows} == {"candidate=hasty"}
     markdown = comparison.render()
     assert markdown == report_markdown(comparison.report)
     assert "No control resolved" not in markdown
-    assert "model=hasty (control)" in markdown
+    assert "candidate=hasty (control)" in markdown
 
 
 async def test_the_report_is_titled_by_the_campaign_s_name_and_names_its_id_below() -> None:
@@ -225,7 +230,7 @@ async def test_the_example_runs_offline_and_prints_the_verdict(
     assert out.startswith("ANTHROPIC_API_KEY is not set: running OFFLINE")
     assert "(offline)" in comparison.name
     accuracy = {row["reading"]: row for row in _comparisons(comparison).rows}["accuracy"]
-    assert (accuracy["contrast"], accuracy["verdict"]) == ("model=candidate", "improved on the control")
+    assert (accuracy["contrast"], accuracy["verdict"]) == ("candidate=candidate", "improved on the control")
     assert re.search(r"\ncandidate vs baseline on accuracy: \+0\.42 \(p=[\d.e-]+\): improved on the control\n", out)
     assert comparison.render() not in out
 

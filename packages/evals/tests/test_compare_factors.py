@@ -197,12 +197,12 @@ async def test_a_one_factor_comparison_is_read_against_another_control_too() -> 
     comparison = await compare(
         CASES, {"hasty": hasty, "careful": careful}, expected=_expected, control="hasty", scope_id=SCOPE, k=2
     )
-    assert comparison.factors == ("model",)
+    assert comparison.factors == ("candidate",)
     flipped = comparison.against("careful")
     (row,) = flipped.contrasts("accuracy")
     assert (row["contrast"], row["control"], row["verdict"]) == (
-        "model=hasty",
-        "model=careful",
+        "candidate=hasty",
+        "candidate=careful",
         "regressed from the control",
     )
 
@@ -235,3 +235,48 @@ async def test_an_unusable_factorial_is_refused_before_anything_runs(overrides: 
     with pytest.raises(ValueError, match=said):
         await _factorial(host=host, **overrides)
     assert list_templates(host.storage, SCOPE) == []
+
+
+async def test_arms_keyed_as_models_with_factors_model_keep_their_names_as_the_runs_models() -> None:
+    comparison = await compare(
+        CASES,
+        {"hasty": hasty, "careful": careful},
+        expected=_expected,
+        control="hasty",
+        factors=("model",),
+        scope_id=SCOPE,
+        k=2,
+    )
+    assert comparison.factors == ("model",)
+    assert comparison.arms["careful"].candidate_model == "careful" and comparison.arms["careful"].arm is None
+    (row,) = comparison.contrasts("accuracy")
+    assert (row["arm"], row["contrast"], row["control"]) == ("careful", "model=careful", "model=hasty")
+
+
+async def test_a_callers_host_without_the_arm_lever_names_single_factor_arms_as_models() -> None:
+    comparison = await compare(
+        CASES,
+        {"hasty": hasty, "careful": careful},
+        expected=_expected,
+        control="hasty",
+        host=callable_host(),
+        scope_id=SCOPE,
+        k=2,
+    )
+    assert comparison.factors == ("model",)
+    (row,) = comparison.contrasts("accuracy")
+    assert (row["arm"], row["contrast"]) == ("careful", "model=careful")
+
+
+async def test_a_callers_host_declaring_the_arm_lever_names_arms_on_it() -> None:
+    comparison = await compare(
+        CASES,
+        {"hasty": hasty, "careful": careful},
+        expected=_expected,
+        control="hasty",
+        host=callable_host(arms=True),
+        scope_id=SCOPE,
+        k=2,
+    )
+    (row,) = comparison.contrasts("accuracy")
+    assert (row["arm"], row["contrast"], row["control"]) == ("careful", "candidate=careful", "candidate=hasty")

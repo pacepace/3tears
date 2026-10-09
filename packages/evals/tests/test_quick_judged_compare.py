@@ -162,7 +162,10 @@ async def test_every_contrast_row_names_its_arm_by_the_callers_key() -> None:
     )
     rows = comparison.contrasts()
     assert sorted(row["arm"] for row in rows) == ["candidate", "other"]
-    assert {row["contrast"]: row["arm"] for row in rows} == {"model=candidate": "candidate", "model=other": "other"}
+    assert {row["contrast"]: row["arm"] for row in rows} == {
+        "candidate=candidate": "candidate",
+        "candidate=other": "other",
+    }
 
 
 async def test_a_factorial_contrast_row_names_its_arm_by_its_tuple_of_levels() -> None:

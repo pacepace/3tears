@@ -167,7 +167,7 @@ async def main(out_dir: Path = Path("eval-analysis")) -> list[EvalAnalysis]:
 
     # The verdict code reached; nothing an analysis writes changes it.
     for row in comparison.contrasts("accuracy"):
-        arm, control = (row[key].removeprefix("model=") for key in ("contrast", "control"))
+        arm, control = row["arm"], comparison.control  # each arm by the key you gave it
         p = "" if row["p_adjusted"] is None else f" (p={row['p_adjusted']:.2g})"  # none when nothing varied
         print(f"Code's verdict: {arm} vs {control} on {row['reading']}: {row['delta']:+.2g}{p}: {row['verdict']}\n")
 

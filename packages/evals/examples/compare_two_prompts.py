@@ -132,7 +132,7 @@ async def main() -> Comparison:
 
     comparison = await compare(
         CASES,
-        # Each arm by name; the report calls it model=<name>.
+        # Each arm by name; the report calls it candidate=<name>.
         {"baseline": make(BASELINE_PROMPT), "candidate": make(CANDIDATE_PROMPT)},
         expected=lambda case: case["queue"],  # a classifier eval: accuracy and a confusion matrix
         control="baseline",  # the arm every other arm is tested against
@@ -146,7 +146,7 @@ async def main() -> Comparison:
 
     # The verdict: each arm against the control, the difference, its Holm-adjusted p, and whether it separated.
     for row in comparison.contrasts():
-        arm, control = (row[key].removeprefix("model=") for key in ("contrast", "control"))
+        arm, control = row["arm"], comparison.control  # each arm by the key you gave it
         p = "" if row["p_adjusted"] is None else f" (p={row['p_adjusted']:.2g})"  # none when nothing varied
         print(f"{arm} vs {control} on {row['reading']}: {row['delta']:+.2g}{p}: {row['verdict']}")
     print("\nThe full report: comparison.render(), or reports.py to write it to files.")
