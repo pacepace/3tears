@@ -133,13 +133,14 @@ def _refuse_colliding_commands(commands: Sequence[HostCommand]) -> None:
 #: The program name the command line prints when it is run as ``python -m threetears.evals``.
 DEFAULT_PROG = "python -m threetears.evals"
 
-#: Exit codes: every run completed (or the command read what it was asked for); a run did not
-#: complete; the command was refused before it could do anything; the command failed on an error
-#: nothing anticipated — a host factory, a launcher or a handler raising, or the engine's own fault —
-#: which is never 1, so a broken host cannot read as runs that finished.
+#: Exit code: every run completed, or the command read what it was asked for.
 EXIT_OK = 0
+#: Exit code: a launched run did not complete.
 EXIT_RUN_DID_NOT_COMPLETE = 1
+#: Exit code: the command was refused before it could do anything.
 EXIT_REFUSED = 2
+#: Exit code: the command failed on an error nothing anticipated — a host factory, a launcher or a handler
+#: raising, or the engine's own fault. Never 1, so a broken host cannot read as runs that finished.
 EXIT_FAILED = 3
 
 

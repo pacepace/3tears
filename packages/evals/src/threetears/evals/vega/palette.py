@@ -52,6 +52,7 @@ from threetears.observe import get_logger
 
 log = get_logger(__name__)
 
+#: The colour theme a chart is drawn for.
 Theme = Literal["light", "dark"]
 
 #: The palette artifact, beside the module that reads it — packaged data, resolved

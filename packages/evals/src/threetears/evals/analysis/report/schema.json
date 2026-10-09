@@ -343,6 +343,7 @@
         "kind": {
           "const": "chart",
           "default": "chart",
+          "description": "Which kind of block this is.",
           "title": "Kind",
           "type": "string"
         },
@@ -817,6 +818,7 @@
         "kind": {
           "const": "disclosure",
           "default": "disclosure",
+          "description": "Which kind of block this is.",
           "title": "Kind",
           "type": "string"
         },
@@ -1032,6 +1034,7 @@
         "kind": {
           "const": "table",
           "default": "table",
+          "description": "Which kind of block this is.",
           "title": "Kind",
           "type": "string"
         },
@@ -1196,6 +1199,7 @@
         "kind": {
           "const": "text",
           "default": "text",
+          "description": "Which kind of block this is.",
           "title": "Kind",
           "type": "string"
         },

@@ -2053,6 +2053,8 @@ class VariationCounts(EvalDocumentModel):
         return self.kept < self.requested
 
 
+#: Where a run's completeness counts were taken: the run loop's own tally, or the results in storage
+#: (:attr:`RunCompleteness.counted_from`).
 CompletenessSource = Literal["run_loop", "stored_results"]
 
 
