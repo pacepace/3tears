@@ -163,6 +163,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "quick/judged.py": {},
     "quick/levers.py": {},
     "quick/one_call.py": {},
+    "quick/tools.py": {},
     "ops/__init__.py": {},
     "ops/analysis.py": {},
     "ops/host.py": {},

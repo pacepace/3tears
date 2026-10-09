@@ -10,7 +10,10 @@ with a model against a rubric. A candidate that calls a paid model returns an :c
 what each answer spent, which the summary and the results' ``cost_usd`` carry. :func:`compare` runs two or
 more candidates over one case list the same way, each as one arm, and returns a :class:`Comparison` whose
 campaign report tests every arm against the one named the control; keyed by their level of each of several
-factors (``factors=``), its arms are the cells of a factorial design, each factor a lever of its own.
+factors (``factors=``), its arms are the cells of a factorial design, each factor a lever of its own. A candidate that calls tools declares them (``tools=``, each a
+:data:`Tool`) and is handed them beside each case (:data:`ToolUsingCandidate`); a run with
+``cassette_mode='capture'`` records what they answered, and ``'replay'`` serves that recording to every arm
+in place of calling them.
 :func:`run_cli` is ``python -m threetears.evals``: ``run``, ``ls``, ``report``, ``bundle`` and ``spend`` over
 a host named ``module:factory``, or mounted under a product's own CLI with its host factory and any
 subcommands of its own (:class:`HostCommand`).
@@ -55,6 +58,7 @@ from threetears.evals.quick.one_call import (
     run_eval,
 )
 from threetears.evals.quick.judged import CaseMaterial, Judge
+from threetears.evals.quick.tools import CandidateTools, Tool, ToolUsingCandidate
 from threetears.evals.ops.summary import DimensionSummary, EvalSummary, MeasureSummary, summarize_run
 
 __all__ = [
@@ -74,6 +78,7 @@ __all__ = [
     "Answer",
     "ArmKey",
     "Candidate",
+    "CandidateTools",
     "CaseMaterial",
     "Comparison",
     "ConfusionCount",
@@ -86,6 +91,8 @@ __all__ = [
     "LabelStatistics",
     "MeasureSummary",
     "Scorer",
+    "Tool",
+    "ToolUsingCandidate",
     "build_parser",
     "callable_host",
     "callable_kind_contracts",

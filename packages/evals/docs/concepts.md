@@ -229,7 +229,9 @@ The universal templates, run as one pre-flighted set (`start_universal_battery`)
 #### Cassette
 A recording of what a candidate's tools answered. A run in `cassette_mode="capture"` records one; a run in
 `"replay"` is served that recording instead of calling the tools live, so two arms can face exactly the
-same tool answers.
+same tool answers. It records the tools only, never the candidate. On the quick path a candidate declares its
+tools to `run_eval` or `compare` (`tools=`) and is handed them beside each case; `examples/cassettes.py`
+captures once and replays the recording to two arms.
 
 #### Simulator
 The engine's simulated user: the other side of a conversation a conversing kind holds
