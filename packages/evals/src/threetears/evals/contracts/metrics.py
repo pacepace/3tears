@@ -129,6 +129,8 @@ __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why th
     "GradedBy",
     "MeasureFamily",
     "MeasurePopulation",
+    "DELIVERED_AXES",
+    "summary_population",
     "Materiality",
     "classifier_label_measure",
     "classifier_label_of",
@@ -207,7 +209,25 @@ MeritAxis = Literal["quality", "cost", "latency", "reliability"]
 #: row. The distinction is not a nicety: it is the difference between two ``mean_score`` figures
 #: that a reader currently has to hold in their head, and that a second consumer would inherit
 #: with no way to know.
-MeasurePopulation = Literal["scored", "all_observed"]
+#:
+#: ``delivered`` drops, beside the faults, every observation the candidate FAILED — a refusal, a
+#: model error, a turn its budget ended, an answer its output cap cut. A failure still counts against
+#: the arm wherever the arm is graded (a rate, a bar, a judged score), but it delivered no result, so
+#: the time it took and what it spent are not a result's latency or cost: a refused call's round trip
+#: is a fast turn nobody took, and its empty usage a spend nobody observed. Averaged in, an arm whose
+#: every call was refused read as the fastest and cheapest on the surface. A cost or latency measure
+#: read where ``scored`` would apply is read over this population instead
+#: (:func:`summary_population`).
+MeasurePopulation = Literal["scored", "all_observed", "delivered"]
+
+#: The merit axes whose readings describe a DELIVERED result — what it took to produce an answer, and
+#: what producing it cost — and are therefore read over ``delivered`` where ``scored`` would apply.
+DELIVERED_AXES: frozenset[MeritAxis] = frozenset({"cost", "latency"})
+
+#: The engine's blended spend, read over ``delivered`` like a cost-axis measure though it serves no axis. It
+#: serves none only because it sums the judge's spend beside the candidate's — what it cost to MEASURE a
+#: result, not what the candidate costs — and that does not make a failed call's spend a delivered result's.
+_DELIVERED_SPEND = "cost_usd"
 
 # Loosest to strictest. `strictest_class` relies on this ordering, and the lint that
 # refuses a declaration looser than its family's structural floor (a separate concern,
@@ -328,7 +348,9 @@ class MetricDescriptor(EvalBaseModel):
             "Which observations this measure is computed over. Every summary of it — a cell's, a bar's, a run's — "
             "is computed over exactly that population and states which, so two populations are never pooled under "
             "one name. None leaves it to the surface: the decision surface's cells and bars read `scored`, a run's "
-            "summary and the rollups `all_observed`, and each summary says which it used."
+            "summary and the rollups `all_observed`, and each summary says which it used. A cost or latency measure, "
+            "and the engine's blended spend `cost_usd`, that would be read over `scored` is read over `delivered`, "
+            "leaving out the results the candidate failed, whose time and spend describe no delivered result."
         ),
     )
     contained_by: str | None = Field(
@@ -1664,6 +1686,31 @@ def is_code_graded(descriptor: MetricDescriptor, measures: MeasureRegistry) -> b
         return descriptor.family in CODE_GRADED_FAMILIES
     declared = measures.family(descriptor.family)
     return declared is not None and declared.graded_by == "code"
+
+
+def summary_population(descriptor: MetricDescriptor, undeclared: MeasurePopulation) -> MeasurePopulation:
+    """The population one summary of a measure is computed over — the ONE answer every summary asks.
+
+    The measure's declared population when it declares one, else ``undeclared``, the population of the
+    surface asking. Then one narrowing: a measure on a cost or latency axis (:data:`DELIVERED_AXES`),
+    or the engine's blended spend ``cost_usd``, that would be read over ``scored`` is read over
+    ``delivered``. ``scored`` keeps a candidate's
+    failures because a failure is a result of the arm, and on a quality or reliability reading it must
+    count against it; on a cost or latency reading the same failure is a turn that delivered nothing,
+    and its round trip and its empty spend would be averaged in as a fast, free result. An explicit
+    ``all_observed`` is not narrowed: the declarer asked for every raw row, and the summary says so.
+
+    Args:
+        descriptor: The measure's descriptor.
+        undeclared: The population of the surface asking, for a measure that declares none.
+
+    Returns:
+        The population the summary is computed over, and states.
+    """
+    population = descriptor.population or undeclared
+    if population == "scored" and (descriptor.merit_axis in DELIVERED_AXES or descriptor.name == _DELIVERED_SPEND):
+        return "delivered"
+    return population
 
 
 #: How a difference in a measure reads against the measure's declared materiality threshold.

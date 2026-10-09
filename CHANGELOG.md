@@ -6,6 +6,34 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: an arm whose every result failed reads as failed, not as the fastest and cheapest
+
+- **A cost or latency reading is over the results the candidate delivered.** `MeasurePopulation` gains
+  `delivered`: the non-faulted results less the candidate's failures (a refusal, a model error, a turn its budget
+  ended, an answer its output cap cut). A measure on the cost or latency axis (`DELIVERED_AXES`), and the engine's
+  blended `cost_usd`, that would be read over `scored` is read over `delivered` instead (`summary_population`, the
+  one answer the measure walk, the bars, the comparisons and a run's summary ask). A failure still counts against
+  its arm in every rate, bar and judged score; its round trip and its spend are no delivered result's. An explicit
+  `all_observed` declaration is not narrowed. Before, a classifier arm whose every call was refused read 53 ms and
+  $0 on the decision surface, averaged from the refusals.
+- **`CellFacts.n_candidate_failed`** and **`StratumFacts.n_candidate_failed`** (`int | None`) count the failures,
+  and the strata add up to the cell. `None` on an analysis frozen before the count was kept, whose cost and latency
+  were read over failed results too — never 0 for a count nobody took. `CellFacts.all_failed` and
+  `StratumFacts.all_failed` (derived, not stored) say the candidate failed every counted result.
+- **A cell whose every result failed says so.** It carries no cost or latency reading. The decision surface reads
+  `no successful results` under its cost and latency columns (`NO_SUCCESSFUL_RESULTS`, `SurfaceRow.all_failed`) and
+  its replication counts the failures; the table carries `all_failed_disclosure`, which both reports state beside
+  it, naming the arms when only some failed. The strata table says the same of a stratum. The bundle names the cells
+  (`all_failed_cells`, with the sentence `all_failed`), and the generator prompt points the writer at both and at
+  `n_candidate_failed`.
+- **`cost_unmeasured_cells` reads the delivered results too**, the population `cost_usd` is read over: a billed
+  refusal no longer makes a cell whose deliveries reported no spend look measured, and a cell that delivered
+  nothing is listed in `all_failed_cells` rather than as unmeasured.
+- **A run's summary reads a cost or latency measure the same way**: over the results the candidate delivered, with
+  how many it left out (`MeasureSummary.n_undelivered`), and `no successful results` for a run that delivered none.
+- Bundle `schema_version` 42 -> 43. A stored analysis still reads: its cells carry `n_candidate_failed: null`, and
+  the report shape (`schema.json`) is unchanged.
+
 ### 3tears-evals: a swept lever is checked against the mechanism it acts on; a divergent reasoning share qualifies a model comparison (#577, #576)
 
 - **`Sweepable.acts_on`** (optional), and **`ActsOn(measure)`** for a kind contract's overlay field (beside

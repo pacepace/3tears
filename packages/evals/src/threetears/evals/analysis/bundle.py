@@ -146,6 +146,7 @@ from threetears.evals.contracts.metrics import (
     materiality,
     partition_components,
     remainder_withheld_reason,
+    summary_population,
 )
 from threetears.evals.contracts.base import EvalDocumentModel
 
@@ -155,6 +156,7 @@ from threetears.evals.contracts.provider import sum_optional_tokens
 from threetears.evals.contracts.result_condition import (
     JUDGE_CANNOT_TELL_OUTCOME,
     ResultOutcome,
+    classify_result,
     counted_goal_verdicts,
     harness_faulted,
 )
@@ -168,6 +170,7 @@ from threetears.evals.contracts.surface import (
     TimeAxis,
     TimeAxisBasis,
     TimePosition,
+    all_failed_sentence,
 )
 from threetears.evals.contracts.usage_capture import (
     count_substituted_deliveries,
@@ -1574,7 +1577,7 @@ class AnalysisContextBundle(EvalDocumentModel):
     # A/B set spanning a bump must be read as spanning it. Why each earlier version moved is in
     # this file's history.
     schema_version: int = Field(
-        default=42, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=43, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -1709,11 +1712,12 @@ class AnalysisContextBundle(EvalDocumentModel):
     cost_unmeasured_cells: list[CellCoordinate] = Field(
         default_factory=list,
         description=(
-            "Every cell where no result observed spend — no usage row in its cost roles carried dollars — ordered "
-            "by (variant_key, apparatus_class_id). Each result there stores a `cost_usd` of 0 that is the sum of "
-            "nothing, not a measured $0, so the cell carries no `cost_usd` reading: nothing charts it or tests it "
-            "against the control. A cell with a measured $0 (a row carrying 0 dollars) is not listed. A result "
-            "whose spend went unpriced is not listed either: its cost is unknown, which `cost_usd` null already says."
+            "Every cell where no result it delivered observed spend — no usage row in its cost roles carried "
+            "dollars — ordered by (variant_key, apparatus_class_id). Each result there stores a `cost_usd` of 0 "
+            "that is the sum of nothing, not a measured $0, so the cell carries no `cost_usd` reading: nothing "
+            "charts it or tests it against the control. A cell with a measured $0 (a row carrying 0 dollars) is "
+            "not listed. A result whose spend went unpriced is not listed either: its cost is unknown, which "
+            "`cost_usd` null already says. Nor is a cell whose every result failed, which `all_failed_cells` lists."
         ),
     )
     cost_unmeasured: str | None = Field(
@@ -1721,6 +1725,24 @@ class AnalysisContextBundle(EvalDocumentModel):
         description=(
             "The sentence to quote about `cost_unmeasured_cells` — that cost was not measured there, and why a $0 "
             "would mean nothing. None when every cell observed spend somewhere."
+        ),
+    )
+    all_failed_cells: list[CellCoordinate] = Field(
+        default_factory=list,
+        description=(
+            "Every cell where the candidate failed every result the harness did not fault — a refusal, a model "
+            "error, a turn its budget ended — ordered by (variant_key, apparatus_class_id). The candidate "
+            "delivered nothing there, so the cell carries no cost or latency reading: a failed call's round trip "
+            "and its empty spend describe no delivered result, and read as one they made a refusing arm the "
+            "fastest and cheapest. Its failures still count against it in every rate, bar and judged score. "
+            "Not 'unmeasured': the arm was measured, and every result failed."
+        ),
+    )
+    all_failed: str | None = Field(
+        default=None,
+        description=(
+            "The sentence to quote about `all_failed_cells` — that every result there failed, so there is no cost "
+            "or latency to read. None when every cell delivered a result."
         ),
     )
     controls_reading: ControlsReading = Field(
@@ -1940,7 +1962,11 @@ class AnalysisContextBundle(EvalDocumentModel):
             "read over, so a value here and a verdict on the same cell describe the same observations — "
             "every judged dimension scored there, its replication, and the notes on its member runs. Read "
             "per-arm numbers from here rather than pooling run summaries, which mix arms a run co-ran and "
-            "include the observations the harness faulted."
+            "include the observations the harness faulted. A cost or latency measure is read over the results "
+            "the candidate delivered (population `delivered`): a failed result counts against its arm in every "
+            "rate, bar and judged score, but its time and spend are no delivered result's. `n_candidate_failed` "
+            "says how many failed, and a cell where every result failed carries no cost or latency reading at "
+            "all and is listed in `all_failed_cells`."
         ),
     )
     time_axis: TimeAxis | None = Field(
@@ -2767,6 +2793,29 @@ def _open_map_leaves(
             yield name, value, describe_measure(name, profile.measures)
 
 
+def _in_population(population: MeasurePopulation, outcome: ResultOutcome) -> bool:
+    """Whether a result of this outcome is an observation of a measure read over ``population``.
+
+    The one membership rule the measure walk applies, per measure and per result: a result the harness
+    faulted is in ``all_observed`` only; one the candidate failed is in everything but ``delivered``,
+    because a failure counts against its arm wherever the arm is graded but delivered no result whose
+    time or spend a cost or latency reading could describe; every other result is in all three.
+
+    Args:
+        population: The population the measure's summary is computed over
+            (:func:`~threetears.evals.contracts.metrics.summary_population`).
+        outcome: The result's outcome (:func:`~threetears.evals.contracts.result_condition.classify_result`).
+
+    Returns:
+        True when the result's observations of the measure count.
+    """
+    if outcome is ResultOutcome.INFRA_EXCLUDE:
+        return population == "all_observed"
+    if outcome is ResultOutcome.CANDIDATE_FAIL:
+        return population != "delivered"
+    return True
+
+
 def _measure_collection(
     results: list[EvalResult], *, profile: HostProfile, undeclared: MeasurePopulation
 ) -> MeasureCollection:
@@ -2785,12 +2834,15 @@ def _collect_measures(
 
     **Each measure is computed over its own population** (``MetricDescriptor.population``): a
     ``scored`` measure leaves out every result the harness faulted, an ``all_observed`` one keeps
-    them, and every summary states which it was. ``results`` is therefore EVERY result in scope,
-    faulted ones included — the walk does the excluding, per measure, so a cell, a bar, a run summary
-    and a divergence lens reporting one measure name report it over one population. A measure that
-    declares none is computed over ``undeclared``, the population of the surface asking: ``scored``
-    for the decision surface's cells and bars, ``all_observed`` for a run's summary and the rollups,
-    which is what each of those always computed.
+    them, a ``delivered`` one leaves out the candidate's failures too, and every summary states which
+    it was. ``results`` is therefore EVERY result in scope, faulted and failed ones included — the walk
+    does the excluding, per measure, so a cell, a bar, a run summary and a divergence lens reporting
+    one measure name report it over one population. A measure that declares none is computed over
+    ``undeclared``, the population of the surface asking: ``scored`` for the decision surface's cells
+    and bars, ``all_observed`` for a run's summary and the rollups, which is what each of those always
+    computed. Which one a summary states is :func:`~threetears.evals.contracts.metrics.summary_population`'s
+    answer, so a cost or latency measure on the decision surface is read over ``delivered``: a refused
+    call is a failure every rate counts against its arm, and not a 50 ms turn costing nothing.
 
     The second return value maps every pooled measure to its **observation unit**:
     ``'result'`` for the result's own scalars, its open maps, and the leaves of any single
@@ -2838,12 +2890,13 @@ def _collect_measures(
         *,
         report_gaps: bool,
         case_id: str,
-        faulted: bool,
+        outcome: ResultOutcome,
         carrier: str | None = None,
     ) -> None:
         # Outside its population before anything else: a faulted result is not an observation of a
-        # `scored` measure at all, so it can neither contribute a value nor be reported as one lost.
-        if faulted and (descriptor.population or undeclared) == "scored":
+        # `scored` or `delivered` measure at all, nor a failed one of a `delivered` measure, so it can
+        # neither contribute a value nor be reported as one lost.
+        if not _in_population(summary_population(descriptor, undeclared), outcome):
             return
         if not _is_reportable(descriptor, profile.measures):
             # An undescribed NUMBER from a telemetry source is the loss worth reporting: a
@@ -2866,11 +2919,11 @@ def _collect_measures(
 
     for result in results:
         case_id = result.test_case_id
-        faulted = harness_faulted(result)
+        outcome = classify_result(result)
         for name, value, descriptor in _lineage_leaves(result, profile=profile):
-            record(outer, name, value, descriptor, report_gaps=False, case_id=case_id, faulted=faulted)
+            record(outer, name, value, descriptor, report_gaps=False, case_id=case_id, outcome=outcome)
         for name, value, descriptor in _open_map_leaves(result, profile=profile):
-            record(outer, name, value, descriptor, report_gaps=True, case_id=case_id, faulted=faulted)
+            record(outer, name, value, descriptor, report_gaps=True, case_id=case_id, outcome=outcome)
         for name, value, report_gaps, carrier, observation_unit in chain(
             _carrier_leaves(result, profile=profile),
             _derived_leaves(result),
@@ -2884,7 +2937,7 @@ def _collect_measures(
                 describe_measure(name, profile.measures),
                 report_gaps=report_gaps,
                 case_id=case_id,
-                faulted=faulted,
+                outcome=outcome,
                 carrier=carrier,
             )
             inner_units[name] = observation_unit
@@ -2911,7 +2964,7 @@ def _collect_measures(
         _measure_summary(
             *pooled[name],
             n_independent=len(cases_by_name.get(name, ())),
-            population=pooled[name][0].population or undeclared,
+            population=summary_population(pooled[name][0], undeclared),
         )
         for name in sorted(pooled)
     ]
@@ -3737,10 +3790,13 @@ def _mechanism_value(result: EvalResult, name: str, *, profile: HostProfile) -> 
         profile: The host whose measure registry resolves the name's population.
 
     Returns:
-        The value, or None — a faulted result outside a ``scored`` measure's population, no
-        observation, an ambiguous one, or one that is not a finite number.
+        The value, or None — a result outside the measure's declared population (a faulted one outside a
+        ``scored`` measure's, a failed one outside a ``delivered`` one's, which a declared ``scored`` cost or
+        latency measure is read as), no observation, an ambiguous one, or one that is not a finite number.
     """
-    if describe_measure(name, profile.measures).population == "scored" and harness_faulted(result):
+    descriptor = describe_measure(name, profile.measures)
+    declared = descriptor.population
+    if declared is not None and not _in_population(summary_population(descriptor, declared), classify_result(result)):
         return None
     outer = [
         value
@@ -5544,6 +5600,7 @@ def assemble_context_bundle(
         incomplete_runs=bundle.incomplete_runs,
         profile=profile,
     )
+    bundle.all_failed_cells, bundle.all_failed = _all_failed(bundle.cell_measures)
     # The time axis, over the same algebra the decision surface was just read with, and before the catalog
     # for the same reason: its cells are measure collections the catalog has to describe.
     bundle.time_axis, bundle.time_axis_withheld = _time_axis(
@@ -5849,6 +5906,16 @@ def _non_faulted(members: list[EvalResult]) -> list[EvalResult]:
     return [result for result in members if not harness_faulted(result)]
 
 
+def _candidate_failed(members: list[EvalResult]) -> int:
+    """How many of a cell's results the candidate failed — counted against the arm, and delivered nothing.
+
+    By :func:`~threetears.evals.contracts.result_condition.classify_result`, the rule the measure walk's
+    ``delivered`` population leaves them out by, so the count beside a cell's cost and latency is the number
+    those readings left out.
+    """
+    return sum(1 for result in members if classify_result(result) is ResultOutcome.CANDIDATE_FAIL)
+
+
 def _cannot_tell_on(bar: BarName, counted: list[EvalResult], judged_rows: dict[str, list[ScoreRecord]]) -> int:
     """How many of a cell's counted results the judge could not score on a judged bar's dimension."""
     if bar.kind != "judged":
@@ -6052,7 +6119,10 @@ def _cost_unmeasured(results_by_cell: dict[_CellKey, list[EvalResult]]) -> tuple
     nothing, so the measure walk read none of them and the cell carries no ``cost_usd`` reading. A cell whose
     every result went unpriced is not listed — its cost is unknown for a reason ``cost_usd`` null already
     states — and neither is one where any result observed spend, whose own ``n`` discloses the rest. Read
-    over the results the harness did not fault, the population a cell's ``cost_usd`` reading is read over.
+    over the results the candidate delivered, the population a cell's ``cost_usd`` reading is read over
+    (``delivered``), so a billed refusal cannot make a cell whose deliveries reported nothing look measured.
+    A cell that delivered nothing is not listed: it has no cost because every result failed, which
+    :func:`_all_failed` says, and "nobody reported spend" would be the wrong reason.
 
     Args:
         results_by_cell: Each cell's results, from :func:`_results_by_cell`.
@@ -6062,7 +6132,7 @@ def _cost_unmeasured(results_by_cell: dict[_CellKey, list[EvalResult]]) -> tuple
     """
     unmeasured: list[CellCoordinate] = []
     for (variant_key, apparatus_class_id), members in sorted(results_by_cell.items()):
-        counted = _non_faulted(members)
+        counted = [result for result in members if classify_result(result) is ResultOutcome.OK]
         stores_a_cost = any(result.cost_usd is not None for result in counted)
         if stores_a_cost and not any(spend_observed(result.usage, result.cost_roles) for result in counted):
             unmeasured.append(CellCoordinate(variant_key=variant_key, apparatus_class_id=apparatus_class_id))
@@ -6080,6 +6150,30 @@ def _cost_unmeasured(results_by_cell: dict[_CellKey, list[EvalResult]]) -> tuple
             "where it was measured."
         )
     return unmeasured, f"{sentence} {_HOW_TO_REPORT_SPEND}"
+
+
+def _all_failed(cells: list[CellFacts]) -> tuple[list[CellCoordinate], str | None]:
+    """Name every cell whose every counted result the candidate failed, with the one sentence that says so.
+
+    Read off the cells' own counts (:attr:`~threetears.evals.contracts.surface.CellFacts.all_failed`), so the
+    list and the surface cannot disagree about which cell delivered nothing. Such a cell has no cost or
+    latency reading, and without this the absence reads as "not measured" beside the arms that were.
+
+    Args:
+        cells: The decision surface's cells, from :func:`_cell_measures`.
+
+    Returns:
+        The cells in coordinate order, and the sentence
+        (:func:`~threetears.evals.contracts.surface.all_failed_sentence`) — None when there are none.
+    """
+    failed = [
+        CellCoordinate(variant_key=cell.variant_key, apparatus_class_id=cell.apparatus_class_id)
+        for cell in sorted(cells, key=lambda c: (c.variant_key, c.apparatus_class_id))
+        if cell.all_failed
+    ]
+    if not failed:
+        return [], None
+    return failed, all_failed_sentence(len(failed), len(cells))
 
 
 def _controls_reading(runs: list[EvalRun], design: CampaignDesign | None) -> ControlsReading:
@@ -6532,6 +6626,7 @@ def _cell_strata(
                     n_observations=len(members),
                     n_cases=len({result.test_case_id for result in members}),
                     n_infra_excluded=len(members) - len(_non_faulted(members)),
+                    n_candidate_failed=_candidate_failed(members),
                     measures=_measure_collection(members, profile=profile, undeclared="scored"),
                     judged=judged.get(key, []),
                 )
@@ -6554,6 +6649,8 @@ def _cell_measures(
     **One population, the bars' own**: each cell's results the harness did not fault
     (:func:`_non_faulted`), so a measure's value here and a :class:`BarVerdict` on the same cell and
     measure are one mean over one set of observations, never two readings a reader has to reconcile.
+    A cost or latency measure is read over the ``delivered`` part of it, by the same walk for the cell
+    and the bar alike, and the failures it left out are counted beside it (``n_candidate_failed``).
 
     **The judged readings are the judged measures, transposed** — read off what
     :func:`_judged_measures` produced rather than scored again, so a cell's reading of a dimension
@@ -6589,6 +6686,7 @@ def _cell_measures(
                 repeats_per_case_min=cell.repeats_per_case_min,
                 repeats_per_case_max=cell.repeats_per_case_max,
                 n_infra_excluded=len(members) - len(counted),
+                n_candidate_failed=_candidate_failed(members),
                 # Every member, faulted ones included: the walk leaves a fault out of each measure whose
                 # population is `scored` and keeps it in one whose population is `all_observed`.
                 measures=_measure_collection(members, profile=profile, undeclared="scored"),

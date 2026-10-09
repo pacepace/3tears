@@ -126,6 +126,29 @@ class JudgedDimensionFacts(EvalDocumentModel):
 STRATUM_MIN_CASES = 10
 
 
+def _every_counted_result_failed(n_observations: int, n_infra_excluded: int, n_candidate_failed: int | None) -> bool:
+    """Whether the candidate failed every observation the harness did not fault, at least one of them.
+
+    The one reading of the counts :attr:`CellFacts.all_failed` and :attr:`StratumFacts.all_failed` share.
+    """
+    if not n_candidate_failed:
+        return False
+    return n_observations - n_infra_excluded - n_candidate_failed == 0
+
+
+def _check_failures_fit(n_observations: int, n_infra_excluded: int, n_candidate_failed: int | None) -> None:
+    """Refuse faulted and failed counts that together exceed the observations they partition.
+
+    Raises:
+        ValueError: The two counts sum to more than ``n_observations``.
+    """
+    if n_candidate_failed is not None and n_infra_excluded + n_candidate_failed > n_observations:
+        raise ValueError(
+            f"{n_infra_excluded} faulted and {n_candidate_failed} failed observations cannot come from "
+            f"{n_observations}: a result is faulted, failed or delivered, never two of them"
+        )
+
+
 class StratumFacts(EvalDocumentModel):
     """Everything measured in one stratum of one cell — the cell's figures again, over one kind of case.
 
@@ -156,6 +179,15 @@ class StratumFacts(EvalDocumentModel):
     n_infra_excluded: int = Field(
         default=0, ge=0, description="Observations the harness faulted, excluded from every value below."
     )
+    n_candidate_failed: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Observations the candidate failed, by the cell's own rule: counted against the arm in every rate, "
+            "bar and judged score below, and left out of its cost and latency measures. None on an analysis "
+            "frozen before the count was kept."
+        ),
+    )
     measures: MeasureCollection = Field(
         default_factory=MeasureCollection,
         description="Every measure over the stratum's observations, by the cell's own rules.",
@@ -164,6 +196,17 @@ class StratumFacts(EvalDocumentModel):
         default_factory=list, description="Every judged dimension scored in this stratum, sorted by dimension."
     )
 
+    @property
+    def all_failed(self) -> bool:
+        """Whether every result of the stratum the harness did not fault was a failure — see :attr:`CellFacts.all_failed`."""
+        return _every_counted_result_failed(self.n_observations, self.n_infra_excluded, self.n_candidate_failed)
+
+    @model_validator(mode="after")
+    def _failures_fit(self) -> StratumFacts:
+        """Refuse more failed and faulted observations than the stratum holds — see :meth:`CellFacts._failures_fit`."""
+        _check_failures_fit(self.n_observations, self.n_infra_excluded, self.n_candidate_failed)
+        return self
+
 
 class CellFacts(EvalDocumentModel):
     """Everything measured in one cell — one arm, under one rig.
@@ -171,6 +214,16 @@ class CellFacts(EvalDocumentModel):
     The population is the cell's observations the harness did not fault, the same one every bar is
     adjudicated over, so a measure read here and a bar verdict on the same cell describe the same
     observations. How many were left out is stated beside them rather than folded in.
+
+    **A cost or latency measure is read over fewer: the results the candidate delivered**
+    (:func:`~threetears.evals.contracts.metrics.summary_population`). A candidate's failure — a refusal, a
+    model error, a turn its budget ended — is a result of the arm, and every rate, bar and judged score
+    counts it against the arm; but it delivered nothing, so its round trip is not a turn's latency and its
+    empty usage not a spend anyone observed. Averaged in, a classifier arm whose every call was refused
+    read 53 ms and $0 on the surface — the fastest, cheapest arm — and nothing said its every result had
+    failed. So the failures are counted here (``n_candidate_failed``), and a cell with nothing delivered
+    says so (:attr:`all_failed`) where it would otherwise have no cost or latency reading and look merely
+    unmeasured.
     """
 
     variant_key: str = Field(min_length=1, description="The arm's variant — its key into the analysis's variant_index.")
@@ -191,8 +244,23 @@ class CellFacts(EvalDocumentModel):
     n_infra_excluded: int = Field(
         default=0, ge=0, description="Observations the harness faulted, excluded from every value below."
     )
+    n_candidate_failed: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Observations the candidate failed (`classify_result`'s `candidate_fail`): counted against the arm in "
+            "every rate, bar and judged score below, and left out of its cost and latency measures, which describe "
+            "delivered results only. None on an analysis frozen before the count was kept — whose cost and "
+            "latency were read over every non-faulted result, failed ones included — never 0 standing in for "
+            "a count nobody took."
+        ),
+    )
     measures: MeasureCollection = Field(
-        default_factory=MeasureCollection, description="Every measure over the cell's non-faulted observations."
+        default_factory=MeasureCollection,
+        description=(
+            "Every measure over the cell's non-faulted observations — a cost or latency measure over the ones the "
+            "candidate delivered."
+        ),
     )
     judged: list[JudgedReading] = Field(
         default_factory=list, description="Every judged dimension scored in this cell, sorted by dimension."
@@ -213,6 +281,31 @@ class CellFacts(EvalDocumentModel):
             "cells are not broken down by stratum."
         ),
     )
+
+    @property
+    def all_failed(self) -> bool:
+        """Whether the candidate failed every result of this cell the harness did not fault — nothing was delivered.
+
+        Such a cell carries no cost or latency reading, and that absence is not "unmeasured": every result
+        it holds is a failure, which its rates and bars count. Derived from the counts rather than stored,
+        so it cannot disagree with them. False when no result was counted at all (every one faulted, which
+        ``n_infra_excluded`` says), and when the count was not kept (``n_candidate_failed`` None).
+        """
+        return _every_counted_result_failed(self.n_observations, self.n_infra_excluded, self.n_candidate_failed)
+
+    @model_validator(mode="after")
+    def _failures_fit(self) -> CellFacts:
+        """Refuse more failed and faulted observations than the cell holds.
+
+        A result is faulted, failed or delivered, never two of them (``classify_result``), so the two
+        counts together are at most the observations, and a cell claiming more is describing a population
+        that does not exist.
+
+        Raises:
+            ValueError: ``n_infra_excluded + n_candidate_failed`` exceeds ``n_observations``.
+        """
+        _check_failures_fit(self.n_observations, self.n_infra_excluded, self.n_candidate_failed)
+        return self
 
     @field_validator("strata")
     @classmethod
@@ -238,7 +331,8 @@ class CellFacts(EvalDocumentModel):
         reader adding the strata up would meet a cell larger than its parts with nothing saying why.
 
         Raises:
-            ValueError: The strata's observations, faulted observations or cases do not sum to the cell's.
+            ValueError: The strata's observations, faulted observations, failed observations or cases do not
+                sum to the cell's.
         """
         if not self.strata:
             return self
@@ -246,9 +340,42 @@ class CellFacts(EvalDocumentModel):
             raise ValueError("a cell's strata hold every one of its observations, each in one stratum")
         if sum(stratum.n_infra_excluded for stratum in self.strata) != self.n_infra_excluded:
             raise ValueError("a cell's strata hold every one of its faulted observations, each in one stratum")
+        failed = [stratum.n_candidate_failed for stratum in self.strata]
+        if self.n_candidate_failed is None:
+            if any(count is not None for count in failed):
+                raise ValueError("a cell that kept no failure count has strata that kept none either")
+        elif None in failed or sum(count or 0 for count in failed) != self.n_candidate_failed:
+            raise ValueError("a cell's strata hold every one of its failed observations, each in one stratum")
         if self.n_cases is not None and sum(stratum.n_cases for stratum in self.strata) != self.n_cases:
             raise ValueError("a cell's strata hold every one of its cases, each in one stratum")
         return self
+
+
+def all_failed_sentence(n_all_failed: int, n_cells: int) -> str:
+    """The one sentence every surface says about cells whose every result failed (:attr:`CellFacts.all_failed`).
+
+    Stated once, here, because two readers say it — the bundle the analysis is written from, and the
+    decision-surface table every report renders — and a rewording in one would leave them describing one
+    cell two ways. The sentence names no cell: the bundle lists the cells beside it, and the table names
+    their arms after it when only some cells failed.
+
+    Args:
+        n_all_failed: The cells whose every result failed, at least one.
+        n_cells: The cells on the surface.
+
+    Returns:
+        The sentence.
+    """
+    if n_all_failed == n_cells:
+        return (
+            "Every result failed: the candidate delivered nothing, so there is no cost or latency to read — not a "
+            "fast, free arm — and every failure counts against its arm in each rate and bar."
+        )
+    return (
+        f"Every result failed in {n_all_failed} of {n_cells} cells: the candidate delivered nothing there, so those "
+        "cells have no cost or latency to read — not a fast, free arm — and every failure counts against its arm "
+        "in each rate and bar."
+    )
 
 
 #: What a campaign's time positions are: the builds a host labels (``release``), or the UTC days its runs
@@ -386,4 +513,5 @@ __all__ = [
     "TimeAxis",
     "TimeAxisBasis",
     "TimePosition",
+    "all_failed_sentence",
 ]

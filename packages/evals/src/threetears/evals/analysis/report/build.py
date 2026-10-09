@@ -43,7 +43,12 @@ from threetears.evals.analysis.report.words import (
     arm_namer,
     positions,
 )
-from threetears.evals.analysis.surface_table import SurfaceTable, build_surface_table, surface_table_of
+from threetears.evals.analysis.surface_table import (
+    NO_SUCCESSFUL_RESULTS,
+    SurfaceTable,
+    build_surface_table,
+    surface_table_of,
+)
 from threetears.evals.analysis.viz.intent import Cell, chart_intent
 from threetears.evals.analysis.viz.payloads import PayloadError
 from threetears.evals.analysis.viz.policy import IntentPolicyError
@@ -347,7 +352,11 @@ def _arm_blocks(table: ArmTable) -> list[ReportBlock]:
 
 
 def _surface_blocks(table: SurfaceTable, *, provenance: bool = True) -> list[ReportBlock]:
-    """The decision surface laid out, its provenance, and every bar no cell could be read against.
+    """The decision surface laid out, its provenance, its all-failed arms, and every bar no cell could be read against.
+
+    The all-failed sentence follows the table directly, on the analysis's report and the code-only one alike:
+    it is the table's own (``all_failed_disclosure``), derived from the frozen surface, so a stored analysis
+    says it without the bundle it was written from.
 
     The ``Run notes`` column is there only when some row has a note: a column of em dashes says nothing the
     table's having no such column does not. ``provenance=False`` leaves out the sentence saying no number here
@@ -396,6 +405,8 @@ def _surface_blocks(table: SurfaceTable, *, provenance: bool = True) -> list[Rep
                 total_rows=len(rows),
             )
         )
+        if table.all_failed_disclosure is not None:
+            blocks.append(DisclosureBlock(section="surface", source="surface", text=table.all_failed_disclosure))
     blocks.extend(
         DisclosureBlock(
             section="surface",
@@ -519,7 +530,13 @@ def _measure_rows(
     columns: dict[str | None, str],
     surface: DecisionSurface,
 ) -> list[dict[str, Cell]]:
-    """One row per measure the cell or any of its strata holds — every one but a text measure, which is never summarised."""
+    """One row per measure the cell or any of its strata holds — every one but a text measure, which is never summarised.
+
+    A row says :data:`~threetears.evals.analysis.surface_table.NO_SUCCESSFUL_RESULTS` under the pool or a
+    stratum whose every result failed and which carries no figure of it — a cost or latency reading, which
+    leaves failures out — as the decision surface's own columns do, rather than a blank that reads as "not
+    measured" beside the figures of the strata that delivered.
+    """
     pooled = {summary.name: summary for summary in cell.measures.measures}
     per_stratum = {
         name: {summary.name: summary for summary in stratum.measures.measures} for name, stratum in by_name.items()
@@ -541,13 +558,19 @@ def _measure_rows(
             [value for summary in found for value in (summary.mean,) if value is not None],
             facts.unit if facts else None,
         )
+
+        def figure(summaries: dict[str, MeasureSummary], facts_of: CellFacts | StratumFacts) -> Cell:
+            if measure in summaries:
+                return _summary_text(summaries[measure], factor)
+            return NO_SUCCESSFUL_RESULTS if facts_of.all_failed else None
+
         row: dict[str, Cell] = {
             "arm": arm,
             "reading": f"{measure} ({unit})" if unit else measure,
-            "all": _summary_text(pooled[measure], factor) if measure in pooled else None,
+            "all": figure(pooled, cell),
         }
         for name, summaries in per_stratum.items():
-            row[columns[name]] = _summary_text(summaries[measure], factor) if measure in summaries else None
+            row[columns[name]] = figure(summaries, by_name[name])
         rows.append(row)
     return rows
 

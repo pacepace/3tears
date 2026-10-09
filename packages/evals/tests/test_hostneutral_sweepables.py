@@ -140,6 +140,9 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
     # 42/10: a cost no result observed is no reading, and the bundle names the cells it went unmeasured in; the
     # apparatus partition is unchanged.
     ((42, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
+    # 43/10: a cost or latency reading leaves out the results the candidate failed, each cell counts them, and
+    # the bundle names the cells whose every result failed; the apparatus partition is unchanged.
+    ((43, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
 )
 
 
