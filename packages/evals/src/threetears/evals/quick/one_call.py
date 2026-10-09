@@ -25,7 +25,8 @@ here, from the public roots, on the terms the engine already sets:
   document kind: the template carries the rubric, each cell renders the answer and its case as the
   judge's evidence, and the engine's own judge service scores every dimension and records the judge's
   spend on the result's ``judge`` usage row, as it does for any judged run. Scorers and an expected
-  label grade beside it.
+  label grade beside it. The judge also reads the template's intent: ``intent=`` when given, else the
+  first line of the candidate's docstring, else a generic sentence; the summary names which.
 - **A world** is state the candidate acts on through tools, declared by handing ``run_eval`` a
   :class:`~threetears.evals.quick.world.World`, each case's starting state (``seed=``) and goal-state
   checks over the end state and the calls made (``goal_checks=``). The candidate is then called with the
@@ -802,6 +803,7 @@ async def run_eval(
     scope_id: str,
     expected: ExpectedLabel | None = None,
     judge: Judge | None = None,
+    intent: str | None = None,
     world: World | None = None,
     seed: CaseSeed | None = None,
     goal_checks: Sequence[str] = (),
@@ -836,6 +838,10 @@ async def run_eval(
             call per dimension per answer, through the engine's judge service. Each dimension's scores
             are summarised beside the measures, and the judge's spend as its client priced it. A judge
             that fails or cannot tell on a dimension excludes that cell, as any fault of the rig does.
+        intent: What every case asks of the candidate, in one sentence: the template's intent, which the
+            judge reads beside each answer (as ``**Intent:**`` in its prompt) and so can move its scores.
+            ``None`` takes the first line of the candidate's docstring, or, with no docstring, a generic
+            sentence. A judged run's summary renders it with where it came from.
         host: Where to run and store: ``None`` builds :func:`callable_host` over the scorers, whose
             in-memory store lives only as long as this call. A host of the caller's own must declare
             a measure for every scorer, and a contract for the callable kind (:data:`CALLABLE_KIND_CONTRACT`,
@@ -873,8 +879,8 @@ async def run_eval(
 
     Raises:
         ValueError: No cases, a case that is not a JSON object with string keys, no scorer, ``expected``
-            or ``judge``, a scorer with no name, a repeated one or one named ``match``, ``confusion_cell`` or
-            ``accuracy``, an ``expected`` that raises or gives a case a blank, non-string or
+            or ``judge``, an ``intent`` that is not a non-blank string, a scorer with no name, a repeated one or
+            one named ``match``, ``confusion_cell`` or ``accuracy``, an ``expected`` that raises or gives a case a blank, non-string or
             :data:`UNUSABLE_ANSWER` label, a given host that declares no callable-kind contract
             (or one with no seats, a seat in :data:`CALLABLE_UNSEATED`, overlays or a spec), a judged call on
             a given host whose judged-kind contract is missing or seats too much or no judge, a scorer
@@ -897,6 +903,7 @@ async def run_eval(
         scope_id=scope_id,
         expected=expected,
         judge=judge,
+        intent=intent,
         world=world,
         seed=seed,
         goal_checks=goal_checks,
@@ -909,11 +916,30 @@ async def run_eval(
     return summary
 
 
-def _template_intent(candidates: Sequence[object], graded_by: str) -> str:
-    """What the template says its cases ask: the candidates' docstring, when they share one first line."""
-    firsts = {doc.splitlines()[0] if (doc := inspect.getdoc(candidate)) else None for candidate in candidates}
+def _template_intent(arms: Sequence[_Arm], graded_by: str, intent: str | None) -> tuple[str, str | None]:
+    """What the one template every arm shares says its cases ask, and where that came from.
+
+    ``intent`` when given; else the candidates' docstring, when every arm's has one and they share its
+    first line; else a generic sentence.
+
+    Returns:
+        The intent, and its source as a summary names it: ``None`` for the ``intent`` given, else a phrase
+        saying which docstring it was read from or why it is the generic sentence.
+    """
+    if intent is not None:
+        return intent, None
+    firsts = {doc.splitlines()[0] if (doc := inspect.getdoc(arm.candidate)) else None for arm in arms}
     first = next(iter(firsts)) if len(firsts) == 1 else None
-    return first or f"Answer each case so that {graded_by} the answer well."
+    if len(arms) > 1:
+        if first:
+            return first, "from the docstring every arm's candidate shares"
+        lacking = "the arms' candidates share no docstring first line"
+    else:
+        name = getattr(arms[0].candidate, "__name__", None) or arms[0].model or "the candidate"
+        if first:
+            return first, f"from {name}'s docstring"
+        lacking = f"{name} has no docstring"
+    return f"Answer each case so that {graded_by} the answer well.", f"a generic default: no intent=, and {lacking}"
 
 
 async def _run_arms(
@@ -924,6 +950,7 @@ async def _run_arms(
     scope_id: str,
     expected: ExpectedLabel | None = None,
     judge: Judge | None = None,
+    intent: str | None = None,
     world: World | None = None,
     seed: CaseSeed | None = None,
     goal_checks: Sequence[str] = (),
@@ -957,6 +984,10 @@ async def _run_arms(
             "or a world's goal checks (goal_checks=): a run nothing grades measures nothing"
         )
     _refuse_unnamed_or_repeated(scorers)
+    if intent is not None and (not isinstance(intent, str) or not intent.strip()):
+        raise ValueError(
+            f"intent= is the sentence the judge reads as what each case asks: a non-blank string, not {intent!r}"
+        )
     if world is not None and (tools is not None or cassette_mode != "off"):
         # A world's tools act on its state, so a replay that skipped them would grade a world nothing changed.
         raise ValueError(
@@ -981,11 +1012,12 @@ async def _run_arms(
                 raise ValueError(f"{arm.candidate!r} has no __name__ to label its arm by; pass model=")
         models.append(model)
     graded_by = "every scorer grades" if judge is None else "the judge and every scorer grade"
+    template_intent, intent_source = _template_intent(arms, graded_by, intent)
     template = EvalTemplate(
         id=template_id,
         scope_id=scope_id,
         name=f"run_eval over {len(plain_cases)} case(s)",
-        intent=_template_intent([arm.candidate for arm in arms], graded_by),
+        intent=template_intent,
         candidate_kind=CALLABLE_KIND if judge is None else JUDGED_CALLABLE_KIND,
         rubric=list(judge.dims) if judge is not None else [],
         goal_state_checks=goal_checks,
@@ -1054,7 +1086,12 @@ async def _run_arms(
         # leaving pending ones behind in a store that outlives it.
         await launch_host.job_manager.shutdown()
         raise
-    return [summarize_run(host, run.id, scope_id) for run in runs]
+    summaries = [summarize_run(host, run.id, scope_id) for run in runs]
+    # The store keeps the intent but not where it came from; a judged run's summary carries both.
+    return [
+        summary.model_copy(update={"intent_source": intent_source}) if summary.intent is not None else summary
+        for summary in summaries
+    ]
 
 
 __all__ = [

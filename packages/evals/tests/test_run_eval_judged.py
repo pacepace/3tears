@@ -26,6 +26,7 @@ from threetears.evals.quick import (
     Judge,
     callable_host,
     run_eval,
+    summarize_run,
 )
 from threetears.evals.run import get_result_trace, get_template, list_results, list_runs, list_templates
 
@@ -224,6 +225,75 @@ async def test_a_judged_call_and_an_unjudged_one_over_the_same_cases_are_two_tem
     reworded = await run_eval(CASES, answer, [short], judge=other_rubric, scope_id=SCOPE, host=host, k=1)
     assert len({unjudged.template_id, judged.template_id, reworded.template_id}) == 3
     assert unjudged.judged == [] and "judge spend" not in unjudged.render()
+
+
+# --- the intent the judge reads -------------------------------------------------------------------
+
+
+def _intents_read(client: _FakeJudgeClient) -> set[str]:
+    """The intent line of every prompt the judge was sent."""
+    return {line for _, user in client.calls for line in user.splitlines() if line.startswith("**Intent:**")}
+
+
+async def test_an_explicit_intent_is_what_the_judge_reads_and_the_summary_says_so() -> None:
+    client = _FakeJudgeClient()
+    host = callable_host()
+    stated = "Answer a quiz question correctly, or say you do not know."
+    summary = await run_eval(CASES, answer, judge=_judge(client), intent=stated, scope_id=SCOPE, host=host, k=1)
+
+    assert _intents_read(client) == {f"**Intent:** {stated}"}
+    assert get_template(host, summary.template_id or "", SCOPE).intent == stated
+    assert (summary.intent, summary.intent_source) == (stated, None)
+    assert f"\n  intent: {stated}\n" in summary.render()
+
+
+async def test_with_no_intent_the_judge_reads_the_candidates_docstring_and_the_summary_names_it() -> None:
+    client = _FakeJudgeClient()
+    summary = await run_eval(CASES, answer, judge=_judge(client), scope_id=SCOPE, k=1)
+
+    assert _intents_read(client) == {"**Intent:** Answer a question in a few words."}
+    assert "  intent (from answer's docstring): Answer a question in a few words." in summary.render()
+
+
+async def test_with_no_intent_and_no_docstring_the_summary_says_the_intent_is_a_generic_default() -> None:
+    client = _FakeJudgeClient()
+
+    async def undocumented(case: Mapping[str, Any]) -> str:
+        return ANSWERS[case["question"]]
+
+    summary = await run_eval(CASES, undocumented, judge=_judge(client), scope_id=SCOPE, k=1)
+    default = "Answer each case so that the judge and every scorer grade the answer well."
+    assert _intents_read(client) == {f"**Intent:** {default}"}
+    assert f"  intent (a generic default: no intent=, and undocumented has no docstring): {default}" in summary.render()
+
+
+async def test_a_summary_read_back_keeps_the_intent_the_judge_read_but_not_where_it_came_from() -> None:
+    host = callable_host()
+    run = await run_eval(CASES, answer, judge=_judge(_FakeJudgeClient()), scope_id=SCOPE, host=host, k=1)
+    read_back = summarize_run(host, run.run_id, SCOPE)
+    assert (read_back.intent, read_back.intent_source) == ("Answer a question in a few words.", None)
+    assert "  intent: Answer a question in a few words." in read_back.render()
+
+
+async def test_a_template_edited_since_the_run_no_longer_says_what_its_judge_read_so_no_intent_is_shown() -> None:
+    host = callable_host()
+    first = await run_eval(CASES, answer, judge=_judge(_FakeJudgeClient()), scope_id=SCOPE, host=host, k=1)
+    await run_eval(CASES, answer, judge=_judge(_FakeJudgeClient()), intent="Reworded.", scope_id=SCOPE, host=host, k=1)
+    assert first.intent == "Answer a question in a few words."
+    assert summarize_run(host, first.run_id, SCOPE).intent is None
+
+
+async def test_an_unjudged_run_shows_no_intent_since_nothing_that_grades_it_reads_one() -> None:
+    summary = await run_eval(CASES, answer, [short], intent="Answer briefly.", scope_id=SCOPE, k=1)
+    assert summary.intent is None and "intent" not in summary.render()
+
+
+@pytest.mark.parametrize("intent", ["", "   ", 3])
+async def test_an_intent_that_is_not_a_non_blank_string_is_refused_before_anything_runs(intent: Any) -> None:
+    client = _FakeJudgeClient()
+    with pytest.raises(ValueError, match="intent= is the sentence the judge reads"):
+        await run_eval(CASES, answer, judge=_judge(client), intent=intent, scope_id=SCOPE, k=1)
+    assert client.calls == []
 
 
 # --- refusals ------------------------------------------------------------------------------------

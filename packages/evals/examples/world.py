@@ -23,6 +23,7 @@ MODEL = "claude-haiku-5-5"
 # -----------------------------------------------------------------------------
 
 
+# The model sees this docstring as the tool's description.
 def switch_light(room: dict, to: str) -> str:
     """Turn the room's light on or off."""
     room["light"] = to

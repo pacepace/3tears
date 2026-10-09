@@ -77,6 +77,7 @@ trust_top_hit = reader("top_hit", lambda hits: hits[0])
 trust_newest_hit = reader("newest_hit", lambda hits: max(hits, key=lambda hit: hit["date"]))
 
 
+# The engine reads this docstring's first line: it is the measure's description.
 def correct(case: Mapping[str, Any], answer: str) -> bool:
     """Whether the answer is what the current page says."""
     return answer == case["expected"]

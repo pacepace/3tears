@@ -2,7 +2,8 @@
 
 No code grades that, so a model does: a model answers questions about a store policy, and a second call, the
 judge, scores each answer on a rubric, beside a code scorer. New here: ``Judge``, a completion client, its model
-and a rubric, passed to ``run_eval`` as ``judge=``. How far to trust it: ``docs/reading-reports.md``.
+and a rubric, passed to ``run_eval`` as ``judge=``, and ``intent=``, what the judge is told each case asks.
+How far to trust it: ``docs/reading-reports.md``.
 
 Run it with ``python packages/evals/examples/llm_judge.py``. With ``ANTHROPIC_API_KEY`` set, Claude answers and
 judges (30 short calls, well under a cent); without it, a keyword matcher answers and a word-overlap script
@@ -46,12 +47,13 @@ SYSTEM = "Answer the customer's question in one or two sentences, using only the
 SYSTEM += "If the policy does not say, tell them you don't know.\n\n" + POLICY
 
 # -----------------------------------------------------------------------------
-# 2. The grades: one code scorer, and the judge's rubric.
+# 2. The grades: one code scorer, and the judge's rubric and intent.
 # -----------------------------------------------------------------------------
 
 
+# The engine reads this docstring's first line: it is the measure's description.
 def concise(case: dict, answer: str) -> bool:
-    """Whether the answer kept to 40 words or fewer."""  # a scorer's docstring describes its measure
+    """Whether the answer kept to 40 words or fewer."""
     return len(answer.split()) <= 40
 
 
@@ -59,6 +61,7 @@ RUBRIC = {  # one judge call per answer and dimension, scored 1 (worst) to 5 (be
     "helpful": "The answer directly resolves the customer's question, or clearly says the policy does not cover it.",
     "grounded": "Every claim in the answer is stated in the store policy; nothing is invented or assumed.",
 }
+INTENT = "Answer a customer's question from the store policy."  # what the judge is told each case asks
 
 
 def judged_against(case: dict) -> str:  # what the judge reads beside each answer
@@ -114,7 +117,7 @@ def claude_answerer(claude: Any) -> Callable[[dict], Awaitable[Answer]]:
     """The candidate: Claude answering from the policy, its spend returned beside the answer."""
 
     async def answer(case: dict) -> Answer:
-        """Answer a customer's question from the store policy."""  # the judge is shown this as the intent
+        """Answer a customer's question from the store policy."""
         reply = await claude.generate(system=SYSTEM, user=case["question"])
         spent = {"input_tokens": reply.input_tokens, "output_tokens": reply.output_tokens, "cost_usd": reply.cost_usd}
         return Answer(reply.content, model=MODEL, **spent)
@@ -170,7 +173,9 @@ async def main() -> EvalSummary:
     candidate, model = (claude_answerer(client), MODEL) if online else (offline_answer, "offline")
     # The judge: a client you own (the run never closes it), the model it calls, the rubric, and what it reads.
     judge = Judge(client=client, model=model, rubric=RUBRIC, case_material=judged_against)
-    summary = await run_eval(CASES, candidate, [concise], judge=judge, scope_id="llm-judge", k=2, model=model)
+    summary = await run_eval(
+        CASES, candidate, [concise], judge=judge, intent=INTENT, scope_id="llm-judge", k=2, model=model
+    )
     print(summary.render())  # each dimension's mean, then the judge's spend and, online, the candidate's
     if online:
         await client.aclose()

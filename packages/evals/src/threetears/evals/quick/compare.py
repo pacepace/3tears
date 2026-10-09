@@ -289,6 +289,7 @@ async def compare(
     control: ArmKey,
     scope_id: str,
     expected: ExpectedLabel | None = None,
+    intent: str | None = None,
     host: EvalHost | None = None,
     k: int = DEFAULT_LAUNCH_K_RUNS,
     name: str | None = None,
@@ -314,6 +315,10 @@ async def compare(
         control: The arm every other arm is tested against, by its key.
         scope_id: The scope every run and the campaign are stored in.
         expected: Declares every candidate a classifier, as :func:`~threetears.evals.quick.run_eval` takes it.
+        intent: What every case asks, as :func:`~threetears.evals.quick.run_eval` takes it: the intent of the one
+            template every arm shares. ``None`` takes the first line of the candidates' docstring when every
+            arm's has one and they share it, and a generic sentence otherwise. ``compare`` seats no judge, so
+            nothing that grades an arm reads it: it describes the template, as a listing of templates shows.
         host: Where to run and store: ``None`` builds one :func:`~threetears.evals.quick.callable_host` over
             the scorers and the factors other than ``model`` for every arm. A host of the caller's own is held
             to what ``run_eval`` holds it to, and must declare those factors as levers.
@@ -367,6 +372,7 @@ async def compare(
         scorers,
         scope_id=scope_id,
         expected=expected,
+        intent=intent,
         host=host,
         k=k,
         tools=tools,
