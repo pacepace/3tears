@@ -6,11 +6,13 @@ scorer, the in-memory reference store — launches through the engine's own laun
 an :class:`EvalSummary`. Handed each case's expected label (``expected=``), it grades the candidate as a
 classifier, and the summary carries its confusion matrix (:class:`ConfusionCount`) and each label's
 precision, recall and F1 (:class:`LabelStatistics`). Handed a :class:`Judge`, it also grades each answer
-with a model against a rubric. :func:`compare` runs two or more candidates over one case list the same way,
-each as one arm, and returns a :class:`Comparison` whose campaign report tests every arm against the one
-named the control. :func:`run_cli` is ``python -m threetears.evals``: ``run``, ``ls``, ``report``, ``bundle``
-and ``spend`` over a host named ``module:factory``, or mounted under a product's own CLI with its host
-factory and any subcommands of its own (:class:`HostCommand`).
+with a model against a rubric. A candidate that calls a paid model returns an :class:`Answer` to report
+what each answer spent, which the summary and the results' ``cost_usd`` carry. :func:`compare` runs two or
+more candidates over one case list the same way, each as one arm, and returns a :class:`Comparison` whose
+campaign report tests every arm against the one named the control. :func:`run_cli` is
+``python -m threetears.evals``: ``run``, ``ls``, ``report``, ``bundle`` and ``spend`` over a host named
+``module:factory``, or mounted under a product's own CLI with its host factory and any subcommands of its
+own (:class:`HostCommand`).
 
 This package composes the others and is composed by nothing: it may import ``contracts``, ``run``,
 ``analysis`` and ``storage``, and no package of the engine imports it.
@@ -22,6 +24,7 @@ and only the names in ``__all__``.
 from __future__ import annotations
 
 from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics
+from threetears.evals.quick.answer import Answer
 from threetears.evals.quick.cli import (
     DEFAULT_PROG,
     ENGINE_COMMANDS,
@@ -66,6 +69,7 @@ __all__ = [
     "JUDGED_CALLABLE_KIND_CONTRACT",
     "JUDGED_CALLABLE_UNSEATED",
     "UNUSABLE_ANSWER",
+    "Answer",
     "Candidate",
     "CaseMaterial",
     "Comparison",

@@ -6,7 +6,9 @@ here, from the public roots, on the terms the engine already sets:
 
 - **The kind** is :class:`CallableKind`: ``invoke`` calls the candidate on the case and each scorer
   on what it returned, and reports the scores as the host's measures. It is unjudged — the scorers
-  are the grade — and seeds no world.
+  are the grade — and seeds no world. A candidate that returns an
+  :class:`~threetears.evals.quick.answer.Answer` reports its own spend beside its answer, as the cell's
+  ``candidate`` usage row.
 - **A classifier** is a candidate whose answer is a label, declared by handing ``run_eval`` the
   case's expected label (``expected=``). Each cell then lands the core ``match`` and
   ``confusion_cell`` as a classifier kind does, so the summary carries the confusion matrix and each
@@ -90,6 +92,7 @@ from threetears.evals.run import (
     launch_run,
     start_run,
 )
+from threetears.evals.quick.answer import unwrap_answer
 from threetears.evals.quick.judged import Judge, judge_evidence
 from threetears.evals.storage import InMemoryDocumentStore
 
@@ -172,8 +175,9 @@ def _launch_settings() -> LaunchSettings:
     """The launch settings of the one-call path.
 
     One arm, one admitted run at a time, and the cost and metered-call ceilings off: the candidate is
-    an opaque callable whose spend the engine cannot see, so a ceiling would bind only a judge's share of
-    a run's spend and say nothing of the rest. A judge scores one dimension at a time. The
+    an opaque callable whose spend the engine sees only after the fact, and only when it reports it (an
+    :class:`~threetears.evals.quick.answer.Answer`), so a ceiling could neither price an arm before it
+    runs nor bind a candidate that reports nothing. A judge scores one dimension at a time. The
     ceiling values are required by the settings model and, with enforcement off, recorded as absent
     on the run rather than as caps; the out-of-run one binds nothing either, since the callable kind
     declines ``n_variations`` and so never generates.
@@ -259,7 +263,8 @@ class CallableKind:
     """The candidate-kind seam over a plain async callable and its scorer functions.
 
     ``invoke`` calls the candidate with the case it was given and each scorer with that case and the
-    answer, and reports the scores as host measures. A candidate that raises FAILS its cell (a
+    answer, and reports the scores as host measures, and an :class:`~threetears.evals.quick.answer.Answer`'s
+    spend as the cell's ``candidate`` usage. A candidate that raises FAILS its cell (a
     candidate error lowers the score; a broken candidate must not vanish); a scorer that raises, or
     returns something that is not a number, EXCLUDES it, because the grader is the rig rather than
     the thing under test. A classifying kind also lands ``match`` and ``confusion_cell`` against the
@@ -331,7 +336,7 @@ class CallableKind:
         """
         case = test_case.host_payload[_CASE_KEY]
         try:
-            answer = await self._candidate(case)
+            answer, telemetry = unwrap_answer(await self._candidate(case))
         # prawduct:ok-broad-except — the candidate is the caller's code under test: whatever it raises is its failure, recorded on the cell
         except Exception as raised:
             return CandidateOutput(candidate_errors=[f"the candidate raised {type(raised).__name__}: {raised}"])
@@ -342,7 +347,7 @@ class CallableKind:
             except ValueError as unrenderable:
                 # The judge's material is the rig: the cell is excluded, and with no evidence to read it
                 # stores no answer either, since a judged kind's every stored answer carries its evidence.
-                return CandidateOutput(infra_errors=[str(unrenderable)])
+                return CandidateOutput(infra_errors=[str(unrenderable)], telemetry=telemetry)
         trace = [_as_stored(answer)]
         measures: dict[str, bool | float | str] = {}
         if self._classifies:
@@ -360,6 +365,7 @@ class CallableKind:
                     output=trace,
                     infra_errors=[f"the scorer {name} raised {type(raised).__name__}: {raised}"],
                     judge_evidence=evidence,
+                    telemetry=telemetry,
                 )
             # ``bool`` is an ``int``, so True and False pass here as 1 and 0.
             if not isinstance(score, int | float) or not math.isfinite(score):
@@ -367,9 +373,10 @@ class CallableKind:
                     output=trace,
                     infra_errors=[f"the scorer {name} returned {score!r}, not a finite number or a bool"],
                     judge_evidence=evidence,
+                    telemetry=telemetry,
                 )
             measures[name] = float(score)
-        return CandidateOutput(output=trace, host_measures=measures, judge_evidence=evidence)
+        return CandidateOutput(output=trace, host_measures=measures, judge_evidence=evidence, telemetry=telemetry)
 
 
 def _as_stored(answer: Any) -> dict[str, Any]:
@@ -592,7 +599,9 @@ async def run_eval(
 
     Args:
         cases: The cases, each a JSON object; the candidate and the scorers receive each one as given.
-        candidate: The async callable under test, called once per case and repeat.
+        candidate: The async callable under test, called once per case and repeat. Returning an
+            :class:`~threetears.evals.quick.answer.Answer` reports what producing the answer spent, which
+            the summary and every result's ``cost_usd`` then carry; any other return value is the answer itself.
         scorers: The grades. Each is reported as a measure named by its ``__name__``; ``True`` and
             ``False`` count as 1 and 0, and higher is better. None is needed when ``expected`` or
             ``judge`` is given.
