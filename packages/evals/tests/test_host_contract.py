@@ -31,7 +31,7 @@ import pytest
 
 from threetears.evals.contracts.host import style as style_module
 from threetears.evals.contracts.host.bars import Bar, BarRegistrationError, BarRegistry
-from threetears.evals.contracts.host.measures import MeasureRegistry
+from threetears.evals.contracts.host.measures import MeasureRegistrationError, MeasureRegistry
 from threetears.evals.contracts.host.profile import HostProfile, ProfileRegistrationError
 from threetears.evals.contracts.host.style import ChartPalette, StyleError, StyleProfile, ToneRegister
 from threetears.evals.contracts.host.sweepables import (
@@ -43,14 +43,20 @@ from threetears.evals.contracts.host.sweepables import (
     SweepableValue,
 )
 from threetears.evals.contracts.identity import LeverCoordinateError, derive_variant_identity
-from threetears.evals.contracts.metrics import MetricDescriptor
+from threetears.evals.contracts.metrics import METRIC_DESCRIPTORS, MetricDescriptor
 from packages.evals.tests.fixtures.toyhost.corpus import (
     CLEAN_SWEEP,
     CONFOUNDED_SWEEP,
     UNRECORDED_APPARATUS,
     toyhost_observation,
 )
-from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_ID, TOYHOST_PALETTE, toyhost_profile
+from packages.evals.tests.fixtures.toyhost.profile import (
+    TOYHOST_EXTRACTION_FAMILY,
+    TOYHOST_ID,
+    TOYHOST_MEASURES,
+    TOYHOST_PALETTE,
+    toyhost_profile,
+)
 
 
 #: One arbitrary lever level, for the tests that care which NAMES a map carries rather than what
@@ -1259,6 +1265,34 @@ def test_a_second_host_drops_the_attribution_and_says_so_once(caplog) -> None:
     assert _refusal_prefix(registry) == "", "two profiles bound it and its refusals still name one of them"
     announcements = [r for r in caplog.records if "more than one host profile" in r.message]
     assert len(announcements) == 1, f"the drop was announced {len(announcements)} times, not once"
+
+
+# --- a host measure may not take a core measure's name ---------------------------------------------
+
+
+def _host_measure(name: str) -> MetricDescriptor:
+    return MetricDescriptor(
+        name=name,
+        data_type="numeric",
+        family="mechanical",
+        transferability_class="mechanical",
+        attribution_scope="end_to_end",
+        description=f"The host's own {name}, which means something other than the core's.",
+        higher_is_better=True,
+        value_range=(0.0, 100.0),
+    )
+
+
+@pytest.mark.parametrize("name", ["cost_usd", "score", "f1", "precision", "mean_score", "n"])
+def test_a_host_measure_named_like_a_core_measure_is_refused(name: str) -> None:
+    """Every resolver consults the core first, so the host's measure would read as the core's and pool with it."""
+    assert name in METRIC_DESCRIPTORS
+    with pytest.raises(MeasureRegistrationError, match=f"{name} is one of the engine's core measures"):
+        MeasureRegistry([_host_measure(name)])
+    with pytest.raises(MeasureRegistrationError, match=f"{name} is one of the engine's core measures"):
+        MeasureRegistry([*TOYHOST_MEASURES, _host_measure(name)], families=(TOYHOST_EXTRACTION_FAMILY,))
+    renamed = MeasureRegistry([_host_measure(f"host_{name}")])
+    assert renamed.names == (f"host_{name}",), "the refusal is of the name, not of the measure"
 
 
 # --- observed_model_levers names levers this host declares ------------------------------------------

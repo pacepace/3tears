@@ -169,8 +169,9 @@ lists each, and how to set it explicitly instead.
 **Classifier details.** An answer that isn't a non-blank string (`None`, `""`, a number) counts under its
 own predicted label, `UNUSABLE_ANSWER`, and never matches. Any other string is compared exactly, so
 `"positive "` is not `"positive"`. The summary carries the confusion matrix as `summary.confusion` and each
-label's statistics as `summary.labels`. Scores may run beside `expected=`, except ones named `match`,
-`confusion_cell` or `accuracy`.
+label's statistics as `summary.labels`. Scores may run beside `expected=`. No score may take the name of
+an engine core measure (`match`, `accuracy`, `score`, `f1`, `cost_usd` and the rest): `run_eval` refuses it
+and asks you to rename the function.
 
 **Keeping runs to compare.** Pass `host=callable_host(scorers)` (`callable_host()` when there are no
 scorers) and reuse it, so several runs share one store. Your own host must declare a measure per scorer and

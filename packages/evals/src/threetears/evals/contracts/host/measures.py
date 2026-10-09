@@ -96,9 +96,19 @@ class MeasureRegistry(HostAttributed):
 
     def _defects(self) -> list[str]:
         """Name every way the catalogue contradicts what this registry promises."""
-        from threetears.evals.contracts.metrics import ENGINE_FAMILIES, containment_defects
+        from threetears.evals.contracts.metrics import ENGINE_FAMILIES, METRIC_DESCRIPTORS, containment_defects
 
         defects: list[str] = self._family_defects()
+        # A host measure named like a core one cannot be described as the host's: every resolver
+        # consults the core first, so it would read with the core's meaning, direction and range,
+        # and its values would pool into the engine's own distribution under that name with `n`
+        # inflated. Refused here, by name, rather than resolved quietly in either direction.
+        defects.extend(
+            f"{name} is one of the engine's core measures — a host's {name} would be read under the core's meaning, "
+            "direction and range and pooled into the engine's own observations of it; give the host's measure a "
+            "name of its own"
+            for name in sorted({d.name for d in self._descriptors} & set(METRIC_DESCRIPTORS))
+        )
         seen: set[str] = set()
         known_families = set(ENGINE_FAMILIES) | {family.name for family in self._families}
 
