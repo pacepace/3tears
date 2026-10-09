@@ -143,8 +143,10 @@ A knob your host also records resolved, as a lever of its own (`ResolvesInto(...
 `resolves_into` on a `Sweepable`), is reported as one lever where the runs show the resolved lever moved only with
 the knob. The resolved lever then has no coverage row and is named in no confound, and the arm is named by the
 knob, with the resolved lever listed in its variant-index entry's `folded`. Where it also moved while the knob was
-held at one level, it is reported as a lever of its own and named as a confound on the knob's row. Where a run did
-not record it, it is named as an `undecided` confound.
+held at one level by arms the comparison reads, it is reported as a lever of its own and named as a confound on
+that comparison. Which arms that is depends on the lens: the knob's coverage row reads the arms that moved the knob,
+so a drift in an arm that left the knob alone shows in the design's contrast for that arm, not on the knob's row.
+Where a run did not record it, it is named as an `undecided` confound.
 
 Only two arms at one level of the knob can show the resolved lever moving on its own; repeats of one arm cannot,
 because every run of an arm resolves the same value. A fold nothing could have refuted is still applied, but it

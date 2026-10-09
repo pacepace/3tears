@@ -3140,7 +3140,9 @@ class _SurfaceFolds:
     every lens twice — as the knob and as the surface's content hash — and a lens that counted both
     reported a one-knob arm as ``multi_factor`` and each lever as confounded by the other. Every lens
     that decides what a comparison moved or what confounds it asks this object, over the cohort it is
-    comparing, so two lenses cannot come to different answers about one surface.
+    comparing, so two lenses over one cohort cannot come to different answers about one surface. Lenses
+    over different cohorts can: a knob's coverage row pools every arm that moved the knob, while a design
+    contrast reads only the arms its own departures cover, so each answer is about the runs it names.
 
     **Two rules, one per kind of knob, because only one of them has anything to take out.** An open
     family's members are names a host can remove from its surface, so the family's own residual
