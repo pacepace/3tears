@@ -352,7 +352,8 @@ class HostProfile:
             BarRegistrationError: A bar contradicts the measure registry.
             ProfileRegistrationError: A name is registered as both a sweepable and a world
                 dimension, an ``observed_model_levers`` entry claims a lever name the engine
-                reserves or names no lever this host declares, a kind contract's seats name
+                reserves or names no lever this host declares, a lever's ``acts_on`` names no numeric
+                measure the engine or this host declares, a kind contract's seats name
                 neither a pinned role nor an apparatus dimension, or leave out a dimension whose
                 blank is a real level, a kind is contracted twice or two contracts' lever prefixes overlap, a kind contract's lever is registered in
                 :attr:`host_sweepables` as well, the registry lacks a lever the engine resolves
@@ -373,6 +374,7 @@ class HostProfile:
         self._refuse_a_name_in_both_registries()
         self._refuse_an_engine_reserved_lever()
         self._refuse_an_undeclared_observed_lever()
+        self._refuse_an_unknown_mechanism_measure()
         self._refuse_an_unsound_seat()
         self._refuse_a_malformed_listing_elision()
         self._refuse_a_release_label_that_is_not_a_label()
@@ -612,6 +614,40 @@ class HostProfile:
                 f"host {self.host_id!r} declares observed_model_levers for {', '.join(unknown)}, which name no lever "
                 "this host declares — the lens would recover nothing and the lever would read unknown everywhere: "
                 + "; ".join(unknown.values())
+            )
+
+    def _refuse_an_unknown_mechanism_measure(self) -> None:
+        """Refuse a lever's ``acts_on`` that names no numeric measure the engine or this host declares.
+
+        Checked here because the name is a measure and the declaration is a sweepable, and this is the
+        only place both registries are in hand. A misspelled mechanism would be observed on no result,
+        so every bundle would report the lever ``unchecked`` with nothing to say the declaration was
+        the cause — a declaration that reads as live and checks nothing.
+
+        Raises:
+            ProfileRegistrationError: An ``acts_on`` names no declared measure, or a non-numeric one.
+        """
+        # Imported here: the metrics module imports the models module, which imports this package.
+        from threetears.evals.contracts.metrics import METRIC_DESCRIPTORS
+
+        defects: list[str] = []
+        for declared in self.sweepables.declarations:
+            if declared.acts_on is None:
+                continue
+            descriptor = METRIC_DESCRIPTORS.get(declared.acts_on) or self.measures.get(declared.acts_on)
+            if descriptor is None:
+                defects.append(
+                    f"{declared.name} acts on {declared.acts_on!r}, which is no measure or covariate the engine's "
+                    "catalogue or this host's measure registry declares"
+                )
+            elif descriptor.data_type != "numeric":
+                defects.append(
+                    f"{declared.name} acts on {declared.acts_on!r}, a {descriptor.data_type} measure — the check "
+                    "compares per-level means, which only a numeric measure has"
+                )
+        if defects:
+            raise ProfileRegistrationError(
+                f"host {self.host_id!r} declares a mechanism that cannot be checked: " + "; ".join(defects)
             )
 
     def _refuse_an_unsound_seat(self) -> None:

@@ -386,6 +386,24 @@ slots, slots 1-4 validated; a sequential ramp; background, ink, muted, grid, rul
 every colour resolved `#rrggbb`. The presentation rules are checked on the intent (`check_intent`), so they hold for any
 renderer, and the core ships no charting library.
 
+### Did a lever take effect: mechanism checks and observed mechanisms
+
+A lever that changed nothing and a lever that never took effect read alike in every outcome measure. A
+`Sweepable` lever may name the measure or covariate it is supposed to move — `acts_on="context_tokens_in"` on a
+chunk-width lever, say — and each coverage row of the analysis bundle then carries a `mechanism` check over its
+levels: `moved`, `inert` (that measure had the same mean at every level, compared exactly: the lever never took
+effect) or `unchecked` with the reason (`not_declared`, `not_swept`, `levels_unobserved`). Each level's mean is
+beside the state. The name must be a numeric measure the engine or your measure registry declares, or the profile
+refuses it; it is read off each result, and it enters no variant key. A lever naming none reads `unchecked`, never
+as having taken effect.
+
+A comparison can also differ in what its arms did while no setting differed. A reasoning effort is a word each
+vendor maps to its own budget, so two models at one effort setting can reason very differently. The bundle reads
+each arm's mean reasoning share (`reasoning_ratio`) into `arm_mechanisms`, and a comparison whose levels' shares
+are at least `REASONING_SHARE_DIVERGENCE` (0.20) apart names an `observed_mechanism` confound in `confounded_by`,
+carrying the threshold and each level's value. The confound qualifies the comparison; it never hides it. A share
+nothing measured is said to be unmeasured and names no confound.
+
 ### Results by kind of case: strata
 
 A test case may declare a **stratum**, the kind of case it is (`EvalTestCase(stratum="lookalike")`), in the

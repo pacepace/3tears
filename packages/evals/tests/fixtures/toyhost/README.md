@@ -39,6 +39,11 @@ runner's own output, cell by cell.
 ## What each element exercises
 
 - **Scalar levers** (`chunk_tokens`, `retriever_top_k`) — numeric axes with real spacing.
+- **A lever that names its mechanism** (`chunk_tokens`, `acts_on="context_tokens_in"`): a wider chunk should
+  carry more context into extraction, so the analysis checks that the engine's `context_tokens_in` covariate
+  moved across the lever's levels and reports the lever `inert` where it did not. The declared campaign
+  records it per arm (`campaign.py`), so its bundle reads `moved`. `retriever_top_k` names none, and reads
+  `unchecked`.
 - **A kind contract** (`contract.py`): the overlays are an ordinal, an interval with a unit, a text
   joined by content and an open family (`field_aliases`), each read as a lever `extractor.<field>`
   with no per-knob code; the spec is which invoice fields a template grades, validated at authoring

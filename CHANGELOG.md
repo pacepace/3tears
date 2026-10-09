@@ -6,6 +6,33 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: a swept lever is checked against the mechanism it acts on; a divergent reasoning share qualifies a comparison (#577, #576)
+
+- **`Sweepable.acts_on`** (optional): the measure or covariate a `lever` is supposed to move, by its registered
+  name. The profile refuses a name neither the engine's catalogue nor the host's measure registry declares, and a
+  non-numeric one (`ProfileRegistrationError`); the registry refuses it blank, on an apparatus or label input, or on
+  an open family (`RegistrationError`). It is declaration metadata and enters no variant key or measurement context.
+- **`LeverCoverageInput.mechanism`** (`MechanismCheck`, required): per coverage row, over the row's cohort,
+  `moved` (two levels' means of the declared measure differ), `inert` (observed at every level, identical means,
+  compared exactly) or `unchecked` with `reason` `not_declared` / `not_swept` / `levels_unobserved`. The per-level
+  means and the levels that observed none are beside the state. The measure is read per result (a covariate, a host
+  measure, or one of the result's own per-result measures); a per-role usage-row count is not read.
+- **`Confound.kind` gains `observed_mechanism`**, with `level_values` and `threshold`: a comparison (a coverage row,
+  a scope divergence) whose levels' mean reasoning share (`reasoning_ratio`) is at least `REASONING_SHARE_DIVERGENCE`
+  (0.20, absolute) apart names it, under the dimension `observed:reasoning_ratio`, with its reason in
+  `confound_catalog`. It qualifies the comparison and suppresses nothing. A level that measured none of the share is
+  left out rather than read as zero. The check is written over a covariate name; `reasoning_ratio` is the only one
+  registered.
+- **`AnalysisContextBundle.arm_mechanisms`** (`list[ArmMechanismReading]`): each arm's mean reasoning share with how
+  many of its results measured it; a null mean says it went unmeasured.
+- **`REASONING_RATIO_KEY`** (`threetears.evals.contracts`) names the covariate.
+- **The generator prompt** (rules 4 and 7) reads both: an `inert` lever never took effect and is not reported as a
+  null effect, an `unchecked` lever's null is mechanism-unverified, and an `observed_mechanism` confound means one
+  reasoning-effort setting did not hold reasoning constant. A deployment whose stored `eval_analysis_gen` preset
+  predates this keeps its own text until an operator updates it.
+- Bundle `schema_version` 40 -> 41. Bundles are never stored, so nothing stored needs reading; an analysis generated
+  before carries a fingerprint over the older shape.
+
 ### 3tears-evals: the host states how long one request can take; the wall-clock ceilings count requests (breaking)
 
 - **`generation_ceiling_s`, `judge_phase_ceiling_s` and `reporter_cell_timeout_s` take `request_s:
