@@ -1748,6 +1748,27 @@ async def test_a_publish_whose_claim_is_lost_mid_write_moves_no_pointer() -> Non
     await snapshot.stop()
 
 
+async def test_a_chunk_swept_while_its_claim_lapsed_unseen_moves_no_pointer() -> None:
+    """a replica cut off from NATS past its claim's lifetime still reads its claim held; a sweep on
+    another replica took what it wrote, so the pointer must not move onto it."""
+    snapshot, pointers, store, _ = _snapshot()
+    await _started(snapshot, pointers)
+    before = pointers.entries["enr.s.TX"][0]
+    real_put = store.put
+
+    async def put_then_swept(name: str, data: bytes) -> None:
+        await real_put(name, data)
+        del store.objects[name]  # the sweep, while this replica's claim had lapsed
+
+    store.put = put_then_swept  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="no pointer is moved onto a missing chunk"):
+        await snapshot.publish("TX", 2, {"results": [{"county": "c1", "state": "TX", "votes": 9}]})
+
+    assert pointers.entries["enr.s.TX"][0] == before, "a pointer moved onto a chunk that is gone"
+    await snapshot.stop()
+
+
 async def test_stopping_ends_a_rebuild_claim_still_held() -> None:
     snapshot, pointers, _, _ = _snapshot()
     await _started(snapshot, pointers)

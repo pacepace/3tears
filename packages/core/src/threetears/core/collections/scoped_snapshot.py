@@ -2023,12 +2023,14 @@ class ScopedSnapshot:
                     # after `_applied` moves, as every other commit path does, so a listener reading
                     # applied_epoch sees the epoch of what it reads; on a failed chunk write, still told
                     self._notify()
-                # a chunk found already written was judged by a sweep that may have read the claims
-                # before this one was taken: it must still be there before a pointer names it
-                if reused and not await self._exist(reused):
+                # every chunk the pointer will name must still be there: one found already written was
+                # judged by a sweep that may have read the claims before this one was taken, and one
+                # written here may have been swept while this replica was cut off from NATS past its
+                # claim's lifetime (a lapse it cannot see until it reconnects)
+                if not await self._exist(objects.values()):
                     raise RuntimeError(
-                        f"scope {scope!r}: a chunk of epoch {epoch} it found written was deleted before its pointer "
-                        f"moved ({reused}); no pointer is moved onto a missing chunk"
+                        f"scope {scope!r}: a chunk of epoch {epoch} was deleted before its pointer moved "
+                        f"({sorted(objects.values())}, reused: {reused}); no pointer is moved onto a missing chunk"
                     )
                 # the change recorded is this replica's own: a racing writer's later pointer, or a fresh
                 # one of other columns it yields to, is not what this L1 holds
