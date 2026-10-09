@@ -100,6 +100,18 @@ TRUNCATED_ROUNDS_KEY = "truncated_rounds"
 TURN_BUDGET_ENDED_KEY = "turns_ended_by_budget"
 
 
+#: Covariate key: the share of the candidate's generated tokens that were reasoning — candidate
+#: ``reasoning_tokens`` over candidate ``completion_tokens``, summed across the candidate's usage
+#: rows. Absent unless both halves were measured and the candidate generated something; see
+#: :func:`_reasoning_ratio_of`.
+#:
+#: Named because the analysis reads it as an OBSERVED MECHANISM as well as a covariate: a reasoning
+#: effort sent as a word maps to a different effective budget per vendor, so two arms pinned to one
+#: effort word can reason very differently, and the bundle discloses a contrast whose arms' shares
+#: diverge (``threetears.evals.analysis.bundle``).
+REASONING_RATIO_KEY = "reasoning_ratio"
+
+
 def _candidate_turn_records(trace: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The ``TurnRecord`` dumps a cell's trace carries, in order.
 
@@ -267,7 +279,7 @@ def derive_covariates(
 
     reasoning_ratio = _reasoning_ratio_of(candidate_rows)
     if reasoning_ratio is not None:
-        out["reasoning_ratio"] = reasoning_ratio
+        out[REASONING_RATIO_KEY] = reasoning_ratio
 
     return out
 
@@ -343,6 +355,7 @@ def fold_phase_timings(
 
 __all__ = [
     "DROPPED_TOOL_CALLS_KEY",
+    "REASONING_RATIO_KEY",
     "REFUSED_TOOL_ATTACHES_KEY",
     "TRUNCATED_ROUNDS_KEY",
     "TURN_BUDGET_ENDED_KEY",

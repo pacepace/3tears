@@ -190,6 +190,7 @@ from threetears.evals.analysis.stats import PAIRED_TEST_NAME
 from threetears.evals.analysis.surface_table import SurfaceTable
 from threetears.evals.analysis.arms import ArmLevel, ArmMeasurement, ArmRow, ArmStatus
 from threetears.evals.analysis.bundle import (
+    ArmMechanismReading,
     CampaignReadStore,
     CellCoordinate,
     ComparedCell,
@@ -203,6 +204,8 @@ from threetears.evals.analysis.bundle import (
     JudgedMeasure,
     LeverCoverageInput,
     MeasureMovement,
+    MechanismCheck,
+    MechanismUncheckedReason,
     MeritTier,
     MultipleComparisons,
     QuestionScope,
@@ -319,6 +322,7 @@ __all__ = [
     "AnalysisStore",
     "ArmLevel",
     "ArmMeasurement",
+    "ArmMechanismReading",
     "ArmRow",
     "ArmStatus",
     "ArmTable",
@@ -368,6 +372,8 @@ __all__ = [
     "LeverCoverageInput",
     "MeasureMovement",
     "MeasurementWindow",
+    "MechanismCheck",
+    "MechanismUncheckedReason",
     "MeritTier",
     "MultipleComparisons",
     "NextExperiment",

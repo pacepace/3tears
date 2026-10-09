@@ -251,6 +251,30 @@ class Sweepable:
     "cannot say", never as agreement.
     """
 
+    acts_on: str | None = None
+    """The measure or covariate this ``lever`` is supposed to move, by its registered name.
+
+    What lets the analysis tell "the lever made no difference" from "the lever never took effect".
+    Those read alike in every outcome measure and lead to opposite actions: a knob swept on a model
+    that ignores it, or a cap set above anything the candidate ever reached, is not evidence that
+    the knob does not matter. Naming the mechanism lets the bundle test, per swept lever, whether
+    that measure itself separated across the lever's levels — ``moved``, ``inert`` or ``unchecked``
+    on the lever's coverage row (``MechanismCheck``).
+
+    The name must be a numeric measure the engine's catalogue or this host's measure registry
+    declares, and one each result carries as a single value — a covariate, a host measure, or one of
+    the result's own per-result measures. Anything else is refused at profile construction, where the
+    measure registry is in hand: a quantity recorded once per row (``reasoning_tokens``, one per usage
+    role) or only over a whole run (``p95_total_ms``) has no per-result value to compare, so accepting
+    it would leave the check reading nothing. A kind's overlay field declares the same thing with the
+    :class:`~threetears.evals.contracts.host.kinds.ActsOn` marker.
+
+    Declaration metadata about what to CHECK, never a value a run ran under: it enters no variant
+    key and no measurement context. ``None`` — the normal case — is reported as ``unchecked``, never
+    as having taken effect. Valid on a fixed ``lever`` only: an open family's members are distinct
+    knobs that one name could not speak for, and an apparatus or label input is never swept.
+    """
+
 
 @dataclass(frozen=True)
 class RolePins:
@@ -433,6 +457,7 @@ class SweepableRegistry(HostAttributed):
                 defects.append(f"{name} states a confound reason but is not apparatus — no scan would ever read it")
             defects.extend(self._coordinate_defects(declared))
             defects.extend(self._family_defects(declared))
+            defects.extend(self._mechanism_defects(declared))
         for name in self._role_pins:
             pinned = self._by_declared_name(name)
             if pinned is None:
@@ -554,6 +579,39 @@ class SweepableRegistry(HostAttributed):
                 )
             ]
         return []
+
+    @staticmethod
+    def _mechanism_defects(declared: Sweepable) -> list[str]:
+        """Check an ``acts_on`` declaration is on a fixed lever and names something.
+
+        Whether the name resolves to a measure is not decidable here — the measure registry is the
+        profile's — so :class:`~threetears.evals.contracts.host.profile.HostProfile` checks that half.
+
+        Args:
+            declared: The declaration to check.
+
+        Returns:
+            One message per defect, empty when the declaration is well-formed.
+        """
+        if declared.acts_on is None:
+            return []
+        defects: list[str] = []
+        if not declared.acts_on.strip():
+            defects.append(
+                f"{declared.name!r} declares a blank acts_on — a mechanism with no name can never be checked, "
+                "so the lever would read as declared and still be unchecked everywhere"
+            )
+        if declared.role != "lever":
+            defects.append(
+                f"{declared.name!r} is a {declared.role} and declares acts_on — only a swept lever has levels to "
+                "compare its mechanism across"
+            )
+        if declared.open_family is not None:
+            defects.append(
+                f"{declared.name!r} is an open family and declares acts_on — its members are distinct knobs, and "
+                "one mechanism named for all of them would be checked against knobs it does not describe"
+            )
+        return defects
 
     @staticmethod
     def _family_defects(declared: Sweepable) -> list[str]:

@@ -39,7 +39,7 @@ from __future__ import annotations
 from threetears.evals.contracts.host.apparatus import ApparatusError
 from threetears.evals.contracts.host.bars import Bar, BarRegistry
 from threetears.evals.contracts.host.eval_host import CompletionClients, CompletionRole, EvalHost
-from threetears.evals.contracts.host.kinds import Interval, KindContract, KindContractError, Ordinal, freeze
+from threetears.evals.contracts.host.kinds import ActsOn, Interval, KindContract, KindContractError, Ordinal, freeze
 from threetears.evals.contracts.host.measures import MeasureRegistrationError, MeasureRegistry
 from threetears.evals.contracts.host.profile import Coverage, HostProfile
 from threetears.evals.contracts.host.spend import ExternalSpend
@@ -119,6 +119,7 @@ __all__ = [
     "UNSEATED_LEVEL",
     "VALIDATED_SLOTS",
     "ActionParameterReader",
+    "ActsOn",
     "ApparatusError",
     "Bar",
     "BarProposal",

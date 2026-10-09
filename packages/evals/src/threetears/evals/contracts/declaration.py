@@ -34,13 +34,14 @@ import uuid
 from collections.abc import Collection, Iterator, Mapping
 from dataclasses import dataclass
 from functools import cache
-from typing import TYPE_CHECKING, Any, Literal, get_args
+from typing import TYPE_CHECKING, Any, Literal, get_args, get_origin
 
 from pydantic import BaseModel, Field, TypeAdapter, field_validator, model_validator
 
 from threetears.evals.contracts.base import EvalDocumentModel
 from threetears.evals.contracts.covariates import (
     DROPPED_TOOL_CALLS_KEY,
+    REASONING_RATIO_KEY,
     REFUSED_TOOL_ATTACHES_KEY,
     TRUNCATED_ROUNDS_KEY,
     TURN_BUDGET_ENDED_KEY,
@@ -611,7 +612,7 @@ _COVARIATE_MEASURES: frozenset[str] = frozenset(
         TRUNCATED_ROUNDS_KEY,
         TURN_BUDGET_ENDED_KEY,
         "context_tokens_in",
-        "reasoning_ratio",
+        REASONING_RATIO_KEY,
     }
 )
 
@@ -711,6 +712,52 @@ def _per_result_measure_names(measures: MeasureRegistry) -> frozenset[str]:
         measures: The host's measure registry.
     """
     return _carried_field_names() | DERIVED_PER_RESULT_MEASURES | _COVARIATE_MEASURES | _host_measure_names(measures)
+
+
+def _listed(annotation: object) -> bool:
+    """Whether a field annotation holds a LIST of carriers (one observation per element), through ``Optional``."""
+    if get_origin(annotation) in (list, tuple):
+        return True
+    return any(_listed(argument) for argument in get_args(annotation) if argument is not type(None))
+
+
+@cache
+def _single_carried_field_names() -> frozenset[str]:
+    """Every name a result's own fields carry ONCE — its scalars and the fields of its single sub-models.
+
+    :func:`_carried_field_names` without the listed carriers: a usage row per role or a delivery per
+    async call carries its fields once per element, so a result holds several values under such a name
+    and no one of them is the result's. Derived by reflection, cached, for the same reasons.
+    """
+    names: set[str] = set()
+    for field_name, field in EvalResult.model_fields.items():
+        carriers = list(_carriers_of(field.annotation))
+        if not carriers:
+            names.add(field_name)
+        elif not _listed(field.annotation):
+            for carrier in carriers:
+                names.update(carrier.model_fields)
+    return frozenset(names)
+
+
+def mechanism_measure_names(measures: MeasureRegistry) -> frozenset[str]:
+    """Every described name one result carries a single value under — what a lever may declare it acts on.
+
+    The per-result set :func:`_per_result_measure_names` reads, narrowed to the values a result holds
+    once: its own scalars and single sub-models, the measures it implies, its covariates and the host's
+    own measures. A field of a listed carrier is left out — ``reasoning_tokens`` is recorded per usage
+    row, one per role — because comparing a lever's levels needs one value per result, and pooling one
+    role's count with another's describes no mechanism.
+
+    Args:
+        measures: The host's measure registry.
+    """
+    return (
+        _single_carried_field_names()
+        | DERIVED_PER_RESULT_MEASURES
+        | _COVARIATE_MEASURES
+        | _host_measure_names(measures)
+    )
 
 
 def resolve_bar_name(
@@ -1021,6 +1068,7 @@ __all__ = [
     "Question",
     "SweptAxis",
     "UnreadableBarName",
+    "mechanism_measure_names",
     "reconcile_question_edits",
     "refuse_an_undeclarable_design",
     "resolve_bar_name",

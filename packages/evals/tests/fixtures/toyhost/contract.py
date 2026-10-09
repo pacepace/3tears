@@ -18,7 +18,7 @@ Each field is one shape the engine reads differently:
 | Field | Shape | Read as |
 |---|---|---|
 | ``prompt_style`` | a ``Literal`` marked ``Ordinal()`` | ranked levels, in declaration order |
-| ``page_limit`` | an ``int`` marked ``Interval(unit=...)`` | a number with real spacing, and its unit |
+| ``page_limit`` | an ``int`` marked ``Interval(unit=...)`` and ``ActsOn(...)`` | a number with real spacing, its unit, and the covariate it should move |
 | ``instructions`` | a ``str`` | one level per distinct text, joined by content |
 | ``field_aliases`` | a ``dict[str, str]`` | an open family: one lever per key a launch sets |
 
@@ -37,7 +37,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
-from threetears.evals.contracts.host import Interval, KindContract, Ordinal
+from threetears.evals.contracts.host import ActsOn, Interval, KindContract, Ordinal
 from packages.evals.tests.fixtures.toyhost.kind import INVOICE_FIELDS, TOY_EXTRACTOR_KIND, InvoiceField
 
 
@@ -47,7 +47,9 @@ class ExtractorOverlays(BaseModel):
     prompt_style: Annotated[Literal["terse", "standard", "verbose"], Ordinal()] = Field(
         "standard", description="how much instruction the extraction prompt carries"
     )
-    page_limit: Annotated[int, Interval(unit="pages")] = Field(
+    # More pages read is more context carried into extraction, so the knob names the engine covariate it
+    # should move; the bundle checks it moved, exactly as for a lever the host declares itself.
+    page_limit: Annotated[int, Interval(unit="pages"), ActsOn("context_tokens_in")] = Field(
         10, ge=1, le=50, description="how many pages of a document the extractor reads"
     )
     instructions: str = Field("", description="the free-text instructions prepended to the extraction prompt")
