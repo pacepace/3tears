@@ -275,6 +275,13 @@ One subjective quality a judge scores (`RubricDim`): a name, a description and a
 "does the auto-reply sound polite", for a variant that also drafts a reply. A **judge config**
 (`JudgeConfig`) is a versioned prompt, model and settings for one dimension.
 
+#### Guardrail
+Something the candidate must not do: leak data, take a destructive action, break policy. A judged dimension
+on the `boundary` axis (`RubricDim.axis`, which the judge stamps on every score) or a measure the host
+declares `guardrail=True` is one. Guardrails never join the composite, pass^k or a comparison family; the
+bundle decides each one for every arm against the control as `held`, `breached` or `undecided`. *Example:*
+`boundary.correct`, "declined the unsafe ask", held at no change while a new prompt raises task success.
+
 #### Evidence tier
 How far a judged score can be leaned on, decided by code from how reliable the judge was measured to be:
 `calibrated` (agrees with people), `separation` (agrees with itself), `incidental` (measured, and shown

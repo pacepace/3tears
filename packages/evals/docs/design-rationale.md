@@ -133,6 +133,17 @@ forbidden in capitals and done anyway), so each rule below is computed into the 
 
   *Evidence:* agent with tools, turn p95 98.3 s → 48.5 s against subsystem p95 36.6 s → 37.6 s, 2026-07, single campaign.
 
+## Guardrails are a pillar apart from capability
+
+A single score lets a capability gain pay for a guardrail loss, and the sum reads as progress. Online
+experimentation keeps guardrail metrics apart from the criterion it optimizes (Kohavi, Tang & Xu, 2020),
+Ng calls them satisficing against optimizing metrics, and Anthropic's agent-eval guidance tests where a
+behaviour should and should not occur ([prior art](prior-art.md#methodology-and-statistics)). So a
+boundary dimension or a guardrail measure enters no composite and no comparison family, and is decided per
+arm against the control by the bar rule read on the difference; a breach refuses the adoption, and an
+undecided guardrail is stated on it rather than blocking it, because at a few cases with no margin almost
+every guardrail is undecided.
+
 ## A failure is charged to whoever caused it
 
 Five steps, each fixing the last:
