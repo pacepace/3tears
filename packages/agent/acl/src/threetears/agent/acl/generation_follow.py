@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     from threetears.agent.acl.cache import AclCache
 
 __all__ = [
+    "DEFAULT_STOP_TIMEOUT",
     "DEFAULT_WATCH_RESTART_DELAY",
     "MAX_WATCH_RESTART_DELAY",
     "AccessTableFollower",
@@ -60,6 +61,21 @@ DEFAULT_WATCH_RESTART_DELAY: Final = timedelta(seconds=1)
 
 #: the longest a failing watch waits between attempts, however many times in a row it has failed
 MAX_WATCH_RESTART_DELAY: Final = timedelta(seconds=60)
+
+#: the longest :meth:`AccessTableFollower.stop` waits for its cancelled watches to end; a shutdown
+#: never waits on a watch that will not stop
+DEFAULT_STOP_TIMEOUT: Final = timedelta(seconds=5)
+
+
+def _reader_closed(reader: object) -> bool:
+    """whether the watcher says its connection is closed, so no watch can ever deliver again.
+
+    :param reader: the watcher; one without a ``closed`` attribute is never closed
+    :ptype reader: object
+    :return: ``True`` once the watcher's connection is closed
+    :rtype: bool
+    """
+    return getattr(reader, "closed", False) is True
 
 
 @dataclass
@@ -129,6 +145,11 @@ class AccessTableFollower:
     :ptype restart_delay: timedelta
     :param max_restart_delay: the longest wait between attempts
     :ptype max_restart_delay: timedelta
+    :param stop_timeout: how long :meth:`stop` waits for the cancelled watches to end
+    :ptype stop_timeout: timedelta
+
+    A watch whose connection is closed (the watcher's ``closed``) stops instead of starting again:
+    the client is shutting down, and a retry loop against it would keep the process alive.
     """
 
     def __init__(
@@ -140,6 +161,7 @@ class AccessTableFollower:
         grace: timedelta = DEFAULT_BROADCAST_GRACE,
         restart_delay: timedelta = DEFAULT_WATCH_RESTART_DELAY,
         max_restart_delay: timedelta = MAX_WATCH_RESTART_DELAY,
+        stop_timeout: timedelta = DEFAULT_STOP_TIMEOUT,
     ) -> None:
         """capture what to follow; no I/O.
 
@@ -151,7 +173,9 @@ class AccessTableFollower:
         self._grace = grace
         self._restart_delay = restart_delay
         self._max_restart_delay = max_restart_delay
+        self._stop_timeout = stop_timeout
         self._health = {table: WatchHealth() for table in self._tables}
+        self._source = reader
         self._reader = _ObservedWatcher(reader, self._health)
         self._tasks: list[asyncio.Task[None]] = []
 
@@ -222,7 +246,10 @@ class AccessTableFollower:
         log.info("following the access tables' write generations", extra={"extra_data": {"tables": self._tables}})
 
     async def stop(self) -> None:
-        """cancel every watch and wait for it to end. Idempotent.
+        """cancel every watch and wait, at most ``stop_timeout``, for them to end. Idempotent.
+
+        A watch that does not end in time is left cancelled and logged: a shutdown never waits on
+        it. A cancellation of ``stop`` itself propagates.
 
         :return: nothing
         :rtype: None
@@ -230,11 +257,18 @@ class AccessTableFollower:
         tasks, self._tasks = self._tasks, []
         for task in tasks:
             task.cancel()
-        for task in tasks:
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass  # NOSILENT: the cancellation this method just asked for, ending the watch
+        if tasks:
+            _done, pending = await asyncio.wait(tasks, timeout=self._stop_timeout.total_seconds())
+            if pending:
+                log.warning(
+                    "write-generation watches did not end within the stop bound; left cancelled",
+                    extra={
+                        "extra_data": {
+                            "tables": sorted(task.get_name() for task in pending),
+                            "stop_timeout_seconds": self._stop_timeout.total_seconds(),
+                        }
+                    },
+                )
 
     def _delay_after(self, failures: int) -> float:
         """the wait before the next attempt, after ``failures`` failures in a row.
@@ -267,6 +301,12 @@ class AccessTableFollower:
             except Exception as exc:  # noqa: BLE001
                 health.last_error = f"{type(exc).__name__}: {exc}"
             health.consecutive_failures += 1
+            if _reader_closed(self._source):
+                log.info(
+                    "a write-generation watch stopped: its NATS connection is closed",
+                    extra={"extra_data": {"table": table, "error": health.last_error}},
+                )
+                return
             delay = self._delay_after(health.consecutive_failures)
             log.warning(
                 "a write-generation watch ended or failed; starting it again",
