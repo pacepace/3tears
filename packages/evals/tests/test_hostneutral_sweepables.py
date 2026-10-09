@@ -154,6 +154,9 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
     # comparison family, and the readings no declared question asks about are labelled exploratory; the apparatus
     # partition is unchanged.
     ((46, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
+    # 47/10: the decision surface's cells are laid out control first, as the reference, then every other arm
+    # alphabetically by name (#645); the apparatus partition is unchanged.
+    ((47, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
 )
 
 
