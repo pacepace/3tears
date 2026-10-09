@@ -48,15 +48,15 @@ async def test_with_no_api_key_the_example_runs_offline_and_weighs_accuracy_agai
     module = _load()
     comparison = await module.main()
 
-    assert comparison.control == module.OLDER
-    assert list(comparison.arms) == [module.OLDER, module.NEWER]
+    assert comparison.control == module.CONTROL
+    assert list(comparison.arms) == [module.CONTROL, module.CHEAPER]
     for summary in comparison.arms.values():
         assert summary.status == "completed" and (summary.n_cases, summary.k_runs, summary.n_scored) == (12, 2, 24)
         assert summary.candidate_calls == 24
         assert summary.candidate_cost_usd is not None and summary.candidate_cost_usd > 0
         assert summary.errors == []
-    older, newer = comparison.arms[module.OLDER], comparison.arms[module.NEWER]
-    assert newer.candidate_cost_usd < older.candidate_cost_usd  # type: ignore[operator]
+    control, cheaper = comparison.arms[module.CONTROL], comparison.arms[module.CHEAPER]
+    assert cheaper.candidate_cost_usd < control.candidate_cost_usd  # type: ignore[operator]
 
     contrasts = _contrasts(comparison)
     assert {"accuracy", "cost_usd"} <= set(contrasts)
@@ -65,7 +65,6 @@ async def test_with_no_api_key_the_example_runs_offline_and_weighs_accuracy_agai
 
     out = capsys.readouterr().out
     assert out.startswith("ANTHROPIC_API_KEY is not set: running OFFLINE")
-    assert "say nothing about Claude" in out
     assert "candidate spend: $" in out
     assert comparison.render() in out
 
@@ -108,28 +107,28 @@ def _fake_sdk(monkeypatch: pytest.MonkeyPatch, anthropic: ModuleType, reply: Any
 async def test_the_live_candidate_returns_the_label_with_its_priced_usage(monkeypatch: pytest.MonkeyPatch) -> None:
     anthropic = pytest.importorskip("anthropic")
     module = _load()
-    sent = _fake_sdk(monkeypatch, anthropic, _reply(anthropic, module.NEWER, " Phishing\n"))
+    sent = _fake_sdk(monkeypatch, anthropic, _reply(anthropic, module.CHEAPER, " Phishing\n"))
 
-    answer = await module.claude_classifier(module.NEWER)(module.CASES[0])
+    answer = await module.claude_classifier(module.CHEAPER)(module.CASES[0])
 
     assert isinstance(answer, Answer)
-    assert sent[0]["model"] == module.NEWER and sent[0]["system"] == module.PROMPT
+    assert sent[0]["model"] == module.CHEAPER and sent[0]["system"] == module.PROMPT
     assert sent[0]["messages"] == [{"role": "user", "content": module.CASES[0]["email"]}]
     assert sent[0]["output_config"] == {"effort": "low"}
     assert answer.value == "phishing"
-    assert (answer.model, answer.input_tokens, answer.output_tokens) == (module.NEWER, 120, 40)
-    input_rate, output_rate = module.RATES_PER_MILLION[module.NEWER]
+    assert (answer.model, answer.input_tokens, answer.output_tokens) == (module.CHEAPER, 120, 40)
+    input_rate, output_rate = module.MODELS[module.CHEAPER]
     assert answer.cost_usd == pytest.approx((120 * input_rate + 40 * output_rate) / 1e6)
 
 
-async def test_the_older_model_is_sent_no_effort(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_the_control_model_is_sent_no_effort(monkeypatch: pytest.MonkeyPatch) -> None:
     anthropic = pytest.importorskip("anthropic")
     module = _load()
-    sent = _fake_sdk(monkeypatch, anthropic, _reply(anthropic, module.OLDER, "legit"))
+    sent = _fake_sdk(monkeypatch, anthropic, _reply(anthropic, module.CONTROL, "legit"))
 
-    await module.claude_classifier(module.OLDER)(module.CASES[0])
+    await module.claude_classifier(module.CONTROL)(module.CASES[0])
 
-    assert sent[0]["model"] == module.OLDER and "output_config" not in sent[0]
+    assert sent[0]["model"] == module.CONTROL and "output_config" not in sent[0]
 
 
 async def test_with_an_api_key_every_call_s_spend_reaches_its_arm(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -149,5 +148,5 @@ async def test_with_an_api_key_every_call_s_spend_reaches_its_arm(monkeypatch: p
     for model, summary in comparison.arms.items():
         (accuracy,) = [measure.mean for measure in summary.measures if measure.name == "match"]
         assert accuracy == 1.0
-        input_rate, output_rate = module.RATES_PER_MILLION[model]
+        input_rate, output_rate = module.MODELS[model]
         assert summary.candidate_cost_usd == pytest.approx(24 * (120 * input_rate + 40 * output_rate) / 1e6)
