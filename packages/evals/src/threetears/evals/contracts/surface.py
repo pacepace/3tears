@@ -126,6 +126,60 @@ class JudgedDimensionFacts(EvalDocumentModel):
 STRATUM_MIN_CASES = 10
 
 
+def _no_turn_delivered(n_observations: int, n_infra_excluded: int, n_no_turn: int | None) -> bool:
+    """Whether no observation the harness did not fault took a turn — every one a failure that took none.
+
+    The one reading of the counts :attr:`CellFacts.all_failed` and :attr:`StratumFacts.all_failed` share.
+    False when nothing was counted at all (every observation faulted), and when the count was not kept.
+    """
+    if not n_no_turn:
+        return False
+    return n_observations - n_infra_excluded - n_no_turn == 0
+
+
+def _check_failures_fit(
+    n_observations: int, n_infra_excluded: int, n_candidate_failed: int | None, n_no_turn: int | None
+) -> None:
+    """Refuse failure counts that cannot come from the observations they partition.
+
+    Raises:
+        ValueError: One count was kept without the other; the faulted and failed counts sum to more than
+            ``n_observations``; or more failures took no turn than failed at all.
+    """
+    if (n_candidate_failed is None) != (n_no_turn is None):
+        raise ValueError("n_candidate_failed and n_no_turn are kept together, or neither is")
+    if n_candidate_failed is None or n_no_turn is None:
+        return
+    if n_infra_excluded + n_candidate_failed > n_observations:
+        raise ValueError(
+            f"{n_infra_excluded} faulted and {n_candidate_failed} failed observations cannot come from "
+            f"{n_observations}: a result is faulted, failed or neither, never two of them"
+        )
+    if n_no_turn > n_candidate_failed:
+        raise ValueError(
+            f"{n_no_turn} failures that took no turn cannot come from {n_candidate_failed} failures: they are a "
+            "subset of them"
+        )
+
+
+#: How :attr:`CellFacts.n_no_turn` and :attr:`StratumFacts.n_no_turn` read.
+_N_NO_TURN = (
+    "Of `n_candidate_failed`, the failures that took no turn — the candidate's model refused or errored before "
+    "delivering one (`delivered_a_turn` is False) — left out of every cost and latency measure, which "
+    "describe the turns the candidate took. A failure that took a turn (its budget ended it, its output cap "
+    "cut it, its deadline struck mid-call, its model failed after delivered turns) is not here: its time and "
+    "spend stay in. None exactly when `n_candidate_failed` is."
+)
+
+#: How :attr:`CellFacts.n_candidate_failed` and :attr:`StratumFacts.n_candidate_failed` read.
+_N_CANDIDATE_FAILED = (
+    "Observations the candidate failed (`classify_result`'s `candidate_fail`), for any cause: counted against "
+    "the arm in every rate, bar and judged score below. None on an analysis frozen before the count was kept "
+    "— whose cost and latency were read over every non-faulted result, failures included — never 0 standing "
+    "in for a count nobody took."
+)
+
+
 class StratumFacts(EvalDocumentModel):
     """Everything measured in one stratum of one cell — the cell's figures again, over one kind of case.
 
@@ -156,6 +210,8 @@ class StratumFacts(EvalDocumentModel):
     n_infra_excluded: int = Field(
         default=0, ge=0, description="Observations the harness faulted, excluded from every value below."
     )
+    n_candidate_failed: int | None = Field(default=None, ge=0, description=_N_CANDIDATE_FAILED)
+    n_no_turn: int | None = Field(default=None, ge=0, description=_N_NO_TURN)
     measures: MeasureCollection = Field(
         default_factory=MeasureCollection,
         description="Every measure over the stratum's observations, by the cell's own rules.",
@@ -164,6 +220,17 @@ class StratumFacts(EvalDocumentModel):
         default_factory=list, description="Every judged dimension scored in this stratum, sorted by dimension."
     )
 
+    @property
+    def all_failed(self) -> bool:
+        """Whether no result of the stratum the harness did not fault took a turn — see :attr:`CellFacts.all_failed`."""
+        return _no_turn_delivered(self.n_observations, self.n_infra_excluded, self.n_no_turn)
+
+    @model_validator(mode="after")
+    def _failures_fit(self) -> StratumFacts:
+        """Refuse failure counts the stratum cannot hold — see :meth:`CellFacts._failures_fit`."""
+        _check_failures_fit(self.n_observations, self.n_infra_excluded, self.n_candidate_failed, self.n_no_turn)
+        return self
+
 
 class CellFacts(EvalDocumentModel):
     """Everything measured in one cell — one arm, under one rig.
@@ -171,6 +238,19 @@ class CellFacts(EvalDocumentModel):
     The population is the cell's observations the harness did not fault, the same one every bar is
     adjudicated over, so a measure read here and a bar verdict on the same cell describe the same
     observations. How many were left out is stated beside them rather than folded in.
+
+    **A cost or latency measure is read over fewer: the turns the candidate took**
+    (:func:`~threetears.evals.contracts.result_condition.delivered_a_turn`). Every candidate failure is a
+    result of the arm, and every rate, bar and judged score counts it against the arm; but a call the model
+    refused or errored on straight away took no turn, so its round trip is not a turn's latency and its
+    empty usage not a spend anyone observed. Averaged in, a classifier arm whose every call was refused
+    read 53 ms and $0 on the surface — the fastest, cheapest arm — and nothing said its every result had
+    failed. A failure that took a turn — ended by the turn budget, cut by the output cap, struck by the
+    deadline mid-call, or a model failure after delivered turns — stays in: its time and spend are what
+    failing cost the arm. So both are counted
+    here (``n_candidate_failed``, and the ``n_no_turn`` of them left out of cost and latency), and a cell
+    where no result took a turn says so (:attr:`all_failed`) where it would otherwise have no cost or
+    latency reading and look merely unmeasured.
     """
 
     variant_key: str = Field(min_length=1, description="The arm's variant — its key into the analysis's variant_index.")
@@ -191,8 +271,14 @@ class CellFacts(EvalDocumentModel):
     n_infra_excluded: int = Field(
         default=0, ge=0, description="Observations the harness faulted, excluded from every value below."
     )
+    n_candidate_failed: int | None = Field(default=None, ge=0, description=_N_CANDIDATE_FAILED)
+    n_no_turn: int | None = Field(default=None, ge=0, description=_N_NO_TURN)
     measures: MeasureCollection = Field(
-        default_factory=MeasureCollection, description="Every measure over the cell's non-faulted observations."
+        default_factory=MeasureCollection,
+        description=(
+            "Every measure over the cell's non-faulted observations — a cost or latency measure over the turns the "
+            "candidate took, leaving out the `n_no_turn` failures that took none."
+        ),
     )
     judged: list[JudgedReading] = Field(
         default_factory=list, description="Every judged dimension scored in this cell, sorted by dimension."
@@ -213,6 +299,34 @@ class CellFacts(EvalDocumentModel):
             "cells are not broken down by stratum."
         ),
     )
+
+    @property
+    def all_failed(self) -> bool:
+        """Whether no result of this cell the harness did not fault took a turn — each one a failure that took none.
+
+        Such a cell carries no cost or latency reading, and that absence is not "unmeasured": every result
+        it holds is a failure, which its rates and bars count. Derived from the counts rather than stored,
+        so it cannot disagree with them. A cell whose every result failed but some took a turn (its budget
+        ended them) is not ``all_failed``: it has the cost and latency of those turns to state, and
+        ``n_candidate_failed`` says every result failed. False when no result was counted at all (every one
+        faulted, which ``n_infra_excluded`` says), and when the count was not kept (``n_no_turn`` None).
+        """
+        return _no_turn_delivered(self.n_observations, self.n_infra_excluded, self.n_no_turn)
+
+    @model_validator(mode="after")
+    def _failures_fit(self) -> CellFacts:
+        """Refuse failure counts the cell cannot hold.
+
+        A result is faulted, failed or neither (``classify_result``), so the faulted and failed counts
+        together are at most the observations; the failures that took no turn are some of the failures; and
+        the two failure counts are kept together or not at all. A cell claiming otherwise is describing a
+        population that does not exist.
+
+        Raises:
+            ValueError: Any of those does not hold.
+        """
+        _check_failures_fit(self.n_observations, self.n_infra_excluded, self.n_candidate_failed, self.n_no_turn)
+        return self
 
     @field_validator("strata")
     @classmethod
@@ -238,7 +352,8 @@ class CellFacts(EvalDocumentModel):
         reader adding the strata up would meet a cell larger than its parts with nothing saying why.
 
         Raises:
-            ValueError: The strata's observations, faulted observations or cases do not sum to the cell's.
+            ValueError: The strata's observations, faulted observations, failed observations or cases do not
+                sum to the cell's.
         """
         if not self.strata:
             return self
@@ -246,9 +361,46 @@ class CellFacts(EvalDocumentModel):
             raise ValueError("a cell's strata hold every one of its observations, each in one stratum")
         if sum(stratum.n_infra_excluded for stratum in self.strata) != self.n_infra_excluded:
             raise ValueError("a cell's strata hold every one of its faulted observations, each in one stratum")
+        for name, total, counts in (
+            ("failed", self.n_candidate_failed, [stratum.n_candidate_failed for stratum in self.strata]),
+            ("no-turn", self.n_no_turn, [stratum.n_no_turn for stratum in self.strata]),
+        ):
+            if total is None:
+                if any(count is not None for count in counts):
+                    raise ValueError(f"a cell that kept no {name} count has strata that kept none either")
+            elif None in counts or sum(count or 0 for count in counts) != total:
+                raise ValueError(f"a cell's strata hold every one of its {name} observations, each in one stratum")
         if self.n_cases is not None and sum(stratum.n_cases for stratum in self.strata) != self.n_cases:
             raise ValueError("a cell's strata hold every one of its cases, each in one stratum")
         return self
+
+
+def all_failed_sentence(n_all_failed: int, n_cells: int) -> str:
+    """The one sentence every surface says about cells where no result took a turn (:attr:`CellFacts.all_failed`).
+
+    Stated once, here, because two readers say it — the bundle the analysis is written from, and the
+    decision-surface table every report renders — and a rewording in one would leave them describing one
+    cell two ways. The sentence names no cell: the bundle lists the cells beside it, and the table names
+    their arms after it when only some cells failed.
+
+    Args:
+        n_all_failed: The cells where no result took a turn, at least one.
+        n_cells: The cells on the surface.
+
+    Returns:
+        The sentence.
+    """
+    if n_all_failed == n_cells:
+        return (
+            "Every result failed: the candidate's model refused or errored on every call and took no turn, so there "
+            "is no cost or latency to read — not a fast, free arm — and every failure counts against its arm in "
+            "each rate, bar and judged score."
+        )
+    return (
+        f"Every result failed in {n_all_failed} of {n_cells} cells: the candidate's model refused or errored on "
+        "every call there and took no turn, so those cells have no cost or latency to read — not a fast, free arm "
+        "— and every failure counts against its arm in each rate, bar and judged score."
+    )
 
 
 #: What a campaign's time positions are: the builds a host labels (``release``), or the UTC days its runs
@@ -386,4 +538,5 @@ __all__ = [
     "TimeAxis",
     "TimeAxisBasis",
     "TimePosition",
+    "all_failed_sentence",
 ]

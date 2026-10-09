@@ -18,7 +18,9 @@ The generator translates every alias to the cell's full ``cell_ref`` before reso
 anything, so everything below this seam, and every stored analysis, carries the full identity.
 
 **The point estimate is the cell's MEAN**, over its non-faulted observations — the population every
-bar is adjudicated over, so a reading and a bar verdict on one cell describe the same observations.
+bar is adjudicated over, so a reading and a bar verdict on one cell describe the same observations. A
+cost or latency reading is over the turns the candidate took (population ``delivered``), for the bar and
+the reading alike, and a cell where no result took a turn has none to resolve.
 The interval is t-based on ``n``; where ``n_cases`` is below ``n`` the observations are clustered
 and the interval is narrower than the clustering supports, which :attr:`ResolvedReading.dispersion`
 says in a short clause (``N obs over M cases, interval too narrow``) rather than leaving to the reader.

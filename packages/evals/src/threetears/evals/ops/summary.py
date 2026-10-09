@@ -15,6 +15,13 @@ as a measure whose mean is the share of answers that matched, and the ``confusio
 confusion matrix and each label's precision, recall and F1, counted by
 :func:`~threetears.evals.analysis.confusion.label_statistics` as the analysis bundle counts them.
 
+**A cost or latency measure is read over the turns the candidate took**
+(:func:`~threetears.evals.contracts.delivered_a_turn`), as every analysis surface reads it
+(:func:`~threetears.evals.contracts.metrics.summary_population`): a call the model refused or errored on
+carries a round trip and an empty spend, and averaged in they read as a fast, free run. What was left out
+is counted beside the mean — the failures that took no turn apart from the results excluded as a fault of
+the rig — and a run none of whose results took a turn says ``no successful results`` instead of a number.
+
 **A judged run's rubric is read too.** Each dimension a judge scored is summarised over the results that
 carry its score, beside how many the judge could not tell on, and the judge's spend is the sum of the
 results' ``judge`` usage rows — unknown, never zero, when any judge call went unpriced. So is the
@@ -41,6 +48,7 @@ from pydantic import BaseModel, ConfigDict
 
 from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics, confusion_matrix, label_statistics
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
+from threetears.evals.analysis.surface_table import NO_SUCCESSFUL_RESULTS
 from threetears.evals.contracts import (
     CONFUSION_CELL_MEASURE,
     MATCH_MEASURE,
@@ -50,8 +58,10 @@ from threetears.evals.contracts import (
     UsageRole,
     classify_result,
     counted_goal_verdicts,
+    delivered_a_turn,
 )
 from threetears.evals.contracts.host import EvalHost
+from threetears.evals.contracts.metrics import describe_measure, summary_population
 from threetears.evals.contracts.usage_capture import blended_cost
 from threetears.evals.run import get_run, list_results
 
@@ -88,6 +98,11 @@ class MeasureSummary(BaseModel):
             measure, whose words are listed by the analysis bundle and never averaged.
         minimum: The lowest value; ``None`` when none does.
         maximum: The highest value; ``None`` when none does.
+        n_no_turn: How many results carrying it were left out of ``n`` and the mean because the candidate's
+            model refused or errored and took no turn. Only a cost or latency measure leaves any out; 0 for
+            every other.
+        n_faulted: How many results carrying it were left out of ``n`` and the mean as a fault of the rig. Only
+            a cost or latency measure leaves any out; 0 for every other.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -97,6 +112,8 @@ class MeasureSummary(BaseModel):
     mean: float | None
     minimum: float | None
     maximum: float | None
+    n_no_turn: int = 0
+    n_faulted: int = 0
 
 
 class GoalCheckSummary(BaseModel):
@@ -219,7 +236,12 @@ class EvalSummary(BaseModel):
             f"candidate, {self.n_excluded} excluded",
         ]
         for measure in self.measures:
-            if measure.n == 0:
+            left_out = _left_out(measure)
+            if measure.n == 0 and measure.n_no_turn:
+                lines.append(f"  {measure.name}: {NO_SUCCESSFUL_RESULTS}{left_out}")
+            elif measure.n == 0 and measure.n_faulted:
+                lines.append(f"  {measure.name}: every result carrying it was excluded{left_out}")
+            elif measure.n == 0:
                 lines.append(f"  {measure.name}: no result carries it")
             elif measure.name == CONFUSION_CELL_MEASURE and self.confusion:
                 lines.append(f"  {measure.name}: n={measure.n}, counted in the confusion matrix below")
@@ -228,7 +250,7 @@ class EvalSummary(BaseModel):
             else:
                 lines.append(
                     f"  {measure.name}: mean {measure.mean:.3g} (n={measure.n}, "
-                    f"min {measure.minimum:.3g}, max {measure.maximum:.3g})"
+                    f"min {measure.minimum:.3g}, max {measure.maximum:.3g}{left_out})"
                 )
         if self.confusion:
             lines.append("  confusion (expected → predicted):")
@@ -258,6 +280,15 @@ class EvalSummary(BaseModel):
         lines.extend(f"  goal check {goal.check}: passed {goal.passed}/{goal.n}" for goal in self.goal_checks)
         lines.extend(f"  error: {error}" for error in self.errors)
         return "\n".join(lines)
+
+
+def _left_out(measure: MeasureSummary) -> str:
+    """What a cost or latency measure's mean left out, each kind named for what it is — or nothing."""
+    parts = [
+        *([f"{measure.n_no_turn} refused or errored with no turn taken"] if measure.n_no_turn else []),
+        *([f"{measure.n_faulted} excluded as a fault of the rig"] if measure.n_faulted else []),
+    ]
+    return f", left out: {' and '.join(parts)}" if parts else ""
 
 
 def _shown(label: str) -> str:
@@ -324,7 +355,12 @@ def summarize_run(host: EvalHost, run_id: str, scope_id: str) -> EvalSummary:
     ]
     measures = []
     for name in (*declared, *classified):
-        carried = [result.host_measures[name] for result in results if name in result.host_measures]
+        carrying = [result for result in results if name in result.host_measures]
+        # A cost or latency reading is a turn's: a call that took none carries a round trip and an empty spend,
+        # and a faulted one measured the rig. `delivered_a_turn` is the one predicate every surface reads.
+        turns_only = summary_population(describe_measure(name, host.profile.measures), "all_observed") == "delivered"
+        left = [result for result in carrying if turns_only and not delivered_a_turn(result)]
+        carried = [result.host_measures[name] for result in carrying if not turns_only or delivered_a_turn(result)]
         # A text observation is words, never a number; a boolean counts as 1 or 0, so its mean is its rate.
         values = [float(value) for value in carried if not isinstance(value, str)]
         measures.append(
@@ -334,6 +370,8 @@ def summarize_run(host: EvalHost, run_id: str, scope_id: str) -> EvalSummary:
                 mean=sum(values) / len(values) if values else None,
                 minimum=min(values) if values else None,
                 maximum=max(values) if values else None,
+                n_no_turn=sum(1 for result in left if classify_result(result) is ResultOutcome.CANDIDATE_FAIL),
+                n_faulted=sum(1 for result in left if classify_result(result) is ResultOutcome.INFRA_EXCLUDE),
             )
         )
     errors = [

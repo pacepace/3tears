@@ -13,7 +13,8 @@ here, from the public roots, on the terms the engine already sets:
   case's expected label (``expected=``). Each cell then lands the core ``match`` and
   ``confusion_cell`` as a classifier kind does, so the summary carries the confusion matrix and each
   label's precision, recall and F1, and the analysis derives ``accuracy``. An answer that is not a
-  usable label lands under :data:`UNUSABLE_ANSWER`, a predicted label of its own.
+  usable label lands under :data:`UNUSABLE_ANSWER`, a predicted label of its own — and so does a
+  candidate that raised, a failure counted as a miss rather than left out of every rate.
 - **Tools** are plain functions the candidate calls, declared by handing ``run_eval`` them by name
   (``tools=``); the candidate is then called with the case and its tools. Each cell adapts them to the
   engine's cassette seams (:class:`~threetears.evals.quick.tools.CellTools`), so a run launched with
@@ -65,6 +66,7 @@ from threetears.evals.contracts import (
     DEFAULT_LAUNCH_K_RUNS,
     MATCH_MEASURE,
     CandidateOutput,
+    CandidateTelemetry,
     CassetteMode,
     CellCassettes,
     CellSink,
@@ -419,7 +421,15 @@ class CallableKind:
             raise  # the rig's fault under the candidate — a replay miss — is the engine's to exclude the cell on
         # prawduct:ok-broad-except — the candidate is the caller's code under test: whatever it raises is its failure, recorded on the cell
         except Exception as raised:
-            return CandidateOutput(candidate_errors=[f"the candidate raised {type(raised).__name__}: {raised}"])
+            missed = _missed(test_case.host_payload[_EXPECTED_KEY]) if self._classifies else {}
+            return CandidateOutput(
+                candidate_errors=[f"the candidate raised {type(raised).__name__}: {raised}"],
+                host_measures=missed,
+                # One call, and it answered nothing: a refusal's round trip is no turn's time or spend.
+                telemetry=CandidateTelemetry(turns_delivered=0),
+            )
+        # One call, answered: the kind's whole turn.
+        telemetry = telemetry.model_copy(update={"turns_delivered": 1})
         evidence: JudgeEvidence | None = None
         if self._judge is not None:
             try:
@@ -457,6 +467,24 @@ class CallableKind:
                 )
             measures[name] = float(score)
         return CandidateOutput(output=trace, host_measures=measures, judge_evidence=evidence, telemetry=telemetry)
+
+
+def _missed(expected: str) -> dict[str, bool | float | str]:
+    """A classifier's verdict on a case its candidate raised on: a miss, predicted as no usable label.
+
+    A raise — a refusal, a provider error — answered nothing, so a classifier counts it as it counts a
+    blank answer: ``match`` False, and the expected label's confusion cell under :data:`UNUSABLE_ANSWER`.
+    Landed rather than left absent because an absent ``match`` is in no rate: an arm that refused the
+    cases it would have got wrong read more accurate than one that answered them, and its refusals were in
+    none of its precision or recall.
+
+    Args:
+        expected: The case's expected label.
+
+    Returns:
+        The measures to land beside the failure.
+    """
+    return {MATCH_MEASURE: False, CONFUSION_CELL_MEASURE: confusion_cell(expected, UNUSABLE_ANSWER)}
 
 
 async def _call_candidate(candidate: Candidate | ToolUsingCandidate, case: Any, tools: CellTools | None) -> Any:

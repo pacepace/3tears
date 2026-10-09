@@ -143,6 +143,10 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
     # 43/10: a resolved surface folded into a fixed knob without a check is named as an `unverified_fold`
     # confound; the apparatus partition is unchanged.
     ((43, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
+    # 44/10: a cost or latency reading leaves out the results that delivered no turn, each cell counts its
+    # candidate failures, and the bundle names the cells where no result delivered a turn; the apparatus
+    # partition is unchanged.
+    ((44, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
 )
 
 

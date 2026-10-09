@@ -4453,8 +4453,13 @@ class TestHistoryLatencyExcludesTheHarnesssOwnCells:
             f"the harness's truncated wall-clock entered a regression series (got {points[0].value})"
         )
 
-    def test_a_candidate_failure_is_still_a_latency_observation(self):
-        """The guard must not widen into 'any error' — a slow candidate failure is real data."""
+    def test_a_candidate_failure_that_took_a_turn_is_still_a_latency_observation(self):
+        """The guard must not widen into 'any error' — a slow candidate failure is real data.
+
+        A failure that took a turn — here a model call the cell's deadline struck while it was pending — ran
+        for as long as it ran. Only a call that came straight back refused or errored took no turn
+        (``delivered_a_turn``), and that one is left out: its round trip is no turn's latency.
+        """
         run = _fr_run()
         fast = _fr_result(run, model="m1", variant_key="vk-a", test_case_id="tc1", total_ms=100.0)
         slow_failure = _fr_result(
@@ -4463,13 +4468,42 @@ class TestHistoryLatencyExcludesTheHarnesssOwnCells:
             variant_key="vk-a",
             test_case_id="tc2",
             total_ms=900.0,
-            candidate_error="the candidate returned nothing",
+            candidate_error="the cell's deadline struck while the candidate's model was pending",
+        ).model_copy(update={"termination": "cell_timeout"})
+        refused = _fr_result(
+            run,
+            model="m1",
+            variant_key="vk-a",
+            test_case_id="tc3",
+            total_ms=50.0,
+            candidate_error="the provider refused the request",
         )
 
-        result = compute_history([run], [fast, slow_failure], metric=METRIC_TOTAL_MS, profile=_JUDGED_HOST)
+        result = compute_history([run], [fast, slow_failure, refused], metric=METRIC_TOTAL_MS, profile=_JUDGED_HOST)
 
         points = [point for series in result.series for point in series.points]
         assert points[0].value == pytest.approx(500.0)
+
+
+class TestHistoryCostLeavesOutACallThatTookNoTurn:
+    """A billed refusal's dollars are no turn's spend; a faulted cell's dollars were spent and stay."""
+
+    def test_a_billed_refusal_is_left_out_and_a_faulted_cell_kept(self):
+        run = _fr_run()
+        answered = _fr_result(run, model="m1", variant_key="vk-a", test_case_id="tc1").model_copy(
+            update={"cost_usd": 0.004}
+        )
+        refused = _fr_result(
+            run, model="m1", variant_key="vk-a", test_case_id="tc2", candidate_error="the provider refused the request"
+        ).model_copy(update={"cost_usd": 0.0001})
+        faulted = _fr_result(
+            run, model="m1", variant_key="vk-a", test_case_id="tc3", infra_error="cassette miss"
+        ).model_copy(update={"cost_usd": 0.002})
+
+        result = compute_history([run], [answered, refused, faulted], metric=METRIC_COST_USD, profile=_JUDGED_HOST)
+
+        points = [point for series in result.series for point in series.points]
+        assert points[0].value == pytest.approx(0.003)
 
 
 class TestFrontierLatencyExcludesTheHarnesssOwnCells:
@@ -4508,11 +4542,14 @@ class TestFrontierLatencyExcludesTheHarnesssOwnCells:
             f"made this contestant look faster than it is (got {point.mean_total_ms})"
         )
 
-    def test_a_candidate_failure_still_counts_toward_latency(self):
+    def test_a_candidate_failure_that_took_a_turn_still_counts_toward_latency(self):
         """The guard must not widen into 'any error', which would delete real measurements.
 
-        A candidate that failed slowly IS a measurement of that candidate, and it is the
-        case pass^k counts as a failure rather than excluding — so latency must keep it.
+        A failure that took a turn — here a model call the cell's deadline struck while it was
+        pending — is a measurement of that candidate, and it is the case pass^k counts as a failure
+        rather than excluding, so latency keeps it. A call its model refused straight away took no
+        turn (``delivered_a_turn``), and is left out: an all-refusing contestant otherwise ranked
+        fastest and dominated the arms that answered.
         """
         run = _fr_run()
         fast = _fr_result(run, model="m1", variant_key="vk-a", test_case_id="tc1", total_ms=100.0)
@@ -4522,13 +4559,24 @@ class TestFrontierLatencyExcludesTheHarnesssOwnCells:
             variant_key="vk-a",
             test_case_id="tc2",
             total_ms=900.0,
-            candidate_error="the candidate returned nothing",
+            candidate_error="the cell's deadline struck while the candidate's model was pending",
+        ).model_copy(update={"termination": "cell_timeout"})
+        refused = _fr_result(
+            run,
+            model="m1",
+            variant_key="vk-a",
+            test_case_id="tc3",
+            total_ms=50.0,
+            candidate_error="the provider refused the request",
         )
 
-        out = compute_frontier([run], [fast, slow_failure])
+        out = compute_frontier([run], [fast, slow_failure, refused])
         point = _point_by_model(out.subjects[0], "m1")
 
-        assert point.mean_total_ms == pytest.approx(500.0), "a candidate failure is a measurement and must stay in"
+        assert point.mean_total_ms == pytest.approx(500.0), (
+            "a failure that took a turn is a measurement and must stay in"
+        )
+        assert point.n_latency == 2
 
     def test_a_point_whose_every_cell_was_excluded_reports_no_latency(self):
         """Not zero — zero is the fastest possible contestant, and would win on that axis."""

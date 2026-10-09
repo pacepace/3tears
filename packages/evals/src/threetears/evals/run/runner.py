@@ -74,6 +74,7 @@ from threetears.evals.contracts.candidate_kind import (
     VariantConfig,
 )
 from threetears.evals.contracts.covariates import (
+    count_delivered_turns,
     count_dropped_tool_calls,
     count_refused_tool_attaches,
     count_truncated_rounds,
@@ -1805,6 +1806,8 @@ def assemble_completed_cell(
         # Why the conversation inside it stopped, as the kind reported it — a separate fact
         # from termination, and None from a kind that does not converse.
         stop_cause=output.stop_cause,
+        # Counted, never inferred: what tells a model failure after delivered turns from a refusal.
+        turns_delivered=count_delivered_turns(trace, reported=telemetry.turns_delivered),
         scored_at=scored_at,
     )
     judge_evidence = output.judge_evidence
@@ -2170,6 +2173,11 @@ def _degraded_capture_fields(
         "host_measures": dict(side.host_measures) if side is not None else {},
         "goal_state_outcomes": list(returned.mechanical_facts) if returned is not None else list(ungraded_goal_checks),
         "stop_cause": side.stop_cause if side is not None else None,
+        # What the kind had delivered when the cell ended, as it counted or stamped it; None when nothing
+        # counted — a pre-turn exit, or a kind cut off before it reported anything.
+        "turns_delivered": count_delivered_turns(
+            trace, reported=side.telemetry.turns_delivered if side is not None else None
+        ),
         "candidate_instance_id": side.candidate_instance_id if side is not None else None,
         "kind_payload": side.kind_payload if side is not None else None,
         # What fired before the cell ended, from the session the engine owns — so a cut-off cell

@@ -70,7 +70,9 @@ def propose_bars(host: EvalHost, baseline_campaign_id: str, *, scope_id: str) ->
 
     Each proposal's threshold is the incumbent's mean on the measure, over the cell's non-faulted
     observations — the same population every bar is later adjudicated over, so a proposed bar and
-    the verdict that will read it describe one set of observations.
+    the verdict that will read it describe one set of observations. A cost or latency measure is over
+    the turns the incumbent took (population ``delivered``), as its bar will be read; an incumbent
+    none of whose calls took a turn has no such mean, and nothing is proposed on it.
 
     Args:
         host: The host whose measures, bars and storage this reads.

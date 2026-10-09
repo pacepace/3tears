@@ -62,6 +62,8 @@ from threetears.evals.contracts.result_condition import (
     counted_goal_verdicts,
     counted_rubric_scores,
     counted_score,
+    delivered_a_turn,
+    harness_faulted,
     trial_exclusion,
 )
 from threetears.evals.contracts.scoring import compute_pass_k, result_composite
@@ -3782,10 +3784,15 @@ class FrontierPoint(EvalBaseModel):
     # not "infinitely expensive").
     cost_per_acceptable_outcome: float | None = None
 
-    # Latency — total wall-clock ms, the performance axis. Mean over the results
-    # that harvested a total; ``None`` when none did.
+    # Latency — total wall-clock ms, the performance axis. Mean over the turns the candidate took
+    # (`delivered_a_turn`) that harvested a total; ``None`` when none did.
     mean_total_ms: float | None = None
     n_latency: int = 0
+    #: Results whose candidate's model refused or errored with no turn taken — failures pass^k counts,
+    #: left out of the cost and latency above. Equal to ``n_results`` (less any faulted) when every call
+    #: failed that way: then the absent cost and latency mean every result failed, not that nothing was
+    #: measured, and the point can dominate nothing on either axis.
+    n_no_turn: int = 0
 
     # What this point rests on across all axes.
     n_results: int = 0
@@ -4142,11 +4149,16 @@ def _frontier_point(
     # tool credits, so letting it contribute its observed sum here would rank a
     # substituted contestant as cheaper than a live one on a difference in apparatus
     # rather than in configuration. Withholding is what keeps the ranking a comparison.
+    #
+    # A call the candidate's model refused or errored on took no turn (`delivered_a_turn`), so its dollars are
+    # no turn's spend, and averaged in they rank a refusing contestant cheap; it is left out here as on every
+    # cost reading. A faulted cell is not: that is the deliberate exception above, whose dollars a turn spent.
     observed_costs = [
         c
         for c in (
             production_replicating_cost(r.usage, substituted_deliveries=count_substituted_deliveries(r))
             for r in results
+            if delivered_a_turn(r) or harness_faulted(r)
         )
         if c is not None
     ]
@@ -4168,13 +4180,15 @@ def _frontier_point(
     # leaves latency None), so pooling it here lets an apparatus fault push a contestant into or
     # out of the dominated set. Cost is the deliberate exception on this point and says so above
     # — the dollars were really spent. Wall-clock that a cassette miss cut short measures the
-    # harness, not the candidate, so it is not the same case.
+    # harness, not the candidate, so it is not the same case. Nor is a call the model refused or
+    # errored on: it took no turn, and its round trip ranked an all-refusing contestant the fastest
+    # on the subject, dominating the arms that answered. `delivered_a_turn` is that predicate — the
+    # cells' own — and it keeps a turn the budget ended or the deadline struck, which really took
+    # that long.
     totals = [
         r.latency.total_ms
         for r in results
-        if r.latency is not None
-        and r.latency.total_ms is not None
-        and classify_result(r) is not ResultOutcome.INFRA_EXCLUDE
+        if r.latency is not None and r.latency.total_ms is not None and delivered_a_turn(r)
     ]
     n_latency = len(totals)
     mean_total_ms = round(sum(totals) / n_latency, 3) if n_latency else None
@@ -4231,6 +4245,9 @@ def _frontier_point(
         cost_per_acceptable_outcome=cost_per_acceptable_outcome,
         mean_total_ms=mean_total_ms,
         n_latency=n_latency,
+        n_no_turn=sum(
+            1 for r in results if classify_result(r) is ResultOutcome.CANDIDATE_FAIL and not delivered_a_turn(r)
+        ),
         n_results=len(results),
         n_cases=len({r.test_case_id for r in results}),
     )
@@ -4851,20 +4868,21 @@ def _history_value_of(metric: str) -> Callable[[EvalResult], float | None]:
     if metric == METRIC_COMPOSITE:
         return result_composite
     if metric == METRIC_COST_USD:
-        return lambda result: result.cost_usd
+        # Whole but for a call the model refused or errored on, which took no turn and spent no turn's
+        # dollars — the frontier's cost rule, so the two surfaces read one spend.
+        return lambda result: result.cost_usd if delivered_a_turn(result) or harness_faulted(result) else None
     if metric == METRIC_TOTAL_MS:
         # Infra-excluded cells are withheld here for the reason they are on the frontier's
         # latency: an apparatus fault produces a REAL but truncated `LatencyMetrics`, and this
         # series issues regression verdicts. Composite already drops them (via `result_composite`
         # returning None), so leaving latency in made the two metrics on one surface answer
         # different questions — and a cassette miss could post a "faster" step that describes the
-        # harness. Cost is the deliberate exception in this family and stays whole: those dollars
-        # were spent.
+        # harness. A call the model refused or errored on took no turn, and is withheld for the frontier's
+        # reason: `delivered_a_turn`, the one predicate every latency reading uses. Cost keeps a faulted
+        # cell's dollars, which were spent (see METRIC_COST_USD above).
         return lambda result: (
             result.latency.total_ms
-            if result.latency is not None
-            and result.latency.total_ms is not None
-            and classify_result(result) is not ResultOutcome.INFRA_EXCLUDE
+            if result.latency is not None and result.latency.total_ms is not None and delivered_a_turn(result)
             else None
         )
     if metric in (METRIC_TRANSCRIPT, METRIC_OUTCOME):

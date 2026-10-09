@@ -129,6 +129,9 @@ __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why th
     "GradedBy",
     "MeasureFamily",
     "MeasurePopulation",
+    "DELIVERED_AXES",
+    "reads_turns",
+    "summary_population",
     "Materiality",
     "classifier_label_measure",
     "classifier_label_of",
@@ -207,7 +210,37 @@ MeritAxis = Literal["quality", "cost", "latency", "reliability"]
 #: row. The distinction is not a nicety: it is the difference between two ``mean_score`` figures
 #: that a reader currently has to hold in their head, and that a second consumer would inherit
 #: with no way to know.
-MeasurePopulation = Literal["scored", "all_observed"]
+#:
+#: ``delivered`` is the turns the candidate took
+#: (:func:`~threetears.evals.contracts.result_condition.delivered_a_turn`): it drops, beside the faults,
+#: the candidate failures that took no turn — a call the model refused or errored on straight away. A
+#: failure still counts against the arm wherever the arm is graded (a rate, a bar, a judged score), but a
+#: refused call's round trip is not a turn's latency, and an arm whose every call was refused read as the
+#: fastest and cheapest on the surface when it was averaged in. A failure that DID take a turn — one the
+#: host's turn budget ended, the output cap cut, the cell's deadline struck mid-call, or a model failure
+#: after turns the candidate had delivered (``EvalResult.turns_delivered``) — stays: its time and spend are
+#: the arm's real cost of failing. Every cost or latency measure that declares no other
+#: population is read over this one (:func:`summary_population`).
+MeasurePopulation = Literal["scored", "all_observed", "delivered"]
+
+#: The merit axes whose readings describe a turn the candidate took — what taking it cost, and how long it
+#: took — and are therefore read over ``delivered`` unless the measure declares otherwise.
+DELIVERED_AXES: frozenset[MeritAxis] = frozenset({"cost", "latency"})
+
+#: The engine's blended spend, read over ``delivered`` like a cost-axis measure though it serves no axis. It
+#: serves none only because it sums the judge's spend beside the candidate's — what it cost to MEASURE a
+#: result, not what the candidate costs — and that does not make a refused call's spend a turn's.
+_DELIVERED_SPEND = "cost_usd"
+
+
+def reads_turns(descriptor: MetricDescriptor) -> bool:
+    """Whether a measure describes a turn's time or spend — a cost or latency axis, or ``cost_usd``.
+
+    The one membership test for the measures ``delivered`` is for: :func:`summary_population` reads them over
+    it, and :class:`MetricDescriptor` refuses ``delivered`` declared on any other.
+    """
+    return descriptor.merit_axis in DELIVERED_AXES or descriptor.name == _DELIVERED_SPEND
+
 
 # Loosest to strictest. `strictest_class` relies on this ordering, and the lint that
 # refuses a declaration looser than its family's structural floor (a separate concern,
@@ -328,7 +361,11 @@ class MetricDescriptor(EvalBaseModel):
             "Which observations this measure is computed over. Every summary of it — a cell's, a bar's, a run's — "
             "is computed over exactly that population and states which, so two populations are never pooled under "
             "one name. None leaves it to the surface: the decision surface's cells and bars read `scored`, a run's "
-            "summary and the rollups `all_observed`, and each summary says which it used."
+            "summary and the rollups `all_observed`, and each summary says which it used. A cost or latency measure, "
+            "and the engine's blended spend `cost_usd`, is read over `delivered` on every surface unless it declares "
+            "`all_observed`: the turns the candidate took, leaving out the failures that took none (a refusal, a "
+            "model error), whose round trip and spend are no turn's. `delivered` may be declared only on such a "
+            "measure."
         ),
     )
     contained_by: str | None = Field(
@@ -351,6 +388,22 @@ class MetricDescriptor(EvalBaseModel):
             "direction is exactly what would let a ranking read the diagnostic as a merit."
         ),
     )
+
+    @model_validator(mode="after")
+    def _delivered_is_for_a_turns_time_or_spend(self) -> MetricDescriptor:
+        """Refuse ``population="delivered"`` on a measure that is not a turn's time or spend.
+
+        ``delivered`` leaves out the failures that took no turn. On a quality or reliability reading that
+        is exactly the inflation it exists to prevent elsewhere: a refusing arm's refusals would vanish from
+        its accuracy, and it would read better for refusing.
+        """
+        if self.population == "delivered" and not reads_turns(self):
+            raise ValueError(
+                f"{self.name} declares population 'delivered', which is for a turn's time or spend — a cost or "
+                f"latency measure, or cost_usd — and {self.name} is on {self.merit_axis or 'no'} axis; a failure "
+                "must count against the arm on any other reading, so declare `scored` or `all_observed`"
+            )
+        return self
 
     @model_validator(mode="after")
     def _a_diagnostic_has_no_better_end(self) -> MetricDescriptor:
@@ -1664,6 +1717,32 @@ def is_code_graded(descriptor: MetricDescriptor, measures: MeasureRegistry) -> b
         return descriptor.family in CODE_GRADED_FAMILIES
     declared = measures.family(descriptor.family)
     return declared is not None and declared.graded_by == "code"
+
+
+def summary_population(descriptor: MetricDescriptor, undeclared: MeasurePopulation) -> MeasurePopulation:
+    """The population one summary of a measure is computed over — the ONE answer every summary asks.
+
+    A measure describing a turn's time or spend (:func:`reads_turns`) is read over ``delivered`` on EVERY
+    surface unless it declares ``all_observed`` — the decision surface's cells and bars, a run's summary,
+    the telemetry rollup and the scope divergences alike — so no lens can average a refused call's round
+    trip in as a fast turn while another leaves it out. ``scored`` keeps a candidate's failures because a
+    failure is a result of the arm, and on a quality or reliability reading it must count against it; on a
+    cost or latency reading a failure that took no turn has no turn's time or spend to contribute. An
+    explicit ``all_observed`` is not narrowed: the declarer asked for every raw row, and the summary says so.
+
+    Every other measure is read over its declared population, else ``undeclared``, the population of the
+    surface asking.
+
+    Args:
+        descriptor: The measure's descriptor.
+        undeclared: The population of the surface asking, for a measure that declares none.
+
+    Returns:
+        The population the summary is computed over, and states.
+    """
+    if reads_turns(descriptor) and descriptor.population != "all_observed":
+        return "delivered"
+    return descriptor.population or undeclared
 
 
 #: How a difference in a measure reads against the measure's declared materiality threshold.

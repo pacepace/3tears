@@ -204,6 +204,7 @@ from threetears.evals.contracts.result_condition import (
     classify_result,
     counted_goal_verdicts,
     counted_score,
+    delivered_a_turn,
     resolve_result_condition,
 )
 from threetears.evals.contracts.scoring import (
@@ -619,6 +620,7 @@ __all__ = [
     "classify_result",
     "counted_goal_verdicts",
     "counted_score",
+    "delivered_a_turn",
     "describe_and_log_failure",
     "extract_json",
     "extract_json_array",

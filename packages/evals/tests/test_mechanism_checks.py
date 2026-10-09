@@ -45,7 +45,9 @@ from threetears.evals.contracts import (
     SweptAxis,
     resolve_variant_identity,
 )
+from threetears.evals.contracts.metrics import MetricDescriptor
 from threetears.evals.contracts.host import (
+    MeasureRegistry,
     CANDIDATE_MODEL_LEVER,
     SHARED_CORE,
     ActsOn,
@@ -72,7 +74,11 @@ from packages.evals.tests.fixtures.toyhost.corpus import (
     toyhost_measurements,
 )
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
-from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from packages.evals.tests.fixtures.toyhost.profile import (
+    TOYHOST_EXTRACTION_FAMILY,
+    TOYHOST_MEASURES,
+    toyhost_profile,
+)
 from packages.evals.tests.fixtures.toyhost.sweepables import TOYHOST_ROLES, TOYHOST_SWEEPABLES
 
 _CONTEXT = "context_tokens_in"
@@ -107,6 +113,7 @@ class _Arm:
     llm_ms: float | None = None
     documents: tuple[str, ...] = TOYHOST_DOCUMENTS
     keep: Callable[[str, int], bool] | None = None
+    alter: Callable[[EvalResult], EvalResult] | None = None
 
 
 def _profile(*, acts_on: str | None = _CONTEXT, kinds: tuple[KindContract, ...] | None = None) -> HostProfile:
@@ -164,7 +171,8 @@ def _observations(arm: _Arm, profile: HostProfile) -> list[EvalResult]:
             update["covariates"] = dict(arm.covariates(result.test_case_id, result.k_iteration))
         if arm.llm_ms is not None and result.latency is not None:
             update["latency"] = result.latency.model_copy(update={"llm_ms": arm.llm_ms})
-        kept.append(result.model_copy(update=update))
+        altered = result.model_copy(update=update)
+        kept.append(arm.alter(altered) if arm.alter is not None else altered)
     return kept
 
 
@@ -302,6 +310,69 @@ class TestALeverIsCheckedAgainstTheMechanismItDeclares:
     def test_the_candidate_model_lever_declares_no_mechanism(self) -> None:
         bundle = _bundle([_Arm(_model_batch(_MODEL_A)), _Arm(_model_batch(_MODEL_B))])
         assert _row(bundle, "model").mechanism.reason == "not_declared"
+
+
+#: A host-declared, per-result latency measure a lever can act on, declaring ``scored`` — which a turn's time
+#: is read as ``delivered``, so a call the model refused straight away is no observation of it.
+_RETRIEVE_MS = "retrieve_ms"
+
+
+def _retrieve_profile() -> HostProfile:
+    """The toy profile, with ``chunk_tokens`` acting on a host latency measure that declares ``scored``."""
+    descriptor = MetricDescriptor(
+        name=_RETRIEVE_MS,
+        data_type="numeric",
+        family="mechanical",
+        transferability_class="mechanical",
+        attribution_scope="subsystem",
+        description="Wall-clock the retriever took for one document.",
+        higher_is_better=False,
+        unit="ms",
+        merit_axis="latency",
+        population="scored",
+    )
+    declarations = tuple(
+        replace(declared, acts_on=_RETRIEVE_MS) if declared.name == "chunk_tokens" else declared
+        for declared in TOYHOST_SWEEPABLES
+    )
+    return replace(
+        toyhost_profile(),
+        host_sweepables=SHARED_CORE.extend(declarations, roles=TOYHOST_ROLES),
+        measures=MeasureRegistry([*TOYHOST_MEASURES, descriptor], families=(TOYHOST_EXTRACTION_FAMILY,)),
+    )
+
+
+def _retrieved(*, refuse: tuple[str, ...] = ()) -> Callable[[EvalResult], EvalResult]:
+    """Each observation's retrieve time: 1 s for a turn taken, 50 ms for a call refused on a ``refuse`` document."""
+
+    def alter(result: EvalResult) -> EvalResult:
+        refused = result.test_case_id in refuse
+        update: dict[str, object] = {
+            "host_measures": {**result.host_measures, _RETRIEVE_MS: 50.0 if refused else 1000.0}
+        }
+        if refused:
+            update["candidate_error"] = "the provider refused the request"
+        return result.model_copy(update=update)
+
+    return alter
+
+
+class TestAMechanismOnATurnsTimeIsReadOverTurnsTaken:
+    """A lever acting on a latency measure is checked over the turns its levels took, as the cells read it."""
+
+    def test_a_refused_call_s_round_trip_does_not_move_the_mechanism(self) -> None:
+        refused = TOYHOST_DOCUMENTS[: len(TOYHOST_DOCUMENTS) // 2]
+        bundle = _bundle(
+            [
+                _Arm(_chunk_batch(256), alter=_retrieved(refuse=refused)),
+                _Arm(_chunk_batch(1024), alter=_retrieved()),
+            ],
+            profile=_retrieve_profile(),
+        )
+        mechanism = _row(bundle, "chunk_tokens").mechanism
+        # Read over every result, the refusals' 50 ms would pull the narrow level's mean far below 1 s.
+        assert mechanism.level_means == {"256": 1000.0, "1024": 1000.0}
+        assert mechanism.state == "inert"
 
 
 class TestAKindOverlayLeverDeclaresItsMechanismToo:

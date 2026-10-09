@@ -209,6 +209,28 @@ def count_truncated_rounds(trace: list[dict[str, Any]]) -> int | None:
     return sum(int(record.get("truncated_rounds") or 0) for record in reporting)
 
 
+def count_delivered_turns(trace: list[dict[str, Any]], *, reported: int | None) -> int | None:
+    """How many turns a cell's candidate delivered — what the kind reported, else the turn records it stamped.
+
+    The kind's own count wins: it is the one producer that knows what a turn is for it — one call for a
+    classifier, one artifact for a generator. A conversing kind stamps a ``TurnRecord`` on every candidate turn
+    it records, and a turn that raised never reaches the trace (see :func:`count_dropped_tool_calls`), so the
+    records ARE the delivered turns. With neither, nothing counted, and that is ``None`` — never a zero a
+    reader would take for "refused before any turn".
+
+    Args:
+        trace: The cell's judge-visible trace entries.
+        reported: The kind's own count (``CandidateTelemetry.turns_delivered``), or ``None``.
+
+    Returns:
+        The count, or ``None`` when nothing counted.
+    """
+    if reported is not None:
+        return reported
+    records = _candidate_turn_records(trace)
+    return len(records) if records else None
+
+
 def derive_covariates(
     *,
     usage: list[RoleUsage],
@@ -359,6 +381,7 @@ __all__ = [
     "REFUSED_TOOL_ATTACHES_KEY",
     "TRUNCATED_ROUNDS_KEY",
     "TURN_BUDGET_ENDED_KEY",
+    "count_delivered_turns",
     "count_dropped_tool_calls",
     "count_refused_tool_attaches",
     "count_truncated_rounds",
