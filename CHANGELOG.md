@@ -23,12 +23,16 @@ packages (bumped in lock-step).
   `moved` = some pair separates (a nonzero gap with no spread counts); `inert` = every level observed, every pair
   testable, none separates — no measurable evidence the lever acted on its mechanism; `unchecked` with `reason`
   `not_declared` / `not_swept` / `levels_unobserved` / `too_few_observations`. `level_means`, `level_n` (cases)
-  and `unobserved_levels` sit beside the state.
+  and `unobserved_levels` sit beside the state. A level's value is derived once, everywhere it is stated (this
+  check, an observed-mechanism confound's `level_values`, `arm_mechanisms`): the exact mean of its per-case means,
+  repeats of a case averaged first in rationals, so unequal repeats neither shift it nor leave float noise that
+  the test would read as a gap.
 - **`Confound.kind` gains `observed_mechanism`**, with `level_values` and `threshold`, raised only on comparisons
   across candidate models: the `model` coverage row and its scope divergences, whose levels' mean reasoning share
   (`reasoning_ratio`) is at least `REASONING_SHARE_DIVERGENCE` (0.20, absolute) apart, under the dimension
   `observed:reasoning_ratio` with its reason in `confound_catalog`. Never raised on another lever, where the share
-  moving is that lever's effect, nor for a covariate equal to the lever's own `acts_on`. It qualifies the
+  moving is that lever's effect, nor for a covariate equal to the lever's own `acts_on`; one predicate decides
+  that for the coverage row, its divergences and every pairwise contrast below. It qualifies the
   comparison and suppresses nothing; a level that measured none of the share is left out rather than read as zero.
   Written over a covariate name; `reasoning_ratio` is the only one registered.
 - **`DesignArm.mechanism_confounds`** and **`FamilyComparison.mechanism_confounds`**: the same confound on each

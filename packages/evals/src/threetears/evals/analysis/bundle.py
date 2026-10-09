@@ -494,8 +494,10 @@ class Confound(EvalDocumentModel):
     level_values: dict[str, float] = Field(
         default_factory=dict,
         description=(
-            "observed_mechanism only: the comparison's level -> the mean of the covariate over that level's "
-            "results that measured it. A level that measured none is absent. Empty on every other kind."
+            "observed_mechanism only: the comparison's level -> the covariate's value there, the mean of its "
+            "per-case means over the level's results that measured it (repeats of a case averaged first, as "
+            "everywhere a level's value is stated). A level that measured none is absent. Empty on every other "
+            "kind."
         ),
     )
     threshold: float | None = Field(
@@ -617,8 +619,9 @@ class MechanismCheck(EvalDocumentModel):
     level_means: dict[str, float] = Field(
         default_factory=dict,
         description=(
-            "The lever's level -> the mean of `measure`'s per-case means over this row's results at that level. "
-            "A level that observed none is in `unobserved_levels` instead."
+            "The lever's level -> the mean of `measure`'s per-case means over this row's results at that level "
+            "(repeats of a case averaged first, the unit the separation test reads). A level that observed none "
+            "is in `unobserved_levels` instead."
         ),
     )
     level_n: dict[str, int] = Field(
@@ -665,8 +668,9 @@ class ArmMechanismReading(EvalDocumentModel):
     mean: float | None = Field(
         default=None,
         description=(
-            "The mean over the arm's results that measured it. None = no result of this arm measured it, which "
-            "is not zero: a provider that reports no reasoning split leaves the share unknown."
+            "The mean of its per-case means over the arm's results that measured it (repeats of a case averaged "
+            "first, as in `confounded_by`). None = no result of this arm measured it, which is not zero: a "
+            "provider that reports no reasoning split leaves the share unknown."
         ),
     )
     n_measured: int = Field(ge=0, description="The arm's results that measured the covariate.")
@@ -3754,46 +3758,63 @@ def _exact(value: float) -> Fraction:
     return Fraction(repr(value))
 
 
-def _level_means(
-    values: Mapping[str, tuple[str, float]], result_ids_by_level: Mapping[str, Collection[str]]
-) -> dict[str, Fraction]:
-    """Each level's exact mean of one mechanism, over that level's results that observed it.
+def _per_case_means(values: Mapping[str, tuple[str, float]], result_ids: Collection[str]) -> dict[str, Fraction]:
+    """One level's exact per-case means of one mechanism — the unit the separation test reads.
 
-    Args:
-        values: Result id -> that result's ``(case id, value)``.
-        result_ids_by_level: The comparison's level -> the result ids at that level.
-
-    Returns:
-        The exact mean per level that observed any; a level that observed none is absent.
-    """
-    means: dict[str, Fraction] = {}
-    for level in sorted(result_ids_by_level):
-        observed = [
-            _exact(values[result_id][1]) for result_id in set(result_ids_by_level[level]) if result_id in values
-        ]
-        if observed:
-            means[level] = sum(observed, Fraction(0)) / len(observed)
-    return means
-
-
-def _per_case_means(values: Mapping[str, tuple[str, float]], result_ids: Collection[str]) -> dict[str, float]:
-    """One level's per-case means of one mechanism — the unit the separation test reads.
-
-    Repeats of a case are averaged first, as :func:`_per_case_values` averages them for a family comparison.
+    Repeats of a case are averaged first, as :func:`_per_case_values` averages them for a family comparison,
+    and averaged EXACTLY (:func:`_exact`): a float mean of three 0.1s is 0.10000000000000002, so a constant
+    measure read at three repeats a case on one level and one on another would differ by float noise with no
+    spread, which the separation test counts as a gap.
 
     Args:
         values: Result id -> that result's ``(case id, value)``.
         result_ids: The level's result ids.
 
     Returns:
-        Case id -> the mean of its results' observations; a case none of whose results observed it is absent.
+        Case id -> the exact mean of its results' observations; a case none of whose results observed it is
+        absent.
     """
-    by_case: dict[str, list[float]] = defaultdict(list)
+    by_case: dict[str, list[Fraction]] = defaultdict(list)
     for result_id in result_ids:
         if result_id in values:
             case_id, value = values[result_id]
-            by_case[case_id].append(value)
-    return {case_id: sum(case_values) / len(case_values) for case_id, case_values in sorted(by_case.items())}
+            by_case[case_id].append(_exact(value))
+    return {
+        case_id: sum(case_values, Fraction(0)) / len(case_values) for case_id, case_values in sorted(by_case.items())
+    }
+
+
+def _level_value(per_case: Mapping[str, Fraction]) -> Fraction:
+    """A level's value of one mechanism: the exact mean of its per-case means.
+
+    **The one derivation of "this level's value"**, read by the mechanism check, the observed-mechanism
+    confound and the arm readings alike. Per case first, because the separation test runs over per-case
+    means and a case repeated three times is still one case; a mean over results would weigh it thrice and
+    show a different number for the same arm wherever the repeats are unequal.
+
+    Args:
+        per_case: The level's per-case means, from :func:`_per_case_means`; not empty.
+    """
+    return sum(per_case.values(), Fraction(0)) / len(per_case)
+
+
+def _level_means(
+    values: Mapping[str, tuple[str, float]], result_ids_by_level: Mapping[str, Collection[str]]
+) -> dict[str, Fraction]:
+    """Each level's value of one mechanism (:func:`_level_value`), for every level that observed it.
+
+    Args:
+        values: Result id -> that result's ``(case id, value)``.
+        result_ids_by_level: The comparison's level -> the result ids at that level.
+
+    Returns:
+        The exact value per level that observed any; a level that observed none is absent.
+    """
+    return {
+        level: _level_value(per_case)
+        for level in sorted(result_ids_by_level)
+        if (per_case := _per_case_means(values, result_ids_by_level[level]))
+    }
 
 
 def _levels_separate(per_case: Mapping[str, Mapping[str, float]]) -> tuple[bool, bool]:
@@ -3861,7 +3882,9 @@ def _mechanism_check(
     unobserved = [level for level in sorted(result_ids_by_level) if level not in per_case]
     state: Literal["moved", "inert", "unchecked"]
     reason: MechanismUncheckedReason | None = None
-    separated, untestable = _levels_separate(per_case)
+    separated, untestable = _levels_separate(
+        {level: {case: float(mean) for case, mean in cases.items()} for level, cases in per_case.items()}
+    )
     if len(result_ids_by_level) < 2:
         state, reason = "unchecked", "not_swept"
     elif separated:
@@ -3875,44 +3898,62 @@ def _mechanism_check(
     return MechanismCheck(
         state=state,
         measure=measure,
-        level_means={level: sum(cases.values()) / len(cases) for level, cases in per_case.items()},
+        level_means={level: float(_level_value(cases)) for level, cases in per_case.items()},
         level_n={level: len(cases) for level, cases in per_case.items()},
         unobserved_levels=unobserved,
         reason=reason,
     )
 
 
+def _raises_observed_mechanism(lever: str, covariate: str, *, profile: HostProfile) -> bool:
+    """Whether a comparison grouped by ``lever`` may name ``covariate`` as an observed-mechanism confound.
+
+    **The one answer to that question**, asked by every lens that raises one — the coverage row, a
+    divergence, and each pairwise contrast between two models — so no two of them can disagree about the
+    same lever and covariate. Yes only for the candidate model, the comparison a pinned effort word fails to
+    equalise; on any other lever the covariate moving is what the lever was swept to do. And never for the
+    lever's own declared mechanism (``acts_on``): it moving is the lever's effect, not a rival to it.
+
+    Args:
+        lever: The lever the comparison varies.
+        covariate: An observed-mechanism covariate.
+        profile: The host whose declaration of the lever names its mechanism.
+    """
+    if lever != _CANDIDATE_MODEL_LEVER:
+        return False
+    declared = profile.sweepables.get(lever)
+    return declared is None or declared.acts_on != covariate
+
+
 def _observed_mechanism_confounds(
+    lever: str,
     result_ids_by_level: Mapping[str, Collection[str]],
     observations: _MechanismObservations,
     *,
-    lever_acts_on: str | None = None,
+    profile: HostProfile,
 ) -> list[Confound]:
-    """Name every observed mechanism whose levels' means diverged by at least its threshold.
+    """Name every observed mechanism whose levels' values diverged by at least its threshold.
 
     The third kind of confound, and the one no setting records: the levels compared ran under the same
     configuration as far as any lever says, and still did measurably different things. It qualifies the
     comparison and never suppresses it. A level that measured none of the covariate is left out of the
     comparison rather than read as zero, so a covariate nothing measured names no confound — the arm
-    readings (``arm_mechanisms``) say it went unmeasured.
-
-    **Callers ask it only of a comparison across candidate models** — a coverage row or divergence on the
-    model lever, or a contrast whose two arms ran different models. That is the comparison a pinned
-    effort word fails to equalise; on any other lever the same covariate moving is what the lever was
-    swept to do, and naming it a confound would charge the lever's intended effect to it.
+    readings (``arm_mechanisms``) say it went unmeasured. Which covariates a lever may name at all is
+    :func:`_raises_observed_mechanism`'s answer, asked here so every caller gets it.
 
     Args:
+        lever: The lever the comparison varies.
         result_ids_by_level: The comparison's level -> the result ids at that level.
         observations: The campaign's mechanism observations.
-        lever_acts_on: The compared lever's own declared mechanism. A covariate equal to it is never named:
-            it moving is the lever's effect, not a rival to it.
+        profile: The host whose declaration of the lever names its mechanism.
 
     Returns:
-        One ``observed_mechanism`` confound per diverged covariate, sorted by dimension.
+        One ``observed_mechanism`` confound per diverged covariate, sorted by dimension; empty for a lever
+        the predicate excludes.
     """
     confounds: list[Confound] = []
     for covariate, mechanism in sorted(_OBSERVED_MECHANISMS.items()):
-        if covariate == lever_acts_on:
+        if not _raises_observed_mechanism(lever, covariate, profile=profile):
             continue
         means = _level_means(observations.get(covariate, {}), result_ids_by_level)
         if len(means) < 2 or max(means.values()) - min(means.values()) < _exact(mechanism.threshold):
@@ -3928,38 +3969,12 @@ def _observed_mechanism_confounds(
     return confounds
 
 
-def _lever_mechanism_confounds(
-    lever: str,
-    result_ids_by_level: Mapping[str, Collection[str]],
+def _model_contrast_confounds(
+    side_a: Sequence[EvalResult],
+    side_b: Sequence[EvalResult],
     observations: _MechanismObservations,
     *,
     profile: HostProfile,
-) -> list[Confound]:
-    """The observed-mechanism confounds of a comparison grouped by one lever — the coverage row's and a divergence's.
-
-    The one predicate both lenses ask, so they cannot disagree about which lever a mechanism qualifies:
-    only the candidate model's, and never the lever's own declared mechanism (see
-    :func:`_observed_mechanism_confounds`).
-
-    Args:
-        lever: The lever the comparison is grouped by.
-        result_ids_by_level: Its level -> the result ids at that level, over the comparison's cohort.
-        observations: The campaign's mechanism observations.
-        profile: The host whose declaration of the lever names its mechanism.
-
-    Returns:
-        The confounds; empty for any lever but the candidate model.
-    """
-    if lever != _CANDIDATE_MODEL_LEVER:
-        return []
-    declared = profile.sweepables.get(lever)
-    return _observed_mechanism_confounds(
-        result_ids_by_level, observations, lever_acts_on=declared.acts_on if declared is not None else None
-    )
-
-
-def _model_contrast_confounds(
-    side_a: Sequence[EvalResult], side_b: Sequence[EvalResult], observations: _MechanismObservations
 ) -> list[Confound]:
     """The observed-mechanism confounds of one pairwise contrast, when its two sides ran different models.
 
@@ -3970,6 +3985,7 @@ def _model_contrast_confounds(
         side_a: One side's results.
         side_b: The other side's results.
         observations: The campaign's mechanism observations.
+        profile: The host whose declaration of the model lever names its mechanism.
 
     Returns:
         The confounds, or an empty list when the sides share a model or either names no single model.
@@ -3982,12 +3998,19 @@ def _model_contrast_confounds(
     if model_a is None or model_b is None:
         return []
     return _observed_mechanism_confounds(
-        {model_a: {result.id for result in side_a}, model_b: {result.id for result in side_b}}, observations
+        _CANDIDATE_MODEL_LEVER,
+        {model_a: {result.id for result in side_a}, model_b: {result.id for result in side_b}},
+        observations,
+        profile=profile,
     )
 
 
 def _design_with_mechanism_confounds(
-    design: RealizedDesign, results_by_run: Mapping[str, list[EvalResult]], observations: _MechanismObservations
+    design: RealizedDesign,
+    results_by_run: Mapping[str, list[EvalResult]],
+    observations: _MechanismObservations,
+    *,
+    profile: HostProfile,
 ) -> RealizedDesign:
     """The design with each contrast arm's observed-mechanism confounds against the control arm.
 
@@ -3995,6 +4018,7 @@ def _design_with_mechanism_confounds(
         design: The derived design.
         results_by_run: Each run's results.
         observations: The campaign's mechanism observations.
+        profile: The host whose declaration of the model lever names its mechanism.
 
     Returns:
         The design, its contrasts qualified where they ran another model and a mechanism diverged; unchanged
@@ -4010,6 +4034,7 @@ def _design_with_mechanism_confounds(
                     control,
                     [result for run_id in arm.run_ids for result in results_by_run.get(run_id, [])],
                     observations,
+                    profile=profile,
                 )
             }
         )
@@ -4384,7 +4409,7 @@ def _scope_divergences(
                     apparatus_levels,
                     folds=folds,
                     profile=profile,
-                ) + _lever_mechanism_confounds(
+                ) + _observed_mechanism_confounds(
                     lever, {level: result_ids[level] for level in (level_a, level_b)}, observations, profile=profile
                 )
                 for unit, e_a, e_b, s_a, s_b in _comparable_pairs(collections[level_a], collections[level_b], catalog):
@@ -4886,7 +4911,7 @@ def _coverage_map(
                 confounded_by=_uncontrolled_dimensions(
                     lever, sorted(cohort), lever_levels, apparatus_levels, folds=folds, profile=profile
                 )
-                + _lever_mechanism_confounds(lever, result_ids_by_level, observations, profile=profile),
+                + _observed_mechanism_confounds(lever, result_ids_by_level, observations, profile=profile),
                 mechanism=_mechanism_check(
                     declared_lever.acts_on if declared_lever is not None else None, result_ids_by_level, observations
                 ),
@@ -5304,7 +5329,7 @@ def assemble_context_bundle(
         folds=folds,
         profile=profile,
     )
-    design = _design_with_mechanism_confounds(design, results_by_run, mechanisms)
+    design = _design_with_mechanism_confounds(design, results_by_run, mechanisms, profile=profile)
     # Built before the run summaries, because `RunSummary.config` names the levers this map
     # names. Both read `_effective_config`, so without that the two disagreed the moment the
     # registry became the vocabulary: a summary would carry every contestant property the host
@@ -6277,7 +6302,9 @@ def _multiple_comparisons(
     # One answer per pair, stated on every reading the pair is compared on: which pair diverged is a fact
     # about the two arms, and a writer reading one comparison should not have to find it on another.
     pair_confounds = {
-        pair: _model_contrast_confounds(results_by_cell[pair[0]], results_by_cell[pair[1]], observations)
+        pair: _model_contrast_confounds(
+            results_by_cell[pair[0]], results_by_cell[pair[1]], observations, profile=profile
+        )
         for pair in pairs
     }
     families = []

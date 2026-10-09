@@ -106,6 +106,7 @@ class _Arm:
     total_ms: float = 900.0
     llm_ms: float | None = None
     documents: tuple[str, ...] = TOYHOST_DOCUMENTS
+    keep: Callable[[str, int], bool] | None = None
 
 
 def _profile(*, acts_on: str | None = _CONTEXT, kinds: tuple[KindContract, ...] | None = None) -> HostProfile:
@@ -155,6 +156,8 @@ def _observations(arm: _Arm, profile: HostProfile) -> list[EvalResult]:
     kept = []
     for result in results:
         if result.test_case_id not in arm.documents:
+            continue
+        if arm.keep is not None and not arm.keep(result.test_case_id, result.k_iteration):
             continue
         update: dict[str, object] = {}
         if arm.covariates is not None:
@@ -224,6 +227,16 @@ class TestALeverIsCheckedAgainstTheMechanismItDeclares:
     def test_constants_written_alike_are_alike(self) -> None:
         # Three observations of 0.1 sum to 0.30000000000000004 in floats; the levels still do not separate.
         bundle = _chunk_sweep(_constant({_CONTEXT: 0.1}), _constant({_CONTEXT: 0.1}))
+        assert _row(bundle, "chunk_tokens").mechanism.state == "inert"
+
+    def test_a_constant_read_at_unequal_repeats_is_inert(self) -> None:
+        # Three 0.1s average to 0.10000000000000002 in floats; one 0.1 is 0.1. The case means are exact.
+        bundle = _bundle(
+            [
+                _Arm(_chunk_batch(256), _constant({_CONTEXT: 0.1})),
+                _Arm(_chunk_batch(1024), _constant({_CONTEXT: 0.1}), keep=lambda _document, repeat: repeat == 1),
+            ]
+        )
         assert _row(bundle, "chunk_tokens").mechanism.state == "inert"
 
     def test_noise_within_overlapping_levels_is_inert_not_moved(self) -> None:
@@ -449,7 +462,9 @@ class TestTheMechanismCheckStatesOnlyWhatItsEvidenceDecides:
             MechanismCheck.model_validate(fields)
 
 
-def _model_comparison(*shares: float | None, design: CampaignDesign | None = None) -> AnalysisContextBundle:
+def _model_comparison(
+    *shares: float | None, design: CampaignDesign | None = None, profile: HostProfile | None = None
+) -> AnalysisContextBundle:
     models = (_MODEL_A, _MODEL_B, _MODEL_C)[: len(shares)]
     return _bundle(
         [
@@ -457,6 +472,7 @@ def _model_comparison(*shares: float | None, design: CampaignDesign | None = Non
             for model, share in zip(models, shares, strict=True)
         ],
         design=design,
+        profile=profile,
     )
 
 
@@ -548,6 +564,16 @@ class TestALeverSMediatedEffectIsNotItsConfound:
         row = _row(bundle, CANDIDATE_MODEL_LEVER)
         assert row.mechanism.state == "moved"
         assert _observed(row.confounded_by) == []
+
+    def test_the_pairwise_contrasts_follow_the_same_rule(self) -> None:
+        bundle = _model_comparison(
+            0.50, 0.40, 0.25, design=_three_model_design(), profile=_model_declares_reasoning_profile()
+        )
+        comparisons = [c for family in bundle.multiple_comparisons.families for c in family.comparisons]
+        assert comparisons, "the fixture must produce comparisons, or this asserts nothing"
+        assert len(bundle.design.contrasts) == 2
+        assert all(arm.mechanism_confounds == [] for arm in bundle.design.contrasts)
+        assert all(comparison.mechanism_confounds == [] for comparison in comparisons)
 
     def test_a_lever_declaring_no_mechanism_is_not_confounded_by_the_share_either(self) -> None:
         bundle = _chunk_sweep(_constant({REASONING_RATIO_KEY: 0.2}), _constant({REASONING_RATIO_KEY: 0.7}))
@@ -647,3 +673,38 @@ class TestAnObservedMechanismConfoundCarriesItsEvidence:
             Confound(dimension="x", kind=kind, threshold=0.2)  # type: ignore[arg-type]
         with pytest.raises(ValidationError):
             Confound(dimension="x", kind=kind, level_values={"a": 1.0, "b": 2.0})  # type: ignore[arg-type]
+
+
+class TestALevelSValueIsDerivedOnce:
+    """A level's value is the mean of its per-case means, wherever the bundle states it."""
+
+    @staticmethod
+    def _arms() -> list[_Arm]:
+        # Model A's share climbs with the document, and its first six documents ran once, the rest three times:
+        # the mean of its per-case means (0.475) is not the mean over its results.
+        return [
+            _Arm(
+                _model_batch(_MODEL_A),
+                _per_document(REASONING_RATIO_KEY, 0.20, 0.05),
+                keep=lambda document, repeat: TOYHOST_DOCUMENTS.index(document) >= 6 or repeat == 1,
+            ),
+            _Arm(_model_batch(_MODEL_B), _constant({REASONING_RATIO_KEY: 0.90})),
+        ]
+
+    def test_the_confound_and_the_arm_reading_state_the_same_value(self) -> None:
+        bundle = _bundle(self._arms())
+        (confound,) = _observed(_row(bundle, CANDIDATE_MODEL_LEVER).confounded_by)
+        variant_a = resolve_variant_identity(run=_model_batch(_MODEL_A), profile=_profile()).variant_key
+        (reading,) = [r for r in bundle.arm_mechanisms if r.variant_key == variant_a]
+        over_results = (sum(0.20 + 0.05 * i for i in range(6)) + 3 * sum(0.20 + 0.05 * i for i in range(6, 12))) / 24
+        assert confound.level_values[_MODEL_A] == reading.mean
+        assert reading.mean == pytest.approx(0.475)
+        assert over_results != pytest.approx(0.475), "the repeats must be unequal enough to tell the two apart"
+
+    def test_the_mechanism_check_states_it_too(self) -> None:
+        declared = _bundle(self._arms(), profile=_model_declares_reasoning_profile())
+        undeclared = _bundle(self._arms())
+        (confound,) = _observed(_row(undeclared, CANDIDATE_MODEL_LEVER).confounded_by)
+        level_mean = _row(declared, CANDIDATE_MODEL_LEVER).mechanism.level_means[_MODEL_A]
+        assert level_mean == confound.level_values[_MODEL_A]
+        assert level_mean == pytest.approx(0.475)
