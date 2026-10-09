@@ -196,15 +196,15 @@ class TestOneUnitPerQuantity:
 class TestTheKnockoutInkStaysWhereItWasMeasured:
     """The third chart ink is bounded, and this is what holds the bound.
 
-    The palette admits `chart.fg-on-fill` for a value drawn on a mark's fill, measured
-    against slot 1 — the single-series mark colour. Over the tier-2 slots that same ink
-    inverts (2.99:1 in dark over slot 5), which is WORSE than the 2.53:1 it exists to
-    fix. Nothing in the repo reaches tier 2 today; the gate exists so the day something
-    does is a refusal rather than a silent contrast regression.
+    A palette's `on_fill` ink is for a value drawn on a mark's fill, measured against
+    slot 1 — the single-series mark colour. Over other slots the same ink can fall under
+    the 4.5:1 it exists to clear (packaged: 3.52:1 over slot 2 in dark, 2.45:1 over slot 7
+    in light). Nothing in the repo writes a value on another slot today; the gate exists
+    so the day something does is a refusal rather than a silent contrast regression.
     """
 
     def _labelled(self, **mark_overrides):
-        """A value label asking for the knockout, in an otherwise conforming frame."""
+        """A value label asking for the on-fill ink, in an otherwise conforming frame."""
         return {
             "data": {"values": [{"c": "a", "v": 1}]},
             "mark": {"type": "text", "style": VALUE_ON_FILL_STYLE, **mark_overrides},
@@ -219,7 +219,7 @@ class TestTheKnockoutInkStaysWhereItWasMeasured:
         assert check_spec(self._labelled()) == []
 
     def test_a_non_text_mark_may_not(self):
-        """That ink IS the chart surface, so painting a MARK with it draws a hole."""
+        """That ink can be the chart surface itself, so painting a MARK with it draws a hole."""
         spec = self._labelled()
         spec["mark"]["type"] = "bar"
         assert any("draws a hole" in violation for violation in check_spec(spec))
@@ -287,7 +287,7 @@ class TestPaletteDiscipline:
         This previously asserted the opposite — a fifth category was a violation — under
         an earlier palette rule. That rule was reversed:
         the number of series is a property of the data, so a five-series finding takes the
-        derived second tier rather than losing its chart. The refusal that remains is for a
+        second tier rather than losing its chart. The refusal that remains is for a
         palette that cannot say WHICH slot a category took, which is a different defect and
         is still tested above.
         """
@@ -477,7 +477,7 @@ class TestRenderableColour:
             assert any("cannot parse" in violation for violation in check_spec(spec)), notation
 
     def test_resolved_hex_passes(self):
-        assert check_spec(_bar(background="#140a29")) == []
+        assert check_spec(_bar(background="#1a1a19")) == []
 
     def test_prose_that_merely_reads_like_a_colour_function_is_not_refused(self):
         """CSS attaches the bracket; a measure name does not.
@@ -508,7 +508,7 @@ class TestRenderableColour:
         spec["encoding"]["color"] = {
             "field": "c",
             "type": "nominal",
-            "scale": {"domain": ["a", "b"], "range": ["#140a29", "lab(50% 40 59)"]},
+            "scale": {"domain": ["a", "b"], "range": ["#1a1a19", "lab(50% 40 59)"]},
         }
         violations = check_spec(spec)
         assert any("cannot parse" in violation and "lab(50% 40 59)" in violation for violation in violations), (

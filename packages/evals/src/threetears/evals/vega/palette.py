@@ -9,28 +9,34 @@ checked with the contract's own colour check
 (:func:`~threetears.evals.contracts.host.require_resolved_colour`), so "what a palette may hold" has one
 answer for both.
 
-The browser reads the palette straight off the CSS custom properties, so it can
-never drift from the design tokens. Python cannot do that, and two facts make the
-obvious workarounds wrong:
+**The packaged palette is a brand-neutral default.** Its hues and steps are a published, validated
+default categorical palette used unchanged, defined separately for a light and a dark surface; only the
+slot order is chosen here. It ships *inside this package*, beside
+:mod:`~threetears.evals.vega.text_metrics`'s ``font_metrics.json``, and is resolved from this module's
+own directory, because a package may read what ships with it and nothing else.
 
-- **The tokens are authored in OKLCH, and the rasteriser cannot parse it.**
-  vl-convert rasterises through resvg; an ``oklch(...)`` string passes into the
-  SVG ``fill`` verbatim and renders BLACK. A valid PNG is produced and no warning
-  is raised, so the failure is invisible from inside the process that caused it.
-  The palette therefore reaches this module as resolved sRGB hex.
-- **A design system's build outputs are not a runtime dependency this package may
-  have.** Reading the palette out of a stylesheet, or out of whatever directory a
-  token build happens to write to, works on a machine that has just run that build
-  and fails everywhere else. So the palette arrives here as an artifact that ships
-  *inside this package*, beside :mod:`~threetears.evals.vega.text_metrics`'s
-  ``font_metrics.json``, and is resolved from this module's own directory.
+**Every colour is resolved sRGB hex.** vl-convert rasterises through resvg; an ``oklch(...)`` string
+passes into the SVG ``fill`` verbatim and renders BLACK. A valid PNG is produced and no warning is
+raised, so the failure is invisible from inside the process that caused it.
 
-That is the whole of the contract with whoever supplies the palette: produce
-:data:`_PALETTE_PATH` — resolved sRGB hex, the shape the loader checks — and this
-module will draw with it. What produces it is named in the artifact's own
-``$comment``: a token build converting from the same token sources a browser's CSS
-custom properties come from, so the two surfaces share one conversion rather than a
-hand-copied second one.
+**The rules the packaged palette is held to**, each measured in ``tests/test_vega_render.py`` rather than
+asserted here:
+
+- *Text* — :attr:`~threetears.evals.contracts.host.ChartPalette.ink` and ``muted`` clear 4.5:1 (WCAG)
+  against the chart surface, and ``on_fill`` clears 4.5:1 over slot 1, the only fill a value is written
+  on.
+- *Marks* — slot 1, the single-series colour every unlabelled mark is drawn in, clears 3:1 against the
+  chart surface in both themes, as do ``highlight`` and ``context``.
+- *Categorical separation* — slots 1 to :func:`validated_slots` clear OKLab ΔE 6 between EVERY pair under
+  simulated protanopia and deuteranopia (Machado 2009, severity 1) and ΔE 15 under normal vision; all
+  :func:`series_slots` slots clear ΔE 8 and ΔE 15 between neighbours.
+- *What is not claimed* — several categorical slots fall below 3:1 against the light surface, so a
+  categorical colour is never the only thing identifying a level: the chart vocabulary always names it
+  as well (a direct label, or the values table).
+
+A host declaring its own palette is held to the contract's shape, not to these measurements: whether its
+slots separate is its author's measurement to make (see
+:class:`~threetears.evals.contracts.host.ChartPalette`).
 """
 
 from __future__ import annotations
@@ -68,14 +74,14 @@ ZERO_RULE_STYLE = "chart-zero-rule"
 #: The Vega-Lite config style a value label asks for when it is drawn ON a mark's fill.
 #:
 #: The value-label rule puts a value inside its mark when there is no clearance outside, and that
-#: is the longest bar on nearly every figure rather than an edge case. Chart ink over
-#: the single-series hue measures 2.53:1 in dark and 3.36:1 in light, against the 4.5:1
-#: the design rules require; the knockout — each mode's own chart surface — measures
-#: 6.27:1 and 5.66:1. The "two contrast levels, not three" rule was amended
-#: to admit this third ink, bounded to this one use.
+#: is the longest bar on nearly every figure rather than an edge case. Text needs 4.5:1, and a
+#: mid-tone fill can sit where the ordinary chart ink does not reach it: in the packaged palette
+#: ink over the single-series hue measures 4.46:1 in light and 3.64:1 in dark, while the on-fill
+#: ink measures 4.76:1 and 4.79:1. So a palette carries a third text ink, bounded to this one
+#: use: a value written on slot 1's fill.
 #:
 #: A style rather than a colour in the spec, for the reason every other colour here is:
-#: what "knockout" resolves to is a property of the surface being painted, which a
+#: what the on-fill ink resolves to is a property of the palette being painted with, which a
 #: compiled spec cannot see.
 VALUE_ON_FILL_STYLE = "chart-value-on-fill"
 
@@ -85,7 +91,7 @@ VALUE_ON_FILL_STYLE = "chart-value-on-fill"
 #: Recession is a per-THEME decision and this is what hands it to the renderer. A
 #: compiler that writes an opacity into the spec has decided what "receded" looks
 #: like on a surface it cannot see, and the same alpha is not the same recession on
-#: near-black and on pearl.
+#: near-black and on near-white.
 #:
 #: Colour and no opacity, deliberately. Receding here means *drawn in the neutral
 #: that carries no identity*, which is a statement about identity; the low alpha a
@@ -110,7 +116,7 @@ class PaletteError(RuntimeError):
 
 @lru_cache(maxsize=1)
 def load_palette() -> dict[str, Any]:
-    """Load and check the generated palette artifact.
+    """Load and check the packaged palette artifact.
 
     Returns:
         The parsed artifact.
@@ -125,8 +131,7 @@ def load_palette() -> dict[str, Any]:
     except OSError as exc:
         raise PaletteError(
             f"chart palette artifact missing at {_PALETTE_PATH} — it is packaged data and ships beside this "
-            "module, so an installation without it is incomplete. The tool that produces it is named in the "
-            "artifact's own `$comment`."
+            "module, so an installation without it is incomplete."
         ) from exc
     palette: dict[str, Any] = json.loads(raw)
     return check_palette_artifact(palette)
@@ -182,11 +187,9 @@ def validated_slots() -> int:
 def series_slots() -> int:
     """How wide the categorical palette is — where it starts recycling, not where it stops being validated.
 
-    The artifact carries this because the token build COUNTS it off the token tree
-    rather than authoring it. Read
-    it rather than measuring ``len(series_colors(theme))``: both give the same
-    answer today, and only this one still gives it if a mode's block is ever built
-    short.
+    Read it rather than measuring ``len(series_colors(theme))``: both give the same
+    answer today, and only this one is a single statement of the width rather than a
+    measurement of one theme's list.
     """
     return int(load_palette()["series_slots"])
 
@@ -196,8 +199,8 @@ def geometry() -> dict[str, Any]:
 
     Sizes travel with the palette for the same reason the hues do: the report is
     drawn by two renderers in two languages, and a number written twice is a number
-    that will disagree. The block is authored in the design tokens' chart group
-    and reaches both sides through the generated artifact.
+    that will disagree. The block ships in the packaged artifact so both sides can
+    read the same numbers.
 
     Returns:
         The geometry block. Keys are stable names (``plot_width``, ``row_step``,
@@ -208,7 +211,7 @@ def geometry() -> dict[str, Any]:
 
 
 def font_sizes() -> dict[str, float]:
-    """The chart type scale, in px, already resolved from rem by the token build.
+    """The chart type scale, in px.
 
     Read by the compiler as well as by :func:`vega_config`, because a layout
     decision taken from a string's width is only right if it measures at the size
@@ -243,15 +246,15 @@ def font_weights() -> dict[str, float]:
 def series_colors(theme: Theme) -> list[str]:
     """The categorical hues, in fixed order — the whole palette, not the validated prefix.
 
-    Slots 1-4 pass categorical validation and 5-8 are the derived second tier. The
-    palette does not refuse to draw past the validated slots: the number of series is a
-    property of the data, and refusing
+    Slots 1-4 separate as a set and 5-8 are the second tier, which separates only from
+    its neighbours (see the module docstring). The palette does not refuse to draw past
+    the validated slots: the number of series is a property of the data, and refusing
     legitimate data is never the right answer. Past eight Vega-Lite recycles the
     range, which is admitted rather than prevented — and survivable only because a
     direct label on every mark is mandatory from five series up, so identity has left
     the hue channel before the hue channel weakens.
     """
-    return list(load_palette()[theme]["chart"])
+    return list(load_palette()[theme]["series"])
 
 
 def sequential_colors(theme: Theme) -> list[str]:
@@ -262,7 +265,7 @@ def sequential_colors(theme: Theme) -> list[str]:
     ceiling on how many levels a dimension may have. As a range it is a path Vega
     samples, so five stops draw seven levels as seven distinct tones.
     """
-    return list(load_palette()[theme]["seq"])
+    return list(load_palette()[theme]["sequential"])
 
 
 def packaged_palette(theme: Theme) -> ChartPalette:
@@ -283,9 +286,9 @@ def packaged_palette(theme: Theme) -> ChartPalette:
     mode = load_palette()[theme]
     try:
         return ChartPalette(
-            series=tuple(mode["chart"]),
-            sequential=tuple(mode["seq"]),
-            background=mode["surface"],
+            series=tuple(mode["series"]),
+            sequential=tuple(mode["sequential"]),
+            background=mode["background"],
             ink=mode["ink"],
             muted=mode["muted"],
             grid=mode["grid"],
@@ -301,8 +304,8 @@ def vega_config(palette: ChartPalette, font: ChartFont | None = None) -> dict[st
     """Build the Vega-Lite config that themes a compiled spec in ``palette``, set in ``font``.
 
     The spec itself carries no colour, so this is the whole of a chart's
-    appearance on the server side — and the mirror of what the browser assembles
-    from its CSS custom properties.
+    appearance on the server side — and the mirror of what a browser host
+    assembles from its own CSS custom properties, if it has one.
 
     The two must build the same KEYS; their values differ by construction, resolved
     hex here against a custom property there, the surface colour here against
@@ -329,17 +332,13 @@ def vega_config(palette: ChartPalette, font: ChartFont | None = None) -> dict[st
     """
     artifact = load_palette()
     font_family = (font if font is not None else packaged_font()).family
-    # The chart type scale and weights, resolved to px by the token build. Charts read
-    # their OWN scale rather than borrowing the page's: they previously took `font.size.xs`
-    # for labels and `font.size.sm` for titles — the two steps the design system defines
-    # for captions and helper text — because those were the smallest available, not because
-    # a chart element belongs there. A tick and the value written on a mark are where a chart
-    # states its numbers, and neither of those is helper text.
+    # The chart type scale and weights, in px. Charts read their OWN scale rather than
+    # borrowing a page's caption and helper-text sizes: a tick and the value written on a
+    # mark are where a chart states its numbers, and neither of those is helper text.
     sizes, weights = artifact["font_size"], artifact["font_weight"]
-    # Three ink levels. `chart.fg` carries everything except footnotes; `fg-2`/`fg-3` cap
-    # around Lc 59 in dark by design, which is right for a caption and wrong for a value.
-    # `on_fill` is the third, admitted by an amendment to the two-contrast-levels rule and
-    # bounded to a value drawn over a mark — see `VALUE_ON_FILL_STYLE`.
+    # Three text inks. `ink` carries everything except footnotes and subtitles, which take
+    # `muted`; both clear 4.5:1 against the surface. `on_fill` is the third, bounded to a
+    # value drawn over slot 1's fill — see `VALUE_ON_FILL_STYLE`.
     ink, muted, grid, rule, context = palette.ink, palette.muted, palette.grid, palette.rule, palette.context
     on_fill = palette.on_fill
     single = palette.series[0]
@@ -351,7 +350,7 @@ def vega_config(palette: ChartPalette, font: ChartFont | None = None) -> dict[st
         #
         # Per-mark entries are NOT redundant with `mark`: `config.mark.color` does
         # not reach a mark whose colour rides on `stroke`, so an interval drawn as
-        # a `rule` renders in Vega's own default — pure black, which on an obsidian
+        # a `rule` renders in Vega's own default — pure black, which on a dark
         # surface is an interval the reader cannot see. Established by rendering.
         "mark": {"color": single},
         "bar": {"color": single},
@@ -483,17 +482,17 @@ def vega_config(palette: ChartPalette, font: ChartFont | None = None) -> dict[st
         # `chart-context` is the same division applied to RECESSION. A mark that is
         # present for comparison rather than as the answer asks for it by name, and the
         # renderer decides what receding looks like on the surface it is drawing on —
-        # a compiled opacity would be the same alpha on near-black and on pearl, which
-        # is the right recession on at most one of them. Colour and no opacity: this
+        # a compiled opacity would be the same alpha on near-black and on near-white,
+        # which is the right recession on at most one of them. Colour and no opacity: this
         # says "carries no identity", not "turned down", and the low alpha a rug or an
         # overlap band uses is the other thing.
         #
         # `chart-value-on-fill` is the third of the same kind, and the one that is a
         # CONTRAST decision rather than an identity one: a value drawn on a mark takes the
-        # knockout, which is each mode's own chart surface. Bounded to the single-series
-        # mark colour — the same ink over a tier-2 slot inverts (dark knockout over slot 5
-        # is 2.99:1), so nothing may reach for this style on a mark whose fill came from
-        # the categorical range.
+        # on-fill ink. Bounded to the single-series mark colour — it was measured over slot 1
+        # only, and over other slots it can fall short (packaged: 3.52:1 over slot 2 in
+        # dark, 2.45:1 over slot 7 in light), so nothing may reach for this style on a mark
+        # whose fill came from the categorical range.
         "style": {
             "chart-zero-rule": {"color": rule},
             "chart-context": {"color": context},

@@ -1,8 +1,8 @@
 """The server-side render — checked by looking at the pixels it actually drew.
 
 **"A PNG was produced" cannot gate this file.** The rasteriser behind
-``vl-convert`` is resvg, which does not parse ``oklch()`` — and the design tokens
-these charts are painted from are authored in OKLCH. Handed an unconverted
+``vl-convert`` is resvg, which does not parse ``oklch()`` — and OKLCH is how
+colour is commonly authored today. Handed an unconverted
 palette it emits a perfectly valid PNG, of the right size, with no warning and
 every series black. Every well-formedness assertion passes on exactly the output
 this file exists to prevent, so the only check that means anything is what colour
@@ -23,6 +23,7 @@ registered, and that text laid out against its metrics stays inside its column -
 to the host that supplies it.
 """
 
+import itertools
 import json
 import math
 import re
@@ -75,7 +76,7 @@ PAYLOAD = {
 #: assertion in it passed against a renderer that was painting interval marks pure
 #: black — `config.mark.color` does not reach a mark whose colour rides on
 #: `stroke`, so the rule marks in a distribution or a null result were invisible on
-#: the obsidian surface and nothing said so.
+#: the dark surface and nothing said so.
 PAYLOADS: dict[str, tuple[str, dict]] = {
     "breakdown": ("breakdown", PAYLOAD),
     "distribution_with_values": (
@@ -495,24 +496,47 @@ def spec():
     return compile_chart("breakdown", PAYLOAD).spec
 
 
-def _oklch(hex_colour: str) -> tuple[float, float, float]:
-    """An sRGB hex as OKLCH (L, C, hue-degrees).
+#: Machado, Oliveira & Fernandes (2009) dichromacy simulation at severity 1.0, applied in linear sRGB.
+#: The separation thresholds below are calibrated against this model, so it is part of the rule rather
+#: than an implementation detail: a different simulation moves borderline pairs.
+_CVD = {
+    "protan": ((0.152286, 1.052583, -0.204868), (0.114503, 0.786281, 0.099216), (-0.003882, -0.048116, 1.051998)),
+    "deutan": ((0.367322, 0.860646, -0.227968), (0.280085, 0.672501, 0.047413), (-0.011820, 0.042940, 0.968881)),
+}
 
-    The inverse of the conversion the token build applies when it generates the
-    artifact. Written here rather than imported because nothing in the app needs to go this
-    direction — only a test asserting that one palette tier is DERIVED from another does.
+
+def _oklab(hex_colour: str, cvd: str | None = None) -> tuple[float, float, float]:
+    """An sRGB hex as OKLab, optionally as a protanope or deuteranope sees it.
+
+    Written here rather than imported because nothing in the package needs colour science at
+    runtime: the packaged palette is measured once, here, and a host's palette is its author's to
+    measure.
     """
     channels = [int(hex_colour[i : i + 2], 16) / 255 for i in (1, 3, 5)]
-    r, g, b = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+    rgb = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+    if cvd is not None:
+        rgb = [min(1.0, max(0.0, sum(m * c for m, c in zip(row, rgb, strict=True)))) for row in _CVD[cvd]]
+    r, g, b = rgb
     lms = (
         (0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b) ** (1 / 3),
         (0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b) ** (1 / 3),
         (0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b) ** (1 / 3),
     )
-    lightness = 0.2104542553 * lms[0] + 0.7936177850 * lms[1] - 0.0040720468 * lms[2]
-    a = 1.9779984951 * lms[0] - 2.4285922050 * lms[1] + 0.4505937099 * lms[2]
-    b_ = 0.0259040371 * lms[0] + 0.7827717662 * lms[1] - 0.8086757660 * lms[2]
-    return lightness, math.hypot(a, b_), math.degrees(math.atan2(b_, a)) % 360
+    return (
+        0.2104542553 * lms[0] + 0.7936177850 * lms[1] - 0.0040720468 * lms[2],
+        1.9779984951 * lms[0] - 2.4285922050 * lms[1] + 0.4505937099 * lms[2],
+        0.0259040371 * lms[0] + 0.7827717662 * lms[1] - 0.8086757660 * lms[2],
+    )
+
+
+def _separation(first: str, second: str, cvd: str | None = None) -> float:
+    """OKLab distance x100 between two colours, under normal vision or a simulated dichromacy."""
+    return 100 * math.dist(_oklab(first, cvd), _oklab(second, cvd))
+
+
+def _worst_cvd_separation(first: str, second: str) -> float:
+    """The smaller of the protan and deutan separations — what the CVD floor is stated against."""
+    return min(_separation(first, second, "protan"), _separation(first, second, "deutan"))
 
 
 class TestPaletteArtifact:
@@ -527,81 +551,116 @@ class TestPaletteArtifact:
         """
         palette = load_palette()
         for mode in ("light", "dark"):
-            for colour in [*palette[mode]["chart"], palette[mode]["surface"], palette[mode]["ink"]]:
+            for colour in [*palette[mode]["series"], palette[mode]["background"], palette[mode]["ink"]]:
                 assert colour.startswith("#") and len(colour) == 7, f"{mode}: {colour!r} is not resolved sRGB hex"
 
-    def test_the_generated_hexes_match_the_validation_record(self):
-        """The palette's colourblind/contrast results only describe THESE values.
+    def test_the_packaged_hexes_match_the_validation_record(self):
+        """The separation and contrast results below only describe THESE values.
 
-        Hard-coded on purpose: this is the one place the conversion's output is pinned to
-        the record that measured it, so a token edit that changes a drawn colour has to be
-        re-validated rather than silently shipped. Slots 1-4 are the validated categorical
-        hues in v5.2 order (velvet, azure, champagne, teal); 5-8 are the derived second
-        tier, which is NOT claimed to pass validation — that is what makes it tier 2.
+        Hard-coded on purpose: this is the one place the drawn colours are pinned, so
+        changing one has to be re-measured rather than silently shipped. The hues and
+        steps are a published validated default categorical palette, unchanged; the
+        order is chosen so slots 1-4 separate as a set. Slot 1 blue, 2 green, 3 magenta,
+        4 yellow; then the second tier, 5 aqua, 6 orange, 7 violet, 8 red.
         """
         palette = load_palette()
-        assert palette["light"]["chart"] == [
-            "#8625fe",
-            "#00a2c4",
-            "#c79100",
-            "#00ad8a",
-            "#451686",
-            "#005d6f",
-            "#785b20",
-            "#006652",
+        assert palette["light"]["series"] == [
+            "#2a78d6",
+            "#008300",
+            "#e87ba4",
+            "#eda100",
+            "#1baf7a",
+            "#eb6834",
+            "#4a3aa7",
+            "#e34948",
         ]
-        assert palette["dark"]["chart"] == [
-            "#ac79ff",
-            "#00c1df",
-            "#eaab05",
-            "#00c7a6",
-            "#6a50a5",
-            "#007989",
-            "#977430",
-            "#2d7f6c",
+        assert palette["dark"]["series"] == [
+            "#3987e5",
+            "#008300",
+            "#d55181",
+            "#c98500",
+            "#199e70",
+            "#d95926",
+            "#9085e9",
+            "#e66767",
         ]
 
-    def test_tier_two_is_derived_from_tier_one_by_the_stated_rule(self):
-        """Slots 5-8 are a function of 1-4, not four more hand-picked hues.
+    def test_the_validated_slots_separate_as_a_set(self):
+        """Slots 1 to `validated_slots` are told apart pair by pair, not only from their neighbours.
 
-        The authored rule is chroma x0.6 and lightness -0.20 in OKLCH, per hue. What is
-        asserted here is deliberately weaker than that arithmetic, because the artifact
-        carries 8-bit sRGB and several of these colours are outside the sRGB gamut at their
-        authored chroma — dark azure is authored at C 0.18 and resolves to C 0.131 once
-        clipped. Re-deriving the exact triple from the hex would therefore fail on values
-        that are perfectly correct, and pinning the post-clip numbers instead would pin the
-        clipping rather than the rule.
-
-        So: same hue, materially darker, materially duller. That still fails the thing this
-        guards — a tier-2 slot quietly replaced by a colour someone preferred, which is how
-        the second tier would stop being derivable and become a second palette nobody
-        validated.
+        A chart within the validated slots may put any two of its categories side by side —
+        the one arm that draws categorical colour fuses a lever's cells in a column, where
+        any level can sit beside any other — so every pair is measured. The floors are the
+        validator's: OKLab dE 6 under simulated protanopia and deuteranopia (the legal floor
+        when a second channel names the category, which the values table does), dE 15 under
+        normal vision (a hard floor no second channel excuses).
         """
         palette = load_palette()
         for theme in ("light", "dark"):
-            hues = palette[theme]["chart"]
-            for index in range(4):
-                base_l, base_c, base_h = _oklch(hues[index])
-                twin_l, twin_c, twin_h = _oklch(hues[index + 4])
-                slot = f"{theme} slot {index + 5}"
-                assert twin_l < base_l - 0.12, f"{slot}: tier 2 must be materially darker than its twin"
-                assert twin_c < base_c * 0.8, f"{slot}: tier 2 must be materially duller than its twin"
-                separation = abs((twin_h - base_h + 180) % 360 - 180)
-                assert separation < 10, (
-                    f"{slot}: hue drifted {separation:.1f} deg from its twin — it is a different hue, not a tier"
-                )
+            validated = palette[theme]["series"][: palette["validated_slots"]]
+            for first, second in itertools.combinations(validated, 2):
+                cvd = _worst_cvd_separation(first, second)
+                normal = _separation(first, second)
+                assert cvd >= 6.0, f"{theme}: {first}/{second} separate by dE {cvd:.1f} under CVD, under 6"
+                assert normal >= 15.0, f"{theme}: {first}/{second} separate by dE {normal:.1f}, under 15"
+
+    def test_every_slot_separates_from_its_neighbours(self):
+        """The whole palette, second tier included, clears the target between adjacent slots.
+
+        Assigned in fixed order, slot n always draws beside slot n+1 in a stack, a ranked
+        list or a set of lines, so the second tier is measured on that pairlist: dE 8 under
+        simulated CVD (the target, not the floor) and dE 15 under normal vision. It does not
+        clear the floors on EVERY pair — that is what makes it the second tier, and why a
+        direct label becomes mandatory at five series.
+        """
+        palette = load_palette()
+        for theme in ("light", "dark"):
+            series = palette[theme]["series"]
+            for first, second in itertools.pairwise(series):
+                cvd = _worst_cvd_separation(first, second)
+                normal = _separation(first, second)
+                assert cvd >= 8.0, f"{theme}: neighbours {first}/{second} separate by dE {cvd:.1f} under CVD, under 8"
+                assert normal >= 15.0, f"{theme}: neighbours {first}/{second} separate by dE {normal:.1f}, under 15"
+
+    def test_text_clears_four_and_a_half_to_one_against_the_surface(self):
+        """Every label, value and subtitle is text, and text takes the WCAG 4.5:1 bar."""
+        palette = load_palette()
+        for theme in ("light", "dark"):
+            mode = palette[theme]
+            for role in ("ink", "muted"):
+                ratio = _contrast_ratio(mode[role], mode["background"])
+                assert ratio >= 4.5, f"{theme} {role} {mode[role]} is {ratio:.2f}:1 on the surface, under 4.5:1"
+
+    def test_the_marks_drawn_without_a_label_clear_three_to_one(self):
+        """Slot 1 is the colour of every single-series mark, so it may never lean on a label to be seen.
+
+        `highlight` and `context` are held to the same 3:1 non-text bar: a receded mark is
+        still a mark the reader is meant to find. The other categorical slots are not —
+        several fall below 3:1 on the light surface, which is why a categorical colour is
+        never the only thing naming a level.
+        """
+        palette = load_palette()
+        for theme in ("light", "dark"):
+            mode = palette[theme]
+            for role, colour in (
+                ("series[0]", mode["series"][0]),
+                ("highlight", mode["highlight"]),
+                ("context", mode["context"]),
+            ):
+                ratio = _contrast_ratio(colour, mode["background"])
+                assert ratio >= 3.0, f"{theme} {role} {colour} is {ratio:.2f}:1 on the surface, under 3:1"
 
     def test_the_categorical_range_offers_the_whole_palette(self):
         """The palette does not refuse to draw past the validated slots.
 
         The palette never refuses to draw: the number of series is a property of
-        the data, so a fifth series takes the derived tier rather than a neutral. Handing
+        the data, so a fifth series takes the second tier rather than a neutral. Handing
         Vega a 4-wide range would put it back to cycling, which repaints series 5 as
         series 1 — the failure the old cap was reaching for and did not actually prevent.
         """
         palette = load_palette()
         for theme in ("light", "dark"):
-            assert vega_config(packaged_palette(theme))["range"]["category"] == palette[theme]["chart"]
+            assert vega_config(packaged_palette(theme))["range"]["category"] == palette[theme]["series"]
             # Against the artifact's own counted width, not against a literal 8. A
             # literal here was the last independently-pinned copy of the palette width:
             # widening the palette would have failed this test as a regression rather
@@ -609,13 +668,13 @@ class TestPaletteArtifact:
             assert len(vega_config(packaged_palette(theme))["range"]["category"]) == series_slots()
 
     def test_a_value_drawn_on_a_mark_clears_the_contrast_bar_in_both_themes(self):
-        """The knockout ink, measured rather than eyeballed.
+        """The on-fill ink, measured rather than eyeballed.
 
         The value-placement rule puts a value inside its mark when there is no clearance outside, which
         is the longest bar on nearly every figure rather than an edge case. Chart ink
-        there measures 2.53:1 in dark and 3.36:1 in light against slot 1 — the only fill
-        a value is ever written on — and the design rules ask 4.5:1 for text at this
-        size. The two-contrast-levels rule admits a third ink for this one use.
+        there measures 4.46:1 in light and 3.64:1 in dark against slot 1 — the only fill
+        a value is ever written on — and text takes 4.5:1. So the palette carries a third
+        text ink for this one use.
 
         Computed from the committed artifact rather than asserted as a number, so
         retuning a hue fails here instead of quietly dropping the value label below the
@@ -629,7 +688,7 @@ class TestPaletteArtifact:
             assert ratio >= 4.5, f"{theme}: value-on-fill {knockout} over {fill} is {ratio:.2f}:1, under 4.5:1"
 
     def test_the_knockout_is_the_reason_the_ordinary_ink_could_not_be_used(self):
-        """Guards the amendment's premise, so it cannot outlive its own justification.
+        """Guards the third ink's premise, so it cannot outlive its own justification.
 
         If chart ink ever clears 4.5:1 over slot 1 on its own, the third ink is a
         complication with no argument left and the palette should go back to two levels.
@@ -639,24 +698,24 @@ class TestPaletteArtifact:
             config = vega_config(packaged_palette(theme))
             ratio = _contrast_ratio(config["text"]["color"], config["bar"]["color"])
             assert ratio < 4.5, (
-                f"{theme}: chart ink now clears {ratio:.2f}:1 over the mark fill — the on-fill knockout "
+                f"{theme}: chart ink now clears {ratio:.2f}:1 over the mark fill — the on-fill ink "
                 "exists because it did not, so re-open the third-ink exception rather than deleting this test"
             )
 
     def test_the_named_roles_are_present_and_are_not_categorical_slots(self):
-        """`highlight`, `context` and the seq ramp mean something; they are not spare hues.
+        """`highlight`, `context` and the sequential ramp mean something; they are not spare hues.
 
-        Carried separately from `chart[]` so no index can ever reach them: assigning
-        `highlight` as "series 5" would put spot magenta in a categorical set, which is the
-        one thing its once-per-figure discipline forbids.
+        Carried separately from `series` so no index can ever reach them: assigning
+        `highlight` as "series 5" would put the one emphasised mark's colour in a
+        categorical set, which is the one thing its once-per-figure discipline forbids.
         """
         palette = load_palette()
         for theme in ("light", "dark"):
             mode = palette[theme]
             assert mode["highlight"].startswith("#") and mode["context"].startswith("#")
-            assert len(mode["seq"]) == 5
-            assert mode["highlight"] not in mode["chart"]
-            assert mode["context"] not in mode["chart"]
+            assert len(mode["sequential"]) == 5
+            assert mode["highlight"] not in mode["series"] + mode["sequential"]
+            assert mode["context"] not in mode["series"]
 
     def test_the_chart_type_scale_reaches_the_config_at_the_weight_floor(self):
         """Charts carry their own scale, and no chart text drops below 500 except footnotes.
@@ -801,7 +860,7 @@ class TestSvgRender:
     def test_the_series_colour_reaches_the_svg_as_hex(self, spec):
         for theme in ("light", "dark"):
             svg = render_svg(spec, palette=packaged_palette(theme))
-            assert load_palette()[theme]["chart"][0] in svg
+            assert load_palette()[theme]["series"][0] in svg
 
     def test_no_unparseable_colour_notation_reaches_the_svg(self, spec):
         """The `fill` attribute is exactly where an OKLCH string would survive to."""
@@ -947,7 +1006,7 @@ class TestADumbbellsValueIsNotStruckThroughByItsOwnMark:
         """
         png = render_png(compile_chart(viz_type, payload).spec, palette=packaged_palette(theme), scale=1)
         mode = load_palette()[theme]
-        value_ink, series_hue = _hex_to_rgb(mode["ink"]), _hex_to_rgb(mode["chart"][0])
+        value_ink, series_hue = _hex_to_rgb(mode["ink"]), _hex_to_rgb(mode["series"][0])
         ink: dict[int, set[int]] = defaultdict(set)
         hue: dict[int, set[int]] = defaultdict(set)
         for row, scanline in enumerate(pixel_rows(png)):
@@ -1014,7 +1073,7 @@ class TestPngPixels:
         """
         for theme in ("light", "dark"):
             colours = dominant_colours(render_png(spec, palette=packaged_palette(theme), scale=1))
-            expected = _hex_to_rgb(load_palette()[theme]["chart"][0])
+            expected = _hex_to_rgb(load_palette()[theme]["series"][0])
             drawn = {rgb: count for rgb, count in colours}
             assert expected in drawn, f"{theme}: expected bars in {expected}, got {colours}"
             assert drawn[expected] > 1000, f"{theme}: series colour present but barely drawn: {colours}"
@@ -1029,7 +1088,7 @@ class TestPngPixels:
         """Contrast was measured against this surface; drawing on another invalidates it."""
         for theme in ("light", "dark"):
             colours = dominant_colours(render_png(spec, palette=packaged_palette(theme), scale=1))
-            assert colours[0][0] == _hex_to_rgb(load_palette()[theme]["surface"])
+            assert colours[0][0] == _hex_to_rgb(load_palette()[theme]["background"])
 
     def test_every_compiled_type_is_drawn_here(self):
         """The coverage the type-keyed dict used to give for free.
@@ -1071,7 +1130,7 @@ class TestPngPixels:
             # while being painted perfectly.
             drawn = dict(counts)
             commonest = dict(counts[:12])
-            expected = _hex_to_rgb(load_palette()[theme]["chart"][0])
+            expected = _hex_to_rgb(load_palette()[theme]["series"][0])
             assert drawn.get(expected, 0) > 100, f"{shape}/{theme}: series colour barely drawn: {commonest}"
             if theme == "dark":
                 assert drawn.get((0, 0, 0), 0) < 500, (
@@ -1147,7 +1206,7 @@ class TestPngPixels:
         png = vlc.vegalite_to_png(json.dumps(spec), config=broken, scale=1)
         drawn = {rgb: count for rgb, count in dominant_colours(png)}
         assert drawn.get((0, 0, 0), 0) > 1000, "OKLCH no longer renders black — this suite's premise needs rechecking"
-        assert _hex_to_rgb(load_palette()["dark"]["chart"][0]) not in drawn
+        assert _hex_to_rgb(load_palette()["dark"]["series"][0]) not in drawn
 
 
 class TestALabelTooWideForTheColumnOverrunsRatherThanTruncating:
@@ -1202,5 +1261,5 @@ class TestThePackagedPaletteIsHeldByTheContractsColourCheck:
     def test_the_packaged_variants_are_palettes(self):
         for theme in ("light", "dark"):
             palette = packaged_palette(theme)
-            assert list(palette.series) == load_palette()[theme]["chart"]
-            assert palette.background == load_palette()[theme]["surface"]
+            assert list(palette.series) == load_palette()[theme]["series"]
+            assert palette.background == load_palette()[theme]["background"]

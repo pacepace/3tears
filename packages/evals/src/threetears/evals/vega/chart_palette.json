@@ -1,5 +1,5 @@
 {
-  "$comment": "Packaged data: the chart palette as resolved sRGB hex, converted from the OKLCH design tokens it was drawn from — do not hand-edit single values. Hex, because the server-side chart renderer rasterises through resvg and cannot parse oklch(). To restyle charts, convert the whole palette from its token source and replace this file.",
+  "$comment": "Packaged data: the brand-neutral default chart palette, as resolved sRGB hex for the light and dark themes. A host that wants its own colours declares a ChartPalette on its style profile; this file is only what a renderer draws in when none is declared. Hex, because the server-side chart renderer rasterises through resvg and cannot parse oklch(). The hues and steps are a published validated default categorical palette, used unchanged; only the slot ORDER is chosen here, so that slots 1-4 separate as a set (see `validated_slots$comment`). The roles under `light` and `dark` are the ChartPalette contract's own (`series`, `sequential`, `background`, `ink`, `muted`, `grid`, `rule`, `context`, `on_fill`) plus `highlight`. Changing any colour means re-running the checks pinned in tests/test_vega_render.py::TestPaletteArtifact, not editing one value.",
   "font_size": {
     "title": 18,
     "label": 14,
@@ -42,61 +42,61 @@
     "series_label_gutter": 160
   },
   "series_slots": 8,
-  "series_slots$comment": "How wide the categorical palette IS, counted off the token tree rather than authored. Everything that needs the width reads this one key: adding a ninth `chart.N` token widens the artifact, and the consumers follow, instead of the artifact being quietly truncated to a literal written somewhere else. Contrast `validated_slots`, which is authored because it records where a MEASUREMENT stopped rather than a fact about the tree.",
+  "series_slots$comment": "How wide the categorical palette IS: the length of each theme's `series` list, and the ChartPalette contract's SERIES_SLOTS. Everything that needs the width reads this one key rather than a literal written somewhere else. Contrast `validated_slots`, which records where a MEASUREMENT stopped rather than how many colours there are.",
   "validated_slots": 4,
-  "validated_slots$comment": "Where validated separation ENDS, not where the palette does. Slots 1-4 pass the colourblind and contrast checks; 5-8 are a derived second tier that does not, and past 8 the renderers recycle from slot 1. None of those is a refusal to draw — the number of series is a property of the data. What makes the weaker tiers honest is that a direct label on every mark becomes mandatory at five series, one slot before this boundary.",
+  "validated_slots$comment": "Where validated separation ENDS, not where the palette does. Slots 1-4 (blue, green, magenta, yellow) separate as a SET in both themes: every pair, not only neighbours, clears OKLab dE 6 under simulated protanopia and deuteranopia (13.0 light, 6.9 dark) and dE 15 under normal vision (19.6 light, 19.3 dark). Slots 5-8 (aqua, orange, violet, red) are a second tier: all eight clear dE 8 CVD and dE 15 normal-vision between NEIGHBOURS (worst 9.1/19.6 light, 8.4/19.3 dark) but not between every pair. Past 8 the renderers recycle from slot 1. None of those is a refusal to draw; what makes the second tier honest is that a direct label on every mark becomes mandatory at five series. Contrast against the chart surface: slot 1 clears 3:1 in both themes; slots 3-5 fall below 3:1 on the light surface, so a categorical colour must never be the only way a level is identified -- the one arm that draws categorical colour names every level in its values table.",
   "light": {
-    "chart": [
-      "#8625fe",
-      "#00a2c4",
-      "#c79100",
-      "#00ad8a",
-      "#451686",
-      "#005d6f",
-      "#785b20",
-      "#006652"
+    "series": [
+      "#2a78d6",
+      "#008300",
+      "#e87ba4",
+      "#eda100",
+      "#1baf7a",
+      "#eb6834",
+      "#4a3aa7",
+      "#e34948"
     ],
-    "highlight": "#de0068",
-    "context": "#878491",
-    "seq": [
-      "#d4c9fb",
-      "#ad8dfd",
-      "#8625fe",
-      "#6403c4",
-      "#45008c"
+    "highlight": "#184f95",
+    "context": "#898781",
+    "sequential": [
+      "#86b6ef",
+      "#5598e7",
+      "#2a78d6",
+      "#1c5cab",
+      "#0d366b"
     ],
-    "surface": "#ffffff",
-    "ink": "#140a29",
-    "muted": "#504d5c",
-    "on_fill": "#ffffff",
-    "grid": "#d4d3da",
-    "rule": "#b1afba"
+    "background": "#fcfcfb",
+    "ink": "#0b0b0b",
+    "muted": "#52514e",
+    "on_fill": "#000000",
+    "grid": "#e1e0d9",
+    "rule": "#c3c2b7"
   },
   "dark": {
-    "chart": [
-      "#ac79ff",
-      "#00c1df",
-      "#eaab05",
-      "#00c7a6",
-      "#6a50a5",
-      "#007989",
-      "#977430",
-      "#2d7f6c"
+    "series": [
+      "#3987e5",
+      "#008300",
+      "#d55181",
+      "#c98500",
+      "#199e70",
+      "#d95926",
+      "#9085e9",
+      "#e66767"
     ],
-    "highlight": "#ff508c",
-    "context": "#5e5c68",
-    "seq": [
-      "#dacfff",
-      "#c4abff",
-      "#ac79ff",
-      "#8755e6",
-      "#613ea6"
+    "highlight": "#6da7ec",
+    "context": "#898781",
+    "sequential": [
+      "#b7d3f6",
+      "#86b6ef",
+      "#5598e7",
+      "#256abf",
+      "#184f95"
     ],
-    "surface": "#140a29",
-    "ink": "#ebeaee",
-    "muted": "#b1afba",
-    "on_fill": "#140a29",
-    "grid": "#2d2642",
-    "rule": "#3f3852"
+    "background": "#1a1a19",
+    "ink": "#ffffff",
+    "muted": "#c3c2b7",
+    "on_fill": "#1a1a19",
+    "grid": "#2c2c2a",
+    "rule": "#383835"
   }
 }
