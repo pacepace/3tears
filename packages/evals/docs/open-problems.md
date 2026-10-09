@@ -1,7 +1,7 @@
 # Open problems
 
-Read this when you plan work on the engine, or want to know whether a weakness in a report is known.
-Each entry is a gap in today's code, or a limit chosen on purpose and marked as such: what is missing, why it
+**For** anyone planning work on the engine, or wondering whether a weakness in a report is known. **Answers:**
+what is missing today and why it matters. Each entry is a gap in today's code, or a limit chosen on purpose and marked as such: what is missing, why it
 matters, and the fix where one is known. Each has a tracking issue; the change that closes it deletes its entry. The figures behind several entries are in [measuring soundly](measuring-soundly.md),
 and the outside sources in [prior art](prior-art.md).
 
@@ -67,13 +67,13 @@ ruled permanently unanswerable.
 
 Tracked in [#633](https://github.com/pacepace/3tears/issues/633).
 
-Every judge call now asks for temperature 0 unless a config says otherwise (owner ruling), and the temperature
+Every judge call now asks for temperature 0 unless a config says otherwise, and the temperature
 sent is part of the judge's identity, so the split the issue found is gone. What was not done is the measurement
 the issue asked the policy to rest on: borderline-case score variance across repeats at each setting, which
 `repeat_judge_scores` can produce for a judge at 0 and one at the provider's default. Until it is run, how much
 temperature moves a judge's scores is unknown; what is known is that the two are never pooled.
 
-*Evidence:* one probe, Discodon, 2026-09: scores stable across attempts at the provider default (a refusal scored
+*Evidence:* one probe in a private host application, 2026-09: scores stable across attempts at the provider default (a refusal scored
 5, a detailed answer 4); says nothing about borderline cases.
 
 ### Human labels and judge scores are not combined
@@ -89,9 +89,8 @@ with many judge scores into an estimate whose interval stays valid when the judg
 A tier is decided on score bounds for kappa
 ([evidence tiers](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers)). On pass/fail and
 for separation at its floor, a judge at the bar earns the tier 2.5-4.5% of the time, close to the 5% allowed. On a
-1-5 scale at the 20-result calibration floor it earns it 0.2-1.9% of the time. The bounds use a normal
-approximation, and the disagreement size is the larger of the observed and the chance-sized one. That spends
-power: a true-0.9 judge calibrates only 14-45% of the time at 20 results. An exact test under a stated
+1-5 scale at the 20-result calibration floor it earns it 0.2-1.9% of the time. That spends power: a true-0.9
+judge calibrates only 14-45% of the time at 20 results. An exact test under a stated
 disagreement model would earn tiers on fewer results. It would be valid only for that model, though, and a judge
 that occasionally reverses the scale breaks it. Not built. The floors are set where the power is reasonable:
 separation needs 120 results.
@@ -130,15 +129,6 @@ the dollar cap (fails open with no rate card), a separate eval provider key. A f
 quota the host declares, shared across runs.
 
 ## Testing the engine
-
-### No test checks the statistics against known answers
-
-Tracked in [#601](https://github.com/pacepace/3tears/issues/601).
-
-The statistics tests (`tests/test_stats.py`, `tests/test_multiple_comparisons.py`) pin outputs on fixed
-inputs. None simulates data with a known truth and checks coverage, false-positive rate or power; this
-page's figures came from a simulation outside the package. Fix: a seeded simulation suite that checks
-interval coverage and test error rates at the sample sizes the engine actually sees.
 
 ### No paid analysis-generation lane
 

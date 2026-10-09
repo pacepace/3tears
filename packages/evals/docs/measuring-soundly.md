@@ -1,12 +1,16 @@
 # Measuring soundly
 
-Read this when you are about to design a campaign, choose k and a case count, pick a judge, or decide
-whether to believe a surprising result. It collects what running evals measured while the engine was built
-against one production host, July to October 2026: a conversational agent with tools, its three-label
-classifier, a retrieval sub-agent it calls, and the engine's own analysis writer.
+**For** anyone about to design a campaign, choose k and a case count, pick a judge, or decide whether to believe
+a surprising result. **Answers:** which practices keep an eval's numbers honest, and what went wrong without
+them. These are practice notes from building the engine against one production host between May and October
+2026: a conversational agent with tools, its three-label classifier, a retrieval sub-agent it calls, and the
+engine's own analysis writer.
 
 Each finding is a rule, its reason and an *Evidence:* line; "replicated" means two or more independent
-campaigns or arm pairs showed it. Terms are as [Concepts](concepts.md) defines them.
+campaigns or arm pairs showed it. The Evidence lines summarise campaigns run in that private application; the
+campaigns themselves are not published. Every "in simulation" figure is reproducible from the package's
+known-answer suite (`packages/evals/tests/test_sim_*.py` and `test_simulated_*.py`, on
+`tests/simulation_support.py`). Terms are as [Concepts](concepts.md) defines them.
 **pass^k** is the chance that k attempts at a case all pass: per case C(c, k) / C(n, k) from c passes in
 n ≥ k repeats, averaged over the cases measured that deep (field `pass_hat_k`). It is not pass@k, the chance
 that at least one of k passes.
@@ -18,19 +22,17 @@ readings move. A smaller difference is not a finding. Stability tracks how mecha
 one anchored on an observable order reproduced exactly, and one judging "the right artefact" moved most.
 *Evidence:* agent with tools and retrieval sub-agent, re-runs at n=12 per dimension and at k=1 then k=3, 2 campaigns, 2026-08 and 2026-09, 4 of 6 dimensions within 0.2 and 2 moving 0.5–0.7, latency moving 12%, replicated.
 
-**Never rank on k=1.** The engine defaults to k=3.
-*Evidence:* retrieval sub-agent, 6 models, k=1 then k=3 over 3 cases, 2026-07, one model's two leading dimensions fell from 3.3 to 1.4, single campaign.
-
-**Add cases before repeats.** k measures consistency and cases measure coverage, so five cases at k=3 are not
-fifteen independent draws. The engine computes every reading's interval over the cases, so five cases at
-k=3 get the width of five draws, not fifteen; repeats narrow it only as far as they steady each case. At n=5 a
-paired test resolves only d_z ≈ 1.25, so "not significant" there says almost nothing. Size the bank from a
-measured effect: for d_z ≈ 0.74 about 16 cases reach 80% power, and 32 cases detect about 0.50.
+**Add cases before repeats.** k (default 3) measures consistency and cases measure coverage, so five cases at
+k=3 are not fifteen independent draws. The engine computes every reading's interval over the cases, so five
+cases at k=3 get the width of five draws, not fifteen; repeats narrow it only as far as they steady each case.
+At n=5 a paired t-test reaches p < 0.05 only once the observed standardised difference d_z passes about 1.24,
+and it has 80% power only for a true d_z near 1.7, so "not separated" there says almost nothing. Size the bank
+from a measured effect: 80% power needs about 17 cases for d_z ≈ 0.74 and about 34 for d_z ≈ 0.50.
 *Evidence:* agent with tools, two independent arm pairs at n=5, 2026-08, pass^k 0.2 → 0.8 gave p=0.174 and p=0.629, replicated; in simulation (2026-09) a 95% interval over observations from 5 cases × k=3 covered the truth 70.3% of the time, against 94.3% over case means; from 2 to 15 cases at k=1 to 5 the engine's interval over cases covered 95% on average for a mean, every configuration within Monte-Carlo error, and at least 96% for a rate, against as little as 51% and 67% over observations (`tests/test_sim_reading_intervals.py`, 2026-10).
 
-**A small bank flatters.** Widening it lowers the score and improves the measurement. See
+**A small bank misses whole failure classes.** A hand-picked handful covers the cases its author thought of. See
 [How many cases](designing-classifier-evals.md#4-how-many-cases).
-*Evidence:* three-label classifier, k=3, 8 then 20 cases, 2026-09, pass^k 0.875 → 0.750, the wider bank exposing a 5-of-5 failure class, single campaign.
+*Evidence:* three-label classifier, k=3, 8 then 20 cases, 2026-09: the 20-case bank held a failure class (5 cases, all failed) the 8-case bank had no case of. The prompt also changed between the two banks, so the score's fall (0.875 → 0.750) is not attributable to the bank alone; single campaign.
 
 **Pair by case.** Between-case variance dominates small banks, so compare per-case differences, as the engine
 does where levels share cases. Two standard errors over five pairs is still loose: t with 4 degrees of
@@ -93,7 +95,7 @@ changed nothing. Declare what it acts on
 the word to its own budget, and the engine names a confound when two arms' reasoning shares differ by
 `REASONING_SHARE_DIVERGENCE` (0.20). A provider refusing to turn reasoning off (HTTP 400) is a permanent rig
 result, not a low score; never retry it as transient.
-*Evidence:* three subjects, 2026-08 to 2026-10, replicated. A classifier parsed 3 of 6 at a 32-token cap with reasoning on, 6 of 6 with it off, and 6 of 6 at a 512 cap for 10–90× the tokens. At effort "low" one model spent 0.28–0.48 of its completion reasoning and another 0.68–1.00, losing cases to truncation. Turning reasoning off cut the agent's p95 time to first action from 163 s to 37 s on one model, while doubling the cap barely moved latency.
+*Evidence:* three subjects, 2026-08 to 2026-10, replicated. A classifier parsed 3 of 6 at a 32-token cap with reasoning on, 6 of 6 with it off, and 6 of 6 at a 512 cap for 10–90× the tokens. At effort "low" one model spent 0.28–0.48 of its completion reasoning and another 0.68–1.00. Turning reasoning off cut the agent's p95 time to first action from 163 s to 37 s on one model.
 
 **Change one thing at a time; a judge change voids a before/after.** The engine never pools observations
 across [apparatus classes](concepts.md#apparatus-class).
@@ -106,9 +108,9 @@ once and run every arm over the stored cases.
 
 ## Rig failures that score as candidate failures
 
-Each defect below produced plausible numbers, some for months. A rig fault is
-excluded, never scored ([Rig failures](adopting-a-host.md#rig-failures-a-broken-rig-costs-one-cell-never-the-run)).
-The converse matters as much: **a swept lever's own failure is the outcome.** Excluding a swept sub-model's
+Each defect below produced plausible numbers, some for months. A rig fault is excluded, never scored
+([Rig failures](adopting-a-host.md#rig-failures-a-broken-rig-costs-one-cell-never-the-run)); the converse
+matters as much: **a swept lever's own failure is the outcome.** Excluding a swept sub-model's
 timeouts as harness failures dropped 10 of 15 cells and left pass^k at 1.0 over 2 cases. The engine charges a
 candidate for a turn truncated at its output cap, and never excludes a trial a failed check already decided.
 
@@ -118,9 +120,8 @@ candidate for a turn truncated at its output cap, and never excludes a trial a f
 - **Templates assumed a state the world did not show.** Six of seven described a system mid-task while the
   seed showed it idle; they measured the confound.
 - **Tools were never started under eval.** Every call returned "not started", the judge scored grounding
-  1/5, and a cassette recorded the failure as the tool's answer. An earlier probe had confirmed "third-party
-  calls go uncounted", true only because none was made. When a probe confirms a predicted absence, demand one
-  positive observation of the path running.
+  1/5, and a cassette recorded the failure as the tool's answer. When a probe confirms a predicted absence,
+  demand one positive observation of the path running.
 - **Muted actions succeeded where production refuses them** (2 of 199 failures). The fix: production's
   handlers on seeded production state, replacing only what leaves the process.
 - **Goal checks counted refused calls.** One trial passed 7 of 7 checks with every call refused. The call
@@ -135,13 +136,12 @@ candidate for a turn truncated at its output cap, and never excludes a trial a f
 *Evidence:* agent with tools and its classifier, 2026-05 to 2026-10, eight separate defects, each reproduced live.
 
 **Prove a check can fail before trusting it passing.** A goal check giving the same verdict whether the
-candidate acted or did nothing grades nothing. Authoring requires a control end state for every goal check
-(`goal_check_controls`) and refuses a check that gives the same verdict on it and on the untouched seed. A
-template saved straight to the store can lack controls, and so does every quick run's. A launch records each
-check as `proven`, `unproven` or `refuted` (`EvalRun.goal_check_proofs`). The run summary, the analysis
-bundle (`goal_check_proofs`) and the code-only report mark every check not proven beside its pass rate. A quick
-world run also states how many cases a candidate that did nothing would pass, read off each case's seed. Calibrate any script that reads verdicts on a known pass and a known fail, and classify on
-reported counts, not exit codes: a run that never happened and a run that failed both exit non-zero.
+candidate acted or did nothing grades nothing. Authoring refuses a check that gives one verdict on its control end
+state and on the untouched seed, and every run marks a check not so proven (`unproven`, `refuted`) beside its pass
+rate; a quick world run also states how many cases a do-nothing candidate would pass
+([world model](world-model.md#the-rules-the-contract-enforces)). Calibrate any script that reads verdicts on a
+known pass and a known fail, and classify on reported counts, not exit codes: a run that never happened and a run
+that failed both exit non-zero.
 *Evidence:* agent with tools, 2026-10, an audit found a hold check reading a parameter rather than its effect, and goal checks reading the static seed rather than the end state, single audit.
 
 **Test failure paths, not more samples.** The defects that change verdicts live in the code deciding what an
@@ -168,9 +168,8 @@ folded into a composite 1–5 scale is outweighed by everything else; give it a 
 ## The analysis writer
 
 **The writer model, not the prompt's form, limits groundedness, and judge noise limits what you can tune.**
-Subtract rubric criteria before adding them. Blind human ratings are a separate measurement: raters preferred a
-cheap writer to an expensive one, scoring the expensive one too long.
-*Evidence:* analysis writer, a latitude A/B with a pre-stated rule, a 2×2 form × input study and a blind rating by 3 raters over 4 campaigns, 2026-09: groundedness near 2 in every condition, the latitude arm failing its rule, judge test–retest noise (0.42–0.46) exceeding every effect ranked, and raters preferring the cheaper writer 6–2 with 1 tie; single campaign.
+Subtract rubric criteria before adding them. Blind human ratings are a separate measurement from the judge's.
+*Evidence:* analysis writer, a latitude A/B with a pre-stated rule and a 2×2 form × input study, 2026-09: groundedness near 2 in every condition, the latitude arm failing its rule, and judge test–retest noise (0.42–0.46) exceeding every effect ranked; single campaign.
 
 **Code renders every number, and the model's prose references them.** A deterministic gate over prose never
 converges ([What the schema checks](reading-reports.md#what-the-schema-checks-and-what-only-the-model-does)).
@@ -183,20 +182,17 @@ like runs ([Spend outside any run](cost-and-budgets.md#spend-outside-any-run)).
 
 ## How an eval program drifts
 
-From an audit of one eval program, each mechanism with the counter-measure adopted:
+From an audit of one eval program's history (about 1,900 commits over six months to 2026-09, single program),
+each mechanism with its counter-measure:
 
-- **Every defect was answered with an addition** (2.74 lines inserted per line deleted), and removals were
-  written down but never built. Name what each new mechanism replaces; delete at the third rework.
-- **Locally right rules** ("fix what you find", "prove every guard") made every finding mandatory machinery,
-  with no fixed point. Fix an apparatus defect now only if it would change the current decision or corrupt
-  stored evidence, and cap review at two rounds.
-- **The product was defined as prose,** the part that cannot converge. Code checks structure; an eval
-  measures prose.
-- **Generality was built for absent consumers.** The identity version moved 15 times and the bundle schema 24
+- **Every defect was answered with an addition** (2.74 lines inserted per line deleted). Name what each new
+  mechanism replaces; delete at the third rework.
+- **Locally right rules made every finding mandatory machinery.** Fix an apparatus defect now only if it would
+  change the current decision or corrupt stored evidence, and cap review at two rounds.
+- **The product was defined as prose,** the part that cannot converge. Code checks structure; an eval measures
+  prose.
+- **Generality was built for absent consumers:** the identity version moved 15 times and the bundle schema 24
   times in two months, each bump shortening stored evidence's life. Build for a consumer you can name.
-- **Campaigns were scheduled to produce repairs, and "trusted enough" had no test.** No product decision
-  reached production in five weeks while about 150 apparatus defects surfaced. Declare the decision, bar and
-  inconclusive default before launch.
-- **Nothing had a budget.** Set size ceilings that only fall, and spend and repair budgets per campaign.
-
-*Evidence:* one eval program's commit history and rulings, about 1,900 commits over six months to 2026-09, single program.
+- **"Trusted enough" had no test:** no product decision reached production in five weeks while about 150
+  apparatus defects surfaced. Declare the decision, bar and inconclusive default before launch, and give each
+  campaign spend and repair budgets.

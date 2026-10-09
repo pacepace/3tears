@@ -1398,17 +1398,18 @@ Batteries: run an eval in one call, and drive the engine from a command line.
 - **`callable_kind_contracts`** · function · The contracts of both callable kinds, declaring `levers` as each run's levels beside its model.
   <br>`callable_kind_contracts(levers: Sequence[str] = ()) -> tuple[KindContract, KindContract]`
 - **`compare`** · async function · Run each candidate over every case `k` times as one arm, test every arm against `control`, and report.
-  <br>`compare(cases: Sequence[Mapping[str, Any]], candidates: Mapping[str, Candidate | ToolUsingCandidate | WorldCandidate] | Mapping[tuple[str, ...], Candidate | ToolUsingCandidate | WorldCandidate], scorers: Sequence[Scorer] = (), *, control: ArmKey, scope_id: str, expected: ExpectedLabel | None = None, intent: str | None = None, host: EvalHost | None = None, k: int = 3, name: str | None = None, created_by: str = 'compare', factors: Sequence[str] | None = None, tools: Mapping[str, Tool] | None = None, cassette_mode: CassetteMode = 'off', cassette_corpus_id: str | None = None, world: World | None = None, seed: CaseSeed | None = None, goal_checks: Sequence[str] = ()) -> Comparison`
+  <br>`compare(cases: Sequence[Mapping[str, Any]], candidates: Mapping[str, Candidate | ToolUsingCandidate | WorldCandidate] | Mapping[tuple[str, ...], Candidate | ToolUsingCandidate | WorldCandidate], scorers: Sequence[Scorer] = (), *, control: ArmKey, scope_id: str, expected: ExpectedLabel | None = None, judge: Judge | None = None, intent: str | None = None, host: EvalHost | None = None, k: int = 3, name: str | None = None, created_by: str = 'compare', factors: Sequence[str] | None = None, tools: Mapping[str, Tool] | None = None, cassette_mode: CassetteMode = 'off', cassette_corpus_id: str | None = None, world: World | None = None, seed: CaseSeed | None = None, goal_checks: Sequence[str] = (), max_cost_usd: float | None = None) -> Comparison`
 - **`run_cli`** · function · Parse `argv` and carry out the command, printing to stdout and refusals to stderr.
   <br>`run_cli(argv: Sequence[str] | None = None, *, host_factory: HostFactory | None = None, prog: str = 'python -m threetears.evals', commands: Sequence[HostCommand] = ()) -> int`
 - **`run_eval`** · async function · Run `candidate` on every case `k` times, grade each answer with every scorer and the judge, and summarise.
-  <br>`run_eval(cases: Sequence[Mapping[str, Any]], candidate: Candidate | ToolUsingCandidate | WorldCandidate, scorers: Sequence[Scorer] = (), *, scope_id: str, expected: ExpectedLabel | None = None, judge: Judge | None = None, intent: str | None = None, world: World | None = None, seed: CaseSeed | None = None, goal_checks: Sequence[str] = (), host: EvalHost | None = None, k: int = 3, model: str | None = None, levers: Mapping[str, str] | None = None, tools: Mapping[str, Tool] | None = None, cassette_mode: CassetteMode = 'off', cassette_corpus_id: str | None = None) -> EvalSummary`
+  <br>`run_eval(cases: Sequence[Mapping[str, Any]], candidate: Candidate | ToolUsingCandidate | WorldCandidate, scorers: Sequence[Scorer] = (), *, scope_id: str, expected: ExpectedLabel | None = None, judge: Judge | None = None, intent: str | None = None, world: World | None = None, seed: CaseSeed | None = None, goal_checks: Sequence[str] = (), host: EvalHost | None = None, k: int = 3, model: str | None = None, levers: Mapping[str, str] | None = None, tools: Mapping[str, Tool] | None = None, cassette_mode: CassetteMode = 'off', cassette_corpus_id: str | None = None, max_cost_usd: float | None = None) -> EvalSummary`
 - **`summarize_run`** · function · Summarise one stored run and its results.
-  <br>`summarize_run(host: EvalHost, run_id: str, scope_id: str) -> EvalSummary`
+  <br>`summarize_run(host: EvalHost, run_id: str, scope_id: str, *, case_names: Mapping[str, str] | None = None) -> EvalSummary`
 
 **Classes**
 
 - **`Answer`** · dataclass · What a candidate returns to report its own spend beside its answer.
+- **`CaseResult`** · model · One case's answer on one repeat, every grade it got, and why it failed or was excluded.
 - **`Comparison`** · dataclass · What `compare` ran and what its campaign's report says.
 - **`Dimension`** · dataclass · One piece of the world's state.
 - **`DimensionSummary`** · model · One judged rubric dimension over a run's results.
@@ -1416,6 +1417,7 @@ Batteries: run an eval in one call, and drive the engine from a command line.
 - **`GoalCheckSummary`** · model · One goal-state check over a run's results.
 - **`HostCommand`** · dataclass · A subcommand a host adds beside the engine's own, mounted by `run_cli` under the same program.
 - **`Judge`** · dataclass · A model that grades each answer on a rubric, one call per dimension.
+- **`JudgeGrade`** · model · One rubric dimension's score on one answer, with the judge's reason.
 - **`MeasureSummary`** · model · One measure over a run's results.
 - **`ToolRefused`** · exception · A tool call the world did not make: no such tool, or parameters its schema refuses. Nothing changed.
 - **`World`** · class · A small world: named state each case seeds, and tools the candidate changes it with.
@@ -1426,12 +1428,14 @@ Batteries: run an eval in one call, and drive the engine from a command line.
 
 - **`ArmKey`** · type alias · An arm's key: its name, which is its model, when `compare` is given no `factors`; with them, its level of each factor, in the order `factors` names them.
   <br>`str | tuple[str, ...]`
-- **`Candidate`** · type alias · The candidate under test: an async callable taking one case and returning its answer.
-  <br>`Callable[[Mapping[str, Any]], Awaitable[Any]]`
+- **`Candidate`** · type alias · The candidate under test: a callable taking one case and returning its answer — usually `async def`; a plain `def` is called in a worker thread (`run_eval`), and a callable returning an awaitable has it awaited.
+  <br>`Callable[[Mapping[str, Any]], Awaitable[Any] | Any]`
 - **`CandidateTools`** · type alias · What a tool-using candidate is handed beside its case: each declared tool by name, as an async function of keyword arguments returning the tool's JSON answer.
   <br>`Mapping[str, Callable[..., Awaitable[Any]]]`
 - **`CaseMaterial`** · type alias · Renders the material one case's answer is judged against: takes the case, returns non-blank text.
   <br>`Callable[[Mapping[str, Any]], str]`
+- **`CaseOutcome`** · literal · How one result came out, as `classify_result` classifies it: graded normally, failed by the candidate (it counts against the candidate), or excluded as a fault of the rig (it counts for nothing).
+  <br>`'scored'` | `'failed'` | `'excluded'`
 - **`CaseSeed`** · type alias · A case's starting state: takes the case, returns dimension name to value.
   <br>`Callable[[Mapping[str, Any]], Mapping[str, Any]]`
 - **`ExpectedLabel`** · type alias · A classifier's expected label for one case: takes the case, returns the label a correct answer gives.
@@ -1452,7 +1456,7 @@ Batteries: run an eval in one call, and drive the engine from a command line.
 - **`CALLABLE_KIND`** · constant (str) · The kind `run_eval` launches, as its template names it.
   <br>`= 'callable'`
 - **`CALLABLE_KIND_CONTRACT`** · constant (KindContract) · The callable kind's contract: no overlays, no spec, and no rig seat — nothing in a `run_eval` run is graded by a model or talks to a simulated user.
-- **`CALLABLE_UNSEATED`** · constant (frozenset) · What a `run_eval` run never has, whatever host it runs in, so a callable-kind contract may seat none of it: the engine's judge and simulator (by role or by any pinned dimension) — the callable kind is unjudged and simulates nobody — and the spend ceiling, which the one-call launch leaves off.
+- **`CALLABLE_UNSEATED`** · constant (frozenset) · What a `run_eval` run never has as a level of its rig, whatever host it runs in, so a callable-kind contract may seat none of it: the engine's judge and simulator (by role or by any pinned dimension) — the callable kind is unjudged and simulates nobody — and the spend ceiling, which is off unless a call caps it (`max_cost_usd=`) and is then a condition stated beside the run: a run it stopped says so by its status, and two runs under different caps measured the same candidate the same way until one stopped.
 - **`DEFAULT_PROG`** · constant (str) · The program name the command line prints when it is run as `python -m threetears.evals`.
   <br>`= 'python -m threetears.evals'`
 - **`ENGINE_COMMANDS`** · constant (tuple) · The commands the engine itself carries; a host command may take none of these names.
@@ -1467,7 +1471,7 @@ Batteries: run an eval in one call, and drive the engine from a command line.
 - **`JUDGED_CALLABLE_KIND`** · constant (str) · The kind `run_eval` launches when it is handed a judge: the callable, its answers judged as documents.
   <br>`= 'callable-judged'`
 - **`JUDGED_CALLABLE_KIND_CONTRACT`** · constant (KindContract) · The judged callable kind's contract: no overlays, no spec, and the engine's judge seated — its runs are graded by a model, so who judged them is part of what two of them are compared on, and a run judged by another model or under other judge configs is a confound rather than a blank.
-- **`JUDGED_CALLABLE_UNSEATED`** · constant (frozenset) · What a judged `run_eval` run never has: the simulator (by role or by any pinned dimension) and the spend ceiling.
+- **`JUDGED_CALLABLE_UNSEATED`** · constant (frozenset) · What a judged `run_eval` run never has as a level of its rig: the simulator (by role or by any pinned dimension) and the spend ceiling, a condition beside the run as `CALLABLE_UNSEATED` says.
 - **`UNUSABLE_ANSWER`** · constant (str) · The predicted label a classifier's answer is counted under when it is not a usable label: not a string, or a blank one.
   <br>`= '(unusable answer)'`
 
@@ -1631,7 +1635,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 
 **Also exported here**
 
-`AnalysisGenerationEstimate` ([`threetears.evals.analysis`](#api-analysis)), `CostEstimate` ([`threetears.evals.analysis`](#api-analysis)), `DimensionSummary` ([`threetears.evals.quick`](#api-quick)), `EvalSummary` ([`threetears.evals.quick`](#api-quick)), `FrozenReporterCase` ([`threetears.evals.analysis`](#api-analysis)), `HistoryResult` ([`threetears.evals.analysis`](#api-analysis)), `MeasureSummary` ([`threetears.evals.quick`](#api-quick)), `PivotTable` ([`threetears.evals.analysis`](#api-analysis)), `ScoreExport` ([`threetears.evals.analysis`](#api-analysis)), `summarize_run` ([`threetears.evals.quick`](#api-quick))
+`AnalysisGenerationEstimate` ([`threetears.evals.analysis`](#api-analysis)), `CaseResult` ([`threetears.evals.quick`](#api-quick)), `CostEstimate` ([`threetears.evals.analysis`](#api-analysis)), `DimensionSummary` ([`threetears.evals.quick`](#api-quick)), `EvalSummary` ([`threetears.evals.quick`](#api-quick)), `FrozenReporterCase` ([`threetears.evals.analysis`](#api-analysis)), `HistoryResult` ([`threetears.evals.analysis`](#api-analysis)), `JudgeGrade` ([`threetears.evals.quick`](#api-quick)), `MeasureSummary` ([`threetears.evals.quick`](#api-quick)), `PivotTable` ([`threetears.evals.analysis`](#api-analysis)), `ScoreExport` ([`threetears.evals.analysis`](#api-analysis)), `summarize_run` ([`threetears.evals.quick`](#api-quick))
 
 <a id="api-actions"></a>
 ### `threetears.evals.actions`

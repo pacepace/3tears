@@ -1,9 +1,10 @@
 # The world model
 
-Read this when you are deciding whether your subject needs a world, designing one, or wondering why the world
-contract refuses something you wrote. [Concepts](concepts.md#world) defines the world and
-[Adopting the engine](adopting-a-host.md#a-world-through-the-cells-session) shows how to wire one. This page covers
-why an eval runs its subject in a seeded world, what was tried first, and the reasoning behind each rule.
+**For** anyone deciding whether their subject needs a world, designing one, or wondering why the world contract
+refuses something they wrote. **Answers:** why an eval runs its subject in a seeded world, what is new about the
+engine's world contract, what was tried first, and the reasoning behind each rule. [Concepts](concepts.md#world)
+defines the world and [Adopting the engine](adopting-a-host.md#a-world-through-the-cells-session) shows how to
+wire one.
 
 ## The problem
 
@@ -18,46 +19,54 @@ solvable".
 
 *Evidence:* conversational agent with tools, one template, 2026-08, single campaign.
 
-The agent-eval systems surveyed all declare what an agent may *do* and what it may *see*. Almost none declares what
-a run may *set before the agent starts*. The world contract is that third declaration.
+## What is new here
+
+The engine evaluates an application's own agent in a world that the host application declares to it.
+
+- Each dimension of that world has a JSON Schema, opaque seed and read handles that use production's own write
+  paths, and the list of surfaces that show it to the agent.
+- Every run records each dimension as seeded-and-perceived, seeded-only (judge-only), perceived-but-not-seeded
+  (witnessed) or out of play. Witnessed state is a confound that is disclosed and never pooled with seeded state.
+- A conformance kit the host runs against its own world checks that seeds read back, that each named surface moves
+  when its dimension does and unnamed ones hold still, and that dimensions are independent. A check it cannot run
+  is reported as unavailable, with its reason, never waived.
+
+We found no prior system that combines the host-declared contract, the per-run record and the host-run kit.
+
+What is *not* new: declaring a run's starting state (OSWorld, τ²-bench, AgentDojo, Google ADK and PRISM all do it),
+the do-nothing control, excluding a trial whose world did not start where the case says, and splitting rig from
+subject failures (τ²-bench, PRISM, Harbor's `nop` and `oracle` agents, Inspect). The verdicts and sources are in
+[Prior art](prior-art.md#agent-environments-and-worlds).
 
 ## How it got here
 
-**Static mocks.** The first eval returned canned tool results: the same five items for any search. Multi-step
-flows were graded against state that did not exist, and neither judge was given the tool results the candidate had
-responded to.
+**Static mocks.** The first eval returned canned tool results, the same five items for any search, so
+multi-step flows were graded against state that did not exist.
 
-**A synthetic tool world.** Test doubles over a shared state object, with a goal language reading that state. It
-was built and dropped before it ran in production: open-ended cases needed a hand-curated catalogue per template,
-the doubles could not see drift in the real services, and definitions became per-subject code. Industry practice
-(τ-bench; Anthropic's "Demystifying evals for AI agents"; AWS Strands Evals) pointed to real tools and outcome
-scoring against a stateful world. The replacement ran the real subject with *muted actuation*: outbound side
-effects suppressed, read-only tools live, [cassettes](concepts.md#cassette) for replay. Two lessons from this phase
-still hold:
+**A synthetic tool world.** Test doubles over a shared state object, with a goal language reading it, were built
+and dropped before production: open-ended cases needed a hand-curated catalogue per template, the doubles could
+not see drift in the real services, and definitions became per-subject code. The replacement ran the real subject
+with *muted actuation* (outbound side effects suppressed, read-only tools live, [cassettes](concepts.md#cassette)
+for replay). Two lessons from this phase still hold:
 
 - **The judge must not see what the candidate did not.** The seed lived in a side store while the candidate's
-  prompt was rendered from the empty production object, so the judge saw a seeded queue the candidate never
-  perceived. An eval-mode flag was rejected as the signal, because it was set only around tool calls and was false
-  during prompt assembly. The invariant since: **one resolution path**, so candidate, judge and report read the same
-  resolved world, frozen on the run as provenance.
-- **Cassettes cannot hold an open-ended case.** A cassette replays identical requests. An open-ended case is
-  valuable because the model chooses its own query, so the hit rate is close to zero. The first host's answer was
-  to deliver a seeded payload in answer to *whatever* call the subject makes. There is no lookup key and so nothing
-  to miss, and the query is still recorded for separate grading. Unconditional delivery was rejected as incoherent
-  when the subject never asked. This is a technique a host builds into its own tools; the engine has no
-  payload-delivery feature. From this came the split between a rig failure (a replay miss, a malformed seed:
+  prompt was rendered from the empty production object, so the judge saw a queue the candidate never perceived.
+  The invariant since: **one resolution path**, so candidate, judge and report read the same resolved world,
+  frozen on the run as provenance.
+- **Cassettes cannot hold an open-ended case.** A cassette replays identical requests, and an open-ended case is
+  valuable because the model chooses its own query. The first host answered by delivering a seeded payload to
+  *whatever* call the subject makes; that is a technique a host builds into its own tools, not an engine feature.
+  From this came the split between a rig failure (a replay miss, a malformed seed:
   [`ApparatusError`](adopting-a-host.md#rig-failures-a-broken-rig-costs-one-cell-never-the-run), excluded) and an
   in-world failure (a rate limit, an item not found: shown to the subject, which may be scored on how it copes).
 
 **Production handlers on seeded production state.** A muted call reported success, so it skipped every refusal
-production gives: an empty message, an unknown target, resuming what was not paused. No validate-only seam existed,
-because each handler interleaves its refusals with the mutation. The fix was a redesign. The seed is written into
-real production state through production's own write paths, production handlers run against it, and only what
-leaves the process is replaced, at its lowest seam (outbound engine commands answered with the events the engine
-would send, downloads, external lookups, speech synthesis). Once actions were real, eval-only render builders that
-still read the seed contradicted them: a real pause then resume was refused, and a skipped item still showed. So
-there is **one render path**, and every reader reads production state. Seeding settles before the first turn (the
-registry's `settle` handle), leaves no perceptions behind, and replaces rather than appends on re-seed.
+production gives (an empty message, an unknown target, resuming what was not paused). So the seed is now written
+into real production state through production's own write paths, production handlers run against it, and only
+what leaves the process is replaced, at its lowest seam. Once actions were real, eval-only renderers that still
+read the seed contradicted them, so there is **one render path**, and every reader reads production state.
+Seeding settles before the first turn (the registry's `settle` handle), leaves no perceptions behind, and
+replaces rather than appends on re-seed.
 
 *Evidence:* conversational agent with tools, 2 of 199 failures across two stages of one campaign traced to muted
 refusals, 2026-10, single campaign.
@@ -92,8 +101,7 @@ declared permanently witnessed, so every mid-operation template ran in an idle s
 read as a different event entirely. The template measured the confound, not the model. The dimension was made
 seedable and the templates re-issued. The same reasoning moved the clock, the turn number and recent history into
 the world, so a case reads the same on every run. The clock design is worth copying: cell time is the seeded instant
-plus elapsed wall time, stored stamps stay wall time so relative labels are unchanged, and only absolute renders add
-the offset (zero in production). A test seeds a clock far from any wall time and fails if the real date reaches a
+plus elapsed wall time, and a test seeds a clock far from any wall time and fails if the real date reaches a
 prompt.
 
 *Evidence:* conversational agent with tools, 6 of 7 templates affected, 1 campaign, 2026-10, single campaign.
@@ -110,8 +118,9 @@ reports `passed`, `failed` or `unavailable` with a reason from a closed list. *R
 because the hosts the contract exists for, the least like an in-memory dict, would live in the waivers. Building
 the kit added three rules:
 
-- `unavailable` comes from the declared shape (no perturbation binding, a trigger only a person fires), never from
-  a handle that throws; catching exceptions would launder a broken host into a permanent disclosed gap. An engine
+- `unavailable` comes from the declared shape (no perturbation binding, a trigger only a person fires) or from a
+  check's own setup not landing (`seeding_did_not_take`, a defect the round trip already names as failed), never
+  from a handle that throws; catching exceptions would launder a broken host into a permanent disclosed gap. An engine
   gap raises `WorldConformanceError` instead of blaming the host.
 - One defect gets one finding. A dead seeder once failed three checks, two blaming innocent code; checks now confirm
   setup landed (`seeding_did_not_take`), and round trip seeds a value different from what the world holds, since a
@@ -147,8 +156,8 @@ grammar rule refuses: the launch records it with the reason, grades every cell o
 summary, the bundle and the report name it as refused under the current grammar.
 
 **A refused call is not an action.** The [call ledger](concepts.md#goal-state-check) records only calls that
-succeeded; the trace keeps refusals for the judge. Stored runs re-grade from their ledgers (`recheck`) rather than
-re-running.
+succeeded; the trace keeps refusals for the judge. Stored runs re-grade from their ledgers (`recheck_goal_states`) rather
+than re-running.
 
 *Evidence:* conversational agent with tools, 96 runs, 1 campaign, 2026-10, one result passed 7 of 7 action checks
 with every call refused, single campaign.
@@ -158,20 +167,10 @@ observations under different worlds never pool. A name registered as both a swee
 refused. *Rejected:* detecting that through a shared binding table, since a sweepable's after-the-fact reader and a
 live world handle are different callables that never collide.
 
-## Prior art
+## Review
 
-| Source | Verdict |
-|---|---|
-| Gymnasium, OpenEnv core API | The gap: actions and observations typed, reset state untyped or absent |
-| MCP | Precedent for an app declaring to a generic client; no notion of setting state or of perception |
-| τ-bench, AppWorld | Adopted for postconditions; nobody checks the world could *start* where the task says |
-| Meta ARE / Gaia2 | Adapted: seeded initial state plus triggered events |
-| METR Task Standard | Rejected: imperative setup, nothing to introspect |
-| Java TCK, PDDL | Adopted: the conformance kit; closed grammar over open vocabulary |
-
-An independent review found two outside citations in the first draft fabricated or misquoted, now corrected. Walking
-the design against three other applications produced both contract-level changes, neither visible from the first
-host or a toy host by the same author.
+An independent review found two outside citations in the first draft fabricated or misquoted, now corrected.
+Walking the design against three other applications produced both contract-level changes.
 
 ## What the contract still cannot see
 
@@ -190,9 +189,6 @@ host or a toy host by the same author.
 
 ## What a host author should take from it
 
-- Seed state through the code production uses; replace only what leaves the process.
-- Name every surface in `perceived_by`, and treat anything the subject sees that no dimension declares (the clock,
-  its memory of earlier turns) as a defect. A host-side test tracing each rendered prompt section to a source is
-  worthwhile.
-- Give every goal check a control end state; read effects, not parameters.
-- Run a few cells and read them before trusting a template. The gates came after the audits.
+Seed state through the code production uses and replace only what leaves the process; treat anything the subject
+sees that no dimension declares as a defect; give every goal check a control and read effects, not parameters;
+and run a few cells and read them before trusting a template, since the gates came after the audits.

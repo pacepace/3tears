@@ -205,11 +205,15 @@ class World:
         """A case's starting state as the engine's seed: every value under this world's carrier."""
         return WorldSeed(namespaces={self.name: dict(values)})
 
-    def refuse_unseedable(self, values: Any, *, case: int) -> dict[str, Any]:
+    def refuse_unseedable(self, values: Any, *, case: int | str) -> dict[str, Any]:
         """The case's starting state, refused unless it sets every dimension to a value its schema admits.
 
         Every dimension, because a dimension a case leaves unset would read back as ``None`` — a value
         nobody seeded, which a goal check would grade as though one had.
+
+        Args:
+            values: The state ``seed=`` gave the case.
+            case: What the refusal calls the case: its name, or its position.
 
         Raises:
             ValueError: The state is not a mapping, leaves a dimension unset, or the seed walk refuses it.

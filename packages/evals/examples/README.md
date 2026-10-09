@@ -1,7 +1,7 @@
 # Examples
 
-Each file here answers one question about your LLM-backed feature, and each builds on the one before.
-Read them in order. They all run offline with no API key, and against Claude when you add one.
+Each file here answers one question about your LLM-backed feature. Read them in order: the first five build
+on each other, and each one after adds one capability. They all run offline with no API key, and against Claude when you add one.
 
 ## Running them
 
@@ -20,18 +20,19 @@ ANTHROPIC_API_KEY=sk-ant-...
 Git ignores `.env` files, so the key stays out of commits. Then pass the file to `uv run`:
 
 ```bash
-uv run --env-file packages/evals/examples/.env python packages/evals/examples/rung_zero.py
+uv run --env-file packages/evals/examples/.env python packages/evals/examples/llm_judge.py
 ```
 
-Each example prints which way it ran:
+An example that calls a model prints which way it ran:
 
 - `Running against Claude (<model>).` means it is calling the API. The model ids are in each file's
   `MODEL` or `MODELS` constant.
 - `ANTHROPIC_API_KEY is not set: running OFFLINE, ...` means small scripted stand-ins play the model. The
   output has the real shape, and its numbers say nothing about any model.
-- `No model is called: ...` means the example never calls one, live or not.
+- `No model is called: ...` means the example never calls one, live or not (`cassettes.py`, `reports.py`).
+  `rung_zero.py` calls no model either, and prints only its summary.
 
-Live runs use the cheapest Haiku models over a dozen or so cases, so each costs cents. Each file's
+Live runs use the cheapest Haiku models over 4 to 14 cases, so each costs cents. Each file's
 docstring gives its rough live cost. `reports.py` and `llm_analysis.py` write their files under the
 directory you run from (`./eval-report/` and `./eval-analysis/`).
 
@@ -59,7 +60,9 @@ These are documented in the guides:
 - Judge reliability and evidence tiers, and results by kind of case (strata):
   [Reading reports](../docs/reading-reports.md).
 - Budgets and spend caps: [Cost and budgets](../docs/cost-and-budgets.md).
-- Conversations with a simulated user, generating cases, bars, storage, and writing your own host:
+- Conversations with a simulated user, generating cases, storage, and writing your own host:
   [Adopting the engine](../docs/adopting-a-host.md).
+- How a bar is decided: [Reading reports](../docs/reading-reports.md#methods) and
+  [Measuring soundly](../docs/measuring-soundly.md#variance-k-and-how-many-cases).
 - The command line: [The command line](../docs/command-line.md).
 - Driving evals from an agent over MCP: [Driving it from an agent](../docs/agents-and-mcp.md).

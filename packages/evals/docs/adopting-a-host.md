@@ -1,8 +1,9 @@
 # Adopting the engine: the host, the scope and the kind
 
-This guide is for the developer wiring 3tears-evals into an app for real: your own storage, your own
-launch path, runs you can compare over weeks. If you only want to grade a function once, `run_eval` (the
-README's [Your first eval](../README.md#your-first-eval)) builds all of this for you. Read
+**For** the developer wiring 3tears-evals into an app for real: your own storage, your own launch path, runs
+you can compare over weeks. **Answers:** what you write (a host, a store, a kind, a launcher) and what the engine
+does with each. If you only want to grade a function once, `run_eval` (the [README](../README.md)'s first
+example) builds all of this for you. Read
 [Concepts](concepts.md) first: this guide uses its terms (host, kind, lever, apparatus, scope, cell)
 without stopping to define them.
 
@@ -38,8 +39,9 @@ nothing but the public roots and itself:
 Both run on `InMemoryDocumentStore` (`threetears.evals.storage`), the engine's in-memory reference
 `DocumentStore`: scoped, with conditional writes, and the shape to compare your own adapter against.
 
-Import from the public roots listed in the README and from `threetears.evals.contracts.host`, never from a
-module below them. Every engine type a public signature hands you — a protocol you implement, a value you
+Import only from a public root (`threetears.evals.PUBLIC_ROOTS` lists them, including
+`threetears.evals.contracts.host`, `threetears.evals.analysis.viz` and `threetears.evals.vega`), and only the names
+its `__all__` declares; never from a module below one. Every engine type a public signature hands you — a protocol you implement, a value you
 receive, an exception you catch, a literal you annotate with — is exported from one of those roots.
 
 ## The host
@@ -61,13 +63,16 @@ pass it to every entrypoint. It holds:
 - your `failure_describer` — how a raised provider call reads. It is the only thing that can say a call
   was refused for the calling account, which stops a run rather than excluding its cells;
   `withhold_failure_detail` is the honest one for an app with no error types of its own;
-- your tracing, executor and cell-timeout choices. None of these last four has a default: each is named
+- your tracing, executor and cell-timeout choices. None of these last three has a default: each is named
   where the host is built.
 
 Nothing is ambient: there is no installed or default host, so two hosts in one process never meet.
 
 An app that starts runs builds a `LaunchHost` (in `threetears.evals.run`) around its `EvalHost`: the
-launch settings, a registry of the kinds it can launch, and a job timeout; it builds its job manager over
+launch settings, a registry of the kinds it can launch, a job timeout, `world_placements` (required exactly
+when the profile declares a world: what each assembled run did with every dimension) and a `launch_pricer`
+(without one, an arm under an enforced cap is refused unless the launch names its own cap; see
+[Cost and budgets](cost-and-budgets.md#every-arm-is-priced-before-any-launcher-runs)); it builds its job manager over
 the host's own storage. Hand its `eval_host` to the analysis side.
 
 ## Tenancy: the scope
@@ -75,7 +80,8 @@ the host's own storage. Hand its `eval_host` to the analysis side.
 **Tenancy is one opaque `scope_id`.** Every stored document carries a non-empty `scope_id`, and the
 engine never interprets it, defaults it or branches on it: it is your tenant, project or environment,
 whatever you partition by. All of it goes through one `DocumentStore` you implement, keyed by
-`(scope_id, doc_type, id)`. Every port call names its scope, and there is no scope-free read: a caller that
+`(scope_id, doc_type, id)`. Every port call names its scope (an upsert takes it from the document it
+writes), and there is no scope-free read: a caller that
 needs several scopes is told which by you and asks each. A campaign and the runs it compares live in one
 scope. Your adapter strips whatever it injects (an etag, a timestamp) before handing a document back,
 because every stored model reads strictly.
@@ -119,40 +125,33 @@ What a kind adds to the engine's own fields is two Pydantic models you name once
 - Its **spec** is what a template of that kind declares (`kind_spec`), such as a label set or a table
   setup: refused by field at authoring, then validated again and frozen onto each run.
 
+The contract also takes `seats`, the parts of the rig the kind's runs fill (`judge`, `simulator`, or an
+apparatus dimension; the default, `None`, holds the kind to every dimension), and `prefix`, the namespace of
+its levers (`<prefix>.<field>`; the kind's name when unset).
+
 An overlay field takes markers beside its type, in `Annotated[...]`: `Ordinal()` ranks a `Literal` or `Enum`
 in declaration order, `Interval(unit=...)` names a number's unit, `ActsOn(measure)` names the measure the knob
 is supposed to move, and `ResolvesInto(lever)` names the host lever the knob is written into.
 
 `ResolvesInto` is for a knob whose effect your host also records, resolved, as a lever of its own: a
-`reasoning_effort` overlay and an `llm_parameters` lever that hashes the model parameters it resolved into, say,
-or a `tool_configs` map and the resolved tool configuration. Without it the two move together, so every sweep of
-the knob reports two moved levers, each confounded by the other. With
+`reasoning_effort` overlay and an `llm_parameters` lever hashing the model parameters it resolved into, say.
+Without it every sweep of the knob reports two moved levers, each confounded by the other. With
 `Annotated[Literal["low", "high"], ResolvesInto("llm_parameters")]`, the surface folds into the knob wherever the
-compared runs show it moved only where the knob did: every level of the knob carries one level of the surface.
-Then it gets no coverage row or confound of its own, the contrast moved one lever, and the arm is named by the
-knob (the surface is listed in the variant index's `folded` and stays in the key). Where runs that held the knob
-at one level carried different surfaces, something else wrote into it, and it stays a lever and a confound. A run
-whose surface reader returned `None` folds nothing. On a map field the marker rides on the map's own lever, whose
-level is the members a launch set.
+compared runs show every level of the knob carrying one level of the surface: it gets no coverage row or confound
+of its own, and the arm is named by the knob (the surface stays in the key, listed in the variant index's
+`folded`). Where runs at one knob level carried different surfaces, something else wrote into it, and it stays a
+lever and a confound. A run whose surface reader returned `None` folds nothing. On a map field the marker rides on the map's own
+lever, and the surface is compared with the swept entries removed.
 
-The fold can only be tested across arms. The surface is in the variant key, so every run of one arm resolves the
-same surface, and repeating an arm (more runs, or a higher `k`) can never show it moving on its own. Only a level
-of the knob held by two or more arms can: two `low` arms that differ in something else, such as the model or
-another setting you suspect writes into the surface. Where no level of the knob is held by two arms, as in a plain
-two-arm `low` / `high` sweep, the surface is still folded and the knob still names the arm, but every comparison
-that folds it carries an `unverified_fold` confound (`unverified_fold:llm_parameters`). The confound reaches the
-analysis generator and the code-only report, so a memo cannot present the fold as a checked non-confound. A fold
-that a second arm at some level could have broken, and did not, carries no mark.
+Only arms can test a fold: every run of one arm resolves the same surface, so only a knob level held by two or
+more arms (differing in, say, the model) can show the surface moving on its own. A plain two-arm `low` / `high`
+sweep still folds, but every comparison that does carries an `unverified_fold:llm_parameters` confound, which the
+analysis generator and the code-only report both state.
 
-The lever named must be a fixed `lever` your host declares, not an open family, and not one another knob or
-family already names. The profile refuses anything else (`RegistrationError`), and a field marked twice is
-refused where the kind is declared (`KindContractError`). The marker moves no variant key. A host's own fixed
-lever declares the same thing as `Sweepable(resolves_into=...)`.
-
-One surface takes one knob. If your host hashes several knobs into one surface (`reasoning_effort` and
-`max_output_tokens` both into `llm_parameters`), mark only one of them; the surface stays unfolded against every
-other knob, and a sweep of a second knob reads as moving two levers. The remedy is one resolved lever per knob:
-record each resolved parameter as its own lever, and mark each knob with its own.
+The lever named must be a fixed `lever` your host declares, not an open family, and not one another knob already
+names (`RegistrationError`); a field marked twice is refused (`KindContractError`). The marker moves no variant key.
+A host's own fixed lever declares the same thing as `Sweepable(resolves_into=...)`. One surface takes one knob: if
+several knobs hash into one surface, give each its own resolved lever.
 
 You register neither anywhere else: the profile adds the contract's levers to its `sweepables`, and the
 engine resolves every run's level of them — with its `candidate_model` and its `candidate_kind` — into the
@@ -282,14 +281,8 @@ in [Cost and budgets: how a result's cost is counted](cost-and-budgets.md#how-a-
 
 ## Cassettes: recording and replaying tools
 
-A cassette lets two arms face exactly the same tool answers: one run records what its tools said, and
-later runs are served that recording instead of calling the tools live. You only need this if your
-candidate calls tools whose answers vary or cost money.
-
-**Without a host of your own,** `run_eval` and `compare` do the wiring below for you: declare the tools
-as plain functions (`tools={"search": search}`), write the candidate as `candidate(case, tools)`, and pass
-`cassette_mode="capture"`, then `"replay"` with `cassette_corpus_id=<the capture's run id>`, into one
-host and scope. `examples/cassettes.py` is that, end to end. The rest of this section is for a kind of
+A [cassette](concepts.md#cassette) lets two arms face exactly the same tool answers. `run_eval` and `compare`
+do the wiring below for you (`tools=`, `cassette_mode=`; `examples/cassettes.py`); this section is for a kind of
 your own.
 
 **Cassettes record and replay through seams the kind supplies.** Launch a run with
@@ -308,13 +301,12 @@ cell.
   `SyncActionSeam` instead (`arm_sync_tools`), its tools are `SyncToolLike`
   (`act_sync(action, parameters)`), and it calls the wrapped tools' `act_sync`. Both seams record and replay through one
   implementation, so a corpus captured on either replays on either.
-- **Background work.** A delivery seam reports each piece of background work where it starts
-  (`recorder.started(request)`) and settles the ticket where it ends; under replay it takes
-  `replay.next(request)` instead of starting live work, and reports what it was served with
+- **Background work.** A delivery seam reports each piece of work where it starts (`recorder.started(request)`)
+  and settles it where it ends; under replay it takes `replay.next(request)` instead, reporting
   `substituted=True`.
-- **Matching.** Every recording is keyed by what was asked and by which time it was asked, so a repeated
-  dice roll replays both rolls in order and two scouts are each paired with their own report; an ask the
-  capture never made, or made fewer times, stops the cell as the rig's failure rather than running live.
+- **Matching.** Every recording is keyed by what was asked and which time it was asked, so a repeated dice roll
+  replays both rolls in order; an ask the capture never made, or made fewer times, stops the cell as the rig's
+  failure rather than running live.
 - **No silent live runs.** A kind that does not wire the handle it was given, or a candidate with no
   seams, is refused rather than run live under a replay.
 

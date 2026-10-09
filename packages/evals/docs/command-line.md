@@ -1,9 +1,9 @@
 # The command line
 
-Read this to launch runs and read reports from a terminal, or to mount the same commands under your app's
-own CLI. Every command works in a host you already have; if you do not have one yet, start with the
-README's [Your first eval](../README.md#your-first-eval), which needs none, then
-[Adopting the engine](adopting-a-host.md).
+**For** anyone who already has a host and wants to launch runs and read reports from a terminal, or mount the
+same commands under their app's own CLI. **Answers:** what each command does, what it maps to, and its exit
+codes. With no host yet, start with the README's [Your first eval](../README.md#your-first-eval), which needs
+none, then [Adopting the engine](adopting-a-host.md).
 
 ## Commands
 
@@ -35,18 +35,20 @@ python -m threetears.evals spend  --host myapp.evals:build_host --scope dev [--p
   out-of-run cap, outside the runs' caps; see [Cost and budgets](cost-and-budgets.md#spend-outside-any-run)).
 - `--apparatus-settings` sets host-declared apparatus values as a JSON object.
 
-Each is `start_run`'s argument of the same name.
+Each flag passes to one `start_run` argument: `--model` to `models`, `--k` to `k_runs`, `--template` to
+`template_id`, `--subject` to `subject_id`, `--scope` to `scope_id`, and the rest to the argument of the same name.
 
 ### `report` and `bundle`
 
 `report` prints the campaign's report (see [Reading reports](reading-reports.md#the-campaigns-report)) —
-its analysis, or, when it has none, a code-only report of its evidence; `bundle` prints the analysis
-bundle a generation would read, as JSON. Neither calls a model.
+its analysis, or, when it has none, a code-only report of its evidence. `bundle` prints, as JSON, the analysis
+bundle a generation would read inside a wrapper (`BundleInspection`) that adds its campaign, scope and
+fingerprint; the bundle itself is the wrapper's `bundle` field. Neither command calls a model.
 
 ### `spend`
 
-`spend` prints what the engine spent outside any run in the scope — case generations, rubric proposals
-and analysis generations — narrowed by its flags.
+`spend` prints what the engine spent outside any run in the scope — case generations, rubric proposals,
+analysis generations and judge repeats (`--purpose variation|proposer|analysis|judge`) — narrowed by its flags.
 
 ## Exit codes
 

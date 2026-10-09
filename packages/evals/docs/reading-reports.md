@@ -1,29 +1,19 @@
 # Reading reports
 
-Read this when you have a campaign — runs you want compared — and want to read what it found, render it,
-or build your own renderer. It covers the report document, how arms are named, results by kind of case
-(strata), how far a judged score can be trusted (evidence tiers), and drawing charts. Terms such as
+**For** anyone with a campaign (runs to compare) who wants to read what it found, render it, or build a renderer.
+**Answers:** what each part of a report means, which statistical method produced each number, how arms are
+named, how far a judged score can be trusted (evidence tiers), and how charts are drawn. Terms such as
 campaign, arm, cell and analysis are defined in [Concepts](concepts.md).
-
-## What a report is, in plain words
-
-Every campaign is read through one document, the **report**. It is a list of blocks in reading order:
-text, tables, charts and disclosures. If someone has generated an **analysis** (a model reading the
-campaign's numbers and writing findings), the report carries those findings beside the evidence. If not,
-you still get a **code-only report**: every table and chart code can build, with no words from a model,
-and a line saying no analysis was generated. Either way, every number comes from code; a model never
-gets to state a figure or decide how much a judged score can be trusted.
-
-[`examples/reports.py`](../examples/reports.py) takes a finished campaign to the files people read: the
-contrasts' verdicts read off the `Report` as data, the report as Markdown and HTML, the evidence bundle
-as JSON, and each chart as a Vega-Lite spec (plus an SVG with the `[vega]` extra). It runs offline.
 
 ## The report
 
-A generated analysis is read through one document. `analysis_report(storage, analysis_id, scope_id)`
-returns a `Report`: an ordered list of blocks — `text` (what the analysis's author wrote, with a role),
-`table` (evidence, arms, decision surface), `chart` and `disclosure` (what code must add) — each linked
-to the findings it belongs to or rests on. Serialize it three ways:
+Every campaign is read through one document, the **report**: blocks in reading order, `text` (what an analysis's
+author wrote, with a role), `table`, `chart` and `disclosure` (what code must add), each linked to the findings it
+belongs to or rests on. With an **analysis** (a model reading the campaign's numbers and writing findings), the
+report carries those findings beside the evidence; without one it is a **code-only report**, every table and
+chart code can build and a line saying no analysis was generated. Either way every number comes from code, and a
+model never decides how much a judged score can be trusted. [`examples/reports.py`](../examples/reports.py) writes
+one to files, offline. `analysis_report(storage, analysis_id, scope_id)` returns a generated analysis's `Report`:
 
 ```python
 from threetears.evals.analysis import analysis_report, report_html, report_markdown
@@ -43,12 +33,15 @@ or, when it has none, a **code-only report** of its evidence (`build_code_only_r
 A code-only report has `basis="code_only"` and no author's words — no headline, no findings, no text block,
 which the published schema and the model both refuse. It holds:
 
+- the campaign's declared questions, when it declares any, with the readings no question names
+  ([exploratory](#readings-no-question-asked-about-exploratory));
 - the arm table: each arm and every lever it ran, with no status column (every arm is unresolved, since
   nothing decided) and no finding column (there are no findings);
 - the guardrails, each decided for each arm against the control ([below](#reading-the-guardrails));
 - the decision surface;
 - the contrasts the evidence tested against the control;
-- a distribution chart per measure and judged dimension;
+- a distribution chart per judged dimension and per measure with a better end, except a label's statistics
+  (they are in the labels table), `match` where `accuracy` is charted, and a cost no result reported;
 - for a classifier, one `labels` table of each label's precision, recall and F1, a row per label and arm:
   precision and recall with their 95% Wilson intervals over the cases, F1 with none (it has none by construction), and
   every figure with the n it is counted over;
@@ -74,9 +67,8 @@ An analysis's arm table gives each arm a status, read off the decisions that nam
 | replaced incumbent | the control, when some other arm won |
 | unresolved | no decision reached a verdict on it; a deferred decision is not a verdict |
 
-The analysis writer is refused when it adopts and rejects one arm, so only an analysis stored before that
-refusal can carry **contradicted**. Neither verdict is shown as standing: the arm is never shown as the
-winner, the control is not shown as replaced on its account, and a disclosure below the table names it.
+Only an analysis stored before the writer was refused for adopting and rejecting one arm can carry
+**contradicted**; neither verdict is then shown as standing, and a disclosure names it.
 
 ## Reading the decision surface
 
@@ -122,7 +114,7 @@ the control on each reading, under one rig.
 | improved / regressed | adjusted p < 0.05, in that direction | act on it, unless the row says *immaterial* (below the measure's margin) |
 | equivalent | the paired difference is shown inside ± the measure's margin by TOST, corrected in the same family | treat the arms as interchangeable on this reading |
 | not separated | the cases could not tell the arms apart | add cases, or declare a margin; never read it as a tie |
-| untested | no test could decide: too few cases, or every case moved by one amount over too few cases for an exact test to reach 0.05; the row says why | fix what it names (usually too few cases) |
+| untested | no test could decide: fewer than two cases on a side, or every shared case moved by exactly the same amount, which leaves no spread to test; the row says why | fix what it names (usually too few cases) |
 
 `equivalent` needs a declared margin (`MetricDescriptor.materiality_threshold`) and a paired test. Its p
 is corrected in the same Holm family as the separations, with the multiplier capped at the number of
@@ -163,6 +155,27 @@ under the questions, and a finding resting only on them carries a `Scope` fact. 
 every finding is exploratory, and the report says so once near the top rather than on every row. A
 guardrail is never exploratory.
 
+## Methods
+
+Every test is two-sided at α = 0.05, and every interval is 95% unless a correction widens it. The case is the
+unit of analysis: a case's repeats are averaged first, because they are not independent draws.
+
+| Number | Method |
+|---|---|
+| Interval on a mean | t on `n_cases − 1` degrees of freedom with a cluster-robust standard error over cases (Miller 2024), clipped to the measure's scale. One case gives no interval. |
+| Interval on a rate (accuracy, precision, recall, any 0/1 measure) | Wilson, on the effective sample size the clustering of repeats leaves, with t on `n_cases − 1` df. F1 has none. |
+| pass^k | Unbiased C(c, k) / C(n, k) per case, averaged over the cases with n ≥ k, pooled across the runs of one cell; its interval is Clopper–Pearson on an effective size. |
+| A contrast against the control | Paired t-test on per-case means over the shared cases (two or more), else Welch's t on Hsu's `min(n_a, n_b) − 1` df. Effect size Hedges' g (g_z when paired). Holm correction within each family; interval Bonferroni at 1 − α/m. |
+| `equivalent` | Paired TOST against the measure's `materiality_threshold`, in the same Holm family, capped at the number of compared rows (Shaffer). |
+| A bar | Three-valued: the cell's interval against the threshold less the margin (cleared, missed, undecided). A seeded threshold is the incumbent's mean moved √2 − 1 of its half-width toward the permissive end. |
+| A guardrail | Non-inferiority: the 95% interval on arm − control against zero change less the margin. |
+| Scope divergence, mechanism checks | The difference tested directly, paired or Welch as for a contrast; a gap with no spread is read by an exact permutation test, which can reach 0.05 only from six shared cases (four a side unshared). |
+| Frontier | Dominance by the contrasts' test, Holm across the subject's pairs; latency ranked on the mean; p95 median-unbiased (Hyndman–Fan type 8) from 13 observations; cost band a lognormal prediction band. |
+| Run history | Paired test per adjacent pair of runs, uncorrected; `equivalent` by TOST against the threshold. |
+| Judge agreement and evidence tiers | Cohen's κ, quadratic-weighted on 1–5; tiers decided on a score interval for κ (one-sided 95% lower bound to award, 97.5% upper bound to deny). |
+
+The [simulation suite](measuring-soundly.md) checks each method's error rate against a known truth.
+
 ## Having a model write the analysis, over frozen evidence
 
 An analysis is written from the campaign's **bundle** alone (`AnalysisContextBundle`), and every figure
@@ -171,12 +184,17 @@ in it is a reference code resolves against that bundle. Save the bundle (`bundle
 saved file under a second prompt compares the two prompts and nothing else; each analysis records the
 fingerprint it read on `generation.bundle_fingerprint`. The insight-ledger cutoff (`bundle_assembled_at`),
 the generation time and its cost are on that provenance, not in the bundle.
+
+The bundle stays closed: the generator has no tools to fetch more context, such as a `bisect_runs` or `pivot`
+drill-down. A generator that fetched its own context would read different inputs on every call, so nothing could
+be fingerprinted before generation and two prompts could no longer be compared on one bundle. A question the
+bundle cannot answer is answered by adding a field to it.
 [`examples/llm_analysis.py`](../examples/llm_analysis.py) does all of it in one file.
 
 ## How an arm is named
 
 Every block that names an arm — decisions, evidence rows, the arm table, the decision surface, the
-results by stratum, the contrasts and every chart group — prints one name for it, built once
+results by stratum, the contrasts, the guardrails and labels tables, and every chart group — prints one name for it, built once
 (`threetears.evals.analysis.arms.arm_names`).
 
 - An arm is named by the levers whose levels differ across the report's arms, each lever compared only
@@ -213,7 +231,7 @@ alone accepts exactly those three malformations as well.
 
 A chart block carries the chart's **intent** (`ChartIntent`, from `threetears.evals.analysis.viz`), never
 a charting library's spec: its type from eval's eight, the rows it draws, what each field encodes
-(identity, length, position, interval with what it varies over, level, class, ordinal), its axes with
+(identity, length, position, interval with what it varies over, level, class, ordinal, count, label), its axes with
 their units and zero baselines, its order, the colour *slots* it uses and what it must disclose — plus its
 values as drawn, which the HTML shows as a table.
 
@@ -247,20 +265,11 @@ including a quantity recorded per usage row (`reasoning_tokens`: declare `reason
 run (`p95_total_ms`). For a call cap, report the calls each case used as a host measure and name that. The
 declaration enters no variant key. A lever naming no mechanism reads `unchecked`, never as having taken effect.
 
-A knob your host also records resolved, as a lever of its own (`ResolvesInto(...)` on a kind's overlay field, or
-`resolves_into` on a `Sweepable`), is reported as one lever where the runs show the resolved lever moved only with
-the knob. The resolved lever then has no coverage row and is named in no confound, and the arm is named by the
-knob, with the resolved lever listed in its variant-index entry's `folded`. Where it also moved while the knob was
-held at one level by arms the comparison reads, it is reported as a lever of its own and named as a confound on
-that comparison. Which arms that is depends on the lens: the knob's coverage row reads the arms that moved the knob,
-so a drift in an arm that left the knob alone shows in the design's contrast for that arm, not on the knob's row.
-Where a run did not record it, it is named as an `undecided` confound.
-
-Only two arms at one level of the knob can show the resolved lever moving on its own; repeats of one arm cannot,
-because every run of an arm resolves the same value. A fold nothing could have refuted is still applied, but it
-carries an `unverified_fold` confound (`unverified_fold:<lever>`, explained in `confound_catalog`), and a code-only
-report states it among its disclosures. Read it as an assumption these runs did not test: the knob's effect is not
-separated from anything else written into that lever. A fold without the mark was tested at the levels two or more arms held, and held there; levels only one arm ran were not tested.
+A knob your host also records resolved as a lever of its own (`ResolvesInto`) is reported as one lever where
+the runs show the resolved lever moved only with the knob: it then has no coverage row, names no confound, and
+is listed in the arm's `folded`. Where it moved on its own it stays a lever and a confound, and a fold no two arms
+at one knob level could have refuted carries an `unverified_fold` confound. The rule in full is in
+[Adopting the engine](adopting-a-host.md#the-kind-what-you-are-evaluating).
 
 A comparison across candidate models can also differ in what the models did while no setting differed. A
 reasoning effort is a word each vendor maps to its own budget, so two models at one effort setting can reason very
@@ -272,19 +281,12 @@ design's contrast arms and on each family comparison). On any other lever the sh
 so it is never named there. The confound qualifies the comparison; it never hides it. A share nothing measured is
 said to be unmeasured and names no confound.
 
-An arm is keyed by the model id its launch asked for, and a floating alias (a "latest" pointer) is resolved on the
-provider's side, so two runs of one arm can have been answered by different models. Only the response names the
-model that answered, and each candidate usage row records it (`RoleUsage.served_model`). The bundle reads that into
-`arm_served_models`: each arm's served models, and its state, `one`, `pooled` (two or more models answered it, so
-its numbers are a mixture) or `unrecorded` (some response named no model, or the row was stored before this was
-recorded; never read as the alias). Wherever one requested id was answered by more than one model across a
-comparison's runs, whether inside one arm or between two arms that asked for the same id, the comparison names a
-`served_model:candidate` confound: on the coverage rows and divergences (`confounded_by`) and on each contrast
-against the control (`mechanism_confounds`). It is `undecided` where no mixture is shown but some response named
-no model. Two arms that asked for different ids and were answered by different models are the model lever, not
-its confound. A code-only report says which arms pooled more than one model. The arm still pools under its key:
-the variant key is fixed at launch, before any response names a model, so the mixture is disclosed rather than
-split.
+A floating model alias (a "latest" pointer) is resolved by the provider, so two runs of one arm can have been
+answered by different models. Each candidate usage row records the model the response named
+(`RoleUsage.served_model`), and the bundle reads it into `arm_served_models`: per arm, `one`, `pooled` (its
+numbers are a mixture) or `unrecorded`. Where one requested id was answered by more than one model across a
+comparison's runs, the comparison names a `served_model:candidate` confound (`undecided` where some response
+named no model). The arm still pools under its key, fixed at launch, so the mixture is disclosed, not split.
 
 ## Results by kind of case: strata
 
@@ -327,9 +329,11 @@ whether that judge has been shown to agree with people (best), or at least with 
 The engine measures both and labels every judged reading with the result — the **evidence tier**. It
 never hides a reading for a weak tier; it tells you how much weight it can bear.
 
-Every judged reading — each `judged_measures` arm, each judged reading on the decision surface, each
-judged evidence row of a finding — carries an `evidence_tier` that code decides from what the judge's
-reliability was measured to be (`threetears.evals.contracts.evidence_tiers`, owner ruling 2026-10-06):
+Every judged reading carries a tier that code decides from what the judge's reliability was measured to be
+(`threetears.evals.contracts.evidence_tiers`): `evidence_tier` on each `judged_measures` arm and each judged
+reading on the decision surface, and `judged_tier` on a finding's resolved evidence row. Code decides it, never
+the analysis writer, because how far a score can be leaned on depends on two measurements of the judge and on
+nothing a report's author says:
 
 | Tier | When |
 |---|---|
@@ -347,33 +351,12 @@ criterion needs (`results_needed`): the rest of the floor when it is short, or, 
 more would carry the bounds clear of the bar if agreement held at its estimate. An analysis stored before this
 rule has no `judged_tier_rule`, and its tiers are rendered as decided on the point estimate.
 
-**Why these bounds.** Three ways to bound kappa were compared by seeded simulation over six marginals (1-5 flat,
-peaked and skewed with quadratic weights, 1-5 with a "can't tell" answer, 1-5 unweighted, pass/fail 1:1 and 3:1),
-500 replicates each. "Size" is how often a judge exactly at the bar is shown over it, at a one-sided 5% bound;
-the target is at most 5%. Power is the range over marginals of how often a better judge earns the tier.
-
-| Method | n | Size, 0.6 bar | Size, 0.8 bar | Power at 0.9, 0.6 bar | Power at 0.95, 0.8 bar | Coverage of a 95% interval |
-|---|---|---|---|---|---|---|
-| Score interval (chosen) | 20 | 3.0% | 3.2% | 12-80% | 0-39% | ≥ 94.0% |
-| | 40 | 3.6% | 3.2% | 57-97% | 7-72% | ≥ 94.6% |
-| | 60 | 4.0% | 3.6% | 71-100% | 37-90% | ≥ 94.8% |
-| Analytic SE (Fleiss-Cohen-Everitt) on t | 20 | 16.6% | 33.6% | 72-91% | 63-76% | ≥ 51.7% |
-| | 60 | 10.8% | 17.6% | 90-100% | 79-96% | ≥ 73.8% |
-| Bootstrap over results, percentile | 20 | 12.6% | 25.8% | 64-89% | 54-73% | ≥ 51.3% |
-| | 60 | 9.2% | 14.4% | 86-100% | 73-95% | ≥ 78.0% |
-| Bootstrap over results, BCa | 20 | 12.0% | 24.2% | 50-86% | 51-70% | ≥ 50.7% |
-| | 60 | 7.0% | 11.4% | 76-100% | 54-92% | ≥ 82.0% |
-
-The analytic and bootstrap bounds read their spread off the estimate, so a sample that happens to agree looks
-certain: their extra power is mostly false awards. The score interval holds each candidate kappa to the spread it
-would have there. A score interval that read the disagreement size off the observed disagreements alone awarded
-the tier at the bar 8-18% of the time, so the size used is the larger of the observed and the chance one. The
-upper bound runs looser than the lower one (a one-sided 95% upper bound showed a judge at the bar below it up to
-8.8% of the time), so a miss is decided on a 97.5% upper bound (1.4-3.7% at the floors). Raters of one result are a
-cluster: their disagreements with the judge are added at the correlation they show on shared results. Two people
-who copy the same truth, added as independent, awarded the tier at the bar 9.5% of the time; with the
-correlation estimated it was at most 4.6%. A bootstrap over results would cluster them too, but it fails at
-these sizes as the table shows.
+**Why these bounds.** Seeded simulation compared a score interval for kappa with the analytic standard error
+and two bootstraps over six marginals (`tests/test_simulated_agreement.py`). At 20 results the score interval
+showed a judge exactly at the bar over it 3.0–3.2% of the time, against 12–34% for the others, which read their
+spread off the estimate and so make a sample that happens to agree look certain. The disagreement size used is
+the larger of the observed and the chance one, a miss is decided on the 97.5% upper bound because the upper
+bound runs looser, and raters of one result are treated as a cluster.
 
 **How many ratings a judge needs.** Seeded simulation, one rater per result, 1,500 replicates. The chance that a
 judge earns the tier, by distinct results:
@@ -391,28 +374,18 @@ because no valid bound can show a kappa of 0.8 from 20 results: even twenty perf
 
 **How agreement is computed.** Agreement is one statistic computed by one rule for both — quadratic-weighted
 kappa on 1-5, kappa on pass/fail, per rater (each person; each round of repeats) and pooled by result.
-Every distinct result weighs 1, split across the raters that measured it, so the figure weighs what the
-floor counts, distinct results, never pairs: neither a small rater nor many raters re-measuring a few
-shared results (five annotators on the same three anchors; one result repeated thirty times) can carry it,
-or the floor, over the bar. A repeat that answers "can't tell" where the judge had scored is a
+Every distinct result weighs 1, split across the raters that measured it, so many raters re-measuring a few
+shared results cannot carry the figure, or the floor, over the bar. A repeat that answers "can't tell" where the judge had scored is a
 disagreement, never set aside. A judge is a served model, a judge config and the temperature its calls were
 sent at, so a tier measured under one prompt or one temperature never sets another's.
 
-**What temperature a judge samples at (#633, owner ruling).** Every judge call is requested at
-`DEFAULT_JUDGE_TEMPERATURE` (0) unless the dimension's `JudgeConfig` states another; a dimension with no config
-is no longer judged at the provider's default (around 1.0 on some) beside configured ones at 0, a split nobody
-chose. A model that refuses a temperature (some reasoning models do) is sent none, and the client reports that on
-its completion (`CompletionResult.temperature`, `None`), so the score records `model_default` rather than the 0
-nobody sent. Each score records what its call was actually sent at (`RubricScore.judge_temperature`), and that is
-part of the judge's identity everywhere: agreement groups and tiers are keyed by it, the `judge_temperature`
-apparatus input compares runs on it, a repeat sent at another temperature is unpaired (`temperature_changed`), and
-a judged run records what its unconfigured dimensions were requested at (`EvalRun.judge_temperature`) in its
-measurement context. A score or run stored before this recorded none and reads as not recorded: its judge is
-unknown, never a match for one at 0, and such a run is not re-judged or repeated under today's request
-(`recorded_judge_pins` refuses it). Its cell keeps the id it had before the dimension existed: an unrecorded
-temperature (or an unseated one on a run with no judge) stays out of the cell id (`CELL_ID_NEUTRAL`), so a stored
-analysis's cell references still resolve, while a run that recorded a temperature gets a cell of its own that
-never pools with the unrecorded one.
+**What temperature a judge samples at.** Every judge call is requested at `DEFAULT_JUDGE_TEMPERATURE` (0)
+unless the dimension's `JudgeConfig` states another, so no dimension is judged at a provider's default beside
+others at 0. A model that refuses a temperature is sent none, and its score records `model_default`. A quick `Judge`'s client is handed the temperature when its `generate` takes a `temperature` keyword. Each score
+records what was sent (`RubricScore.judge_temperature`), and that is part of the judge's identity: agreement
+groups, tiers and apparatus comparisons are keyed by it, and a repeat at another temperature is unpaired. A score
+or run stored before this recorded none and reads as not recorded, never as 0; such a run is not re-judged or
+repeated, and its cells keep their old ids.
 
 **Where tiers appear.** The bundle lists each judge's tier per dimension with both criteria
 (`judge_evidence_tiers`); a finding stands on the weakest tier among its rows
@@ -424,10 +397,8 @@ with the numbers behind it. Tiers are flagged, never a reason to drop a reading.
 judge scores: `repeat_judge_scores` (operation `judge_repeat`; `estimate_judge_repeat` /
 `judge_repeat_estimate` price it without a call) asks the same judge the same question again from the
 evidence its first judge read, under the apparatus the run recorded, and records each answer beside the
-score it repeats (`EvalResult.judge_repeats`) without changing the scores. Every call it can make — parse
-retries included — is priced and admitted against the host's out-of-run cap before the first is sent, and
-each is ledgered under purpose `judge` with the run's id (see
-[Cost and budgets](cost-and-budgets.md#spend-outside-any-run)).
+score it repeats (`EvalResult.judge_repeats`) without changing the scores. Its spend is out-of-run
+([Cost and budgets](cost-and-budgets.md#spend-outside-any-run)).
 
 ## Drawing charts: the Vega-Lite adapter
 
@@ -457,26 +428,16 @@ Drawing a spec needs nothing past the core; only `png` and `svg` need the extra.
 imports the adapter.
 
 The packaged palette is a brand-neutral default with a light and a dark variant (`packaged_palette("light")`,
-`packaged_palette("dark")`). Its hues are a published, validated default categorical palette, used
-unchanged, in an order chosen so that the four validated slots can be told apart as a set. The package's
-tests measure these rules on it:
+`packaged_palette("dark")`), a published categorical palette ordered so the four validated slots can be told
+apart as a set. The package's tests hold text to 4.5:1 against the chart surface, slot 1 (every single-series
+mark), `highlight` and `context` to 3:1, and slots 1-4 to an OKLab ΔE of at least 6 under simulated protanopia
+and deuteranopia. Several categorical slots fall below 3:1 on the light surface, so a chart never relies on
+colour alone to identify a category: it labels the marks or names the level in the values table. A host's own
+`ChartPalette` is held to the contract's shape only.
 
-- text (`ink`, `muted`) clears 4.5:1 against the chart surface, and `on_fill` clears 4.5:1 over slot 1;
-- slot 1, the colour of every single-series mark, clears 3:1 against the surface, as do `highlight` and
-  `context`;
-- every pair of slots 1-4 differs by at least OKLab ΔE 6 under simulated protanopia and deuteranopia and
-  ΔE 15 under normal vision, and every pair of neighbouring slots across all eight by ΔE 8 and ΔE 15.
-
-Several categorical slots fall below 3:1 on the light surface, so the chart vocabulary never relies on
-colour alone to identify a category: it labels the marks directly, or names the level in the values table.
-A host declaring its own `ChartPalette` is held to the contract's shape only; whether its colours separate
-is for the host to measure.
-
-The packaged face is Liberation Sans (`Liberation Sans, Arial, sans-serif`). The rasteriser embeds it, so
-a PNG draws it on a machine with no fonts installed, and it is metric-compatible with Arial, so a browser
-without it lays text out at the same widths. Its digits share one width, so numeric ticks line up. To
-draw in your own face, measure it with the tool in a checkout of this repository (dev tooling, not
-installed with the package; it needs the `[vega]` extra) and declare the result:
+The packaged face is Liberation Sans (`Liberation Sans, Arial, sans-serif`), embedded by the rasteriser and
+metric-compatible with Arial, with digits of one width. To draw in your own face, measure it with the tool in a
+checkout of this repository (it needs the `[vega]` extra) and declare the result:
 
 ```bash
 uv run python packages/evals/scripts/measure_font_metrics.py \
