@@ -96,9 +96,10 @@ listed), never a replica's view, which lags another replica's publish:
   and a publish that found its chunk already written checks it before moving; a missing one leaves
   the scope to the catch-up, which republishes it from L3.
 
-The hub's own sweep of chunk subjects no object names takes only those older than
-`ORPHAN_CHUNK_MIN_AGE`, since an object's chunks land before its metadata; pieces of a write torn
-by a full store wait for it.
+The hub's own sweep of chunk subjects no object names (pieces of a put that failed part way, since
+an object's chunks land before its metadata) runs at each retire only while no write claim stands
+in the pod's pointer bucket: while one does, an unnamed chunk may be a put in flight. Judged by
+state, as the chunks are, never by age.
 
 ## Two code versions at once
 

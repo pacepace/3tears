@@ -84,7 +84,7 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final
 
-from threetears.nats.object_store_requests import MAX_RETIRED_OBJECTS
+from threetears.nats.object_store_requests import MAX_RETIRED_OBJECTS, WRITE_CLAIM_SEGMENT
 from threetears.observe import get_logger
 
 from threetears.core.sql_fragments import quote_identifier
@@ -592,8 +592,9 @@ class _Layout:
 
     @property
     def write_claims_prefix(self) -> str:
-        """the prefix of every write claim's key."""
-        return f"{self.name}.w."
+        """the prefix of every write claim's key; the declarer's orphan sweep reads the same grammar
+        (:func:`~threetears.nats.object_store_requests.is_write_claim_key`)."""
+        return f"{self.name}.{WRITE_CLAIM_SEGMENT}."
 
     def write_claim_key(self, epoch: int, owner: str) -> str:
         """the key of one replica's claim on an epoch it writes chunks at."""

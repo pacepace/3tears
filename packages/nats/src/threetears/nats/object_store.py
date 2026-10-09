@@ -55,7 +55,7 @@ from threetears.observe import get_logger
 
 from threetears.nats._named_read import NamedRead, read_through_named_consumer
 from threetears.nats._publish import run_bounded
-from threetears.nats.object_store_requests import OBJECT_NAME_PATTERN, ORPHAN_CHUNK_MIN_AGE
+from threetears.nats.object_store_requests import OBJECT_NAME_PATTERN, is_write_claim_key
 from threetears.nats.errors import (
     ObjectExistsError,
     ObjectNotFoundError,
@@ -67,6 +67,7 @@ from threetears.nats.errors import (
 
 if TYPE_CHECKING:
     from threetears.nats.client import NatsClient
+    from threetears.nats.kv import KvBucketLike
 
 __all__ = [
     "DEFAULT_OBJECT_CHUNK_BYTES",
@@ -648,19 +649,29 @@ class NatsObjectStore:
             raise ObjectStoreError(f"deleting object {name!r} from {self._full_name} failed: {exc}") from exc
         return True
 
-    async def purge_orphan_chunks(self, *, older_than: timedelta = ORPHAN_CHUNK_MIN_AGE) -> int:
-        """remove chunks no object names, once they are old enough not to be a put in progress.
+    async def purge_orphan_chunks(self, *, pointers: KvBucketLike) -> int:
+        """remove chunks no object names, while no write is in flight; judged by state, never by age.
 
         A put writes its chunks before its metadata, so chunks with no metadata are either a put
-        still running or one that failed part way. Only those whose last chunk is older than
-        ``older_than`` are purged. The DECLARER's operation, like :meth:`delete`.
+        still running or one that failed part way. Its writer holds a claim in ``pointers`` while it
+        writes (:func:`~threetears.nats.object_store_requests.is_write_claim_key`), so while any
+        claim stands nothing is purged; with none standing, every unnamed chunk is a put that will
+        never finish. The DECLARER's operation, like :meth:`delete`.
 
-        :param older_than: how old an unnamed chunk subject's last message must be
-        :ptype older_than: timedelta
+        :param pointers: the pod's pointer bucket, where its writers claim what they write
+        :ptype pointers: KvBucketLike
         :return: how many chunk subjects were purged
         :rtype: int
         :raises ObjectStoreError: when the stream cannot be read or a purge fails
+        :raises KvError: when the pointer bucket cannot be listed (nothing is purged)
         """
+        claims = [key for key in await pointers.list_keys() if is_write_claim_key(key)]
+        if claims:
+            log.info(
+                "unnamed object chunks kept: a write is in flight",
+                extra={"extra_data": {"bucket": self._full_name, "claims": len(claims)}},
+            )
+            return 0
         js = self._client.jetstream_context()
         named = {raw.nuid for raw in await self._list_raw() if raw.nuid and not raw.deleted}
         try:
@@ -669,14 +680,9 @@ class NatsObjectStore:
                 what="object chunk listing",
             )
             subjects = dict(info.state.subjects or {})
-            cutoff = datetime.now(UTC) - older_than
             purged = 0
             for subject in sorted(subjects):
                 if subject.rsplit(".", 1)[-1] in named:
-                    continue
-                last = await self._bounded(lambda s=subject: js.get_last_msg(self.stream, s), what="chunk age read")
-                stamp = last.time if last.time is None or last.time.tzinfo else last.time.replace(tzinfo=UTC)
-                if stamp is not None and stamp > cutoff:
                     continue
                 await self._bounded(lambda s=subject: js.purge_stream(self.stream, subject=s), what="chunk purge")
                 purged += 1

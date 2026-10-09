@@ -9,6 +9,7 @@ shown, retried at the recheck and not in a spin.
 from __future__ import annotations
 
 import ast
+import contextlib
 import asyncio
 import json
 import linecache
@@ -1451,6 +1452,17 @@ def _served(pointers: _Pointers) -> set[str]:
     return served
 
 
+async def _fill_and_sweep(snapshot: ScopedSnapshot, store: _BoundedStore, l3: _L3) -> None:
+    """fill the store to its bound, then publish: the chunk write is refused full and sweeps the store."""
+    from threetears.nats import ObjectStoreFullError
+
+    store.max_bytes = sum(len(d) for d in store.objects.values())
+    l3.epochs["DE"] = l3.epochs.get("DE", 1) + 1
+    # NOSILENT: a store the sweep could not free refuses the write again; the sweep is what is tested
+    with contextlib.suppress(ObjectStoreFullError):
+        await snapshot.catch_up_from_l3()
+
+
 def _writer_died(pointers: _Pointers) -> None:
     """a writer's write claims lapse, as its lease does once it stops renewing."""
     for key in [k for k in pointers.entries if k.startswith("enr.w.")]:
@@ -1497,7 +1509,7 @@ async def test_a_full_store_retires_only_what_no_pointer_serves_and_no_write_cla
 
 
 async def test_a_live_writes_stages_survive_a_full_store_sweep_however_old_they_are() -> None:
-    snapshot, pointers, store, _ = _retiring_snapshot()
+    snapshot, pointers, store, l3 = _retiring_snapshot()
     await _started(snapshot, pointers)
     staged = [
         await snapshot.stage("TX", 3, _TX_ROWS),
@@ -1505,7 +1517,7 @@ async def test_a_live_writes_stages_survive_a_full_store_sweep_however_old_they_
         await snapshot.stage("CA", 3, {"results": [{"county": "c9", "state": "CA", "votes": 1}]}),
     ]
 
-    await snapshot._sweeper.retire_unreferenced()  # noqa: SLF001 -- the sweep a full store runs
+    await _fill_and_sweep(snapshot, store, l3)
 
     for scope in staged:
         assert set(scope.objects.values()) <= set(store.objects), f"a live write's stage of {scope.scope} was swept"
@@ -1513,12 +1525,12 @@ async def test_a_live_writes_stages_survive_a_full_store_sweep_however_old_they_
 
 
 async def test_an_abandoned_writes_stages_are_swept_once_its_claim_is_gone() -> None:
-    snapshot, pointers, store, _ = _retiring_snapshot()
+    snapshot, pointers, store, l3 = _retiring_snapshot()
     await _started(snapshot, pointers)
     staged = await snapshot.stage("TX", 3, _TX_ROWS)
 
     _writer_died(pointers)
-    await snapshot._sweeper.retire_unreferenced()  # noqa: SLF001
+    await _fill_and_sweep(snapshot, store, l3)
 
     assert not set(staged.objects.values()) & set(store.objects), "a dead write's stage outlived its claim"
     assert _served(pointers) <= set(store.objects)

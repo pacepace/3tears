@@ -26,6 +26,10 @@ again.
   A writer must call `discard_staged` when a write it staged will not commit; it may call
   `discard_epoch` when it takes over a dead write. Without them, a dead write's stages go at the
   next sweep once its claim has lapsed.
+- **Changed, `NatsObjectStore.purge_orphan_chunks(*, pointers)`**: the declarer's sweep of chunks no
+  object names takes them only while no write claim stands in the pod's pointer bucket
+  (`object_store_requests.is_write_claim_key`), and then every one; `older_than` and
+  `ORPHAN_CHUNK_MIN_AGE` are gone. A declarer must pass the pod's pointer bucket.
 - **Added, `threetears.nats.ObjectStoreFullError`** (`bucket`, `name`), an `ObjectStoreError` raised
   for a store failure that reports its max bytes exceeded (JetStream 10077) and for insufficient
   server resources (10047); any other store failure stays a plain `ObjectStoreError`.
