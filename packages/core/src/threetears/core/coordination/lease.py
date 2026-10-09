@@ -177,7 +177,8 @@ def _decoded_envelope(value: bytes) -> _Envelope | None:
     """
     try:
         return _decode_envelope(value)
-    except ValueError, KeyError, TypeError:
+    except (ValueError, KeyError, TypeError) as exc:
+        log.info("KVLease: an entry it cannot read is another holder's: %s: %s", type(exc).__name__, exc)
         return None
 
 
