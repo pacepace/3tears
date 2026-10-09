@@ -6,6 +6,37 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Agent acl, core, epoch, nats, registry and agent tools: the access tables are switched on (switch-on stage)
+
+Stage 3 of `docs/epoch-task-06-collection-generations-by-default.md`. Additive: the `acl.*`
+subjects and `AclCache`'s TTL stay until the contract stage.
+
+- **Changed, `groups`, `group_members`, `roles` and `role_assignments` carry write generations**
+  (`write_generation = WRITE_GENERATION` on `GroupCollection`, `GroupMemberCollection`,
+  `RoleCollection`, `RoleAssignmentCollection`). A membership row's broadcast carries
+  `member_type` and `member_id`, an assignment row's `group_id` (`invalidation_columns`).
+- **Changed, `RoleAssignmentCollection.ensure_group_role_assignment` and
+  `delete_by_group_and_scope`**: the rows their SQL wrote are evicted in one advance, naming their
+  group; a lost insert race announces the winning row, and a revocation that matches nothing sends
+  no `DELETE`.
+- **Added, `AclCache` row-by-row eviction**: `evict_group_member_row`, `evict_role_assignment_row`,
+  `evict_role_row`, `evict_group_row`, `drop_membership_layer`, `drop_assignment_layers`; a read
+  fence (`read_fence`, `put_*(fence=)`) so an entry computed before an eviction is not stored after
+  it; `GroupNamespaceEntry.role_ids`, recorded by the evaluator, so a role edit evicts exactly the
+  entries that read the role.
+- **Added, `threetears.agent.acl.bind_acl_cache_to_access_tables` and `ACCESS_TABLES`**, and
+  `threetears.agent.acl.generation_follow.AccessTableFollower` (one supervised generation-key watch
+  per table; `3tears-epoch` joins the `[bus]` extra).
+- **Changed, a broker reply carrying no generations field says the broker advanced nothing**
+  (owner, 2026-10-08): `BrokerGenerationSource.advance` returns `None`, the rows name no
+  generation, and a warning is logged once per table, so a pod switched on ahead of its hub still
+  writes. `GenerationSource.advance` may return `None`.
+- **Changed, grants**: the standalone registry (`_registry`) reads the whole `{ns}-epochs` bucket,
+  read only, as the tool pod does; its rbac stack follows the access tables and takes
+  `BrokerGenerationSource` with a reader.
+- **Changed, the tool pod's collection stack**: its `BrokerGenerationSource` reads through
+  `EpochGenerationReader`; `3tears-agent-tools` and `3tears-registry` depend on `3tears-epoch`.
+
 ### Core, agent tools and enforcement: a pod's writes move its tables' write generations (migrate-writers stage)
 
 Stage 2 of `docs/epoch-task-06-collection-generations-by-default.md`. A pod may not write the epoch
