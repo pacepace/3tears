@@ -359,7 +359,7 @@ def _trial_pass(result: EvalResult, *, rubric_threshold: int) -> tuple[bool | No
     ), False
 
 
-def _pass_hat_k_entry(attempts_by_case: Mapping[Hashable, list[bool]], *, k: int, n_cannot_tell: int) -> dict[str, Any]:
+def _pass_hat_k_entry(attempts_by_case: Mapping[Any, list[bool]], *, k: int, n_cannot_tell: int) -> dict[str, Any]:
     """The one row shape both pass^k producers return, so the two cannot describe a pool differently."""
     curve = _pass_hat_k_curve(attempts_by_case.values())
     headline = pass_hat_k_at(curve, k)
@@ -483,6 +483,64 @@ def pass_hat_k_cell(run: EvalRun) -> tuple[str, ...]:
     return ("context", run.context_key, str(run.identity_version), run.apparatus_provenance)
 
 
+def pool_pass_hat_k_attempts(
+    results: Sequence[EvalResult],
+    *,
+    cell_of_run: Mapping[str, Hashable],
+    rubric_threshold: int = 3,
+) -> tuple[dict[tuple[Hashable, str, int, str, str], list[bool]], int]:
+    """Each case's scored attempts in one pool, keyed as :func:`pool_pass_hat_k` keys them.
+
+    The grouping behind :func:`pool_pass_hat_k`, public so a surface that needs the cases themselves — an
+    interval over them, or a test pairing two contestants on the cases both ran — reads them through the
+    one keying that produced the headline rather than re-deriving it.
+
+    Args:
+        results: The pool.
+        cell_of_run: Run id → its cell, from :func:`pass_hat_k_cell`; a run absent from it is its own cell.
+        rubric_threshold: The 1–5 score a rubric dimension must reach to pass.
+
+    Returns:
+        ``(attempts, n_cannot_tell)``: each ``(cell, variant_key, identity_version, model, test_case_id)``
+        unit's scored attempts in result order, and the attempts left out because a judge could not tell.
+        A unit whose every attempt was left out is absent.
+    """
+    cases: dict[tuple[Hashable, str, int, str, str], list[bool]] = {}
+    n_cannot_tell = 0
+    for r in results:
+        passed, was_cannot_tell = _trial_pass(r, rubric_threshold=rubric_threshold)
+        n_cannot_tell += was_cannot_tell
+        if passed is None:
+            continue
+        cell = cell_of_run.get(r.eval_run_id, ("run", r.eval_run_id))
+        cases.setdefault((cell, r.variant_key, r.identity_version, r.model, r.test_case_id), []).append(passed)
+    return cases, n_cannot_tell
+
+
+def case_pass_hat_k(attempts: Sequence[bool], k: int) -> float | None:
+    """One case's unbiased pass^k estimate from its scored attempts, ``None`` below ``k`` of them.
+
+    ``C(c, k) / C(n, k)`` (see :func:`compute_pass_hat_k`): the per-case value every pass^k headline
+    averages, public so an interval or a paired test over cases reads the same number the headline does.
+
+    Args:
+        attempts: The case's scored attempts.
+        k: The depth, at least 1.
+
+    Returns:
+        The estimate, or ``None`` when the case has fewer than ``k`` scored attempts — it cannot stand in
+        for a depth it was not measured at.
+
+    Raises:
+        ValueError: ``k`` is below 1.
+    """
+    if k < 1:
+        raise ValueError(f"pass^k needs k >= 1, got {k}")
+    if len(attempts) < k:
+        return None
+    return _case_pass_hat_k(len(attempts), sum(attempts), k)
+
+
 def pool_pass_hat_k(
     results: Sequence[EvalResult],
     *,
@@ -516,15 +574,7 @@ def pool_pass_hat_k(
     """
     if k < 1:
         raise ValueError(f"pass^k needs k >= 1, got {k}")
-    cases: dict[Hashable, list[bool]] = {}
-    n_cannot_tell = 0
-    for r in results:
-        passed, was_cannot_tell = _trial_pass(r, rubric_threshold=rubric_threshold)
-        n_cannot_tell += was_cannot_tell
-        if passed is None:
-            continue
-        cell = cell_of_run.get(r.eval_run_id, ("run", r.eval_run_id))
-        cases.setdefault((cell, r.variant_key, r.identity_version, r.model, r.test_case_id), []).append(passed)
+    cases, n_cannot_tell = pool_pass_hat_k_attempts(results, cell_of_run=cell_of_run, rubric_threshold=rubric_threshold)
     return _pass_hat_k_entry(cases, k=k, n_cannot_tell=n_cannot_tell)
 
 
@@ -983,11 +1033,13 @@ __all__ = [
     "compute_latency_summary",
     "compute_pass_hat_k",
     "compute_per_case_composites",
+    "case_pass_hat_k",
     "pass_hat_k_at",
     "pass_hat_k_cell",
     "PassHatPoint",
     "percentile",
     "pool_pass_hat_k",
+    "pool_pass_hat_k_attempts",
     "reconstruct_completeness",
     "result_composite",
     "summarize_completeness",

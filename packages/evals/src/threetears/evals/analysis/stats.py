@@ -433,6 +433,64 @@ def proportion_interval(outcomes: Sequence[bool], cases: Sequence[Hashable]) -> 
     return _wilson_bounds(n_true / n, effective_n, _t_multiplier(groups - 1))
 
 
+def _beta_quantile(p: float, a: float, b: float) -> float:
+    """The ``p`` quantile of a Beta(a, b), by bisection on :func:`_betai` (monotone in ``x``)."""
+    low, high = 0.0, 1.0
+    for _ in range(64):
+        middle = 0.5 * (low + high)
+        if _betai(a, b, middle) < p:
+            low = middle
+        else:
+            high = middle
+    return 0.5 * (low + high)
+
+
+def case_rate_interval(case_rates: Sequence[float], *, max_effective_n: float) -> tuple[float, float] | None:
+    """The interval at :data:`INTERVAL_LEVEL` on the mean of per-case rates, each in ``[0, 1]``.
+
+    For a reading that averages one estimate per case — pass^k's ``C(c, k) / C(n, k)`` is the one this
+    serves — where the cases are the independent draws and each case's own estimate is noisy. It takes
+    :func:`proportion_interval`'s route to an effective sample size, and with it that function's guard:
+    the spread of the case rates is read with two pseudo-cases added, one at 1 and one at 0, so a handful
+    of identical cases (every one passing) is not read as no spread at all, and the effective size is
+    ``s̃ (1 − s̃) / Var̃``, never more than ``max_effective_n``.
+
+    **The bounds are Clopper–Pearson's on that effective size**, not Wilson's, at the tail mass the
+    t multiplier on ``cases − 1`` degrees of freedom leaves on each side. Wilson's shape covered as little as
+    87% of the time in simulation where the truth sat near 0 or 1 at 8–15 cases; Clopper–Pearson's held at
+    least 96% over 2–15 cases, depth 1–5 and case rates from all-alike to all-or-nothing, for about a tenth
+    more width (``tests/test_simulated_frontier.py`` checks it on the engine).
+
+    Args:
+        case_rates: One estimate per case, each in ``[0, 1]``.
+        max_effective_n: The most information the cases can carry — for pass^k, the scored attempts at the
+            qualifying cases over ``k``: the number of separate ``k``-attempt runs they contain.
+
+    Returns:
+        ``(low, high)`` containing the mean of ``case_rates``, or ``None`` below two cases, where there is
+        no between-case spread to estimate.
+
+    Raises:
+        ValueError: A rate is outside ``[0, 1]``.
+    """
+    stray = [rate for rate in case_rates if not 0.0 <= rate <= 1.0]
+    if stray:
+        raise ValueError(f"case rates must lie in [0, 1]; got {stray}")
+    cases = len(case_rates)
+    if cases < 2:
+        return None
+    rate = math.fsum(case_rates) / cases
+    padded = [float(value) for value in case_rates] + [1.0, 0.0]
+    smoothed = math.fsum(padded) / len(padded)
+    variance = math.fsum((value - smoothed) ** 2 for value in padded) / ((len(padded) - 1) * len(padded))
+    effective_n = max(1.0, min(max_effective_n, smoothed * (1.0 - smoothed) / variance))
+    tail = 1.0 - NormalDist().cdf(_t_multiplier(cases - 1))
+    held = rate * effective_n
+    low = 0.0 if held <= 0.0 else _beta_quantile(tail, held, effective_n - held + 1.0)
+    high = 1.0 if held >= effective_n else _beta_quantile(1.0 - tail, held + 1.0, effective_n - held)
+    return min(rate, low), max(rate, high)
+
+
 def mean_interval(
     mean: float, sem: float, n_cases: int, *, value_range: tuple[float, float] | None = None
 ) -> tuple[float, float] | None:
@@ -796,6 +854,34 @@ def composite_significance(
     return SignificanceResult(cohens_d, p_value < SIGNIFICANCE_ALPHA, p_value)
 
 
+def separation_p(sample_a: Sequence[float], sample_b: Sequence[float], *, paired: bool) -> float | None:
+    """The two-sided p of the separation test between two samples, where one exists.
+
+    :func:`composite_significance`'s p — paired t on shared per-case values, Welch otherwise — and, where
+    that has none because every paired difference is the same nonzero amount, the exact sign-flip p
+    ``2^(1 − n)``: with the differences all alike, only the two all-one-sign assignments of the ``2^n``
+    are as extreme. That is the reasoning :func:`paired_change` gives a deterministic gap, with its p
+    stated rather than a floor, so a caller combining p's has one to combine.
+
+    Args:
+        sample_a: One side's per-case values.
+        sample_b: The other's, aligned with ``sample_a`` when ``paired``.
+        paired: Whether the two are one-to-one on the same cases.
+
+    Returns:
+        The p, or ``None`` where no test separates the two: fewer than two values a side, identical paired
+        samples, or two unpaired samples each without spread.
+    """
+    tested = composite_significance(list(sample_a), list(sample_b), paired=paired)
+    if tested.p_value is not None:
+        return tested.p_value
+    if paired and len(sample_a) == len(sample_b) >= 2:
+        diffs = [float(b) - float(a) for a, b in zip(sample_a, sample_b)]
+        if _sample_std(diffs) == 0.0 and diffs[0] != 0.0:
+            return min(1.0, 2.0 ** (1 - len(diffs)))
+    return None
+
+
 #: What a change between two paired samples reads as — see :class:`ChangeVerdict`.
 ChangeLabel = Literal["improved", "regressed", "equivalent", "below_threshold", "not_separated", "inconclusive"]
 
@@ -1046,6 +1132,7 @@ __all__ = [
     "ChangeVerdict",
     "SignificanceResult",
     "bar_seed",
+    "case_rate_interval",
     "ci_half_width",
     "clustered_standard_error",
     "cohen_kappa",
@@ -1056,6 +1143,7 @@ __all__ = [
     "observed_mean_interval",
     "paired_change",
     "proportion_interval",
+    "separation_p",
     "standard_error_of_mean",
     "t_critical_two_sided",
     "wilson_interval",
