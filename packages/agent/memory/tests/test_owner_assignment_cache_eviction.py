@@ -3,10 +3,9 @@
 every request that reaches the ensure has just been authorized, so the
 caller's memberships -- and its owner group's contribution on this
 namespace -- are already in the :class:`AclCache`, saying "no grant". these
-tests run on the cache's DEFAULT ttl, which is what production runs on: a
-ttl of zero expires every entry on read and hides the stale-cache denial
-completely, which is how it reached a live deployment as a 500 on a user's
-second chat turn.
+tests run on a cache that keeps what it holds, as production's does: a cache
+that kept nothing would hide the stale-cache denial completely, which is how
+it reached a live deployment as a 500 on a user's second chat turn.
 """
 
 from __future__ import annotations
@@ -15,8 +14,7 @@ from typing import Any
 from uuid import UUID, uuid7
 
 import pytest
-from pydantic import BaseModel
-from threetears.agent.acl import AclCache, AssignmentInvalidatePayload, MembershipInvalidatePayload, Role
+from threetears.agent.acl import AclCache, Role
 from threetears.agent.memory.authorize import (
     ACTION_MEMORY_READ,
     ACTION_MEMORY_WRITE,
@@ -31,52 +29,9 @@ from threetears.agent.memory.authorize import (
 from .rbac_rows import RbacRows
 
 
-class _RecordingPublisher:
-    """records every invalidation broadcast.
+def _wiring() -> tuple[RbacRows, MemoryAuthorizerDependencies]:
+    """build rows seeded with the builtin owner role, and a bundle on a cache that keeps what it holds.
 
-    not a ``Fake<Name>``; it implements the one method of
-    :class:`~threetears.agent.acl.invalidation_bus.AclInvalidationPublisher`.
-    """
-
-    def __init__(self) -> None:
-        """start with nothing sent.
-
-        :return: nothing
-        :rtype: None
-        """
-        self.sent: list[BaseModel] = []
-
-    async def publish(self, *, subject: Any, message: BaseModel) -> None:
-        """record the message.
-
-        :param subject: invalidation subject (unused)
-        :ptype subject: Any
-        :param message: payload
-        :ptype message: BaseModel
-        :return: nothing
-        :rtype: None
-        """
-        _ = subject
-        self.sent.append(message)
-
-
-@pytest.fixture(autouse=True)
-def _namespace(monkeypatch: pytest.MonkeyPatch) -> None:
-    """give the invalidation subjects a namespace.
-
-    :param monkeypatch: pytest monkeypatch
-    :ptype monkeypatch: pytest.MonkeyPatch
-    :return: nothing
-    :rtype: None
-    """
-    monkeypatch.setenv("THREETEARS_NATS_SUBJECT_NAMESPACE", "t")
-
-
-def _wiring(publisher: _RecordingPublisher | None = None) -> tuple[RbacRows, MemoryAuthorizerDependencies]:
-    """build rows seeded with the builtin owner role, and a bundle on a default-ttl cache.
-
-    :param publisher: invalidation publisher for the bundle, or ``None``
-    :ptype publisher: _RecordingPublisher | None
     :return: the rows and the bundle
     :rtype: tuple[RbacRows, MemoryAuthorizerDependencies]
     """
@@ -92,7 +47,6 @@ def _wiring(publisher: _RecordingPublisher | None = None) -> tuple[RbacRows, Mem
     )
     deps = MemoryAuthorizerDependencies(
         acl_cache=AclCache(membership_loader=rows, grant_loader=rows),
-        invalidation_publisher=publisher,
         **rows.collections(),
     )
     return rows, deps
@@ -160,21 +114,12 @@ async def test_a_grant_on_a_second_agent_is_honoured_when_the_membership_already
     assert resolved.id == second.id
 
 
-async def test_what_the_ensure_wrote_is_broadcast_and_a_repeat_ensure_broadcasts_nothing() -> None:
-    """other pods hold the same stale entries; a no-op ensure runs on every write and must stay silent."""
-    publisher = _RecordingPublisher()
-    rows, deps = _wiring(publisher)
-    agent_id, customer_id, user_id = uuid7(), uuid7(), uuid7()
-    namespace = rows.namespace(namespace_type=MEMORY_NAMESPACE_TYPE, agent_id=agent_id, customer_id=customer_id)
-
-    await ensure_memory_owner_assignment(user_id=user_id, namespace=namespace, deps=deps)
-
-    group_id = rows.assignments[0].group_id
-    assert publisher.sent == [
-        MembershipInvalidatePayload(actor_type="user", actor_id=user_id),
-        AssignmentInvalidatePayload(group_id=group_id),
-    ]
-
-    await ensure_memory_owner_assignment(user_id=user_id, namespace=namespace, deps=deps)
-
-    assert len(publisher.sent) == 2
+def test_the_bundle_takes_no_invalidation_publisher() -> None:
+    """the acl invalidation subjects are retired: other processes hear the rows' broadcasts and generations."""
+    rows, _deps = _wiring()
+    with pytest.raises(TypeError):
+        MemoryAuthorizerDependencies(  # type: ignore[call-arg]
+            acl_cache=AclCache(membership_loader=rows, grant_loader=rows),
+            invalidation_publisher=object(),
+            **rows.collections(),
+        )

@@ -27,7 +27,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Final, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Final, Protocol, runtime_checkable
+
+from threetears.core.exceptions import GenerationUnavailableError
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 __all__ = [
     "WRITE_GENERATION",
@@ -40,6 +45,7 @@ __all__ = [
     "UndeclaredWriteGeneration",
     "WriteGeneration",
     "WriteGenerationDeclaration",
+    "announce_unheard_writes",
     "source_reads",
     "split_generation_token",
 ]
@@ -87,6 +93,49 @@ class GenerationSource(Protocol):
         :raises GenerationUnavailableError: when the generation cannot be advanced
         """
         ...
+
+
+async def announce_unheard_writes(source: GenerationSource, tables: Iterable[str]) -> dict[str, str]:
+    """advance each table once for writes that no collection made and no row broadcast names.
+
+    For a writer that changes rows it cannot list -- a schema migration, a restore, a bulk repair
+    in SQL. Nothing is published for the advance, so every process following a table finds a count
+    it did not hear and drops the table and everything derived from it: the reach is unknown, so
+    that is the right answer, and the only one the epoch system can give. Call it after the writes
+    have committed, never before: a follower that dropped first would re-read the old rows.
+
+    Every table is attempted even when one fails, and the failures are raised together after,
+    because a table left unadvanced keeps every follower's stale rows with nothing to correct them.
+
+    :param source: the source the writer's process advances through
+    :ptype source: GenerationSource
+    :param tables: the tables written; each is advanced once
+    :ptype tables: Iterable[str]
+    :return: each table's token, as :meth:`GenerationSource.advance` returned it
+    :rtype: dict[str, str]
+    :raises GenerationUnavailableError: when any table could not be advanced, or its advance returned
+        no generation, naming each
+    """
+    tokens: dict[str, str] = {}
+    failed: dict[str, str] = {}
+    for table in sorted(set(tables)):
+        try:
+            token = await source.advance(table)
+        except GenerationUnavailableError as exc:
+            failed[table] = str(exc)
+            continue
+        if not isinstance(token, str) or not token:
+            # a source that does not say what it wrote may have moved nothing, and an announcement
+            # that reached no follower leaves every one serving the old rows: a failure
+            failed[table] = f"the source advanced {table} without returning a generation"
+            continue
+        tokens[table] = token
+    if failed:
+        raise GenerationUnavailableError(
+            "writes no collection announced could not be put on the epoch system; followers keep what "
+            f"they hold of these tables until each moves again: {failed}"
+        )
+    return tokens
 
 
 #: the optional attribute a :class:`GenerationSource` sets to ``False`` when it can advance a table's

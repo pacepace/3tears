@@ -50,11 +50,13 @@ Exports (see `src/threetears/agent/acl/__init__.py`):
   exception classes; per-resource wrappers subclass `AccessDenied`
   to carry typed catching at endpoint code (e.g.
   `MemoryAccessDenied`, `DatasourceAccessDenied`).
-- `AclCache` -- three-layer in-process TTL cache
+- `AclCache` -- three-layer in-process cache
   (`actor -> [GroupMembership]`, `(group_id, namespace_id) -> action_set
   + trails`, `(group_id, namespace_type, customer_id) -> action_set
-  + trails`) with fine-grained invalidation hooks fired on
-  group-membership / role / assignment change. The `ActorMembershipEntry`
+  + trails`). Nothing in it ages: it is evicted row by row from the
+  access tables' row broadcasts and follows their write generations
+  (`generation_follow.follow_access_tables`), and serves what it holds
+  only while those watches run. The `ActorMembershipEntry`
   carries the full memberships tuple so the evaluator's
   cross-customer + member-type filter runs against cached state.
 
@@ -78,12 +80,11 @@ Exports (see `src/threetears/agent/acl/__init__.py`):
 
 ### Invalidation
 
-- `MembershipInvalidatePayload`, `AssignmentInvalidatePayload`,
-  `RoleInvalidatePayload` -- typed Pydantic models for the three
-  `{ns}.acl.*.invalidate` NATS subjects. Wire format is single-source:
-  every publisher (admin endpoints, agent self-mutations) and every
-  subscriber (cache subscribers in any consuming app) speaks
-  these models.
+- `follow_access_tables(registry, cache, reader)` -- binds an `AclCache`
+  to the access tables' row broadcasts and follows their write
+  generations (epoch-task-06); the only invalidation there is.
+- `evict_after_rbac_write(cache, member_actors=..., group_ids=...)` --
+  what a helper that writes an rbac row evicts from its own cache at once.
 
 ### Value types & protocols
 
@@ -136,7 +137,6 @@ grant_loader = CollectionGrantLoader(
 cache = AclCache(
     membership_loader=membership_loader,
     grant_loader=grant_loader,
-    ttl_seconds=60,
 )
 
 # 4. evaluate

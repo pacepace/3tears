@@ -25,6 +25,7 @@ Needs ``3tears-epoch``, which comes with the ``3tears-agent-acl[bus]`` extra.
 from __future__ import annotations
 
 import asyncio
+import functools
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from datetime import timedelta
@@ -44,6 +45,7 @@ if TYPE_CHECKING:
     from threetears.agent.acl.cache import AclCache
 
 __all__ = [
+    "DEFAULT_STOP_TIMEOUT",
     "DEFAULT_WATCH_RESTART_DELAY",
     "MAX_WATCH_RESTART_DELAY",
     "AccessTableFollower",
@@ -51,6 +53,7 @@ __all__ = [
     "WatchHealth",
     "follow_access_tables",
     "follow_caller_access_cache",
+    "follow_tables",
 ]
 
 log = get_logger(__name__)
@@ -60,6 +63,21 @@ DEFAULT_WATCH_RESTART_DELAY: Final = timedelta(seconds=1)
 
 #: the longest a failing watch waits between attempts, however many times in a row it has failed
 MAX_WATCH_RESTART_DELAY: Final = timedelta(seconds=60)
+
+#: the longest :meth:`AccessTableFollower.stop` waits for its cancelled watches to end; a shutdown
+#: never waits on a watch that will not stop
+DEFAULT_STOP_TIMEOUT: Final = timedelta(seconds=5)
+
+
+def _reader_closed(reader: object) -> bool:
+    """whether the watcher says its connection is closed, so no watch can ever deliver again.
+
+    :param reader: the watcher; one without a ``closed`` attribute is never closed
+    :ptype reader: object
+    :return: ``True`` once the watcher's connection is closed
+    :rtype: bool
+    """
+    return getattr(reader, "closed", False) is True
 
 
 @dataclass
@@ -129,6 +147,11 @@ class AccessTableFollower:
     :ptype restart_delay: timedelta
     :param max_restart_delay: the longest wait between attempts
     :ptype max_restart_delay: timedelta
+    :param stop_timeout: how long :meth:`stop` waits for the cancelled watches to end
+    :ptype stop_timeout: timedelta
+
+    A watch whose connection is closed (the watcher's ``closed``) stops instead of starting again:
+    the client is shutting down, and a retry loop against it would keep the process alive.
     """
 
     def __init__(
@@ -140,6 +163,7 @@ class AccessTableFollower:
         grace: timedelta = DEFAULT_BROADCAST_GRACE,
         restart_delay: timedelta = DEFAULT_WATCH_RESTART_DELAY,
         max_restart_delay: timedelta = MAX_WATCH_RESTART_DELAY,
+        stop_timeout: timedelta = DEFAULT_STOP_TIMEOUT,
     ) -> None:
         """capture what to follow; no I/O.
 
@@ -151,9 +175,13 @@ class AccessTableFollower:
         self._grace = grace
         self._restart_delay = restart_delay
         self._max_restart_delay = max_restart_delay
+        self._stop_timeout = stop_timeout
         self._health = {table: WatchHealth() for table in self._tables}
+        self._source = reader
         self._reader = _ObservedWatcher(reader, self._health)
         self._tasks: list[asyncio.Task[None]] = []
+        # table -> what this follower registered with the registry, withdrawn by stop()
+        self._watching_by_table: dict[str, Callable[[], bool]] = {}
 
     @property
     def running(self) -> bool:
@@ -186,6 +214,16 @@ class AccessTableFollower:
         """
         return self.running and all(h.consecutive_failures == 0 for h in self._health.values())
 
+    def _table_watching(self, table: str) -> bool:
+        """whether ``table``'s watch is running with no failure since its last push.
+
+        :param table: the table
+        :ptype table: str
+        :return: ``True`` while the watch can judge the table
+        :rtype: bool
+        """
+        return self.running and self._health[table].consecutive_failures == 0
+
     @property
     def healthy(self) -> bool:
         """whether every table's watch is running and has been pushed a value since it last failed.
@@ -214,27 +252,43 @@ class AccessTableFollower:
         # every table followed first, then one watch task each: start() does not yield, so no watch is
         # pushed a value before its table is followed. The tasks are a fixed set, one per table, held to
         # be stopped -- nothing is accumulated or flushed
+        # what a cache derived from each table reads to know whether it may serve what it holds
+        self._watching_by_table = {table: functools.partial(self._table_watching, table) for table in self._tables}
         for table in self._tables:
             self._registry.follow_generation(table)
+            self._registry.watched_by(table, self._watching_by_table[table])
         self._tasks = [
             asyncio.create_task(self._watch(table), name=f"follow-generation:{table}") for table in self._tables
         ]
         log.info("following the access tables' write generations", extra={"extra_data": {"tables": self._tables}})
 
     async def stop(self) -> None:
-        """cancel every watch and wait for it to end. Idempotent.
+        """cancel every watch and wait, at most ``stop_timeout``, for them to end. Idempotent.
+
+        A watch that does not end in time is left cancelled and logged: a shutdown never waits on
+        it. A cancellation of ``stop`` itself propagates.
 
         :return: nothing
         :rtype: None
         """
         tasks, self._tasks = self._tasks, []
+        watching_by_table, self._watching_by_table = self._watching_by_table, {}
+        for table, watching in watching_by_table.items():
+            self._registry.not_watched_by(table, watching)
         for task in tasks:
             task.cancel()
-        for task in tasks:
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass  # NOSILENT: the cancellation this method just asked for, ending the watch
+        if tasks:
+            _done, pending = await asyncio.wait(tasks, timeout=self._stop_timeout.total_seconds())
+            if pending:
+                log.warning(
+                    "write-generation watches did not end within the stop bound; left cancelled",
+                    extra={
+                        "extra_data": {
+                            "tables": sorted(task.get_name() for task in pending),
+                            "stop_timeout_seconds": self._stop_timeout.total_seconds(),
+                        }
+                    },
+                )
 
     def _delay_after(self, failures: int) -> float:
         """the wait before the next attempt, after ``failures`` failures in a row.
@@ -267,6 +321,12 @@ class AccessTableFollower:
             except Exception as exc:  # noqa: BLE001
                 health.last_error = f"{type(exc).__name__}: {exc}"
             health.consecutive_failures += 1
+            if _reader_closed(self._source):
+                log.info(
+                    "a write-generation watch stopped: its NATS connection is closed",
+                    extra={"extra_data": {"table": table, "error": health.last_error}},
+                )
+                return
             delay = self._delay_after(health.consecutive_failures)
             log.warning(
                 "a write-generation watch ended or failed; starting it again",
@@ -313,6 +373,50 @@ class AccessTableFollowing:
         self._unbind()
 
 
+def follow_tables(
+    registry: CollectionRegistry,
+    reader: GenerationWatcher,
+    tables: Sequence[str],
+    *,
+    grace: timedelta = DEFAULT_BROADCAST_GRACE,
+    restart_delay: timedelta = DEFAULT_WATCH_RESTART_DELAY,
+    max_restart_delay: timedelta = MAX_WATCH_RESTART_DELAY,
+) -> AccessTableFollower:
+    """follow ``tables`` on ``registry`` by watching their generation keys, and return the follower, started.
+
+    For tables whose derived caches live on the registry itself -- the visibility-scan cache
+    (:meth:`~threetears.core.collections.registry.CollectionRegistry.scan_cache`), which serves an
+    entry only while every table it depends on is followed this way. Stop the follower before the
+    registry's invalidation listener.
+
+    :param registry: the registry whose listener hears the rows, and which follows the tables
+    :ptype registry: CollectionRegistry
+    :param reader: reads and watches the epoch bucket
+    :ptype reader: GenerationWatcher
+    :param tables: the tables to follow
+    :ptype tables: Sequence[str]
+    :param grace: how long a watch waits for an advance's rows before judging them missed
+    :ptype grace: timedelta
+    :param restart_delay: a failing watch's first wait before it starts again
+    :ptype restart_delay: timedelta
+    :param max_restart_delay: the longest wait between a failing watch's attempts
+    :ptype max_restart_delay: timedelta
+    :return: the running follower
+    :rtype: AccessTableFollower
+    :raises RuntimeError: when the registry's invalidation listener is not running
+    """
+    follower = AccessTableFollower(
+        registry,
+        reader,
+        tables=tuple(tables),
+        grace=grace,
+        restart_delay=restart_delay,
+        max_restart_delay=max_restart_delay,
+    )
+    follower.start()
+    return follower
+
+
 def follow_access_tables(
     registry: CollectionRegistry,
     cache: AclCache,
@@ -325,7 +429,9 @@ def follow_access_tables(
     """bind ``cache`` to the access tables' row broadcasts on ``registry`` and follow the tables.
 
     The one call a consumer makes, once ``registry``'s invalidation listener is running: it is what
-    hears the rows. Stop the returned handle before stopping the listener.
+    hears the rows. Stop the returned handle before stopping the listener. From here the cache serves
+    and keeps entries only while every watch is running (:attr:`AclCache.trusted`), and once the
+    handle stops it never does again.
 
     :param registry: the registry whose listener hears the rows, and which follows the tables
     :ptype registry: CollectionRegistry
@@ -343,14 +449,39 @@ def follow_access_tables(
     :rtype: AccessTableFollowing
     :raises RuntimeError: when the registry's invalidation listener is not running
     """
-    return _bind_and_follow(
+    following = _bind_and_follow(
         registry,
-        lambda degraded: bind_acl_cache_to_access_tables(registry, cache, degraded=degraded),
+        lambda degraded: _acl_cache_bound_and_followed(registry, cache, degraded),
         reader,
         grace=grace,
         restart_delay=restart_delay,
         max_restart_delay=max_restart_delay,
     )
+    cache.followed_by(lambda: following.follower.watching)
+    return following
+
+
+def _acl_cache_bound_and_followed(
+    registry: CollectionRegistry, cache: AclCache, degraded: DegradedEvictions
+) -> Callable[[], None]:
+    """bind the acl cache; the remover also tells it nobody follows it any more, so it never trusts again.
+
+    :param registry: the registry
+    :ptype registry: CollectionRegistry
+    :param cache: the acl cache
+    :ptype cache: AclCache
+    :param degraded: where unknown-reach rows are counted
+    :ptype degraded: DegradedEvictions
+    :return: the call that unbinds it and marks it unfollowed
+    :rtype: Callable[[], None]
+    """
+    unbind = bind_acl_cache_to_access_tables(registry, cache, degraded=degraded)
+
+    def remove() -> None:
+        cache.followed_by(None)
+        unbind()
+
+    return remove
 
 
 def follow_caller_access_cache(

@@ -1,4 +1,4 @@
-"""three-layer in-process ttl cache for the rbac evaluator.
+"""three-layer in-process cache for the rbac evaluator.
 
 the evaluator is pure-functional: it never holds state across calls.
 this cache sits in front of the loaders the evaluator depends on so
@@ -29,15 +29,9 @@ fans out correctly):
   ``type_customer`` scope). invalidated by the same triggers as the
   per-namespace layer.
 
-each layer enforces its own ttl. layer entries carry a freshness
-timestamp; lookup re-checks ttl on every hit so a stale entry is
-evicted before being served.
-
-cache is process-local. two pods have independent caches; cross-pod
-invalidation is the responsibility of the caller's pub/sub layer
-(broker publishes ``{ns}.acl.<layer>.invalidate`` events on every
-mutation; subscribers translate those events to local
-:meth:`AclCache.invalidate_*` calls).
+cache is process-local. two pods have independent caches, and nothing
+cached here has an age: an entry stays until a write that reaches it is
+heard, or the cache stops being trusted.
 
 **row by row, from the access tables' write generations.** the four
 tables every entry is derived from (``groups``, ``group_members``,
@@ -47,6 +41,17 @@ broadcasts to the ``evict_*_row`` method of that table, which evicts
 exactly the entries the row reaches. a layer is emptied only when the
 reach of a change is unknown: a row that does not say which member or
 group it names, or a table dropped because a broadcast was missed.
+
+**trusted only while followed.** a cache handed to
+:func:`~threetears.agent.acl.generation_follow.follow_access_tables` serves
+and keeps entries only while every table's watch is running
+(:attr:`AclCache.trusted`). a follower whose watches are failing cannot judge
+a missed broadcast, so the cache asks its loaders every time and is emptied,
+and nothing held across the failure is served after it. once its follower
+stops, it is never trusted again. a cache nobody ever followed is trusted:
+that is a scratch cache, scoped to one request (a dry run, a test), which no
+write can reach while it lives; a cache that outlives a request must be
+followed.
 
 **the read fence.** an entry computed from rows read before an eviction
 must not be stored after it: the eviction would be undone. a caller
@@ -58,13 +63,17 @@ skipped, and the next lookup reads again.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from threading import RLock
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from threetears.agent.acl.loader import GrantLoader, MembershipLoader
 from threetears.agent.acl.types import GroupMembership, Trail
 from threetears.observe import get_logger
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 __all__ = [
     "AclCache",
@@ -138,8 +147,8 @@ class ActorMembershipEntry:
         actor (deterministically ordered by the loader); on a cache
         hit the evaluator filters this in process for the
         namespace's customer + member type
-    :ivar date_cached: utc moment the entry was minted; ttl is
-        measured against this
+    :ivar date_cached: utc moment the entry was minted; for diagnosis
+        only, nothing expires on it
     """
 
     memberships: tuple[GroupMembership, ...]
@@ -155,7 +164,7 @@ class GroupNamespaceEntry:
     :ivar trails: trail rows the per-namespace resolution produced;
         cached so trail-mode lookups via the explain api can pull
         the same rows the decision-mode lookup used
-    :ivar date_cached: utc moment the entry was minted
+    :ivar date_cached: utc moment the entry was minted; for diagnosis only
     :ivar role_ids: every role the resolution read for the group's covering
         assignments, so an edit of any of them evicts this entry and no
         other; ``None`` when the caller did not say, which a role edit
@@ -180,7 +189,7 @@ class GroupTypeCustomerEntry:
     :ivar actions: action set this group contributes for the
         type+customer scope
     :ivar trails: trail rows the resolution produced
-    :ivar date_cached: utc moment the entry was minted
+    :ivar date_cached: utc moment the entry was minted; for diagnosis only
     """
 
     actions: frozenset[str]
@@ -194,25 +203,25 @@ class GroupTypeCustomerEntry:
 
 
 class AclCache:
-    """three-layer ttl cache for the rbac evaluator, bundling loaders.
+    """three-layer cache for the rbac evaluator, bundling loaders.
 
     the cache carries the two loader handles the evaluator depends on
     alongside its three in-process layers. production wiring (broker
     + every agent pod) hands a single :class:`AclCache` instance to
-    every authorization call site: the cache holds the TTL state, the
+    every authorization call site: the cache holds the entries, the
     loaders resolve misses, and the evaluator reads both through the
     public :attr:`membership_loader` + :attr:`grant_loader` attributes.
 
     layers are explicitly separated so invalidation can target one
     layer without disturbing the others. all three layers share one
-    ``ttl`` value and one ``RLock`` so multi-step
-    "lookup-or-insert" sequences run atomically without giving up the
-    cache in the middle.
+    ``RLock`` so multi-step "lookup-or-insert" sequences run
+    atomically without giving up the cache in the middle.
 
     instances are process-local. one cache per process is the
     expected deployment shape: the broker has one, each agent pod
-    has one. cross-process invalidation is the caller's job (publish
-    invalidation events on whatever bus already exists).
+    has one, and each is followed on the access tables
+    (:func:`~threetears.agent.acl.generation_follow.follow_access_tables`),
+    which is what evicts it when another process writes.
 
     :param membership_loader: actor -> groups resolver consumed by the
         evaluator on membership-layer misses
@@ -220,10 +229,6 @@ class AclCache:
     :param grant_loader: groups -> assignments + roles + groups
         resolver consumed by the evaluator on assignment-layer misses
     :ptype grant_loader: GrantLoader
-    :param ttl_seconds: how long an entry stays fresh; defaults to
-        sixty seconds. lookups past the ttl evict the entry and
-        return ``None``.
-    :ptype ttl_seconds: int
     """
 
     def __init__(
@@ -231,11 +236,9 @@ class AclCache:
         *,
         membership_loader: MembershipLoader,
         grant_loader: GrantLoader,
-        ttl_seconds: int = 60,
     ) -> None:
         self.membership_loader = membership_loader
         self.grant_loader = grant_loader
-        self._ttl = timedelta(seconds=ttl_seconds)
         self._membership: dict[ActorMembershipKey, ActorMembershipEntry] = {}
         self._group_namespace: dict[GroupNamespaceKey, GroupNamespaceEntry] = {}
         self._group_type_customer: dict[
@@ -246,6 +249,86 @@ class AclCache:
         # moved by every eviction; see :meth:`read_fence`
         self._evictions = 0
         self._fence_skipped_stores = 0
+        # who follows this cache: never set for a scratch cache; see :meth:`followed_by`
+        self._watching: Callable[[], bool] | None = None
+        self._ever_followed = False
+
+    # -----------------------------------------------------------------
+    # trust
+    # -----------------------------------------------------------------
+
+    def followed_by(self, watching: Callable[[], bool] | None) -> None:
+        """say who follows the cache, or ``None`` once nobody does any more.
+
+        Set by :func:`~threetears.agent.acl.generation_follow.follow_access_tables`; a caller does
+        not call it. Once followed, the cache is :attr:`trusted` only while ``watching`` answers
+        ``True``, and after ``None`` not until it is followed again. The first follow empties the
+        cache: what it held was cached while nothing could tell it of a write, and a table whose
+        generation was never written pushes no first value whose drop would remove it.
+
+        :param watching: answers whether every table's watch is running now; ``None`` when the
+            follower has stopped
+        :ptype watching: Callable[[], bool] | None
+        :return: nothing
+        :rtype: None
+        """
+        with self._lock:
+            if watching is None or not self._ever_followed:
+                self._empty_locked()
+            self._watching = watching
+            self._ever_followed = True
+
+    @property
+    def trusted(self) -> bool:
+        """whether entries may be served and stored now.
+
+        A cache nobody ever followed is trusted (a scratch cache, see the module docstring). A
+        followed one is trusted while every watch is running; losing trust empties it, so an entry
+        held while a broadcast could go unjudged is never served after.
+
+        :return: ``True`` when the cache may answer from what it holds
+        :rtype: bool
+        """
+        with self._lock:
+            return self._trusted_locked()
+
+    def _trusted_locked(self) -> bool:
+        """see :attr:`trusted`; the caller holds the lock.
+
+        :return: whether the cache is trusted
+        :rtype: bool
+        """
+        if not self._ever_followed:
+            return True
+        watching = self._watching
+        trusted = watching is not None and watching()
+        if not trusted and self._size_locked():
+            log.warning(
+                "acl cache not trusted: its access-table watches are not running, so it is emptied and "
+                "asks its loaders until they are",
+                extra={"extra_data": {"entries_dropped": self._size_locked()}},
+            )
+            self._empty_locked()
+        return trusted
+
+    def _empty_locked(self) -> None:
+        """drop every entry and move the fence; the caller holds the lock.
+
+        :return: nothing
+        :rtype: None
+        """
+        self._evictions += 1
+        self._membership.clear()
+        self._group_namespace.clear()
+        self._group_type_customer.clear()
+
+    def _size_locked(self) -> int:
+        """total entries; the caller holds the lock.
+
+        :return: the count
+        :rtype: int
+        """
+        return len(self._membership) + len(self._group_namespace) + len(self._group_type_customer)
 
     # -----------------------------------------------------------------
     # the read fence
@@ -298,7 +381,7 @@ class AclCache:
         self,
         key: ActorMembershipKey,
     ) -> ActorMembershipEntry | None:
-        """lookup an actor's group ids; returns None on miss or expiry.
+        """lookup an actor's group ids; returns None on a miss, or while the cache is not trusted.
 
         :param key: actor identity tuple
         :ptype key: ActorMembershipKey
@@ -306,14 +389,7 @@ class AclCache:
         :rtype: ActorMembershipEntry | None
         """
         with self._lock:
-            entry = self._membership.get(key)
-            if entry is None:
-                result: ActorMembershipEntry | None = None
-            elif self._is_expired(entry.date_cached):
-                del self._membership[key]
-                result = None
-            else:
-                result = entry
+            result = self._membership.get(key) if self._trusted_locked() else None
         return result
 
     def put_membership(
@@ -334,7 +410,7 @@ class AclCache:
             the entry is not stored when an eviction has landed since
         :ptype fence: int | None
         :return: the entry (with freshly-stamped ``date_cached``), stored
-            unless the fence moved
+            unless the fence moved or the cache is not trusted
         :rtype: ActorMembershipEntry
         """
         entry = ActorMembershipEntry(
@@ -342,16 +418,15 @@ class AclCache:
             date_cached=datetime.now(UTC),
         )
         with self._lock:
-            if not self._fence_moved(fence):
+            if self._trusted_locked() and not self._fence_moved(fence):
                 self._membership[key] = entry
         return entry
 
     def invalidate_membership(self, key: ActorMembershipKey) -> None:
         """drop a single actor's cached group ids.
 
-        emitted in response to ``{ns}.acl.membership.invalidate``
-        events naming a specific actor. drops only the matching
-        entry; the assignment layers stay populated because their
+        a ``group_members`` row naming the actor reaches here. drops
+        only the matching entry; the assignment layers stay populated because their
         keys are independent of actor identity.
 
         :param key: actor identity to evict
@@ -393,7 +468,7 @@ class AclCache:
         self,
         key: GroupNamespaceKey,
     ) -> GroupNamespaceEntry | None:
-        """lookup a per-namespace contribution; returns None on miss / expiry.
+        """lookup a per-namespace contribution; returns None on a miss, or while not trusted.
 
         :param key: ``(group_id, namespace_id)`` tuple
         :ptype key: GroupNamespaceKey
@@ -401,14 +476,7 @@ class AclCache:
         :rtype: GroupNamespaceEntry | None
         """
         with self._lock:
-            entry = self._group_namespace.get(key)
-            if entry is None:
-                result: GroupNamespaceEntry | None = None
-            elif self._is_expired(entry.date_cached):
-                del self._group_namespace[key]
-                result = None
-            else:
-                result = entry
+            result = self._group_namespace.get(key) if self._trusted_locked() else None
         return result
 
     def put_group_namespace(
@@ -433,7 +501,7 @@ class AclCache:
         :param fence: :meth:`read_fence` as taken before the rows were read;
             the entry is not stored when an eviction has landed since
         :ptype fence: int | None
-        :return: the entry, stored unless the fence moved
+        :return: the entry, stored unless the fence moved or the cache is not trusted
         :rtype: GroupNamespaceEntry
         """
         entry = GroupNamespaceEntry(
@@ -443,7 +511,7 @@ class AclCache:
             role_ids=role_ids,
         )
         with self._lock:
-            if not self._fence_moved(fence):
+            if self._trusted_locked() and not self._fence_moved(fence):
                 self._group_namespace[key] = entry
         return entry
 
@@ -480,10 +548,8 @@ class AclCache:
     def invalidate_group(self, group_id: UUID) -> None:
         """drop every entry that names ``group_id`` in either assignment layer.
 
-        emitted in response to role-change events affecting a role the
-        group holds, or to assignment-change events targeting the
-        group, or to membership-change events that drop the group
-        entirely.
+        a ``role_assignments`` row granting to the group reaches here,
+        as does a ``groups`` row for it.
 
         does not touch the membership layer (callers also want a
         membership-layer invalidation for any actor that was in the
@@ -511,7 +577,7 @@ class AclCache:
         self,
         key: GroupTypeCustomerKey,
     ) -> GroupTypeCustomerEntry | None:
-        """lookup a type+customer contribution; returns None on miss / expiry.
+        """lookup a type+customer contribution; returns None on a miss, or while not trusted.
 
         :param key: ``(group_id, namespace_type, customer_id)`` tuple
         :ptype key: GroupTypeCustomerKey
@@ -519,14 +585,7 @@ class AclCache:
         :rtype: GroupTypeCustomerEntry | None
         """
         with self._lock:
-            entry = self._group_type_customer.get(key)
-            if entry is None:
-                result: GroupTypeCustomerEntry | None = None
-            elif self._is_expired(entry.date_cached):
-                del self._group_type_customer[key]
-                result = None
-            else:
-                result = entry
+            result = self._group_type_customer.get(key) if self._trusted_locked() else None
         return result
 
     def put_group_type_customer(
@@ -549,7 +608,7 @@ class AclCache:
         :param fence: :meth:`read_fence` as taken before the rows were read;
             the entry is not stored when an eviction has landed since
         :ptype fence: int | None
-        :return: the entry, stored unless the fence moved
+        :return: the entry, stored unless the fence moved or the cache is not trusted
         :rtype: GroupTypeCustomerEntry
         """
         entry = GroupTypeCustomerEntry(
@@ -558,7 +617,7 @@ class AclCache:
             date_cached=datetime.now(UTC),
         )
         with self._lock:
-            if not self._fence_moved(fence):
+            if self._trusted_locked() and not self._fence_moved(fence):
                 self._group_type_customer[key] = entry
         return entry
 
@@ -584,19 +643,14 @@ class AclCache:
     def invalidate_all(self) -> None:
         """clear every layer.
 
-        emitted on role-definition changes (a role's permissions
-        were edited; the safe move is to drop everything because
-        every assignment that references the role is now stale and
-        we have no fast index for that). also useful for tests.
+        for a change whose reach is unknown; a heard, named change
+        evicts row by row instead (``evict_*_row``).
 
         :return: nothing
         :rtype: None
         """
         with self._lock:
-            self._evictions += 1
-            self._membership.clear()
-            self._group_namespace.clear()
-            self._group_type_customer.clear()
+            self._empty_locked()
 
     # -----------------------------------------------------------------
     # row by row, from the access tables
@@ -712,7 +766,7 @@ class AclCache:
         :rtype: int
         """
         with self._lock:
-            result = len(self._membership) + len(self._group_namespace) + len(self._group_type_customer)
+            result = self._size_locked()
         return result
 
     @property
@@ -747,18 +801,3 @@ class AclCache:
         with self._lock:
             result = len(self._group_type_customer)
         return result
-
-    # -----------------------------------------------------------------
-    # internal helpers
-    # -----------------------------------------------------------------
-
-    def _is_expired(self, date_cached: datetime) -> bool:
-        """true iff the entry's age exceeds the ttl.
-
-        :param date_cached: timestamp the entry was minted
-        :ptype date_cached: datetime
-        :return: whether the entry has aged past ttl
-        :rtype: bool
-        """
-        age = datetime.now(UTC) - date_cached
-        return age >= self._ttl

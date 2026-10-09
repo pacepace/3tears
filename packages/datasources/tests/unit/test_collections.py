@@ -935,3 +935,33 @@ class TestDataSourceColumnGetByNaturalKey:
         coll.l3_pool = None
         entity = await coll.get_by_natural_key(uuid4(), "s", "t", "c")
         assert entity is None
+
+
+class TestATemplateDeleteAnnouncesTheTablesItUnbinds:
+    """``datasource_tables.template_id`` is ON DELETE SET NULL, and a bound table's cached row names the template."""
+
+    @pytest.mark.asyncio
+    async def test_every_bound_table_is_invalidated_through_its_collection(self) -> None:
+        registry, config = _make_registry_and_config()
+        registry.generation_source = None
+        registry.publish_invalidation = AsyncMock(return_value=None)
+        from threetears.core.collections import NO_L2
+
+        templates = TableTemplateCollection(registry=registry, config=config, nats_client=NO_L2)
+        tables = DataSourceTableCollection(registry=registry, config=config, nats_client=NO_L2)
+        tables.invalidate_cache_many = AsyncMock()  # type: ignore[method-assign]
+        registry.get_collection.side_effect = {"datasource_tables": tables, "table_templates": templates}.get
+        template_id, bound = uuid4(), [uuid4(), uuid4()]
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(return_value=[{"id": table_id} for table_id in bound])
+        templates.l3_pool = pool
+
+        await templates.delete(template_id)
+
+        # the bound tables were read before the delete, by the column the action clears
+        read_sql, read_ids = pool.fetch.await_args.args
+        assert "FROM datasource_tables WHERE template_id = ANY($1)" in read_sql
+        assert read_ids == [template_id]
+        assert pool.fetch.await_count == 1
+        tables.invalidate_cache_many.assert_awaited_once()
+        assert tables.invalidate_cache_many.await_args.args[0] == bound

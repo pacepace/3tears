@@ -34,9 +34,13 @@ from sqlalchemy import Column, Float, MetaData, String, Table, Text
 from threetears.core._bridge import fire_and_forget, sync_await
 from threetears.core.backends.protocol import L3Backend
 from threetears.core.cache import MISSING
-from threetears.core.cache.base import CACHED_AT_COLUMN
 from threetears.core.collections.bypassing_write import BypassingWrite
 from threetears.core.collections.caller_transaction import CallerTransaction, shared_advance_for
+from threetears.core.collections.delete_cascade import (
+    DeleteCascade,
+    announce_delete_cascade,
+    read_delete_cascade,
+)
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer
 from threetears.core.collections.generation import (
     WRITE_GENERATION_UNDECLARED,
@@ -78,8 +82,10 @@ __all__ = [
     "NO_L2",
     "BaseCollection",
     "CasMutation",
+    "DeleteCascade",
     "EntityT",
     "NoL2",
+    "ScanReadTicket",
     "table_named_by_class",
     "tables_with_write_generation",
 ]
@@ -308,6 +314,22 @@ class _KeyTicket:
     writing: bool
 
 
+@dataclass(frozen=True, slots=True)
+class ScanReadTicket:
+    """a scan's claim on its collection's L1, taken before the scan's first await (:meth:`BaseCollection.scan_ticket`).
+
+    A scan reads rows it cannot name in advance, so it cannot hold a ticket per key. It holds one
+    on the whole collection instead: the rows it read may enter L1 only while no write of any key
+    has begun, no eviction has landed, and no write was in flight when it was taken.
+
+    :ivar seen: the fence's count of writes begun and evictions landed, as the ticket left it
+    :ivar contended: whether a write of any key was in flight when the ticket was taken
+    """
+
+    seen: int
+    contended: bool
+
+
 class _L1Fence:
     """orders this process's L1 writes of a key against every other write and eviction of it.
 
@@ -325,7 +347,7 @@ class _L1Fence:
     The check and the L1 write run with no await between them.
     """
 
-    __slots__ = ("_keys",)
+    __slots__ = ("_changes", "_keys", "_writers")
 
     def __init__(self) -> None:
         """start with no key watched.
@@ -334,6 +356,10 @@ class _L1Fence:
         :rtype: None
         """
         self._keys: dict[tuple[str, ...], _KeyActivity] = {}
+        # every write begun and eviction landed on any key, and the writes in flight on any key:
+        # what a scan, which cannot name its keys before it reads, is fenced by
+        self._changes = 0
+        self._writers = 0
 
     def begin(self, key: tuple[str, ...], *, writing: bool) -> _KeyTicket:
         """take a ticket on ``key`` before the first await of a read or write of it.
@@ -353,6 +379,8 @@ class _L1Fence:
         if writing:
             activity.writers += 1
             activity.changes += 1
+            self._writers += 1
+            self._changes += 1
         activity.holders += 1
         return _KeyTicket(key=key, activity=activity, seen=activity.changes, contended=contended, writing=writing)
 
@@ -378,6 +406,7 @@ class _L1Fence:
         activity = ticket.activity
         if ticket.writing:
             activity.writers -= 1
+            self._writers -= 1
         activity.holders -= 1
         if activity.holders == 0 and self._keys.get(ticket.key) is activity:
             del self._keys[ticket.key]
@@ -390,6 +419,7 @@ class _L1Fence:
         :return: nothing
         :rtype: None
         """
+        self._changes += 1
         activity = self._keys.get(key)
         if activity is not None:
             activity.changes += 1
@@ -402,8 +432,28 @@ class _L1Fence:
         :return: nothing
         :rtype: None
         """
+        self._changes += 1
         for activity in self._keys.values():
             activity.changes += 1
+
+    def begin_scan(self) -> ScanReadTicket:
+        """take a ticket on every key, before the first await of a scan.
+
+        :return: the ticket
+        :rtype: ScanReadTicket
+        """
+        return ScanReadTicket(seen=self._changes, contended=self._writers > 0)
+
+    def scan_still_newest(self, ticket: ScanReadTicket) -> bool:
+        """whether the rows a scan read under ``ticket`` are still the newest this process knows.
+
+        :param ticket: the scan's ticket
+        :ptype ticket: ScanReadTicket
+        :return: ``True`` when no write was in flight when it was taken and no write began, and no
+            eviction landed, on any key since
+        :rtype: bool
+        """
+        return not ticket.contended and self._changes == ticket.seen
 
     @contextmanager
     def watching(self, key: tuple[str, ...], *, writing: bool) -> Iterator[_KeyTicket]:
@@ -600,6 +650,12 @@ class BaseCollection(ABC, Generic[EntityT]):
     #: deleted, for a delete, which is read before it goes -- so a receiver needs no read to know
     #: what the row was. A write that saw no row (an eviction naming only a key) carries none.
     invalidation_columns: ClassVar[tuple[str, ...]] = ()
+
+    #: Each foreign key that points at this table with ``ON DELETE CASCADE`` or ``ON DELETE SET
+    #: NULL``. The database rewrites those rows where no collection sees it, and nothing in L1
+    #: ages, so :meth:`delete` reads the rows each one will reach before deleting and invalidates
+    #: them through their own collections after (:mod:`~threetears.core.collections.delete_cascade`).
+    delete_cascades: ClassVar[tuple[DeleteCascade, ...]] = ()
 
     #: Whether this collection keeps a copy of its rows in the process's L1. ``False`` declares a
     #: collection that caches nowhere in L1 -- one whose rows are read from L2 every time, such as
@@ -1326,104 +1382,31 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         return self._select_from_l1(entity_id)
 
-    @property
-    def l1_max_age_seconds(self) -> float | None:
-        """How long an L1 row cached from a lower tier may be served, or ``None``.
-
-        **``None`` unless a collection opts in, and structurally ``None`` when
-        there is no L3.** The second half is the load-bearing one. A collection
-        with no L3 pool does not fall back to a slower tier on a miss: the
-        L1+L2-only collections override :meth:`get` to return ``None`` on a
-        total miss, so an expired row does not become a pull-through, it becomes
-        "this row does not exist". Downstream, a compare-and-set that reads
-        absence writes a fresh row over a live one -- a presence room with ten
-        members replaced by a room with one, and no error anywhere. Expiry is a
-        cache mechanism, and a tier that is the source of truth is not a cache.
-
-        :return: the configured bound, or ``None`` when expiry is off
-        :rtype: float | None
-        """
-        if self.l3_pool is None:
-            return None
-        return self._registry.get_l1_max_age(self.table_name)
-
     def _select_from_l1(self, entity_id: Any, *, expiring: bool = False) -> dict[str, Any] | None:
-        """The one L1 read, with expiry applied only where a miss is repairable.
+        """The one L1 read, applying a row's declared expiry only where a miss is repairable.
 
-        Every reader **in this class** routes through here rather than calling
-        the backend itself, so the policy has one home. But the callers do not
-        share a contract, and that is why ``expiring`` is a parameter rather
-        than always-on:
-
-        - **Repairing callers** (:meth:`ensure`, :meth:`_resolve_row`,
-          :meth:`_ensure_in_l1`) treat a
-          miss as "go to the lower tier", so expiring a row makes it reload.
-          That is the whole mechanism, and they pass ``expiring=True``.
-
-          :meth:`_resolve_row` is on this list for a reason worth stating: it
-          backs ``collection[id]``, the primary read path, and it reaches L1
-          directly rather than through :meth:`get_row_sync`. Routing it through
-          that reporting method instead makes the bound unreachable for
-          subscript reads -- the non-expiring read returns the stale row and
-          nothing further runs -- which is inert, not conservative.
-        - **Reporting callers** (:meth:`get_row_sync`, :meth:`get_field_sync`,
-          :meth:`set_field_sync`, :meth:`exists_in_cache_sync`) treat a miss as
-          "not cached" and return it to a caller that will not fall back.
-          Expiring for them turns a stale row into a *deleted* one and reports
-          absence, which is worse than the staleness it was bounding:
-          ``__setitem__`` reads a field write back through
-          :meth:`get_row_sync` and skips propagation when it sees ``None``, so
-          the write is silently dropped, and an entity handle held across the
-          bound starts answering ``None`` for fields it has.
-
-        The distinction is a miss's *meaning*, not its value. Expiry converts a
-        stale hit into a miss, which is only an improvement where a miss is
-        cheap and self-correcting.
-
-        The class scoping is deliberate. A subclass in another package can
-        still reach ``self._l1`` directly, and one does --
-        ``ContextItemCollection.touch`` reads L1 to stamp ``date_accessed``.
-        That read is outside the bound, which is harmless there because it
-        neither serves the row to a caller nor clears the stamp on write-back,
-        but it is not covered by this funnel and should not be assumed to be.
+        Every reader **in this class** routes through here. Nothing cached in L1
+        ages; the one expiry is the row's own (:attr:`expires_at_column`), data the
+        row carries. Callers that repair a miss by pulling through (:meth:`ensure`,
+        :meth:`_resolve_row`, :meth:`_ensure_in_l1`) pass ``expiring=True``; a
+        reporting caller (:meth:`get_row_sync` and the like) does not, since hiding
+        a row there turns updating an entity past its expiry into a crash.
 
         :param entity_id: primary-key value identifying the row
         :ptype entity_id: Any
-        :param expiring: whether to apply the collection's max-age bound; only
-            a caller that repairs a miss by pulling through may pass ``True``
+        :param expiring: whether to apply the row's declared expiry
         :ptype expiring: bool
         :return: row dict, or ``None`` when L1 is absent, the row is not
-            cached, or (when ``expiring``) the row was past its max age
+            cached, or (when ``expiring``) the row has expired
         :rtype: dict[str, Any] | None
         """
         if self._l1 is None:
             return None
-        max_age = self.l1_max_age_seconds if expiring else None
-        row: dict[str, Any] | None
-        if max_age is None:
-            # The kwarg is omitted, not passed as None, when expiry is off.
-            # ``L1Backend`` is a published Protocol, so an out-of-repo
-            # implementation predating this parameter would raise TypeError on
-            # EVERY cached read otherwise -- and a bound nobody configured is
-            # the overwhelmingly common case, so the whole platform would break
-            # for a feature it had not opted into.
-            row = self._l1.select_by_id(
-                self.table_name,
-                self.normalize_pk(entity_id),
-                self.primary_key_columns,
-            )
-        else:
-            row = self._l1.select_by_id(
-                self.table_name,
-                self.normalize_pk(entity_id),
-                self.primary_key_columns,
-                max_age_seconds=max_age,
-            )
-        # Row expiry follows the same split as the max-age bound, for the same reason: the reads
-        # that answer "does this exist" (get, ensure, collection[id]) are the repairing ones, and
-        # an expired row is absent to them. A reporting read serves an entity's own internals --
-        # to_dict() during a save reads its row through here -- and hiding the row there turns
-        # updating an entity past its expiry into a crash rather than a write.
+        row: dict[str, Any] | None = self._l1.select_by_id(
+            self.table_name,
+            self.normalize_pk(entity_id),
+            self.primary_key_columns,
+        )
         if expiring and row is not None and self._row_is_expired(row):
             self._evict_l1(entity_id)
             row = None
@@ -1797,12 +1780,25 @@ class BaseCollection(ABC, Generic[EntityT]):
             return
         self._l1.delete_by_id(_ABSENT_MARKER_TABLE, (self._absent_marker_key(entity_id),), ("key",))
 
+    def scan_ticket(self) -> ScanReadTicket:
+        """take the ticket a scan caches its rows under; take it before the scan's first await.
+
+        A row a scan read from L3 may be older than a write that committed, and was evicted here,
+        while the scan was in flight: caching it after that eviction leaves L1 behind with nothing
+        left to evict it. Pass the ticket to :meth:`write_to_cache_sync` (``read_since=``) and the
+        rows are cached only while nothing of this collection changed since it was taken.
+
+        :return: the ticket
+        :rtype: ScanReadTicket
+        """
+        return self._l1_fence.begin_scan()
+
     def write_to_cache_sync(
         self,
         data: dict[str, Any],
         primary_key: str | tuple[str, ...] | None = None,
         *,
-        from_lower_tier: bool = False,
+        read_since: ScanReadTicket | None = None,
     ) -> bool:
         """upsert full row into L1 cache, synchronously.
 
@@ -1813,23 +1809,25 @@ class BaseCollection(ABC, Generic[EntityT]):
             accepts either single column name (str) or tuple of column
             names (composite-pk override).
         :ptype primary_key: str | tuple[str, ...] | None
-        :param from_lower_tier: whether ``data`` was just read from L2 or
-            L3 rather than authored here. Stamps the row's provenance, which
-            is what makes it eligible for max-age expiry. **A subclass
-            accessor that reads L3 and caches the result must pass this**:
-            without it the row is indistinguishable from a local write and
-            never expires, so the rows most likely to go stale are exactly
-            the ones exempt. Defaults to ``False`` because the unstamped
-            reading is the safe one -- it can only under-expire, never
-            revert a local write.
-        :ptype from_lower_tier: bool
-        :return: ``True`` on successful write, ``False`` when L1 is absent
+        :param read_since: for a row a read returned, the :meth:`scan_ticket` taken before that
+            read; the row is cached only while nothing of this collection changed since.
+            ``None`` for a row this process decided itself, which is newest by construction and is
+            recorded as a change, so no read in flight caches the row it read over it.
+        :ptype read_since: ScanReadTicket | None
+        :return: ``True`` on successful write, ``False`` when L1 is absent or the read was overtaken
         :rtype: bool
         """
         if self._l1 is None:
             return False
+        if read_since is not None and not self._l1_fence.scan_still_newest(read_since):
+            return False
         pk: str | tuple[str, ...] = primary_key if primary_key is not None else self.primary_key_columns
-        self._l1_upsert(self._stamped(data) if from_lower_tier else data, pk)
+        if read_since is None:
+            # a row this process decided: every read in flight, a scan's included, read it as it
+            # was before, so none of them may cache what it read over this one
+            columns = (pk,) if isinstance(pk, str) else pk
+            self._l1_fence.changed(tuple(str(data.get(column)) for column in columns))
+        self._l1_upsert(data, pk)
         return True
 
     def exists_in_cache_sync(self, entity_id: Any) -> bool:
@@ -2356,8 +2354,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         survives. Here the value is already known stale and skipping an absent key costs
         nothing.
 
-        **Structurally a no-op when there is no L3**, on exactly the reasoning
-        :attr:`l1_max_age_seconds` already applies to expiry: a tier that is the source of
+        **Structurally a no-op when there is no L3**: a tier that is the source of
         truth is not a cache, and evicting from it is not eviction, it is deletion. An
         L1+L2-only collection has nothing to pull through from, so a key this method removed
         is a row that no longer exists -- ``HeartbeatCollection``'s pod row, a presence room's
@@ -2457,7 +2454,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         lookup = await self._l2_lookup(entity_id, distrust_row=self._distrusts_l2(entity_id))
         if lookup.row is not None:
             if self._l1 is not None and self._l1_fence.still_newest(ticket):
-                self._l1_upsert(self._stamped(lookup.row), self.primary_key_columns)
+                self._l1_upsert(lookup.row, self.primary_key_columns)
             return lookup.row
         if generation is not None and lookup.marker is not None and lookup.marker.generation == generation:
             self._write_l1_marker(entity_id, generation)
@@ -2715,23 +2712,8 @@ class BaseCollection(ABC, Generic[EntityT]):
             else:
                 cacheable = False
         if cacheable and self._l1 is not None and self._l1_fence.still_newest(ticket):
-            self._l1_upsert(self._stamped(answer), self.primary_key_columns)
+            self._l1_upsert(answer, self.primary_key_columns)
         return answer
-
-    @staticmethod
-    def _stamped(data: dict[str, Any]) -> dict[str, Any]:
-        """Return a copy of ``data`` carrying the cache-age stamp for this instant.
-
-        Stamped wherever a row arrives from a LOWER tier -- both pull-through
-        sites and :meth:`reload_entity` -- and nowhere else. The stamp records
-        provenance, not local activity: stamping on every write would let
-        ``set_field_sync`` renew a stale row's lifetime by editing one field,
-        which makes exactly the rows this bounds immortal.
-
-        A copy, because the caller's dict is returned to the caller and becomes
-        entity data. The stamp is storage bookkeeping and must not ride along.
-        """
-        return {**data, CACHED_AT_COLUMN: time.monotonic()}
 
     def _resolve_row(self, entity_id: Any) -> dict[str, Any]:
         """Get row from L1, pulling through L2/L3 on miss. Raises KeyError if not found.
@@ -3661,7 +3643,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                     # even though no pull-through ran. Leaving it unstamped would make a
                     # freshly-reloaded row read as locally authored, and locally
                     # authored rows never expire.
-                    self._l1_upsert(self._stamped(data), self.primary_key_columns)
+                    self._l1_upsert(data, self.primary_key_columns)
                 else:
                     # a write or eviction of the key overlapped the read, so the row may already be
                     # older than L3's: the handle keeps it, L1 does not.
@@ -3714,6 +3696,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         self._set_span_table()
         # read before it goes, and only when the message must carry columns of it
         row = await self._row_before_delete(entity_id)
+        # the rows the database's foreign-key actions will rewrite, read while they still name it
+        cascaded = await read_delete_cascade(self, [entity_id])
         if self._write_buffer is not None:
             await self._write_buffer.remove(self.table_name, entity_id)
         await self.delete_from_store(entity_id)
@@ -3721,6 +3705,12 @@ class BaseCollection(ABC, Generic[EntityT]):
         self._evict_l1(entity_id)
         await self._delete_from_l2(entity_id)
         await self._announce_row(entity_id, bump=bump, row=row)
+        try:
+            await announce_delete_cascade(self, cascaded)
+        except GenerationUnavailableError:
+            # the row's own failure, when there is one, is the one raised
+            if bump.failure is None:
+                raise
         if bump.failure is not None:
             raise bump.failure
         return True

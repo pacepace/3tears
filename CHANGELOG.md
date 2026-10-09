@@ -29,6 +29,69 @@ per part, one round trip after another; the round trips, not the bytes, were the
   ask for them, so an older hub sees what it knows; one that is asked for them refuses
   (`MALFORMED_REQUEST`), and a caller asks part by part instead.
 
+### Agent acl, core, nats, registry, memory and conversations: the access tables' contract stage
+
+Stage 5 of `docs/epoch-task-06-collection-generations-by-default.md`, for the access tables. The
+write generations are now the only invalidation of every cache derived from them. **Deploy
+precondition: every hub, gateway, agent pod, tool pod and standalone registry is on the switch-on
+release (3tears `5173b662`, hub `e6b3f9f2`, SDK `3db24dd2`) or later before this ships anywhere;**
+see "What Must Already Be Deployed Everywhere" in the note.
+
+- **Removed, breaking:** `threetears.agent.acl.invalidation_bus` (`subscribe_acl_invalidation`,
+  `unsubscribe_acl_invalidation`, `publish_membership_invalidation`,
+  `publish_assignment_invalidation`, `publish_role_invalidation`, `AclInvalidationPublisher`,
+  `AclInvalidationSubscriber`) and `threetears.agent.acl.invalidation` (`MembershipInvalidatePayload`,
+  `AssignmentInvalidatePayload`, `RoleInvalidatePayload`).
+- **Removed, breaking:** `AclCache(ttl_seconds=)`; nothing in the cache ages. A consumer that passed
+  it drops the argument (14-eng-ai-survey's tenancy integration test passes `ttl_seconds=0`).
+- **Changed, breaking:** `evict_after_rbac_write(cache, *, member_actors=, group_ids=)` is
+  synchronous and takes no publisher; `MemoryAuthorizerDependencies` and
+  `ConversationAuthorizerDependencies` take no `invalidation_publisher`.
+- **Added, `AclCache.followed_by` / `AclCache.trusted`:** a cache `follow_access_tables` follows
+  serves and keeps entries only while every watch runs, is emptied when that stops, and is never
+  trusted again once its follower stops. A cache nobody followed is a scratch cache and is trusted.
+- **Added, `threetears.core.collections.announce_unheard_writes(source, tables)`:** advances each
+  table once with no rows, for writes no collection made (a migration, a restore), so every follower
+  drops the table; attempts every table and raises the failures together.
+- **Changed, grants:** the hub, the gateway and the registry are no longer granted the `acl.*`
+  subjects. An agent pod keeps the subscribe, dated, so a pod one release back is not refused it;
+  `Subjects.acl_invalidate` stays for that grant alone.
+- **Removed:** the registry stack's `acl.*` subscriptions and `THREETEARS_REGISTRY_ACL_TTL_SECONDS`.
+- **Removed, breaking (owner, 2026-10-09):** the L1 age mechanism: `CollectionRegistry.set_l1_max_age`
+  / `get_l1_max_age`, `DEFAULT_L1_MAX_AGE_SECONDS`, `BaseCollection.l1_max_age_seconds`,
+  `write_to_cache_sync(from_lower_tier=)`, `L1Backend.select_by_id` / `select_batch`
+  `max_age_seconds=` / `now_monotonic=`, the SQLite cached-at stamp, `CACHED_AT_COLUMN`,
+  `TABLES_WITHOUT_CACHE_STAMP` and `entry_is_fresh`. Nothing in L1 ages.
+- **Changed, breaking:** `ScanCache` has no TTL (`DEFAULT_SCAN_TTL_SECONDS`, `ttl_seconds=`, the
+  `now_monotonic=` of `get` / `put` are gone): it stores and serves an entry only while every table
+  it depends on is followed with its watch running (`trusted=`, which the registry supplies from
+  the new `CollectionRegistry.watched_by` / `not_watched_by` / `tables_trusted`; every follower of
+  a table is tracked, and the table is trusted only while all of them are watching). A `ScanCache`
+  built without `trusted=` caches nothing.
+- **Changed:** `announce_unheard_writes` fails (`GenerationUnavailableError`, after attempting every
+  table) when an advance returns no generation, as it does when an advance raises.
+- **Added:** `BaseCollection.delete_cascades` (`DeleteCascade(child_table, child_column, action,
+  parent_column="id")`): each foreign key that points at the table with `ON DELETE CASCADE` or `SET
+  NULL`. `delete` reads the rows each will reach before deleting and invalidates them through their
+  own collections after (`threetears.core.collections.delete_cascade.read_delete_cascade` /
+  `announce_delete_cascade`, which a raw-SQL delete calls itself); a reached table with no
+  collection here is advanced with no rows. `NamespaceCollection` declares its grants'
+  (`role_assignments.scope_namespace_id`) and `TableTemplateCollection` the tables it unbinds
+  (`datasource_tables.template_id`).
+- **Added:** `BaseCollection.scan_ticket()` and `write_to_cache_sync(..., read_since=)`
+  (`ScanReadTicket`): a row a scan read is cached in L1 only while nothing of the collection was
+  written or evicted since the ticket was taken, so a scan can no longer cache a row older than a
+  write it overlapped. A `write_to_cache_sync` with no ticket (a row the process decided, such as
+  an upsert's) is recorded as a change, so no read in flight caches its older row over it. Every scan in the framework passes it, and an enforcement test holds every
+  `async` method to it.
+- **Switched on:** `concepts`, `playbook_entries` (`threetears.agent.knowledge`), `datasources` and
+  `datasource_tables` (`threetears.datasources`). A process caching knowledge scans follows them
+  beside the access tables: `generation_follow.follow_tables(registry, reader,
+  KNOWLEDGE_SCAN_TABLES)`. The scans' dependencies name `namespaces` too.
+- **Fixed:** a write-generation watch whose connection is closed stops instead of restarting forever
+  (`EpochGenerationReader.closed`), and `AccessTableFollower.stop` is bounded (`stop_timeout`, 5 s);
+  a tool pod no longer hangs on SIGTERM.
+
 ### Core coordination: a fence on a producer's ready signal
 
 - **Added, `threetears.core.coordination.source_token`**: `SourceToken` (the producer's run and the
