@@ -6,6 +6,33 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: the public surface claims nothing it does not do (breaking)
+
+Fields and names fixed before the first public release of the schema and API.
+
+- **Removed, because nothing honoured them.** `LeverCoverage.confidence` (a fixed lookup on `status`, read by
+  nothing) (#662); `EvalCampaign.status` (no writer, nothing enforced it), with `list_campaigns(status=)` and
+  `CampaignLine.status` (#655); `StyleProfile.locale` (no renderer or number formatter read it) (#680);
+  `CandidateTurn.actions` (the driver reads only `content`; a candidate's calls reach the engine through the call
+  ledger) (#671).
+- **Renamed.** `CampaignDesign.controls` is `held_fixed`, one letter from `control` no longer; the bundle's
+  `controls_reading` / `ControlsReading` are `held_fixed_reading` / `HeldFixedReading`, and the bundle's shape
+  version is 47 (#639).
+- **Stored documents still load.** A document model may name a field retired within a schema version
+  (`__retired_fields__`): the stored read (`from_dict`) reads a renamed key under its new name and discards a
+  removed one, and every other path refuses the old key, naming what became of it. `EVAL_SCHEMA_VERSION` stays 8.
+  A reporter case's frozen bundle rebuilds through the rename with every value.
+- **A deleted rubric dim stays deleted** (#620). `delete_rubric_dim` writes a `RubricDimTombstone` for the key and
+  the definition seed does not write it back (`SeedOutcome.deleted`). It is a new stored type
+  (`rubric_dim_tombstone`): a host whose document store routes by `doc_type` must accept it. `DefinitionStore`
+  gains `save_rubric_dim_tombstone` and `query_rubric_dim_tombstones`.
+- **`runs_compare`** (operation and read action) exposes `compare_two_runs`, with each short run's completeness
+  sentence and the clock and cassette disclosures beside it (#621). `compare_runs` is deleted (no caller), with
+  `ComparisonColumns`; `bisect_runs` is internal.
+- **`campaign_create` declares a design** (#685): `declared_design` and `control_run_id`, validated, gated and
+  stamped as every declaration is; the control is resolved from a run as `set_campaign_control` resolves it.
+- `ConfidenceTier` is the authored `Confidence`, one declaration of the tiers (#644).
+
 ### 3tears-evals: an arm whose calls were refused reads as failed, not as the fastest and cheapest
 
 - **One predicate decides what a turn's time and spend are averaged over: `delivered_a_turn(result)`**
