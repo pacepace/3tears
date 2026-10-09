@@ -274,6 +274,21 @@ class TestALeverIsCheckedAgainstTheMechanismItDeclares:
         ).mechanism
         assert mechanism.state == "moved"
 
+    @pytest.mark.parametrize(("n_cases", "reading"), [(5, ("unchecked", "too_few_observations")), (6, ("moved", None))])
+    def test_a_constant_gap_is_moved_only_over_enough_cases_for_an_exact_test(
+        self, n_cases: int, reading: tuple[str, str | None]
+    ) -> None:
+        """Every case shifted alike has exact p 2^(1-n): under α from six cases, too few to tell below that."""
+        documents = TOYHOST_DOCUMENTS[:n_cases]
+        bundle = _bundle(
+            [
+                _Arm(_chunk_batch(256), _per_document(_CONTEXT, 3000.0, 40.0), documents=documents),
+                _Arm(_chunk_batch(1024), _per_document(_CONTEXT, 3001.0, 40.0), documents=documents),
+            ]
+        )
+        mechanism = _row(bundle, "chunk_tokens").mechanism
+        assert (mechanism.state, mechanism.reason) == reading
+
     def test_one_case_a_level_is_too_few_to_test(self) -> None:
         bundle = _bundle(
             [

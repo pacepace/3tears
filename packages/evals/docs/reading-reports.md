@@ -131,7 +131,10 @@ the same separation test the contrasts against the control use (per-case means, 
 cases, Holm-corrected across the lever's pairs): `moved` when some pair separates; `inert` when every level was
 observed, every pair could be tested and none separates — no measurable evidence the lever acted on its mechanism;
 otherwise `unchecked` with the reason (`not_declared`, `not_swept`, `levels_unobserved`, `too_few_observations`).
-Each level's mean and its number of cases sit beside the state.
+Each level's mean and its number of cases sit beside the state. Every case shifting by the same amount is read
+by an exact test, so it reads `moved` only from six shared cases (four a side where the levels share none); below
+that it is `too_few_observations`, since a 0/1 measure under a lever that did nothing shifts two cases alike one
+time in eight.
 
 The profile accepts only a numeric measure that each result carries as a single value: a covariate, a measure
 your kind reports per result, or one of the result's own fields. It refuses anything else where you declare it,

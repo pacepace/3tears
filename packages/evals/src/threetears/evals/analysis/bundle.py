@@ -109,6 +109,7 @@ from threetears.evals.analysis.stats import (
     composite_significance,
     holm_adjust,
     interval_clears,
+    level_difference,
     observed_mean_interval,
     proportion_interval,
 )
@@ -636,7 +637,8 @@ def observed_mechanism_key(covariate: str) -> str:
 #: acts on; ``not_swept`` = it was observed at one level, so there is nothing to compare;
 #: ``levels_unobserved`` = some level observed none of the measure, so no pair of levels separated and
 #: whether it held still at every level cannot be shown; ``too_few_observations`` = every level observed
-#: it, but some pair of levels has too few cases on a side for the separation test to run.
+#: it, but some pair of levels has too few cases on a side for the separation test to run, or a gap with no
+#: spread over too few cases for an exact test to call it at alpha.
 MechanismUncheckedReason = Literal["not_declared", "not_swept", "levels_unobserved", "too_few_observations"]
 
 
@@ -651,7 +653,9 @@ class MechanismCheck(EvalDocumentModel):
     **Read with the engine's own separation test, never by inequality.** Each pair of levels is
     compared on the measure's per-case means exactly as a family comparison compares a contrast with
     the control (paired over shared cases, else Welch's; Holm-corrected across the lever's pairs), so
-    noise does not read as a lever taking effect.
+    noise does not read as a lever taking effect. A gap with no spread — every case shifted alike — is
+    read by the exact permutation test, so over a handful of cases it is too few to tell, not ``moved``:
+    a 0/1 mechanism under a lever that did nothing shifts two cases alike one time in eight.
 
     **Three states, none of them a default.** ``moved``: some pair of levels separates on the measure.
     ``inert``: every level observed it, every pair could be tested, and none separates — no measurable
@@ -690,7 +694,8 @@ class MechanismCheck(EvalDocumentModel):
         description=(
             "Why the check is unchecked; None otherwise. not_declared = the lever names no mechanism. not_swept = "
             "one level only. levels_unobserved = some level observed none of it. too_few_observations = some pair "
-            "of levels had fewer than two cases on a side."
+            "of levels had fewer than two cases on a side, or every case shifted by the same amount over too few "
+            "cases for an exact test to tell that from chance (fewer than six shared cases)."
         ),
     )
 
@@ -4254,43 +4259,35 @@ def _level_means(
     }
 
 
-def _levels_separate(per_case: Mapping[str, Mapping[str, float]]) -> tuple[bool, bool]:
+def _levels_separate(per_case: Mapping[str, Mapping[str, Fraction]]) -> tuple[bool, bool]:
     """Whether any pair of levels separates on per-case values, and whether any pair could not be tested.
 
-    The family comparison's test, applied to every pair of levels: paired over the cases both levels ran
-    when they share at least two, else Welch's over each level's per-case values
-    (:func:`~threetears.evals.analysis.stats.composite_significance`), the pairs Holm-corrected as one
-    family and read against the same alpha. Two of the test's own undefined results are decided here,
-    since each has only one honest reading: fewer than two cases on a side is untestable; a gap with no
-    spread at all (every case moved by the same nonzero amount, or two different constants) is a
-    separation the noise cannot account for, because there is none.
+    The engine's between-level test applied to every pair of levels
+    (:func:`~threetears.evals.analysis.stats.level_difference`): paired over the cases both levels ran when
+    they share at least two, else Welch's over each level's per-case values, the pairs Holm-corrected as one
+    family and read against the same alpha. A gap with no spread at all (every case moved by the same nonzero
+    amount, or two different constants) is read by the exact permutation test, so it separates only over
+    enough cases for that pattern to be rarer than alpha by chance: at two cases a 0/1 mechanism under a lever
+    that did nothing shifts both cases alike one time in eight. Below that it is untestable, as is a pair with
+    fewer than two cases on a side.
 
     Args:
-        per_case: Level -> its per-case means, for every level that observed the measure.
+        per_case: Level -> its exact per-case means, for every level that observed the measure.
 
     Returns:
         ``(separated, untestable)``.
     """
     raw: list[float] = []
-    separated = untestable = False
+    untestable = False
     levels = sorted(per_case)
     for index, level_a in enumerate(levels):
         for level_b in levels[index + 1 :]:
-            values_a, values_b = per_case[level_a], per_case[level_b]
-            shared = sorted(set(values_a) & set(values_b))
-            paired = len(shared) >= 2
-            a = [values_a[case] for case in shared] if paired else list(values_a.values())
-            b = [values_b[case] for case in shared] if paired else list(values_b.values())
-            result = composite_significance(a, b, paired=paired)
-            if result.significant is None:
-                if len(a) < 2 or len(b) < 2:
-                    untestable = True
-                else:
-                    separated = True
-            elif result.p_value is not None:
-                raw.append(result.p_value)
-    if raw and min(holm_adjust(raw)) < SIGNIFICANCE_ALPHA:
-        separated = True
+            tested = level_difference(per_case[level_a], per_case[level_b])
+            if tested.p_value is None:
+                untestable = True
+            else:
+                raw.append(tested.p_value)
+    separated = bool(raw) and min(holm_adjust(raw)) < SIGNIFICANCE_ALPHA
     return separated, untestable
 
 
@@ -4319,9 +4316,7 @@ def _mechanism_check(
     unobserved = [level for level in sorted(result_ids_by_level) if level not in per_case]
     state: Literal["moved", "inert", "unchecked"]
     reason: MechanismUncheckedReason | None = None
-    separated, untestable = _levels_separate(
-        {level: {case: float(mean) for case, mean in cases.items()} for level, cases in per_case.items()}
-    )
+    separated, untestable = _levels_separate(per_case)
     if len(result_ids_by_level) < 2:
         state, reason = "unchecked", "not_swept"
     elif separated:

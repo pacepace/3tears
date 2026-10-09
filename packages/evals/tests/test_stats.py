@@ -8,6 +8,7 @@ values computed with scipy: ``2 * scipy.stats.t.sf(abs(t), df)``.
 from __future__ import annotations
 
 import math
+from fractions import Fraction
 
 import pytest
 
@@ -16,6 +17,7 @@ from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
     UNPAIRED_TEST_NAME,
     composite_significance,
+    level_difference,
     paired_change,
     standard_error_of_mean,
     t_critical_two_sided,
@@ -569,3 +571,71 @@ class TestDisclosedTestNames:
         assert PAIRED_TEST_NAME != UNPAIRED_TEST_NAME
         assert "paired" in PAIRED_TEST_NAME
         assert "Welch" in UNPAIRED_TEST_NAME
+
+
+class TestLevelDifference:
+    """The between-level test the divergence lens and the mechanism check read: t where it exists, exact where not."""
+
+    def test_shared_cases_are_paired_and_match_the_paired_t_test(self) -> None:
+        a = {"c1": 1.0, "c2": 2.0, "c3": 4.0, "c4": 3.5}
+        b = {"c1": 1.6, "c2": 2.1, "c3": 5.0, "c4": 3.9}
+        tested = level_difference(a, b)
+        reference = composite_significance(list(a.values()), list(b.values()), paired=True)
+        assert (tested.test, tested.n_a, tested.n_b) == ("paired", 4, 4)
+        assert tested.p_value == pytest.approx(reference.p_value)
+        assert tested.separated == reference.significant
+        diffs = [b[case] - a[case] for case in a]
+        mean = sum(diffs) / 4
+        assert tested.se == pytest.approx(math.sqrt(sum((d - mean) ** 2 for d in diffs) / 3) / 2)
+
+    def test_disjoint_cases_are_welch_s(self) -> None:
+        a = {"c1": 1.0, "c2": 2.0, "c3": 4.0}
+        b = {"d1": 3.0, "d2": 5.5, "d3": 4.0, "d4": 6.0}
+        tested = level_difference(a, b)
+        reference = composite_significance(list(a.values()), list(b.values()), paired=False)
+        assert tested.test == "unpaired"
+        assert tested.p_value == pytest.approx(reference.p_value)
+        assert tested.delta == pytest.approx(sum(b.values()) / 4 - sum(a.values()) / 3)
+
+    def test_one_case_a_side_is_untested(self) -> None:
+        tested = level_difference({"c1": 1.0}, {"c1": 2.0, "c2": 3.0})
+        assert (tested.separated, tested.p_value, tested.test) == (None, None, None)
+        assert tested.untested_reason == "fewer than two cases on a side"
+
+    @pytest.mark.parametrize(("n", "separated"), [(2, None), (5, None), (6, True), (8, True)])
+    def test_an_alike_shift_is_read_by_the_exact_sign_flip_test(self, n: int, separated: bool | None) -> None:
+        """Every case moving by one amount has exact p 2^(1-n): below α only from six cases."""
+        a = {f"c{i}": Fraction(i, 10) for i in range(n)}
+        b = {case: value + Fraction(1, 10) for case, value in a.items()}
+        tested = level_difference(a, b)
+        assert tested.separated is separated
+        if separated:
+            assert tested.p_value == pytest.approx(2.0 ** (1 - n))
+        else:
+            assert tested.p_value is None and tested.untested_reason is not None
+
+    def test_an_alike_shift_of_decimals_is_decided_exactly(self) -> None:
+        """0.1→0.3 and 0.2→0.4 are one shift; in floats they differ in the last place, which a t would read."""
+        a = {"c1": Fraction("0.1"), "c2": Fraction("0.2")}
+        b = {"c1": Fraction("0.3"), "c2": Fraction("0.4")}
+        assert level_difference(a, b).separated is None
+
+    @pytest.mark.parametrize(("n_a", "n_b", "separated"), [(2, 2, None), (3, 3, None), (4, 4, True), (3, 5, True)])
+    def test_two_constants_are_read_by_the_exact_split_test(self, n_a: int, n_b: int, separated: bool | None) -> None:
+        """Exact p 2 / C(n_a + n_b, n_a): 1/3 at two a side, 1/10 at three, 1/35 at four."""
+        tested = level_difference({f"a{i}": 1.0 for i in range(n_a)}, {f"b{i}": 2.0 for i in range(n_b)})
+        assert tested.separated is separated
+        if separated:
+            assert tested.p_value == pytest.approx(2 / math.comb(n_a + n_b, n_a))
+
+    def test_identical_values_are_tested_and_not_separated(self) -> None:
+        tested = level_difference({"c1": 3.0, "c2": 3.0}, {"c1": 3.0, "c2": 3.0})
+        assert (tested.separated, tested.p_value, tested.delta) == (False, 1.0, 0.0)
+
+    def test_equivalence_needs_a_margin_and_shared_cases(self) -> None:
+        a = {f"c{i}": float(i) for i in range(10)}
+        b = {case: value + (0.01 if int(case[1:]) % 2 else -0.01) for case, value in a.items()}
+        assert level_difference(a, b).equivalent is None
+        assert level_difference(a, b, equivalence_margin=1.0).equivalent is True
+        disjoint = {f"d{i}": value for i, value in enumerate(b.values())}
+        assert level_difference(a, disjoint, equivalence_margin=1.0).equivalent is None
