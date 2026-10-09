@@ -55,7 +55,9 @@ world, or beside a sibling at every value the dimension can take — is a ``fail
 the coupling, never an ``unavailable`` one. ``unavailable`` keeps meaning what the shape forces.
 
 **Two conventions the kit fixes, because a generic caller needs them fixed.** A ``subject_view``
-binding is called with one keyword, ``surfaces``, holding the surface names to render; and a
+binding is called with one keyword, ``surfaces``, holding the surface names to render, and returns a
+mapping with one entry per surface name, that surface's rendering (a surface missing from it reads as
+rendering nothing); and a
 ``seed``, ``perturb`` or ``fire`` binding is called with the value as its single positional
 argument, ``fire`` with none. A triggered dimension's ``seed`` binding ARMS an event and returns the
 host's identity of it — a non-empty string, which a cell's world session keeps so a firing of the

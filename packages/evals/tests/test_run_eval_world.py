@@ -245,3 +245,22 @@ async def test_an_incoherent_world_run_is_refused_before_anything_is_stored(kwar
     with pytest.raises(ValueError, match=said):
         await run_eval(CASES, sensible, host=host, scope_id=SCOPE, **kwargs)
     assert list_templates(host.storage, SCOPE) == []
+
+
+async def test_a_well_formed_quick_world_passes_the_engine_s_own_conformance_kit() -> None:
+    """The kit reads the subject view one entry per surface; the quick world once returned its state bare.
+
+    Every dimension's ``perception_ab`` then read nothing on the ``view`` surface and failed, so the engine's own
+    world could not pass the kit a host is told to run.
+    """
+    from threetears.evals.contracts.host.world_conformance import check_world_conformance
+
+    world = room()
+    report = await check_world_conformance(world.registry, expressions=[LIT_IFF_DARK])
+
+    failed = [
+        (result.check, result.dimension, result.detail) for result in report.results if result.outcome == "failed"
+    ]
+    assert failed == []
+    ab = {result.dimension: result.outcome for result in report.results if result.check == "perception_ab"}
+    assert ab == {"lamp": "passed", "dark": "passed"}

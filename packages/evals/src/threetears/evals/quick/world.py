@@ -191,7 +191,9 @@ class World:
             return lambda: copy.deepcopy(state.get(dim))
 
         def view(*, surfaces: Sequence[str]) -> dict[str, Any]:
-            return copy.deepcopy(state) if _VIEW in surfaces else {}
+            # One entry per surface asked for, the registry's convention: the conformance kit reads each
+            # surface's rendering by its name, and found nothing when this returned the state itself.
+            return {_VIEW: copy.deepcopy(state)} if _VIEW in surfaces else {}
 
         table: dict[str, Callable[..., Any]] = {f"{self.name}.{_VIEW}": view}
         for dim in self.dimension_names:
@@ -323,7 +325,8 @@ class WorldTools(Mapping[str, Callable[..., Awaitable[Any]]]):
         """The world as the candidate sees it now, through the registry's subject view."""
         handle = self.session.registry.subject_view
         assert handle is not None
-        seen: dict[str, Any] = await self.session.registry.call(handle, surfaces=(_VIEW,))
+        rendered: dict[str, Any] = await self.session.registry.call(handle, surfaces=(_VIEW,))
+        seen: dict[str, Any] = rendered[_VIEW]
         return seen
 
     async def call(self, tool: str, /, **params: Any) -> Any:
