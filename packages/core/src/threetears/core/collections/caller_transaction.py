@@ -15,6 +15,12 @@ collection writes that join it (``conn=`` the same connection) record the keys t
 the transaction has committed or rolled back each key is evicted from L1 and L2 and the eviction
 is broadcast. The next read of the key takes whichever row L3 ended with.
 
+On a collection switched on to carry a write generation
+(:attr:`~threetears.core.collections.base.BaseCollection.write_generation`), settling is also where
+the generation advances: once per collection for the whole transaction, however many of its rows
+the transaction wrote, with every row's broadcast naming that one advance. It advances whichever
+way the transaction ended, for the reason the eviction runs either way.
+
 Evicting rather than writing the committed row is deliberate: it is correct whether the
 transaction committed, rolled back, or rolled back a savepoint that a save joined, with no need to
 know which. A save refuses a ``conn`` no :class:`CallerTransaction` opened, rather than guess.
@@ -34,6 +40,7 @@ from contextvars import ContextVar, Token
 from types import TracebackType
 from typing import TYPE_CHECKING, Any
 
+from threetears.core.exceptions import GenerationUnavailableError
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
@@ -71,7 +78,7 @@ class CallerTransaction:
         """
         self.conn = conn
         self._options = options
-        self._enrolled: list[tuple[BaseCollection[Any], Any]] = []
+        self._enrolled: list[tuple[BaseCollection[Any], Any, dict[str, Any] | None]] = []
         self._outermost: CallerTransaction | None = None
         self._token: Token[tuple[CallerTransaction, ...]] | None = None
         self._transaction: Any = None
@@ -118,7 +125,7 @@ class CallerTransaction:
             )
         return found
 
-    def enroll(self, collection: BaseCollection[Any], entity_id: Any) -> None:
+    def enroll(self, collection: BaseCollection[Any], entity_id: Any, *, row: dict[str, Any] | None = None) -> None:
         """record that ``collection`` wrote ``entity_id`` in this transaction, to be evicted when it ends.
 
         A key written twice is evicted twice, which costs one more L2 delete and nothing else.
@@ -127,10 +134,13 @@ class CallerTransaction:
         :ptype collection: BaseCollection
         :param entity_id: pk value (single-pk) or tuple of pk values in declared order
         :ptype entity_id: Any
+        :param row: the row as the write sent it, when the write saw one; the eviction's broadcast
+            takes the collection's declared invalidation columns from it
+        :ptype row: dict[str, Any] | None
         :return: nothing
         :rtype: None
         """
-        self._enrolled.append((collection, entity_id))
+        self._enrolled.append((collection, entity_id, row))
 
     async def __aenter__(self) -> CallerTransaction:
         """open the transaction and make it findable from the writes that join it.
@@ -165,7 +175,11 @@ class CallerTransaction:
         :ptype traceback: TracebackType | None
         :return: whatever the connection's transaction returned, so it may suppress as it would alone
         :rtype: bool
+        :raises GenerationUnavailableError: when the transaction ended cleanly and a collection
+            switched on to carry a write generation could not advance it. Every row was still
+            evicted and broadcast. A body or a commit that raised keeps its own error
         """
+        generation_failure: GenerationUnavailableError | None = None
         try:
             suppressed = await self._transaction.__aexit__(exc_type, exc, traceback)
         finally:
@@ -173,29 +187,50 @@ class CallerTransaction:
                 _OPEN.reset(self._token)
                 self._token = None
             if self._outermost is None:
-                await asyncio.shield(self._settle(committed=exc_type is None))
+                generation_failure = await asyncio.shield(self._settle(committed=exc_type is None))
+        if generation_failure is not None and exc_type is None:
+            raise generation_failure
         return bool(suppressed)
 
-    async def _settle(self, *, committed: bool) -> None:
+    async def _settle(self, *, committed: bool) -> GenerationUnavailableError | None:
         """evict every key a write joined to this transaction touched, from L1 and L2, and broadcast it.
+
+        One call per collection, so a collection that carries a write generation advances it once
+        for the whole transaction. One collection's failed advance does not stop the next
+        collection's rows being settled.
 
         :param committed: whether the body finished without raising, for the log; the commit itself
             may still have failed, and the eviction is the same either way
         :ptype committed: bool
-        :return: nothing
-        :rtype: None
+        :return: the first failure to advance a write generation, for the caller to raise; ``None``
+            when every advance that was owed was made
+        :rtype: GenerationUnavailableError | None
         """
         enrolled = list(self._enrolled)
         self._enrolled.clear()
+        failure: GenerationUnavailableError | None = None
         # one call per collection, with every key it wrote, in the order written: a load of many
         # rows settles them together rather than one round trip at a time
-        by_collection: dict[int, tuple[BaseCollection[Any], list[Any]]] = {}
-        for collection, entity_id in enrolled:
-            by_collection.setdefault(id(collection), (collection, []))[1].append(entity_id)
-        for collection, keys in by_collection.values():
-            await collection.invalidate_cache_many(keys)
+        by_collection: dict[int, tuple[BaseCollection[Any], list[Any], list[dict[str, Any] | None]]] = {}
+        for collection, entity_id, row in enrolled:
+            _, keys, rows = by_collection.setdefault(id(collection), (collection, [], []))
+            keys.append(entity_id)
+            rows.append(row)
+        for collection, keys, rows in by_collection.values():
+            try:
+                if collection.invalidation_columns:
+                    await collection.invalidate_cache_many(keys, rows=rows)
+                else:
+                    # the call every collection has always been given, so one that overrides it
+                    # without the keyword is still settled
+                    await collection.invalidate_cache_many(keys)
+            except GenerationUnavailableError as exc:
+                # logged where the advance failed; this collection's rows were all evicted
+                if failure is None:
+                    failure = exc
         if enrolled:
             log.debug(
                 "caller transaction ended; the rows its writes touched were evicted from every cache",
                 extra={"extra_data": {"rows": len(enrolled), "body_completed": committed}},
             )
+        return failure

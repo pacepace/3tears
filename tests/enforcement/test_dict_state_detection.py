@@ -78,6 +78,31 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/registry.py",
+        class_name="CollectionRegistry",
+        attr_name="_derived_caches",
+        rationale=(
+            "per-table registrations of the caches derived from a collection table: pairs of "
+            "callables into in-process caches, wiring alongside _collections, IS the "
+            "infrastructure. not serializable, and a registration names a cache that exists only "
+            "in this process, so there is nothing a shared or durable copy could hold"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/generation.py",
+        class_name="GenerationMarks",
+        attr_name="_tables",
+        rationale=(
+            "per followed table, the last write generation whose writes THIS process's caches "
+            "have accounted for. it describes this process's L1 and derived caches, which are "
+            "themselves per-process: another pod has heard different broadcasts and holds a "
+            "different mark, so a shared copy would vouch for caches it knows nothing about. a "
+            "restart correctly starts with no mark, which drops each followed table once at its "
+            "first pass, over a cache that is itself empty. keyed by followed table, and each "
+            "table's record of advances heard out of order is capped"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/collections/scan_cache.py",
         class_name="ScanCache",
         attr_name="_evictions",

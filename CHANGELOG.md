@@ -6,6 +6,72 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Core, epoch and nats: a table can carry a write generation a pod follows (expand stage)
+
+A row broadcast is at most once, and a pod that misses one serves its cached row until it
+restarts. This is the first of five stages (`docs/epoch-task-06-collection-generations-by-default.md`)
+that let a pod detect that for any collection table. Everything ships here and nothing is on: no
+collection is switched on, so no table advances a generation it did not already, and nothing
+follows one. An unchanged collection writes exactly as before.
+
+- **Changed, `GenerationSource.advance`** (`threetears.core.collections.generation`) returns the
+  token it wrote, and `EpochGenerationSource.advance` returns the value its own compare-and-swap
+  put in the epoch bucket. Callers that ignored the `None` are unaffected. A source that still
+  returns nothing works: the write advances and its row messages name no generation.
+- **Added, `BaseCollection.write_generation`**: `WRITE_GENERATION` switches a table on,
+  `NoWriteGeneration(reason="...")` is the reasoned opt-out, and `WRITE_GENERATION_UNDECLARED`,
+  the default, changes nothing. A switched-on collection advances its table's generation once
+  per commit on every write path: `save_entity`, `delete`, a won `l2_cas_mutate`, a subscript
+  write, `invalidate_cache`, `invalidate_cache_many`, `bypassing_write`, a `CallerTransaction`
+  settling, and `flush_pending` (once per table per flush). Never once per row. It needs a
+  generation source on the registry; without one nothing advances. A collection built with
+  `NO_L2` advances nothing whatever it declares. A class that sets `negative_cache_max_age` and
+  opts out is refused when it is defined.
+- **Added, `BaseCollection.invalidation_columns`**: column names whose values ride on every row
+  message the collection publishes, from the row the write saw. A delete reads the row before
+  deleting it, and only for a collection that declares columns; so does
+  `SchemaBackedCollection.delete_rows`, once per key, on the caller's transaction.
+- **Added, `BaseCollection.L2_READ_THROUGH_LIMIT`** (10,000): how many keys read through from L3
+  since a table drop are remembered as trusted again. Past it the oldest is distrusted again and
+  costs one more L3 read.
+- **Added:** a failed advance after a committed write raises `GenerationUnavailableError` from
+  `delete`, `invalidate_cache`, `invalidate_cache_many`, `bypassing_write`, `CallerTransaction`
+  and `flush_pending`, on a switched-on collection only, after the rest of the write path has
+  run. `save_entity` and `l2_cas_mutate` already raised it for a collection that caches absences.
+- **Changed, `PeriodicFlusher`** (`threetears.core.coordination.flusher`): a write generation that
+  could not be advanced for a flush is logged as rows written with the generation unmoved, never
+  as "retrying", because `flush_pending` raises it only after the rows were acknowledged. The
+  interval loop carries on; the final flush in `aclose` raises it.
+- **Added, `CollectionRegistry`**: `follow_generation`, `generation_marks`, `account_generation`
+  and `settle_generation` keep and judge a per-table mark (`GenerationMarks`,
+  `GenerationVerdict`); `drop_table` drops a table's L1 rows, its cached scans and every cache
+  derived from it; `register_derived_cache(table, on_row=..., on_table_dropped=...)` tells a
+  derived cache about each changed row, this process's own writes included, and to drop
+  everything only when the table drops; `row_message` and `tell_derived_caches` are the pieces.
+  `publish_invalidation` takes `generation`, `bump_rows` and `columns`.
+- **Added, `BaseCollection.drop_cached_table`** and `announce_flushed`. After a table drop the
+  pod's own L2 entries for the table are not trusted until each has been read through from L3
+  once: a missed broadcast leaves the stale entry in place, and it would otherwise be cached
+  again by the next read. Not on a write-behind table or one a compare-and-swap orders, where L2
+  is ahead of L3 by design.
+- **Changed, `CollectionRegistry.register`** raises `ValueError` for a second collection for a
+  table that declares `write_generation` differently from the one it holds.
+- **Added, `threetears.epoch`**: `EpochGenerationReader` (binds the epoch bucket, reads or watches
+  a table's generation, never writes), `generation_catchup_tick(registry, reader)` (one pass per
+  call; the consumer schedules it; one table's failure does not abandon the rest; a generation
+  that cannot be read drops nothing), `follow_generation_key(registry, reader, table)` (follows
+  one table through `watch_key`, waiting `DEFAULT_BROADCAST_GRACE` for an advance's row
+  broadcasts before calling them missed), and `generation_kv_key(table)`.
+- **Changed, `threetears.nats.subject_permissions`**: a tool pod holds a read of the `{ns}-epochs`
+  bucket, as an agent pod already did, so it can follow the tables its per-caller cache is
+  derived from. No pod can write it.
+- **Wire:** additive. `CacheInvalidationMessage` gains `generation`, `bump_rows` and `columns`,
+  all optional. A receiver built before them ignores them; a message without them is handled as
+  before. A tool pod's minted NATS grant grows by the epoch bucket's read subjects.
+- **Not changed:** `AclCache`, the `acl.*.invalidate` subjects, `set_l1_max_age` and the scan
+  TTL. `save_entity(conn=)` and subscript writes stay refused on a collection that caches
+  absences.
+
 ### Datasources: closing a dead Redshift connection no longer breaks the process's other TLS connections
 
 - **Fixed, `RedshiftDriver`**: a cached connection that had died while idle (a scheduled query every

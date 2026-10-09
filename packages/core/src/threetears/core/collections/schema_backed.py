@@ -1951,9 +1951,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             keys.append(key if len(key) > 1 else key[0])
         if len(set(keys)) != len(keys):
             raise ValueError(f"{type(self).__name__}.save_rows: two rows share a key; one statement upserts a key once")
-        for key in keys:
+        for key, data in zip(keys, stamped, strict=True):
             # enrolled before the write, so a write whose outcome is unknown is settled with the rest
-            transaction.enroll(self, key)
+            transaction.enroll(self, key, row=data)
             self._evict_l1(key)
         written = 0
         if stamped and isinstance(store, BulkDurableStore):
@@ -1995,6 +1995,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         caller's :class:`CallerTransaction` commits, a failing delete fails the transaction, and every
         key leaves this process's L1 now and is settled with the rest when the transaction ends.
 
+        A collection that declares :attr:`invalidation_columns` reads each row before deleting it,
+        on the same transaction, so each row's message carries those columns of the row removed.
+
         :param keys: each row's key values, in the schema's key order
         :ptype keys: Sequence[Sequence[Any]]
         :param conn: the caller's connection, its transaction opened by :class:`CallerTransaction`
@@ -2029,8 +2032,16 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             )
         for key in named:
             entity_key = key if width > 1 else key[0]
+            # a collection whose row messages carry columns reads each row before it goes, on the
+            # caller's transaction, so the message can say whose it was; one read per key, and
+            # none for a collection that declares no columns
+            seen = (
+                await store.fetch_one(self.table_name, dict(zip(self.schema.pk_columns, key, strict=True)), conn=conn)
+                if self.invalidation_columns
+                else None
+            )
             # enrolled before the delete, so a delete whose outcome is unknown is settled with the rest
-            transaction.enroll(self, entity_key)
+            transaction.enroll(self, entity_key, row=seen)
             self._evict_l1(entity_key)
         deleted = 0
         if named and isinstance(store, BulkDeletingStore):

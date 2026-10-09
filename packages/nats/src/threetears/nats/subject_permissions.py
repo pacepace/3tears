@@ -1965,6 +1965,19 @@ def _tool_pod(
             # that reason, since a refused ``STREAM.CREATE`` is never answered and costs a
             # JetStream deadline at every startup before falling through to the bind anyway.
             JsResource.kv(f"{ns}-collections", scope=scope, writable=True),
+            # the epoch bucket, READ ONLY, exactly as an agent pod holds it and for the same reason:
+            # its keys are platform-shared counters, and among them are the write generations of
+            # the collection tables a pod FOLLOWS (``{ns}.collections.{table}.epoch``) -- the four
+            # access tables behind its per-caller cache. A pod watches those keys
+            # (``threetears.epoch.follow_generation_key``) or reads them in a catch-up pass, to
+            # learn that it missed a row broadcast. It writes nothing here, and must not: a pod
+            # that could write could fake an advance every follower acts on. The hub's L3 broker
+            # advances a table's generation after it commits the pod's write.
+            #
+            # The whole bucket rather than the four keys, because nothing narrower is expressible
+            # today: ``KV_KEY_READ`` names one key that is one subject token, and a generation key
+            # is four; and its read is the direct get, which this bucket is not declared for.
+            JsResource.kv_bucket_keys(f"{ns}-epochs", writable=False),
             # the pod's OWN data-version entry, read and watched while it waits for an upgrade of
             # the tables it owns to finish. keyed on ``tool_pods.id`` -- pinned from the verified
             # key id, as the collections scope above is -- so replicas share one key and no pod can
