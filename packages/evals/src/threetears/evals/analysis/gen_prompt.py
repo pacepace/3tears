@@ -55,9 +55,11 @@ PROMPT_CHAR_BUDGET = 28_000
 #: The most rules the prompt carries, not its numbered headings. It only falls.
 PROMPT_RULE_BUDGET = 15
 
-# The generator sends this as the SYSTEM message, followed by the reference grammar it appends; the
-# bundle JSON is the USER message and the authored document's schema is the response format. No
-# placeholders resolve in this text (it is a ``resolves_placeholders=False`` type).
+#: The analysis generator's default system prompt.
+#:
+#: The generator sends this as the SYSTEM message, followed by the reference grammar it appends; the
+#: bundle JSON is the USER message and the authored document's schema is the response format. No
+#: placeholders resolve in this text (it is a ``resolves_placeholders=False`` type).
 EVAL_ANALYSIS_GEN_DEFAULT = """\
 You are an eval analyst, handed a CONTEXT BUNDLE for one evaluation campaign — a curated set of runs of one subject on one behavior — to write its analysis. You run, fetch and ask nothing: the bundle is all the evidence there is. Read it honestly and say what it does and does not support.
 

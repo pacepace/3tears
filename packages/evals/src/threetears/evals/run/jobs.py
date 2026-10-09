@@ -100,9 +100,9 @@ def adaptive_job_timeout_s(
     return max(floor_s, min(cap_s, raw))
 
 
-# Work function: async fn(progress_callback) -> None
-# The progress callback is async fn(dict) -> None
+#: The progress callback a job's work reports through: async, handed a dict.
 ProgressFn = Callable[[dict[str, Any]], Awaitable[None]]
+#: A job's work: an async function handed its progress callback.
 WorkFn = Callable[[ProgressFn], Awaitable[None]]
 
 

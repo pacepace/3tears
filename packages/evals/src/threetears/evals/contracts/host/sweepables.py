@@ -60,6 +60,8 @@ from threetears.evals.contracts.host.values import IntervalScale, NominalScale, 
 if TYPE_CHECKING:
     from threetears.evals.contracts.models import EvalResult, EvalRun
 
+#: Who owns a sweepable input: a ``lever`` a campaign sweeps, ``apparatus`` (the measuring rig, which should
+#: not move), or a ``label`` that identifies rather than varies.
 SweepableRole = Literal["lever", "apparatus", "label"]
 
 #: The three outcomes of comparing one input across a set of runs. Three, not two: an input

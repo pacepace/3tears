@@ -168,6 +168,7 @@ def reporter_cell_timeout_s(
     return generation_s + judging_s
 
 
+#: Where a person reading a memo places it on a rubric dimension, low to high.
 LabelDirection = Literal["low", "low_mid", "mid", "mid_high", "high"]
 
 #: The 1-5 judge scores each label direction agrees with, inclusive. A calibration read counts a
