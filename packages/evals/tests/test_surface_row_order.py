@@ -22,6 +22,7 @@ from packages.evals.tests.toyhost_memo import cell_at
 from threetears.evals.analysis.arms import arm_names
 from threetears.evals.analysis.bundle import AnalysisContextBundle, assemble_context_bundle, bundle_decision_surface
 from threetears.evals.analysis.cells import cell_ref, variant_of_cell_ref
+from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
 from threetears.evals.analysis.generator import build_user_message
 from threetears.evals.analysis.report import build_code_only_report, report_markdown
 from threetears.evals.analysis.report.model import TableBlock
@@ -67,6 +68,10 @@ class TestTheWritersCellsFollowTheRule:
             cell_at(bundle, TOYHOST_WIDE),
             cell_at(bundle, TOYHOST_NARROW),
         ]
+
+    def test_the_writer_prompt_states_the_rule(self) -> None:
+        """The writer's table is ``cell_measures``, and the seed prompt says what its order is and is not."""
+        assert "(`cell_measures`, control first; its order is not a ranking)" in EVAL_ANALYSIS_GEN_DEFAULT
 
     def test_the_frozen_surface_keeps_the_order(self) -> None:
         bundle = _bundle(control=TOYHOST_NARROW)
