@@ -152,8 +152,8 @@ candidate's own spend, `production_replicating_cost`, and every mean of it (`mea
 summary, a frontier point's cost, an analysis cell's) — reads only the turns the candidate took. It leaves
 out a result the harness faulted, since a cell an apparatus fault cut short spent less than a whole one and
 would let the rig make an arm look cheaper. It also leaves out a call the candidate's model refused straight
-away, which took no turn. Program spend (`cost_usd`, `total_cost_usd`, `mean_cost_usd`, the budget view)
-keeps both, because those dollars were spent. `n_prod_cost_usd` counts what the comparison figure rests on.
+away, which took no turn. Program spend (`cost_usd`, `total_cost_usd`, `mean_cost_usd`, a `cost_usd` pivot,
+the `cost_usd` history series, the budget view) keeps both, because those dollars were spent. `n_prod_cost_usd` counts what the comparison figure rests on.
 
 **A cost pivot says what its cells pool.** `scope_pivot(metric="cost_usd")` averages measuring spend, so
 each cell names the role sets its dollars were summed over (`cost_compositions`), and the table sets

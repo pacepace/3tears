@@ -75,7 +75,6 @@ from threetears.evals.contracts.result_condition import (
     counted_rubric_scores,
     counted_score,
     delivered_a_turn,
-    harness_faulted,
     trial_exclusion,
 )
 from threetears.evals.contracts.scoring import (
@@ -5532,9 +5531,13 @@ def _history_value_of(metric: str) -> Callable[[EvalResult], float | None]:
     if metric == METRIC_COMPOSITE:
         return result_composite
     if metric == METRIC_COST_USD:
-        # Whole but for a call the model refused or errored on, which took no turn and spent no turn's
-        # dollars — the frontier's cost rule, so the two surfaces read one spend.
-        return lambda result: result.cost_usd if delivered_a_turn(result) or harness_faulted(result) else None
+        # Measuring spend, so every dollar the program spent: the population program spend keeps on every
+        # surface that reads it — the cost pivot, a run summary's `mean_cost_usd`
+        # (:func:`~threetears.evals.contracts.scoring.compute_cost_summary`) and the budget view. A call the
+        # model refused before any turn was still billed, and a cell the harness faulted spent what it spent.
+        # Leaving the refusal out while the pivot kept it gave one corpus two figures for one quantity. What an
+        # arm COSTS reads only the turns taken, and is `production_replicating_cost`, which no series offers.
+        return lambda result: result.cost_usd
     if metric == METRIC_TOTAL_MS:
         # Infra-excluded cells are withheld here for the reason they are on the frontier's
         # latency: an apparatus fault produces a REAL but truncated `LatencyMetrics`, and this
@@ -5542,8 +5545,8 @@ def _history_value_of(metric: str) -> Callable[[EvalResult], float | None]:
         # returning None), so leaving latency in made the two metrics on one surface answer
         # different questions — and a cassette miss could post a "faster" step that describes the
         # harness. A call the model refused or errored on took no turn, and is withheld for the frontier's
-        # reason: `delivered_a_turn`, the one predicate every latency reading uses. Cost keeps a faulted
-        # cell's dollars, which were spent (see METRIC_COST_USD above).
+        # reason: `delivered_a_turn`, the one predicate every latency reading uses. Measuring spend keeps
+        # both, because those dollars were spent (see METRIC_COST_USD above).
         return lambda result: (
             result.latency.total_ms
             if result.latency is not None and result.latency.total_ms is not None and delivered_a_turn(result)

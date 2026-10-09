@@ -4674,10 +4674,10 @@ class TestHistoryLatencyExcludesTheHarnesssOwnCells:
         assert points[0].value == pytest.approx(500.0)
 
 
-class TestHistoryCostLeavesOutACallThatTookNoTurn:
-    """A billed refusal's dollars are no turn's spend; a faulted cell's dollars were spent and stay."""
+class TestHistoryCostKeepsEveryDollarSpent:
+    """``cost_usd`` is measuring spend: a billed refusal and a faulted cell were both paid for, and both stay."""
 
-    def test_a_billed_refusal_is_left_out_and_a_faulted_cell_kept(self):
+    def test_a_billed_refusal_and_a_faulted_cell_are_both_kept(self):
         run = _fr_run()
         answered = _fr_result(run, model="m1", variant_key="vk-a", test_case_id="tc1").model_copy(
             update={"cost_usd": 0.004}
@@ -4692,7 +4692,40 @@ class TestHistoryCostLeavesOutACallThatTookNoTurn:
         result = compute_history([run], [answered, refused, faulted], metric=METRIC_COST_USD, profile=_JUDGED_HOST)
 
         points = [point for series in result.series for point in series.points]
-        assert points[0].value == pytest.approx(0.003)
+        assert points[0].value == pytest.approx((0.004 + 0.0001 + 0.002) / 3)
+
+    def test_the_cost_pivot_and_the_run_summary_read_the_same_spend_as_the_history(self):
+        """All three measure spend, so one corpus gives one figure."""
+        run = _fr_run()
+        answered = _fr_result(run, model="m1", variant_key="vk-a", test_case_id="tc1").model_copy(
+            update={"cost_usd": 0.004}
+        )
+        refused = _fr_result(
+            run, model="m1", variant_key="vk-a", test_case_id="tc2", candidate_error="the provider refused the request"
+        ).model_copy(update={"cost_usd": 0.0001})
+        faulted = _fr_result(
+            run, model="m1", variant_key="vk-a", test_case_id="tc3", infra_error="cassette miss"
+        ).model_copy(update={"cost_usd": 0.002})
+        results = [answered, refused, faulted]
+
+        (cell,) = compute_pivot(
+            project_score_records([run], results, profile=_JUDGED_HOST).records,
+            row_factor="model",
+            column_factor="variant_key",
+            metric=METRIC_COST_USD,
+            profile=_JUDGED_HOST,
+        ).cells
+        (point,) = [
+            point
+            for series in compute_history([run], results, metric=METRIC_COST_USD, profile=_JUDGED_HOST).series
+            for point in series.points
+        ]
+        from threetears.evals.contracts.scoring import compute_cost_summary
+
+        (summary,) = compute_cost_summary(results).values()
+
+        assert cell.value == pytest.approx(point.value) == pytest.approx(summary["mean_cost_usd"])
+        assert (cell.n, point.n, summary["n_cost_usd"]) == (3, 3, 3)
 
 
 class TestFrontierLatencyExcludesTheHarnesssOwnCells:
