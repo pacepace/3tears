@@ -36,6 +36,11 @@ from threetears.core.backends.protocol import L3Backend
 from threetears.core.cache import MISSING
 from threetears.core.collections.bypassing_write import BypassingWrite
 from threetears.core.collections.caller_transaction import CallerTransaction, shared_advance_for
+from threetears.core.collections.delete_cascade import (
+    DeleteCascade,
+    announce_delete_cascade,
+    read_delete_cascade,
+)
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer
 from threetears.core.collections.generation import (
     WRITE_GENERATION_UNDECLARED,
@@ -77,8 +82,10 @@ __all__ = [
     "NO_L2",
     "BaseCollection",
     "CasMutation",
+    "DeleteCascade",
     "EntityT",
     "NoL2",
+    "ScanReadTicket",
     "table_named_by_class",
     "tables_with_write_generation",
 ]
@@ -307,6 +314,22 @@ class _KeyTicket:
     writing: bool
 
 
+@dataclass(frozen=True, slots=True)
+class ScanReadTicket:
+    """a scan's claim on its collection's L1, taken before the scan's first await (:meth:`BaseCollection.scan_ticket`).
+
+    A scan reads rows it cannot name in advance, so it cannot hold a ticket per key. It holds one
+    on the whole collection instead: the rows it read may enter L1 only while no write of any key
+    has begun, no eviction has landed, and no write was in flight when it was taken.
+
+    :ivar seen: the fence's count of writes begun and evictions landed, as the ticket left it
+    :ivar contended: whether a write of any key was in flight when the ticket was taken
+    """
+
+    seen: int
+    contended: bool
+
+
 class _L1Fence:
     """orders this process's L1 writes of a key against every other write and eviction of it.
 
@@ -324,7 +347,7 @@ class _L1Fence:
     The check and the L1 write run with no await between them.
     """
 
-    __slots__ = ("_keys",)
+    __slots__ = ("_changes", "_keys", "_writers")
 
     def __init__(self) -> None:
         """start with no key watched.
@@ -333,6 +356,10 @@ class _L1Fence:
         :rtype: None
         """
         self._keys: dict[tuple[str, ...], _KeyActivity] = {}
+        # every write begun and eviction landed on any key, and the writes in flight on any key:
+        # what a scan, which cannot name its keys before it reads, is fenced by
+        self._changes = 0
+        self._writers = 0
 
     def begin(self, key: tuple[str, ...], *, writing: bool) -> _KeyTicket:
         """take a ticket on ``key`` before the first await of a read or write of it.
@@ -352,6 +379,8 @@ class _L1Fence:
         if writing:
             activity.writers += 1
             activity.changes += 1
+            self._writers += 1
+            self._changes += 1
         activity.holders += 1
         return _KeyTicket(key=key, activity=activity, seen=activity.changes, contended=contended, writing=writing)
 
@@ -377,6 +406,7 @@ class _L1Fence:
         activity = ticket.activity
         if ticket.writing:
             activity.writers -= 1
+            self._writers -= 1
         activity.holders -= 1
         if activity.holders == 0 and self._keys.get(ticket.key) is activity:
             del self._keys[ticket.key]
@@ -389,6 +419,7 @@ class _L1Fence:
         :return: nothing
         :rtype: None
         """
+        self._changes += 1
         activity = self._keys.get(key)
         if activity is not None:
             activity.changes += 1
@@ -401,8 +432,28 @@ class _L1Fence:
         :return: nothing
         :rtype: None
         """
+        self._changes += 1
         for activity in self._keys.values():
             activity.changes += 1
+
+    def begin_scan(self) -> ScanReadTicket:
+        """take a ticket on every key, before the first await of a scan.
+
+        :return: the ticket
+        :rtype: ScanReadTicket
+        """
+        return ScanReadTicket(seen=self._changes, contended=self._writers > 0)
+
+    def scan_still_newest(self, ticket: ScanReadTicket) -> bool:
+        """whether the rows a scan read under ``ticket`` are still the newest this process knows.
+
+        :param ticket: the scan's ticket
+        :ptype ticket: ScanReadTicket
+        :return: ``True`` when no write was in flight when it was taken and no write began, and no
+            eviction landed, on any key since
+        :rtype: bool
+        """
+        return not ticket.contended and self._changes == ticket.seen
 
     @contextmanager
     def watching(self, key: tuple[str, ...], *, writing: bool) -> Iterator[_KeyTicket]:
@@ -599,6 +650,12 @@ class BaseCollection(ABC, Generic[EntityT]):
     #: deleted, for a delete, which is read before it goes -- so a receiver needs no read to know
     #: what the row was. A write that saw no row (an eviction naming only a key) carries none.
     invalidation_columns: ClassVar[tuple[str, ...]] = ()
+
+    #: Each foreign key that points at this table with ``ON DELETE CASCADE`` or ``ON DELETE SET
+    #: NULL``. The database rewrites those rows where no collection sees it, and nothing in L1
+    #: ages, so :meth:`delete` reads the rows each one will reach before deleting and invalidates
+    #: them through their own collections after (:mod:`~threetears.core.collections.delete_cascade`).
+    delete_cascades: ClassVar[tuple[DeleteCascade, ...]] = ()
 
     #: Whether this collection keeps a copy of its rows in the process's L1. ``False`` declares a
     #: collection that caches nowhere in L1 -- one whose rows are read from L2 every time, such as
@@ -1723,10 +1780,25 @@ class BaseCollection(ABC, Generic[EntityT]):
             return
         self._l1.delete_by_id(_ABSENT_MARKER_TABLE, (self._absent_marker_key(entity_id),), ("key",))
 
+    def scan_ticket(self) -> ScanReadTicket:
+        """take the ticket a scan caches its rows under; take it before the scan's first await.
+
+        A row a scan read from L3 may be older than a write that committed, and was evicted here,
+        while the scan was in flight: caching it after that eviction leaves L1 behind with nothing
+        left to evict it. Pass the ticket to :meth:`write_to_cache_sync` (``read_since=``) and the
+        rows are cached only while nothing of this collection changed since it was taken.
+
+        :return: the ticket
+        :rtype: ScanReadTicket
+        """
+        return self._l1_fence.begin_scan()
+
     def write_to_cache_sync(
         self,
         data: dict[str, Any],
         primary_key: str | tuple[str, ...] | None = None,
+        *,
+        read_since: ScanReadTicket | None = None,
     ) -> bool:
         """upsert full row into L1 cache, synchronously.
 
@@ -1737,10 +1809,16 @@ class BaseCollection(ABC, Generic[EntityT]):
             accepts either single column name (str) or tuple of column
             names (composite-pk override).
         :ptype primary_key: str | tuple[str, ...] | None
-        :return: ``True`` on successful write, ``False`` when L1 is absent
+        :param read_since: for a row a read returned, the :meth:`scan_ticket` taken before that
+            read; the row is cached only while nothing of this collection changed since.
+            ``None`` for a row this process decided itself, which is newest by construction.
+        :ptype read_since: ScanReadTicket | None
+        :return: ``True`` on successful write, ``False`` when L1 is absent or the read was overtaken
         :rtype: bool
         """
         if self._l1 is None:
+            return False
+        if read_since is not None and not self._l1_fence.scan_still_newest(read_since):
             return False
         pk: str | tuple[str, ...] = primary_key if primary_key is not None else self.primary_key_columns
         self._l1_upsert(data, pk)
@@ -3612,6 +3690,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         self._set_span_table()
         # read before it goes, and only when the message must carry columns of it
         row = await self._row_before_delete(entity_id)
+        # the rows the database's foreign-key actions will rewrite, read while they still name it
+        cascaded = await read_delete_cascade(self, [entity_id])
         if self._write_buffer is not None:
             await self._write_buffer.remove(self.table_name, entity_id)
         await self.delete_from_store(entity_id)
@@ -3619,6 +3699,12 @@ class BaseCollection(ABC, Generic[EntityT]):
         self._evict_l1(entity_id)
         await self._delete_from_l2(entity_id)
         await self._announce_row(entity_id, bump=bump, row=row)
+        try:
+            await announce_delete_cascade(self, cascaded)
+        except GenerationUnavailableError:
+            # the row's own failure, when there is one, is the one raised
+            if bump.failure is None:
+                raise
         if bump.failure is not None:
             raise bump.failure
         return True

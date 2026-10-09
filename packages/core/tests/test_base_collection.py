@@ -1480,3 +1480,51 @@ class TestNothingInL1Ages:
 
         assert entity is not None
         assert entity.name == "Original"
+
+
+class TestAScanCachesOnlyWhatIsStillNewest:
+    """a row a scan read is cached only while nothing of the collection changed since the scan began."""
+
+    def test_an_undisturbed_scan_caches_its_rows(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        coll = StubCollection(registry, config_always)
+        ticket = coll.scan_ticket()
+        assert coll.write_to_cache_sync({"id": "e1", "name": "Alice", "score": 1}, read_since=ticket) is True
+        assert coll.get_row_sync("e1") is not None
+
+    def test_an_eviction_during_the_scan_refuses_its_rows(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        """the eviction a peer's broadcast makes for a key not yet in L1 is what the scan must not outrun."""
+        coll = StubCollection(registry, config_always)
+        ticket = coll.scan_ticket()
+        coll.evict_from_cache_sync("e1")  # heard while the scan's L3 read was in flight
+        assert coll.write_to_cache_sync({"id": "e1", "name": "Before", "score": 1}, read_since=ticket) is False
+        assert coll.get_row_sync("e1") is None
+        later = coll.scan_ticket()
+        assert coll.write_to_cache_sync({"id": "e1", "name": "After", "score": 2}, read_since=later) is True
+
+    @pytest.mark.asyncio
+    async def test_a_write_in_flight_or_begun_during_the_scan_refuses_its_rows(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        coll = StubCollection(registry, config_always, nats_client=_make_nats_mock())
+        entered, release = asyncio.Event(), asyncio.Event()
+        stored = coll.save_to_store
+
+        async def slow(data: dict, original_timestamp: datetime | None = None) -> int:
+            entered.set()
+            await release.wait()
+            return await stored(data, original_timestamp)
+
+        coll.save_to_store = slow  # type: ignore[method-assign]
+        before = coll.scan_ticket()
+        saving = asyncio.create_task(coll.save_entity(coll.create({"id": "e2", "name": "y", "score": 2})))
+        await entered.wait()
+        during = coll.scan_ticket()  # taken while another key's write is in flight
+        assert coll.write_to_cache_sync({"id": "e1", "name": "x", "score": 1}, read_since=during) is False
+        release.set()
+        await saving
+        # a write began on the collection after this scan's ticket
+        assert coll.write_to_cache_sync({"id": "e1", "name": "x", "score": 1}, read_since=before) is False

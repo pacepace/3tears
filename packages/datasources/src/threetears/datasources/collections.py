@@ -700,6 +700,7 @@ class CapabilitySourceCollection(SchemaBackedCollection[CapabilitySourceEntity])
         :return: capability-source entity or ``None`` when no row exists
         :rtype: CapabilitySourceEntity | None
         """
+        read_ticket = self.scan_ticket()  # before the first await
         result: CapabilitySourceEntity | None = None
         if self.l3_pool is not None:
             row = await self.l3_pool.fetchrow(
@@ -708,7 +709,7 @@ class CapabilitySourceCollection(SchemaBackedCollection[CapabilitySourceEntity])
             )
             if row is not None:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data)
+                self.write_to_cache_sync(data, read_since=read_ticket)
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
 

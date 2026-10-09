@@ -1333,6 +1333,22 @@ stops, and `AccessTableFollower.stop` is bounded (`stop_timeout`, 5 s). The repo
 pod stops following after its server's drain (`storage_closing`); with this it no longer hangs, and
 moving that stop before the drain is the product's to do.
 
+#### What No Age Hid Any More (the hub contract review)
+
+Two gaps the old ages covered became permanent once nothing aged, and both were closed in the
+framework rather than per site:
+
+- **Foreign-key actions.** An `ON DELETE CASCADE` or `SET NULL` rewrites a cached table inside the
+  database. A collection declares each one pointing at it (`delete_cascades`); its `delete` reads
+  the rows each will reach before deleting and invalidates them through their own collections
+  after, following a cascaded table's own actions, and advances with no rows a table it has no
+  collection for. The hub lists every such action into a switched-on table with the path that
+  announces it, read from its migrations, so a new one cannot ship unannounced.
+- **A scan seeding L1.** A scan's rows were written into L1 with no fence, so a write that
+  committed, and was evicted here, while the scan read L3 left the older row cached. A scan now
+  takes a ticket before its first await and caches its rows only while nothing of the collection
+  changed since (`scan_ticket`, `write_to_cache_sync(read_since=)`).
+
 ### Test Evidence
 
 Targeted, with each main checkout's locked tools and the worktrees first on the path. Each new test
