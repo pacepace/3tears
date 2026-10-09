@@ -7,27 +7,6 @@ and the outside sources in [prior art](prior-art.md).
 
 ## Measurement
 
-### A sub-threshold change in history reads "flat"
-
-Tracked in [#592](https://github.com/pacepace/3tears/issues/592).
-
-Campaign contrasts say `not_separated`, never "no difference". The history read does not:
-`paired_change` (`analysis/stats.py`) labels any move that misses significance or the magnitude gate
-`flat`, which its docstring glosses as "real noise, not a finding". At two to six cases almost nothing is significant, so `flat` becomes
-the default claim. Fix: say `not_separated`; for a "no meaningful change" claim, an
-equivalence test (TOST, Lakens 2017) against a declared margin.
-
-### Bars compare means, not intervals
-
-Tracked in [#593](https://github.com/pacepace/3tears/issues/593).
-
-`propose_bars` (`analysis/bar_proposals.py`) seeds a bar at the incumbent's mean, and `BarVerdict.cleared`
-compares the cell's mean with the threshold, so an unchanged incumbent misses its own bar about half the
-time. The ruled design: a bar decides by the interval against a declared margin, and seeds from the
-incumbent's measured interval.
-
-*Evidence:* simulation of an unchanged incumbent, n = 3, 6 and 15, 2026-09, missed its own bar 49–50% of the time.
-
 ### No power pre-flight
 
 Tracked in [#594](https://github.com/pacepace/3tears/issues/594).

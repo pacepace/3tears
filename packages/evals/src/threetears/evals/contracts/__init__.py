@@ -236,7 +236,13 @@ from threetears.evals.contracts.usage_capture import (
     program_cost,
     resolve_result_usage,
 )
-from threetears.evals.contracts.analysis_measures import BarAdjudication, BarVerdict, MeasureCollection, MeasureSummary
+from threetears.evals.contracts.analysis_measures import (
+    BarAdjudication,
+    BarDecision,
+    BarVerdict,
+    MeasureCollection,
+    MeasureSummary,
+)
 from threetears.evals.contracts.authored import (
     AuthoredAnalysis,
     Caveat,
@@ -391,6 +397,7 @@ __all__ = [
     "AttributionScope",
     "AuthoredAnalysis",
     "BarAdjudication",
+    "BarDecision",
     # What a bar name resolves to, and why one cannot carry a verdict: the structured answer an
     # adopter's own authoring surface shows before a design is submitted, and what it checks its
     # registered bars against — registration checks only that a bar's measure is declared and its

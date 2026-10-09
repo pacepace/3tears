@@ -41,6 +41,15 @@ freedom needs about 2.8.
 [stratum](reading-reports.md#results-by-kind-of-case-strata) or over a homogeneous population.
 *Evidence:* retrieval sub-agent, 5 cases, every arm, 2026-09, two cases scored 4–5 and three scored 3 under every configuration, so no arm cleared 4.0, single campaign.
 
+**A bar decides on the interval, against a margin, three ways.** Seeded at the incumbent's mean and read on a
+cell's mean, a bar fails the unchanged incumbent half the time. The engine reads the cell's interval against
+the threshold less the measure's materiality threshold: cleared when the whole interval is on the good side,
+missed when it is wholly on the bad side, undecided when it straddles. It seeds the threshold at the
+incumbent's mean moved √2 − 1 of the way to its interval's permissive end, which makes a miss of an
+unchanged incumbent measured on as many cases a one-sided test at the interval's 2.5%. On a handful of
+cases most verdicts are undecided, and that is the finding: the bank cannot tell.
+*Evidence:* seeded simulation (`tests/test_sim_bars_and_change.py`), σ = 1, one observation per case, no margin, 2026-10: the mean rule missed an unchanged incumbent 49–50% of the time at n = 3, 6 and 15. The three-way rule missed it 1.3%, 2.0% and 2.2% of the time and cleared it 21%, 19% and 21%; a candidate 1.6σ worse was cleared 1.6%, 0.05% and 0% of the time and missed 15%, 60% and 98%.
+
 ## Order and time
 
 **Launch compared arms together, and never let running order follow the lever.** Throughput and load

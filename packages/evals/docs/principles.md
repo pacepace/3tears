@@ -65,8 +65,9 @@ one case repeated has no interval.
 Each contrast against the control is `improved`, `regressed`, `not_separated` or `untested`, read off a
 Holm-adjusted p within one family: one per declared question, or one campaign-wide. Twenty uncorrected
 tests find a chance "winner" more often than not. False-discovery control across a history of campaigns and
-sequential testing stay out. The two-run change helper still calls a sub-threshold move `flat`
-([open problems](open-problems.md)); the figures behind these rules are in
+sequential testing stay out. The run-history read follows the same rule: a step that misses significance is
+`not_separated`, and "no meaningful change" (`equivalent`) is claimed only by an equivalence test (TOST)
+against the measure's declared margin, its materiality threshold. The figures behind these rules are in
 [measuring soundly](measuring-soundly.md).
 
 **Trust in a judge is measured, not asserted, and nothing waits for calibration.**
@@ -77,10 +78,12 @@ self-consistency measures precision, not accuracy.
 
 **Bars start where the incumbent performs ("never ship worse than what runs today") and only tighten.**
 A proposed bar is never adopted
-automatically, and one looser than the registered bar is refused. The engine still seeds a proposal from
-the incumbent's mean and clears a bar on a cell's mean; the intended rule is the interval against a
-declared margin, since a bar at the mean fails an unchanged incumbent about half the time
-([open problems](open-problems.md)).
+automatically, and one looser than the registered bar is refused. A bar decides by the interval against the
+measure's declared margin, never the mean, and three ways: cleared when the whole interval sits on the good
+side of the threshold less the margin, missed when it sits wholly on the bad side, and undecided when it
+straddles the line, which is neither a pass nor a failure. A proposal seeds the threshold at the incumbent's
+mean, moved by the share of its interval its own error accounts for. A bar at the mean, read on a cell's
+mean, failed an unchanged incumbent about half the time.
 
 **What an arm would cost in production and what it cost to measure are kept apart.**
 Spend is recorded per role: the candidate's calls and the work they start are what production would pay;
@@ -122,11 +125,10 @@ would govern users that do not exist.
 Its model-driven parts are subjects, and every chain of evaluation should end in a code check or a human
 label. The analysis writer has a kind, and a judge's self-agreement is measured by repeating its scores. The statistics
 are tested against seeded data with a known truth at the sample sizes the engine sees (2–15 cases, 1–5 repeats):
-the `test_simulated_*` files in `tests/`, on the generators and reference answers in `tests/simulation_support.py`.
-They check interval coverage, false-positive rates, power, family-wise error and estimator bias, and each
-property the engine misses stays in the suite as a strict `xfail` stating the measured rate against the nominal.
-A single reading's interval, pass^k, bars and the history read are not in it yet
-([open problems](open-problems.md)).
+the `test_simulated_*` and `test_sim_*` files in `tests/`, on the generators and reference answers in
+`tests/simulation_support.py`. They check interval coverage, false-positive rates, power, family-wise error and
+estimator bias, and each property the engine misses stays in the suite as a strict `xfail` stating the measured rate
+against the nominal.
 
 **A run's memory should scale with its matrix, never with how much a cell produced.**
 How talkative a candidate is should not decide whether a run survives. Nothing measures this yet.

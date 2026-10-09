@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, computed_field, model_validator
 
 from threetears.evals.contracts.metrics import AttributionScope, MeasurePopulation, MeritAxis
 from threetears.evals.contracts.base import EvalDocumentModel
@@ -217,6 +217,10 @@ class MeasureCollection(EvalDocumentModel):
     )
 
 
+#: What a bar's verdict on one cell came to — see :attr:`BarVerdict.decision`.
+BarDecision = Literal["cleared", "missed", "undecided", "no_interval", "no_data"]
+
+
 class BarVerdict(EvalDocumentModel):
     """Whether one cell cleared one bar — computed here, never by the reader.
 
@@ -231,6 +235,13 @@ class BarVerdict(EvalDocumentModel):
     in neither its value nor its ``n``. Its ``n_infra_excluded`` still counts only the faults; the
     failures left out are the cell's ``n_no_turn``. A cell where no result took a turn carries no value,
     and its verdict is ``no data``, never a clearance on a refusal's round trip.
+
+    **The verdict is decided by the interval against the measure's declared margin, never the mean**
+    (:func:`~threetears.evals.analysis.stats.interval_clears`), and it has three outcomes: cleared (the
+    whole interval on the good side of the threshold less the margin), missed (the whole interval on the
+    bad side), and undecided (the interval straddles it). Undecided is neither a pass nor a failure. A
+    cell with a value but no interval (fewer than two observations) is not read at all. ``decision``
+    names which of these, or the two absences, a verdict is.
     """
 
     variant_key: str = Field(
@@ -278,10 +289,67 @@ class BarVerdict(EvalDocumentModel):
             "it — left out of the value, and not a fault. Zero for every other bar."
         ),
     )
+    ci_low: float | None = Field(
+        default=None,
+        description=(
+            "Low bound of the interval on `value` the verdict was decided on — the cell's own interval on the "
+            "measure, as its summary states it. None below two observations, and on a verdict stored before bars "
+            "read intervals."
+        ),
+    )
+    ci_high: float | None = Field(
+        default=None, description="High bound of that interval. None exactly when `ci_low` is."
+    )
+    margin: float | None = Field(
+        default=None,
+        description=(
+            "The measure's declared margin the bar was read with, in its units — its materiality threshold, the "
+            "difference too small to act on. None when it declares none: the bar is then held at the threshold "
+            "itself."
+        ),
+    )
     cleared: bool | None = Field(
         default=None,
-        description="Whether the value reaches the threshold in the bar's direction. None when the cell carries no observation — unknown, never failed.",
+        description=(
+            "True — cleared: the whole interval lies on the good side of the threshold less the margin, so the "
+            "cell is shown no worse than the bar by more than the margin. False — missed: the whole interval lies "
+            "on the bad side, so it is shown to fall short by more than the margin. None — no decision: the "
+            "interval straddles the line (undecided), the cell has a value but no interval (fewer than two "
+            "observations), or no observation. `decision` says which; none of the three is a pass or a failure. "
+            "A stored verdict with `cleared` set and no interval predates interval verdicts: it was the cell's "
+            "mean against the threshold, with no margin — read it as that point comparison "
+            "(`decided_on_the_mean`)."
+        ),
     )
+
+    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
+        description=(
+            "The verdict as one word: `cleared`, `missed`, `undecided` (the interval straddles the threshold "
+            "less the margin — neither a pass nor a failure), `no_interval` (a value from fewer than two "
+            "observations, which is not read) or `no_data` (no observation). Derived from `cleared`, `value` and "
+            "the interval, so it cannot disagree with them."
+        )
+    )
+    @property
+    def decision(self) -> BarDecision:
+        """Which of the five a verdict is — the word every render branches on, never ``cleared`` alone."""
+        if self.cleared is not None:
+            return "cleared" if self.cleared else "missed"
+        if self.value is None:
+            return "no_data"
+        if self.ci_low is None or self.ci_high is None:
+            return "no_interval"
+        return "undecided"
+
+    @property
+    def decided_on_the_mean(self) -> bool:
+        """Whether this is a stored verdict from before bars read intervals: decided, with no interval.
+
+        Every verdict decided now is decided on an interval, so a decision with none can only have been
+        the old point comparison — the cell's mean against the threshold. Read structurally rather than
+        from a stored flag, so an analysis frozen before the change needs no migration to say so.
+        """
+        return self.cleared is not None and (self.ci_low is None or self.ci_high is None)
 
 
 class BarAdjudication(EvalDocumentModel):
@@ -333,6 +401,7 @@ class BarAdjudication(EvalDocumentModel):
 
 __all__ = [
     "BarAdjudication",
+    "BarDecision",
     "BarVerdict",
     "MeasureCollection",
     "MeasureSummary",

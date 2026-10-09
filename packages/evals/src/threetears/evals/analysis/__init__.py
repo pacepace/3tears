@@ -186,7 +186,7 @@ from threetears.evals.analysis.service import (
     reporter_case_bank,
     run_analysis_generation,
 )
-from threetears.evals.analysis.stats import PAIRED_TEST_NAME
+from threetears.evals.analysis.stats import EQUIVALENCE_TEST_NAME, PAIRED_TEST_NAME, ChangeLabel
 from threetears.evals.analysis.surface_table import SurfaceTable
 from threetears.evals.analysis.arms import ArmLevel, ArmMeasurement, ArmRow, ArmStatus
 from threetears.evals.analysis.bundle import (
@@ -305,6 +305,7 @@ __all__ = [
     "COST_PREDICTION_METHOD",
     "DECLARED_INPUT_ORIGIN",
     "DEFAULT_WEIGHTING",
+    "EQUIVALENCE_TEST_NAME",
     "EVAL_ANALYSIS_GEN_DEFAULT",
     "HISTORY_METRICS",
     "LABEL_BANDS",
@@ -336,6 +337,7 @@ __all__ = [
     "CaseSetIdentity",
     "Cell",
     "CellCoordinate",
+    "ChangeLabel",
     "ComparedCell",
     "ComparisonColumns",
     "ComparisonFamily",

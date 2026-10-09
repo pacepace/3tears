@@ -86,8 +86,11 @@ def cell(model: str | None = None, *, variant: str | None = None, rig: str = RIG
     return CellFacts(**{**defaults, **overrides})
 
 
-def verdict(of: CellFacts, value: float | None, sem: float | None, cleared: bool | None) -> BarVerdict:
-    """A bar verdict on the cell ``of``."""
+def verdict(
+    of: CellFacts, value: float | None, sem: float | None, cleared: bool | None, *, interval: bool = True
+) -> BarVerdict:
+    """A bar verdict on the cell ``of`` — decided on an interval around the value, unless ``interval`` is False."""
+    bounds = value is not None and interval
     return BarVerdict(
         variant_key=of.variant_key,
         apparatus_class_id=of.apparatus_class_id,
@@ -96,6 +99,8 @@ def verdict(of: CellFacts, value: float | None, sem: float | None, cleared: bool
         sem=sem,
         n=0 if value is None else 6,
         n_independent=0 if value is None else 2,
+        ci_low=value - 1.0 if bounds and value is not None else None,
+        ci_high=value + 1.0 if bounds and value is not None else None,
         cleared=cleared,
     )
 
@@ -449,6 +454,28 @@ class TestBarColumns:
         assert value.verdict == word
         assert value.verdict_word == said
         assert value.model_dump(mode="json")["verdict_word"] == said
+
+    def test_an_interval_straddling_the_bar_reads_undecided_never_clears(self) -> None:
+        """An interval across the line is neither a pass nor a failure, and the word says so (#593)."""
+        surface = two_arm_surface()
+        surface.bars[0].verdicts = [verdict(c, 3.5, 0.25, None) for c in surface.cells]
+        value = build_surface_table(analysis(surface)).rows[0].values[0]
+        assert (value.verdict, value.verdict_word) == ("undecided", "undecided")
+
+    def test_a_value_with_no_interval_is_not_read_and_not_no_data(self) -> None:
+        """One observation has a value and no interval: the bar read nothing, and says which nothing (#593)."""
+        surface = two_arm_surface()
+        surface.bars[0].verdicts = [verdict(c, 3.5, None, None, interval=False) for c in surface.cells]
+        value = build_surface_table(analysis(surface)).rows[0].values[0]
+        assert (value.verdict, value.verdict_word) == ("no_interval", "no interval")
+
+    def test_a_verdict_stored_before_intervals_says_it_was_decided_on_the_mean(self) -> None:
+        """An analysis frozen before bars read intervals keeps its word and is marked as the point comparison it was."""
+        surface = two_arm_surface()
+        surface.bars[0].verdicts = [verdict(c, 3.5, 0.25, True, interval=False) for c in surface.cells]
+        value = build_surface_table(analysis(surface)).rows[0].values[0]
+        assert value.verdict == "clears"
+        assert value.text == "3.5 ± 0.25 (n=6), decided on the mean"
 
     def test_a_merit_value_carries_no_verdict_word(self) -> None:
         table = build_surface_table(analysis(two_arm_surface()))

@@ -1029,7 +1029,9 @@ def engine_actions() -> tuple[Action, ...]:
             detail=(
                 "A contestant is one resolved configuration within a subject, so a step is a re-run of the same "
                 "thing. Each step against the previous point carries a verdict and the test it rests on; a step "
-                "where the suite changed is marked so a new denominator does not read as a regression."
+                "where the suite changed is marked so a new denominator does not read as a regression. A step that "
+                "misses significance reads not_separated, never no change; only an equivalence test against the "
+                "measure's declared materiality threshold reads equivalent."
             ),
         ),
         Action(

@@ -243,8 +243,11 @@ class TestPairedChange:
         )
         assert verdict.label == "regressed"
 
-    def test_a_significant_but_tiny_change_is_flat_not_flagged(self) -> None:
-        """The joint gate: significance alone must not flag when the move is below threshold."""
+    def test_a_significant_but_tiny_change_is_below_threshold_not_flagged(self) -> None:
+        """The joint gate: significance alone must not flag when the move is below threshold.
+
+        Nor is it "no change": the move is separated from zero, so it reads ``below_threshold`` (#592).
+        """
         verdict = paired_change(
             [0.800] * 6,
             [0.810] * 6,
@@ -254,7 +257,7 @@ class TestPairedChange:
         )
         assert verdict.significant is True
         assert verdict.exceeds_threshold is False
-        assert verdict.label == "flat"
+        assert verdict.label == "below_threshold"
 
     def test_relative_threshold_can_flag_when_absolute_would_not(self) -> None:
         """A small absolute move on a small baseline is a large relative one."""
@@ -296,7 +299,7 @@ class TestPairedChange:
         )
         assert verdict.significant is True
         assert verdict.exceeds_threshold is False
-        assert verdict.label == "flat"
+        assert verdict.label == "below_threshold"
 
     def test_a_deterministic_uniform_decline_is_significant_not_inconclusive(self) -> None:
         """Every case dropping by the same amount is the strongest regression, not the weakest.
@@ -371,15 +374,14 @@ class TestPairedChange:
         assert 2.0 ** (1 - n) <= SIGNIFICANCE_ALPHA
         assert 2.0 ** (1 - (n - 1)) > SIGNIFICANCE_ALPHA
 
-    def test_a_deterministic_no_change_is_flat_not_inconclusive(self) -> None:
-        """Two identical paired samples (>= 2 pairs) are a *measured* no-change → 'flat'.
+    def test_a_deterministic_no_change_is_not_separated_not_inconclusive(self) -> None:
+        """Two identical paired samples (>= 2 pairs) are measured, and read 'not_separated' without a margin.
 
         Zero difference-variance makes the paired t-test undefined, but a perfect
         no-change is a definite result, not too-few-data: ``composite_significance``
-        reports it as ``(0.0, not-significant)`` and the verdict reads 'flat'.
-        'inconclusive' is reserved for fewer than two pairs — a
-        no-change with two or more pairs was tested and came back flat, and must
-        never masquerade as untestable.
+        reports it as ``(0.0, not-significant)``. 'inconclusive' is reserved for
+        fewer than two pairs. Three identical pairs with no declared margin still
+        claim no stability: only an equivalence test against a margin may (#592).
         """
         verdict = paired_change(
             [0.5, 0.5, 0.5],
@@ -388,12 +390,12 @@ class TestPairedChange:
             min_relative_change=0.10,
             higher_is_better=True,
         )
-        assert verdict.label == "flat"
+        assert verdict.label == "not_separated"
         assert verdict.significant is False
         assert verdict.delta == 0.0
         assert verdict.n_pairs == 3
 
-    def test_fewer_than_two_pairs_is_inconclusive_never_flat(self) -> None:
+    def test_fewer_than_two_pairs_is_inconclusive_never_a_measured_reading(self) -> None:
         """One pair cannot be tested; it must not masquerade as a measured 'no change'."""
         verdict = paired_change([0.8], [0.4], min_absolute_change=0.0, min_relative_change=0.0, higher_is_better=True)
         assert verdict.label == "inconclusive"
@@ -453,6 +455,80 @@ class TestPairedChange:
         assert verdict.delta == pytest.approx(-0.40)
         assert verdict.relative_delta == pytest.approx(-0.50)
         assert verdict.n_pairs == 4
+
+
+class TestEquivalence:
+    """The TOST against the measure's declared margin — the only route to a claim of no meaningful change (#592)."""
+
+    @staticmethod
+    def _change(baseline: list[float], current: list[float], *, margin: float | None, gate: float = 0.0):
+        return paired_change(
+            baseline,
+            current,
+            min_absolute_change=gate,
+            min_relative_change=0.0,
+            higher_is_better=True,
+            equivalence_margin=margin,
+        )
+
+    @pytest.mark.parametrize(
+        "diffs",
+        [
+            [0.01, -0.02, 0.0, 0.015, -0.005],
+            [0.05, 0.09, 0.02, 0.07, 0.04, 0.06],
+            [0.2, -0.3, 0.1, 0.4, -0.2],
+            [0.08, 0.11, 0.09],
+        ],
+        ids=["centred", "near the edge", "noisy", "three pairs"],
+    )
+    def test_equivalent_exactly_when_the_ninety_percent_interval_sits_inside_the_margin(self, diffs) -> None:
+        """TOST at α is the (1 − 2α) interval inside ± the margin — pinned through that duality, not a copy of the formula."""
+        margin = 0.1
+        n = len(diffs)
+        mean = sum(diffs) / n
+        sd = math.sqrt(sum((d - mean) ** 2 for d in diffs) / (n - 1))
+        half = t_critical_two_sided(1 - 2 * SIGNIFICANCE_ALPHA, n - 1) * sd / math.sqrt(n)
+        inside = -margin < mean - half and mean + half < margin
+
+        verdict = self._change([0.5] * n, [0.5 + d for d in diffs], margin=margin)
+
+        assert verdict.equivalence_p is not None and verdict.equivalence_margin == margin
+        assert (verdict.equivalence_p < SIGNIFICANCE_ALPHA) is inside
+        assert (verdict.label == "equivalent") is (inside and not verdict.significant)
+
+    def test_a_significant_move_under_the_gate_and_inside_the_margin_reads_equivalent(self) -> None:
+        """A real but immaterial move, precisely measured: the one shape that earns 'no meaningful change'."""
+        verdict = self._change([0.80] * 6, [0.81, 0.812, 0.808, 0.811, 0.809, 0.81], margin=0.05, gate=0.05)
+
+        assert verdict.significant is True and verdict.exceeds_threshold is False
+        assert verdict.label == "equivalent"
+
+    def test_without_a_margin_no_test_runs_and_no_label_claims_equivalence(self) -> None:
+        verdict = self._change([0.80] * 6, [0.81, 0.812, 0.808, 0.811, 0.809, 0.81], margin=None, gate=0.05)
+
+        assert verdict.label == "below_threshold"
+        assert verdict.equivalence_p is None and verdict.equivalence_margin is None
+
+    def test_a_directional_label_the_gate_earns_is_kept_and_its_equivalence_p_still_carried(self) -> None:
+        """With the gate off, a significant move is flagged even inside the margin — the caller asked for it — and the TOST p rides along."""
+        verdict = self._change([0.80] * 6, [0.81, 0.812, 0.808, 0.811, 0.809, 0.81], margin=0.05)
+
+        assert verdict.label == "improved"
+        assert verdict.equivalence_p is not None and verdict.equivalence_p < SIGNIFICANCE_ALPHA
+
+    @pytest.mark.parametrize(("n_pairs", "label"), [(5, "not_separated"), (6, "equivalent")])
+    def test_identical_samples_are_equivalent_only_from_the_pair_floor(self, n_pairs, label) -> None:
+        """Zero spread has no t; the deterministic-gap floor governs it, so a coincidence of a coarse scale is not a finding."""
+        verdict = self._change([0.5] * n_pairs, [0.5] * n_pairs, margin=0.05)
+
+        assert verdict.label == label
+        assert verdict.equivalence_p is None
+
+    def test_fewer_than_two_pairs_runs_no_equivalence_test(self) -> None:
+        verdict = self._change([0.5], [0.5], margin=0.05)
+
+        assert verdict.label == "inconclusive"
+        assert verdict.equivalence_p is None
 
 
 class TestTCriticalTwoSided:
