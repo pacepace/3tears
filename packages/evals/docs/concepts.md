@@ -2,7 +2,8 @@
 
 Read this when a word in the README or a guide stops you. It draws one picture of how the pieces relate,
 then defines every term of art the docs use, in plain words, with one running example. Nothing here
-assumes you have built an eval before.
+assumes you have built an eval before. Why the pieces are shaped this way is in
+[Design rationale](design-rationale.md) and [The world model](world-model.md).
 
 **The running example.** You own a support-ticket triage classifier: it reads a ticket's subject and body
 and picks one queue, `billing`, `bug`, `account` or `other`. You have a prompt in production (call it v1),
@@ -124,7 +125,8 @@ A stateful environment the subject acts in, declared on the profile (`WorldRegis
 cell as a `WorldSession`. Seeded before the first turn and read back after the last. A classifier has none.
 *Example:* for a support *agent* (not the classifier), a ticketing system whose open tickets it can close.
 In `run_eval`, a `World` of `Dimension`s and `WorldTool`s, each case's starting state (`seed=`) and
-goal-state checks (`goal_checks=`): see `examples/world.py`.
+goal-state checks (`goal_checks=`): see `examples/world.py`. Why a subject runs in a seeded world at all:
+[The world model](world-model.md).
 
 ### What you vary, and what must hold still
 
