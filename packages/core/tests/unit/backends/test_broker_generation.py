@@ -8,8 +8,10 @@ The contract this pins (epoch-task-06, stage 2):
 - a token belongs to its commit: a later write's reply, naming generations or not, ends it;
 - every door that commits carries it: ``l3.query`` (an execute, or a fetch with ``RETURNING``),
   ``l3.batch`` and ``l3.tx.commit``; a rolled-back transaction, or a refused commit, hands out none;
-- a reply from a broker built before generations still works for the pod, and a switched-on
-  collection's advance then raises rather than claim an advance nobody made;
+- a reply carrying no generations field at all says the broker advanced nothing (a broker built
+  before generations, or a hub not yet holding the table switched on): the pod still writes, its
+  advance returns no token and its rows name no generation, with one warning per table; a reply
+  that names generations and not the table, or lists it failed, still raises;
 - a reply whose write committed and whose advance failed is still a success, so nothing retries
   the write, and the collection's advance raises :class:`GenerationUnavailableError`;
 - each task is handed its own commit's token, never another's;
@@ -201,8 +203,7 @@ class TestNothingIsHandedOutForWhatDidNotCommit:
         proxy = _Broker(_wrote("inc:2"), {"success": True, "row_count": 1}).proxy()
         await proxy.execute("DELETE FROM group_members")
         await proxy.execute("DELETE FROM group_members")
-        with pytest.raises(GenerationUnavailableError, match="named no write generation"):
-            await BrokerGenerationSource().advance(_TABLE)
+        assert await BrokerGenerationSource().advance(_TABLE) is None
 
     async def test_a_later_transaction_commit_naming_nothing_ends_it_too(self) -> None:
         broker = _Broker(_wrote("inc:2"), {"success": True, "tx_id": _TX_ID}, {"success": True})
@@ -210,8 +211,7 @@ class TestNothingIsHandedOutForWhatDidNotCommit:
         await proxy.execute("DELETE FROM group_members")
         async with proxy.transaction():
             pass
-        with pytest.raises(GenerationUnavailableError, match="named no write generation"):
-            await BrokerGenerationSource().advance(_TABLE)
+        assert await BrokerGenerationSource().advance(_TABLE) is None
 
     async def test_a_read_in_between_leaves_the_commits_token(self) -> None:
         proxy = _Broker(_wrote("inc:2"), {"success": True, "rows": []}).proxy()
@@ -241,10 +241,42 @@ class TestABrokerBuiltBeforeGenerations:
         assert await proxy.fetch("SELECT id FROM group_members") == [{"id": "m1"}]
         assert await proxy.execute("DELETE FROM group_members") == "DELETE 3"
 
-    async def test_a_switched_on_advance_after_it_raises(self) -> None:
+    async def test_a_switched_on_advance_after_it_is_told_nothing_was_advanced(self) -> None:
+        # owner, 2026-10-08: a pod switched on ahead of its hub still writes; raising would make
+        # every hub release before any pod, which is lockstep
         await _Broker({"success": True, "row_count": 1}).proxy().execute("DELETE FROM group_members")
-        with pytest.raises(GenerationUnavailableError, match="older than write generations"):
+        assert await BrokerGenerationSource().advance(_TABLE) is None
+
+    async def test_it_is_warned_about_once_per_table(self, caplog: pytest.LogCaptureFixture) -> None:
+        from threetears.core.backends import broker_generation  # noqa: PLC0415 -- the once-per-table record
+
+        broker_generation._WARNED_UNADVANCED.discard(_TABLE)
+        proxy = _Broker({"success": True, "row_count": 1}, {"success": True, "row_count": 1}).proxy()
+        with caplog.at_level("WARNING"):
+            await proxy.execute("DELETE FROM group_members")
+            assert await BrokerGenerationSource().advance(_TABLE) is None
+            await proxy.execute("DELETE FROM group_members")
+            assert await BrokerGenerationSource().advance(_TABLE) is None
+        warned = [r for r in caplog.records if "advanced no write generation" in r.getMessage()]
+        assert len(warned) == 1
+
+    async def test_a_broker_that_names_generations_and_not_the_table_still_raises(self) -> None:
+        await _Broker({"success": True, "row_count": 1, GENERATIONS_REPLY_FIELD: {}}).proxy().execute(
+            "DELETE FROM group_members"
+        )
+        with pytest.raises(GenerationUnavailableError, match="named no write generation"):
             await BrokerGenerationSource().advance(_TABLE)
+
+    async def test_a_task_that_committed_nothing_still_raises(self) -> None:
+        with pytest.raises(GenerationUnavailableError, match="named no write generation"):
+            await BrokerGenerationSource().advance(_TABLE)
+
+    async def test_a_switched_on_collections_row_names_no_generation(self) -> None:
+        bus = FakeNatsClient()
+        members = _pod(_SwitchedOnBrokeredMembers, _Broker({"success": True, "row_count": 1}), bus)
+        await members.save_entity(members.create({"id": "m1"}))
+        (message,) = _messages(bus)
+        assert (message.ids, message.generation, message.bump_rows) == (["m1"], None, None)
 
 
 class TestAFailedAdvanceAfterACommittedWrite:
