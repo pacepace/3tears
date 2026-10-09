@@ -87,10 +87,12 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Annotated, Final
 from uuid import UUID, uuid7
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_serializer
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_serializer
 from threetears.nats.errors import RequestError
 from threetears.nats.subjects import Subjects
 from threetears.observe import get_logger
+
+from threetears.datasources.geo_config import layer_name_fits
 
 if TYPE_CHECKING:
     from threetears.nats import NatsClient
@@ -213,6 +215,20 @@ def generations_to_delete(stamped: Iterable[int], *, version: int, previous: int
     return frozenset(stamped) - {version, previous}
 
 
+def _fitting_layer_name(name: str) -> str:
+    """refuse a reported layer name no layer may have, before it reaches the hub.
+
+    :param name: the layer's name as reported
+    :ptype name: str
+    :return: the name, unchanged
+    :rtype: str
+    :raises ValueError: when :func:`~threetears.datasources.geo_config.layer_name_fits` refuses it
+    """
+    if not layer_name_fits(name):
+        raise ValueError(f"layer name {name!r} is not one any layer may have (layer_name_fits)")
+    return name
+
+
 class GeoLayersReloadedRequest(BaseModel):
     """a tool pod's report that it has written a new generation of some layers' shapes.
 
@@ -230,7 +246,7 @@ class GeoLayersReloadedRequest(BaseModel):
     identity_token: SecretStr
     correlation_id: UUID
     generations: Annotated[
-        dict[Annotated[str, Field(min_length=1)], Annotated[int, Field(ge=1)]],
+        dict[Annotated[str, AfterValidator(_fitting_layer_name)], Annotated[int, Field(ge=1)]],
         Field(min_length=1, max_length=MAX_RELOADED_LAYERS),
     ]
 

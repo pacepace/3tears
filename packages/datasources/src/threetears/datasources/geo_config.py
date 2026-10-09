@@ -33,7 +33,7 @@ from enum import StrEnum
 from collections.abc import Collection, Mapping
 from typing import Any, Final
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from threetears.core.http_cache import CacheClass as CacheClassConfig
 
@@ -46,21 +46,38 @@ __all__ = [
     "GeometryConfig",
     "GeometryKind",
     "MeasureAggregation",
+    "MAX_LAYER_NAME_LENGTH",
+    "WRITE_CONTEXT",
     "layer_name_fits",
 ]
 
-#: what a layer name may be: ASCII letters, digits, ``-`` and ``_``, at least one. explicit ASCII
-#: classes rather than ``\w``, which would admit any Unicode letter or digit.
-_LAYER_NAME: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9_-]+")
+#: the longest a layer name may be. the name is a NATS subject token, a KV key part, a tile URL
+#: path segment and a config row key; every name in use is under 60 characters.
+MAX_LAYER_NAME_LENGTH: Final = 128
+
+#: what a layer name may be: ASCII letters, digits, ``-`` and ``_``, one to
+#: :data:`MAX_LAYER_NAME_LENGTH`. explicit ASCII classes rather than ``\w``, which would admit any
+#: Unicode letter or digit.
+_LAYER_NAME: Final[re.Pattern[str]] = re.compile(rf"[A-Za-z0-9_-]{{1,{MAX_LAYER_NAME_LENGTH}}}")
+
+#: the validation context a writer passes to refuse an unfit layer name:
+#: ``GeoConfig.model_validate(data, context=WRITE_CONTEXT)`` (or :meth:`GeoConfig.for_write`)
+WRITE_CONTEXT: Final = {"geo_layer_names": "refuse"}
 
 
 def layer_name_fits(name: str) -> bool:
-    """whether ``name`` can name a geo layer: ASCII letters, digits, ``-`` and ``_``, and not empty.
+    """whether ``name`` can name a geo layer: ASCII letters, digits, ``-`` and ``_``, 1 to 128 of them.
 
-    a layer's name becomes one token of a NATS subject -- the epoch that carries its tile version
-    -- where a ``.`` would split the token, ``*`` and ``>`` are wildcards, and whitespace ends the
-    subject. it is also a path segment of the tile URL. :class:`GeoLayerConfig` refuses any other
-    name when it is written; this is the same rule for a caller holding only the name.
+    a layer's name becomes one token of the NATS subject that carries its tile version. the subject
+    builder maps ``.`` to ``-`` (``Subjects.datasource_tile_epoch``), so ``a.b`` would share
+    ``a-b``'s version rather than fail, and it does nothing about ``*``, ``>`` or whitespace, which
+    make no usable subject. it is also a path segment of the tile URL and a KV key part.
+
+    **Strict on write, lenient on read.** A declaration being written is refused when a layer's name
+    does not fit (:meth:`GeoConfig.for_write`, or the :data:`WRITE_CONTEXT` validation context). A
+    stored declaration read back is not: one bad name would otherwise make the whole config, and the
+    datasource around it, unreadable. A reader leaves out only the unfit layer and says so
+    (:meth:`GeoConfig.unfit_layer_names`).
 
     :param name: the layer's name
     :ptype name: str
@@ -223,19 +240,26 @@ class GeoLayerConfig(BaseModel):
 
     @field_validator("name")
     @classmethod
-    def name_fits_a_subject(cls, name: str) -> str:
-        """refuse a name that cannot be one token of a NATS subject.
+    def name_fits_a_subject(cls, name: str, info: ValidationInfo) -> str:
+        """refuse, on write, a name that cannot be one token of a NATS subject.
+
+        Only a writer refuses (the :data:`WRITE_CONTEXT` validation context): a stored declaration
+        read back keeps the layer, for the reader to leave out and name
+        (:meth:`GeoConfig.unfit_layer_names`).
 
         :param name: the declared name
         :ptype name: str
+        :param info: the validation's context
+        :ptype info: ValidationInfo
         :return: the name, unchanged
         :rtype: str
-        :raises ValueError: when the name is not ASCII letters, digits, ``-`` and ``_``
+        :raises ValueError: on write, when the name is not 1 to 128 ASCII letters, digits, ``-`` and ``_``
         """
-        if not layer_name_fits(name):
+        context = info.context if isinstance(info.context, dict) else {}
+        if context.get("geo_layer_names") == "refuse" and not layer_name_fits(name):
             raise ValueError(
-                f"layer name {name!r} must be one or more ASCII letters, digits, '-' and '_' only: it becomes "
-                f"a token of the layer's NATS subject and a tile URL path segment"
+                f"layer name {name!r} must be 1 to {MAX_LAYER_NAME_LENGTH} ASCII letters, digits, '-' and '_' "
+                f"only: it becomes a token of the layer's NATS subject and a tile URL path segment"
             )
         return name
 
@@ -346,6 +370,26 @@ class GeoConfig(BaseModel):
                     f"geo layer {layer.name!r} reads column(s) {', '.join(missing)} that table "
                     f"{layer.table!r} does not declare"
                 )
+
+    @classmethod
+    def for_write(cls, data: Any) -> GeoConfig:
+        """the ``geo:`` block as a writer validates it: an unfit layer name is refused.
+
+        :param data: the block as declared
+        :ptype data: Any
+        :return: the config
+        :rtype: GeoConfig
+        :raises pydantic.ValidationError: when the block is invalid, an unfit layer name included
+        """
+        return cls.model_validate(data, context=WRITE_CONTEXT)
+
+    def unfit_layer_names(self) -> list[str]:
+        """the layers whose names :func:`layer_name_fits` refuses, sorted: what a reader leaves out.
+
+        :return: the names
+        :rtype: list[str]
+        """
+        return sorted(layer.name for layer in self.layers if not layer_name_fits(layer.name))
 
     def layer(self, name: str) -> GeoLayerConfig | None:
         """return a declared layer by name.
