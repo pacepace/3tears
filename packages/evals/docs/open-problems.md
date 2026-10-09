@@ -20,8 +20,8 @@ with `n_cases − 1` degrees of freedom, or Miller's cluster-robust form, and dr
 
 ### pass^k is the all-pass indicator, stored under the opposite name
 
-`compute_pass_k` (`contracts/scoring.py`) counts a case as passing when every scored repeat passed. At
-uniform depth that is unbiased; a run stopped early leaves mixed depths, which flatter the shallow cases,
+`compute_pass_k` (`contracts/scoring.py`) is the all-pass indicator per case, averaged: a case passes when
+every scored repeat passed. At uniform depth that is unbiased; a run stopped early leaves mixed depths, which flatter the shallow cases,
 and the engine discloses the depth range rather than correcting. Grouping is per run, so repeat runs
 cannot add depth. The stored key is `pass_at_k`, which elsewhere
 means "at least one of k" (Chen et al. 2021): the opposite quantity. Fix: the τ-bench estimator
@@ -97,7 +97,7 @@ A" is exactly the pairwise case.
 
 ## Host contract
 
-### A shared third-party quota can still be exhausted
+### A shared third-party quota can still be exhausted (accepted limit)
 
 The per-run metered-call ceiling (`run/metering.py`) refuses calls past a run's limit. It is in memory
 and per run, so concurrent runs, out-of-run calls and the host's live traffic can exhaust one provider
