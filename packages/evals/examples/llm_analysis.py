@@ -190,6 +190,8 @@ async def main(out_dir: Path = Path("eval-analysis")) -> list[EvalAnalysis]:
         print(f"\n# {analysis.document.headline}")
         for finding in analysis.document.findings:
             print(f"- {finding.title.rstrip('.')}: {finding.body}")  # every figure in the body was filled in by code
+        for decision in analysis.document.decisions:  # checked: adopting an arm needs a reading that separated
+            print(f"  decision ({decision.disposition}): {decision.proposal}")
         print(f"  bundle {made.bundle_fingerprint[:12]}, prompt {made.prompt_version[:12]}, ${made.token_cost:.4f}")
         refused = (made.repaired_refusal or "nothing").split(". ")[0]
         print(f"  repairs {made.repair_attempts}, after the check refused: {refused}")
