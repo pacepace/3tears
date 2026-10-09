@@ -311,7 +311,7 @@ stratum yet, so strata need cases stored as test cases, as a classifier kind's a
 
 ### Rung zero
 
-`run_eval` ([Rung zero](../README.md#rung-zero-one-call) in the README) runs a classifier function over a
+`run_eval` ([Your first eval](../README.md#your-first-eval) in the README) runs a classifier function over a
 list of cases in one call. Pass `expected=`, a function that returns the label a case expects, and `run_eval`
 grades the function as a classifier:
 

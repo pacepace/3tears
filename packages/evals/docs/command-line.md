@@ -2,7 +2,7 @@
 
 Read this to launch runs and read reports from a terminal, or to mount the same commands under your app's
 own CLI. Every command works in a host you already have; if you do not have one yet, start with the
-README's [Rung zero](../README.md#rung-zero-one-call), which needs none, then
+README's [Your first eval](../README.md#your-first-eval), which needs none, then
 [Adopting the engine](adopting-a-host.md).
 
 ## Commands

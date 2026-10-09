@@ -2,7 +2,7 @@
 
 This guide is for the developer wiring 3tears-evals into an app for real: your own storage, your own
 launch path, runs you can compare over weeks. If you only want to grade a function once, `run_eval` (the
-README's [Rung zero](../README.md#rung-zero-one-call)) builds all of this for you. Read
+README's [Your first eval](../README.md#your-first-eval)) builds all of this for you. Read
 [Concepts](concepts.md) first: this guide uses its terms (host, kind, lever, apparatus, scope, cell)
 without stopping to define them.
 
