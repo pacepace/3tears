@@ -1221,7 +1221,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
             "export_results and accepted as a pivot metric. Its dimension is a COORDINATE "
             "(rubric_dim), never part of the name, so pivoting it without rubric_dim on an axis pools "
             "every dimension into one number: two dims that disagree average to a score neither was "
-            f"given. NOT the composite, which rescales it to 0-1 ({_NORMALISED}) and averages across dims "
+            f"given. NOT the composite, which rescales it to 0-1 ({_NORMALISED}) and averages across capability dims "
             "on 0-1 — a 4 here is not a 4 there. And not a history measure: a series carries one "
             "value per contestant per run, and this is per dimension, so history series mean_composite "
             "instead."
@@ -1428,8 +1428,8 @@ _SEED: tuple[MetricDescriptor, ...] = (
         formula="mean over cases scored at least k times of C(c, k) / C(n, k), n scored attempts and c passes",
         description=(
             "pass^k (τ-bench): the chance that k attempts at a case ALL pass — never pass@k, the chance that at "
-            "least one does. An attempt passes only if it cleared every rubric dimension and every goal-state "
-            "check. Unbiased at any depth; infra-excluded attempts count toward no case's n."
+            "least one does. An attempt passes only if it cleared every capability rubric dimension and every "
+            "goal-state check; a boundary dimension is a guardrail and is decided apart. Unbiased at any depth; infra-excluded attempts count toward no case's n."
         ),
     ),
     _d(
@@ -1440,7 +1440,10 @@ _SEED: tuple[MetricDescriptor, ...] = (
         attribution_scope="end_to_end",
         higher_is_better=True,
         value_range=(0.0, 1.0),
-        formula=f"mean over cases of the per-case mean, across the result's rubric dims, of each score normalised to 0-1 ({_NORMALISED})",
+        formula=(
+            f"mean over cases of the per-case mean, across the result's capability rubric dims (a boundary dim is a "
+            f"guardrail and is never averaged in), of each score normalised to 0-1 ({_NORMALISED})"
+        ),
         description=(
             "Average judged quality, threshold-free — a regression often shows here before cases start "
             "failing pass^k. Comparable only across runs judged the same way."

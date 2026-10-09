@@ -3627,19 +3627,21 @@ class TwoPillarDisclosure(EvalBaseModel):
 
     The verdict definition requires clearing the bar on BOTH a capability axis
     and a boundary/robustness axis, so a cheap model that is brittle
-    off-distribution is disqualified rather than crowned cheapest. That second
-    pillar has no data path today — no scored rubric dim resolves to a rubric
-    axis — so it is descoped WITH disclosure rather than silently absent: an
-    operator must never mistake "nothing was disqualified" for "nothing was
-    checked". The frontier gains real disqualification when the axis reaches
-    results; until then this rides on the answer.
+    off-distribution is disqualified rather than crowned cheapest. A scored rubric
+    dim now carries its axis (``RubricScore.axis``), and the frontier's pass^k and
+    composite read capability dims only, so a boundary dim no longer moves them
+    either way. The boundary pillar is decided as guardrails — each arm against a
+    control, in the analysis bundle — and the frontier, which ranks contestants
+    against an absolute bar with no control, does not yet disqualify on it. So it is
+    still descoped WITH disclosure: an operator must never mistake "nothing was
+    disqualified" for "nothing was checked".
     """
 
     boundary_pillar_available: bool = False
-    verdict_rests_on: str = "capability pillar (pass^k) alone"
+    verdict_rests_on: str = "capability pillar (pass^k over capability criteria) alone"
     reason: str = (
-        "no scored rubric dim resolves to a rubric axis (capability|boundary), "
-        "so boundary-axis disqualification cannot be computed"
+        "boundary dimensions are left out of pass^k and the composite and decided as guardrails against a "
+        "control in the analysis bundle; the frontier does not disqualify a contestant on one"
     )
 
 
@@ -4590,8 +4592,9 @@ def compute_frontier(
 
     **Domination is decided by test, never read off point estimates** (:func:`_dominance_p`): a point is
     flagged dominated only when another is shown better on every axis it measured, the subject's pairs
-    Holm-adjusted together, and otherwise reads ``not_separated`` or ``untested``. Two-pillar disqualification is descoped with disclosure —
-    see :class:`TwoPillarDisclosure`.
+    Holm-adjusted together, and otherwise reads ``not_separated`` or ``untested``. pass^k and the composite read
+    capability dims only; boundary-pillar disqualification is descoped with disclosure — see
+    :class:`TwoPillarDisclosure`.
 
     The two skips :func:`project_score_records` makes — a result whose run is
     absent, and one whose run captured no subject — are mirrored here and returned

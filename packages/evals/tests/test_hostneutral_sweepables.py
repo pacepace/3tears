@@ -150,6 +150,10 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
     # 45/10: the frontier's pass^k is renamed `pass_hat_k`, estimated without bias and carried with its curve
     # and subject depth (#591); the apparatus partition is unchanged.
     ((45, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
+    # 46/10: guardrails (boundary judged dimensions and measures declared one) are decided apart from every
+    # comparison family, and the readings no declared question asks about are labelled exploratory; the apparatus
+    # partition is unchanged.
+    ((46, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
 )
 
 

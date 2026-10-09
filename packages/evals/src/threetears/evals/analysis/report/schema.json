@@ -19,7 +19,7 @@
           "type": "array"
         },
         "quantity": {
-          "description": "What the axis measures, as a reader is told it — the quantity, with its unit in parentheses where it has one.",
+          "description": "What the axis measures, as a reader is told it \u2014 the quantity, with its unit in parentheses where it has one.",
           "minLength": 1,
           "title": "Quantity",
           "type": "string"
@@ -288,7 +288,7 @@
           }
         }
       ],
-      "description": "A chart: a finding's (its intent, or why the stored chart cannot be drawn), or one code chose.\n\nA chart code chose — on a code-only report, one per measure the surface can draw — names no finding.",
+      "description": "A chart: a finding's (its intent, or why the stored chart cannot be drawn), or one code chose.\n\nA chart code chose \u2014 on a code-only report, one per measure the surface can draw \u2014 names no finding.",
       "else": {
         "properties": {
           "error": {
@@ -360,6 +360,7 @@
             "summary",
             "questions",
             "decisions",
+            "guardrails",
             "findings",
             "arms",
             "surface",
@@ -428,7 +429,7 @@
           "type": "string"
         },
         "uncoloured": {
-          "description": "Values of `field` deliberately given no slot — an absence (a lever a configuration never set) drawn in the neutral that carries no identity, rather than in a hue that would read as a value.",
+          "description": "Values of `field` deliberately given no slot \u2014 an absence (a lever a configuration never set) drawn in the neutral that carries no identity, rather than in a hue that would read as a value.",
           "items": {
             "type": "string"
           },
@@ -485,7 +486,7 @@
           "type": "string"
         },
         "role": {
-          "description": "What the field encodes — see `EncodingRole`.",
+          "description": "What the field encodes \u2014 see `EncodingRole`.",
           "enum": [
             "identity",
             "length",
@@ -526,7 +527,7 @@
           "type": "string"
         },
         "order": {
-          "description": "Every identity, in drawn order — stated, never left to a renderer to sort.",
+          "description": "Every identity, in drawn order \u2014 stated, never left to a renderer to sort.",
           "items": {
             "type": "string"
           },
@@ -556,7 +557,7 @@
     },
     "ChartIntent": {
       "additionalProperties": false,
-      "description": "One chart's intent: what it draws and what it must say, for any renderer to draw.\n\nSee the module docstring for the contract. A renderer may read ``payload`` for what a summary\ntable cannot hold — the raw observations a distribution draws as density — and reads everything\nelse from the fields below, which is what makes two renderers draw one chart.",
+      "description": "One chart's intent: what it draws and what it must say, for any renderer to draw.\n\nSee the module docstring for the contract. A renderer may read ``payload`` for what a summary\ntable cannot hold \u2014 the raw observations a distribution draws as density \u2014 and reads everything\nelse from the fields below, which is what makes two renderers draw one chart.",
       "properties": {
         "axes": {
           "description": "The rulers the chart measures against.",
@@ -621,7 +622,7 @@
           "type": "boolean"
         },
         "disclosures": {
-          "description": "What the chart must tell a reader that the author could not — one idea per line, in reading order.",
+          "description": "What the chart must tell a reader that the author could not \u2014 one idea per line, in reading order.",
           "items": {
             "type": "string"
           },
@@ -638,7 +639,7 @@
         },
         "footnote": {
           "default": "",
-          "description": "A note the figure carries with it — what it could not draw, in one sentence; empty when none.",
+          "description": "A note the figure carries with it \u2014 what it could not draw, in one sentence; empty when none.",
           "title": "Footnote",
           "type": "string"
         },
@@ -669,12 +670,12 @@
         },
         "payload": {
           "additionalProperties": true,
-          "description": "The type's validated data (the payload model for `type`), as JSON — the source the rest was decided from.",
+          "description": "The type's validated data (the payload model for `type`), as JSON \u2014 the source the rest was decided from.",
           "title": "Payload",
           "type": "object"
         },
         "references": {
-          "description": "Standards drawn across an axis — a quality bar the marks are held to.",
+          "description": "Standards drawn across an axis \u2014 a quality bar the marks are held to.",
           "items": {
             "$ref": "#/$defs/ChartReference"
           },
@@ -718,7 +719,7 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "A `class` field's values → the geometric symbol each is drawn as (`circle`, `diamond`, `cross`).",
+          "description": "A `class` field's values \u2192 the geometric symbol each is drawn as (`circle`, `diamond`, `cross`).",
           "title": "Shapes",
           "type": "object"
         },
@@ -767,7 +768,7 @@
     },
     "ChartReference": {
       "additionalProperties": false,
-      "description": "A standard drawn across one axis — the bar the marks are read against, not one of them.",
+      "description": "A standard drawn across one axis \u2014 the bar the marks are read against, not one of them.",
       "properties": {
         "axis": {
           "description": "The axis the standard is drawn across.",
@@ -797,7 +798,7 @@
     },
     "DisclosureBlock": {
       "additionalProperties": false,
-      "description": "Something code must tell the reader that no author wrote — one idea.",
+      "description": "Something code must tell the reader that no author wrote \u2014 one idea.",
       "properties": {
         "finding": {
           "anyOf": [
@@ -833,6 +834,7 @@
             "summary",
             "questions",
             "decisions",
+            "guardrails",
             "findings",
             "arms",
             "surface",
@@ -854,7 +856,9 @@
             "measurement",
             "apparatus",
             "comparisons",
-            "strata"
+            "strata",
+            "guardrails",
+            "scope"
           ],
           "title": "Source",
           "type": "string"
@@ -876,7 +880,7 @@
     },
     "Fact": {
       "additionalProperties": false,
-      "description": "A labelled fact code states beside an author's words — a confidence, a disposition, a tier.",
+      "description": "A labelled fact code states beside an author's words \u2014 a confidence, a disposition, a tier.",
       "properties": {
         "name": {
           "description": "What the fact is, e.g. `Confidence`.",
@@ -900,7 +904,7 @@
     },
     "ReportSource": {
       "additionalProperties": false,
-      "description": "What the report is a report of, and how that analysis was generated — or that none was.",
+      "description": "What the report is a report of, and how that analysis was generated \u2014 or that none was.",
       "properties": {
         "analysis_id": {
           "anyOf": [
@@ -1000,7 +1004,7 @@
     },
     "TableBlock": {
       "additionalProperties": false,
-      "description": "A table code laid out — its columns, its rows in their stated order, and how much of it is shown.",
+      "description": "A table code laid out \u2014 its columns, its rows in their stated order, and how much of it is shown.",
       "properties": {
         "columns": {
           "description": "The columns, in display order.",
@@ -1084,6 +1088,7 @@
             "summary",
             "questions",
             "decisions",
+            "guardrails",
             "findings",
             "arms",
             "surface",
@@ -1225,6 +1230,7 @@
             "summary",
             "questions",
             "decisions",
+            "guardrails",
             "findings",
             "arms",
             "surface",
@@ -1354,7 +1360,7 @@
   "description": "One analysis, as a document every surface renders. See the module docstring for the contract.",
   "properties": {
     "basis": {
-      "description": "`analysis` when the report renders a generated analysis; `code_only` when no analysis exists and the report is the campaign's evidence as code computed it — no headline, no findings, no author's words.",
+      "description": "`analysis` when the report renders a generated analysis; `code_only` when no analysis exists and the report is the campaign's evidence as code computed it \u2014 no headline, no findings, no author's words.",
       "enum": [
         "analysis",
         "code_only"
@@ -1393,7 +1399,7 @@
       "type": "array"
     },
     "finding_count": {
-      "description": "How many findings the document holds — the range every position is in.",
+      "description": "How many findings the document holds \u2014 the range every position is in.",
       "minimum": 0,
       "title": "Finding Count",
       "type": "integer"
@@ -1404,8 +1410,8 @@
       "type": "string"
     },
     "report_version": {
-      "const": 4,
-      "default": 4,
+      "const": 5,
+      "default": 5,
       "description": "This shape's version.",
       "title": "Report Version",
       "type": "integer"

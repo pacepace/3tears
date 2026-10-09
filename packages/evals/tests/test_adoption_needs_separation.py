@@ -38,6 +38,9 @@ from threetears.evals.analysis.bundle import AnalysisContextBundle, ComparisonVe
 from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.errors import SoundnessRefusal
 from threetears.evals.analysis.generator import generate_analysis
+from threetears.evals.analysis.report import build_report
+from threetears.evals.analysis.report.model import TextBlock
+from threetears.evals.contracts.surface import GuardrailCell, GuardrailCheck, GuardrailDecision, GuardrailReadings
 from threetears.evals.contracts.campaign import EvalAnalysis
 from threetears.evals.contracts.models import utc_now_iso
 
@@ -240,3 +243,104 @@ class TestAnArmNoTestCouldReachHasNoSeparationToAdoptOn:
         )
         with pytest.raises(SoundnessRefusal, match="no comparison in `multiple_comparisons` tests it"):
             await _adopt(bundle, TOYHOST_WIDE)
+
+
+# --- guardrails: a breached guardrail refuses the adoption, an undecided one is stated on it ----------------
+
+
+def _with_guardrail(bundle: AnalysisContextBundle, decision: GuardrailDecision) -> AnalysisContextBundle:
+    """The bundle with one judged guardrail decided ``decision`` for the wide width against the control.
+
+    Its cells are those of the family's first comparison, so the check names the arm the memo adopts.
+    """
+    comparison = bundle.multiple_comparisons.families[0].comparisons[0]
+    control, contrast = comparison.control, comparison.contrast
+    check = GuardrailCheck(
+        reading="judged",
+        name="boundary.correct",
+        higher_is_better=True,
+        control=GuardrailCell(
+            variant_key=control.variant_key, apparatus_class_id=control.apparatus_class_id, n_cases=4, mean=1.0
+        ),
+        contrast=GuardrailCell(
+            variant_key=contrast.variant_key, apparatus_class_id=contrast.apparatus_class_id, n_cases=4, mean=0.5
+        ),
+        test="paired",
+        delta=-0.5,
+        interval=(-0.9, -0.1) if decision == "breached" else (-0.9, 0.4),
+        interval_basis="t",
+        margin=0.0,
+        margin_declared=False,
+        decision=decision,
+        undecided_reason="the interval reaches both sides of 0" if decision == "undecided" else None,
+    )
+    guardrails = GuardrailReadings(dimensions=["boundary.correct"], checks=[check])
+    return bundle.model_copy(update={"guardrails": guardrails})
+
+
+class TestAGuardrailOnTheAdoptedArm:
+    async def test_a_breached_guardrail_refuses_the_adoption_whatever_the_arm_gained(self):
+        """The wide width improves accuracy (a real separation), and still cannot be adopted over a breach."""
+        bundle = _with_guardrail(_toy_bundle(control=True), "breached")
+        with pytest.raises(SoundnessRefusal) as refused:
+            await _adopt(bundle, TOYHOST_WIDE)
+        message = str(refused.value)
+        assert "breached the guardrail boundary.correct" in message
+        assert "mark it `rejected`, or adopt the control" in message
+
+    async def test_an_undecided_guardrail_lets_the_adoption_stand_and_the_report_states_it(self):
+        bundle = _with_guardrail(_toy_bundle(control=True), "undecided")
+        analysis = await _adopt(bundle, TOYHOST_WIDE)
+
+        assert analysis.decision_surface.guardrails == bundle.guardrails, "frozen with the analysis"
+        report = build_report(analysis)
+        (decision,) = [b for b in report.blocks if isinstance(b, TextBlock) and b.role == "decision"]
+        facts = {fact.name: fact.value for fact in decision.facts}
+        assert "undecided on boundary.correct, so not known to be safe" in facts["Guardrails"]
+        assert [b.section for b in report.blocks].count("guardrails") >= 1
+
+    async def test_a_held_guardrail_adds_nothing_to_the_decision(self):
+        bundle = _with_guardrail(_toy_bundle(control=True), "held").model_copy()
+        held = bundle.guardrails.checks[0].model_copy(update={"interval": (-0.1, 0.4), "decision": "held"})
+        bundle = bundle.model_copy(update={"guardrails": bundle.guardrails.model_copy(update={"checks": [held]})})
+        report = build_report(await _adopt(bundle, TOYHOST_WIDE))
+        (decision,) = [b for b in report.blocks if isinstance(b, TextBlock) and b.role == "decision"]
+        assert "Guardrails" not in {fact.name for fact in decision.facts}
+
+
+# --- exploratory: a finding resting on readings no declared question asked about is labelled ----------------
+
+
+def _toy_bundle_asking(axes: list[str]) -> AnalysisContextBundle:
+    """The toy campaign's bundle, its one question scoped to ``axes``."""
+    profile = toyhost_profile()
+    campaign, storage = toyhost_campaign(profile=profile)
+    assert campaign.declared_design is not None
+    design = campaign.declared_design
+    questions = [question.model_copy(update={"merit_axes": axes}) for question in design.questions]
+    campaign = campaign.model_copy(update={"declared_design": design.model_copy(update={"questions": questions})})
+    return assemble_context_bundle(campaign, storage=storage, profile=profile)
+
+
+def _finding_scope(analysis: EvalAnalysis) -> str | None:
+    report = build_report(analysis)
+    (title,) = [b for b in report.blocks if isinstance(b, TextBlock) and b.role == "finding_title"]
+    return {fact.name: fact.value for fact in title.facts}.get("Scope")
+
+
+class TestAFindingNoQuestionAskedAboutIsExploratory:
+    """The toy memo's one finding rests on the arms' latency (`total_ms`)."""
+
+    async def test_a_question_on_quality_leaves_the_latency_finding_exploratory(self):
+        bundle = _toy_bundle_asking(["quality"])
+        assert "total_ms" in bundle.reading_scope.exploratory_measures
+        analysis = await _generate(bundle, FixturedClient(json.dumps(memo_payload(bundle))))
+        scope = _finding_scope(analysis)
+        assert scope is not None and scope.startswith("exploratory")
+
+    async def test_a_question_on_latency_asks_about_it_and_no_label_is_added(self):
+        bundle = _toy_bundle_asking(["latency"])
+        analysis = await _generate(bundle, FixturedClient(json.dumps(memo_payload(bundle))))
+        assert _finding_scope(analysis) is None
+        report = build_report(analysis)
+        assert not [b for b in report.blocks if getattr(b, "source", None) == "scope"], "said only with no question"
