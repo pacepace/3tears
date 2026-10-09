@@ -16,7 +16,14 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.evals.contracts.base import EvalBaseModel, EvalDocumentModel
-from threetears.evals.contracts.models import EVAL_SCHEMA_VERSION, CassetteKey, EvalCassette, EvalResult, EvalRun
+from threetears.evals.contracts.models import (
+    EVAL_SCHEMA_VERSION,
+    CassetteKey,
+    EvalCassette,
+    EvalResult,
+    EvalRun,
+    RubricDimTombstone,
+)
 from threetears.evals.contracts.out_of_run import OutOfRunSpend
 from threetears.evals.contracts.storage import EvalStorage
 from threetears.evals.contracts.identity import IDENTITY_VERSION
@@ -356,6 +363,7 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
     "EvalTrace": make_eval_trace,
     "JudgeConfig": make_judge_config,
     "OutOfRunSpend": _out_of_run_spend,
+    "RubricDimTombstone": lambda: RubricDimTombstone(scope_id="uni-1", key="conversation.tone", deleted_dim_id="d-1"),
 }
 
 

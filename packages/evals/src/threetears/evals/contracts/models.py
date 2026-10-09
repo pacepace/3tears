@@ -121,6 +121,10 @@ fed, ``list_campaigns``'s ``status`` filter, is gone with it. ``CampaignDesign.c
 (one letter from ``control``, it named a different thing), and the bundle's ``controls_reading`` with it
 (``held_fixed_reading``): a stored campaign, an analysis's ``design_snapshot`` and a reporter case's frozen bundle
 read the old key under the new name, value unchanged.
+
+**Within v8, not a bump**: ``RubricDimTombstone`` joined as a new stored type — the record a rubric dim delete
+leaves so the definition seed does not write the key back. A store written before it holds none, which reads as
+"no key was deleted since": a dim deleted before then is still written back at the next seed, as it was then.
 """
 
 
@@ -1495,6 +1499,38 @@ class CatalogRubricDim(EvalDocumentModel):
         """Reject documents loaded into the wrong model class."""
         if v != "rubric_dim":
             raise ValueError(f"doc_type must be 'rubric_dim', got '{v}'")
+        return v
+
+
+class RubricDimTombstone(EvalDocumentModel):
+    """The record that a rubric dim key was deleted, so a seed never writes it back.
+
+    Seeding fills empty slots only (:func:`~threetears.evals.run.definition_seed.seed_eval_definitions`),
+    and a delete empties a slot. Without this, deleting a seeded dim undid itself at the next boot while
+    archiving one was permanent — the opposite of what an operator choosing the destructive path meant.
+    :func:`~threetears.evals.run.authoring.delete_rubric_dim` writes one for the key it deletes, and the
+    seeder treats a tombstoned key as decided: it is not written, and is reported as deleted.
+
+    It holds no prose: the dim's definition and scoring guide are what the delete destroys. Authoring a dim
+    under the key again is unaffected (``create_rubric_dim`` does not read tombstones); the key is then
+    occupied, which the seed respects in any case.
+    """
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid7()))
+    doc_type: Literal["rubric_dim_tombstone"] = "rubric_dim_tombstone"
+    schema_version: SchemaVersion = EVAL_SCHEMA_VERSION
+    scope_id: str = Field(min_length=1)
+
+    key: str = Field(min_length=1, description="The deleted dim's version-group key — the seed's slot.")
+    deleted_dim_id: str = Field(min_length=1, description="The id of the record whose delete wrote this.")
+    deleted_at: str = Field(default_factory=utc_now_iso)
+
+    @field_validator("doc_type")
+    @classmethod
+    def check_doc_type(cls, v: str) -> str:
+        """Reject documents loaded into the wrong model class."""
+        if v != "rubric_dim_tombstone":
+            raise ValueError(f"doc_type must be 'rubric_dim_tombstone', got '{v}'")
         return v
 
 
@@ -4294,6 +4330,7 @@ __all__ = [
     "ProposedDimSuggestion",
     "ProposedTemplate",
     "RubricDim",
+    "RubricDimTombstone",
     "RubricProposal",
     "RepeatedScore",
     "RubricScore",
