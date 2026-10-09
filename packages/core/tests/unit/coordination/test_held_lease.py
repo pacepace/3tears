@@ -510,3 +510,87 @@ async def test_a_retaking_lease_still_yields_to_another_holder() -> None:
     await held.release()
     surviving = await (await _bucket(client)).get_entry(key="job")
     assert surviving is not None and b"pod-b" in surviving[0], "a lease that retakes took another holder's entry"
+
+
+@_in_virtual_time
+async def test_a_retaking_lease_whose_own_renewal_landed_unseen_keeps_its_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A renewal the server applied whose reply was lost leaves the handle a revision behind its own
+    entry: that is still this holder's lease, not another holder's."""
+    pointers = await FakeNatsClient().kv_bucket(name="pointers")
+    held = await _claims_lease(pointers).hold("enr.w.3.writer", ttl=_TTL, renew_every=_RENEW, retake=True)
+    real_update = pointers.update
+    dropped = [False]
+
+    async def reply_lost(**kwargs: Any) -> int | None:
+        revision = await real_update(**kwargs)
+        if not dropped[0]:
+            dropped[0] = True
+            raise ConnectionError("the reply was lost after the write landed")
+        return revision
+
+    monkeypatch.setattr(pointers, "update", reply_lost)
+    try:
+        await _advance_with_the_bucket(pointers, _TTL.total_seconds() * 3)
+        assert dropped[0]
+        assert held.held and not held.lost.is_set(), "its own unseen renewal was taken for another holder"
+        assert await pointers.list_keys() == ["enr.w.3.writer"], "the entry stopped being renewed"
+    finally:
+        await held.release()
+
+
+@_in_virtual_time
+async def test_closing_a_lease_ends_every_hold_it_handed_out() -> None:
+    pointers = await FakeNatsClient().kv_bucket(name="pointers")
+    lease = _claims_lease(pointers)
+    holds = [await lease.hold(key, ttl=_TTL, renew_every=_RENEW, retake=True) for key in ("enr.w.3.a", "enr.w.3.b")]
+
+    await lease.close()
+
+    assert await pointers.list_keys() == [], "a hold outlived its lease's close"
+    assert all(not held.held and not held.lost.is_set() for held in holds), "a close is a release, not a loss"
+    await _advance_with_the_bucket(pointers, _RENEW.total_seconds() * 4)
+    assert await pointers.list_keys() == [], "a closed hold renewed its entry back"
+    after = await lease.hold("enr.w.4.c", ttl=_TTL, renew_every=_RENEW)
+    try:
+        await _advance_with_the_bucket(pointers, _TTL.total_seconds() * 2)
+        assert after.held, "a hold taken after the close was ended by it"
+    finally:
+        for held in [after, *holds]:
+            await held.release()
+
+
+@_in_virtual_time
+async def test_an_entry_the_lease_cannot_read_is_anothers_never_an_error() -> None:
+    """A key written in another format (an older holder's raw id) is held by somebody: the lease neither
+    fails on it nor reclaims it."""
+    pointers = await FakeNatsClient().kv_bucket(name="pointers")
+    await pointers.create(key="enr.rebuild", value=b"another replica")
+    with pytest.raises(LeaseUnavailable):
+        await _claims_lease(pointers).hold("enr.rebuild", ttl=_TTL, renew_every=_RENEW)
+    assert await pointers.get(key="enr.rebuild") == b"another replica"
+
+
+@_in_virtual_time
+async def test_a_release_cancelled_while_it_waits_still_frees_the_entry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An owner stopping cancels the task that is releasing: the entry must still go, or every other
+    pod waits out its TTL."""
+    client = FakeNatsClient()
+    held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW)
+    bucket = await _bucket(client)
+    real_update = bucket.update
+    in_flight = asyncio.Event()
+
+    async def slow_update(**kwargs: Any) -> int | None:
+        in_flight.set()
+        await asyncio.sleep(0.5)
+        return await real_update(**kwargs)
+
+    monkeypatch.setattr(bucket, "update", slow_update)
+    await asyncio.wait_for(in_flight.wait(), timeout=5)
+    releasing = asyncio.create_task(held.release())
+    await asyncio.sleep(0.1)  # the release waits on the renewal in flight
+    releasing.cancel()
+    await asyncio.wait([releasing])
+    assert await bucket.get_entry(key="job") is None, "a cancelled release left the entry behind"
