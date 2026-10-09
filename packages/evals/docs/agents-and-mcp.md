@@ -53,6 +53,24 @@ An agent calls `action='help'` for the actions grouped by workflow and `action='
 one action's parameters and an example. A parameter the action does not declare is refused, naming the
 ones it accepts. `read_only_tools(prefix)` mounts a tool an agent can only read through.
 
+## Reading one result
+
+`run_get` says how a run came out; it does not say what one cell did. Two read actions do:
+
+- `results_list` pages one run's results as light rows, ordered by case, then repeat, then id: each row's
+  id, case, repeat, model and variant, its condition (`ok`, `candidate_fail` or `infra_exclude`), how the
+  cell ended, its cost, its goal checks as every rate counts them, its judge scores and its host measures.
+  `condition_filter` narrows the rows to one condition, `total` counts the rows that match across every
+  page, and `next_offset` is the offset of the next page. A page holds 50 rows unless `limit` asks for
+  fewer or more, and never more than 200.
+- `result_get` reads one result back as stored. The response has the record with its per-role usage rows
+  and every error field, the condition with the sentence every surface shows for it, and the trace. The
+  trace is returned exactly as the kind stored it. For a kind whose candidate acts on tools, the trace
+  records each action the way the kind wrote it: whether it succeeded and what the tool returned. The
+  call ledger beside it holds only the calls that succeeded.
+
+A run or a result outside the caller's scope is not found. A listing never comes back empty in its place.
+
 ## FastMCP
 
 The FastMCP transport (`threetears.evals.transports.fastmcp`) needs the extra; the core does not:

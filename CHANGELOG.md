@@ -6,6 +6,24 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: one stored result is readable through the action catalogue
+
+- **New `results_list` read action and operation**, which takes a `run_id`, an optional `condition_filter`,
+  an `offset` and a `limit` (default 50, at most 200 through the action; the operation is unbounded when
+  `limit` is `None`). It returns a `ResultListing` of light `ResultLine` rows: id, case, repeat, model,
+  variant key, condition (`ResultOutcome`: `ok` / `candidate_fail` / `infra_exclude`), termination, cost,
+  goal checks as every rate counts them, judge scores as given, and host measures. Rows are ordered by case,
+  then repeat, then id, with `total` and `next_offset`. A run outside the caller's scope is not found, never
+  listed as empty.
+- **New `result_get` read action and operation**, which returns a `ResultDetail`: the stored `EvalResult`
+  (its `usage` rows and error fields among it), its `ResultCondition` as `resolve_result_condition` gives
+  it, and its `EvalTrace` as stored, or `None` when the cell wrote none. The trace's output documents
+  are returned verbatim, so an action a kind recorded as failed reads back failed, with the tool's own
+  words. Before this, a cell whose candidate failed every action could be diagnosed only by reading
+  `eval_trace` in the database: `run_get` returns run-level measures alone. Both actions read through the
+  existing `get_run` / `list_results` / `get_result` / `get_result_trace`, so no store method changed.
+- `result_rate`'s `result_id` now says it is named by `results_list`; it is the same parameter on both.
+
 ### 3tears-evals: a swept lever is checked against the mechanism it acts on; a divergent reasoning share qualifies a model comparison (#577, #576)
 
 - **`Sweepable.acts_on`** (optional), and **`ActsOn(measure)`** for a kind contract's overlay field (beside

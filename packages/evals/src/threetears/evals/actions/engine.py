@@ -18,7 +18,7 @@ from pydantic import Field
 
 from threetears.evals.actions import render
 from threetears.evals.actions.catalogue import Action, ActionCatalogue, Caller
-from threetears.evals.contracts import EvalRunStatus
+from threetears.evals.contracts import EvalRunStatus, ResultOutcome
 from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts import OutOfRunPurpose
 from threetears.evals.ops import (
@@ -42,6 +42,8 @@ from threetears.evals.ops import (
     ReportDocument,
     ReporterCaseFreeze,
     ReporterCaseListing,
+    ResultDetail,
+    ResultListing,
     ResultRated,
     RunDeleted,
     RunLine,
@@ -63,7 +65,9 @@ from threetears.evals.ops import (
     reporter_case_archive,
     reporter_case_freeze,
     reporter_cases_list,
+    result_get,
     result_rate,
+    results_list,
     run_archive,
     run_delete,
     run_get,
@@ -84,6 +88,7 @@ RunId = Annotated[str, Field(min_length=1, description="A run's id, as runs_list
 # same thing a launch does.
 TemplateId = Annotated[str, LaunchArguments.model_fields["template_id"]]
 SubjectId = Annotated[str, LaunchArguments.model_fields["subject_id"]]
+ResultId = Annotated[str, Field(min_length=1, description="A result's id, as results_list names it.")]
 CampaignId = Annotated[str, Field(min_length=1, description="A campaign's id, as campaigns_list names it.")]
 AnalysisId = Annotated[str, Field(min_length=1, description="A stored analysis's id, as analyses_list names it.")]
 JobId = Annotated[
@@ -165,6 +170,23 @@ ExportRunIds = Annotated[
     list[str] | None,
     Field(description="Export only these runs, archived ones included since they are named; omitted exports all."),
 ]
+# The condition's values spelled out rather than the enum itself, which would nest a definition in a flat
+# parameter list; the handler reads it back as the enum, so a value the enum lacks fails there, loudly.
+ConditionFilter = Annotated[
+    Literal["ok", "candidate_fail", "infra_exclude"] | None,
+    Field(
+        description="List only results in this condition: ok (delivered, scored), candidate_fail (scored as a hard "
+        "fail) or infra_exclude (a harness fault, in no aggregate)."
+    ),
+]
+#: The rows one ``results_list`` page holds unless the caller asks for fewer, and the most it may ask for: a
+#: page is read into an agent's context, and a run of a few hundred cases at k=3 is a thousand rows.
+_RESULTS_PAGE_DEFAULT = 50
+_RESULTS_PAGE_MAX = 200
+Offset = Annotated[int, Field(ge=0, description="Skip this many rows; the previous page's next_offset.")]
+Limit = Annotated[
+    int, Field(ge=1, le=_RESULTS_PAGE_MAX, description=f"The most rows to return, up to {_RESULTS_PAGE_MAX}.")
+]
 CaseCount = Annotated[
     int | None,
     Field(ge=1, description="A case count to price each planned arm at in place of its plan's, for a what-if grid."),
@@ -186,6 +208,21 @@ class RunParams(EvalBaseModel):
     """An action over one run."""
 
     run_id: RunId
+
+
+class ResultsListParams(EvalBaseModel):
+    """``results_list``."""
+
+    run_id: RunId
+    condition_filter: ConditionFilter = None
+    offset: Offset = 0
+    limit: Limit = _RESULTS_PAGE_DEFAULT
+
+
+class ResultParams(EvalBaseModel):
+    """An action over one result."""
+
+    result_id: ResultId
 
 
 class RunLaunchParams(LaunchArguments):
@@ -355,7 +392,7 @@ class ScopeOutOfRunSpendParams(EvalBaseModel):
 class ResultRateParams(EvalBaseModel):
     """``result_rate``."""
 
-    result_id: Annotated[str, Field(min_length=1, description="A result's id, as a run's results name it.")]
+    result_id: ResultId
     rubric_dim: Annotated[
         str, Field(min_length=1, description="The judged dimension rated, spelled as the result's score spells it.")
     ]
@@ -398,6 +435,27 @@ async def _runs_list(host: OpsHost, caller: Caller, params: RunsListParams) -> R
 
 async def _run_get(host: OpsHost, caller: Caller, params: RunParams) -> EvalSummary:
     return await run_blocking(host.eval_host.blocking_executor, run_get, host.eval_host, params.run_id, caller.scope_id)
+
+
+async def _results_list(host: OpsHost, caller: Caller, params: ResultsListParams) -> ResultListing:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor,
+        partial(
+            results_list,
+            condition=None if params.condition_filter is None else ResultOutcome(params.condition_filter),
+            offset=params.offset,
+            limit=params.limit,
+        ),
+        eval_host,
+        params.run_id,
+        caller.scope_id,
+    )
+
+
+async def _result_get(host: OpsHost, caller: Caller, params: ResultParams) -> ResultDetail:
+    eval_host = host.eval_host
+    return await run_blocking(eval_host.blocking_executor, result_get, eval_host, params.result_id, caller.scope_id)
 
 
 async def _run_launch(host: OpsHost, caller: Caller, params: RunLaunchParams) -> JobsStarted:
@@ -754,6 +812,43 @@ def engine_actions() -> tuple[Action, ...]:
             handler=_run_get,
             render=render.render_summary,
             example={"run_id": run_id},
+        ),
+        Action(
+            name="results_list",
+            summary="List one run's results, a light row each — case, repeat, condition, headline measures — paged.",
+            workflow=RUN,
+            permission="read",
+            params=ResultsListParams,
+            result=ResultListing,
+            handler=_results_list,
+            render=render.render_results,
+            example={"run_id": run_id, "condition_filter": "candidate_fail"},
+            detail=(
+                "Ordered by case, then repeat, then result id, so a finished run pages the same way every time; "
+                "pass next_offset as offset for the next page. condition_filter narrows to the results that "
+                "counted as delivered (ok), as a hard fail (candidate_fail) or not at all (infra_exclude), and "
+                "total counts what matched across every page. A run not in the caller's scope is not found. "
+                "result_get reads one row's result whole."
+            ),
+        ),
+        Action(
+            name="result_get",
+            summary="Read one stored result whole: its record, usage rows, condition and trace, as stored.",
+            workflow=RUN,
+            permission="read",
+            params=ResultParams,
+            result=ResultDetail,
+            handler=_result_get,
+            render=render.render_result,
+            example={"result_id": "0193a1b2-result"},
+            detail=(
+                "The trace is returned as the candidate's kind stored it: its output documents verbatim — for a "
+                "kind whose candidate acts on tools, each action as the kind recorded it, whether it succeeded "
+                "and what the tool said — beside the call ledger (the calls that succeeded), what the judge "
+                "read, the world's end state and the spans. The condition is resolved as every surface resolves "
+                "it, with the sentence a reader must not miss. A result not in the caller's scope is not found; "
+                "results_list names a run's results."
+            ),
         ),
         Action(
             name="campaign_create",

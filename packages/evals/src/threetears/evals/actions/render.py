@@ -40,6 +40,9 @@ from threetears.evals.ops import (
     ReportDocument,
     ReporterCaseEntry,
     ReporterCaseListing,
+    ResultDetail,
+    ResultLine,
+    ResultListing,
     ResultRated,
     RunDeleted,
     RunLine,
@@ -210,6 +213,106 @@ def render_runs(listing: RunListing) -> str:
 def render_summary(summary: EvalSummary) -> str:
     """One run's summary."""
     return summary.render()
+
+
+def _usd(amount: float | None) -> str:
+    """Spend as stored, to three significant figures; an unpriced amount says so rather than reading as $0."""
+    return "unpriced" if amount is None else f"${amount:.3g}"
+
+
+def _compact(value: Any) -> str:
+    """A stored JSON value on one line, keys sorted, as written — never re-typed or summarised."""
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+
+
+def _result_line(line: ResultLine) -> str:
+    """One result on one line: where it sits, its condition, and its headline measures."""
+    parts = [f"{line.condition.value} ({line.termination})", f"cost {_usd(line.cost_usd)}"]
+    if line.goal_checks:
+        passed = "not counted" if line.goal_checks_passed is None else f"{line.goal_checks_passed}/{line.goal_checks}"
+        parts.append(f"goal checks {passed}")
+    if line.judge_scores:
+        parts.append("judged " + ", ".join(f"{dim}={score}" for dim, score in line.judge_scores.items()))
+    if line.host_measures:
+        parts.append("measures " + ", ".join(f"{name}={value}" for name, value in line.host_measures.items()))
+    if not line.has_trace:
+        parts.append("no trace")
+    return f"- {line.id}: case {line.test_case_id} k={line.k_iteration}, {line.model}: " + "; ".join(parts)
+
+
+def render_results(listing: ResultListing) -> str:
+    """One page of a run's results, and how to read the next page and one result."""
+    narrowed = "" if listing.condition_filter is None else f" {listing.condition_filter.value}"
+    end = listing.offset + len(listing.results)
+    lines = [
+        f"results of run {listing.run_id}: {listing.total}{narrowed}, rows {listing.offset + 1}-{end} shown"
+        if listing.results
+        else f"results of run {listing.run_id}: {listing.total}{narrowed}, none from row {listing.offset + 1}",
+        *(_result_line(line) for line in listing.results),
+    ]
+    if listing.next_offset is not None:
+        lines.append(
+            f"More: action='results_list', run_id='{listing.run_id}', offset={listing.next_offset}"
+            + ("" if listing.condition_filter is None else f", condition_filter='{listing.condition_filter.value}'")
+            + "."
+        )
+    if listing.results:
+        lines.append("Read one with action='result_get', result_id='<id>'.")
+    return "\n".join(lines)
+
+
+def render_result(detail: ResultDetail) -> str:
+    """One stored result whole: its condition, errors, usage rows, checks and scores, then its trace as stored.
+
+    The trace's output documents are printed one per line exactly as the kind stored them, so an action the
+    kind recorded as failed reads as failed, with the tool's own words; nothing here interprets them. The
+    spans are counted and left to the structured result, which carries them whole.
+    """
+    result, condition, trace = detail.result, detail.condition, detail.trace
+    lines = [
+        f"result {result.id} of run {result.eval_run_id}: case {result.test_case_id} k={result.k_iteration}, "
+        f"model {result.model}, kind {result.candidate_kind}",
+        f"condition: {condition.scoring.value} (termination {condition.termination}, judging {condition.judging})",
+    ]
+    if condition.disclosure:
+        lines.append(f"  {condition.disclosure}")
+    for label, error in (
+        ("candidate error", result.candidate_error),
+        ("infra error", result.infra_error),
+        ("judge error", result.judge_error),
+    ):
+        if error:
+            lines.append(f"{label}: {error}")
+    lines.append(f"cost {_usd(result.cost_usd)} over {', '.join(result.cost_roles) or 'no role'}")
+    lines.append(f"usage ({len(result.usage)} row(s)):")
+    lines += [f"- {_compact(row.model_dump(mode='json', exclude_none=True))}" for row in result.usage]
+    lines += [
+        f"goal check {outcome.expression}: {'passed' if outcome.passed else 'failed'}"
+        + (f" — {outcome.detail}" if outcome.detail else "")
+        for outcome in result.goal_state_outcomes
+    ]
+    scores = [*result.rubric_scores, result.transcript_score, result.outcome_score]
+    lines += [f"judged {score.dim}: {score.score} ({score.scale})" for score in scores if score is not None]
+    lines += [f"judge could not tell on {dim}: {reason}" for dim, reason in result.judge_cannot_tell.items()]
+    if result.host_measures:
+        lines.append(f"host measures: {_compact(result.host_measures)}")
+    if trace is None:
+        lines.append("trace: none stored")
+        return "\n".join(lines)
+    lines.append(f"output ({len(trace.trace)} document(s), as the kind stored them):")
+    lines += [f"- {_compact(document)}" for document in trace.trace]
+    if trace.call_ledger is None:
+        lines.append("call ledger: none kept")
+    else:
+        lines.append(f"call ledger ({len(trace.call_ledger.calls)} call(s) that succeeded):")
+        lines += [f"- {call.tool}.{call.action} {_compact(call.params)}" for call in trace.call_ledger.calls]
+    if trace.judge_evidence is not None:
+        lines.append(f"judge read ({trace.judged_artifact}):")
+        lines.append(trace.judge_evidence.artifact)
+    if trace.end_state is not None:
+        lines.append(f"end state: {_compact(trace.end_state)}")
+    lines.append(f"spans: {len(trace.otel_trace)}, in the structured result")
+    return "\n".join(lines)
 
 
 def render_jobs_started(started: JobsStarted) -> str:
@@ -402,7 +505,9 @@ __all__ = [
     "render_analysis_deleted",
     "render_analysis_estimate",
     "render_analysis_line",
+    "render_result",
     "render_result_rated",
+    "render_results",
     "render_campaign",
     "render_campaigns",
     "render_estimate",
