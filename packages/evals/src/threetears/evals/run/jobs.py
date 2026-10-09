@@ -452,6 +452,9 @@ class EvalJobManager:
         # see _set_status, which derives the empty-matrix stamp from this rather
         # than taking it from each except-branch.
         self._work_ran: dict[str, bool] = {}
+        # Runs inside a concurrency slot right now, as against queued for one. A launch group's
+        # members share one slot and execute side by side inside it, so each member counts.
+        self._executing: set[str] = set()
         # Runs admitted by a launch that has not yet handed them over — see AdmissionTicket.
         self._reserved = 0
         # Detached tasks (start_task), kept apart from ``_tasks`` because everything that reads
@@ -480,8 +483,25 @@ class EvalJobManager:
 
     @property
     def active_count(self) -> int:
-        """Number of currently active (not done) jobs."""
+        """Runs whose task is not done: queued for a concurrency slot or executing in one.
+
+        This is queue depth plus contention, which is what admission bounds. It is NOT how many
+        runs are executing: under a cap of one, a run executing alone with two queued behind it
+        reads 3 here. A measurement condition reads :attr:`executing_count`.
+        """
         return sum(1 for t in self._tasks.values() if not t.done())
+
+    @property
+    def executing_count(self) -> int:
+        """Runs executing right now: inside a concurrency slot, never queued for one.
+
+        What the ``execution_mode`` covariate's probe reads. A run waiting at the semaphore makes
+        no provider calls and contends with nothing, so counting it, as :attr:`active_count` does,
+        stamped a deliberately serial baseline ``concurrent`` whenever another run was queued
+        behind it. A launch group's members execute side by side inside their one shared slot, so
+        each member counts: two arms of one launch are concurrent with each other.
+        """
+        return len(self._executing)
 
     @property
     def admitted_count(self) -> int:
@@ -876,15 +896,22 @@ class EvalJobManager:
         self._work_ran[run_id] = False
         try:
             async with slot.hold() if slot is not None else self._semaphore:
-                await self._set_status(run_id, scope_id, "running")
+                # Counted as executing only while it holds the slot, and uncounted as it leaves,
+                # before any terminal write outside it: a run queued behind this one may start the
+                # moment the slot is released, and must not see this one as still running.
+                self._executing.add(run_id)
+                try:
+                    await self._set_status(run_id, scope_id, "running")
 
-                async def progress_fn(progress: dict[str, Any]) -> None:
-                    await self._update_progress(run_id, scope_id, progress)
+                    async def progress_fn(progress: dict[str, Any]) -> None:
+                        await self._update_progress(run_id, scope_id, progress)
 
-                async with self._job_timeout_factory(budget_s):
-                    self._work_ran[run_id] = True
-                    await work(progress_fn)
-                await self._set_status(run_id, scope_id, "completed")
+                    async with self._job_timeout_factory(budget_s):
+                        self._work_ran[run_id] = True
+                        await work(progress_fn)
+                    await self._set_status(run_id, scope_id, "completed")
+                finally:
+                    self._executing.discard(run_id)
 
         except asyncio.CancelledError:
             # The reason goes to its own channel, not to ``error_details``: a human

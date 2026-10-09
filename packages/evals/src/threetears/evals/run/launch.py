@@ -2946,7 +2946,9 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
             # corrupts a latency pool — cells within a run are serial. The run is this job
             # manager's job, so the probe is the run's rather than the host's: a run executed
             # outside a job manager records no execution_mode rather than a guessed one.
-            concurrent_eval_jobs_probe=lambda: job_manager.active_count,
+            # Runs EXECUTING, never runs queued for a slot: a queued run calls no provider, and
+            # counting it stamped a serial baseline `concurrent` whenever another run waited behind it.
+            concurrent_eval_jobs_probe=lambda: job_manager.executing_count,
             # One tally rather than two: what the kind's collaborators count and what each
             # cell reports. A kind that calls no metered third party records zero refusals
             # under a ceiling that was in force, which is a different fact from nobody
