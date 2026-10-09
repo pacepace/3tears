@@ -94,6 +94,8 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "job_poll": "read",
         "job_cancel": "write",
         "run_get": "read",
+        "results_list": "read",
+        "result_get": "read",
         "campaign_create": "write",
         "analysis_generate": "spend",
         "analysis_estimate": "read",

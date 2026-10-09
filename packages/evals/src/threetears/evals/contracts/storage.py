@@ -465,13 +465,30 @@ class EvalStorage:
         """Reconstruct a list of models from stored documents (see :meth:`_hydrate`)."""
         return [cls._hydrate(model_cls, row) for row in rows]
 
+    @staticmethod
+    def _of_type[M: EvalBaseModel](model_cls: type[M], data: dict[str, Any] | None) -> dict[str, Any] | None:
+        """``data`` when it is a document of ``model_cls``'s type, else ``None`` — the one id-read type check.
+
+        A point read is by id alone (:meth:`~threetears.evals.contracts.store_port.DocumentStore.get`),
+        and ids of different types share a scope: a run's id, its results' ids and each result's
+        ``<id>:trace`` all resolve there. A document of another type is not the document asked for, so
+        it reads as none rather than reaching the wrong model's validator: every load by id goes through
+        here, and every caller's absent branch (``NotFoundError`` at a read surface) is the answer. A
+        document with no ``doc_type`` at all is left to the model's own validation.
+        """
+        if data is None:
+            return None
+        stored = data.get("doc_type")
+        expected = model_cls.model_fields["doc_type"].default
+        return None if stored is not None and stored != expected else data
+
     def _save(self, document: dict[str, Any], *, if_match: str | None = None) -> None:
         """Upsert ``document`` with :func:`save_document`, which raises on any failure."""
         save_document(self._store, document, if_match=if_match)
 
     def _load[M: EvalBaseModel](self, model_cls: type[M], doc_id: str, scope_id: str) -> M | None:
-        """One document by id within a scope, hydrated, or ``None`` when it does not resolve there."""
-        data = self._store.get(doc_id, scope_id)
+        """One document by id within a scope, hydrated, or ``None`` when no document of its type resolves there."""
+        data = self._of_type(model_cls, self._store.get(doc_id, scope_id))
         if data is None:
             return None
         return self._hydrate(model_cls, data)
@@ -715,7 +732,7 @@ class EvalStorage:
         Returns:
             ``True`` or ``False`` for a stored analysis, ``None`` when none resolves.
         """
-        data = self._store.get(analysis_id, scope_id)
+        data = self._of_type(EvalAnalysis, self._store.get(analysis_id, scope_id))
         if data is None:
             return None
         return data.get("archived") is True
@@ -894,10 +911,7 @@ class EvalStorage:
 
     def load_test_case(self, test_case_id: str, scope_id: str) -> EvalTestCase | None:
         """Load a test case by id + scope."""
-        data = self._store.get(test_case_id, scope_id)
-        if data is None:
-            return None
-        return self._hydrate(EvalTestCase, data)
+        return self._load(EvalTestCase, test_case_id, scope_id)
 
     def query_test_cases(
         self,
@@ -975,11 +989,8 @@ class EvalStorage:
         self._save(run.to_dict(), if_match=if_match)
 
     def load_eval_run(self, run_id: str, scope_id: str) -> EvalRun | None:
-        """Load an eval run by id + scope."""
-        data = self._store.get(run_id, scope_id)
-        if data is None:
-            return None
-        return self._hydrate(EvalRun, data)
+        """Load an eval run by id + scope; ``None`` when the id names no run there (:meth:`_of_type`)."""
+        return self._load(EvalRun, run_id, scope_id)
 
     def load_eval_run_with_etag(
         self,
@@ -994,6 +1005,7 @@ class EvalStorage:
         to say so.
         """
         data, etag = self._store.get_with_etag(run_id, scope_id)
+        data = self._of_type(EvalRun, data)
         if data is None:
             return None, None
         return self._hydrate(EvalRun, data), etag
@@ -1205,11 +1217,11 @@ class EvalStorage:
         self._save(result.model_copy(update={"has_trace": stored}).to_dict())
 
     def load_eval_result(self, result_id: str, scope_id: str) -> EvalResult | None:
-        """Load an eval result by id + scope. Never carries the trace — see :meth:`load_eval_trace`."""
-        data = self._store.get(result_id, scope_id)
-        if data is None:
-            return None
-        return self._hydrate(EvalResult, data)
+        """Load an eval result by id + scope. Never carries the trace — see :meth:`load_eval_trace`.
+
+        ``None`` when the id names no result there, a run's or a trace's id among them (:meth:`_of_type`).
+        """
+        return self._load(EvalResult, result_id, scope_id)
 
     def load_eval_result_with_etag(self, result_id: str, scope_id: str) -> tuple[EvalResult | None, str | None]:
         """Load an eval result plus the token a conditional rewrite of it must present.
@@ -1218,6 +1230,7 @@ class EvalStorage:
         rewrites a stored result after its cell has finished (a re-judge).
         """
         data, etag = self._store.get_with_etag(result_id, scope_id)
+        data = self._of_type(EvalResult, data)
         if data is None:
             return None, None
         return self._hydrate(EvalResult, data), etag
@@ -1251,10 +1264,7 @@ class EvalStorage:
         know whether detail EXISTS should read ``EvalResult.has_trace`` instead —
         that is what the marker is for.
         """
-        data = self._store.get(eval_trace_doc_id(result_id), scope_id)
-        if data is None:
-            return None
-        return self._hydrate(EvalTrace, data)
+        return self._load(EvalTrace, eval_trace_doc_id(result_id), scope_id)
 
     def query_eval_results(
         self,
@@ -1342,6 +1352,7 @@ class EvalStorage:
         # prawduct:ok-broad-except — DB read boundary; re-raised as a typed eval error
         except Exception as e:
             raise StorageError(f"failed to read eval_cassette '{key.doc_id}': {e}") from e
+        data = self._of_type(EvalCassette, data)
         if data is None:
             return None
         return self._hydrate(EvalCassette, data)

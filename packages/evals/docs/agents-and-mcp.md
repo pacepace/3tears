@@ -53,6 +53,39 @@ An agent calls `action='help'` for the actions grouped by workflow and `action='
 one action's parameters and an example. A parameter the action does not declare is refused, naming the
 ones it accepts. `read_only_tools(prefix)` mounts a tool an agent can only read through.
 
+## Reading one result
+
+`run_get` says how a run came out; it does not say what one cell did. Two read actions do:
+
+- `results_list` pages one run's results as light rows, ordered by case, then repeat, then id: each row's
+  id, case, repeat, model and variant, its condition (`ok`, `candidate_fail` or `infra_exclude`), how the
+  cell ended, its cost, its goal checks as every rate counts them, its judge scores and its host measures.
+  `condition_filter` narrows the rows to one condition, `total` counts the rows that match across every
+  page, and `next_offset` is the offset of the next page. A page holds 50 rows unless `limit` asks for
+  fewer or more, and never more than 200.
+- `result_get` reads one result back as stored, with one `part` of its trace:
+  - `record`, the default: the result record with its per-role usage rows and every error field, and its
+    condition with the sentence every surface shows for it. Each goal check is shown as evaluated, and
+    also as counted when the two differ: a candidate failure counts every check failed, and a harness
+    fault counts none. Then come the output documents exactly as the kind stored them, the call ledger
+    and the world's end state.
+  - `judge`: what the judge was sent.
+  - `spans`: the stored spans.
+
+  Every part's data carries the result record and its condition, so a reply always says whose part it is.
+
+  The default leaves the judge's evidence and the spans out of both the text and the data, because either
+  can outweigh everything else, and its text says how to ask for them.
+
+  The output documents hold whatever the kind wrote about each call. A failed call, with what the tool
+  returned, appears there only when the kind records failures. A kind that records only successes leaves
+  no sign of a refused call. The call ledger holds only the calls the kind recorded as succeeded.
+
+  A trace the record says was written but whose document is missing reads as missing, not as none stored.
+
+A run or a result outside the caller's scope is not found, and so is an id of another type, such as a run's
+id passed to `result_get`. A listing never comes back empty in place of not found.
+
 ## FastMCP
 
 The FastMCP transport (`threetears.evals.transports.fastmcp`) needs the extra; the core does not:

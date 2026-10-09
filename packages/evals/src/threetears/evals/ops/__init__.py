@@ -18,6 +18,10 @@ and its siblings) beside them, so a command line and an agent read one rendering
 :func:`scope_out_of_run_spend` reads the out-of-run ledger — the spend no run's results carry — into an
 :class:`OutOfRunSpendReport` of its own, with :func:`out_of_run_spend_text` beside it.
 
+A run's results are read by :func:`results_list` — one light row per result, paged, so an operator can find
+the cell that came out wrong — and :func:`result_get`, which reads one result back as stored with one part of its
+trace: by default the output its kind stored and the roles' spend, and the judge's evidence or the spans by name.
+
 The reporter case bank's operations — :func:`reporter_case_freeze`, :func:`reporter_cases_list` and
 :func:`reporter_case_archive` — are how a surface makes the cases a reporter run measures: each is one
 campaign's analysis bundle, frozen, and a reporter template launches nothing until one is.
@@ -95,6 +99,17 @@ from threetears.evals.ops.reporter import (
     reporter_case_freeze,
     reporter_cases_list,
 )
+from threetears.evals.ops.results import (
+    ResultDetail,
+    ResultLine,
+    ResultListing,
+    ResultPart,
+    TraceJudge,
+    TraceRecord,
+    TraceState,
+    result_get,
+    results_list,
+)
 from threetears.evals.ops.runs import (
     LaunchArguments,
     ResultRated,
@@ -113,7 +128,7 @@ from threetears.evals.ops.runs import (
     runs_list,
     templates_list,
 )
-from threetears.evals.ops.summary import DimensionSummary, EvalSummary, MeasureSummary, summarize_run
+from threetears.evals.ops.summary import DimensionSummary, EvalSummary, MeasureSummary, dollars_text, summarize_run
 
 __all__ = [
     "ANALYSIS_JOB_PREFIX",
@@ -151,6 +166,10 @@ __all__ = [
     "ReporterCaseEntry",
     "ReporterCaseFreeze",
     "ReporterCaseListing",
+    "ResultDetail",
+    "ResultLine",
+    "ResultListing",
+    "ResultPart",
     "ResultRated",
     "RunDeleted",
     "RunLine",
@@ -158,6 +177,9 @@ __all__ = [
     "ScoreExport",
     "TemplateLine",
     "TemplateListing",
+    "TraceJudge",
+    "TraceRecord",
+    "TraceState",
     "UnreadableReporterCase",
     "analyses_list",
     "analysis_archive",
@@ -168,6 +190,7 @@ __all__ = [
     "campaign_archive",
     "campaign_create",
     "campaigns_list",
+    "dollars_text",
     "estimate_text",
     "export_text",
     "generation_key",
@@ -184,7 +207,9 @@ __all__ = [
     "reporter_case_freeze",
     "reporter_cases_list",
     "serialize_report",
+    "result_get",
     "result_rate",
+    "results_list",
     "run_archive",
     "run_delete",
     "run_get",

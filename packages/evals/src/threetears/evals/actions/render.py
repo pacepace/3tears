@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
+from threetears.evals.contracts import GoalStateOutcome, ResultOutcome, counted_goal_verdicts
 from threetears.evals.contracts.errors import EvalServiceError
 from threetears.evals.ops import (
     AnalysisDeleted,
@@ -40,12 +41,16 @@ from threetears.evals.ops import (
     ReportDocument,
     ReporterCaseEntry,
     ReporterCaseListing,
+    ResultDetail,
+    ResultLine,
+    ResultListing,
     ResultRated,
     RunDeleted,
     RunLine,
     RunListing,
     ScoreExport,
     TemplateListing,
+    dollars_text,
     estimate_text,
     export_text,
     history_text,
@@ -210,6 +215,167 @@ def render_runs(listing: RunListing) -> str:
 def render_summary(summary: EvalSummary) -> str:
     """One run's summary."""
     return summary.render()
+
+
+def _usd(amount: float | None) -> str:
+    """Spend as a run's summary prints it (:func:`~threetears.evals.ops.dollars_text`); unpriced says so, never $0."""
+    return "unpriced" if amount is None else dollars_text(amount)
+
+
+def _compact(value: Any) -> str:
+    """A stored JSON value on one line, keys sorted, as written — never re-typed or summarised."""
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+
+
+def _result_line(line: ResultLine) -> str:
+    """One result on one line: where it sits, its condition, and its headline measures."""
+    parts = [f"{line.condition.value} ({line.termination})", f"cost {_usd(line.cost_usd)}"]
+    if line.goal_checks:
+        passed = "not counted" if line.goal_checks_passed is None else f"{line.goal_checks_passed}/{line.goal_checks}"
+        parts.append(f"goal checks {passed}")
+    if line.judge_scores:
+        parts.append("judged " + ", ".join(f"{dim}={score}" for dim, score in line.judge_scores.items()))
+    if line.host_measures:
+        parts.append("measures " + ", ".join(f"{name}={value}" for name, value in line.host_measures.items()))
+    if not line.has_trace:
+        parts.append("no trace")
+    return f"- {line.id}: case {line.test_case_id} k={line.k_iteration}, {line.model}: " + "; ".join(parts)
+
+
+def render_results(listing: ResultListing, *, default_limit: int | None = None) -> str:
+    """One page of a run's results, and how to read the next page and one result.
+
+    Args:
+        listing: The page.
+        default_limit: The page size the calling surface uses when none is named; the next-page hint names
+            ``limit`` whenever this page's differs, so following the hint reads a page of the same size.
+
+    Returns:
+        The text.
+    """
+    narrowed = "" if listing.condition_filter is None else f" {listing.condition_filter.value}"
+    end = listing.offset + len(listing.results)
+    lines = [
+        f"results of run {listing.run_id}: {listing.total}{narrowed}, rows {listing.offset + 1}-{end} shown"
+        if listing.results
+        else f"results of run {listing.run_id}: {listing.total}{narrowed}, none from row {listing.offset + 1}",
+        *(_result_line(line) for line in listing.results),
+    ]
+    if listing.next_offset is not None:
+        hint = f"More: action='results_list', run_id='{listing.run_id}', offset={listing.next_offset}"
+        if listing.condition_filter is not None:
+            hint += f", condition_filter='{listing.condition_filter.value}'"
+        if listing.limit is not None and listing.limit != default_limit:
+            hint += f", limit={listing.limit}"
+        lines.append(hint + ".")
+    if listing.results:
+        lines.append("Read one with action='result_get', result_id='<id>'.")
+    return "\n".join(lines)
+
+
+def _goal_check_line(outcome: GoalStateOutcome, counted: bool | None, condition: ResultOutcome) -> str:
+    """One goal check as evaluated, and as every rate counts it when the two differ.
+
+    A candidate failure counts every check failed and a harness fault counts none
+    (:func:`~threetears.evals.contracts.counted_goal_verdicts`), so a check that evaluated True on such a
+    result says both, rather than reading as a pass the listing's count does not hold.
+    """
+    evaluated = "passed" if outcome.passed else "failed"
+    if counted is None:
+        verdict = f"{evaluated} as evaluated; not counted (harness fault)"
+    elif counted != outcome.passed:
+        cause = "candidate failure" if condition is ResultOutcome.CANDIDATE_FAIL else condition.value
+        verdict = f"{evaluated} as evaluated; counts {'passed' if counted else 'failed'} ({cause})"
+    else:
+        verdict = evaluated
+    return f"goal check {outcome.expression}: {verdict}" + (f" — {outcome.detail}" if outcome.detail else "")
+
+
+def _record_lines(detail: ResultDetail) -> list[str]:
+    """The record part: errors, spend and usage rows, checks and scores, then what the kind stored."""
+    result, condition = detail.result, detail.condition
+    lines = [
+        f"{label}: {error}"
+        for label, error in (
+            ("candidate error", result.candidate_error),
+            ("infra error", result.infra_error),
+            ("judge error", result.judge_error),
+        )
+        if error
+    ]
+    lines.append(f"cost {_usd(result.cost_usd)} over {', '.join(result.cost_roles) or 'no role'}")
+    lines.append(f"usage ({len(result.usage)} row(s)):")
+    lines += [f"- {_compact(row.model_dump(mode='json', exclude_none=True))}" for row in result.usage]
+    counted = counted_goal_verdicts(result)
+    lines += [
+        _goal_check_line(outcome, None if counted is None else counted[index][1], condition.scoring)
+        for index, outcome in enumerate(result.goal_state_outcomes)
+    ]
+    lines += [f"judged {score.dim}: {score.score} ({score.scale})" for score in result.judge_scores()]
+    lines += [f"judge could not tell on {dim}: {reason}" for dim, reason in result.judge_cannot_tell.items()]
+    if result.host_measures:
+        lines.append(f"host measures: {_compact(result.host_measures)}")
+    record = detail.record
+    if record is None:
+        return lines
+    lines.append(f"output ({len(record.output)} document(s), as the kind stored them):")
+    lines += [f"- {_compact(document)}" for document in record.output]
+    if record.call_ledger is None:
+        lines.append("call ledger: none kept")
+    else:
+        lines.append(f"call ledger ({len(record.call_ledger.calls)} call(s) the kind recorded as succeeded):")
+        lines += [f"- {call.tool}.{call.action} {_compact(call.params)}" for call in record.call_ledger.calls]
+    if record.end_state is not None:
+        lines.append(f"end state: {_compact(record.end_state)}")
+    if record.judged_artifact is not None:
+        lines.append(
+            f"judge evidence ({record.judged_artifact}) left out: read it with action='result_get', "
+            f"result_id='{result.id}', part='judge'."
+        )
+    if record.span_count:
+        lines.append(
+            f"{record.span_count} span(s) left out: read them with action='result_get', result_id='{result.id}', "
+            "part='spans'."
+        )
+    return lines
+
+
+def render_result(detail: ResultDetail) -> str:
+    """One stored result and the part of its trace asked for.
+
+    The record part prints the output documents one per line exactly as the kind stored them, so whatever the
+    kind wrote about a call — that it failed, what the tool said — reads in the kind's own words; nothing here
+    interprets them. The judge's evidence and the spans are printed only when their part is asked for, and the
+    record part says how to ask.
+    """
+    result, condition = detail.result, detail.condition
+    lines = [
+        f"result {result.id} of run {result.eval_run_id}: case {result.test_case_id} k={result.k_iteration}, "
+        f"model {result.model}, kind {result.candidate_kind}",
+        f"condition: {condition.scoring.value} (termination {condition.termination}, judging {condition.judging})",
+    ]
+    if condition.disclosure:
+        lines.append(f"  {condition.disclosure}")
+    if detail.part == "record":
+        lines += _record_lines(detail)
+    if detail.trace_state == "none":
+        lines.append("trace: none stored")
+    elif detail.trace_state == "missing":
+        lines.append("trace: recorded but its document is missing")
+    elif detail.part == "judge":
+        if detail.judge is None:
+            lines.append("judge evidence: none stored — nothing was sent to a judge for this cell")
+        else:
+            evidence = detail.judge.evidence
+            lines.append(f"judge evidence ({detail.judge.judged_artifact}):")
+            if evidence.subject is not None:
+                lines += ["subject:", evidence.subject]
+            lines += ["case material:", evidence.case_material, "artifact:", evidence.artifact]
+    elif detail.part == "spans":
+        spans = detail.spans or []
+        lines.append(f"spans ({len(spans)}):")
+        lines += [f"- {_compact(span)}" for span in spans]
+    return "\n".join(lines)
 
 
 def render_jobs_started(started: JobsStarted) -> str:
@@ -402,7 +568,9 @@ __all__ = [
     "render_analysis_deleted",
     "render_analysis_estimate",
     "render_analysis_line",
+    "render_result",
     "render_result_rated",
+    "render_results",
     "render_campaign",
     "render_campaigns",
     "render_estimate",

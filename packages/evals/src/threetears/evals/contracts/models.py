@@ -3949,10 +3949,20 @@ class EvalResult(EvalDocumentModel):
         Returns:
             The score, or ``None`` when this result carries none on that dimension.
         """
-        for score in (*self.rubric_scores, self.transcript_score, self.outcome_score):
-            if score is not None and score.dim == dim:
-                return score
-        return None
+        return next((score for score in self.judge_scores() if score.dim == dim), None)
+
+    def judge_scores(self) -> list[RubricScore]:
+        """Every score the judge gave this result: the template's dimensions, then the two reserved axes when scored.
+
+        The assembly :meth:`judge_score` looks a dimension up in and the result actions list, so a reserved
+        axis is never on one of those surfaces and missing from another.
+
+        Returns:
+            The scores as the judge gave them, in that order; empty for a result no judge scored.
+        """
+        return [
+            score for score in (*self.rubric_scores, self.transcript_score, self.outcome_score) if score is not None
+        ]
 
 
 # =============================================================================
