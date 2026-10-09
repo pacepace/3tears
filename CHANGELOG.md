@@ -6,6 +6,54 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Core, agent tools and enforcement: a pod's writes move its tables' write generations (migrate-writers stage)
+
+Stage 2 of `docs/epoch-task-06-collection-generations-by-default.md`. A pod may not write the epoch
+bucket, so the hub's L3 broker advances each switched-on table a pod's commit wrote and names the
+token in its reply; this release is the pod's half. No table is switched on, so nothing advances
+that did not already.
+
+- **Added, `threetears.core.backends.BrokerGenerationSource`**: a pod's generation source.
+  `advance(table)` returns the token the broker's reply named for the commit this task just made,
+  once per table per commit (a second advance of the table for that commit raises), and raises
+  `GenerationUnavailableError` when the reply named none or listed the table as not advanced.
+  `current` reads through an optional `GenerationReader` (such as
+  `threetears.epoch.EpochGenerationReader`) and raises with none, or for a table with no generation
+  yet: a pod cannot mint one. Without a reader it says so (`reads_generations = False`).
+- **Changed, `NatsProxyL3Backend`**: every reply that ends a commit (a successful `l3.query` or
+  `l3.tx.commit`, and every `l3.batch` reply, a partly failed statement-by-statement batch
+  included) that ends a write replaces the calling task's record with its own generations, naming
+  any or not; a read's reply leaves it. A rolled-back transaction, a refused commit and a commit
+  whose request got no reply drop them all; a later advance then raises
+  `GenerationNotCommittedError`.
+- **Changed, `CallerTransaction`**: settling advances each table once, however many collection
+  instances of it the transaction wrote (`SharedAdvance`, `shared_advance_for`), and every row
+  broadcast carries the total row count.
+- **Changed, `AgentSkillCollection.bump_use_count`**: evicts its rows in one `invalidate_cache_many`,
+  one advance for its one UPDATE.
+- **Added, `threetears.core.exceptions.GenerationNotCommittedError`**, a `GenerationUnavailableError`
+  for an advance asked of a commit that landed nothing; a collection logs it at INFO.
+- **Added, reading as a capability of its own**: `GenerationSource` implementations may declare
+  `reads_generations = False`; `threetears.core.collections.generation.source_reads` and
+  `CollectionRegistry.readable_generation_source` read it. Absence caching (and the refusal to build
+  an absence-caching collection without a source) needs a source that reads, so a registry wired
+  with a reader-less source caches no absences, exactly as with no source.
+- **Added, wire names** in `threetears.core.backends.broker_generation`:
+  `GENERATIONS_REPLY_FIELD` (`generations`), `GENERATIONS_FAILED_REPLY_FIELD`
+  (`generations_failed`) and `GENERATION_UNAVAILABLE_ERROR_CODE` (`GENERATION_UNAVAILABLE`, on a
+  reply that is still a success, because the write committed and must not be retried).
+- **Added, `threetears.core.collections.tables_with_write_generation()`**: the tables named on
+  every live imported collection class that is switched on or caches absences. What the broker
+  reads. `threetears.core.collections.base.table_named_by_class` is the one derivation of a class's
+  table, shared with the census.
+- **Changed, `build_tool_pod_collection_stack`** (so `ToolServerBootstrap.install_collection_stack`)
+  wires `BrokerGenerationSource()` on the pod's registry.
+- **Added, `threetears.enforcement.collection_census`** (`run_census`, `find_census_problems`):
+  the one-class-per-table census, shipped so a product repository runs it over its own trees with
+  the framework's classes joined (`framework=True`). Replaces `tests/enforcement/_collection_census.py`.
+- **Wire:** additive. A pod built before this ignores the reply fields; a reply without them is read
+  as before.
+
 ### Core, epoch and nats: a table can carry a write generation a pod follows (expand stage)
 
 A row broadcast is at most once, and a pod that misses one serves its cached row until it

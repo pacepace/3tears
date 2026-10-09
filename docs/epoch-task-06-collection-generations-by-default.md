@@ -1,9 +1,10 @@
 # epoch-task-06: Every Collection Carries a Write Generation by Default
 
-**Status:** STAGE 1 OF 5 BUILT (expand). Everything in "Rollout" stage 1 ships; nothing bumps
-and nothing follows until a table is switched on, and no table is. What exists, what the build
-decided, where this note was wrong against the code, and what the migrate stages need are under
-"Built in the Expand Stage" at the end. The direction was decided by the product owner on
+**Status:** STAGES 1 AND 2 OF 5 BUILT (expand, migrate writers). Every deployment now wires a
+generation source and the hub's L3 broker advances a pod's switched-on tables after each commit;
+no table is switched on outside tests, and nothing follows. What exists, what each build decided,
+where this note was wrong against the code, and what the later stages need are under "Built in
+the Expand Stage" and "Built in the Migrate-Writers Stage" at the end. The direction was decided by the product owner on
 2026-10-08 and is recorded under "The Decision"; it is not re-argued here. What this note
 adds is the model, the costs, the rollout, his answers to the questions it raised, and the
 three that wait on the measurement.
@@ -331,8 +332,11 @@ broadcasts. It needs no epoch subject and no `acl.*` subject.
 > generation key is four tokens, `{ns}.collections.{table}.epoch`. Its read is also the direct
 > get, which the epoch bucket is not declared for. The tool pod is granted what the agent pod
 > already holds on this bucket, `JsResource.kv_bucket_keys(f"{ns}-epochs", writable=False)`:
-> the whole bucket, read only. A grant of four literal keys needs a new capability; that is the
-> owner's call and is listed under "What the Migrate Stages Need".
+> the whole bucket, read only. A grant of four literal keys would need a new capability.
+>
+> **Decided (owner, 2026-10-09): the tool pod's read of the whole bucket is accepted**, and no
+> capability for four literal keys will be built. The values are counters with nothing secret in
+> them, and every write stays with the hub.
 
 ## The L1 Max Age
 
@@ -664,10 +668,10 @@ any of them that is switched on before its own publishes carry an advance.
 
 Run at `823f5689` on 2026-10-09 with the workspace's locked tools, serially:
 
-- every unit suite, `pytest packages/ tests/ -m "not integration"`: 25,642 passed, 320 skipped,
-  none failed. None of the skips is in core, epoch or nats except one baseline enforcement skip.
-  Recorded as this repository's test evidence (`prawduct-hook test-evidence record`).
-- integration, `-m integration -rs` over core, epoch and nats, against docker: 329 passed, no
+- every unit suite, `pytest packages/ tests/ -m "not integration"`: none failed. None of the skips
+  is in core, epoch or nats except one baseline enforcement skip. Recorded as this repository's
+  test evidence (`prawduct-hook test-evidence record`).
+- integration, `-m integration -rs` over core, epoch and nats, against docker: none failed, no
   skips.
 - `ruff check`, `ruff format --check` and `mypy` (868 files) clean.
 
@@ -730,7 +734,252 @@ names and watching it fail:
 
 **For the owner.**
 
-- Whether a tool pod's read of the whole epoch bucket is acceptable, or a capability for a
-  literal key of several tokens should be added so the grant names four keys.
-- Whether the epoch bucket should be declared for direct gets, which the narrower grant would
-  also need for a read; a watch needs neither.
+- ~~Whether a tool pod's read of the whole epoch bucket is acceptable.~~ **Decided (owner,
+  2026-10-09): accepted.** `JsResource.kv_bucket_keys(f"{ns}-epochs", writable=False)` stays; no
+  capability for literal multi-token keys is built. The values are counters with nothing secret in
+  them, and writes stay with the hub.
+- Whether the epoch bucket should be declared for direct gets. Only the narrower grant needed it
+  for a read, and that grant is not being built, so this falls away; a watch needs neither.
+
+---
+
+## Built in the Migrate-Writers Stage
+
+Built on `feat/generations-migrate-writers` in 3tears, the hub (`14-eng-ai-bot-reports`) and the
+SDK (`14-eng-ai-bot-agents-reports`), 2026-10-09. No table is switched on outside tests.
+
+### What Exists Now
+
+- **The hub's broker advances.** `QueryProxy` takes a `generation_source` (the hub passes the same
+  `EpochGenerationSource(nc)` its own registry is wired with, after `configure`). After each
+  commit it advances, once per table, every table the commit wrote that is switched on:
+  `l3.query` after `_execute_query` returned (the RLS transaction left, or the autocommit), each
+  `l3.batch` request after its one transaction committed or after its statements ran one by one,
+  and `l3.tx.commit` after `session.commit()`. `_TxSession.written_tables` collects the tables of
+  every statement admitted to the session (`_admit_tx_statement`). A rollback, a refused commit,
+  a refused statement, a rolled-back batch, and a session the sweeper or shutdown force-rolls back
+  advance nothing. The written tables are `ClassifiedStatement.targets` that are not `select`
+  (`written_tables`), so a write in a CTE under a `SELECT` counts; a trigger, a cascade or a
+  function's write does not.
+- **The reply names the tokens.** `L3QueryResponse`, `L3BatchResponse` and `L3TxCompleteResponse`
+  gain `generations` (table to token), `generations_failed`, and, on the two that lacked them,
+  `error_code` and `error_message`. All optional; absent unless a switched-on table was written.
+  The field names and the code are spelled once, in `threetears.core.backends.broker_generation`
+  (`GENERATIONS_REPLY_FIELD`, `GENERATIONS_FAILED_REPLY_FIELD`, `GENERATION_UNAVAILABLE_ERROR_CODE`),
+  and the hub imports them.
+- **A pod's source.** `threetears.core.backends.BrokerGenerationSource`. `NatsProxyL3Backend` hands
+  every reply that ends a commit to `record_reply_generations` (a successful `l3.query` or
+  `l3.tx.commit`, and every `l3.batch` reply, a statement-by-statement batch that failed partway
+  included); `advance(table)` returns the token the broker's reply carried for that table, as often
+  as that commit's settling asks. `current` reads through an optional `GenerationReader`
+  (`EpochGenerationReader` satisfies it) and raises when there is none or the table has no
+  generation yet, because a pod cannot mint one. Without a reader the source says it cannot read
+  (`reads_generations`), and absence caching stays off (see "Reading and Advancing Are Two
+  Capabilities").
+- **Wired everywhere.** Every SDK registry is built by
+  `aibots_agents.runtime.broker_registry.broker_collection_registry`, which sets
+  `BrokerGenerationSource()`: `build_three_tier_stack`, `build_owner_data_stack` and the devx
+  workspace runtime (`DevxWorkspaceRuntime.connect`), and an SDK enforcement test refuses a
+  registry built anywhere else. The framework's `build_tool_pod_collection_stack` (which
+  `ToolServerBootstrap.install_collection_stack` and `ProviderToolPod` reach) sets it too. Every
+  hub-family registry takes its source from `aibots.hub.common.generation_sources` (see "Every
+  hub-family registry has a source"). identity-core already wires `EpochGenerationSource`. Stage 3
+  gives the pod source its reader in those two places.
+- **How each side knows a table's writes advance: from the one class.** The pod: its collection
+  class, which calls `advance` when it declares `WRITE_GENERATION` or caches absences
+  (`negative_cache_max_age`). The broker: `threetears.core.collections.tables_with_write_generation()`,
+  the tables named on every live collection class imported in the hub process that does either,
+  read through `table_named_by_class`, the one derivation the census uses too. No request field, so the hub's
+  `extra="forbid"` request models are untouched.
+- **One class per table, for the two tables that had three.** See "Playbook Entries and Concepts".
+- **The census ships.** `threetears.enforcement.collection_census` (`run_census`,
+  `find_census_problems`) replaces `tests/enforcement/_collection_census.py`. With
+  `framework=True` it imports the installed 3tears packages too and marks their classes, so a
+  product's census catches a class of its own for a table the framework already has a class for.
+  The hub and the SDK each run it (`tests/enforcement/test_one_class_per_table.py`); run over the
+  hub's and the SDK's trees before this stage, it reports exactly the `playbook_entries` and
+  `concepts` duplicates.
+
+### Decided in the Build
+
+**A failed advance is answered as a success.** The note asked for "a distinct reply code" so the
+pod raises and does not retry. A failed reply (`success: false`) would not do that for a pod one
+release back: it reads every failed reply as `DataLayerUnavailableError`, which callers retry, and
+the write has already committed. So the reply stays `success: true`, carries its rows, and adds
+`generations_failed` and `error_code: GENERATION_UNAVAILABLE`. An old pod ignores both; a new pod's
+collection raises `GenerationUnavailableError` from its `advance`, after the rest of its write path
+ran, exactly as over the epoch bucket. The broker logs the failure, and never turns an advance's
+failure (of any kind) into a failed commit.
+
+**Which commit a token belongs to: the calling task's own.** The record is a context variable.
+Two tasks writing one table each get their own token. A task started while one is held (the
+`asyncio.shield` around `CallerTransaction._settle`) reads its starter's tokens, because they share
+the record object; a task that makes a write request of its own starts its own record and leaves
+the one it inherited as it was.
+
+**One commit, one advance per table, with one count (verify of the owner's 2026-10-09 rule).** The
+owner's rule was that every advance of a table for one commit is handed that commit's token. The
+verify (rev-20261009T044338Z-669a118d) showed what that cost: each advance stamped its own row
+count, so N advances under one token published N groups each claiming `bump_rows` of its own
+group, and a follower counted the advance complete after the first group and moved on before the
+others landed. So one commit's rows are settled in one advance that stamps them all with their
+total: `AgentSkillCollection.bump_use_count` evicts its rows in one `invalidate_cache_many`, and
+`CallerTransaction._settle` shares one advance (`SharedAdvance`) among the collection instances of
+one table, the first advancing for the rows of all of them. The token is handed out once; a second
+advance of the table for the same commit raises `GenerationUnavailableError` rather than publish
+rows under a count already given, and its rows are still evicted and broadcast, naming no
+generation.
+
+**A token belongs to the commit that produced it.** Every reply that ends a write (an `l3.query`
+whose statement writes, an `l3.batch`, an `l3.tx.commit`) replaces the task's record, naming
+generations or not, so an advance after a commit whose reply named nothing for the table raises
+`GenerationUnavailableError` (the broker named nothing, whose cause is the broker's) instead of
+being handed an earlier commit's token. It is not `GenerationNotCommittedError`: that one says the
+commit landed nothing and is logged at INFO, and this commit landed. A read's reply ends no write
+and leaves the record. A rolled-back transaction (`tx.rollback`, sent by the pod, including
+the acquire exit's safety net), a refused commit, and a commit whose request raised before any
+reply came back (a timeout, a closed client) leave a record that says so. A collection settling
+after any of those is not handed an earlier commit's token: its advance raises
+`GenerationNotCommittedError`, a `GenerationUnavailableError` that says the commit landed nothing,
+which the collection logs at INFO rather than as a failed advance. A table the broker named nothing
+for raises the plain error, whose cause is the broker's.
+
+**A statement-by-statement batch advances once per table, not once per statement.** "What the
+Migrate Stages Need" said "each l3.batch transaction or item". The pod gets one reply and stamps
+one token per table on the rows of its batch, so a second advance for a second item would be an
+advance no row names, and every follower would read it as missed. One advance after the batch,
+for every table a committed item wrote, says the same thing: a write committed since any token
+read before it.
+
+**Several commits before one advance.** A collection that writes a table twice before it advances
+once (a `bypassing_write` body of two autocommitted statements) is handed the later token; the
+earlier advance has no row, and a follower drops the table once. The safe direction.
+
+**An autocommitted write refused for too many returned rows still advances.** Without RLS the
+statement committed before `RESULT_TOO_LARGE` was raised; under RLS the refusal rolled it back.
+
+**A session's written tables are collected when a statement is admitted**, not after it ran. A
+statement that then fails aborts the transaction, so its commit lands nothing; an advance for it
+would be needless, the safe direction.
+
+**Reading and Advancing Are Two Capabilities.** A collection that caches absences needs a
+generation it can READ to stamp them with; a switched-on collection needs one it can ADVANCE. A
+source declares the first with `reads_generations` (absent means it reads), checked through
+`source_reads`; `CollectionRegistry.readable_generation_source` is the registry's source when it
+reads. Every absence-caching check, including the refusal at construction and the advance an
+absence-caching class makes, uses the readable source; the switched-on advance uses any source. So
+a pod's reader-less `BrokerGenerationSource` leaves `CoordinationRevocationsCollection` (through
+`RevocationGuard`) exactly as with no source, and nothing on a pod caches absences until stage 3
+wires a reader.
+
+**The broker's advance, after review.** Only a success reply is stamped: a failed reply (a
+statement-by-statement batch whose later item was refused) keeps its own `error_code`, so a
+constraint violation still reaches the pod typed and is not retried as unavailability; its
+advances are still made and logged. The advances share the time left before the pod stops
+waiting for the commit's reply (`ReplyDeadline.seconds_left_to_answer`), and a table not reached
+in it is named failed, so a stalled epoch bucket neither turns a committed write into a timeout
+the pod retries nor holds an in-flight slot. The failure is logged with the door, principal,
+namespace, correlation id and session. A transaction session records how it ended (open,
+committing, committed, rolled back): a commit asked of a session that shutdown, the sweeper or a
+fence refusal rolled back while the commit waited is refused (`TX_SESSION_CLOSED`) and advances
+nothing.
+
+**Every hub-family registry has a source.** `aibots.hub.common.generation_sources` picks it by how
+the process writes: directly with the epoch bucket's write (the hub, the gateway):
+`EpochGenerationSource`; through the broker: `BrokerGenerationSource`; directly without the grant
+(the agent router, the dataset executor, the channel adapters, an operator's audit replay): a
+source that reads nothing and refuses every advance at once, naming the process. A table one of
+those processes writes cannot be switched on until the process is granted the bucket's write; the
+refusal says so rather than letting an ungranted JetStream call block to its deadline. An
+enforcement test holds every `CollectionRegistry()` in the hub to a source from that module.
+
+**The hub's knowledge subclasses inherit the framework's agent reads (accepted).** The framework's
+`PlaybookEntryCollection` and `ConceptCollection` carry the agent pod's reads
+(`list_visible_to_user`, `list_own_drafts`, `fetch_embeddings`, over the rbac proxy pool with
+`customer_scope`) beside the table's declaration, so the hub's subclasses inherit reads that do
+not run on the hub's pool. The hub's own reads are named `list_entities_visible_to_user` and
+`list_own_draft_entities`, and every hub docstring names those. Splitting the framework class into
+a declaration base and an agent-pod subclass would let the hub keep the shorter name; it is a
+3tears change with no behaviour in it, and is left for the stage that touches those classes again.
+
+**Pods read no generation yet.** The SDK and `3tears-agent-tools` do not depend on `3tears-epoch`,
+and adding it is a lock change this stage does not need: nothing on a pod caches absences.
+`BrokerGenerationSource()` is built without a reader, so `current` raises and a collection that
+caches absences on a pod trusts none. Stage 3 adds the dependency, because a follower needs
+`EpochGenerationReader` anyway, and passes the reader in.
+
+**What a reply that names no generation means.** A switched-on pod collection whose commit's reply
+names no token for its table raises `GenerationUnavailableError`, not `GenerationNotCommittedError`: the hub is older than this stage,
+has no source, or has not imported the class that switches the table on (a class whose table is
+named per instance cannot be read off the class at all). Loud, never a claimed advance. One gap is
+not loud: during a rolling hub upgrade, a token left unclaimed from a new replica's reply can be
+handed to a later commit an old replica served. That commit advanced nothing, which is what any
+old writer does, and the stage 3 rule already covers it: no follower trusts an unmoved generation
+until every writer of the table is past stage 2.
+
+### Playbook Entries and Concepts
+
+Compared column by column (name, type, nullability, immutability, default, primary key,
+`cas_column` and every other schema attribute and class variable):
+
+- **`concepts`**: the framework's, the hub's and the SDK's schemas are identical.
+- **`playbook_entries`**: the SDK's is identical to the framework's. **The hub's has one more
+  column, `enforcement`** (nullable JSONB, migration v020, query-enforcement-task-01), which the
+  hub's routes write and its governance scan reads. The framework's class leaves it out, as it
+  leaves out `embedding`. So `HubPlaybookEntryCollection` declares the framework's schema plus
+  `enforcement` (`dataclasses.replace` of the framework's, so nothing else can drift), and the
+  pods' projection is unchanged. Adding the column to the framework's class would hand it to every
+  agent's read; that is the owner's call, not this stage's.
+- **Entities**: all six were bare `BaseEntity` subclasses with `primary_key_field = "id"`. The hub
+  and the SDK now use the framework's, and the SDK's `DraftView` (identical fields) is the
+  framework's.
+
+The hub's `HubPlaybookEntryCollection` and `HubConceptCollection` and the SDK's
+`AgentPlaybookEntryCollection` and `AgentConceptCollection` subclass the framework's classes and
+inherit schema, table name and declaration. The hub's two reads that shared a name with the
+framework's agent reads but not their signature (an entity list, no `customer_scope`) are renamed
+`list_entities_visible_to_user` and `list_own_draft_entities`, so the subclass does not break the
+contract the framework's callers rely on. The SDK's subclass overrides only
+`list_visible_to_user`, which refuses a named datasource and reads uncached; its `list_own_drafts`
+and `fetch_embeddings` were the framework's line for line and are inherited.
+
+### What Stage 3 Needs
+
+- *Per table, recorded.* The releases after which every writer of each access table advances: the
+  hub (direct, through its registry), identity-core, agent pods and tool pods (through the
+  broker). Only after all of them are on this stage may a follower read "did not move" as
+  "nothing changed".
+- *Switch the four on.* `write_generation = WRITE_GENERATION` on `GroupCollection`,
+  `GroupMemberCollection`, `RoleCollection` and `RoleAssignmentCollection` (the hub's `Hub*`
+  subclasses inherit it), with `invalidation_columns` declared so a row names its member; the hub
+  must import those classes, which it does.
+- *Readers.* `3tears-epoch` as a dependency of the SDK and `3tears-agent-tools`;
+  `BrokerGenerationSource(EpochGenerationReader(nc))` in the three pod stacks; `follow_generation`
+  and `follow_generation_key` per access table, `generation_catchup_tick` where the watch's limit
+  matters; `AclCache` registered with `register_derived_cache` and its indexes.
+- *The write paths the base class does not see* (listed under the expand stage) before any of those
+  tables is switched on.
+- *Open:* whether the framework's `PlaybookEntryCollection` should carry `enforcement`; a hub
+  table written only by pods whose class the hub does not import is never advanced, which the
+  pod's advance reports, but no test enumerates such tables yet.
+
+### Test Evidence
+
+Run on 2026-10-09 with each main checkout's locked tools and the three worktrees first on the path,
+serially (the hub's sets at `-n 4`):
+
+- 3tears, after the review fixes (`54a1a221`), serially: the unit suites of the packages this stage
+  touches (core, epoch, agent tools, enforcement, and `tests/enforcement`), and the integration
+  suites of core and nats against Docker, none failed and no integration test skipped; recorded in
+  the evidence store (`prawduct-hook test-evidence record`). `ruff` and `mypy` (872 files) clean.
+- Hub, `tests/unit tests/enforcement -m "not integration"`: all passed after rebasing on
+  `feature/reports`. `ruff` clean; `mypy src` clean.
+- SDK, `tests/unit tests/enforcement`: all passed. `ruff` and `mypy src` clean.
+
+Each new test was checked against the code it names: the pod-side tests fail with the proxy's
+recording removed, with either rollback's forgetting removed, with the unanswered commit's
+forgetting removed, with the per-task owner check removed, with a token removed on its first take,
+and with the readable-source gate removed; the broker's fail with each of
+the seven advance sites or conditions broken; the wiring tests fail with the wiring removed; the
+census tests report exactly the old duplicates when run over the hub's and the SDK's trees as they
+were before this stage.

@@ -15,7 +15,7 @@ from threetears.core.collections.asyncpg_init import (
     init_connection,
     register_jsonb_text_codec,
 )
-from threetears.core.collections.base import NO_L2, BaseCollection, NoL2
+from threetears.core.collections.base import NO_L2, BaseCollection, NoL2, tables_with_write_generation
 from threetears.core.collections.bucket import (
     COLLECTIONS_BUCKET_SUFFIX,
     bind_collections_bucket,
@@ -137,4 +137,5 @@ __all__ = [
     "repoint_user_rows",
     "serialize_to_json",
     "spans_partitions",
+    "tables_with_write_generation",
 ]

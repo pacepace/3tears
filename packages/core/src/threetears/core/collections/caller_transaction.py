@@ -17,8 +17,9 @@ is broadcast. The next read of the key takes whichever row L3 ended with.
 
 On a collection switched on to carry a write generation
 (:attr:`~threetears.core.collections.base.BaseCollection.write_generation`), settling is also where
-the generation advances: once per collection for the whole transaction, however many of its rows
-the transaction wrote, with every row's broadcast naming that one advance. It advances whichever
+the generation advances: once per table for the whole transaction, however many of its rows the
+transaction wrote and however many collection instances of the table wrote them, with every row's
+broadcast naming that one advance and the number of rows it covers. It advances whichever
 way the transaction ended, for the reason the eviction runs either way.
 
 Evicting rather than writing the committed row is deliberate: it is correct whether the
@@ -36,7 +37,9 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from contextvars import ContextVar, Token
+from dataclasses import dataclass
 from types import TracebackType
 from typing import TYPE_CHECKING, Any
 
@@ -46,13 +49,45 @@ from threetears.observe import get_logger
 if TYPE_CHECKING:
     from threetears.core.collections.base import BaseCollection
 
-__all__ = ["CallerTransaction"]
+__all__ = ["CallerTransaction", "SharedAdvance", "shared_advance_for"]
 
 log = get_logger(__name__)
 
 #: every CallerTransaction open in this context, outermost first. A context variable, so a task
 #: started inside the transaction still finds it, and one started outside never does.
 _OPEN: ContextVar[tuple[CallerTransaction, ...]] = ContextVar("threetears_caller_transactions", default=())
+
+
+@dataclass(slots=True)
+class SharedAdvance:
+    """one table's write-generation advance for a settling transaction that more than one collection
+    instance of the table wrote.
+
+    The first instance to advance makes it, for every row of the table the transaction wrote; each
+    later one stamps its broadcasts with that same advance. A follower then counts the advance
+    complete only once it has heard every row's broadcast, whichever instance sent it.
+
+    :ivar rows: how many rows of the table the transaction settles, across every instance
+    :ivar bump: the advance, once the first instance has made it; ``None`` before
+    """
+
+    rows: int
+    bump: object | None = None
+
+
+#: the shared advances of the transaction settling in this context, by table.
+_SHARED: ContextVar[Mapping[str, SharedAdvance]] = ContextVar("threetears_shared_advances", default={})
+
+
+def shared_advance_for(table_name: str) -> SharedAdvance | None:
+    """the advance a settling transaction shares among the instances of ``table_name``, if any.
+
+    :param table_name: the table a collection is advancing
+    :ptype table_name: str
+    :return: the shared advance, or ``None`` when the collection advances on its own
+    :rtype: SharedAdvance | None
+    """
+    return _SHARED.get().get(table_name)
 
 
 class CallerTransaction:
@@ -195,9 +230,10 @@ class CallerTransaction:
     async def _settle(self, *, committed: bool) -> GenerationUnavailableError | None:
         """evict every key a write joined to this transaction touched, from L1 and L2, and broadcast it.
 
-        One call per collection, so a collection that carries a write generation advances it once
-        for the whole transaction. One collection's failed advance does not stop the next
-        collection's rows being settled.
+        One call per collection, and one advance per table: when two collection instances of one
+        table wrote rows, the first to advance does so for the rows of both (:class:`SharedAdvance`),
+        so every broadcast names the same advance and the same count. One collection's failed advance
+        does not stop the next collection's rows being settled.
 
         :param committed: whether the body finished without raising, for the log; the commit itself
             may still have failed, and the eviction is the same either way
@@ -208,7 +244,6 @@ class CallerTransaction:
         """
         enrolled = list(self._enrolled)
         self._enrolled.clear()
-        failure: GenerationUnavailableError | None = None
         # one call per collection, with every key it wrote, in the order written: a load of many
         # rows settles them together rather than one round trip at a time
         by_collection: dict[int, tuple[BaseCollection[Any], list[Any], list[dict[str, Any] | None]]] = {}
@@ -216,6 +251,34 @@ class CallerTransaction:
             _, keys, rows = by_collection.setdefault(id(collection), (collection, [], []))
             keys.append(entity_id)
             rows.append(row)
+        per_table: dict[str, list[int]] = {}
+        for collection, keys, _ in by_collection.values():
+            per_table.setdefault(collection.table_name, []).append(len(keys))
+        shared = {table: SharedAdvance(rows=sum(counts)) for table, counts in per_table.items() if len(counts) > 1}
+        sharing = _SHARED.set(shared)
+        try:
+            failure = await self._settle_each(by_collection)
+        finally:
+            _SHARED.reset(sharing)
+        if enrolled:
+            log.debug(
+                "caller transaction ended; the rows its writes touched were evicted from every cache",
+                extra={"extra_data": {"rows": len(enrolled), "body_completed": committed}},
+            )
+        return failure
+
+    @staticmethod
+    async def _settle_each(
+        by_collection: dict[int, tuple[BaseCollection[Any], list[Any], list[dict[str, Any] | None]]],
+    ) -> GenerationUnavailableError | None:
+        """settle each collection's keys, in turn.
+
+        :param by_collection: each collection with the keys it wrote and the rows it saw
+        :ptype by_collection: dict[int, tuple[BaseCollection, list[Any], list[dict[str, Any] | None]]]
+        :return: the first failure to advance a write generation; ``None`` when there was none
+        :rtype: GenerationUnavailableError | None
+        """
+        failure: GenerationUnavailableError | None = None
         for collection, keys, rows in by_collection.values():
             try:
                 if collection.invalidation_columns:
@@ -228,9 +291,4 @@ class CallerTransaction:
                 # logged where the advance failed; this collection's rows were all evicted
                 if failure is None:
                     failure = exc
-        if enrolled:
-            log.debug(
-                "caller transaction ended; the rows its writes touched were evicted from every cache",
-                extra={"extra_data": {"rows": len(enrolled), "body_completed": committed}},
-            )
         return failure

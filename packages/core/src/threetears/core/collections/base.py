@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import random
 import re
 import time
+import weakref
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from contextlib import asynccontextmanager, contextmanager
@@ -34,7 +36,7 @@ from threetears.core.backends.protocol import L3Backend
 from threetears.core.cache import MISSING
 from threetears.core.cache.base import CACHED_AT_COLUMN
 from threetears.core.collections.bypassing_write import BypassingWrite
-from threetears.core.collections.caller_transaction import CallerTransaction
+from threetears.core.collections.caller_transaction import CallerTransaction, shared_advance_for
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer
 from threetears.core.collections.generation import (
     WRITE_GENERATION_UNDECLARED,
@@ -56,6 +58,7 @@ from threetears.core.entities.base import BaseEntity, derive_addressing_id
 from threetears.core.exceptions import (
     ConcurrentModificationError,
     CorruptCacheEntry,
+    GenerationNotCommittedError,
     GenerationUnavailableError,
     L2EpochRegressedError,
     L2ScopeNotConfiguredError,
@@ -69,7 +72,16 @@ if TYPE_CHECKING:
     # local `_NatsClientFromRegistry` sentinel, not `NatsClient`.
     from threetears.nats import NatsClient, NatsKvBucket
 
-__all__ = ["NATS_CLIENT_FROM_REGISTRY", "NO_L2", "BaseCollection", "CasMutation", "EntityT", "NoL2"]
+__all__ = [
+    "NATS_CLIENT_FROM_REGISTRY",
+    "NO_L2",
+    "BaseCollection",
+    "CasMutation",
+    "EntityT",
+    "NoL2",
+    "table_named_by_class",
+    "tables_with_write_generation",
+]
 
 log = get_logger(__name__)
 
@@ -178,6 +190,58 @@ class _Bump:
 
 #: no advance was made and none was owed.
 _NO_BUMP: Final = _Bump()
+
+#: every collection class defined in this process whose committed writes advance its table's write
+#: generation: switched on (``write_generation = WRITE_GENERATION``), or caching absences. Appended
+#: by :meth:`BaseCollection.__init_subclass__`, read by :func:`tables_with_write_generation`.
+_GENERATION_CLASSES: weakref.WeakSet[type[BaseCollection[Any]]] = weakref.WeakSet()
+
+
+def table_named_by_class(cls: type) -> str | None:
+    """the table a collection class names without being built, or ``None``.
+
+    The one derivation of "which table does this class name": the hub's broker reads it, through
+    :func:`tables_with_write_generation`, to decide which tables to advance, and the
+    one-class-per-table census (``threetears.enforcement.collection_census``) reads it to prove
+    there is one class per table. Two copies could disagree on a class, and the census would then
+    pass a layout the broker reads differently.
+
+    :param cls: a collection class
+    :ptype cls: type
+    :return: a ``schema``'s ``name``, or what a ``table_name`` property answers with the class
+        standing in for an instance; ``None`` when the table is named per instance
+    :rtype: str | None
+    """
+    name = getattr(getattr(cls, "schema", None), "name", None)
+    if isinstance(name, str):
+        return name
+    prop = inspect.getattr_static(cls, "table_name", None)
+    if isinstance(prop, property) and prop.fget is not None:
+        try:
+            answer: Any = prop.fget(cls)
+        # prawduct:allow prawduct/broad-except -- a getter that needs an instance names its table per instance
+        except Exception:  # noqa: BLE001
+            # NOSILENT: a getter that raises for the class standing in for an instance is the answer
+            return None
+        return answer if isinstance(answer, str) else None
+    return None
+
+
+def tables_with_write_generation() -> frozenset[str]:
+    """every table whose committed writes advance its write generation, by the classes defined here.
+
+    What the hub's L3 broker reads to decide which tables to advance after committing a pod's
+    write: the pod's collection and the broker's answer come from the same class, so they agree
+    exactly when one class names the table. A table is in the set when a collection class this
+    process has imported declares ``write_generation = WRITE_GENERATION`` or caches absences
+    (``negative_cache_max_age``), and names its table on the class. A class whose table is named
+    per instance is not readable here, and its table is not in the set: a pod switching such a
+    table on is told by its own advance, which raises, that the broker advanced nothing.
+
+    :return: the table names
+    :rtype: frozenset[str]
+    """
+    return frozenset(name for name in map(table_named_by_class, list(_GENERATION_CLASSES)) if name is not None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -567,6 +631,8 @@ class BaseCollection(ABC, Generic[EntityT]):
                 f"{cls.__name__}.negative_cache_sweep_batch must be at least 1, or a sweep could never "
                 f"remove an expired absent-marker; got {cls.negative_cache_sweep_batch}"
             )
+        if isinstance(cls.write_generation, WriteGeneration) or cls.negative_cache_max_age is not None:
+            _GENERATION_CLASSES.add(cls)
 
     # datasource-task-06 DS-06-04: per-concrete-class memo of table
     # names that have already emitted the "nats_client missing"
@@ -639,11 +705,12 @@ class BaseCollection(ABC, Generic[EntityT]):
             )
         if not self._negative_cache_writes_advance:
             return
-        if self._registry.generation_source is None:
+        if self._registry.readable_generation_source is None:
             raise ValueError(
                 f"{type(self).__name__} opts into negative caching but its registry has no generation "
-                f"source: nothing could invalidate a recorded absence when a write lands. wire "
-                f"registry.set_generation_source(...) before constructing it"
+                f"source it can read: nothing could invalidate a recorded absence when a write lands. "
+                f"wire registry.set_generation_source(...) with a source that reads before "
+                f"constructing it"
             )
         if self._declares_deferred_l3_writes:
             raise ValueError(
@@ -1410,7 +1477,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         return (
             self._negative_cache_writes_advance
             and self._nats_client is not None
-            and self._registry.generation_source is not None
+            and self._registry.readable_generation_source is not None
         )
 
     async def _current_generation(self) -> str | None:
@@ -1421,7 +1488,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         :return: the generation token, or ``None``
         :rtype: str | None
         """
-        source = self._registry.generation_source
+        source = self._registry.readable_generation_source
         if source is None:
             return None
         try:
@@ -1450,7 +1517,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         # in runs none of this path however it was assembled. L2 is deliberately not part of it.
         if not self._negative_cache_writes_advance:
             return None
-        source = self._registry.generation_source
+        # a source that cannot read leaves absence caching off, so there is no absence to invalidate
+        source = self._registry.readable_generation_source
         if source is None:
             return None
         try:
@@ -1486,7 +1554,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         Only a switched-on collection advances here (:attr:`_write_generation_on`). The advance is
         this registry's own, so its mark for the table accounts for it without a broadcast.
 
-        :param rows: how many row messages the commit publishes
+        :param rows: how many row messages the commit publishes; inside a settling transaction that
+            more than one instance of the table wrote, the shared advance's count is stamped instead
         :ptype rows: int
         :return: the generation written and the row count to stamp on those messages; a failure for
             the caller to raise once its write path has run; or nothing, when nothing was advanced
@@ -1495,10 +1564,37 @@ class BaseCollection(ABC, Generic[EntityT]):
         registry = self.registry
         if not self._write_generation_on or registry is None or rows < 1:
             return _NO_BUMP
+        shared = shared_advance_for(self.table_name)
+        if shared is None:
+            return await self._advance_for_commit(registry, rows)
+        if not isinstance(shared.bump, _Bump):
+            # the first instance of the table to settle advances it for every instance's rows
+            shared.bump = await self._advance_for_commit(registry, shared.rows)
+        elif shared.bump.token is not None:
+            registry.account_generation(self.table_name, shared.bump.token)
+        return shared.bump
+
+    async def _advance_for_commit(self, registry: CollectionRegistry, rows: int) -> _Bump:
+        """advance this table's write generation once, for a commit whose messages number ``rows``.
+
+        :param registry: this collection's registry, which carries a generation source
+        :ptype registry: CollectionRegistry
+        :param rows: how many row messages the commit publishes, across every instance of the table
+        :ptype rows: int
+        :return: what the advance came to
+        :rtype: _Bump
+        """
         source = registry.generation_source
         assert source is not None  # narrow: _write_generation_on
         try:
             token = await source.advance(self.table_name)
+        except GenerationNotCommittedError as exc:
+            # the commit did not land (a rolled-back transaction settling): nothing to advance
+            log.info(
+                "no write generation to advance: the commit these rows were written in did not land",
+                extra={"extra_data": {"table": self.table_name, "rows": rows, "error": str(exc)}},
+            )
+            return _Bump(failure=exc)
         except GenerationUnavailableError as exc:
             log.error(
                 "write generation could not be advanced after a committed write; a pod following "

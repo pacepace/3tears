@@ -14,6 +14,7 @@ from threetears.core.collections.generation import (
     GenerationVerdict,
     NoWriteGeneration,
     WriteGeneration,
+    source_reads,
 )
 from threetears.core.collections.scan_cache import ScanCache
 from threetears.core.exceptions import InvalidL2ScopeError, L2ScopeNotConfiguredError
@@ -539,6 +540,16 @@ class CollectionRegistry:
         :rtype: GenerationSource | None
         """
         return self._generation_source
+
+    @property
+    def readable_generation_source(self) -> GenerationSource | None:
+        """the wired source when it can read a table's generation, for absence caching; else ``None``.
+
+        :return: the source, or ``None`` when none is wired or it can only advance
+            (:func:`~threetears.core.collections.generation.source_reads`)
+        :rtype: GenerationSource | None
+        """
+        return self._generation_source if source_reads(self._generation_source) else None
 
     # ------------------------------------------------------------------
     # Following a table's write generation
