@@ -459,6 +459,22 @@ class TestTheTiersFromResults:
         assert f"needs {CALIBRATION_MIN_RESULTS} results" in tier_sentence(tier)
         assert (tier.separation.state, tier.separation.results_needed, tier.tier) == ("met", None, "separation")
 
+    def test_an_undefined_kappa_below_the_floor_still_says_how_many_more_results_it_needs(self) -> None:
+        """Every rating one value leaves kappa undefined; below the floor that is still a count short of it."""
+        tier = JudgeEvidenceTier(
+            rubric_dim=TONE,
+            scale="ordinal",
+            judge_model="j",
+            judge_config_id=None,
+            tier="undetermined",
+            calibration=calibration_criterion(7, 7, None),
+            separation=separation_criterion(0, 0, None),
+        )
+        assert tier.calibration.results_needed == CALIBRATION_MIN_RESULTS - 7
+        sentence = tier_sentence(tier)
+        assert "undefined over 7 pairs from 7 results" in sentence
+        assert f"needs {CALIBRATION_MIN_RESULTS - 7} more results" in sentence
+
     def test_nineteen_repeats_do_not(self) -> None:
         assert self._tiers(repeated=SEPARATION_MIN_RESULTS - 1).tier == "undetermined"
 

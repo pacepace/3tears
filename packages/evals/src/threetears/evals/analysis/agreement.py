@@ -868,7 +868,10 @@ def _criterion_words(criterion: TierCriterion) -> str:
     if criterion.n == 0:
         return f"not measured {bar} — needs {criterion.min_results} results"
     if criterion.agreement is None:
-        return f"undefined over {criterion.n} pairs {bar}"
+        # Undefined kappa below the floor is still short of the floor: the results it needs are stated as they are
+        # for a defined one, so the sentence never reads as though only the kappa were missing.
+        undefined = f"undefined over {criterion.n} pairs from {criterion.results} results {bar}"
+        return f"{undefined} — needs {needed} more results" if needed is not None else undefined
     over = f"over {criterion.n} pairs from {criterion.results} results"
     if criterion.interval is not None:
         low, high = criterion.interval
