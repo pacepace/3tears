@@ -93,6 +93,12 @@ records the config that asked for the score it repeats (``RepeatedScore.first_ju
 so a repeat under one judge prompt never measures another. A v7 analysis holding a judged reading cannot say
 what tier it stood on, so nothing written under v7 loads.
 
+**Within v8, not a bump**: ``RubricScore.axis`` joined as an OPTIONAL field — the rubric axis the judge
+stamped from the dimension's definition, so a boundary (guardrail) score stays out of the composite and
+pass^k. A score judged before it carries None, and is read as capability, which is how it was read then:
+its result's composite does not move, and the bundle names the dimensions read that way
+(``GuardrailReadings.unstamped_dimensions``) rather than presenting them as known capability.
+
 **Within v8, not a bump**: ``EvalResult.turns_delivered`` joined as an OPTIONAL field — how many turns the
 candidate delivered, which decides whether a model failure's time and spend are a turn's. A result written
 before it carries none and still means what it says; it reads as None, "nothing counted", and every reader
@@ -586,10 +592,15 @@ class GoalCheckControls(EvalDocumentModel):
 #: pass/fail; an existing 1–5 criterion keeps its scale until what it measures changes.
 RubricScale = Literal["ordinal", "pass_fail"]
 
-#: The two rubric axes a catalog dimension sits on: what a subject should DO (``capability``) and
-#: what it should refuse or withstand (``boundary``). One alias, because a dimension's stored axis
-#: and the axis a draft was proposed on are the same vocabulary — the proposer stamps the axis it
-#: ran on into the very field this validates.
+#: The two rubric axes a dimension sits on: what a subject should DO (``capability``) and what it
+#: should refuse or withstand (``boundary``). One alias, because a dimension's stored axis and the
+#: axis a draft was proposed on are the same vocabulary — the proposer stamps the axis it ran on into
+#: the very field this validates.
+#:
+#: **A boundary dimension is a guardrail, and the two axes are never added together.** The composite
+#: and pass^k are read over capability dimensions alone, a boundary dimension joins no comparison
+#: family, and the analysis bundle decides each one on its own against the control (``guardrails``):
+#: averaged in, a capability gain could pay for a guardrail loss and the sum would read as progress.
 RubricAxis = Literal["capability", "boundary"]
 
 #: The stored score a pass/fail answer becomes. 1 and 0, so a dimension's mean is its pass rate.
@@ -755,6 +766,14 @@ class RubricDim(EvalDocumentModel):
     description: str = Field(min_length=1)
     scale: RubricScale = Field(description="Integer 1–5 ('ordinal'), or 'pass_fail'. Stated, never assumed.")
     scoring_guide: dict[str, str] = Field(default_factory=dict)
+    axis: RubricAxis = Field(
+        default="capability",
+        description=(
+            "'capability' = something the subject should do well, read into the composite and pass^k; "
+            "'boundary' = something it must not do (leak, comply with an unsafe ask, break policy), a guardrail "
+            "that is decided on its own and never averaged with capability. The judge stamps it onto each score."
+        ),
+    )
 
     @model_validator(mode="after")
     def _guide_matches_the_scale(self) -> RubricDim:
@@ -821,6 +840,15 @@ class RubricScore(EvalDocumentModel):
 
     dim: DimName = Field(min_length=1)
     scale: RubricScale = Field(description="The dimension's scale when it was judged.")
+    axis: RubricAxis | None = Field(
+        default=None,
+        description=(
+            "The dimension's axis when it was judged, stamped by the judge from the dimension's definition. "
+            "'boundary' scores are guardrail readings and enter neither the composite nor pass^k. None = judged "
+            "before the axis was stamped, so which axis it served is not recorded; it is read as capability, "
+            "which is how every score was read then, and re-judging stamps it."
+        ),
+    )
     score: int = Field(description="1–5 on the ordinal scale; 1 (pass) or 0 (fail) on pass/fail.")
     reasoning: ModelProse = Field(default="")
     served_model: str | None = Field(
@@ -912,7 +940,10 @@ class ProposedTemplate(EvalBaseModel):
     intent: str = Field(min_length=1, description="What this template tests.")
     rubric: list[RubricDim] = Field(
         default_factory=list,
-        description="Subjective capability dims (reused catalog dims + novel ones) the judge would score.",
+        description=(
+            "The dims the judge would score (reused catalog dims + novel ones), each on the axis the proposer "
+            "ran on: capability dims from the capability proposer, boundary dims from the boundary proposer."
+        ),
     )
     variation_axes: list[VariationAxis] = Field(
         default_factory=list,

@@ -409,6 +409,38 @@ class MetricDescriptor(EvalBaseModel):
         ),
     )
 
+    guardrail: bool = Field(
+        default=False,
+        description=(
+            "True for a measure the candidate must not get worse on — a destructive call, a leak, a policy "
+            "breach counted per result — as opposed to one it should get better on. A guardrail is never "
+            "optimized: it serves no merit axis, joins no comparison family and no composite, and the bundle "
+            "decides it on its own for each arm against the control (`guardrails`): held, breached or "
+            "undecided against its `materiality_threshold` as the margin, or at zero change when it declares "
+            "none. Requires a better end, since 'worse' needs a direction, and no merit axis."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _a_guardrail_is_satisficed_not_optimized(self) -> MetricDescriptor:
+        """Refuse a guardrail with no better end, or one on a merit axis.
+
+        A guardrail is held or breached, which needs a direction. And a merit axis is what every optimizing
+        surface reads — a comparison family, a frontier, a merit tier — so a guardrail on one would be traded
+        against the axis's other measures exactly where it must be held on its own.
+        """
+        if self.guardrail and self.higher_is_better is None:
+            raise ValueError(
+                f"{self.name} is declared a guardrail with no better end: a guardrail is held or breached, "
+                "which needs higher_is_better"
+            )
+        if self.guardrail and self.merit_axis is not None:
+            raise ValueError(
+                f"{self.name} is declared a guardrail on the {self.merit_axis} merit axis: a guardrail is held, "
+                "never optimized, and a merit axis is what the optimizing surfaces read; drop one of the two"
+            )
+        return self
+
     @model_validator(mode="after")
     def _delivered_is_for_a_turns_time_or_spend(self) -> MetricDescriptor:
         """Refuse ``population="delivered"`` on a measure that is not a turn's time or spend.

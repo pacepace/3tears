@@ -82,6 +82,7 @@ from threetears.evals.contracts.scoring import (
     pass_hat_k_cell,
     pool_pass_hat_k,
     pool_pass_hat_k_attempts,
+    capability_scores,
     result_composite,
 )
 from threetears.observe import get_logger
@@ -1390,7 +1391,7 @@ def project_score_records(
             ScoreRecord(
                 metric=METRIC_COMPOSITE,
                 value=composite,
-                dimension_basis=sorted({score.dim for score in result.rubric_scores})
+                dimension_basis=sorted({score.dim for score in capability_scores(result)})
                 if composite is not None
                 else None,
                 host_measures=result.host_measures,

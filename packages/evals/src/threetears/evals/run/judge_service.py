@@ -58,6 +58,7 @@ from threetears.evals.contracts.models import (
     JudgeEvidence,
     RoleUsage,
     RubricDim,
+    RubricAxis,
     RubricScale,
     RubricScore,
     UsageRole,
@@ -316,6 +317,8 @@ class JudgeRequest(NamedTuple):
     label: str
     #: Whether the evidence carries the goal-state outcomes (the transcript axis's does not).
     include_goal_outcomes: bool
+    #: The dimension's rubric axis, stamped onto its score: a boundary dimension is a guardrail.
+    axis: RubricAxis = "capability"
 
 
 def _request(
@@ -328,6 +331,7 @@ def _request(
     scale: RubricScale,
     include_goal_outcomes: bool,
     document: bool = False,
+    axis: RubricAxis = "capability",
 ) -> JudgeRequest:
     """Compose one call's system prompt from its instructions and the JSON-format contract.
 
@@ -356,6 +360,7 @@ def _request(
         scale=scale,
         label=label,
         include_goal_outcomes=include_goal_outcomes,
+        axis=axis,
     )
 
 
@@ -519,6 +524,7 @@ class JudgeService:
             scale=dim.scale,
             include_goal_outcomes=True,
             document=document,
+            axis=dim.axis,
         )
 
     # ------------------------------------------------------------------
@@ -572,6 +578,7 @@ class JudgeService:
             score=RubricScore(
                 dim=dim_id,
                 scale=request.scale,
+                axis=request.axis,
                 score=score_int,
                 # A string by the time it gets here: ``run_judge_llm`` refuses a reply whose
                 # reasoning is not one as a parse failure, so it cannot fail this construction
