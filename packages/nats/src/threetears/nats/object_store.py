@@ -60,6 +60,7 @@ from threetears.nats.errors import (
     ObjectExistsError,
     ObjectNotFoundError,
     ObjectStoreError,
+    ObjectStoreFullError,
     ObjectStoreNotFoundError,
     PublishTimeoutError,
 )
@@ -485,7 +486,7 @@ class NatsObjectStore:
                     name=name,
                 ) from exc
             if code in _JS_ERR_STORE_FULL:
-                raise ObjectStoreError(
+                raise ObjectStoreFullError(
                     f"object store {self._full_name} is full: writing {name!r} would pass its max_bytes. retire "
                     f"objects no longer served, or raise the bucket's bound"
                 ) from exc

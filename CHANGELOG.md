@@ -6,6 +6,23 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Scoped snapshot: chunks no pointer serves are retired, and a full store recovers on its own
+
+A tool pod's Object Store filled with chunks nothing served: a catch-up that failed part way (on a
+full store) retired the old chunks of none of the scopes it had moved, a write that never committed
+kept its stages above the pointers, and once the store was full every publish was refused, so
+nothing was ever retired again. Live, 40 MB of a 64 MiB store was unserved (one whole copy is 26 MB),
+and every refresh fell back to rebuilding the copy from L3.
+
+- **Changed, `ScopedSnapshot`**: a rebuild or catch-up retires each scope's older chunks as soon as
+  its pointer moves, not after the whole run; a chunk write the store refuses as full sweeps what no
+  pointer serves (`_Sweeper.deletable`, the one rule) and is tried once more.
+- **Added, `ScopedSnapshot.discard_staged(staged)`** (the writer of a write that will not commit gives
+  its stages back) and **`ScopedSnapshot.discard_epoch(epoch)`** (a writer taking over a dead write
+  retires that write's epoch; chunks a pointer names are kept).
+- **Added, `threetears.nats.ObjectStoreFullError`**, an `ObjectStoreError` raised for a write past the
+  store's `max_bytes`.
+
 ### Core coordination: a fence on a producer's ready signal
 
 - **Added, `threetears.core.coordination.source_token`**: `SourceToken` (the producer's run and the

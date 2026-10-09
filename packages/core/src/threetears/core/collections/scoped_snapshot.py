@@ -50,7 +50,13 @@ it read only when no write committed meanwhile (``settled``, the writer's seqloc
 (``retire``), in batches the declarer accepts, and only as one rule allows (``_Sweeper.deletable``), judged
 against the scope's pointer as KV holds it: never a chunk the pointer names or one above its epoch
 (a writer's stage), always a superseded one below it, and an unnamed one at its epoch or of a scope
-with no pointer only once it is older than ``stray_age``. A reader that lost the race to a retired
+with no pointer only once it is older than ``stray_age``. A scope's older chunks go as soon as its
+pointer moves, whichever path moved it (a publish, a staged publish, a rebuild or a catch-up), so a
+run that fails part way leaves nothing superseded behind for the scopes it did move. A write that
+never commits gives its stages back itself: its writer discards them (:meth:`ScopedSnapshot.discard_staged`),
+and a writer taking over from one that died names the dead write's epoch
+(:meth:`ScopedSnapshot.discard_epoch`). A store found full is swept by the same rule and the write
+tried once more, so it recovers on its own. A reader that lost the race to a retired
 chunk reads the scope's pointer again and fetches its current chunks; a scope whose chunks still
 cannot be read is shown behind, retried at the recheck, and rebuilt from L3 after three failures.
 
@@ -766,6 +772,61 @@ class _Sweeper:
                 continue
             if (emptied is not None and chunk_epoch <= emptied) or self.deletable(info, chunk_epoch, reference, now):
                 stale.append(info.name)
+        await self.retire_names(stale)
+
+    async def retire_staged(self, staged: Sequence[StagedScope]) -> None:
+        """retire what a write that will never commit staged; never raises.
+
+        Only its writer knows a write is abandoned (an epoch is a write's version, never handed out
+        twice), so it asks: each staged chunk goes unless its scope's pointer, read from KV, names it.
+
+        :param staged: the scopes the abandoned write staged
+        :ptype staged: Sequence[StagedScope]
+        :return: nothing
+        :rtype: None
+        """
+        if self._retire is None or not staged:
+            return
+        stale: list[str] = []
+        try:
+            for scope in staged:
+                reference = await self.pointer_now(self._layout.pointer_key(scope.scope))
+                named = set() if reference is None else set(reference.objects.values())
+                stale += [name for name in scope.objects.values() if name not in named]
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- housekeeping, as in retire_names
+            log.warning("scoped snapshot %s: reading the pointers of discarded stages failed: %s", self._name, exc)
+            return
+        await self.retire_names(stale)
+
+    async def retire_epoch(self, epoch: int) -> None:
+        """retire every chunk written at ``epoch`` that no pointer names; never raises.
+
+        For a write that died before it committed: the writer taking over knows its version is dead
+        and names it. A chunk a pointer names at that epoch is served and kept.
+
+        :param epoch: the dead write's epoch
+        :ptype epoch: int
+        :return: nothing
+        :rtype: None
+        """
+        if self._retire is None:
+            return
+        try:
+            infos = await self._store.list_objects(prefix=self._layout.objects_prefix)
+            by_token: dict[str, list[ObjectInfo]] = {}
+            for info in infos:
+                token = self._layout.token_of(info.name)
+                if token is not None and self._layout.epoch_in_token(token, info.name) == epoch:
+                    by_token.setdefault(token, []).append(info)
+            pointers = {token: await self.pointer_now(self._layout.pointer_key_of_token(token)) for token in by_token}
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- housekeeping, as in retire_names
+            log.warning("scoped snapshot %s: listing epoch %d's chunks failed: %s", self._name, epoch, exc)
+            return
+        stale = []
+        for token, scope_infos in by_token.items():
+            reference = pointers[token]
+            named = set() if reference is None else set(reference.objects.values())
+            stale += [info.name for info in scope_infos if info.name not in named]
         await self.retire_names(stale)
 
     async def retire_unreferenced(self) -> None:
@@ -1872,13 +1933,25 @@ class ScopedSnapshot:
         :return: the chunk's name
         :rtype: str
         """
-        from threetears.nats import ObjectExistsError  # noqa: PLC0415
+        from threetears.nats import ObjectExistsError, ObjectStoreFullError  # noqa: PLC0415
 
         data = await asyncio.to_thread(encode_chunk, arrow)
         name = self._layout.object_name(scope, epoch, table.name)
         # NOSILENT: a replica rebuilding the same scope at the same epoch under the same columns wrote the same rows
         with suppress(ObjectExistsError):
-            await self._store.put(name, data)
+            try:
+                await self._store.put(name, data)
+            except ObjectStoreFullError:
+                # what the store holds that no pointer serves (superseded chunks, a dead write's
+                # stages) is what fills it; swept by the one rule, the write is tried once more,
+                # and a store still full after that is said so by the second refusal
+                log.warning(
+                    "scoped snapshot %s: the object store is full writing %r; retiring what no pointer serves",
+                    self._name,
+                    name,
+                )
+                await self._sweeper.retire_unreferenced()
+                await self._store.put(name, data)
         return name
 
     async def stage(self, scope: str, epoch: int, rows: Mapping[str, Sequence[Mapping[str, Any]]]) -> StagedScope:
@@ -1889,8 +1962,9 @@ class ScopedSnapshot:
         its rows are written to L3, keeping only the compressed chunks rather than every row, and
         after its commit moves every pointer at once (:meth:`publish_staged`). Nothing reads a
         staged chunk until its pointer moves, so a write that never commits shows nothing. A staged
-        chunk is above its scope's pointer, which no retirement touches (:meth:`_Sweeper.deletable`); if its
-        write never commits, the scope's next publish retires it.
+        chunk is above its scope's pointer, which no sweep by the rule touches (:meth:`_Sweeper.deletable`); if
+        its write never commits, its writer gives it back (:meth:`discard_staged`, or :meth:`discard_epoch`
+        from the writer that takes over a dead one), and failing that the scope's next publish retires it.
 
         :param scope: the scope; never ``None``
         :ptype scope: str
@@ -1932,6 +2006,34 @@ class ScopedSnapshot:
             primary_key=table.key,
             order_by=table.key,
         )
+
+    async def discard_staged(self, staged: Sequence[StagedScope]) -> None:
+        """give back what a write that will never commit staged: its chunks are retired now.
+
+        For the writer whose write failed or was abandoned before its commit. Never raises: the
+        chunks are housekeeping, and a failure leaves them for :meth:`discard_epoch` or a full
+        store's sweep.
+
+        :param staged: the scopes the write staged
+        :ptype staged: Sequence[StagedScope]
+        :return: nothing
+        :rtype: None
+        """
+        await self._sweeper.retire_staged(staged)
+
+    async def discard_epoch(self, epoch: int) -> None:
+        """retire every chunk of a write that died before it committed, by its epoch.
+
+        For a writer taking over from one that died mid-write: the dead write's version (its epoch)
+        never commits, so nothing will ever serve what it staged. Chunks a pointer names are kept.
+        Never raises.
+
+        :param epoch: the dead write's epoch
+        :ptype epoch: int
+        :return: nothing
+        :rtype: None
+        """
+        await self._sweeper.retire_epoch(epoch)
 
     async def publish_staged(
         self, staged: Sequence[StagedScope], *, carry_at: Mapping[str, int], whole: bool = False
@@ -2316,8 +2418,13 @@ class ScopedSnapshot:
             log.info("scoped snapshot %s: a write committed during the rebuild; reading again", self._name)
         else:
             for scope in scopes:
+                epoch = int(epochs.get(scope, 0))
                 async with self._local:
-                    await self._publish_locked(scope, int(epochs.get(scope, 0)), read[scope])
+                    moved = await self._publish_locked(scope, epoch, read[scope])
+                if moved is not None:
+                    # at once, scope by scope: a rebuild that fails at a later scope (a full store)
+                    # still leaves nothing superseded behind for the scopes it did move
+                    await self._sweeper.retire_older(scope, epoch)
             await self._update_index(add=scopes, whole=only is None)
             gone = set() if only is not None else set(self._index or ()) - l3_scopes
             if gone:

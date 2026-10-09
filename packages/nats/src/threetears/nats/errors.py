@@ -262,6 +262,14 @@ class ObjectStoreError(NatsClientError):
     """
 
 
+class ObjectStoreFullError(ObjectStoreError):
+    """raised when a write would take an Object Store past its ``max_bytes``.
+
+    the store holds what it holds until objects are deleted: a writer that can name the objects no
+    longer served (superseded, or written by a write that never committed) retires them and tries again.
+    """
+
+
 class ObjectStoreNotFoundError(ObjectStoreError):
     """raised when an Object Store bucket does not exist: the server ANSWERED that its stream is absent.
 
