@@ -29,7 +29,11 @@ follows one. An unchanged collection writes exactly as before.
   opts out is refused when it is defined.
 - **Added, `BaseCollection.invalidation_columns`**: column names whose values ride on every row
   message the collection publishes, from the row the write saw. A delete reads the row before
-  deleting it, and only for a collection that declares columns.
+  deleting it, and only for a collection that declares columns; so does
+  `SchemaBackedCollection.delete_rows`, once per key, on the caller's transaction.
+- **Added, `BaseCollection.L2_READ_THROUGH_LIMIT`** (10,000): how many keys read through from L3
+  since a table drop are remembered as trusted again. Past it the oldest is distrusted again and
+  costs one more L3 read.
 - **Added:** a failed advance after a committed write raises `GenerationUnavailableError` from
   `delete`, `invalidate_cache`, `invalidate_cache_many`, `bypassing_write`, `CallerTransaction`
   and `flush_pending`, on a switched-on collection only, after the rest of the write path has

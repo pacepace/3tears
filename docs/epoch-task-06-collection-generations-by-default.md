@@ -509,7 +509,9 @@ are under "What the Migrate Stages Need".
   collection then writes as an undeclared one does.
 - **`BaseCollection.invalidation_columns`**, a tuple of column names. Their values ride on the
   row message, from the row the write saw. A delete reads the row before it deletes it, from L3
-  when there is one, and only for a collection that declares columns.
+  when there is one, and only for a collection that declares columns. A bulk delete
+  (`SchemaBackedCollection.delete_rows`) does the same, one read per key, on the caller's
+  transaction.
 - **Every write path advances once per commit on a switched-on collection**: `save_entity`,
   `delete`, a won `l2_cas_mutate`, a subscript write, `invalidate_cache`,
   `invalidate_cache_many`, `bypassing_write`, `CallerTransaction` settling (once per collection,
@@ -602,8 +604,17 @@ pod's grant on the collections bucket carries no consumer. So after a drop each 
 distrusted until this process has read it through from L3 once. A live L2 row for a distrusted
 key is read past, as an expired row already is, and replaced by the L3 row at the revision it
 was read at, so a writer's newer value still wins. If L3 no longer holds the row, the stale
-entry is deleted at that revision. The key is trusted again once the entry has moved on. A read
-or write in flight when the table drops does not cache what it read.
+entry is deleted at that revision. The key is trusted again once the entry has moved on, unless
+another drop landed while it was being read through. A read or write in flight when the table
+drops does not cache what it read. The record of keys trusted again since the last drop is
+bounded (`BaseCollection.L2_READ_THROUGH_LIMIT`, 10,000 keys by default). Past the bound the
+oldest key is forgotten, which costs it one more read through L3 and nothing else.
+
+**A row withdrawn because its write did not land advances nothing.** A subscript write whose L3
+write raised, or that the store refused, takes its row out of L1 and L2 and announces it with no
+generation: nothing committed. One that committed and could not be read back is withdrawn the
+same way and carries its advance. The public `invalidate_cache` always advances, because its
+callers use it for a row changed by SQL the collection did not see.
 
 **Where it does not apply.** A write-behind table and a table whose rows a compare-and-swap
 orders keep L2 ahead of L3 on purpose, so reading L3 there would put an older row over a newer
@@ -648,6 +659,25 @@ a method of their own and advance nothing: the presence rooms (`threetears.chann
 collection`), `HeartbeatCollection`, the tool collections in `threetears.agent.tools.
 collections`, and `ObjectResolutionCollection`. None is switched on. The enforcement test fails
 any of them that is switched on before its own publishes carry an advance.
+
+### Test Evidence
+
+Run at `823f5689` on 2026-10-09 with the workspace's locked tools, serially:
+
+- every unit suite, `pytest packages/ tests/ -m "not integration"`: 25,642 passed, 320 skipped,
+  none failed. None of the skips is in core, epoch or nats except one baseline enforcement skip.
+  Recorded as this repository's test evidence (`prawduct-hook test-evidence record`).
+- integration, `-m integration -rs` over core, epoch and nats, against docker: 329 passed, no
+  skips.
+- `ruff check`, `ruff format --check` and `mypy` (868 files) clean.
+
+Each test added for review `rev-20261009T010436Z-d86af247` was checked by breaking the code it
+names and watching it fail:
+- each bump return in `_persist_cas_result`, and the raise after a failed swap advance;
+- each of `_distrusts_l2`'s three exclusions;
+- the guard against re-trusting a key during a second drop;
+- the bump on a withdrawn row that committed, and routing either failure withdrawal through
+  `invalidate_cache`.
 
 ### What the Migrate Stages Need
 
