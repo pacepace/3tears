@@ -196,9 +196,14 @@ class AccessTableFollower:
                 "an access-table follower needs the registry's invalidation listener running first: it "
                 "hears the rows each watch judges against, and an advance judged without them reads as missed"
             )
+        # every table followed first, then one watch task each: start() does not yield, so no watch is
+        # pushed a value before its table is followed. The tasks are a fixed set, one per table, held to
+        # be stopped -- nothing is accumulated or flushed
         for table in self._tables:
             self._registry.follow_generation(table)
-            self._tasks.append(asyncio.create_task(self._watch(table), name=f"follow-generation:{table}"))
+        self._tasks = [
+            asyncio.create_task(self._watch(table), name=f"follow-generation:{table}") for table in self._tables
+        ]
         log.info("following the access tables' write generations", extra={"extra_data": {"tables": self._tables}})
 
     async def stop(self) -> None:
