@@ -920,8 +920,10 @@ and `fetch_embeddings` were the framework's line for line and are inherited.
 Run on 2026-10-09 with each main checkout's locked tools and the three worktrees first on the path,
 serially (the hub's sets at `-n 4`):
 
-- 3tears: `./scripts/check-all.sh` and the integration suite over core, epoch and nats, recorded
-  in the evidence store (`prawduct-hook test-evidence record`); see the review fixes below.
+- 3tears, after the review fixes (`54a1a221`), serially: the unit suites of the packages this stage
+  touches (core, epoch, agent tools, enforcement, and `tests/enforcement`), and the integration
+  suites of core and nats against Docker, none failed and no integration test skipped; recorded in
+  the evidence store (`prawduct-hook test-evidence record`). `ruff` and `mypy` (872 files) clean.
 - Hub, `tests/unit tests/enforcement -m "not integration"`: all passed after rebasing on
   `feature/reports`. `ruff` clean; `mypy src` clean.
 - SDK, `tests/unit tests/enforcement`: all passed. `ruff` and `mypy src` clean.
