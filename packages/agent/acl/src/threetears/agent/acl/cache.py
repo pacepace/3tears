@@ -38,6 +38,21 @@ invalidation is the responsibility of the caller's pub/sub layer
 (broker publishes ``{ns}.acl.<layer>.invalidate`` events on every
 mutation; subscribers translate those events to local
 :meth:`AclCache.invalidate_*` calls).
+
+**row by row, from the access tables' write generations.** the four
+tables every entry is derived from (``groups``, ``group_members``,
+``roles``, ``role_assignments``) carry write generations, and
+:mod:`threetears.agent.acl.generation_follow` hands each of their row
+broadcasts to the ``evict_*_row`` method of that table, which evicts
+exactly the entries the row reaches. a layer is emptied only when the
+reach of a change is unknown: a row that does not say which member or
+group it names, or a table dropped because a broadcast was missed.
+
+**the read fence.** an entry computed from rows read before an eviction
+must not be stored after it: the eviction would be undone. a caller
+takes :meth:`AclCache.read_fence` before its loader reads and passes it
+to ``put_*``; a store whose fence an eviction has since moved is
+skipped, and the next lookup reads again.
 """
 
 from __future__ import annotations
@@ -141,11 +156,16 @@ class GroupNamespaceEntry:
         cached so trail-mode lookups via the explain api can pull
         the same rows the decision-mode lookup used
     :ivar date_cached: utc moment the entry was minted
+    :ivar role_ids: every role the resolution read for the group's covering
+        assignments, so an edit of any of them evicts this entry and no
+        other; ``None`` when the caller did not say, which a role edit
+        treats as reaching it
     """
 
     actions: frozenset[str]
     trails: tuple[Trail, ...]
     date_cached: datetime
+    role_ids: frozenset[UUID] | None = None
 
 
 @dataclass(frozen=True)
@@ -223,6 +243,31 @@ class AclCache:
             GroupTypeCustomerEntry,
         ] = {}
         self._lock = RLock()
+        # moved by every eviction; see :meth:`read_fence`
+        self._evictions = 0
+
+    # -----------------------------------------------------------------
+    # the read fence
+    # -----------------------------------------------------------------
+
+    def read_fence(self) -> int:
+        """take before reading what an entry will be computed from; pass to ``put_*``.
+
+        :return: a token that an eviction after this call invalidates
+        :rtype: int
+        """
+        with self._lock:
+            return self._evictions
+
+    def _fence_moved(self, fence: int | None) -> bool:
+        """whether an eviction landed since ``fence`` was taken. caller holds the lock.
+
+        :param fence: from :meth:`read_fence`, or ``None`` when the caller took none
+        :ptype fence: int | None
+        :return: ``True`` when the entry must not be stored
+        :rtype: bool
+        """
+        return fence is not None and fence != self._evictions
 
     # -----------------------------------------------------------------
     # membership layer
@@ -254,6 +299,8 @@ class AclCache:
         self,
         key: ActorMembershipKey,
         memberships: tuple[GroupMembership, ...],
+        *,
+        fence: int | None = None,
     ) -> ActorMembershipEntry:
         """insert or replace a membership entry.
 
@@ -262,7 +309,11 @@ class AclCache:
         :param memberships: tuple of :class:`GroupMembership` rows
             the actor belongs to
         :ptype memberships: tuple[GroupMembership, ...]
-        :return: stored entry (with freshly-stamped ``date_cached``)
+        :param fence: :meth:`read_fence` as taken before the rows were read;
+            the entry is not stored when an eviction has landed since
+        :ptype fence: int | None
+        :return: the entry (with freshly-stamped ``date_cached``), stored
+            unless the fence moved
         :rtype: ActorMembershipEntry
         """
         entry = ActorMembershipEntry(
@@ -270,7 +321,8 @@ class AclCache:
             date_cached=datetime.now(UTC),
         )
         with self._lock:
-            self._membership[key] = entry
+            if not self._fence_moved(fence):
+                self._membership[key] = entry
         return entry
 
     def invalidate_membership(self, key: ActorMembershipKey) -> None:
@@ -287,6 +339,7 @@ class AclCache:
         :rtype: None
         """
         with self._lock:
+            self._evictions += 1
             self._membership.pop(key, None)
 
     def invalidate_membership_for_actor(
@@ -342,6 +395,9 @@ class AclCache:
         key: GroupNamespaceKey,
         actions: frozenset[str],
         trails: tuple[Trail, ...],
+        *,
+        role_ids: frozenset[UUID] | None = None,
+        fence: int | None = None,
     ) -> GroupNamespaceEntry:
         """insert or replace a per-namespace entry.
 
@@ -351,16 +407,23 @@ class AclCache:
         :ptype actions: frozenset[str]
         :param trails: trail rows produced during resolution
         :ptype trails: tuple[Trail, ...]
-        :return: stored entry
+        :param role_ids: every role the resolution read; ``None`` when unknown
+        :ptype role_ids: frozenset[UUID] | None
+        :param fence: :meth:`read_fence` as taken before the rows were read;
+            the entry is not stored when an eviction has landed since
+        :ptype fence: int | None
+        :return: the entry, stored unless the fence moved
         :rtype: GroupNamespaceEntry
         """
         entry = GroupNamespaceEntry(
             actions=actions,
             trails=trails,
             date_cached=datetime.now(UTC),
+            role_ids=role_ids,
         )
         with self._lock:
-            self._group_namespace[key] = entry
+            if not self._fence_moved(fence):
+                self._group_namespace[key] = entry
         return entry
 
     def invalidate_group_namespace(self, key: GroupNamespaceKey) -> None:
@@ -372,6 +435,7 @@ class AclCache:
         :rtype: None
         """
         with self._lock:
+            self._evictions += 1
             self._group_namespace.pop(key, None)
 
     def invalidate_namespace(self, namespace_id: UUID) -> None:
@@ -387,6 +451,7 @@ class AclCache:
         :rtype: None
         """
         with self._lock:
+            self._evictions += 1
             doomed = [key for key in self._group_namespace if key.namespace_id == namespace_id]
             for key in doomed:
                 del self._group_namespace[key]
@@ -409,6 +474,7 @@ class AclCache:
         :rtype: None
         """
         with self._lock:
+            self._evictions += 1
             ns_doomed = [ns_key for ns_key in self._group_namespace if ns_key.group_id == group_id]
             for ns_key in ns_doomed:
                 del self._group_namespace[ns_key]
@@ -447,6 +513,8 @@ class AclCache:
         key: GroupTypeCustomerKey,
         actions: frozenset[str],
         trails: tuple[Trail, ...],
+        *,
+        fence: int | None = None,
     ) -> GroupTypeCustomerEntry:
         """insert or replace a type+customer entry.
 
@@ -457,7 +525,10 @@ class AclCache:
         :ptype actions: frozenset[str]
         :param trails: trail rows produced during resolution
         :ptype trails: tuple[Trail, ...]
-        :return: stored entry
+        :param fence: :meth:`read_fence` as taken before the rows were read;
+            the entry is not stored when an eviction has landed since
+        :ptype fence: int | None
+        :return: the entry, stored unless the fence moved
         :rtype: GroupTypeCustomerEntry
         """
         entry = GroupTypeCustomerEntry(
@@ -466,7 +537,8 @@ class AclCache:
             date_cached=datetime.now(UTC),
         )
         with self._lock:
-            self._group_type_customer[key] = entry
+            if not self._fence_moved(fence):
+                self._group_type_customer[key] = entry
         return entry
 
     def invalidate_group_type_customer(
@@ -481,6 +553,7 @@ class AclCache:
         :rtype: None
         """
         with self._lock:
+            self._evictions += 1
             self._group_type_customer.pop(key, None)
 
     # -----------------------------------------------------------------
@@ -499,7 +572,114 @@ class AclCache:
         :rtype: None
         """
         with self._lock:
+            self._evictions += 1
             self._membership.clear()
+            self._group_namespace.clear()
+            self._group_type_customer.clear()
+
+    # -----------------------------------------------------------------
+    # row by row, from the access tables
+    # -----------------------------------------------------------------
+
+    def evict_group_member_row(self, member_kind: str | None, member_id: UUID | None) -> None:
+        """a ``group_members`` row changed: evict the membership entry of the member it names.
+
+        a group's row (``member_kind == "group"``) evicts that child group's
+        parent entry and nothing else; every actor beneath it walks the
+        parents at read. a row that does not name its member (an older
+        writer, a raw path) has an unknown reach, so the membership layer is
+        emptied; the assignment layers are not derived from this table.
+
+        :param member_kind: the row's ``member_type``, or ``None`` when unknown
+        :ptype member_kind: str | None
+        :param member_id: the row's ``member_id``, or ``None`` when unknown
+        :ptype member_id: UUID | None
+        :return: nothing
+        :rtype: None
+        """
+        if member_kind is None or member_id is None:
+            self.drop_membership_layer()
+        else:
+            self.invalidate_membership_for_actor(member_kind, member_id)
+
+    def evict_role_assignment_row(self, group_id: UUID | None) -> None:
+        """a ``role_assignments`` row changed: evict the assignment entries of the group it grants to.
+
+        :param group_id: the row's ``group_id``, or ``None`` when the row did
+            not say, which empties both assignment layers
+        :ptype group_id: UUID | None
+        :return: nothing
+        :rtype: None
+        """
+        if group_id is None:
+            self.drop_assignment_layers()
+        else:
+            self.invalidate_group(group_id)
+
+    def evict_role_row(self, role_id: UUID) -> None:
+        """a ``roles`` row changed: evict every assignment entry whose resolution read that role.
+
+        an entry that did not record its roles is evicted too, as is every
+        type+customer entry, which records none.
+
+        :param role_id: the role
+        :ptype role_id: UUID
+        :return: nothing
+        :rtype: None
+        """
+        with self._lock:
+            self._evictions += 1
+            doomed = [
+                key
+                for key, entry in self._group_namespace.items()
+                if entry.role_ids is None or role_id in entry.role_ids
+            ]
+            for key in doomed:
+                del self._group_namespace[key]
+            self._group_type_customer.clear()
+
+    def evict_group_row(self, group_id: UUID) -> None:
+        """a ``groups`` row changed: evict what was resolved through that group.
+
+        its assignment entries; its own parent entry (``("group", id)``); and
+        every membership entry that names it. deleting a group cascades its
+        memberships away in the database, so an actor entry still naming it
+        would otherwise walk to the deleted group's parents.
+
+        :param group_id: the group
+        :ptype group_id: UUID
+        :return: nothing
+        :rtype: None
+        """
+        with self._lock:
+            self.invalidate_group(group_id)
+            self._membership.pop(ActorMembershipKey(actor_kind="group", actor_id=group_id), None)
+            doomed = [
+                key
+                for key, entry in self._membership.items()
+                if any(membership.group_id == group_id for membership in entry.memberships)
+            ]
+            for key in doomed:
+                del self._membership[key]
+
+    def drop_membership_layer(self) -> None:
+        """empty the membership layer, for a change to ``group_members`` whose reach is unknown.
+
+        :return: nothing
+        :rtype: None
+        """
+        with self._lock:
+            self._evictions += 1
+            self._membership.clear()
+
+    def drop_assignment_layers(self) -> None:
+        """empty both assignment layers, for a change to ``role_assignments`` or ``roles`` whose reach is unknown.
+
+        :return: nothing
+        :rtype: None
+        """
+        with self._lock:
+            self._evictions += 1
             self._group_namespace.clear()
             self._group_type_customer.clear()
 

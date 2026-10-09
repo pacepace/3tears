@@ -138,6 +138,8 @@ def _permissions(principal: Principal) -> PrincipalPermissions:
     try:
         if principal is Principal.AGENT_POD:
             return build_permissions(principal, agent_id=_AGENT, pod_id=_POD, conn_id=_POD)
+        if principal is Principal.REGISTRY:
+            return build_permissions(principal, conn_id=_POD)
         return build_permissions(principal, pod_id=_POD, conn_id=_POD)
     finally:
         set_default_namespace(previous)
@@ -169,7 +171,7 @@ async def _connect(uri: str, *, user: str, password: str, inbox_prefix: str | No
     )
 
 
-@pytest.mark.parametrize("principal", [Principal.AGENT_POD, Principal.TOOL_POD])
+@pytest.mark.parametrize("principal", [Principal.AGENT_POD, Principal.TOOL_POD, Principal.REGISTRY])
 async def test_a_pod_follows_a_generation_and_cannot_advance_it(principal: Principal, tmp_path: Path) -> None:
     """the reader binds, reads and watches under the pod's grant; the pod's own advance is refused."""
     if not check_docker_available():

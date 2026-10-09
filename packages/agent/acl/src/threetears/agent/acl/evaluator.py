@@ -590,11 +590,12 @@ async def _resolve_side(
     if membership_entry is not None:
         memberships = membership_entry.memberships
     else:
+        fence = cache.read_fence()
         if member_type == MemberType.USER:
             memberships = await cache.membership_loader.load_for_user(actor_id)
         else:
             memberships = await cache.membership_loader.load_for_agent(actor_id)
-        cache.put_membership(membership_key, memberships)
+        cache.put_membership(membership_key, memberships, fence=fence)
 
     eligible = _filter_memberships(
         memberships=memberships,
@@ -684,12 +685,13 @@ async def _accumulate_groups(
             trails_acc.extend(ns_entry.trails)
             continue
 
-        group_actions, group_trails = await _resolve_group_for_namespace(
+        fence = cache.read_fence()
+        group_actions, group_trails, role_ids = await _resolve_group_for_namespace(
             group_id=group_id,
             namespace=namespace,
             cache=cache,
         )
-        cache.put_group_namespace(ns_key, group_actions, group_trails)
+        cache.put_group_namespace(ns_key, group_actions, group_trails, role_ids=role_ids, fence=fence)
         actions_acc.update(group_actions)
         trails_acc.extend(group_trails)
 
@@ -709,7 +711,7 @@ async def _resolve_group_for_namespace(
     group_id: UUID,
     namespace: Namespace,
     cache: AclCache,
-) -> tuple[frozenset[str], tuple[Trail, ...]]:
+) -> tuple[frozenset[str], tuple[Trail, ...], frozenset[UUID]]:
     """resolve one group's contribution against ``namespace`` via loaders.
 
     cache-miss path for the per-namespace layer. asks the cache's
@@ -723,8 +725,10 @@ async def _resolve_group_for_namespace(
     :ptype namespace: Namespace
     :param cache: shared :class:`AclCache`
     :ptype cache: AclCache
-    :return: ``(action_set, trails)`` pair for this group
-    :rtype: tuple[frozenset[str], tuple[Trail, ...]]
+    :return: ``(action_set, trails, role_ids)`` for this group, ``role_ids``
+        being every role its covering assignments name, which the cache keeps
+        so a role edit evicts exactly the entries that read the role
+    :rtype: tuple[frozenset[str], tuple[Trail, ...], frozenset[UUID]]
     """
     group_ids = (group_id,)
     assignments = await cache.grant_loader.load_assignments_for_groups(
@@ -743,7 +747,7 @@ async def _resolve_group_for_namespace(
         eligible_group_ids=frozenset(group_ids),
         namespace=namespace,
     )
-    return actions, trails
+    return actions, trails, frozenset(role_ids)
 
 
 async def _expand_group_parents(
@@ -790,8 +794,9 @@ async def _expand_group_parents(
             if entry is not None:
                 parent_rows = entry.memberships
             else:
+                fence = cache.read_fence()
                 parent_rows = await cache.membership_loader.load_for_group(group_id)
-                cache.put_membership(membership_key, parent_rows)
+                cache.put_membership(membership_key, parent_rows, fence=fence)
             eligible_parents = _filter_memberships(
                 memberships=tuple(parent_rows),
                 actor_id=group_id,

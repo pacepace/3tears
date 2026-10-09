@@ -42,8 +42,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any
+from typing import ClassVar
 from uuid import UUID, uuid7
 
+from threetears.core.collections import WRITE_GENERATION
 from threetears.core.collections.schema_backed import (
     BOOL_TYPE,
     DATETIMETZ_TYPE,
@@ -190,6 +192,10 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
     consumer already does.
     """
 
+    # the access tables carry write generations (epoch-task-06): every write advances the table's
+    # generation, so a pod following it notices a missed row broadcast, and the caches derived from
+    # it (``AclCache``) are evicted row by row.
+    write_generation = WRITE_GENERATION
     primary_key_column: tuple[str, ...] = ("row_scope", "group_id")
     partition_exempt_methods = frozenset(
         {
@@ -494,6 +500,13 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
     class.
     """
 
+    # the access tables carry write generations (epoch-task-06): every write advances the table's
+    # generation, so a pod following it notices a missed row broadcast, and the caches derived from
+    # it (``AclCache``) are evicted row by row.
+    write_generation = WRITE_GENERATION
+    # a row's key names the group and the row, not the member whose cached group set it changes, so
+    # its broadcast carries the member too
+    invalidation_columns: ClassVar[tuple[str, ...]] = ("member_type", "member_id")
     primary_key_column: tuple[str, ...] = ("group_id", "id")
     partition_exempt_methods = frozenset(
         {
@@ -798,6 +811,10 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
     # name)``, so two customers may both author a "Field Manager".
     # v0.8.0 shard 04.6: bare-``id`` PK renamed to ``role_id`` to
     # standardize on ``<entity>_id`` across all entity tables.
+    # the access tables carry write generations (epoch-task-06): every write advances the table's
+    # generation, so a pod following it notices a missed row broadcast, and the caches derived from
+    # it (``AclCache``) are evicted row by row.
+    write_generation = WRITE_GENERATION
     primary_key_column: str = "role_id"
     schema = TableSchema(
         name="roles",
@@ -999,6 +1016,13 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
     ``count_by_*``) subclass and add their own methods.
     """
 
+    # the access tables carry write generations (epoch-task-06): every write advances the table's
+    # generation, so a pod following it notices a missed row broadcast, and the caches derived from
+    # it (``AclCache``) are evicted row by row.
+    write_generation = WRITE_GENERATION
+    # a row's key names the assignment, not the group whose cached contribution it changes, so its
+    # broadcast carries the group too
+    invalidation_columns: ClassVar[tuple[str, ...]] = ("group_id",)
     primary_key_column: tuple[str, ...] = ("row_scope", "assignment_id")
     partition_exempt_methods = frozenset(
         {
@@ -1234,6 +1258,14 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         racing callers can both insert, which the evaluator reads as one
         grant; declare the index.
 
+        **Announced, with its advance.** The table carries a write generation,
+        so a statement that may have written it is followed by one eviction of
+        the row it names, carrying the group, which advances the generation and
+        lets every follower evict that group's cached contribution. A lost race
+        announces the winning row: through the L3 broker the insert that was
+        absorbed still advanced the generation, and an advance no row is heard
+        for drops the table on every follower.
+
         the ``scope_type`` argument maps to :class:`ScopeType`:
 
         - ``"namespace"`` — ``scope_id`` is the namespace UUID
@@ -1336,12 +1368,13 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             if inserted is not None:
                 result = inserted
                 created = True
+                await self._announce_rows(((row_scope, inserted),), group_id)
             else:
                 # a concurrent ensure inserted the same grant between the lookup and
                 # this insert, and the deploying app's natural-key index absorbed ours
-                winner = await self.l3_pool.fetchval(
+                winner_row = await self.l3_pool.fetchrow(
                     """
-                    SELECT assignment_id FROM role_assignments
+                    SELECT row_scope, assignment_id FROM role_assignments
                      WHERE group_id = $1
                        AND role_id = $2
                        AND scope_type = $3
@@ -1356,12 +1389,13 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
                     scope_id,
                     managed_by,
                 )
-                if winner is None:
+                if winner_row is None:
                     raise RuntimeError(
                         f"role assignment ({group_id}, {role_id}, {scope_type}, {scope_id}, {managed_by}) was "
                         "not inserted: a unique index absorbed it, yet no row holds that grant; the conflict "
                         "is on something other than the grant's natural key"
                     )
+                winner: UUID = winner_row["assignment_id"]
                 log.info(
                     "role assignment ensure lost a concurrent insert of the same grant; answering the row that won",
                     extra={
@@ -1373,9 +1407,25 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
                         }
                     },
                 )
+                winner_scope: str = winner_row["row_scope"]
+                await self._announce_rows(((winner_scope, winner),), group_id)
                 result = winner
                 created = False
         return result, created
+
+    async def _announce_rows(self, keys: Sequence[tuple[str, UUID]], group_id: UUID) -> None:
+        """evict rows a statement of this class wrote by SQL, in one advance, naming their group.
+
+        :param keys: the rows' primary keys, ``(row_scope, assignment_id)``
+        :ptype keys: Sequence[tuple[str, UUID]]
+        :param group_id: the group every one of the rows grants to
+        :ptype group_id: UUID
+        :return: nothing
+        :rtype: None
+        :raises GenerationUnavailableError: when the table's write generation could not be
+            advanced; every row was still evicted and broadcast
+        """
+        await self.invalidate_cache_many(list(keys), rows=[{"group_id": group_id} for _ in keys])
 
     async def delete_by_group_and_scope(
         self,
@@ -1431,40 +1481,35 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         row_scope = "platform" if scope_type == "all" else "customer"
         result: int = 0
         if self.l3_pool is not None:
-            if managed_by is None:
-                status = await self.l3_pool.execute(
-                    """
-                    DELETE FROM role_assignments
+            # one predicate for both statements; ``managed_by IS NULL`` as the parameter means no
+            # provenance filter
+            predicate = """
                      WHERE row_scope = $1
                        AND group_id = $2
                        AND scope_type = $3
                        AND scope_namespace_id IS NOT DISTINCT FROM $4
-                    """,
-                    row_scope,
-                    group_id,
-                    scope_type,
-                    scope_id,
+                       AND ($5::text IS NULL OR managed_by = $5)
+            """
+            params = (row_scope, group_id, scope_type, scope_id, managed_by)
+            # the rows first, so a revocation that matches nothing issues no DELETE: through the L3
+            # broker a DELETE advances the table's write generation whether it removed a row or
+            # not, and an advance with no row heard for it drops the table on every follower.
+            matching = await self.l3_pool.fetch(
+                "SELECT assignment_id FROM role_assignments" + predicate,
+                *params,
+            )
+            if matching:
+                deleted = await self.l3_pool.fetch(
+                    "DELETE FROM role_assignments" + predicate + " RETURNING assignment_id",
+                    *params,
                 )
-            else:
-                status = await self.l3_pool.execute(
-                    """
-                    DELETE FROM role_assignments
-                     WHERE row_scope = $1
-                       AND group_id = $2
-                       AND scope_type = $3
-                       AND scope_namespace_id IS NOT DISTINCT FROM $4
-                       AND managed_by = $5
-                    """,
-                    row_scope,
-                    group_id,
-                    scope_type,
-                    scope_id,
-                    managed_by,
+                result = len(deleted)
+                keys = dict.fromkeys(
+                    [(row_scope, row["assignment_id"]) for row in matching]
+                    + [(row_scope, row["assignment_id"]) for row in deleted]
                 )
-            # asyncpg returns "DELETE <count>" status string
-            parts = status.split()
-            if len(parts) >= 2 and parts[0].upper() == "DELETE":
-                result = int(parts[1])
+                # every row the DELETE may have removed, carrying the group, in one advance
+                await self._announce_rows(tuple(keys), group_id)
         return result
 
 

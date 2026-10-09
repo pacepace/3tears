@@ -1,0 +1,57 @@
+"""the access-table follower keeps one watch per table running for as long as it is started.
+
+A watch ends when its connection closes and fails when the bucket cannot be reached; a table left
+followed with no watch has nothing to judge its mark, so a missed broadcast would never be caught.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import timedelta
+from typing import Any
+
+import pytest
+
+from threetears.agent.acl import ACCESS_TABLES
+from threetears.agent.acl import generation_follow
+from threetears.agent.acl.generation_follow import AccessTableFollower
+from threetears.core.collections import CollectionRegistry
+
+
+class _Watches:
+    """stands in for ``follow_generation_key``: each table's first watch fails, the next one ends, the third runs."""
+
+    def __init__(self) -> None:
+        self.started: dict[str, int] = {}
+
+    async def __call__(self, registry: Any, reader: Any, table: str, *, grace: timedelta) -> None:
+        count = self.started[table] = self.started.get(table, 0) + 1
+        if count == 1:
+            raise ConnectionError("the bucket could not be reached")
+        if count == 2:
+            return
+        await asyncio.Event().wait()
+
+
+async def test_every_table_is_followed_and_a_failed_or_ended_watch_is_started_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    watches = _Watches()
+    monkeypatch.setattr(generation_follow, "follow_generation_key", watches)
+    registry = CollectionRegistry()
+    follower = AccessTableFollower(registry, object(), restart_delay=timedelta(milliseconds=1))  # type: ignore[arg-type]
+    follower.start()
+    try:
+        for table in ACCESS_TABLES:
+            assert registry.generation_marks.follows(table)
+        for _ in range(200):
+            if all(watches.started.get(table) == 3 for table in ACCESS_TABLES):
+                break
+            await asyncio.sleep(0.005)
+        assert {table: watches.started.get(table) for table in ACCESS_TABLES} == dict.fromkeys(ACCESS_TABLES, 3)
+        follower.start()  # a no-op while running
+        assert all(count == 3 for count in watches.started.values())
+    finally:
+        await follower.stop()
+    assert not follower.running
+    await follower.stop()  # idempotent

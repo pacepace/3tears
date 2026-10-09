@@ -2066,6 +2066,13 @@ def _registry(
             # This grant takes effect the moment that static user is narrowed
             # (``coll-task-05b``) or the registry moves onto the callout.
             JsResource.kv(f"{ns}-collections", scope=scope, writable=True),
+            # the epoch bucket, READ ONLY, as an agent pod and a tool pod hold it (owner,
+            # 2026-10-08): the registry's ``AclCache`` is derived from the four access tables, so
+            # it follows their write generations (``{ns}.collections.{table}.epoch``) by watching
+            # the keys, to learn that it missed a row broadcast. It writes nothing here; the hub
+            # advances every generation. The whole bucket, for the reason the tool pod's grant
+            # gives: nothing narrower can name a four-token key.
+            JsResource.kv_bucket_keys(f"{ns}-epochs", writable=False),
             # the registry is on BOTH sides of durable delivery: it consumes each pod's result and
             # publishes each agent's reply, so it needs the JetStream control-plane grant for this
             # stream in both roles. it is also the process that DECLARES the stream at startup,

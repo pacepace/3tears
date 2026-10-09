@@ -1047,8 +1047,12 @@ class TestScopedCollectionsGrant:
                 continue
             assert resource.scope is None, f"{principal}: {resource.name} would deny its own reads"
             # a pod binds what the hub declared and holds no stream verb; an infra identity that
-            # declares what it opens keeps the management grant.
-            expected = JsCapability.KV_BUCKET_KEYS if principal in _POD_PRINCIPALS else JsCapability.FULL
+            # declares what it opens keeps the management grant. The registry binds the epoch
+            # bucket the hub declared, read only, to follow the access tables' generations.
+            binds_only = principal in _POD_PRINCIPALS or (
+                principal is Principal.REGISTRY and resource.name == f"{_NS}-epochs"
+            )
+            expected = JsCapability.KV_BUCKET_KEYS if binds_only else JsCapability.FULL
             assert resource.capability is expected, f"{principal}: {resource.name}"
 
     def test_the_registry_holds_the_bucket_its_own_source_of_truth_collection_runs_on(self) -> None:
