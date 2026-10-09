@@ -8,9 +8,10 @@ classifier, and the summary carries its confusion matrix (:class:`ConfusionCount
 precision, recall and F1 (:class:`LabelStatistics`). Handed a :class:`Judge`, it also grades each answer
 with a model against a rubric. :func:`compare` runs two or more candidates over one case list the same way,
 each as one arm, and returns a :class:`Comparison` whose campaign report tests every arm against the one
-named the control. :func:`run_cli` is ``python -m threetears.evals``: ``run``, ``ls``, ``report``, ``bundle``
-and ``spend`` over a host named ``module:factory``, or mounted under a product's own CLI with its host
-factory and any subcommands of its own (:class:`HostCommand`).
+named the control; keyed by their level of each of several factors (``factors=``), its arms are the
+cells of a factorial design, each factor a lever of its own. :func:`run_cli` is ``python -m threetears.evals``:
+``run``, ``ls``, ``report``, ``bundle`` and ``spend`` over a host named ``module:factory``, or mounted under a
+product's own CLI with its host factory and any subcommands of its own (:class:`HostCommand`).
 
 This package composes the others and is composed by nothing: it may import ``contracts``, ``run``,
 ``analysis`` and ``storage``, and no package of the engine imports it.
@@ -34,7 +35,7 @@ from threetears.evals.quick.cli import (
     build_parser,
     run_cli,
 )
-from threetears.evals.quick.compare import Comparison, compare
+from threetears.evals.quick.compare import ArmKey, Comparison, compare
 from threetears.evals.quick.one_call import (
     CALLABLE_KIND,
     CALLABLE_KIND_CONTRACT,
@@ -47,6 +48,7 @@ from threetears.evals.quick.one_call import (
     ExpectedLabel,
     Scorer,
     callable_host,
+    callable_kind_contracts,
     run_eval,
 )
 from threetears.evals.quick.judged import CaseMaterial, Judge
@@ -66,6 +68,7 @@ __all__ = [
     "JUDGED_CALLABLE_KIND_CONTRACT",
     "JUDGED_CALLABLE_UNSEATED",
     "UNUSABLE_ANSWER",
+    "ArmKey",
     "Candidate",
     "CaseMaterial",
     "Comparison",
@@ -81,6 +84,7 @@ __all__ = [
     "Scorer",
     "build_parser",
     "callable_host",
+    "callable_kind_contracts",
     "compare",
     "run_cli",
     "run_eval",
