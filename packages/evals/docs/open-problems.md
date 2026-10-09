@@ -20,20 +20,6 @@ with `n_cases − 1` degrees of freedom, or Miller's cluster-robust form, and dr
 
 *Evidence:* simulation, 5 cases × k=3, between-case σ 1.0 and repeat σ 0.3, 2026-09, coverage 70.3% vs 94.3%.
 
-### pass^k is the all-pass indicator, stored under the opposite name
-
-Tracked in [#591](https://github.com/pacepace/3tears/issues/591).
-
-`compute_pass_k` (`contracts/scoring.py`) is the all-pass indicator per case, averaged: a case passes when
-every scored repeat passed. At uniform depth that is unbiased; a run stopped early leaves mixed depths, which flatter the shallow cases,
-and the engine discloses the depth range rather than correcting. Grouping is per run, so repeat runs
-cannot add depth. The stored key is `pass_at_k`, which elsewhere
-means "at least one of k" (Chen et al. 2021): the opposite quantity. Fix: the τ-bench estimator
-C(c,k)/C(n,k) per case with n ≥ k, pooled across the runs of one cell, reported as the pass^1..k curve,
-and the field renamed.
-
-*Evidence:* simulation, 5 cases, depths [1,3,2,3,1], 2026-09, 0.651 against a true 0.531.
-
 ### A sub-threshold change in history reads "flat"
 
 Tracked in [#592](https://github.com/pacepace/3tears/issues/592).

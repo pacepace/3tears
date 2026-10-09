@@ -7,7 +7,9 @@ classifier, a retrieval sub-agent it calls, and the engine's own analysis writer
 
 Each finding is a rule, its reason and an *Evidence:* line; "replicated" means two or more independent
 campaigns or arm pairs showed it. Terms are as [Concepts](concepts.md) defines them.
-**pass^k** is the share of cases that pass on every one of their k repeats.
+**pass^k** is the chance that k attempts at a case all pass: per case C(c, k) / C(n, k) from c passes in
+n ≥ k repeats, averaged over the cases measured that deep (field `pass_hat_k`). It is not pass@k, the chance
+that at least one of k passes.
 
 ## Variance, k and how many cases
 
@@ -49,7 +51,7 @@ overlap in time (`measurement_window_disclosure`).
 ## Metrics that mislead
 
 **Keep the pass^k conjunction small and reliable.** A trial passes only when every goal-state check passes
-and every judged dimension clears the bar (`compute_pass_k`). So pass^k collapses to its weakest member, and
+and every judged dimension clears the bar (`compute_pass_hat_k`). So pass^k collapses to its weakest member, and
 judge noise counts as candidate unreliability. Conjoin checks a competent candidate clears and dimensions
 whose retest agreement you have measured. Ranking and diagnosis are two jobs.
 *Evidence:* agent with tools, 2 campaigns, 2026-07 and 2026-08, one never-clearing dimension held pass^k to 0.0 or 0.2 for every arm, and a strict check set pinned it at 0 for every arm; in simulation (2026-09) a perfect candidate with five dimensions, each falsely failing 5% of the time, shows pass^3 ≈ 0.46.

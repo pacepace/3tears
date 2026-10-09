@@ -787,7 +787,7 @@ def resolve_bar_name(
        for it (:func:`~threetears.evals.contracts.metrics.goal_check_measure`), which reads as the check.
 
     Anything else is ``not_carried``, and the reason says what the name IS where anything describes
-    it: a judge-mediated summary such as ``mean_score``, a composite such as ``pass_at_k``, or a
+    it: a judge-mediated summary such as ``mean_score``, a composite such as ``pass_hat_k``, or a
     run-level statistic such as ``mean_total_ms`` is described and still never lands on a result.
 
     Args:
@@ -882,7 +882,7 @@ def refuse_an_undeclarable_design(
     every name a bar may carry is enumerable and this can refuse rather than guess. A name the
     registry describes is still refused when no result carries it with a direction: a run-level
     statistic (``mean_total_ms``), a judge-mediated summary (``mean_score``), a composite
-    (``pass_at_k``), a categorical, a raw count or a diagnostic. A phase-timing key is carried too,
+    (``pass_hat_k``), a categorical, a raw count or a diagnostic. A phase-timing key is carried too,
     but no catalogue describes one, so a bar on it has no descriptor to be read against and is
     refused with the rest. **What the gate cannot see**: a host measure is admitted on the host's
     declaration alone, since nothing in a descriptor says whether the host's kind lands it on a

@@ -6,7 +6,7 @@ This module is the read tier's foundation: one projection,
 answers *which of these runs may honestly be compared with each other*.
 
 **Nothing here is stored.** Records are recomputed per query, exactly as
-:func:`~threetears.evals.contracts.scoring.compute_pass_k` is. That keeps the row shape free to
+:func:`~threetears.evals.contracts.scoring.compute_pass_hat_k` is. That keeps the row shape free to
 evolve while the surfaces that consume it are still being learned — a persisted
 projection would freeze it against every future consumer. Aggregation is
 calibrated to a corpus of dozens-to-hundreds of cells (one operator, one
@@ -33,7 +33,7 @@ import csv
 import io
 import json
 import math
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Hashable, Iterable, Mapping, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, get_args
 
@@ -66,7 +66,13 @@ from threetears.evals.contracts.result_condition import (
     harness_faulted,
     trial_exclusion,
 )
-from threetears.evals.contracts.scoring import compute_pass_k, result_composite
+from threetears.evals.contracts.scoring import (
+    PassHatPoint,
+    pass_hat_k_at,
+    pass_hat_k_cell,
+    pool_pass_hat_k,
+    result_composite,
+)
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
@@ -509,7 +515,7 @@ class LatencyPartition(EvalBaseModel):
 
     **Derived, never stored.** ``orchestration_ms`` is ``total_ms`` minus the two
     parts, recomputed per query exactly as :func:`project_score_records` and
-    :func:`~threetears.evals.contracts.scoring.compute_pass_k` are. A persisted copy would be a
+    :func:`~threetears.evals.contracts.scoring.compute_pass_hat_k` are. A persisted copy would be a
     second answer to a question the three captured components already settle.
 
     **What is deliberately NOT in here.** The drain wait, the judge phase and every
@@ -3647,7 +3653,7 @@ def _template_span_disclosure(span_entries: Sequence[str]) -> str | None:
     contestant stack — everything that would ship, and nothing about the conditions it was
     measured under. ``template_id`` is one of those conditions: it is hashed into the
     CONTEXT key, and :func:`compute_comparison_sets` groups on it. So every scenario suite a
-    variant was ever entered into pools into this one point, and ``pass_at_k``,
+    variant was ever entered into pools into this one point, and ``pass_hat_k``,
     ``mean_composite`` and ``mean_total_ms`` are each one number over cases drawn from all
     of them.
 
@@ -3756,11 +3762,21 @@ class FrontierPoint(EvalBaseModel):
 
     # Quality — pass^k is the headline (and the domination axis), mean-composite
     # the secondary read shown alongside it. Both always travel together.
-    # None when no case was scored (every iteration excluded): nothing was measured,
+    # pass^k is the chance that `k` attempts at a case ALL pass (τ-bench; never pass@k, the
+    # chance that at least one does), estimated without bias per case and averaged over the
+    # cases measured at least `k` times — a case's attempts pooled across every run of one
+    # cell (`scoring.pool_pass_hat_k`), so a repeat run adds depth rather than a second copy.
+    # `k` is the subject's: every point is ranked at the same depth (see SubjectFrontier.k).
+    # None when no case was scored that deep: nothing was measured,
     # which is not a pass^k of zero, and an unmeasured axis never wins a domination.
-    pass_at_k: float | None
+    pass_hat_k: float | None
+    #: The depth ``pass_hat_k`` is read at — the subject's, so every point is ranked at one.
+    k: int = 1
+    #: The cases ``pass_hat_k`` averages over: case-within-cell units scored at least ``k`` times.
     n_pass_cases: int = 0
-    fully_passing_cases: int = 0
+    #: pass^1..pass^K for this point, each with its own case count. pass^1 is the per-case pass
+    #: rate; the deeper points show how fast reliability decays with repetition.
+    pass_hat_k_curve: list[PassHatPoint] = []
     mean_composite: float | None = None
     composite_sem: float | None = None
     n_composite_cases: int = 0
@@ -3779,8 +3795,10 @@ class FrontierPoint(EvalBaseModel):
     #: their costs are not comparable, so ranking one cheaper than the other is ranking a
     #: convention rather than a config. Empty when no result recorded a composition.
     cost_compositions: list[list[str]] = []
-    # cost / pass-probability — the alternate denominator. ``None`` when
-    # cost is unknown or pass^k is zero (dividing by a zero pass rate is undefined,
+    # cost / pass-probability — the alternate denominator. The probability is pass^1, the
+    # chance ONE attempt passes, because the cost is the mean of one attempt: dividing it by
+    # pass^k would price a k-attempt streak at one attempt's cost. ``None`` when
+    # cost is unknown or pass^1 is zero (dividing by a zero pass rate is undefined,
     # not "infinitely expensive").
     cost_per_acceptable_outcome: float | None = None
 
@@ -3807,7 +3825,7 @@ class FrontierPoint(EvalBaseModel):
     #: variant/context identity split as a side effect of a rendering fix and would move
     #: every stored variant's identity with it. It qualifies EVERY axis here, not only
     #: cost: ``cost_is_partial`` already says a replayed arm withheld its cost, and
-    #: ``pass_at_k`` / ``mean_composite`` / ``cost_per_acceptable_outcome`` carry no such
+    #: ``pass_hat_k`` / ``mean_composite`` / ``cost_per_acceptable_outcome`` carry no such
     #: mark while resting on the same mixed pool — the ratio worst of all, since it
     #: divides a partial cost by a confounded pass rate and the two errors do not cancel.
     cassette_mode_disclosure: str | None = None
@@ -3818,7 +3836,7 @@ class FrontierPoint(EvalBaseModel):
     #: ``comparison_sets`` groups on it) while the variant key is the stack that would ship,
     #: so every suite a variant entered pools into this one point — correctly by that design
     #: and silently by this surface's rendering. It qualifies every axis here, not one:
-    #: ``pass_at_k``, ``mean_composite`` and ``mean_total_ms`` are each a weighted average
+    #: ``pass_hat_k``, ``mean_composite`` and ``mean_total_ms`` are each a weighted average
     #: over a mix of suites of unequal difficulty, and ``cost_per_acceptable_outcome``
     #: divides by that same pooled pass rate. Without it, adding an easy suite to a scope
     #: lifts the headline of every variant entered into it, with nothing on the row to show it.
@@ -3840,7 +3858,7 @@ class FrontierPoint(EvalBaseModel):
     #: ``n_pass_cases``, ``n_composite_cases``, ``n_cost``, ``n_latency`` — is partly
     #: made of a matrix that never finished. It moves the verdict rather than only
     #: qualifying it: admitting two truncated runs can take one contestant's
-    #: pass^k from ``(3/3)`` to ``(4/4)``, lower its mean cost by a third,
+    #: pass^k from 1.00 over 3 cases to 1.00 over 4, lower its mean cost by a third,
     #: and flip its rival from *on frontier* to *dominated*.
     completeness_disclosures: dict[str, str] = {}
 
@@ -3873,7 +3891,9 @@ class FrontierVerdict(EvalBaseModel):
 
     variant_key: str
     model: str
-    pass_at_k: float
+    pass_hat_k: float
+    #: The depth ``pass_hat_k`` was read at — the subject's, the same as every point's.
+    k: int = 1
     production_replicating_cost: float | None = None
     cost_is_partial: bool = False
     cassette_mode_disclosure: str | None = None
@@ -3905,6 +3925,12 @@ class SubjectFrontier(EvalBaseModel):
 
     subject_id: str
     subject_label: str = ""
+    #: The depth every point's ``pass_hat_k`` is read at, the bar applied to and domination
+    #: decided on: the smallest ``k_runs`` among the subject's ranked runs, the depth every run
+    #: here was commissioned to. One depth for the subject because pass^3 and pass^1 are
+    #: different quantities, and ranking one contestant on each ranks the depths. A contestant
+    #: measured deeper keeps its extra depth as precision (and on its curve), not as a harder bar.
+    k: int = 1
     points: list[FrontierPoint] = []
     verdict: FrontierVerdict | None = None
     n_cleared_bar: int = 0
@@ -4053,6 +4079,8 @@ def _frontier_point(
     results: list[EvalResult],
     *,
     contestant: ContestantKey,
+    k: int,
+    cell_of_run: Mapping[str, Hashable],
     rubric_threshold: int,
     cassette_modes_by_run: Mapping[str, str],
     templates_by_run: Mapping[str, str | None],
@@ -4061,8 +4089,8 @@ def _frontier_point(
     """Aggregate one contestant's results into a single frontier point.
 
     Every axis aggregates over its own measured subset — pass^k reuses
-    :func:`~threetears.evals.contracts.scoring.compute_pass_k` (which drops infra-excluded
-    iterations), composite drops the nulls :func:`~threetears.evals.contracts.scoring.result_composite`
+    :func:`~threetears.evals.contracts.scoring.pool_pass_hat_k` (which drops infra-excluded
+    iterations, and pools a case's attempts across the runs of one cell), composite drops the nulls :func:`~threetears.evals.contracts.scoring.result_composite`
     returns for infra-excluded and no-rubric results, cost sums only the
     production-replicating roles per result and means over the results that
     reported one, and latency means over the results that harvested a total. The
@@ -4077,6 +4105,10 @@ def _frontier_point(
             can disagree" structural instead of a claim a later change to the key could
             silently falsify — the same reason the gate lives IN the group key rather than
             beside it.
+        k: The subject's depth, at which ``pass_hat_k`` is read (:attr:`SubjectFrontier.k`).
+        cell_of_run: Run id → the cell its attempts are repeats of
+            (:func:`~threetears.evals.contracts.scoring.pass_hat_k_cell`), so two runs of one
+            configuration pool their attempts at a case and two configurations never do.
         rubric_threshold: Pass threshold forwarded to pass^k.
         cassette_modes_by_run: Every candidate run's recorded ``cassette_mode``, keyed by
             run id; narrowed here to the runs these results came from. **Required and
@@ -4108,14 +4140,12 @@ def _frontier_point(
     # Unpacked from the group key, never re-derived off a row.
     variant_key, identity_version = contestant
 
-    # pass^k — reuse the canonical aggregator, which drops infra-excluded
-    # iterations and still reports a (model, run) with only failures as 0/0. A
-    # variant can span runs, so sum across the per-run entries: the fraction of
-    # all this contestant's cases that fully passed.
-    per_run = compute_pass_k(results, rubric_threshold=rubric_threshold)
-    n_pass_cases = sum(entry["n_test_cases"] for entry in per_run.values())
-    fully_passing = sum(entry["fully_passing_cases"] for entry in per_run.values())
-    pass_at_k = (fully_passing / n_pass_cases) if n_pass_cases else None
+    # pass^k — the canonical estimator, over this contestant's attempts pooled per case within
+    # each cell: a repeat run of one configuration deepens its cases, while the same case under
+    # another context (a second template, a replayed cassette) stays a case of its own beside it.
+    pooled = pool_pass_hat_k(results, cell_of_run=cell_of_run, k=k, rubric_threshold=rubric_threshold)
+    pass_hat_k = pooled["pass_hat_k"]
+    pass_hat_1 = pass_hat_k_at(pooled["pass_hat_k_curve"], 1)["pass_hat_k"]
 
     # composite — case-weighted mean of the 0-1 scores, dropping the nulls that
     # mark infra-excluded and no-rubric results (a candidate failure scores 0.0
@@ -4173,7 +4203,7 @@ def _frontier_point(
     cost_compositions = pooled_cost_compositions(results)
 
     # latency — total wall-clock ms over the results that harvested a total, MINUS the cells a
-    # harness failure produced. The same predicate `compute_pass_k` and `compute_dimension_summary`
+    # harness failure produced. The same predicate `compute_pass_hat_k` and `compute_dimension_summary`
     # use, and for the same reason one step further on: this point is RANKED. Domination is
     # decided over pass^k x prod cost x total latency, and an infra-excluded cell carries a real
     # but truncated `LatencyMetrics` (unlike the timeout path, whose `_degraded_capture_fields`
@@ -4194,7 +4224,8 @@ def _frontier_point(
     mean_total_ms = round(sum(totals) / n_latency, 3) if n_latency else None
 
     # cost / pass-probability — undefined when cost is unknown or nothing passed.
-    cost_per_acceptable_outcome = (prod_cost / pass_at_k) if (prod_cost is not None and pass_at_k) else None
+    # One attempt's mean cost over one attempt's pass probability, pass^1 — see the field.
+    cost_per_acceptable_outcome = (prod_cost / pass_hat_1) if (prod_cost is not None and pass_hat_1) else None
 
     # Does this contestant's pool span cassette modes? Narrowed from the caller's whole
     # map to the runs these results actually came from, so a point can never be qualified
@@ -4232,9 +4263,10 @@ def _frontier_point(
         model=model,
         variant_identity_version=identity_version,
         identity_version_disclosure=_identity_version_disclosure(identity_version),
-        pass_at_k=pass_at_k,
-        n_pass_cases=n_pass_cases,
-        fully_passing_cases=fully_passing,
+        pass_hat_k=pass_hat_k,
+        k=k,
+        n_pass_cases=pooled["n_cases_at_k"],
+        pass_hat_k_curve=pooled["pass_hat_k_curve"],
         mean_composite=mean_composite,
         composite_sem=composite_sem,
         n_composite_cases=len(values_by_case),
@@ -4267,7 +4299,7 @@ def _dominates(a: FrontierPoint, b: FrontierPoint) -> bool:
     - **The reverse does NOT block.** When ``a`` defines an axis ``b`` does not,
       that axis is simply skipped, so ``a`` may still dominate on the axes they
       share. This is what lets a working variant dominate one that failed
-      everywhere — its quality is strictly worse (its pass^k is defined, as it is whenever a case was scored) and
+      everywhere — its quality is strictly worse (its pass^k is defined, as it is whenever a case was scored ``k`` deep) and
       its unmeasured cost/latency cannot rescue a zero-quality contestant. The
       trade-off is that a decent point whose cost nothing observed (real quality,
       no cost) can be grayed by a higher-quality measured one; domination only
@@ -4283,7 +4315,7 @@ def _dominates(a: FrontierPoint, b: FrontierPoint) -> bool:
     """
     # (value_a, value_b, higher_is_better)
     axes = (
-        (a.pass_at_k, b.pass_at_k, True),
+        (a.pass_hat_k, b.pass_hat_k, True),
         (a.production_replicating_cost, b.production_replicating_cost, False),
         (a.mean_total_ms, b.mean_total_ms, False),
     )
@@ -4334,6 +4366,15 @@ def compute_frontier(
     still a real number about the variant — it is just not a score on any one suite, which
     is exactly what the disclosure says.
 
+    **One depth per subject.** Every point's pass^k is read at :attr:`SubjectFrontier.k`, the
+    shallowest ``k_runs`` among the subject's ranked runs, and estimated without bias from each
+    case's attempts pooled across the runs of one cell
+    (:func:`~threetears.evals.contracts.scoring.pool_pass_hat_k`): two runs of one variant under
+    one ``context_key`` are more attempts at the same cases, while the same case measured under
+    another context is a separate case beside it. So a repeat run sharpens a contestant's estimate
+    rather than doubling its case count, and no contestant is ranked on a different depth than
+    its rivals.
+
     When ``bar`` is supplied it gates pass^k, and the cheapest above-bar variant
     with a known cost is named as the verdict; an unsupplied bar yields the full
     frontier with no verdict, because inventing a quality threshold would
@@ -4383,7 +4424,7 @@ def compute_frontier(
             surfaces refuse identically rather than one clamping it.
     """
     if bar is not None and not (0.0 <= bar <= 1.0):
-        raise FrontierError(f"bar {bar!r} is outside the pass^k range [0, 1] — pass^k is a fraction of cases")
+        raise FrontierError(f"bar {bar!r} is outside the pass^k range [0, 1] — pass^k is a probability")
 
     placed, exclusions = place_results(
         runs, results, known_run_ids, source="frontier", archived_run_ids=archived_run_ids
@@ -4416,6 +4457,13 @@ def compute_frontier(
     # filter keeps the span from naming a predicate no row in this answer was keyed under
     # — the same rule the cassette-mode and template maps below follow.
     considered: list[EvalResult] = []
+    # Which configuration each run measured, so a contestant's repeat runs pool their attempts at
+    # a case (more depth) and runs under different conditions never do. Collected on the same seam
+    # as the maps above: a point is built from RESULTS and the measurement context lives on the RUN.
+    cell_of_run: dict[str, Hashable] = {}
+    # The depth each subject is ranked at: the shallowest k any of its ranked runs was
+    # commissioned to (see SubjectFrontier.k).
+    k_by_subject: dict[str, int] = {}
 
     for run, result, resolved in placed:
         if subject_id is not None and resolved != subject_id:
@@ -4428,6 +4476,8 @@ def compute_frontier(
         subject_labels[resolved] = run.subject_snapshot.subject_label
         cassette_modes_by_run[run.id] = run.cassette_mode
         templates_by_run[run.id] = run.template_id
+        cell_of_run[run.id] = pass_hat_k_cell(run)
+        k_by_subject[resolved] = min(k_by_subject.get(resolved, run.k_runs), run.k_runs)
         if (short := completeness_disclosure(run.completeness)) is not None:
             degraded_by_run[run.id] = short
             n_degraded_observations += 1
@@ -4435,10 +4485,13 @@ def compute_frontier(
     subjects: list[SubjectFrontier] = []
     for resolved in sorted(by_subject):
         groups = by_subject[resolved]
+        subject_k = k_by_subject[resolved]
         points = [
             _frontier_point(
                 groups[key],
                 contestant=key,
+                k=subject_k,
+                cell_of_run=cell_of_run,
                 rubric_threshold=rubric_threshold,
                 cassette_modes_by_run=cassette_modes_by_run,
                 templates_by_run=templates_by_run,
@@ -4472,19 +4525,20 @@ def compute_frontier(
         verdict: FrontierVerdict | None = None
         n_cleared_bar = 0
         if bar is not None:
-            cleared = [p for p in points if p.pass_at_k is not None and p.pass_at_k >= bar]
+            cleared = [p for p in points if p.pass_hat_k is not None and p.pass_hat_k >= bar]
             n_cleared_bar = len(cleared)
             costed = [
-                (p, p.production_replicating_cost, p.pass_at_k)
+                (p, p.production_replicating_cost, p.pass_hat_k)
                 for p in cleared
-                if p.production_replicating_cost is not None and p.pass_at_k is not None
+                if p.production_replicating_cost is not None and p.pass_hat_k is not None
             ]
             if costed:
-                pick, pick_cost, pick_pass_at_k = min(costed, key=lambda c: (c[1], -c[2], c[0].model))
+                pick, pick_cost, pick_pass_hat_k = min(costed, key=lambda c: (c[1], -c[2], c[0].model))
                 verdict = FrontierVerdict(
                     variant_key=pick.variant_key,
                     model=pick.model,
-                    pass_at_k=pick_pass_at_k,
+                    pass_hat_k=pick_pass_hat_k,
+                    k=subject_k,
                     production_replicating_cost=pick_cost,
                     cost_is_partial=pick.cost_is_partial,
                     # Carried from the picked point rather than re-derived: one predicate,
@@ -4510,6 +4564,7 @@ def compute_frontier(
             SubjectFrontier(
                 subject_id=resolved,
                 subject_label=subject_labels.get(resolved, ""),
+                k=subject_k,
                 points=points,
                 verdict=verdict,
                 n_cleared_bar=n_cleared_bar,
