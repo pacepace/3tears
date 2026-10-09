@@ -36,6 +36,22 @@ subjects and `AclCache`'s TTL stay until the contract stage.
   `BrokerGenerationSource` with a reader.
 - **Changed, the tool pod's collection stack**: its `BrokerGenerationSource` reads through
   `EpochGenerationReader`; `3tears-agent-tools` and `3tears-registry` depend on `3tears-epoch`.
+- **Changed, `namespaces` carries a write generation too** (`NamespaceCollection`): a per-namespace
+  access entry reads the row, so `rescope` (both keys of the moved row) and `ensure_namespace`'s
+  insert announce their row in one advance, and an `AclCache` evicts that namespace's entries.
+- **Added, `follow_access_tables(registry, cache, reader)`** in
+  `threetears.agent.acl.generation_follow`: binds and follows in one call, returning one handle
+  (`AccessTableFollowing`) whose `stop()` undoes both; refuses unless the registry's invalidation
+  listener runs (`CollectionRegistry.invalidation_listener_running`, added). `AccessTableFollower`
+  backs a failing watch off from one second to a sixty-second cap and exposes `WatchHealth` and
+  `healthy`; `DegradedEvictions` counts rows whose reach was unknown. `follow_generation_key` takes
+  any `threetears.epoch.GenerationWatcher`.
+- **Added, `GroupCollection.read_cascade` and `announce_cascade` (`GroupCascade`)**: a group delete
+  announces the memberships and assignments its database cascade removed, and announces them even
+  when its own advance fails.
+- **Changed, absence caching never takes "nothing advanced" as an advance**: for a collection that
+  caches absences, an advance that returns `None` fails, raised after the write path ran.
+- **Changed, `ensure_platform_builtin_tool_user_role`** announces its `INSERT`.
 
 ### Core, agent tools and enforcement: a pod's writes move its tables' write generations (migrate-writers stage)
 
