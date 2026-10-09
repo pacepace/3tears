@@ -253,3 +253,58 @@ class TestNoDivergenceIsPublishedBeyondAlpha:
     def test_a_sweep_with_nothing_moving_publishes_nothing_here(self) -> None:
         divergences, _ = _sweep(random.Random("divergence-quiet"), n_cases=12, whole_shift=0.0)
         assert not [d for d in divergences if (d.end_to_end.name, d.subsystem.name) == ("total_ms", "tool_ms")]
+
+
+class TestTheCarrierIsNamedOnlyWhenShown:
+    """``carried_by`` names one component as carrying a whole-run swing; on the largest delta alone it named
+    one of two components that moved alike every time the whole moved."""
+
+    REPLICATES = 400
+
+    @staticmethod
+    def _named_share(seed: str, llm_shift: float, tool_shift: float) -> tuple[float, int, dict[str, int]]:
+        from fractions import Fraction
+
+        from threetears.evals.analysis.bundle import _carrier, _movement
+        from threetears.evals.contracts.metrics import describe_measure
+
+        registry = toyhost_profile().measures
+        rng = random.Random(seed)
+        named: dict[str, int] = {}
+        moved = 0
+        for _ in range(TestTheCarrierIsNamedOnlyWhenShown.REPLICATES):
+            levels: list[dict[str, dict[str, Fraction]]] = []
+            base = [(rng.gauss(1500.0, 300.0), rng.gauss(500.0, 150.0)) for _ in range(8)]
+            for shifted in (False, True):
+                llm = {
+                    f"c{i}": Fraction(round(b + (llm_shift if shifted else 0.0) + rng.gauss(0.0, 80.0), 3))
+                    for i, (b, _) in enumerate(base)
+                }
+                tool = {
+                    f"c{i}": Fraction(round(t + (tool_shift if shifted else 0.0) + rng.gauss(0.0, 80.0), 3))
+                    for i, (_, t) in enumerate(base)
+                }
+                levels.append({"llm_ms": llm, "tool_ms": tool, "total_ms": {c: llm[c] + tool[c] for c in llm}})
+            at_a, at_b = levels
+            whole = _movement(describe_measure("total_ms", registry), at_a["total_ms"], at_b["total_ms"])
+            parts = [_movement(describe_measure(n, registry), at_a[n], at_b[n]) for n in ("llm_ms", "tool_ms")]
+            if whole.direction in ("improved", "regressed"):
+                moved += 1
+                carrier = _carrier(whole, parts, at_a, at_b)
+                if carrier is not None:
+                    named[carrier.name] = named.get(carrier.name, 0) + 1
+        return sum(named.values()) / TestTheCarrierIsNamedOnlyWhenShown.REPLICATES, moved, named
+
+    def test_two_components_moved_alike_name_no_carrier_beyond_alpha(self) -> None:
+        """Both parts slower by 300 ms, 8 paired cases: the whole moves in every replicate. Measured 0.048 (1.00 on the largest delta alone).
+
+        400 replicates: SE at α is 0.0109, so the bound is 0.094."""
+        rate, moved, _ = self._named_share("carrier-alike", 300.0, 300.0)
+        assert moved == self.REPLICATES
+        assert rate <= at_most(SIGNIFICANCE_ALPHA, self.REPLICATES), f"named a carrier in {rate:.3f}"
+
+    def test_the_part_that_moved_is_named(self) -> None:
+        """Model time slower by 600 ms, tool time unmoved, 8 paired cases. Measured 1.0; held to 0.90 less 4 SE."""
+        rate, _, named = self._named_share("carrier-power", 600.0, 0.0)
+        assert rate >= 0.90 - 4 * (0.9 * 0.1 / self.REPLICATES) ** 0.5, f"named the moving part in only {rate:.3f}"
+        assert set(named) == {"llm_ms"}

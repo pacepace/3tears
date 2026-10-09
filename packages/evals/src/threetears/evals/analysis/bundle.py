@@ -1017,9 +1017,11 @@ class ScopeDivergence(EvalDocumentModel):
     carried_by: str | None = Field(
         default=None,
         description=(
-            "The component carrying the whole-run movement: the one whose delta, in the whole's direction, is "
-            "largest. None when the whole's movement does not separate from its noise, or no component moved its "
-            "way. When it "
+            "The component shown to carry the whole-run movement: the one with the largest delta in the whole's "
+            "direction, named only when its own movement separates that way and it is shown to move further than "
+            "every other component (each case's difference between the two, tested between the levels, "
+            "Holm-adjusted). None when the whole's movement does not separate from its noise, no component moved "
+            "its way, or no single component is shown to carry it — read `whole_components` then. When it "
             "is time inside model calls (llm_ms), a provider's load moves it as readily as the lever does, so "
             "read candidate_output_tokens_per_s across the two cohorts before attributing the movement to the lever."
         ),
@@ -5022,23 +5024,72 @@ def _carried_by(
         profile: The host whose vocabulary this reads.
 
     Returns:
-        ``(components, carried_by, carried_share)``. The carrier is the component whose delta,
-        taken in the whole's direction, is largest, and is None when the whole's movement does not
-        separate from its noise, its delta is zero, or no component moved its way.
+        ``(components, carried_by, carried_share)``, the carrier decided by :func:`_carrier`.
     """
     components = [
         _movement(catalog[name], level_a[name], level_b[name])
         for name in partition_components(whole.name, catalog, measures=profile.measures)
         if level_a.get(name) and level_b.get(name)
     ]
-    if whole.direction not in ("improved", "regressed") or whole.delta == 0.0:
+    carrier = _carrier(whole, components, level_a, level_b)
+    if carrier is None:
         return components, None, None
+    return components, carrier.name, carrier.delta / whole.delta
+
+
+def _carrier(
+    whole: MeasureMovement,
+    components: Sequence[MeasureMovement],
+    level_a: _PerCaseMeasures,
+    level_b: _PerCaseMeasures,
+) -> MeasureMovement | None:
+    """The component SHOWN to carry the whole's movement, or None where the data cannot name one.
+
+    The candidate is the component whose delta, in the whole's direction, is largest. It is named only
+    when two things are shown, each by the engine's between-level test
+    (:func:`~threetears.evals.analysis.stats.level_difference`): its own movement separates in the whole's
+    direction, and it moved further that way than every other component — each case's difference between the
+    candidate and that component, tested between the levels, Holm-adjusted over the other components. Named on
+    the largest delta alone, two components moved alike would hand the carrier to whichever noise favoured.
+
+    Args:
+        whole: The whole-run measure's movement.
+        components: Each component's movement.
+        level_a: Per-case measures at the first level.
+        level_b: Per-case measures at the second level.
+
+    Returns:
+        The carrier, or None when the whole's movement does not separate, no component moved its way, or the
+        largest mover is not shown to move further than every other.
+    """
+    if whole.direction not in ("improved", "regressed") or whole.delta == 0.0:
+        return None
     sign = 1.0 if whole.delta > 0 else -1.0
     moving = [component for component in components if component.delta * sign > 0]
     if not moving:
-        return components, None, None
-    carrier = max(moving, key=lambda component: (component.delta * sign, component.name))
-    return components, carrier.name, carrier.delta / whole.delta
+        return None
+    top = max(moving, key=lambda component: (component.delta * sign, component.name))
+    if top.direction != whole.direction:
+        return None
+    p_values: list[float] = []
+    for other in components:
+        if other.name == top.name:
+            continue
+        gap_a = {
+            case: value - level_a[other.name][case]
+            for case, value in level_a[top.name].items()
+            if case in level_a[other.name]
+        }
+        gap_b = {
+            case: value - level_b[other.name][case]
+            for case, value in level_b[top.name].items()
+            if case in level_b[other.name]
+        }
+        tested = level_difference(gap_a, gap_b)
+        if tested.p_value is None or tested.delta is None or tested.delta * sign <= 0:
+            return None
+        p_values.append(tested.p_value)
+    return top if all(p < SIGNIFICANCE_ALPHA for p in holm_adjust(p_values)) else None
 
 
 class _DivergenceCount(NamedTuple):
