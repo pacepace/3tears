@@ -37,6 +37,7 @@ from threetears.evals.contracts import (
     EvalRun,
     GoalStateOutcome,
     LatencyMetrics,
+    RoleUsage,
     RubricScore,
     omit_paths,
     resolve_variant_identity,
@@ -408,6 +409,11 @@ def _observed_accuracy(field_accuracy: float, document: str, repeat: int) -> flo
     return round(field_accuracy + _DOCUMENT_PROFILE[document][0] + 0.01 * (repeat - 2), 6)
 
 
+def _document_cost(cost_usd: float, document: str) -> float:
+    """What one document cost at a batch's per-document spend, scaled by how hard the document is."""
+    return round(cost_usd * _DOCUMENT_PROFILE[document][1], 6)
+
+
 def toyhost_measurements(
     batch: EvalRun,
     *,
@@ -489,7 +495,7 @@ def toyhost_measurements(
             # Per DOCUMENT as well as per repeat. A longer, less legible document costs more and
             # takes longer, which is what makes twelve documents twelve observations rather than
             # one restated twelve times — see ``_DOCUMENT_PROFILE``.
-            cost_usd=round(cost_usd * _DOCUMENT_PROFILE[document][1], 6),
+            cost_usd=_document_cost(cost_usd, document),
             latency=LatencyMetrics(total_ms=round(total_ms * _DOCUMENT_PROFILE[document][1] + 10 * repeat, 3)),
             # Spread ±0.01 around the mean so three repeats are a real distribution rather
             # than one number restated — a zero-dispersion measure reads as a constant, and
@@ -499,11 +505,21 @@ def toyhost_measurements(
             host_measures={FIELD_ACCURACY: _observed_accuracy(field_accuracy, document, repeat)},
             candidate_kind=TOY_EXTRACTOR_KIND,
             # What a completed cell's capture states: it ran to the end, its spend is the
-            # candidate's alone (no judge, no simulator, no background work), and it carried no
-            # per-role usage rows, covariates or phase timings.
+            # candidate's alone (no judge, no simulator, no background work) — one priced
+            # candidate row, which is what the result's `cost_usd` is derived from and what makes
+            # it an observed spend rather than the sum of nothing — and it carried no covariates
+            # or phase timings. The row names no model: one it named would be an observed candidate
+            # model, a lever of its own on the coverage map, which the corpus holds fixed by `model`.
             termination="completed",
             cost_roles=["candidate"],
-            usage=[],
+            usage=[
+                RoleUsage(
+                    role="candidate",
+                    model=None,
+                    cost_usd=_document_cost(cost_usd, document),
+                    call_count=1,
+                )
+            ],
             covariates={},
             phase_timings={},
             variant_key=variant.variant_key,

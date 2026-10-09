@@ -173,7 +173,8 @@ async def test_every_arm_is_named_by_both_coordinates_and_tested_against_the_con
     assert set(rows) == {"callable.prompt=v2, model=a", "callable.prompt=v1, model=b", "callable.prompt=v2, model=b"}
     assert {row["control"] for row in rows.values()} == {"callable.prompt=v1, model=a"}
     assert all(row["delta"] == pytest.approx(0.5) for row in rows.values()), "the careful rule reads every case"
-    assert {row["reading"] for row in comparison.contrasts()} >= {"accuracy", "cost_usd"}
+    # The arms return plain answers, so no spend was observed and cost is not a reading to test.
+    assert {row["reading"] for row in comparison.contrasts()} == {"accuracy"}
 
 
 async def test_against_reads_the_same_runs_against_another_control_and_runs_nothing() -> None:

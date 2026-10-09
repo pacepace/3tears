@@ -1,7 +1,7 @@
 """``examples/reports.py`` writes a finished campaign's files where it is told, as a newcomer would run it.
 
 The campaign is the example's own offline stand-ins, so its verdicts are fixed: the candidate rule triages every
-ticket right and the baseline seven of twelve, which separates on accuracy, and neither spends anything. The
+ticket right and the baseline seven of twelve, which separates on accuracy, and neither reports any spend. The
 files are checked for presence and substance, not byte for byte: what they say is the report's own tests' job.
 """
 
@@ -35,10 +35,8 @@ async def test_it_writes_the_report_its_evidence_and_its_charts_into_the_directo
 ) -> None:
     verdicts = await _load().main(tmp_path)
 
-    assert verdicts == {
-        ("model=candidate", "accuracy"): "improved on the control",
-        ("model=candidate", "cost_usd"): "not separated from the control",
-    }
+    # Neither arm reports its spend, so cost was not measured and is not tested: accuracy is the one verdict.
+    assert verdicts == {("model=candidate", "accuracy"): "improved on the control"}
     for name in ("report.md", "report.html", "bundle.json"):
         assert (tmp_path / name).stat().st_size > 0, name
     markdown = (tmp_path / "report.md").read_text(encoding="utf-8")

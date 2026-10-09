@@ -191,6 +191,7 @@ from threetears.evals.analysis.surface_table import SurfaceTable
 from threetears.evals.analysis.arms import ArmLevel, ArmMeasurement, ArmRow, ArmStatus
 from threetears.evals.analysis.bundle import (
     CampaignReadStore,
+    CellCoordinate,
     ComparedCell,
     ComparisonFamily,
     ComparisonVerdict,
@@ -330,6 +331,7 @@ __all__ = [
     "CampaignStore",
     "CaseSetIdentity",
     "Cell",
+    "CellCoordinate",
     "ComparedCell",
     "ComparisonColumns",
     "ComparisonFamily",

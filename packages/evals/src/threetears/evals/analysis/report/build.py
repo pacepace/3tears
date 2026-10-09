@@ -55,11 +55,13 @@ from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.viz.quantities import display_scale
 from threetears.evals.contracts.analysis_measures import MeasureSummary
 from threetears.evals.contracts.campaign import VariantIndexEntry
+from threetears.evals.contracts.metrics import ACCURACY_MEASURE, MATCH_MEASURE, classifier_label_of
 from threetears.evals.contracts.surface import (
     STRATUM_MIN_CASES,
     CellFacts,
     DecisionSurface,
     JudgedReading,
+    MeasureFacts,
     StratumFacts,
     TimeAxis,
 )
@@ -802,14 +804,32 @@ def _measure_chart_blocks(
     of which cells to set against which, so it is the chart code picks. A cell is drawn where its reading
     has an interval; a cell left out, and a reading no cell can draw, are each disclosed rather than
     dropped — and a chart the presentation rules refuse is disclosed with the reason.
+
+    Three readings are not charted, because a chart of them carries nothing:
+
+    - **A label's F1.** It is a single figure per cell with no interval by construction, so its chart could
+      only ever be a disclosure that every cell was left out — one per label. It stays in the tables.
+    - **``match`` beside ``accuracy``.** ``accuracy`` is derived from ``match``, observation for observation, so
+      the two charts are one chart drawn twice.
+    - **Cost no result observed.** A cell where no result reported its spend has no ``cost_usd`` reading at all
+      (the bundle leaves its stored zeros out), so there is nothing to chart; the bundle's one sentence saying
+      so stands in its place, naming the arms when only some went unmeasured.
     """
     readings: list[tuple[str, ReadingKind]] = [
-        *((name, "measure") for name, facts in sorted(surface.measures.items()) if facts.higher_is_better is not None),
+        *((name, "measure") for name, facts in sorted(surface.measures.items()) if _chartable(name, facts, surface)),
         *((name, "judged") for name in sorted(surface.dimensions)),
     ]
     cells = cell_index(surface)
     labels = cell_arm_labels(surface, bundle.variant_index)
     blocks: list[ReportBlock] = []
+    if bundle.cost_unmeasured:
+        unmeasured = [cell_ref(cell.variant_key, cell.apparatus_class_id) for cell in bundle.cost_unmeasured_cells]
+        named = (
+            ""
+            if len(unmeasured) == len(cells)
+            else " Unmeasured: " + "; ".join(labels.get(ref, ref) for ref in unmeasured) + "."
+        )
+        blocks.append(DisclosureBlock(section="surface", source="measurement", text=bundle.cost_unmeasured + named))
     for name, reading in readings:
         drawn: list[str] = []
         left_out: list[str] = []
@@ -857,6 +877,19 @@ def _measure_chart_blocks(
                 )
             )
     return blocks
+
+
+def _chartable(name: str, facts: MeasureFacts, surface: DecisionSurface) -> bool:
+    """Whether a measure earns a distribution chart: it has a better end, and its chart would say something.
+
+    A label's F1 has no interval in any cell by construction, and ``match`` is the observation ``accuracy`` is
+    derived from, so where ``accuracy`` is charted a ``match`` chart repeats it.
+    """
+    if facts.higher_is_better is None:
+        return False
+    if (classifier := classifier_label_of(name)) is not None and classifier[0] == "f1":
+        return False
+    return not (name == MATCH_MEASURE and ACCURACY_MEASURE in surface.measures)
 
 
 def _measured(cell: CellFacts, name: str, reading: ReadingKind) -> bool:

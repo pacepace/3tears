@@ -147,7 +147,14 @@ def _bundle_percentiles(costs: list[float]) -> tuple[float, float]:
     profile = toyhost_profile()
     run = make_eval_run(status="completed")
     results = [
-        make_eval_result(eval_run_id=run.id, test_case_id=f"tc-{i}", cost_usd=cost) for i, cost in enumerate(costs)
+        make_eval_result(
+            eval_run_id=run.id,
+            test_case_id=f"tc-{i}",
+            cost_usd=cost,
+            # The priced row the cost is derived from: a cost with no row behind it is no observation of spend.
+            usage=[RoleUsage(role="candidate", model=None, cost_usd=cost, call_count=1)],
+        )
+        for i, cost in enumerate(costs)
     ]
     campaign = EvalCampaign(
         scope_id=run.scope_id,

@@ -84,4 +84,4 @@ class ExternalRateTable:
         rate = self.rates.get((spend.provider, spend.provider_unit))
         if rate is None:
             return None
-        return round(spend.provider_units * rate, 6)
+        return spend.provider_units * rate
