@@ -50,7 +50,7 @@ sentence above as "these are all of them".
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -1104,6 +1104,12 @@ class SweepableRegistry(HostAttributed):
         siblings are for — the judgement is still the declaration's, but a sentinel keeps a
         recorded level from arriving here disguised as an absence.
 
+        What counts as blank is narrower than falsiness: ``None``, the empty string, and an empty
+        collection. A ``False`` or a ``0`` is a level someone recorded — a host's ``clean_snapshot``
+        stored as ``False`` says the snapshot was NOT clean, which is an observation — and reading
+        it as an absence emitted an ``undecided`` apparatus confound on every finding of every
+        campaign that recorded it.
+
         Args:
             name: A declared input name. A name this host never declared is never indeterminate.
             *values: The observed values to judge.
@@ -1112,7 +1118,20 @@ class SweepableRegistry(HostAttributed):
             True when the comparison cannot be decided.
         """
         declared = self._by_name.get(name)
-        return bool(declared and declared.indeterminate_when_blank and not all(values))
+        return bool(declared and declared.indeterminate_when_blank and any(_is_blank(value) for value in values))
+
+
+def _is_blank(value: Any) -> bool:
+    """Whether ``value`` is an absence rather than a recorded level — see :meth:`SweepableRegistry.is_indeterminate`.
+
+    ``None``, ``""`` and an empty collection are blank. A bool or a number never is, whatever its
+    value: falsiness is a property of the type, and ``False`` and ``0`` are recorded answers.
+    """
+    if value is None:
+        return True
+    if isinstance(value, bool | int | float):
+        return False
+    return isinstance(value, Collection) and len(value) == 0
 
 
 def _judge_config_ids(_run: EvalRun, results: Sequence[EvalResult]) -> list[str] | str:

@@ -6,6 +6,14 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: a recorded `False` or `0` is a level, not an unrecorded input
+
+- **`SweepableRegistry.is_indeterminate`** reads only `None`, `""` and an empty collection as blank on an
+  `indeterminate_when_blank` input. It read every falsy value as blank, so a bool or numeric apparatus input
+  recorded as `False` or `0` (a host's `clean_snapshot`) was stored as undecided, and every finding of the
+  campaign carried an `undecided` apparatus confound and a "starting state not recorded" caveat the runs never
+  had. A bool or a number is always a recorded value.
+
 ### 3tears-evals: a swept lever is checked against the mechanism it acts on; a divergent reasoning share qualifies a model comparison (#577, #576)
 
 - **`Sweepable.acts_on`** (optional), and **`ActsOn(measure)`** for a kind contract's overlay field (beside
