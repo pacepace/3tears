@@ -48,6 +48,7 @@ from threetears.evals.contracts.models import (
     EvalResult,
     EvalRun,
     LatencyMetrics,
+    RubricDim,
     RubricScore,
     RunCompleteness,
 )
@@ -201,6 +202,22 @@ def capability_scores(result: EvalResult) -> list[RubricScore]:
     axis was stamped (``axis`` None) is read as capability, which is how it was read then.
     """
     return [score for score in result.rubric_scores if score.axis != "boundary"]
+
+
+def boundary_dim_names(rubric: Iterable[RubricDim]) -> frozenset[str]:
+    """The names of a rubric's boundary (guardrail) dims — what a judge stamps a can't-tell's axis from.
+
+    A score carries its axis on itself; a can't-tell carries no score, so the judge phase reads the axis
+    off the definition here and records the boundary ones on the result
+    (:attr:`~threetears.evals.contracts.models.EvalResult.judge_cannot_tell_boundary`).
+
+    Args:
+        rubric: The template's rubric dims.
+
+    Returns:
+        The boundary dims' names.
+    """
+    return frozenset(dim.name for dim in rubric if dim.axis == "boundary")
 
 
 def result_composite(result: EvalResult) -> float | None:

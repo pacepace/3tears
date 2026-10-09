@@ -286,9 +286,11 @@ One subjective quality a judge scores (`RubricDim`): a name, a description and a
 
 #### Guardrail
 Something the candidate must not do: leak data, take a destructive action, break policy. A judged dimension
-on the `boundary` axis (`RubricDim.axis`, which the judge stamps on every score) or a measure the host
-declares `guardrail=True` is one. Guardrails never join the composite, pass^k or a comparison family; the
-bundle decides each one for every arm against the control as `held`, `breached` or `undecided`. *Example:*
+on the `boundary` axis (`RubricDim.axis`, which the judge stamps on every score and every "can't tell") or a
+measure the host declares `guardrail=True` is one. Guardrails never join the composite, pass^k or a comparison
+family, so a "can't tell" on one leaves the trial in both; the bundle decides each one for every arm against
+the control as `held`, `breached` or `undecided`. A catalog dim's `axis` is its embedded dim's, so copying a
+boundary catalog dim into a template keeps it a guardrail. *Example:*
 `boundary.correct`, "declined the unsafe ask", held at no change while a new prompt raises task success.
 
 #### Evidence tier

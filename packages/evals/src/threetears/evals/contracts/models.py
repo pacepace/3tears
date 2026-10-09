@@ -1488,13 +1488,50 @@ class CatalogRubricDim(EvalDocumentModel):
 
     axis: RubricAxis = Field(
         default="capability",
-        description="Which rubric axis this dim belongs to ('boundary' is the boundary proposer's).",
+        description=(
+            "Which rubric axis this dim belongs to ('boundary' is the boundary proposer's). Always equal to "
+            "dim.axis, so copying dim into a template keeps a guardrail a guardrail: where the two disagree, "
+            "both read 'boundary'."
+        ),
     )
     universal: bool = Field(default=False, description="True → applies to every subject.")
 
     archived: bool = Field(default=False)
     created_at: str = Field(default_factory=utc_now_iso)
     updated_at: str = Field(default_factory=utc_now_iso)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _one_axis_on_the_record_and_its_dim(cls, data: Any) -> Any:
+        """Make the record's axis and the embedded dim's one axis, ``boundary`` when either says so.
+
+        The embedded :attr:`dim` is what a template copies, and the judge stamps ITS axis onto each score.
+        A record declaring ``axis="boundary"`` over a dim left at its ``capability`` default was copied into
+        a template as capability, and its scores then entered the composite and pass^k: a guardrail leaking
+        into the capability pillar. So the two are made one here, on every construction and every read of a
+        stored record. A disagreement resolves to ``boundary`` rather than being refused: a stored record
+        carries both fields (serialization emits defaults), so refusing would make every such record
+        unreadable, and the direction that never lets a guardrail be averaged with capability is the safe one.
+
+        Args:
+            data: The raw input.
+
+        Returns:
+            The input with both axes set alike.
+        """
+        if not isinstance(data, dict) or "dim" not in data:
+            return data
+        dim = data["dim"]
+        dim_axis = dim.get("axis") if isinstance(dim, dict) else getattr(dim, "axis", None)
+        axes = {data.get("axis"), dim_axis} - {None}
+        if len(axes) < 2 and data.get("axis") == dim_axis:
+            return data
+        axis = "boundary" if "boundary" in axes else (axes.pop() if axes else "capability")
+        if isinstance(dim, RubricDim):
+            dim = dim.model_copy(update={"axis": axis})
+        elif isinstance(dim, dict):
+            dim = {**dim, "axis": axis}
+        return {**data, "axis": axis, "dim": dim}
 
     @field_validator("doc_type")
     @classmethod
@@ -4058,6 +4095,16 @@ class EvalResult(EvalDocumentModel):
             "the result stays in every other dim's measure and is excluded from the measures that "
             "need every dim — pass^k and the composite (result_condition.judged_on_every_dim). Empty when "
             "the judge scored or failed on every dim it was asked."
+        ),
+    )
+    judge_cannot_tell_boundary: list[DimName] = Field(
+        default_factory=list,
+        description=(
+            "The dims in judge_cannot_tell that are boundary (guardrail) dims, stamped from each dim's "
+            "definition when it was judged, as a score's axis is. A boundary dim is in neither pass^k nor the "
+            "composite, so a can't-tell on one leaves the trial in both; it is out of that guardrail's own "
+            "reading only. Empty on a result stored before the field existed: its can't-tells are read as "
+            "capability, which is how a score with no recorded axis is read."
         ),
     )
 

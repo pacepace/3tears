@@ -112,7 +112,7 @@ from threetears.evals.contracts.models import (
     scored_dim_ids,
     utc_now_iso,
 )
-from threetears.evals.contracts.scoring import CellSummary
+from threetears.evals.contracts.scoring import CellSummary, boundary_dim_names
 from threetears.evals.contracts.call_ledger import CallLedger
 from threetears.evals.contracts.world_events import Firings, WorldEvent
 from threetears.evals.contracts.world_session import WorldSession
@@ -474,6 +474,8 @@ class _JudgePhase:
     judged_artifact: JudgedArtifact
     evidence: JudgeEvidence
     dims: tuple[str, ...]
+    #: The asked dims on the boundary axis (guardrails), stamped onto a can't-tell as a score's axis is.
+    boundary_dims: frozenset[str] = frozenset()
 
 
 class _JudgeRecord(NamedTuple):
@@ -488,6 +490,8 @@ class _JudgeRecord(NamedTuple):
     #: ``"<dim>: <error>"`` for each dim that failed or did not finish, joined; ``None`` when none.
     judge_error: str | None
     judge_cannot_tell: dict[str, str]
+    #: The can't-tell dims on the boundary axis, sorted.
+    judge_cannot_tell_boundary: list[str]
     #: The judge role's rows, for the calls that returned — what the result's cost reads them from.
     usage: list[RoleUsage]
 
@@ -540,6 +544,7 @@ def _judge_record(
         judge_config_ids=folded.config_ids,
         judge_error="; ".join(f"{dim}: {error}" for dim, error in errors) or None,
         judge_cannot_tell=folded.cannot_tell,
+        judge_cannot_tell_boundary=sorted(dim for dim in folded.cannot_tell if dim in phase.boundary_dims),
         usage=folded.usage,
     )
 
@@ -1301,6 +1306,7 @@ async def run_one_result(
             judged_artifact=judged_artifact,
             evidence=judge_evidence,
             dims=tuple(scored_dim_ids([dim.name for dim in template.rubric], judged_artifact)),
+            boundary_dims=boundary_dim_names(template.rubric),
         )
         sink.begin_judging(phase)
         judged, judge_ms = await _run_judge_phase(
@@ -1445,6 +1451,7 @@ async def judge_witnessed_output(
         judged_artifact=judged_artifact,
         evidence=output.judge_evidence,
         dims=tuple(scored_dim_ids([dim.name for dim in template.rubric], judged_artifact)),
+        boundary_dims=boundary_dim_names(template.rubric),
     )
     return await _run_judge_phase(
         phase,
@@ -1642,6 +1649,7 @@ def _unjudged_record() -> _JudgeRecord:
         judge_config_ids={},
         judge_error=None,
         judge_cannot_tell={},
+        judge_cannot_tell_boundary=[],
         usage=[],
     )
 
@@ -1824,6 +1832,7 @@ def assemble_completed_cell(
         infra_error=errors.infra_error,
         judge_error=judged.judge_error,
         judge_cannot_tell=judged.judge_cannot_tell,
+        judge_cannot_tell_boundary=judged.judge_cannot_tell_boundary,
         variant_key=variant.variant_key,
         identity_version=variant.identity_version,
         # Reached the end of the cell. Stated on the success path too, and not only on the
