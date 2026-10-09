@@ -390,6 +390,11 @@ def vega_config(palette: ChartPalette, font: ChartFont | None = None) -> dict[st
         # channel cannot tell them apart, since one figure here draws names on y and
         # bin ranges on x.
         #
+        # A numeric tick is set in the body face rather than a mono one, and still aligns: the packaged
+        # face's figures are tabular — all ten digits share one advance, held by test — and Vega-Lite has no
+        # way to ask for the `tnum` feature, so the face is where tabular figures have to come from. A host
+        # declaring its own face should pick one whose figures are tabular for the same reason.
+        #
         # `grid: False` is the default in BOTH directions, and the compiler opts an
         # axis in. Gridlines are a per-encoding rule rather than a per-chart choice:
         # a bar has a shared baseline and its value written on it, so a grid is lines

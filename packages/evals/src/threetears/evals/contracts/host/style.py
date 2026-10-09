@@ -220,6 +220,9 @@ class ChartFont:
     renderer, ``packages/evals/scripts/measure_font_metrics.py`` writes one, and
     ``threetears.evals.vega.load_chart_font`` reads it back as a :class:`ChartFont`.
 
+    Numeric ticks are set in this face too, and line up only if its figures are tabular — every digit one
+    advance — since a renderer cannot ask a face for tabular figures it does not draw by default.
+
     Attributes:
         family: The CSS font-family list a renderer emits, e.g. ``"Inter, Arial, sans-serif"``. The
             FIRST family is the face :attr:`advances` was measured in; the rest are fallbacks for a

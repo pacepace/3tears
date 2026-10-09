@@ -746,6 +746,49 @@ class TestThePackagedFaceDrawsEverywhere:
             assert drawn <= estimated * (1 + SAFETY_MARGIN), f"{label!r} draws {drawn / estimated:.3f}x its estimate"
             assert drawn >= estimated * 0.85, f"{label!r} draws {drawn / estimated:.3f}x its estimate — another face"
 
+    def test_numeric_ticks_are_set_in_tabular_figures(self):
+        """#634: every digit of the face numeric ticks are drawn in has one advance, so a column of ticks aligns.
+
+        Vega-Lite cannot ask for the ``tnum`` feature, so the figures are tabular because the FACE's are:
+        the axis label font is the packaged face, and its ten digits draw at one width through the
+        rasteriser itself. The face this replaced drew ``1`` at half the width of ``8``.
+        """
+        import vl_convert as vlc
+
+        config = vega_config(packaged_palette("dark"))
+        assert config["axis"]["labelFont"] == packaged_font().family
+        face = packaged_font().measured_face
+        widths = {}
+        for digit in "0123456789":
+            probe = {
+                "$schema": "https://vega.github.io/schema/vega/v5.json",
+                "autosize": "pad",
+                "padding": 0,
+                "width": 0,
+                "height": 0,
+                "marks": [
+                    {
+                        "type": "text",
+                        "encode": {
+                            "enter": {
+                                "text": {"value": f"H{digit}H"},
+                                "align": {"value": "left"},
+                                "baseline": {"value": "top"},
+                                "font": {"value": face},
+                                "fontSize": {"value": 1000},
+                                "fontWeight": {"value": config["axis"]["labelFontWeight"]},
+                            }
+                        },
+                    }
+                ],
+            }
+            svg = vlc.vega_to_svg(json.dumps(probe))
+            widths[digit] = float(re.search(r'<svg[^>]*\swidth="([\d.]+)"', svg).group(1))
+        # One px at 1000px is the SVG size's rounding, not a difference in the figures.
+        assert max(widths.values()) - min(widths.values()) <= 1, f"proportional figures: {widths}"
+        table = [packaged_font().advances[digit] for digit in "0123456789"]
+        assert max(table) - min(table) <= 0.001, f"the packaged table has proportional figures: {table}"
+
     def test_the_face_and_its_table_have_one_source(self):
         """The palette artifact names no typeface: the family travels with the table measured for it."""
         assert "font" not in load_palette()

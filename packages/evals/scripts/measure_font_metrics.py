@@ -200,9 +200,11 @@ def main(argv: list[str] | None = None) -> int:
         vlc.register_font_directory(str(args.font_dir.resolve()))
     measured = measure(args.family)
     written = write_font_metrics(**measured, path=args.out)
+    digits = [measured["advances"][digit] for digit in "0123456789"]
+    figures = "tabular" if max(digits) - min(digits) <= 0.001 else "PROPORTIONAL — numeric ticks will not align"
     print(
         f"wrote {written}: {args.family!r}, weights {measured['weights']}, worst corpus ratio "
-        f"{measured['worst_ratio']:.4f} on {measured['worst_label']!r}"
+        f"{measured['worst_ratio']:.4f} on {measured['worst_label']!r}; figures {figures}"
     )
     return 0
 
