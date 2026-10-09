@@ -849,7 +849,9 @@ def run_summary(
         measured a production-replicating cost, and ``n_prod_cost_usd`` is
         the denominator ``mean_prod_cost_usd`` was computed over — a result
         that observed no production-role cost is omitted from it rather than
-        counted as a zero. ``completeness`` and ``completeness_disclosure``
+        counted as a zero, and so is one that took no turn: a result the harness
+        faulted, or a call the model refused straight away. The program-cost pair
+        keeps both, because those dollars were spent. ``completeness`` and ``completeness_disclosure``
         are both null when the run carries no completeness record (it has not
         reached a terminal state), and the disclosure alone is null when the
         run delivered its whole matrix — it is the sentence to render when a

@@ -3864,7 +3864,8 @@ class FrontierPoint(EvalBaseModel):
     # not — a result contributes nothing here when its production roles observed no cost,
     # when it carries no usage rows at all, or when a substituted delivery withheld the
     # figure (its background dollars were never spent, so the observed sum would understate
-    # production).
+    # production), or when it is no turn the candidate took: a call its model refused, or a cell
+    # the harness faulted, whose shortened spend would let the rig make the point look cheaper.
     production_replicating_cost: float | None = None
     n_cost: int = 0
     cost_is_partial: bool = False
@@ -4311,15 +4312,17 @@ def _frontier_point(
     # substituted contestant as cheaper than a live one on a difference in apparatus
     # rather than in configuration. Withholding is what keeps the ranking a comparison.
     #
-    # A call the candidate's model refused or errored on took no turn (`delivered_a_turn`), so its dollars are
-    # no turn's spend, and averaged in they rank a refusing contestant cheap; it is left out here as on every
-    # cost reading. A faulted cell is not: that is the deliberate exception above, whose dollars a turn spent.
+    # The population is the turns the candidate took (`delivered_a_turn`), the one every comparison cost reads
+    # (#619). A call the candidate's model refused or errored on took no turn, so its dollars are no turn's
+    # spend, and averaged in they rank a refusing contestant cheap. A cell an apparatus fault cut short spent
+    # less than a whole one, so averaged in it lets the rig make a contestant look cheaper. Both dollars stay
+    # in program spend (`cost_usd`), which is accounting rather than a comparison.
     priced = [
         (r.test_case_id, c)
         for r, c in (
             (r, production_replicating_cost(r.usage, substituted_deliveries=count_substituted_deliveries(r)))
             for r in results
-            if delivered_a_turn(r) or harness_faulted(r)
+            if delivered_a_turn(r)
         )
         if c is not None
     ]
@@ -4340,10 +4343,8 @@ def _frontier_point(
     # decided over pass^k x prod cost x total latency, and an infra-excluded cell carries a real
     # but truncated `LatencyMetrics` (unlike the timeout path, whose `_degraded_capture_fields`
     # leaves latency None), so pooling it here lets an apparatus fault push a contestant into or
-    # out of the dominated set. Cost is the deliberate exception on this point and says so above
-    # — the dollars were really spent. Wall-clock that a cassette miss cut short measures the
-    # harness, not the candidate, so it is not the same case. Nor is a call the model refused or
-    # errored on: it took no turn, and its round trip ranked an all-refusing contestant the fastest
+    # out of the dominated set. Cost drops them too, above. A call the model refused or
+    # errored on is out as well: it took no turn, and its round trip ranked an all-refusing contestant the fastest
     # on the subject, dominating the arms that answered. `delivered_a_turn` is that predicate — the
     # cells' own — and it keeps a turn the budget ended or the deadline struck, which really took
     # that long.

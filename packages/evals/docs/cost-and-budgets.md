@@ -134,6 +134,14 @@ field left `None` is unreported, not zero, so an `Answer` with no `cost_usd` lea
 unknown. A candidate that returns anything else reports no spend, as before.
 `examples/compare_two_models.py` prices each Claude call this way.
 
+**What an arm costs and what the program spent count different results.** A comparison cost — the
+candidate's own spend, `production_replicating_cost`, and every mean of it (`mean_prod_cost_usd` in a run
+summary, a frontier point's cost, an analysis cell's) — reads only the turns the candidate took. It leaves
+out a result the harness faulted, since a cell an apparatus fault cut short spent less than a whole one and
+would let the rig make an arm look cheaper. It also leaves out a call the candidate's model refused straight
+away, which took no turn. Program spend (`cost_usd`, `total_cost_usd`, `mean_cost_usd`, the budget view)
+keeps both, because those dollars were spent. `n_prod_cost_usd` counts what the comparison figure rests on.
+
 **Unpriced is a state, never zero.** A call your client could not price (a local model, say), or
 background work's paid calls that report no `money` and that a run with declared rates has no rate
 for, leaves the result's `cost_usd` as `None`. A reported `money` wins over the run's rate.

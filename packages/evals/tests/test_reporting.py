@@ -4607,6 +4607,30 @@ class TestFrontierLatencyExcludesTheHarnesssOwnCells:
         assert point.mean_total_ms is None, "an all-excluded point must report latency unknown, never a winning zero"
 
 
+class TestFrontierCostLeavesOutAFaultedCell:
+    """#619: the frontier ranks on cost, so a cell an apparatus fault cut short must not make an arm cheaper."""
+
+    def test_a_faulted_cell_does_not_lower_a_points_cost(self):
+        run = _fr_run()
+        whole = [
+            _fr_result(run, model="m1", variant_key="vk-a", test_case_id=f"tc{i}", roles={"candidate": 0.10})
+            for i in range(2)
+        ]
+        faulted = _fr_result(
+            run,
+            model="m1",
+            variant_key="vk-a",
+            test_case_id="tc2",
+            roles={"candidate": 0.01},
+            infra_error="apparatus: cassette miss in replay mode",
+        )
+
+        point = _point_by_model(compute_frontier([run], [*whole, faulted]).subjects[0], "m1")
+
+        assert point.production_replicating_cost == pytest.approx(0.10)
+        assert point.n_cost == 2
+
+
 class TestFrontierCostComposition:
     """The frontier RANKS on cost, so it must say when two contestants priced different things."""
 

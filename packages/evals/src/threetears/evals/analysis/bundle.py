@@ -1320,7 +1320,8 @@ class RunSummary(EvalDocumentModel):
             "Production-replicating spend per MEASURED turn — the comparable figure, and the one the "
             "measure registry names the reporting default. Its denominator is `n_prod_cost_usd`, never "
             "`n_results`: a result that measured nothing is absent from this mean rather than dragging it "
-            "toward a zero nobody observed, which would rank the least-measured configuration cheapest."
+            "toward a zero nobody observed, which would rank the least-measured configuration cheapest. A "
+            "result the harness faulted is absent too, as from every comparison cost."
         ),
     )
     n_prod_cost_usd: int = Field(
@@ -1331,7 +1332,9 @@ class RunSummary(EvalDocumentModel):
             "travels together. A result with no usage decomposition, or one carrying a substituted "
             "delivery, is ABSENT from both rather than entering the sum as a zero: averaging an "
             "unobserved zero in would rank the least-measured config the cheapest. So is a call the model "
-            "refused or errored on, which took no turn (`delivered_a_turn`), as every cost reading leaves it out."
+            "refused or errored on, which took no turn (`delivered_a_turn`), and a result the harness faulted, "
+            "whose cut-short spend would let the rig make an arm look cheaper: every comparison cost leaves both "
+            "out, while `cost_usd` (program spend) keeps them."
         ),
     )
     measures: MeasureCollection = Field(
