@@ -401,19 +401,20 @@ class TestADeclaringPodTakesItsCallerFromTheDelegation:
             assert rec.last_reply[1].success is False
             assert tool.scopes == []
 
-    async def test_a_delegation_from_a_registry_that_signs_no_conversation_is_taken(self) -> None:
-        """a pod may upgrade before its registry: a delegation with no conversation claim still runs.
+    async def test_a_conversation_the_delegation_does_not_sign_is_dropped(self) -> None:
+        """a conversation added to the context of a delegation that signs none never reaches the tool.
 
-        Requiring the claim is the contract step, taken once every registry signs it; until then
-        only a claim that names another conversation is refused.
+        The registry signs the body, not the context, so anyone on the bus can add a conversation to
+        a call whose delegation signed none (a registry from before the claim, or a tool pod's call).
+        The call still runs, as a registry from before the claim needs, but in no conversation.
         """
-        conversation = UUID("06ac4016-baf3-7422-8000-000000000c01")
+        injected = UUID("06ac4016-baf3-7422-8000-000000000c01")
         server, rec, tool = self._server(declares=True)
-        payload = self._payload(pod_id="door-pod", act="door-pod", conversation=conversation, minted_conversation=None)
+        payload = self._payload(pod_id="door-pod", act="door-pod", conversation=injected, minted_conversation=None)
         await deliver_call(server, payload, pod_id="door-pod")
         assert rec.last_reply[1].success is True, rec.last_reply[1].error
         (scope,) = tool.scopes
-        assert scope.context.conversation_id == conversation
+        assert scope.context.conversation_id is None
 
     @pytest.mark.parametrize(("act", "corr"), [("another-pod", None), ("door-pod", "another-call")])
     async def test_a_delegation_for_another_pod_or_call_is_refused(self, act: str, corr: str | None) -> None:

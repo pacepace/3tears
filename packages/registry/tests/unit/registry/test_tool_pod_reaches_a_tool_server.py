@@ -21,7 +21,7 @@ from threetears.core.testing.replay_guard import FakeReplayGuard
 import asyncio
 import base64
 import json
-import inspect
+import itertools
 import time
 from collections.abc import Callable
 from datetime import timedelta
@@ -532,13 +532,14 @@ class TestTheForwardedCallCarriesADelegatedToken:
     ) -> None:
         """the registry cannot tell whether the hub publishes its key, so it strips nothing."""
 
-        def _unreadable_but_for_verification(jwks: dict[str, Any]) -> Callable[[], dict[str, Any]]:
-            # the hub JWKS answers the caller's token verification and fails every other read: the
-            # registry still admits the call, but cannot learn whether the hub publishes its key
+        def _flaky_hub(jwks: dict[str, Any]) -> Callable[[], dict[str, Any]]:
+            # a hub that fails every third fetch: a forwarded call reads the key set twice to verify
+            # its caller (the token, then its proof), and a third time to learn whether the hub
+            # publishes the delegation key, which is the read that fails
+            fetches = itertools.count(1)
+
             def _provider() -> dict[str, Any]:
-                frame = inspect.currentframe()
-                caller = frame.f_back if frame is not None else None
-                if caller is None or caller.f_code.co_name != "_load_jwks":
+                if next(fetches) % 3 == 0:
                     raise RuntimeError("the hub is unreachable")
                 return jwks
 
@@ -547,7 +548,7 @@ class TestTheForwardedCallCarriesADelegatedToken:
         pod_key = Ed25519PrivateKey.generate()
         with caplog.at_level("WARNING"):
             hop, _jwks, _caller, tool = await self._forward(
-                pod_key=pod_key, declares=True, proxy_jwks=_unreadable_but_for_verification, calls=2
+                pod_key=pod_key, declares=True, proxy_jwks=_flaky_hub, calls=2
             )
         assert len(hop.forwarded) == 2
         for forwarded in hop.forwarded:
