@@ -70,7 +70,13 @@ class IncompleteExportError(RuntimeError):
 
 
 class ExportNotDeletedError(RuntimeError):
-    """a proven export could not be deleted; its files are still in the bucket, under the prefix named."""
+    """a proven export could not be deleted; its files are still in the bucket, under the prefix named.
+
+    Raised, failing the part although its rows were read and proven, on purpose: the intent is that
+    no copy of warehouse rows outlives the load that read it. Logging and carrying on would load the
+    part and leave the copy for nobody to own; failing makes the leftover visible, and the next
+    refresh reads the part again through a fresh export and deletes that one.
+    """
 
 
 class ExportStore(Protocol):
