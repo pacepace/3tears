@@ -39,9 +39,9 @@ from urllib.parse import unquote
 from threetears.observe import get_logger
 
 from threetears.datasources.export_read import (
-    ExportNotDeletedError,
     ExportStore,
     IncompleteExportError,
+    _delete_after_load,
     _parquet_rows,
     _read_object,
     export_select,
@@ -246,40 +246,19 @@ async def export_partitions(
         if pending is not None and not pending.done():
             pending.cancel()
             await asyncio.wait({pending})
-        if refused is not None:
-            log.warning(
-                "a partitioned export was refused; it is deleted all the same",
-                extra={
-                    "extra_data": {
-                        "datasource": datasource_name,
-                        "relation": relation,
-                        "object_prefix": result.object_prefix,
-                        "proof": str(refused),
-                        "warehouse_rows": result.row_count,
-                        "parts": {str(v): [f.row_count, f.digest] for v, f in before.items()},
-                    }
-                },
-            )
-        deleted: int | None = None
-        try:
-            deleted = await client.delete_export(datasource_name, destination=destination)
-        except Exception as exc:  # prawduct:allow prawduct/broad-except -- raised as the named failure when nothing else is; logged when an error already unwinds, which wins
-            log.error(
-                "an export could not be deleted; its rows are still in the bucket",
-                extra={
-                    "extra_data": {
-                        "datasource": datasource_name,
-                        "object_prefix": result.object_prefix,
-                        "error": f"{type(exc).__name__}: {exc}",
-                        "unwinding": None if unwinding is None else type(unwinding).__name__,
-                    }
-                },
-            )
-            if unwinding is None:
-                raise ExportNotDeletedError(
-                    f"{relation}: the export was read, but it could not be deleted and is still at "
-                    f"s3://{result.bucket}/{result.object_prefix}: {type(exc).__name__}: {exc}"
-                ) from exc
+        deleted = await _delete_after_load(
+            client,
+            datasource_name,
+            result,
+            destination=destination,
+            what=relation,
+            refused=refused,
+            unwinding=unwinding,
+            refusal_detail={
+                "warehouse_rows": result.row_count,
+                "parts": {str(v): [f.row_count, f.digest] for v, f in before.items()},
+            },
+        )
         if refused is None and unwinding is None:
             log.info(
                 "partitioned export read",

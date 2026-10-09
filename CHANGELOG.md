@@ -230,8 +230,12 @@ export configured.
   the hub to delete every version under its destination (`DatasourceExportDeleteRequest`, the
   `export_delete` ask, `DatasourceQueryClient.delete_export`); the hub deletes with a delete-only
   grant (`ExportConfig.cleanup_access_key_ref`/`cleanup_secret_key_ref`, or its own role), so the
-  reader's keys stay read-only. A delete that fails raises `ExportNotDeletedError`; a refused export
-  is left for an operator. No timer and no lifecycle rule.
+  reader's keys stay read-only. A refused export is deleted too, as `export_partitions` deletes one:
+  every way out of `export_part` after the hub answered (proven, refused, or failed) deletes it, and a
+  refusal is logged at WARNING with its proof and counts so an operator can tell why without the
+  files. A delete that fails raises `ExportNotDeletedError` when nothing else is raised; under a
+  refusal or another error, that error wins and the failed delete is logged at ERROR. No timer and no
+  lifecycle rule.
 - **Added, `S3ObjectStore.delete_versions(prefix)`**: every version and delete marker under a
   non-empty prefix, by version id, raising any S3 refused.
 - **Added, `Driver.export_config`**, and one frozen `ExportResult` (with `ExportLocation`) that

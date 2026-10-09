@@ -20,11 +20,14 @@ warning:
 - the files hold exactly that many rows (and, where the manifest counts each file, as many as it
   says).
 
-**Then it is deleted** (Pace's ruling, 2026-10-09: delete after load, no timer, no lifecycle rule):
-once the part is proven and its rows are in hand, the hub is asked to delete every version under
-the destination (``export_delete``), with a delete-only grant the reader does not hold. A delete
-that fails is raised (:class:`ExportNotDeletedError`) rather than left as a stray copy of warehouse
-rows nobody owns; a refused export is not deleted, so an operator can look at it.
+**Then it is deleted, always** (Pace's ruling, 2026-10-09: delete after load, no timer, no lifecycle
+rule): from the moment the hub answered the export, every way out -- the part proven and read, a
+proof refusing it, a read failing -- asks the hub to delete every version under the destination
+(``export_delete``), with a delete-only grant the reader does not hold, so no copy of warehouse rows
+outlives the load. A refused export is logged at WARNING with what was refused (the proof and the
+counts) so an operator can tell why without the files. A delete that fails is raised
+(:class:`ExportNotDeletedError`) when nothing else is; when a refusal or another error is already
+unwinding, that error wins and the failed delete is logged at ERROR.
 
 A digest over the parquet itself is not compared: the fingerprint is the warehouse's own hash,
 spelled in its dialect, and is opaque to everything else. The before-and-after pair is what proves
@@ -269,29 +272,47 @@ async def export_part(
     filters = dict(where or {})
     before = await client.relation_fingerprint(datasource_name, relation=relation, key=columns, where=filters)
     result = await client.export(datasource_name, select, destination=destination)
-    if not result.object_prefix.endswith(f"/{destination}/"):
-        raise IncompleteExportError(
-            f"the hub answered an export at {result.object_prefix!r}, not the destination {destination!r} asked for"
-        )
-    after = await client.relation_fingerprint(datasource_name, relation=relation, key=columns, where=filters)
-    if after != before:
-        raise IncompleteExportError(
-            f"{relation} {filters or ''} changed while it was exported ({before.row_count} rows before, "
-            f"{after.row_count} after); the export is not one state of it"
-        )
-    if result.row_count != before.row_count:
-        raise IncompleteExportError(
-            f"{relation} {filters or ''}: the warehouse exported {result.row_count} rows, the relation holds "
-            f"{before.row_count}"
-        )
-    rows = await read_export(store, result, bucket=bucket)
+    # from here every way out deletes the export, refused or read: no copy of warehouse rows
+    # outlives the load (delete after load, Pace's ruling)
+    rows: list[dict[str, Any]] = []
+    refused: IncompleteExportError | None = None
+    unwinding: BaseException | None = None
     try:
-        deleted = await client.delete_export(datasource_name, destination=destination)
-    except Exception as exc:  # prawduct:allow prawduct/broad-except -- re-raised as the named failure, cause chained
-        raise ExportNotDeletedError(
-            f"{relation} {filters or ''}: the export was read and proven, but it could not be deleted and is "
-            f"still at s3://{result.bucket}/{result.object_prefix}: {type(exc).__name__}: {exc}"
-        ) from exc
+        try:
+            if not result.object_prefix.endswith(f"/{destination}/"):
+                raise IncompleteExportError(
+                    f"the hub answered an export at {result.object_prefix!r}, not the destination {destination!r} "
+                    "asked for"
+                )
+            after = await client.relation_fingerprint(datasource_name, relation=relation, key=columns, where=filters)
+            if after != before:
+                raise IncompleteExportError(
+                    f"{relation} {filters or ''} changed while it was exported ({before.row_count} rows before, "
+                    f"{after.row_count} after); the export is not one state of it"
+                )
+            if result.row_count != before.row_count:
+                raise IncompleteExportError(
+                    f"{relation} {filters or ''}: the warehouse exported {result.row_count} rows, the relation "
+                    f"holds {before.row_count}"
+                )
+            rows = await read_export(store, result, bucket=bucket)
+        except IncompleteExportError as exc:
+            refused = exc
+            raise
+    except BaseException as exc:
+        unwinding = exc
+        raise
+    finally:
+        deleted = await _delete_after_load(
+            client,
+            datasource_name,
+            result,
+            destination=destination,
+            what=f"{relation} {filters or ''}".rstrip(),
+            refused=refused,
+            unwinding=unwinding,
+            refusal_detail={"warehouse_rows": result.row_count, "fingerprint": [before.row_count, before.digest]},
+        )
     log.info(
         "export read",
         extra={
@@ -306,3 +327,75 @@ async def export_part(
         },
     )
     return rows
+
+
+async def _delete_after_load(
+    client: DatasourceQueryClient,
+    datasource_name: str,
+    result: DatasourceExportResult,
+    *,
+    destination: str,
+    what: str,
+    refused: IncompleteExportError | None,
+    unwinding: BaseException | None,
+    refusal_detail: Mapping[str, Any],
+) -> int | None:
+    """delete an export on its way out, whatever the way: the one rule both export readers keep.
+
+    A refused export is logged at WARNING with its proof first, then deleted all the same. A delete
+    that fails is raised as :class:`ExportNotDeletedError` when nothing is unwinding; when an error
+    already is (a refusal among them), that error wins and the failed delete is logged at ERROR.
+
+    :param client: the caller's datasource client
+    :ptype client: DatasourceQueryClient
+    :param datasource_name: the datasource
+    :ptype datasource_name: str
+    :param result: the export the hub answered
+    :ptype result: DatasourceExportResult
+    :param destination: the destination the export was asked at (what the hub deletes under)
+    :ptype destination: str
+    :param what: what was read, for the messages
+    :ptype what: str
+    :param refused: the proof that refused the export, if one did
+    :ptype refused: IncompleteExportError | None
+    :param unwinding: the error leaving the read, if one is
+    :ptype unwinding: BaseException | None
+    :param refusal_detail: what the refusal is logged with besides its proof (counts, fingerprints)
+    :ptype refusal_detail: Mapping[str, Any]
+    :return: the versions deleted; None when the delete failed under an unwinding error
+    :rtype: int | None
+    :raises ExportNotDeletedError: when the delete failed and nothing else is unwinding
+    """
+    if refused is not None:
+        log.warning(
+            "an export was refused; it is deleted all the same",
+            extra={
+                "extra_data": {
+                    "datasource": datasource_name,
+                    "read": what,
+                    "object_prefix": result.object_prefix,
+                    "proof": str(refused),
+                    **refusal_detail,
+                }
+            },
+        )
+    try:
+        return await client.delete_export(datasource_name, destination=destination)
+    except Exception as exc:  # prawduct:allow prawduct/broad-except -- raised as the named failure when nothing else is; logged when an error already unwinds, which wins
+        log.error(
+            "an export could not be deleted; its rows are still in the bucket",
+            extra={
+                "extra_data": {
+                    "datasource": datasource_name,
+                    "object_prefix": result.object_prefix,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "unwinding": None if unwinding is None else type(unwinding).__name__,
+                }
+            },
+        )
+        if unwinding is None:
+            raise ExportNotDeletedError(
+                f"{what}: the export was read, but it could not be deleted and is still at "
+                f"s3://{result.bucket}/{result.object_prefix}: {type(exc).__name__}: {exc}"
+            ) from exc
+        return None
