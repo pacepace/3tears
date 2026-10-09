@@ -16,14 +16,16 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from threetears.evals.analysis import assemble_context_bundle
 from threetears.evals.analysis.agreement import judge_agreement, judge_self_agreement
 from threetears.evals.contracts import ValidationFailedError
-from threetears.evals.contracts.host.sweepables import SHARED_CORE
+from threetears.evals.contracts.host.sweepables import CORE_ROLES, CORE_SWEEPABLES, SHARED_CORE, SweepableRegistry
 from threetears.evals.contracts.identity import derive_context_identity
 from threetears.evals.contracts.models import (
     DEFAULT_JUDGE_TEMPERATURE,
@@ -42,7 +44,10 @@ from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import JudgeContext, JudgeService
 from threetears.evals.run.rejudge import recorded_judge_pins
 from packages.evals.tests.factories import make_calibration_rating, make_eval_result, make_eval_run
+from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle, toyhost_campaign
+from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from packages.evals.tests.fixtures.toyhost.sweepables import TOYHOST_ROLES, TOYHOST_SWEEPABLES
 
 _TONE = "conversation.tone"
 
@@ -237,3 +242,100 @@ class TestARunJudgedAtAnotherTemperatureIsNotReJudgedAtToday:
         run = _judged()
         assert run.judge_temperature == DEFAULT_JUDGE_TEMPERATURE
         assert recorded_judge_pins(run, request_settings="today") == "judge-a"
+
+
+def _profile_before_the_temperature_joined() -> Any:
+    """The toy profile as it was before ``judge_temperature`` joined the core apparatus."""
+    core = tuple(declared for declared in CORE_SWEEPABLES if declared.name != "judge_temperature")
+    roles = tuple(
+        replace(role, pins=tuple(pin for pin in role.pins if pin != "judge_temperature")) for role in CORE_ROLES
+    )
+    registry = SweepableRegistry(core, roles=roles).extend(TOYHOST_SWEEPABLES, roles=TOYHOST_ROLES)
+    return replace(toyhost_profile(), host_sweepables=registry)
+
+
+def _judging(profile: Any) -> Any:
+    """``profile`` with its toy kind seating the judge — the toy host grades with code and seats none of its own."""
+    return replace(profile, kinds=tuple(replace(kind, seats=kind.seats | {"judge"}) for kind in profile.kinds))
+
+
+def _cells(bundle: Any) -> set[tuple[str, str]]:
+    return {(cell.variant_key, cell.apparatus_class_id) for cell in bundle.cells}
+
+
+def _with_temperature(campaign: Any, storage: Any, temperature: float, *, runs: int | None = None) -> Any:
+    """The toy campaign's store, with every score of its first ``runs`` runs (all, by default) sent at ``temperature``."""
+    loaded = storage.load_eval_runs(campaign.run_ids, TOYHOST_SCOPE)
+    sent = {run.id for run in loaded[: len(loaded) if runs is None else runs]}
+
+    def stamped(result: Any) -> Any:
+        if result.eval_run_id not in sent:
+            return result
+        scores = [score.model_copy(update={"judge_temperature": temperature}) for score in result.rubric_scores]
+        return result.model_copy(update={"rubric_scores": scores})
+
+    return ToyhostStorage(
+        loaded,
+        {run.id: [stamped(r) for r in storage.query_eval_results_by_run(run.id, TOYHOST_SCOPE)] for run in loaded},
+    )
+
+
+def _judged_campaign() -> tuple[Any, ToyhostStorage]:
+    """The toy campaign with its runs judged by a named judge, as stored before temperatures were recorded."""
+    campaign, storage = toyhost_campaign()
+    loaded = storage.load_eval_runs(campaign.run_ids, TOYHOST_SCOPE)
+    judged = [run.model_copy(update={"judge_model": "toy-judge", "judge_config_ids": {}}) for run in loaded]
+    results = {run.id: storage.query_eval_results_by_run(run.id, TOYHOST_SCOPE) for run in loaded}
+    return campaign, ToyhostStorage(judged, results)
+
+
+class TestAStoredCellKeepsItsIdAcrossTheTemperatureJoining:
+    """A stored analysis cites ``<variant_key>:<apparatus_class_id>``; a dimension its runs never recorded must not move it."""
+
+    def test_a_judged_runs_unrecorded_temperature_leaves_its_cell_id_where_it_was(self) -> None:
+        campaign, storage = _judged_campaign()
+        before = assemble_context_bundle(
+            campaign, storage=storage, profile=_judging(_profile_before_the_temperature_joined())
+        )
+        after = assemble_context_bundle(campaign, storage=storage, profile=_judging(toyhost_profile()))
+        assert all("judge_temperature" in cell.unknown_dimensions for cell in after.cells), (
+            "the runs must be judged with the temperature unrecorded, or this asserts nothing"
+        )
+        assert _cells(after) == _cells(before)
+
+    def test_an_unjudged_runs_unseated_temperature_leaves_its_cell_id_where_it_was(self) -> None:
+        assert _cells(toyhost_bundle()) == _cells(toyhost_bundle(profile=_profile_before_the_temperature_joined()))
+
+    def test_a_recorded_temperature_is_a_cell_of_its_own(self) -> None:
+        campaign, storage = toyhost_campaign()
+        recorded = assemble_context_bundle(
+            campaign, storage=_with_temperature(campaign, storage, 0.0), profile=toyhost_profile()
+        )
+        assert _cells(recorded).isdisjoint(_cells(toyhost_bundle()))
+
+    def test_a_recorded_and_an_unrecorded_run_of_one_arm_never_pool(self) -> None:
+        campaign, storage = _judged_campaign()
+        loaded = storage.load_eval_runs(campaign.run_ids, TOYHOST_SCOPE)
+        # Both runs of the first arm: a re-run judged at 0 beside the stored one that recorded nothing.
+        rerun = loaded[0].model_copy(update={"id": "0f6a4c2e-9b1d-4e8f-a3c5-7d2b1e9f4a60"})
+        results = {run.id: storage.query_eval_results_by_run(run.id, TOYHOST_SCOPE) for run in loaded}
+        results[rerun.id] = [
+            result.model_copy(
+                update={
+                    "id": f"{result.id}-rerun",
+                    "eval_run_id": rerun.id,
+                    "rubric_scores": [s.model_copy(update={"judge_temperature": 0.0}) for s in result.rubric_scores],
+                }
+            )
+            for result in results[loaded[0].id]
+        ]
+        mixed = ToyhostStorage([*loaded, rerun], results)
+        bundle = assemble_context_bundle(
+            campaign.model_copy(update={"run_ids": [*campaign.run_ids, rerun.id]}),
+            storage=mixed,
+            profile=_judging(toyhost_profile()),
+        )
+        arm = results[loaded[0].id][0].variant_key
+        assert len({cell.apparatus_class_id for cell in bundle.cells if cell.variant_key == arm}) == 2
+        assert any(merge.variant_key == arm for merge in bundle.refused_merges)
+        assert any(c.dimension == "judge_temperature" and c.status == "undecided" for c in bundle.apparatus_confounds)

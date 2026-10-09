@@ -137,7 +137,7 @@ from threetears.evals.contracts.declaration import (
     resolve_bar_name,
 )
 from threetears.evals.contracts.hashing import canonical_digest, canonical_json
-from threetears.evals.contracts.host.profile import CANDIDATE_MODEL_LEVER, HostProfile
+from threetears.evals.contracts.host.profile import CANDIDATE_MODEL_LEVER, UNSEATED_LEVEL, HostProfile
 from threetears.evals.contracts.host.values import SweepableValue
 from threetears.evals.contracts.identity import IDENTITY_VERSION, resolve_variant_identity
 from threetears.evals.contracts.metrics import (
@@ -6036,6 +6036,49 @@ def _coverage_map(
     return coverage
 
 
+#: Apparatus dimensions that joined the rig after cells were minted under ids that never digested them, each
+#: mapped to the dimension whose seat it shares. Such a dimension stays out of a class's id at the levels that
+#: say nothing about it the class does not already say: UNRECORDED (``None``) — every run stored before the
+#: dimension existed — or the unseated level where its owner reads unseated too. At any recorded level it is
+#: digested like every other dimension. So a stored run's cell keeps the id a stored analysis cites, and a run
+#: that recorded the dimension gets a cell of its own, which never pools with the unrecorded one: the class
+#: still lists the dimension (``unknown_dimensions``), so the merge rule refuses the pair, and the confound scan
+#: reads it ``undecided``.
+#:
+#: **Why no two different classes can share an id.** Within one bundle every class is built over one dimension
+#: set, so a class's unknown set is fixed by its recorded map, and two classes the id cannot tell apart differ
+#: only in this dimension's level, which is neutral in both. Unrecorded beside unrecorded is the same class.
+#: Unrecorded beside unseated cannot happen with the owner agreeing: unseated here needs the owner unseated
+#: (the condition below), while unrecorded here means the run filled the seat, so its owner reads a recorded or
+#: an unrecorded level, never unseated — the owner's own level tells the two classes apart. A dimension's
+#: unseated level paired with a recorded owner (a run that filled no judge seat yet recorded a judge, which
+#: :meth:`~threetears.evals.contracts.host.profile.HostProfile.omits_apparatus` reports as a contradiction) is
+#: therefore digested, not neutral.
+CELL_ID_NEUTRAL: Mapping[str, str] = {"judge_temperature": "judge_model"}
+
+
+def _cell_id_neutral(run_id: str, apparatus_levels: dict[str, dict[str, str | None]]) -> frozenset[str]:
+    """The :data:`CELL_ID_NEUTRAL` dimensions this run's class id leaves out, at the levels where it says nothing new.
+
+    Args:
+        run_id: The run.
+        apparatus_levels: Dimension → run id → level key, from :func:`_apparatus_levels`.
+
+    Returns:
+        The dimensions to leave out of the run's class id; empty when every one is recorded, or absent from the
+        bundle's apparatus altogether.
+    """
+    unseated = canonical_json(UNSEATED_LEVEL)
+    neutral: set[str] = set()
+    for dimension, owner in CELL_ID_NEUTRAL.items():
+        if dimension not in apparatus_levels:
+            continue
+        level = apparatus_levels[dimension].get(run_id)
+        if level is None or (level == unseated and apparatus_levels.get(owner, {}).get(run_id) == unseated):
+            neutral.add(dimension)
+    return frozenset(neutral)
+
+
 def _apparatus_classes(
     runs: list[EvalRun],
     apparatus_levels: dict[str, dict[str, str | None]],
@@ -6061,6 +6104,7 @@ def _apparatus_classes(
         run.id: apparatus_class_of(
             {dim: apparatus_levels.get(dim, {}).get(run.id) for dim in dimensions},
             dimensions=dimensions,
+            id_neutral=_cell_id_neutral(run.id, apparatus_levels),
             # Read off the run, never assumed: the launch path stamps `commissioned`, and a host
             # capturing traffic it did not control writes `witnessed`. It enters the class id, so a
             # captured session beside a launched arm of the same variant is two cells everywhere.

@@ -374,7 +374,10 @@ apparatus input compares runs on it, a repeat sent at another temperature is unp
 a judged run records what its unconfigured dimensions were requested at (`EvalRun.judge_temperature`) in its
 measurement context. A score or run stored before this recorded none and reads as not recorded: its judge is
 unknown, never a match for one at 0, and such a run is not re-judged or repeated under today's request
-(`recorded_judge_pins` refuses it).
+(`recorded_judge_pins` refuses it). Its cell keeps the id it had before the dimension existed: an unrecorded
+temperature (or an unseated one on a run with no judge) stays out of the cell id (`CELL_ID_NEUTRAL`), so a stored
+analysis's cell references still resolve, while a run that recorded a temperature gets a cell of its own that
+never pools with the unrecorded one.
 
 **Where tiers appear.** The bundle lists each judge's tier per dimension with both criteria
 (`judge_evidence_tiers`); a finding stands on the weakest tier among its rows
