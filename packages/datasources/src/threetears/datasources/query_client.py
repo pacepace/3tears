@@ -55,8 +55,19 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID, uuid7
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_serializer, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    SerializerFunctionWrapHandler,
+    field_serializer,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 from threetears.core.sql_fragments import as_written, equality_conditions
+from threetears.datasources.export import ExportResult, check_destination
 from threetears.nats.errors import RequestError
 from threetears.nats.subjects import Subject, Subjects
 from threetears.observe import get_logger, traced
@@ -71,6 +82,12 @@ __all__ = [
     "DEFAULT_QUERY_TIMEOUT_SECONDS",
     "RESULT_TOO_LARGE",
     "QUERY_STATEMENT_TIMEOUT_SECONDS",
+    "EXPORT_NOT_GRANTED",
+    "EXPORT_REFUSED",
+    "EXPORT_UNSUPPORTED",
+    "DatasourceExportDeleteRequest",
+    "DatasourceExportRequest",
+    "DatasourceExportResult",
     "DatasourceQueryClient",
     "DatasourceQueryError",
     "DatasourceQueryRequest",
@@ -247,6 +264,82 @@ class RelationFingerprintResult(BaseModel):
     digest: str
 
 
+class DatasourceExportRequest(BaseModel):
+    """ask the hub to have the warehouse write a ``SELECT``'s rows to the datasource's export bucket.
+
+    A separate ask from a query, granted on its own: the hub runs it only for a caller it would let
+    run the ``SELECT`` on the read rail AND that an operator recorded may export from this
+    datasource. The caller never sends the ``UNLOAD``, a bucket or a role; the hub builds the
+    statement around the ``SELECT`` from an allow-list and the datasource's own export
+    configuration (:mod:`threetears.datasources.export`).
+
+    :param select: a plain ``SELECT``; it binds no parameters (the warehouse's export cannot), so a
+        value it filters by is written in as a literal
+        (:func:`~threetears.datasources.export.sql_string_literal`)
+    :ptype select: str
+    :param destination: where under the datasource's export prefix, a short relative path; files
+        already there are never replaced, so each export names a fresh one
+    :ptype destination: str
+    :raises ValueError: when the destination is not a plain relative path
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    select: str
+    destination: str
+
+    @field_validator("destination")
+    @classmethod
+    def _destination_is_relative(cls, value: str) -> str:
+        """refuse a destination that could leave the configured prefix.
+
+        :param value: the destination
+        :ptype value: str
+        :return: the value unchanged
+        :rtype: str
+        :raises ValueError: when it does not match the destination grammar
+        """
+        check_destination(value)
+        return value
+
+
+#: where an export's files are and how many rows the warehouse wrote: the one model the driver returns
+#: and the wire carries (:class:`threetears.datasources.export.ExportResult`). The reader checks every
+#: field (:mod:`threetears.datasources.export_read`).
+DatasourceExportResult = ExportResult
+
+
+class DatasourceExportDeleteRequest(BaseModel):
+    """ask the hub to delete an export the caller has read and proven: every version under its destination.
+
+    Granted as the export is (a tool pod with the read grant and an export record), and only under
+    the datasource's export prefix. The hub deletes with a delete-only grant of its own, so the
+    reader's keys stay read-only.
+
+    :param destination: the destination the export was written to
+    :ptype destination: str
+    :raises ValueError: when the destination is not a plain relative path
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    destination: str
+
+    @field_validator("destination")
+    @classmethod
+    def _destination_is_relative(cls, value: str) -> str:
+        """refuse a destination that could leave the configured prefix.
+
+        :param value: the destination
+        :ptype value: str
+        :return: the value unchanged
+        :rtype: str
+        :raises ValueError: when it does not match the destination grammar
+        """
+        check_destination(value)
+        return value
+
+
 class DatasourceQueryRequest(BaseModel):
     """one datasource query, carrying the caller's identity as a forwarded token.
 
@@ -296,10 +389,15 @@ class DatasourceQueryRequest(BaseModel):
     query: str | None = None
     params: list[Any] = Field(default_factory=list)
     fingerprint: RelationFingerprintRequest | None = None
+    #: an export instead of a query. A hub that predates exports refuses the field as unknown
+    #: (``MALFORMED_REQUEST``) rather than running anything
+    export: DatasourceExportRequest | None = None
+    #: the deletion of an export the caller read and proved, in place of a query
+    export_delete: DatasourceExportDeleteRequest | None = None
 
     @model_validator(mode="after")
     def _exactly_one_operation(self) -> "DatasourceQueryRequest":
-        """require exactly one of ``query`` and ``fingerprint``.
+        """require exactly one of ``query``, ``fingerprint`` and ``export``.
 
         The two are alternative asks on one subject, and the alternative to this
         check is a model that can represent a request meaning nothing (neither
@@ -316,13 +414,42 @@ class DatasourceQueryRequest(BaseModel):
         :raises ValueError: when neither or both are set
         """
         asked = [
-            name for name, value in (("query", self.query), ("fingerprint", self.fingerprint)) if value is not None
+            name
+            for name, value in (
+                ("query", self.query),
+                ("fingerprint", self.fingerprint),
+                ("export", self.export),
+                ("export_delete", self.export_delete),
+            )
+            if value is not None
         ]
         if len(asked) != 1:
             raise ValueError(
-                f"a datasource request carries exactly one of query or fingerprint, got {asked or 'neither'}"
+                f"a datasource request carries exactly one of query, fingerprint, export or export_delete, got {asked or 'none'}"
             )
+        if (self.export is not None or self.export_delete is not None) and self.params:
+            raise ValueError("an export binds no parameters; write the values into its SELECT as literals")
         return self
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_export(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """leave ``export`` and ``export_delete`` off the wire when they are not asked for.
+
+        A hub that predates exports forbids unknown fields, so a query or fingerprint carrying
+        ``"export": null`` would be refused there as malformed: every read of a newer caller would
+        fail against an older hub. Omitted, the request is byte-for-byte what that hub knows, and
+        the two upgrade in either order.
+
+        :param handler: pydantic's serializer for the fields
+        :ptype handler: SerializerFunctionWrapHandler
+        :return: the serialized request
+        :rtype: dict[str, Any]
+        """
+        data: dict[str, Any] = handler(self)
+        for name in ("export", "export_delete"):
+            if getattr(self, name) is None:
+                data.pop(name, None)
+        return data
 
     @field_serializer("identity_token", "user_identity_token", when_used="json")
     def _emit_token_on_the_wire(self, value: SecretStr | None) -> str | None:
@@ -376,6 +503,10 @@ class DatasourceQueryResponse(BaseModel):
     #: comparing two readings must not have to know which column the digest landed in
     #: or what the driver called it.
     fingerprint: RelationFingerprintResult | None = None
+    #: set only in answer to an ``export`` request
+    export: DatasourceExportResult | None = None
+    #: set only in answer to an ``export_delete`` request: the versions and delete markers deleted
+    export_deleted: int | None = None
 
 
 class DatasourceQueryResult(BaseModel):
@@ -599,6 +730,108 @@ class DatasourceQueryClient:
             )
         return response.fingerprint
 
+    @traced
+    async def export(
+        self,
+        datasource_name: str,
+        select: str,
+        *,
+        destination: str,
+        correlation_id: UUID | None = None,
+    ) -> DatasourceExportResult:
+        """have the warehouse write ``select``'s rows to the datasource's export bucket, as parquet.
+
+        Granted apart from reads: the hub runs it only for a caller that may run ``select`` on the
+        read rail AND that an operator recorded may export from this datasource. A tool pod asks on
+        its own identity; there is no user side to an export.
+
+        :param datasource_name: the datasource's name as the hub holds it
+        :ptype datasource_name: str
+        :param select: a plain ``SELECT`` with no bind parameters (values written in as literals)
+        :ptype select: str
+        :param destination: where under the datasource's export prefix; a fresh path per export,
+            because files already there are never replaced
+        :ptype destination: str
+        :param correlation_id: trace id to carry; generated when omitted
+        :ptype correlation_id: UUID | None
+        :return: how many rows the warehouse wrote and where the files are
+        :rtype: DatasourceExportResult
+        :raises DatasourceQueryError: on a refusal (``EXPORT_NOT_GRANTED``, ``EXPORT_UNSUPPORTED``,
+            ``SQL_SAFETY_VIOLATION``, ``EXPORT_REFUSED``, ...), a transport failure, or a success
+            carrying no result
+        """
+        if not datasource_name:
+            raise DatasourceQueryError(
+                "INVALID_DATASOURCE_NAME",
+                "an export needs the datasource's name; an empty name composes no subject",
+            )
+        request = DatasourceQueryRequest(
+            correlation_id=correlation_id if correlation_id is not None else uuid7(),
+            identity_token=SecretStr(self.forwarded_identity_token()),
+            export=DatasourceExportRequest(select=select, destination=destination),
+        )
+        subject = Subjects.datasource_query(datasource_name)
+        try:
+            response = await self._ask(subject, request)
+        except RequestError as exc:
+            raise DatasourceQueryError("REQUEST_FAILED", f"export on {datasource_name!r}: {exc}") from exc
+        if not response.success:
+            raise DatasourceQueryError(
+                response.error_code or "UNKNOWN",
+                response.error_message or f"export on {datasource_name!r} was refused",
+            )
+        if response.export is None:
+            # a hub that answered success without an export did not run one; taking it as an export
+            # of nothing would read as a relation with no rows
+            raise DatasourceQueryError(
+                "MALFORMED_RESPONSE", f"export on {datasource_name!r} returned success with no export"
+            )
+        log.info(
+            "datasource export written",
+            extra={
+                "extra_data": {
+                    "datasource": datasource_name,
+                    "correlation_id": f"{request.correlation_id}",
+                    "row_count": response.export.row_count,
+                    "object_prefix": response.export.object_prefix,
+                }
+            },
+        )
+        return response.export
+
+    @traced
+    async def delete_export(self, datasource_name: str, *, destination: str) -> int:
+        """have the hub delete an export this caller read and proved: every version under its destination.
+
+        :param datasource_name: the datasource the export was taken from
+        :ptype datasource_name: str
+        :param destination: the destination it was written to
+        :ptype destination: str
+        :return: the versions and delete markers deleted
+        :rtype: int
+        :raises DatasourceQueryError: on a refusal or a transport failure, or a success saying nothing
+            was deleted (a hub that does not know the ask)
+        """
+        request = DatasourceQueryRequest(
+            correlation_id=uuid7(),
+            identity_token=SecretStr(self.forwarded_identity_token()),
+            export_delete=DatasourceExportDeleteRequest(destination=destination),
+        )
+        try:
+            response = await self._ask(Subjects.datasource_query(datasource_name), request)
+        except RequestError as exc:
+            raise DatasourceQueryError("REQUEST_FAILED", f"export delete on {datasource_name!r}: {exc}") from exc
+        if not response.success:
+            raise DatasourceQueryError(
+                response.error_code or "UNKNOWN",
+                response.error_message or f"export delete on {datasource_name!r} was refused",
+            )
+        if response.export_deleted is None:
+            raise DatasourceQueryError(
+                "MALFORMED_RESPONSE", f"export delete on {datasource_name!r} returned success with no count"
+            )
+        return response.export_deleted
+
     async def query(
         self,
         datasource_name: str,
@@ -743,6 +976,18 @@ RESULT_TOO_LARGE: Final = "RESULT_TOO_LARGE"
 #: running and waiting as it bears, or this one waited too long for its turn. nothing ran; ask again
 #: later (a refresh that meets it fails, and the next one runs)
 DATASOURCE_BUSY: Final = "DATASOURCE_BUSY"
+
+#: the hub's refusal of an export from a caller no operator granted one to (``aibots datasource
+#: export-grant``); its reads are unaffected
+EXPORT_NOT_GRANTED: Final = "EXPORT_NOT_GRANTED"
+
+#: the hub's refusal of an export from a datasource that cannot export: no ``export`` on its connection
+#: config, or an engine with none. A reader that treats the export as optional falls back to the rail
+EXPORT_UNSUPPORTED: Final = "EXPORT_UNSUPPORTED"
+
+#: the hub's refusal of an export whose ``SELECT`` cannot sit in a quoted literal, or whose destination
+#: would leave the configured prefix
+EXPORT_REFUSED: Final = "EXPORT_REFUSED"
 
 #: how many times the client asks again after a ``DATASOURCE_BUSY`` refusal before raising it
 BUSY_RETRIES: Final = 3
