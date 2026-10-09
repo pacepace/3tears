@@ -440,7 +440,7 @@ bundle.
 | `threetears.evals.gen` | case and rubric generation |
 | `threetears.evals.analysis` | the analysis bundle, report generation and charts |
 | `threetears.evals.storage` | the storage adapters the engine ships: the in-memory reference store |
-| `threetears.evals.testing` | conformance kits an app runs in its own test suite: the store kit |
+| `threetears.evals.testing` | conformance kits an app runs in its own test suite: the store and reader kits, and the completion-type check |
 | `threetears.evals.quick` | the batteries: `run_eval` in one call, and the `python -m threetears.evals` command line |
 | `threetears.evals.ops` | typed operations over a host, and one job contract for long work |
 | `threetears.evals.actions` | the action catalogue every transport mounts: `evals` and `evals_admin` |

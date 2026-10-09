@@ -237,6 +237,20 @@ design's contrast arms and on each family comparison). On any other lever the sh
 so it is never named there. The confound qualifies the comparison; it never hides it. A share nothing measured is
 said to be unmeasured and names no confound.
 
+An arm is keyed by the model id its launch asked for, and a floating alias (a "latest" pointer) is resolved on the
+provider's side, so two runs of one arm can have been answered by different models. Only the response names the
+model that answered, and each candidate usage row records it (`RoleUsage.served_model`). The bundle reads that into
+`arm_served_models`: each arm's served models, and its state, `one`, `pooled` (two or more models answered it, so
+its numbers are a mixture) or `unrecorded` (some response named no model, or the row was stored before this was
+recorded; never read as the alias). Wherever one requested id was answered by more than one model across a
+comparison's runs, whether inside one arm or between two arms that asked for the same id, the comparison names a
+`served_model:candidate` confound: on the coverage rows and divergences (`confounded_by`) and on each contrast
+against the control (`mechanism_confounds`). It is `undecided` where no mixture is shown but some response named
+no model. Two arms that asked for different ids and were answered by different models are the model lever, not
+its confound. A code-only report says which arms pooled more than one model. The arm still pools under its key:
+the variant key is fixed at launch, before any response names a model, so the mixture is disclosed rather than
+split.
+
 ## Results by kind of case: strata
 
 A pooled accuracy can hide that a variant does well on easy tickets and badly on the hard ones you care

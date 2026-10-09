@@ -203,6 +203,8 @@ class ExtractionResult:
     completion_tokens: int
     cost_usd: float
     model: str
+    #: The model the response named as having answered; ``None`` when it named none.
+    served_model: str | None = None
 
 
 class ScriptedExtractionClient:
@@ -266,6 +268,8 @@ class ScriptedExtractionClient:
             completion_tokens=20 * len(INVOICE_FIELDS),
             cost_usd=script.cost_of(document),
             model=model,
+            # The scripted provider resolves no alias: the model asked for is the one that answers.
+            served_model=model,
         )
 
 
@@ -547,6 +551,7 @@ class ToyExtractorKind:
                     RoleUsage(
                         role="candidate",
                         model=extraction.model,
+                        served_model=extraction.served_model,
                         prompt_tokens=extraction.prompt_tokens,
                         completion_tokens=extraction.completion_tokens,
                         cost_usd=extraction.cost_usd,
