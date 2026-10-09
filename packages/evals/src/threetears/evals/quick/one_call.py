@@ -603,6 +603,8 @@ def _template_id(
     judge: Judge | None,
     seeds: list[dict[str, Any]] | None = None,
     goal_checks: Sequence[str] = (),
+    *,
+    intent: str | None = None,
 ) -> str:
     """The id the case set is addressed by: its cases, a classifier's expected labels and a judge's rubric with them.
 
@@ -611,7 +613,8 @@ def _template_id(
     A rubric is the template's, so the same holds of two judged calls: one template per rubric, and none
     shared with an unjudged call. The judge's model is not part of it: that is the run's apparatus, which
     two runs of one template are compared on. A world run's starting states and goal checks are its cases'
-    and its template's, so they are addressed too.
+    and its template's, so they are addressed too. A judged run's intent is what its judge reads as each
+    case's task, so two judged calls that state different intents never share, or overwrite, one template.
     """
     addressed: Any = cases
     if labels is not None or judge is not None or seeds is not None:
@@ -620,6 +623,7 @@ def _template_id(
             addressed["expected"] = labels
         if judge is not None:
             addressed["rubric"] = [dim.model_dump(mode="json") for dim in judge.dims]
+            addressed["intent"] = intent
         if seeds is not None:
             addressed["seeds"] = seeds
             addressed["goal_checks"] = list(goal_checks)
@@ -643,7 +647,7 @@ def _flat(value: Any) -> str:
 
 
 @dataclass(frozen=True)
-class _Arm:
+class CallableArm:
     """One arm a one-call launch runs: the candidate, the model its run is labelled by, and its other levers.
 
     Attributes:
@@ -896,9 +900,9 @@ async def run_eval(
             level, a replay naming no corpus or one that is no capture of these cases in this scope, or a
             corpus named off replay.
     """
-    (summary,) = await _run_arms(
+    (summary,) = await run_arms(
         cases,
-        [_Arm(candidate, model, levers)],
+        [CallableArm(candidate, model, levers)],
         scorers,
         scope_id=scope_id,
         expected=expected,
@@ -916,7 +920,7 @@ async def run_eval(
     return summary
 
 
-def _template_intent(arms: Sequence[_Arm], graded_by: str, intent: str | None) -> tuple[str, str | None]:
+def _template_intent(arms: Sequence[CallableArm], graded_by: str, intent: str | None) -> tuple[str, str | None]:
     """What the one template every arm shares says its cases ask, and where that came from.
 
     ``intent`` when given; else the candidates' docstring, when every arm's has one and they share its
@@ -942,9 +946,9 @@ def _template_intent(arms: Sequence[_Arm], graded_by: str, intent: str | None) -
     return f"Answer each case so that {graded_by} the answer well.", f"a generic default: no intent=, and {lacking}"
 
 
-async def _run_arms(
+async def run_arms(
     cases: Sequence[Mapping[str, Any]],
-    arms: Sequence[_Arm],
+    arms: Sequence[CallableArm],
     scorers: Sequence[Scorer] = (),
     *,
     scope_id: str,
@@ -997,7 +1001,6 @@ async def _run_arms(
     refuse_unusable_tools(tools, cassette_mode)
     labels = None if expected is None else _expected_labels(plain_cases, expected)
     seeds = _world_seeds(plain_cases, world, seed, goal_checks, host)
-    template_id = _template_id(plain_cases, labels, judge, seeds, goal_checks)
     if host is None:
         host = callable_host(scorers, levers=tuple(arms[0].levers or ()), world=world)
     else:
@@ -1013,6 +1016,9 @@ async def _run_arms(
         models.append(model)
     graded_by = "every scorer grades" if judge is None else "the judge and every scorer grade"
     template_intent, intent_source = _template_intent(arms, graded_by, intent)
+    template_id = _template_id(
+        plain_cases, labels, judge, seeds, goal_checks, intent=template_intent if judge is not None else None
+    )
     template = EvalTemplate(
         id=template_id,
         scope_id=scope_id,

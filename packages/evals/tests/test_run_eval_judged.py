@@ -28,7 +28,14 @@ from threetears.evals.quick import (
     run_eval,
     summarize_run,
 )
-from threetears.evals.run import get_result_trace, get_template, list_results, list_runs, list_templates
+from threetears.evals.run import (
+    get_result_trace,
+    get_template,
+    list_results,
+    list_runs,
+    list_templates,
+    update_template,
+)
 
 SCOPE = "run-eval-judged-tests"
 CASES = [{"question": "What is two plus two?"}, {"question": "What is the capital of France?"}]
@@ -120,7 +127,7 @@ async def test_each_dimension_is_scored_by_the_engines_judge_and_summarised_besi
     rendered = summary.render()
     assert "  answer.helpful (judged 1-5): mean 3.5 (n=2, min 2, max 5)" in rendered
     assert "  answer.honest (judged 1-5): mean 3.5 (n=2, min 2, max 5)" in rendered
-    assert f"  judge spend: ${4 * JUDGE_COST_USD:.6f} over 4 call(s)" in rendered
+    assert "  judge spend: $0.00120 over 4 call(s)" in rendered  # 4 x $0.0003
 
     (run,) = list_runs(host, SCOPE)
     assert run.judge_model == JUDGE_MODEL
@@ -275,12 +282,30 @@ async def test_a_summary_read_back_keeps_the_intent_the_judge_read_but_not_where
     assert "  intent: Answer a question in a few words." in read_back.render()
 
 
-async def test_a_template_edited_since_the_run_no_longer_says_what_its_judge_read_so_no_intent_is_shown() -> None:
+async def test_two_judged_runs_stating_different_intents_each_keep_the_template_their_judge_read() -> None:
     host = callable_host()
     first = await run_eval(CASES, answer, judge=_judge(_FakeJudgeClient()), scope_id=SCOPE, host=host, k=1)
-    await run_eval(CASES, answer, judge=_judge(_FakeJudgeClient()), intent="Reworded.", scope_id=SCOPE, host=host, k=1)
-    assert first.intent == "Answer a question in a few words."
-    assert summarize_run(host, first.run_id, SCOPE).intent is None
+    second = await run_eval(
+        CASES, answer, judge=_judge(_FakeJudgeClient()), intent="Reworded.", scope_id=SCOPE, host=host, k=1
+    )
+    assert first.template_id != second.template_id
+    assert summarize_run(host, first.run_id, SCOPE).intent == "Answer a question in a few words."
+    assert summarize_run(host, second.run_id, SCOPE).intent == "Reworded."
+
+
+async def test_a_template_edited_since_the_run_no_longer_says_what_its_judge_read_so_no_intent_is_shown() -> None:
+    host = callable_host()
+    run = await run_eval(CASES, answer, judge=_judge(_FakeJudgeClient()), scope_id=SCOPE, host=host, k=1)
+    update_template(
+        host,
+        run.template_id or "",
+        SCOPE,
+        {"intent": "Edited after the run."},
+        require_known_tools_allowed=lambda _tools: None,
+        refuse_undeclared_world_seed=lambda _template: None,
+        refuse_undeliverable_template=lambda _template: None,
+    )
+    assert summarize_run(host, run.run_id, SCOPE).intent is None
 
 
 async def test_an_unjudged_run_shows_no_intent_since_nothing_that_grades_it_reads_one() -> None:

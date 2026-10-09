@@ -56,8 +56,8 @@ from threetears.evals.quick.one_call import (
     Candidate,
     ExpectedLabel,
     Scorer,
-    _Arm,
-    _run_arms,
+    CallableArm,
+    run_arms,
     callable_host,
 )
 from threetears.evals.quick.tools import Tool, ToolUsingCandidate
@@ -359,10 +359,10 @@ async def compare(
     coordinates = {arm: _coordinates(arm, named) for arm in arms_given}
     # Every arm in ONE launch, started together, so the arms are measured side by side rather than one after
     # another: what differs between their runs is their settings, not when they ran.
-    summaries = await _run_arms(
+    summaries = await run_arms(
         cases,
         [
-            _Arm(
+            CallableArm(
                 candidate,
                 model=coordinates[arm][CANDIDATE_MODEL_LEVER],
                 levers={lever: coordinates[arm][lever] for lever in levers} or None,

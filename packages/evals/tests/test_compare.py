@@ -22,7 +22,6 @@ import pytest
 from threetears.evals.analysis import DisclosureBlock, TableBlock, report_markdown, variant_key_of_run
 from threetears.evals.contracts.host import CANDIDATE_MODEL_LEVER
 from threetears.evals.quick import Comparison, callable_host, compare
-from threetears.evals.quick.one_call import _Arm, _template_intent
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
 
 #: The example under test.
@@ -180,17 +179,11 @@ async def test_with_no_intent_arms_whose_docstrings_differ_share_the_generic_one
     assert intent == "Answer each case so that every scorer grades the answer well."
 
 
-def test_the_intent_s_source_names_what_every_arm_shares_or_why_none_was_read() -> None:
-    graded_by = "every scorer grades"
-    alike = [_Arm(careful, "a"), _Arm(careful, "b")]
-    assert _template_intent(alike, graded_by, None) == (
-        "Billing whenever money is mentioned, else a bug.",
-        "from the docstring every arm's candidate shares",
-    )
-    assert _template_intent([_Arm(careful), _Arm(hasty)], graded_by, None)[1] == (
-        "a generic default: no intent=, and the arms' candidates share no docstring first line"
-    )
-    assert _template_intent([_Arm(careful), _Arm(hasty)], graded_by, "Stated.") == ("Stated.", None)
+async def test_arms_whose_candidates_share_a_docstring_share_its_first_line_as_the_intent() -> None:
+    comparison = await _compare(candidates={"a": careful, "b": careful}, control="a")
+    (template_id,) = {summary.template_id for summary in comparison.arms.values()}
+    intent = comparison.host.storage.load_template(template_id or "", SCOPE).intent
+    assert intent == "Billing whenever money is mentioned, else a bug."
 
 
 @pytest.mark.parametrize(
