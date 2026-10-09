@@ -33,6 +33,14 @@ an infrastructure failure. A conversing kind's loop checks the cap before every 
 run's ceiling as the level `uncapped`, so two uncapped runs agree and an uncapped run differs from a capped
 one. Only a run that recorded no ceiling and no origin is undecided.
 
+**The quick path's cap.** `run_eval` and `compare` run uncapped unless given `max_cost_usd=`, and every
+summary says which: `spend cap: uncapped — ...` or `spend cap: $0.500 for this run`. With a cap, enforcement
+is on and each run is held to it as above, counting every result's reported spend (the candidate's `Answer`
+and the judge's); `compare`'s cap is the whole comparison's, each arm's run held to an equal share. The cap is
+checked between cases, once the spend so far has passed it, so a run can overshoot it by one case's spend. A
+result whose spend went unpriced stops a capped run, as it stops any. A candidate that returns no `Answer`
+reports no spend, so the cap cannot see it, and the summary says so.
+
 **The wall-clock budget.** Each run's job also runs under a time budget sized to its matrix (cases × k ×
 the cell timeout, plus a margin, clamped between a floor and an 8-hour cap). When it binds, the run ends
 `budget_stopped` too, not `failed`: like the cost cap, it is a bound someone set doing its job, and the
@@ -131,7 +139,7 @@ result's `cost_usd` from those rows and its background work's (`async_deliveries
 [background work](adopting-a-host.md#background-work-payloads-and-spend)).
 
 **A `run_eval` or `compare` candidate reports its spend by returning an `Answer`.** The quick layer's
-candidate is a plain async function, so the engine sees what it returns and nothing of what it spent.
+candidate is a plain function (usually `async`), so the engine sees what it returns and nothing of what it spent.
 Return `Answer(value, model=..., input_tokens=..., output_tokens=..., cost_usd=...)` instead of the bare
 value and the call becomes the cell's `candidate` usage row: `value` is graded and stored as a plain return
 would be, the result's `cost_usd` is derived from the row, the summary prints `candidate spend: $... over N

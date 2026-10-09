@@ -44,8 +44,9 @@ import math
 
 from collections import Counter
 from collections.abc import Mapping
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, JsonValue
 
 from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics, confusion_matrix, label_statistics
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
@@ -53,7 +54,9 @@ from threetears.evals.analysis.surface_table import NO_SUCCESSFUL_RESULTS
 from threetears.evals.contracts import (
     CONFUSION_CELL_MEASURE,
     MATCH_MEASURE,
+    CostCapOrigin,
     EvalResult,
+    EvalRun,
     GoalCheckProof,
     ResultOutcome,
     RubricScale,
@@ -63,6 +66,7 @@ from threetears.evals.contracts import (
     delivered_a_turn,
 )
 from threetears.evals.contracts.host import EvalHost
+from threetears.evals.contracts.host.sweepables import UNCAPPED_SPEND
 from threetears.evals.contracts.metrics import describe_measure, summary_population
 from threetears.evals.contracts.usage_capture import blended_cost
 from threetears.evals.run import get_run, list_results
@@ -196,6 +200,191 @@ class DimensionSummary(BaseModel):
     cannot_tell: int
 
 
+#: How one result came out, as :func:`~threetears.evals.contracts.classify_result` classifies it: graded normally,
+#: failed by the candidate (it counts against the candidate), or excluded as a fault of the rig (it counts for nothing).
+CaseOutcome = Literal["scored", "failed", "excluded"]
+
+_CASE_OUTCOMES: dict[ResultOutcome, CaseOutcome] = {
+    ResultOutcome.OK: "scored",
+    ResultOutcome.CANDIDATE_FAIL: "failed",
+    ResultOutcome.INFRA_EXCLUDE: "excluded",
+}
+
+
+class JudgeGrade(BaseModel):
+    """One rubric dimension's score on one answer, with the judge's reason.
+
+    Attributes:
+        dimension: The dimension, as the rubric names it.
+        scale: ``ordinal`` (1 to 5) or ``pass_fail`` (1 pass, 0 fail).
+        score: The score.
+        reasoning: What the judge said about the answer when it scored it.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    dimension: str
+    scale: RubricScale
+    score: int
+    reasoning: str
+
+
+class CaseResult(BaseModel):
+    """One case's answer on one repeat, every grade it got, and why it failed or was excluded.
+
+    What :meth:`EvalSummary.results` and :meth:`EvalSummary.misses` return, one per result, so a run's answers
+    can be read after it ends without the store it ran in.
+
+    Attributes:
+        case: The case's name: its own ``id`` when the case carries one, else its position in the list given
+            (``"0"`` is the first). The summary's :attr:`EvalSummary.errors` name cases the same way.
+        input: The case, as given.
+        expected: A classifier's expected label for the case; ``None`` when the run classified nothing.
+        repeat: Which repeat of the case this is, from 1 to ``k``.
+        outcome: ``scored``, ``failed`` (the candidate's failure, counted against it) or ``excluded`` (a fault
+            of the rig — a scorer that raised, a judge that failed — counted for nothing).
+        answer: The candidate's answer as returned (its ``repr`` when JSON could not hold it); ``None`` when it
+            gave none.
+        scores: Each grade the result carries, by measure: every scorer's value, and a classifier's ``match``
+            and ``confusion_cell``.
+        judged: Each rubric dimension the judge scored, with its reason; empty for an unjudged run.
+        judge_cannot_tell: Each dimension the judge said it could not score, with its reason. Not a failure.
+        goal_checks: Each goal-state check, by its expression, and whether the end state passed it.
+        errors: Why the result failed or was excluded, as the run recorded it; empty for a scored result.
+        missed_because: Why the result is a miss, one line per reason; empty when it is not one. A miss is a
+            result the candidate failed, a classifier answer that is not the expected label, a scorer that gave
+            0 or less (``False`` counts as 0), a goal check the end state failed, or a pass/fail dimension the
+            judge failed. An excluded result is never a miss: it says nothing about the candidate.
+        cost_usd: What the result spent, as reported and priced; ``None`` when any of it went unpriced.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    case: str
+    input: JsonValue
+    expected: str | None = None
+    repeat: int
+    outcome: CaseOutcome
+    answer: JsonValue = None
+    scores: dict[str, bool | float | str] = {}
+    judged: list[JudgeGrade] = []
+    judge_cannot_tell: dict[str, str] = {}
+    goal_checks: dict[str, bool] = {}
+    errors: list[str] = []
+    missed_because: list[str] = []
+    cost_usd: float | None = None
+
+    @property
+    def missed(self) -> bool:
+        """Whether the result is a miss (:attr:`missed_because` says why)."""
+        return bool(self.missed_because)
+
+    @classmethod
+    def of(
+        cls, result: EvalResult, *, case: str, given: JsonValue, expected: str | None, answer: JsonValue
+    ) -> CaseResult:
+        """One stored result, read as a case result.
+
+        Args:
+            result: The stored result.
+            case: The case's name.
+            given: The case, as given.
+            expected: A classifier's expected label, or ``None``.
+            answer: The candidate's answer, as its kind stored it.
+
+        Returns:
+            The case result, its miss reasons decided by the rule :attr:`missed_because` states.
+        """
+        outcome = _CASE_OUTCOMES[classify_result(result)]
+        errors = (
+            []
+            if outcome == "scored"
+            else [
+                error
+                for error in (
+                    result.runner_error,
+                    None if result.judge_error is None else f"judge: {result.judge_error}",
+                )
+                if error
+            ]
+        )
+        judged = [
+            JudgeGrade(dimension=score.dim, scale=score.scale, score=score.score, reasoning=score.reasoning)
+            for score in result.rubric_scores
+        ]
+        goal_checks = {check.expression: check.passed for check in result.goal_state_outcomes}
+        missed: list[str] = []
+        if outcome == "failed":
+            missed.extend(f"failed: {error}" for error in errors or ["the candidate failed"])
+        elif outcome == "scored":
+            if result.host_measures.get(MATCH_MEASURE) is False:
+                missed.append(f"answered {_shown_value(answer)}, expected {_shown_value(expected)}")
+            missed.extend(
+                f"{name} gave {value:g}"
+                for name, value in result.host_measures.items()
+                if name not in (MATCH_MEASURE, CONFUSION_CELL_MEASURE)
+                and not isinstance(value, str)
+                and float(value) <= 0
+            )
+            missed.extend(f"goal check {check} failed" for check, passed in goal_checks.items() if not passed)
+            missed.extend(
+                f"the judge failed it on {grade.dimension}: {' '.join(grade.reasoning.split())}"
+                for grade in judged
+                if grade.scale == "pass_fail" and grade.score == 0
+            )
+        return cls(
+            case=case,
+            input=given,
+            expected=expected,
+            repeat=result.k_iteration,
+            outcome=outcome,
+            answer=answer,
+            scores=dict(result.host_measures),
+            judged=judged,
+            judge_cannot_tell=dict(result.judge_cannot_tell),
+            goal_checks=goal_checks,
+            errors=errors,
+            missed_because=missed,
+            cost_usd=result.cost_usd,
+        )
+
+    def render(self) -> str:
+        """The result as a few lines of text: the case, the answer, the grades, and why it missed or failed.
+
+        Returns:
+            The text, without a trailing newline.
+        """
+        head = f"case {self.case} (repeat {self.repeat}, {self.outcome}): answered {_shown_value(self.answer)}"
+        if self.expected is not None:
+            head += f", expected {_shown_value(self.expected)}"
+        lines = [head]
+        grades = [
+            f"{name} {value if isinstance(value, str | bool) else f'{value:g}'}"
+            for name, value in self.scores.items()
+            if name != CONFUSION_CELL_MEASURE
+        ]
+        if grades:
+            lines.append(f"  grades: {', '.join(grades)}")
+        lines.extend(
+            f"  judged {grade.dimension}: {grade.score} — {' '.join(grade.reasoning.split())}" for grade in self.judged
+        )
+        lines.extend(
+            f"  judged {dimension}: could not tell — {' '.join(reason.split())}"
+            for dimension, reason in self.judge_cannot_tell.items()
+        )
+        lines.extend(
+            f"  goal check {check}: {'passed' if passed else 'failed'}" for check, passed in self.goal_checks.items()
+        )
+        lines.extend(f"  error: {error}" for error in self.errors)
+        lines.extend(f"  missed: {reason}" for reason in self.missed_because)
+        return "\n".join(lines)
+
+
+def _shown_value(value: Any) -> str:
+    """A value as a result's line prints it: a string quoted, anything else as written."""
+    return repr(value) if isinstance(value, str) or value is None else str(value)
+
+
 class EvalSummary(BaseModel):
     """One run, summarised.
 
@@ -235,7 +424,21 @@ class EvalSummary(BaseModel):
             reported no spend.
         candidate_cost_usd: What those calls cost, as the candidate priced them; ``None`` when any went
             unpriced, and for a run whose candidate reported no spend.
-        errors: Each failed or excluded result's error, prefixed by its case, then the run's own.
+        errors: Each failed or excluded result's error, prefixed by its case, then the run's own. A case is named
+            as the caller that summarised the run named it (:func:`~threetears.evals.quick.run_eval`: its own
+            ``id``, else its position), else by its stored test case id.
+        max_cost_usd: The spend ceiling the run was held to, in US dollars; ``None`` when none bound it.
+        max_cost_usd_origin: Where that ceiling came from, as the run records it: ``chosen`` (the launch named
+            it), ``inherited`` (the host's default), ``uncapped`` (ceiling enforcement was off, so nothing bounded
+            the run), or ``None`` for a run whose writer recorded none.
+        judge_shares_candidate_model: Each model that both judged the run's answers and produced them — the
+            judge's model (as requested, or as a score says it was served) matching the run's candidate model or
+            a model the candidate's usage rows name — sorted; empty when they share none, or for an unjudged run.
+            A model tends to rate its own output higher, so a judged score from one of these may favour the
+            candidate. Compared on the ids as recorded, so an alias one side spells differently is not caught.
+        case_results: Every result, read for a person (:class:`CaseResult`), in case order then repeat; ``None``
+            when the run was summarised without its cases, as the CLI and ``run_get`` summarise one.
+            :meth:`results` and :meth:`misses` read it.
         stopped_because: Why a designed stop ended the run short, as the run records it: the reason an
             operator gave for a cancel, or which budget stopped it (its cost cap, or its wall-clock budget).
             ``None`` for a run nothing stopped, and for a cancel given no reason. A stop is never one of
@@ -268,6 +471,44 @@ class EvalSummary(BaseModel):
     intent_source: str | None = None
     errors: list[str]
     stopped_because: str | None = None
+    max_cost_usd: float | None = None
+    max_cost_usd_origin: CostCapOrigin | None = None
+    judge_shares_candidate_model: list[str] = []
+    case_results: list[CaseResult] | None = None
+
+    def results(self) -> list[CaseResult]:
+        """Every result: each case's answer on each repeat, its grades, and why it failed or was excluded.
+
+        Returns:
+            One :class:`CaseResult` per result, in case order then repeat.
+
+        Raises:
+            ValueError: The summary carries no results — it was summarised without its cases (the CLI's and
+                ``run_get``'s summaries are); read the stored results with
+                :func:`~threetears.evals.run.list_results` instead.
+        """
+        if self.case_results is None:
+            raise ValueError(
+                f"this summary of run {self.run_id} carries no per-case results: it was summarised without its "
+                "cases, as the CLI and run_get summarise a run; read them with threetears.evals.run.list_results"
+            )
+        return list(self.case_results)
+
+    def misses(self) -> list[CaseResult]:
+        """The results the candidate missed, each saying why (:attr:`CaseResult.missed_because`).
+
+        A miss is a result the candidate failed, a classifier answer that is not the expected label, a scorer
+        that gave 0 or less (``False`` counts as 0), a goal check the end state failed, or a pass/fail
+        dimension the judge failed. An excluded result is not a miss — it says nothing about the candidate —
+        so read :meth:`results` for those; the summary's :attr:`n_excluded` counts them.
+
+        Returns:
+            The missed results, in case order then repeat.
+
+        Raises:
+            ValueError: The summary carries no results (:meth:`results`).
+        """
+        return [result for result in self.results() if result.missed]
 
     def render(self) -> str:
         """The summary as a few lines of text for a terminal.
@@ -282,6 +523,8 @@ class EvalSummary(BaseModel):
         ]
         if self.stopped_because is not None:
             lines.append(f"  stopped: {self.stopped_because}")
+        if (cap := _spend_cap_line(self)) is not None:
+            lines.append(f"  {cap}")
         for measure in self.measures:
             left_out = _left_out(measure)
             if measure.n == 0 and measure.n_no_turn:
@@ -310,6 +553,8 @@ class EvalSummary(BaseModel):
             source = "" if self.intent_source is None else f" ({self.intent_source})"
             lines.append(f"  intent{source}: {' '.join(self.intent.split())}")
         lines.extend(f"  {_dimension_line(dimension)}" for dimension in self.judged)
+        if self.judge_shares_candidate_model:
+            lines.append(f"  {self_judging_text(self.judge_shares_candidate_model, 'the candidate')}")
         if self.judged:
             spend = (
                 "unknown: a judge call went unpriced"
@@ -327,6 +572,60 @@ class EvalSummary(BaseModel):
         lines.extend(f"  {goal.line()}" for goal in self.goal_checks)
         lines.extend(f"  error: {error}" for error in self.errors)
         return "\n".join(lines)
+
+
+def self_judging_text(models: list[str], whose: str) -> str:
+    """The disclosure that a judge graded answers its own model produced, as every quick surface words it.
+
+    Public because two surfaces say it — a run's summary and a judged comparison's report — and one wording
+    for both keeps the warning from reading two ways.
+
+    Args:
+        models: The models that both judged and answered.
+        whose: Whose answers they produced (``"the candidate"``, ``"arm 'candidate'"``).
+
+    Returns:
+        One sentence.
+    """
+    return (
+        f"self-judging: the judge's model {', '.join(models)} also produced {whose}'s answers, and a model tends "
+        "to rate its own output higher, so its judged scores may favour them; judge with another model to rule "
+        "that out"
+    )
+
+
+def _self_judging(run: EvalRun, results: list[EvalResult]) -> list[str]:
+    """The models that both judged a run's answers and produced them (:attr:`EvalSummary.judge_shares_candidate_model`)."""
+    judges = {*(run.effective_judges or {}).values(), *([run.judge_model] if run.judge_model else [])}
+    judges |= {score.served_model for result in results for score in result.rubric_scores if score.served_model}
+    if not judges:
+        return []
+    candidates = {run.candidate_model}
+    candidates |= {
+        model
+        for result in results
+        for row in result.usage
+        if row.role == "candidate"
+        for model in (row.model, row.served_model)
+        if model
+    }
+    return sorted(judges & candidates)
+
+
+def _spend_cap_line(summary: EvalSummary) -> str | None:
+    """The spend ceiling the run was held to, or that it had none; nothing for a run that recorded neither.
+
+    A cap counts the spend results report, so a capped run none of whose candidate calls reported any says
+    that its cap counted only what else was spent (a judge's calls, say).
+    """
+    if summary.max_cost_usd_origin == "uncapped":
+        return f"spend cap: {UNCAPPED_SPEND}"
+    if summary.max_cost_usd is None:
+        return None
+    line = f"spend cap: {dollars_text(summary.max_cost_usd)} for this run"
+    if summary.candidate_calls == 0:
+        line += "; it counts only spend a result reports, and the candidate reported none"
+    return line
 
 
 def _left_out(measure: MeasureSummary) -> str:
@@ -392,13 +691,17 @@ def _label_line(statistics: LabelStatistics) -> str:
     return f"{_shown(statistics.label)}: {precision}, {recall}, {f1}"
 
 
-def summarize_run(host: EvalHost, run_id: str, scope_id: str) -> EvalSummary:
+def summarize_run(
+    host: EvalHost, run_id: str, scope_id: str, *, case_names: Mapping[str, str] | None = None
+) -> EvalSummary:
     """Summarise one stored run and its results.
 
     Args:
         host: The host whose store holds the run, and whose measures are summarised.
         run_id: The run.
         scope_id: The scope it lives in.
+        case_names: What each case is called in the summary's errors, by stored test case id; a case it does
+            not name, and every case when it is ``None``, is called by its id.
 
     Returns:
         The summary.
@@ -436,8 +739,9 @@ def summarize_run(host: EvalHost, run_id: str, scope_id: str) -> EvalSummary:
                 n_faulted=sum(1 for result in left if classify_result(result) is ResultOutcome.INFRA_EXCLUDE),
             )
         )
+    names = case_names or {}
     errors = [
-        f"case {result.test_case_id}: {error}"
+        f"case {names.get(result.test_case_id, result.test_case_id)}: {error}"
         for result, outcome in zip(results, outcomes, strict=True)
         if outcome is not ResultOutcome.OK
         for error in (result.runner_error, None if result.judge_error is None else f"judge: {result.judge_error}")
@@ -484,6 +788,9 @@ def summarize_run(host: EvalHost, run_id: str, scope_id: str) -> EvalSummary:
         intent=template.intent if template is not None and template.updated_at <= run.created_at else None,
         errors=errors,
         stopped_because=run.cancellation_reason or run.budget_stop_reason,
+        max_cost_usd=run.max_cost_usd,
+        max_cost_usd_origin=run.max_cost_usd_origin,
+        judge_shares_candidate_model=_self_judging(run, results),
     )
 
 
@@ -540,4 +847,15 @@ def _goal_checks(results: list[EvalResult], proofs: Mapping[str, GoalCheckProof]
     ]
 
 
-__all__ = ["DimensionSummary", "EvalSummary", "GoalCheckSummary", "MeasureSummary", "dollars_text", "summarize_run"]
+__all__ = [
+    "CaseOutcome",
+    "CaseResult",
+    "DimensionSummary",
+    "EvalSummary",
+    "GoalCheckSummary",
+    "JudgeGrade",
+    "MeasureSummary",
+    "dollars_text",
+    "self_judging_text",
+    "summarize_run",
+]

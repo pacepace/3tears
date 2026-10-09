@@ -132,7 +132,15 @@ from threetears.evals.ops.runs import (
     runs_list,
     templates_list,
 )
-from threetears.evals.ops.summary import DimensionSummary, EvalSummary, MeasureSummary, dollars_text, summarize_run
+from threetears.evals.ops.summary import (
+    CaseResult,
+    DimensionSummary,
+    EvalSummary,
+    JudgeGrade,
+    MeasureSummary,
+    dollars_text,
+    summarize_run,
+)
 
 __all__ = [
     "ANALYSIS_JOB_PREFIX",
@@ -148,6 +156,7 @@ __all__ = [
     "CampaignDefinition",
     "CampaignLine",
     "CampaignListing",
+    "CaseResult",
     "CostEstimate",
     "DimensionSummary",
     "EvalSummary",
@@ -158,6 +167,7 @@ __all__ = [
     "JobState",
     "JobStatus",
     "JobsStarted",
+    "JudgeGrade",
     "LaunchArguments",
     "LaunchEstimate",
     "MeasureSummary",

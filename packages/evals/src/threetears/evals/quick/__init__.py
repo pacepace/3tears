@@ -62,7 +62,16 @@ from threetears.evals.quick.one_call import (
 from threetears.evals.quick.judged import CaseMaterial, Judge
 from threetears.evals.quick.tools import CandidateTools, Tool, ToolUsingCandidate
 from threetears.evals.quick.world import CaseSeed, Dimension, ToolRefused, World, WorldCandidate, WorldTool, WorldTools
-from threetears.evals.ops.summary import DimensionSummary, EvalSummary, GoalCheckSummary, MeasureSummary, summarize_run
+from threetears.evals.ops.summary import (
+    CaseOutcome,
+    CaseResult,
+    DimensionSummary,
+    EvalSummary,
+    GoalCheckSummary,
+    JudgeGrade,
+    MeasureSummary,
+    summarize_run,
+)
 
 __all__ = [
     "CALLABLE_KIND",
@@ -83,6 +92,8 @@ __all__ = [
     "Candidate",
     "CandidateTools",
     "CaseMaterial",
+    "CaseOutcome",
+    "CaseResult",
     "CaseSeed",
     "Comparison",
     "ConfusionCount",
@@ -94,6 +105,7 @@ __all__ = [
     "HostCommand",
     "HostFactory",
     "Judge",
+    "JudgeGrade",
     "LabelStatistics",
     "MeasureSummary",
     "Scorer",

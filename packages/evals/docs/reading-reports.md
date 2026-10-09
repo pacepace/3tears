@@ -403,7 +403,9 @@ sent at, so a tier measured under one prompt or one temperature never sets anoth
 is no longer judged at the provider's default (around 1.0 on some) beside configured ones at 0, a split nobody
 chose. A model that refuses a temperature (some reasoning models do) is sent none, and the client reports that on
 its completion (`CompletionResult.temperature`, `None`), so the score records `model_default` rather than the 0
-nobody sent. Each score records what its call was actually sent at (`RubricScore.judge_temperature`), and that is
+nobody sent. A quick `Judge`'s client hears the requested temperature when its `generate` takes a `temperature`
+keyword; one that takes none is called without it, and its scores record what its completions report. Each score
+records what its call was actually sent at (`RubricScore.judge_temperature`), and that is
 part of the judge's identity everywhere: agreement groups and tiers are keyed by it, the `judge_temperature`
 apparatus input compares runs on it, a repeat sent at another temperature is unpaired (`temperature_changed`), and
 a judged run records what its unconfigured dimensions were requested at (`EvalRun.judge_temperature`) in its
