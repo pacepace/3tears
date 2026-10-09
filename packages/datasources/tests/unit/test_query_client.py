@@ -27,6 +27,8 @@ from threetears.datasources.query_client import (
     DatasourceQueryError,
     DatasourceQueryRequest,
     DatasourceQueryResponse,
+    RelationFingerprintGroup,
+    RelationFingerprintResult,
 )
 from threetears.nats.errors import RequestError, RequestTimeoutError
 from threetears.nats.subjects import Subject, set_default_namespace
@@ -453,3 +455,70 @@ class TestABusyHubIsAskedAgain:
 
         assert raised.value.error_code == DATASOURCE_BUSY
         assert len(fake.calls) == 1 + BUSY_RETRIES
+
+
+class TestGroupedFingerprint:
+    """``relation_fingerprint_groups``: one ask, each group answered as a single fingerprint would be."""
+
+    async def test_each_group_is_answered_as_its_own_fingerprint_with_null_as_none(self) -> None:
+        reply = DatasourceQueryResponse(
+            success=True,
+            fingerprint_groups=[
+                RelationFingerprintGroup(value="VA", row_count=3, digest="11"),
+                RelationFingerprintGroup(value=None, row_count=1, digest="7"),
+            ],
+            correlation_id=uuid7(),
+        )
+        fake = _FakeNatsClient(reply=reply)
+
+        groups = await _client(fake).relation_fingerprint_groups(
+            "warehouse", relation="s.t", key=["a", "b"], group_by="state", where={"r": "1"}, where_in={"state": ["VA"]}
+        )
+
+        assert groups == {
+            "VA": RelationFingerprintResult(row_count=3, digest="11"),
+            None: RelationFingerprintResult(row_count=1, digest="7"),
+        }
+        sent = fake.calls[0]["message"].fingerprint
+        assert (sent.relation, sent.key_columns, sent.group_by) == ("s.t", ["a", "b"], "state")
+        assert (sent.where, sent.where_in) == ({"r": "1"}, {"state": ["VA"]})
+        assert "warehouse" in fake.calls[0]["subject"].path
+
+    async def test_a_refusal_carries_the_hubs_code(self) -> None:
+        reply = DatasourceQueryResponse(
+            success=False, error_code="FINGERPRINT_GROUPS_UNSUPPORTED", error_message="no", correlation_id=uuid7()
+        )
+
+        with pytest.raises(DatasourceQueryError) as raised:
+            await _client(_FakeNatsClient(reply=reply)).relation_fingerprint_groups(
+                "warehouse", relation="s.t", key=["a"], group_by="state"
+            )
+
+        assert raised.value.error_code == "FINGERPRINT_GROUPS_UNSUPPORTED"
+
+    async def test_a_success_with_no_groups_is_not_taken_as_an_empty_relation(self) -> None:
+        reply = DatasourceQueryResponse(success=True, correlation_id=uuid7())
+
+        with pytest.raises(DatasourceQueryError) as raised:
+            await _client(_FakeNatsClient(reply=reply)).relation_fingerprint_groups(
+                "warehouse", relation="s.t", key=["a"], group_by="state"
+            )
+
+        assert raised.value.error_code == "MALFORMED_RESPONSE"
+
+    async def test_a_success_with_an_empty_list_is_a_relation_with_no_rows(self) -> None:
+        reply = DatasourceQueryResponse(success=True, fingerprint_groups=[], correlation_id=uuid7())
+
+        groups = await _client(_FakeNatsClient(reply=reply)).relation_fingerprint_groups(
+            "warehouse", relation="s.t", key=["a"], group_by="state"
+        )
+
+        assert groups == {}
+
+    async def test_a_transport_failure_is_named(self) -> None:
+        fake = _FakeNatsClient(raise_exc=RequestError("bus down"))
+
+        with pytest.raises(DatasourceQueryError) as raised:
+            await _client(fake).relation_fingerprint_groups("warehouse", relation="s.t", key=["a"], group_by="state")
+
+        assert raised.value.error_code == "REQUEST_FAILED"
