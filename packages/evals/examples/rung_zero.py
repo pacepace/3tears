@@ -2,7 +2,7 @@
 
 The first rung: cases, an async function, and what a right answer is. ``expected=`` grades it as a classifier
 (confusion matrix, per-label precision, recall and F1); ``decisive`` is a scorer. New here: ``run_eval``.
-
+Code grades it because each case has an exact right label; most answers are graded by an LLM judge, the next example.
 Run it with ``python packages/evals/examples/rung_zero.py``. It calls no model: it runs offline, for free.
 """
 

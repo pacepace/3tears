@@ -74,10 +74,10 @@ Each example is one short file that shows one capability, and each builds on the
 | Example | What it shows |
 |---|---|
 | [`rung_zero.py`](examples/rung_zero.py) | One function evaluated against cases, graded by expected labels and a scorer. |
+| [`llm_judge.py`](examples/llm_judge.py) | Open-ended answers graded by an LLM judge against a rubric. |
 | [`compare_two_prompts.py`](examples/compare_two_prompts.py) | Two prompts measured on the same cases, with a verdict on whether the difference is real. |
 | [`compare_two_models.py`](examples/compare_two_models.py) | A cheaper model weighed on accuracy against cost. |
 | [`prompt_x_model.py`](examples/prompt_x_model.py) | Two things varied at once (prompt and model), with results for every combination. |
-| [`llm_judge.py`](examples/llm_judge.py) | Open-ended answers graded by an LLM judge against a rubric. |
 | [`cassettes.py`](examples/cassettes.py) | Tool results captured once and replayed, so every arm sees the same ones. |
 | [`world.py`](examples/world.py) | A modeled world (a room's light), with the model's impact on it measured. |
 | [`reports.py`](examples/reports.py) | A finished campaign written out as verdicts, Markdown, HTML and charts. |
@@ -180,6 +180,41 @@ that seats only apparatus of your own, never the judge, the simulator or the spe
 
 Example: [`examples/rung_zero.py`](examples/rung_zero.py).
 
+### Grading with an LLM judge
+
+Most answers are graded this way: no code can say whether a reply is helpful or sticks to its source, but
+a model reading it against a rubric can. Give `run_eval` a `Judge`: a completion client, the model it
+calls, and a rubric. The engine's own judge scores each answer
+on each dimension (1-5 by default) and records the judge's spend as the client prices it. Scorers and
+`expected=` still work beside it.
+
+```python
+from threetears.evals.quick import Judge, run_eval
+
+judge = Judge(
+    client=my_client,            # any CompletionClient; you own it, and the run never closes it
+    model="claude-haiku-5-5",
+    rubric={"helpful": "Resolves the question.", "grounded": "Claims only what the policy says."},
+    case_material=lambda case: f"Policy:\n{POLICY}\n\nQuestion: {case['question']}",
+)
+summary = await run_eval(
+    cases, answer, [concise], judge=judge, intent="Answer a customer's question from the policy.", scope_id="faq"
+)
+print(summary.render())   # adds "intent: ...", "answer.helpful (judged 1-5): mean ..." and "judge spend: $..."
+```
+
+The judge reads `intent=` beside every answer as what each case asks, so its wording can move the scores.
+Left out, it is the first line of the candidate's docstring, and `render()` says so:
+`intent (from answer's docstring): ...`.
+
+A bare rubric name is placed under the judge's `context` (`answer` by default), so `helpful` is reported
+as `answer.helpful`. The judge's spend reaches the summary as its client prices it; a candidate that calls
+a model reports its own by returning an `Answer`, as in
+[Comparing models: accuracy and cost](#comparing-models-accuracy-and-cost).
+
+Example: [`examples/llm_judge.py`](examples/llm_judge.py), which includes a small adapter from the
+`anthropic` SDK to the engine's completion client.
+
 ### Comparing two versions
 
 `compare` runs each candidate over the same cases as one arm, files the runs as one campaign, and tests
@@ -260,40 +295,6 @@ whether factors interact. The pivot read (`ops.scope_pivot`) averages a scope's 
 factors, without a significance test.
 
 Example: [`examples/prompt_x_model.py`](examples/prompt_x_model.py).
-
-### Grading with an LLM judge
-
-Most answers are graded this way: no code can say whether a reply is helpful or sticks to its source, but
-a model reading it against a rubric can. Give `run_eval` a `Judge`: a completion client, the model it
-calls, and a rubric. The engine's own judge scores each answer
-on each dimension (1-5 by default) and records the judge's spend as the client prices it. Scorers and
-`expected=` still work beside it.
-
-```python
-from threetears.evals.quick import Judge, run_eval
-
-judge = Judge(
-    client=my_client,            # any CompletionClient; you own it, and the run never closes it
-    model="claude-haiku-5-5",
-    rubric={"helpful": "Resolves the question.", "grounded": "Claims only what the policy says."},
-    case_material=lambda case: f"Policy:\n{POLICY}\n\nQuestion: {case['question']}",
-)
-summary = await run_eval(
-    cases, answer, [concise], judge=judge, intent="Answer a customer's question from the policy.", scope_id="faq"
-)
-print(summary.render())   # adds "intent: ...", "answer.helpful (judged 1-5): mean ..." and "judge spend: $..."
-```
-
-The judge reads `intent=` beside every answer as what each case asks, so its wording can move the scores.
-Left out, it is the first line of the candidate's docstring, and `render()` says so:
-`intent (from answer's docstring): ...`.
-
-A bare rubric name is placed under the judge's `context` (`answer` by default), so `helpful` is reported
-as `answer.helpful`. The judge's spend reaches the summary as its client prices it; a candidate that calls
-a model reports its own by returning an `Answer`, as above.
-
-Example: [`examples/llm_judge.py`](examples/llm_judge.py), which includes a small adapter from the
-`anthropic` SDK to the engine's completion client.
 
 ### Capturing & replaying tool results
 

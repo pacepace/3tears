@@ -2,7 +2,8 @@
 
 No code grades that, so a model does: a model answers questions about a store policy, and a second call, the
 judge, scores each answer on a rubric, beside a code scorer. New here: ``Judge``, a completion client, its model
-and a rubric, passed to ``run_eval`` as ``judge=``, and ``intent=``, what the judge is told each case asks.
+and a rubric, passed to ``run_eval`` as ``judge=``; ``intent=``, what the judge is told each case asks; and
+``Answer``, the candidate's reply plus the tokens and dollars its call spent.
 How far to trust it: ``docs/reading-reports.md``.
 
 Run it with ``python packages/evals/examples/llm_judge.py``. With ``ANTHROPIC_API_KEY`` set, Claude answers and
