@@ -1137,7 +1137,7 @@ def build_user_message(bundle: AnalysisContextBundle) -> str:
     ``variant_index``: the index is the key's pre-image, hashes and folded surfaces included, and
     stays on the bundle for code to store and join on.
 
-    The writer is shown each family comparison's ADJUSTED p only. The raw p stays on the bundle for
+    The writer is shown each family comparison's and each scope divergence's ADJUSTED p only. The raw p stays on the bundle for
     audit, but a figure the writer can see is a figure it can quote, and a verdict quoted on the raw
     p of a ten-comparison family is the chance finding the correction exists to stop.
 
@@ -1152,6 +1152,8 @@ def build_user_message(bundle: AnalysisContextBundle) -> str:
     for family in payload["multiple_comparisons"]["families"]:
         for comparison in family["comparisons"]:
             del comparison["p_raw"]
+    for divergence in payload["scope_divergences"]:
+        del divergence["p_raw"]
     payload.update(writer_arms(bundle.variant_index))
     _name_cells_by_alias(payload, cell_aliases(bundle.cell_measures))
     return "CONTEXT BUNDLE (JSON):\n" + json.dumps(payload, indent=2, sort_keys=True)

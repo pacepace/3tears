@@ -76,7 +76,7 @@ observation ([how a result's cost is counted](cost-and-budgets.md#how-a-results-
 **Rank on the measure at the lever's scope.** An end-to-end measure moves with everything, not only the lever.
 Each measure carries an `attribution_scope` (`end_to_end` or `subsystem`). Report both and rank on the
 subsystem's.
-*Evidence:* agent with tools, 2026-07, a written analysis credited a sub-agent setting with halving end-to-end p95 (98.3 → 48.5 s) while the sub-agent's own p95 was flat (36.6 → 37.6 s), and recommended an arm failing 13% against 0%, single campaign.
+*Evidence:* agent with tools, 2026-07, a written analysis credited a sub-agent setting with halving end-to-end p95 (98.3 → 48.5 s) while the sub-agent's own p95 went from 36.6 to 37.6 s, and recommended an arm failing 13% against 0%, single campaign.
 
 ## Did the lever move
 
