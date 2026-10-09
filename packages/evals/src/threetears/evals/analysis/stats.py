@@ -357,62 +357,90 @@ def observed_mean_interval(
     return None if sem is None else mean_interval(mean, sem, n, value_range=value_range)
 
 
-def bar_seed(interval: tuple[float, float], *, higher_is_better: bool) -> float:
-    """The threshold a measured incumbent proposes as its bar: the permissive end of its interval.
+#: How far below its own mean (above, where lower is better) an incumbent's bar is seeded, as a fraction of
+#: the permissive half of its interval. ``√2 − 1``, derived rather than chosen: a candidate measured as the
+#: incumbent was (same cases, same spread) misses a bar at ``T`` when its interval's near end falls past it,
+#: so an unchanged one misses when its mean trails the incumbent's by more than ``h + c·h`` (``h`` the
+#: half-width). The difference of two such means has standard error ``√2·SE``, and a one-sided test at the
+#: interval's own ``(1 − level) / 2`` rejects past ``t·√2·SE = √2·h``; ``1 + c = √2`` makes the two one rule.
+BAR_SEED_HALF_WIDTH_FRACTION: Final = math.sqrt(2.0) - 1.0
 
-    The low bound on a higher-is-better measure, the high bound on a lower-is-better one — the worst
-    value the incumbent's own measurement still vouches for. A seed at the incumbent's MEAN is a coin
-    the incumbent tosses against itself: re-measured unchanged, its mean lands below its own earlier
-    mean about half the time. Seeded here and read by :func:`interval_clears`, an unchanged incumbent
-    is failed by its own bar only when its new interval falls wholly short of the old one's far end.
+
+def bar_seed(mean: float, interval: tuple[float, float], *, higher_is_better: bool) -> float:
+    """The threshold a measured incumbent proposes as its bar: its mean, less the share of its own noise it carries.
+
+    "Never ship worse than what runs today" anchors the bar at the incumbent's mean. But that mean was
+    measured, and a bar is then held fixed: read by :func:`interval_clears`, an unchanged incumbent re-measured
+    misses a bar at its old mean whenever the new mean trails the old by more than the new interval's
+    half-width — about 8% of the time at large n, past the 2.5% the interval promises, because the old mean's
+    own error was never counted. The seed moves the bar
+    :data:`BAR_SEED_HALF_WIDTH_FRACTION` of the incumbent's permissive half-width toward the permissive
+    end, which is exactly what makes a miss of an unchanged incumbent measured on as many cases a one-sided
+    test at the nominal 2.5%.
+
+    The neighbouring choices fail it. At the mean, the unchanged incumbent misses up to 8% of the time. At
+    the interval's permissive end the bar sits a whole half-width under today's mean, so at three cases a
+    candidate 1.6σ worse than the incumbent is still shown to clear it about a fifth of the time.
+
+    The calibration assumes the candidate is measured on about as many cases as the incumbent was, the
+    usual shape of a bar read on campaigns over one case bank. Fewer cases make a miss rarer than nominal.
+    Many more cases make it commoner, since the incumbent's own error, frozen into the bar, is then the
+    larger share of the difference.
 
     Args:
-        interval: The incumbent's interval on the measure's mean, as the summary states it
-            (:func:`observed_mean_interval` — the one rule every numeric summary takes).
+        mean: The incumbent's mean on the measure.
+        interval: Its interval on that mean, as the summary states it (:func:`observed_mean_interval`).
         higher_is_better: The measure's declared direction.
 
     Returns:
         The seed threshold.
     """
     low, high = interval
-    return low if higher_is_better else high
+    if higher_is_better:
+        return mean - BAR_SEED_HALF_WIDTH_FRACTION * (mean - low)
+    return mean + BAR_SEED_HALF_WIDTH_FRACTION * (high - mean)
 
 
 def interval_clears(
-    interval: tuple[float, float] | None, threshold: float, *, margin: float | None, higher_is_better: bool
+    interval: tuple[float, float], threshold: float, *, margin: float | None, higher_is_better: bool
 ) -> bool | None:
-    """Whether a cell's interval clears a bar, read against the measure's declared margin.
+    """Whether a cell's interval clears a bar, misses it, or cannot tell — against the measure's declared margin.
 
-    A bar is a regression gate: "never ship worse than what runs today". The decision is by the interval,
-    never the mean, and a cell **misses** only when its whole interval lies past the threshold less the
-    margin on the worse side — below ``threshold − margin`` on a higher-is-better measure, above
-    ``threshold + margin`` on a lower-is-better one. That is the claim the data can make: this cell is
-    shown to fall short of the bar by more than a shortfall too small to act on. Otherwise it **clears**,
-    which says exactly the converse — it is *not shown* to fall short by more than the margin. A wide
-    interval reaches far, so a cell measured on a handful of cases clears easily, and a reader weighs
-    that from the interval carried beside the verdict; the bar does not hold an unestimated spread
-    against the cell, because burdening the cell instead (clear only when the whole interval sits at
-    the threshold) fails an unchanged incumbent about half the time at the sample sizes an eval runs.
+    Three states, with the discipline of ``not_separated``: an absence of evidence is never a claim. The
+    line is the threshold less the margin on the worse side — ``threshold − margin`` where higher is
+    better, ``threshold + margin`` where lower is.
+
+    - **True — cleared**: the whole interval lies on the good side of the line (at it counts). The cell
+      is shown to be no worse than the bar by more than a shortfall too small to act on.
+    - **False — missed**: the whole interval lies on the bad side. The cell is shown to fall short by
+      more than that.
+    - **None — undecided**: the interval straddles the line. The data cannot say which, and a wide
+      interval on a handful of cases usually lands here. It is neither a pass nor a failure.
 
     Args:
-        interval: The cell's interval on the mean, or None where none is estimable.
+        interval: The cell's interval on the mean. A cell with none (fewer than two observations) is
+            not passed here: it has no interval to read, which its caller states as such.
         threshold: The bar's threshold, in the measure's units.
         margin: The measure's declared margin (:attr:`MetricDescriptor.materiality_threshold`), in its
             units, or None when it declares none — the bar is then held at the threshold itself.
         higher_is_better: Which way clearing runs.
 
     Returns:
-        True when the cell clears, False when it misses, None with no interval — fewer than two
-        observations decide nothing, and a single value against a threshold would be the mean
-        comparison this replaces.
+        True when cleared, False when missed, None when undecided.
     """
-    if interval is None:
-        return None
     slack = margin or 0.0
     low, high = interval
     if higher_is_better:
-        return high >= threshold - slack
-    return low <= threshold + slack
+        line = threshold - slack
+        good, bad = low >= line, high < line
+    else:
+        line = threshold + slack
+        good, bad = high <= line, low > line
+    if good:
+        return True
+    if bad:
+        return False
+    return None
 
 
 def cohen_kappa(
@@ -860,6 +888,7 @@ def paired_change(
 
 
 __all__ = [
+    "BAR_SEED_HALF_WIDTH_FRACTION",
     "EQUIVALENCE_TEST_NAME",
     "INTERVAL_LEVEL",
     "MULTIPLE_COMPARISON_CORRECTION",

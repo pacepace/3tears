@@ -70,19 +70,21 @@ class BaselineBarProposals:
 def propose_bars(host: EvalHost, baseline_campaign_id: str, *, scope_id: str) -> BaselineBarProposals:
     """Propose a bar on every measure the baseline campaign's incumbent was measured on.
 
-    Each proposal's threshold is seeded from the incumbent's measured interval on the measure, not its
-    mean: the permissive end of the interval (:func:`~threetears.evals.analysis.stats.bar_seed`) — the low
-    bound where higher is better, the high bound where lower is — which is the worst value the
-    incumbent's own measurement vouches for. A seed at the mean fails the incumbent itself about half the
-    time it is re-measured unchanged; seeded here and read by its interval against the measure's
-    margin (:func:`~threetears.evals.analysis.stats.interval_clears`), an unchanged incumbent clears its
-    own bar at the interval's coverage or better. The interval is the one the cell's summary states, over
-    the cell's non-faulted observations — the same population every bar is later adjudicated over, so a
-    proposed bar and the verdict that will read it describe one set of observations. A cost or latency
-    measure is over the turns the incumbent took (population ``delivered``), as its bar will be read; an
-    incumbent none of whose calls took a turn has no such interval, and nothing is proposed on it. Nor is
-    anything proposed on a measure observed fewer than two times: one value has no interval, and a bar
-    seeded at it would be the mean comparison this replaces.
+    Each proposal's threshold is anchored at the incumbent's mean — "no worse than today" — and moved
+    toward the permissive end by the share of its measured interval that the mean's own error accounts for
+    (:func:`~threetears.evals.analysis.stats.bar_seed`): ``√2 − 1`` of the permissive half-width. A bar
+    is read three ways by the cell's interval (:func:`~threetears.evals.analysis.stats.interval_clears`),
+    and at this seed an unchanged incumbent re-measured on as many cases is missed at the interval's
+    nominal 2.5% and mostly reads undecided. Seeded at the mean itself it was missed up to 8% of the time,
+    and at the interval's permissive end the bar sat so low that at three cases a candidate 1.6σ worse
+    was shown to clear it about a fifth of the time.
+
+    The interval is the one the cell's summary states, over the cell's non-faulted observations — the
+    same population every bar is later adjudicated over, so a proposed bar and the verdict that will read
+    it describe one set of observations. A cost or latency measure is over the turns the incumbent took
+    (population ``delivered``), as its bar will be read; an incumbent none of whose calls took a turn has
+    no such interval, and nothing is proposed on it. Nor is anything proposed on a measure observed fewer
+    than two times: one value has no interval to account for its own error.
 
     Args:
         host: The host whose measures, bars and storage this reads.
@@ -130,11 +132,11 @@ def propose_bars(host: EvalHost, baseline_campaign_id: str, *, scope_id: str) ->
         if summary.ci_low is None or summary.ci_high is None:
             not_proposed[summary.name] = (
                 f"it was observed {summary.n} time(s), and a single observation has no interval to seed a threshold "
-                "from — a bar seeded at one value is failed by its own incumbent about half the time"
+                "from — nothing would account for the seed's own error"
             )
             continue
         higher_is_better = bool(descriptor.higher_is_better)
-        seed = bar_seed((summary.ci_low, summary.ci_high), higher_is_better=higher_is_better)
+        seed = bar_seed(summary.mean, (summary.ci_low, summary.ci_high), higher_is_better=higher_is_better)
         proposals.append(
             host.profile.bars.propose(
                 behavior=campaign.behavior,
@@ -142,10 +144,12 @@ def propose_bars(host: EvalHost, baseline_campaign_id: str, *, scope_id: str) ->
                 observed=seed,
                 measures=measures,
                 rationale=(
-                    f"the incumbent's measured baseline: the {'low' if higher_is_better else 'high'} end of its "
-                    f"{INTERVAL_LEVEL:.0%} interval, {format_number(seed)} (mean {format_number(summary.mean)}, "
-                    f"{summary.n} observations of {summary.n_independent} cases) in campaign {campaign.id} — the "
-                    "worst value its own measurement vouches for, so re-measured unchanged it clears its own bar"
+                    f"the incumbent's measured baseline in campaign {campaign.id}: a mean of "
+                    f"{format_number(summary.mean)} over {summary.n} observations of {summary.n_independent} "
+                    f"cases, moved √2 − 1 of the way to the {'low' if higher_is_better else 'high'} end of its "
+                    f"{INTERVAL_LEVEL:.0%} interval ({format_number(summary.ci_low if higher_is_better else summary.ci_high)}) "
+                    f"to {format_number(seed)}, so its own measurement error misses an unchanged incumbent only at "
+                    "the interval's nominal rate"
                 ),
             )
         )

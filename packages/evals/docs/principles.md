@@ -78,10 +78,11 @@ self-consistency measures precision, not accuracy.
 **Bars start where the incumbent performs ("never ship worse than what runs today") and only tighten.**
 A proposed bar is never adopted
 automatically, and one looser than the registered bar is refused. A bar decides by the interval against the
-measure's declared margin, never the mean: a cell misses only when its whole interval falls short of the
-threshold by more than the margin, and a proposal seeds the threshold at the permissive end of the
-incumbent's measured interval. A bar at the mean, read on a cell's mean, failed an unchanged incumbent about
-half the time.
+measure's declared margin, never the mean, and three ways: cleared when the whole interval sits on the good
+side of the threshold less the margin, missed when it sits wholly on the bad side, and undecided when it
+straddles the line, which is neither a pass nor a failure. A proposal seeds the threshold at the incumbent's
+mean, moved by the share of its interval its own error accounts for. A bar at the mean, read on a cell's
+mean, failed an unchanged incumbent about half the time.
 
 **What an arm would cost in production and what it cost to measure are kept apart.**
 Spend is recorded per role: the candidate's calls and the work they start are what production would pay;

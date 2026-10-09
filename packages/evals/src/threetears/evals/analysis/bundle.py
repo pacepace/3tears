@@ -1998,9 +1998,9 @@ class AnalysisContextBundle(EvalDocumentModel):
             "Every bar this campaign is held to — its own declared bars, plus each registered incumbent for "
             "its behavior that no declared bar overrides — with a verdict per cell computed here, or the "
             "reason none exists. A verdict is decided by the cell's interval against the threshold less the "
-            "measure's declared margin, never by its mean: `cleared` false is shown to fall short by more than "
-            "the margin, true is only not shown to, and null is undecided. Read verdicts from this; never "
-            "recompute them."
+            "measure's declared margin, never by its mean, and its `decision` is `cleared` (shown on the good "
+            "side), `missed` (shown on the bad side), `undecided` (the interval straddles the line: neither a pass "
+            "nor a failure), `no_interval` or `no_data`. Read verdicts from this; never recompute them."
         ),
     )
     cell_measures: list[CellFacts] = Field(
@@ -6415,9 +6415,9 @@ def _bar_adjudications(
                             ci_low=None if interval is None else interval[0],
                             ci_high=None if interval is None else interval[1],
                             margin=margin,
-                            cleared=interval_clears(
-                                interval, threshold, margin=margin, higher_is_better=higher_is_better
-                            ),
+                            cleared=None
+                            if interval is None
+                            else interval_clears(interval, threshold, margin=margin, higher_is_better=higher_is_better),
                         )
                     )
             else:

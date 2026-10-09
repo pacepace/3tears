@@ -1,6 +1,6 @@
 """Seeded simulations with a known truth for the two decisions read against a declared margin.
 
-A bar's verdict (:func:`~threetears.evals.analysis.stats.interval_clears`, seeded by
+A bar's three-valued verdict (:func:`~threetears.evals.analysis.stats.interval_clears`, seeded by
 :func:`~threetears.evals.analysis.stats.bar_seed`) and the run-history change read
 (:func:`~threetears.evals.analysis.stats.paired_change` with its equivalence test) are checked
 against data drawn from a distribution whose truth the test knows, at the case counts an eval
@@ -18,6 +18,7 @@ from __future__ import annotations
 import math
 import random
 from collections import Counter
+from typing import NamedTuple
 
 import pytest
 
@@ -42,72 +43,127 @@ def _sample(rng: random.Random, n: int, mean: float, *, higher_is_better: bool) 
     return [sign * rng.gauss(mean, 1.0) for _ in range(n)]
 
 
-def _bar_rates(n: int, shortfall: float, *, higher_is_better: bool, seed: int) -> tuple[float, float]:
-    """``(clear rate, mean-rule miss rate)`` for a candidate ``shortfall`` σ worse than the incumbent.
+class _BarRates(NamedTuple):
+    """How often one candidate's verdict came out each way, and how often the replaced rule missed it."""
+
+    cleared: float
+    missed: float
+    undecided: float
+    mean_rule_missed: float
+
+
+def _bar_rates(n: int, shortfall: float, *, higher_is_better: bool, margin: float | None, seed: int) -> _BarRates:
+    """The verdict rates for a candidate ``shortfall`` σ worse than the incumbent, measured on as many cases.
 
     Each repetition measures the incumbent, seeds its bar from that measurement, then measures a
     candidate whose true mean sits ``shortfall`` below (above, when lower is better) the
-    incumbent's. The second rate is the rule this replaced, computed here only to show what it
+    incumbent's. ``mean_rule_missed`` is the rule this replaced, computed here only to show what it
     did: a bar at the incumbent's mean, read on the candidate's mean.
     """
     rng = random.Random(seed)
-    cleared = mean_rule_misses = 0
+    counts: Counter[bool | None] = Counter()
+    mean_rule_misses = 0
     for _ in range(REPS):
         incumbent = _sample(rng, n, 0.0, higher_is_better=higher_is_better)
         candidate = _sample(rng, n, -shortfall, higher_is_better=higher_is_better)
         incumbent_interval = observed_mean_interval(incumbent)
-        assert incumbent_interval is not None
-        threshold = bar_seed(incumbent_interval, higher_is_better=higher_is_better)
-        verdict = interval_clears(
-            observed_mean_interval(candidate), threshold, margin=MARGIN, higher_is_better=higher_is_better
-        )
-        assert verdict is not None, "every sample here has n >= 2, so every verdict is decided"
-        cleared += verdict
+        candidate_interval = observed_mean_interval(candidate)
+        assert incumbent_interval is not None and candidate_interval is not None, "every sample here has n >= 2"
         incumbent_mean, candidate_mean = sum(incumbent) / n, sum(candidate) / n
+        threshold = bar_seed(incumbent_mean, incumbent_interval, higher_is_better=higher_is_better)
+        counts[interval_clears(candidate_interval, threshold, margin=margin, higher_is_better=higher_is_better)] += 1
         mean_rule_misses += candidate_mean < incumbent_mean if higher_is_better else candidate_mean > incumbent_mean
-    return cleared / REPS, mean_rule_misses / REPS
+    return _BarRates(counts[True] / REPS, counts[False] / REPS, counts[None] / REPS, mean_rule_misses / REPS)
 
 
-@pytest.mark.parametrize("higher_is_better", [True, False], ids=["higher is better", "lower is better"])
+def _upper(rate: float) -> float:
+    """``rate`` plus three Monte-Carlo standard errors at that rate: the bound on a rate whose truth is ``rate``."""
+    return rate + 3 * math.sqrt(rate * (1 - rate) / REPS)
+
+
+_DIRECTIONS = pytest.mark.parametrize("higher_is_better", [True, False], ids=["higher is better", "lower is better"])
+_MARGINS = pytest.mark.parametrize("margin", [None, MARGIN], ids=["no margin", "margin 0.1σ"])
+
+
+@_DIRECTIONS
+@_MARGINS
 @pytest.mark.parametrize("n", [3, 6, 15])
-def test_an_unchanged_incumbent_clears_its_own_bar_at_the_nominal_rate(n: int, higher_is_better: bool) -> None:
-    """Re-measured unchanged, the incumbent clears the bar its own baseline proposed at least 95% of the time.
+def test_an_unchanged_incumbent_misses_its_own_bar_at_most_at_the_nominal_rate(
+    n: int, margin: float | None, higher_is_better: bool
+) -> None:
+    """Re-measured unchanged on as many cases, the incumbent misses the bar its own baseline proposed at most 2.5% of the time.
 
-    Simulated: 99.7–99.85% at every n (conservative: the seed sits at the far end of one interval
-    and the verdict reads the near end of the other). The bound is the interval's nominal 95%;
-    at p = 0.997 the standard error is sqrt(0.997 * 0.003 / 4000) ≈ 0.0009, so the bound sits
-    dozens of standard errors below the expected rate.
+    2.5% is the one-sided rate the 95% interval promises, and the seed is derived to meet it
+    (:data:`~threetears.evals.analysis.stats.BAR_SEED_HALF_WIDTH_FRACTION`). Simulated with no
+    margin: about 1.3%, 2.0% and 2.2% at n = 3, 6, 15 (under nominal at small n, since t on n − 1
+    degrees of freedom is wider than the two-sample test needs). The bound is 2.5% plus three
+    standard errors, sqrt(0.025 * 0.975 / 4000) ≈ 0.0025, so ≈ 0.032.
+
+    Most re-measurements are undecided, not cleared: a small bank cannot show the incumbent meets
+    its own bar, and saying so is the point. Asserted: undecided at least half the time
+    (simulated 70–80%; at p = 0.7 the standard error is ≈ 0.0072, so 0.5 is about 28 below).
 
     The rule this replaced — a bar at the incumbent's mean, read on the candidate's mean — misses
     an unchanged incumbent half the time by symmetry; at p = 0.5 the standard error is
     sqrt(0.25 / 4000) ≈ 0.0079, so 0.5 ± 0.04 is five standard errors either side.
     """
-    clear_rate, mean_rule_miss_rate = _bar_rates(n, 0.0, higher_is_better=higher_is_better, seed=593 + n)
+    rates = _bar_rates(n, 0.0, higher_is_better=higher_is_better, margin=margin, seed=593 + n)
 
-    assert clear_rate >= 0.95
-    assert abs(mean_rule_miss_rate - 0.5) <= 0.04
+    assert rates.missed <= _upper(0.025)
+    assert rates.undecided >= 0.5
+    assert abs(rates.mean_rule_missed - 0.5) <= 0.04
 
 
-@pytest.mark.parametrize("higher_is_better", [True, False], ids=["higher is better", "lower is better"])
-def test_a_candidate_clearly_worse_than_the_margin_misses_its_bar_most_of_the_time_at_fifteen_cases(
-    higher_is_better: bool,
+@_DIRECTIONS
+@_MARGINS
+@pytest.mark.parametrize("n", [3, 6, 15])
+def test_a_candidate_clearly_worse_than_the_incumbent_is_almost_never_shown_to_clear_its_bar(
+    n: int, margin: float | None, higher_is_better: bool
 ) -> None:
-    """A candidate 1.6σ worse than the incumbent — sixteen margins — misses its bar in most repetitions at n = 15.
+    """A candidate 1.6σ worse than the incumbent — sixteen margins — is shown to clear its bar at most 5% of the time.
 
-    Simulated power: about 86% at n = 15 (and about 26% at n = 6, 4% at n = 3: a bar on a handful
-    of cases catches only a gross regression, which its interval shows). The bound asserts
-    "most of the time"; at p = 0.86 the standard error is sqrt(0.86 * 0.14 / 4000) ≈ 0.0055, so
-    0.75 sits about twenty standard errors below the expected rate.
+    Simulated: about 2% at n = 3 and under 0.2% from n = 6. The bound is 5%, about thirteen standard
+    errors (sqrt(0.02 * 0.98 / 4000) ≈ 0.0022) above the worst simulated rate. A small bank
+    instead leaves it undecided — clearing is never what absence of evidence reads as.
     """
-    clear_rate, _ = _bar_rates(15, 1.6, higher_is_better=higher_is_better, seed=1593)
+    rates = _bar_rates(n, 1.6, higher_is_better=higher_is_better, margin=margin, seed=1593 + n)
 
-    assert 1.0 - clear_rate >= 0.75
+    assert rates.cleared <= 0.05
 
 
-def test_a_single_observation_decides_nothing() -> None:
-    """One value has no interval, so its verdict is undecided rather than a point compared with the threshold."""
-    assert observed_mean_interval([0.9]) is None
-    assert interval_clears(None, 0.5, margin=MARGIN, higher_is_better=True) is None
+@_DIRECTIONS
+@_MARGINS
+def test_a_candidate_clearly_worse_than_the_incumbent_misses_its_bar_most_of_the_time_at_fifteen_cases(
+    margin: float | None, higher_is_better: bool
+) -> None:
+    """At n = 15 the 1.6σ-worse candidate is shown to miss its bar in almost every repetition.
+
+    Simulated power: about 97–98% at n = 15 (about 55–60% at n = 6, 14–15% at n = 3: a bar on a
+    handful of cases leaves most regressions undecided, which its interval shows). The bound is
+    0.9; at p = 0.97 the standard error is sqrt(0.97 * 0.03 / 4000) ≈ 0.0027, so 0.9 is about
+    26 standard errors below.
+    """
+    rates = _bar_rates(15, 1.6, higher_is_better=higher_is_better, margin=margin, seed=1593 + 15)
+
+    assert rates.missed >= 0.9
+
+
+@pytest.mark.parametrize(
+    ("interval", "decision"),
+    [((0.81, 0.95), True), ((0.70, 0.79), False), ((0.75, 0.85), None), ((0.80, 0.90), True)],
+    ids=["wholly above", "wholly below", "straddling", "touching the line"],
+)
+def test_each_side_of_the_line_and_the_straddle(interval: tuple[float, float], decision: bool | None) -> None:
+    """A bar at 0.8: cleared needs the whole interval at or above it, missed the whole interval below it."""
+    assert interval_clears(interval, 0.8, margin=None, higher_is_better=True) is decision
+    mirrored = (-interval[1], -interval[0])
+    assert interval_clears(mirrored, -0.8, margin=None, higher_is_better=False) is decision
+
+
+def test_the_margin_moves_the_line_toward_the_bad_side() -> None:
+    """With 0.05 of declared margin an interval wholly above 0.75 clears a bar at 0.8, and one wholly under 0.75 misses."""
+    assert interval_clears((0.76, 0.79), 0.8, margin=0.05, higher_is_better=True) is True
+    assert interval_clears((0.70, 0.74), 0.8, margin=0.05, higher_is_better=True) is False
 
 
 def _paired(

@@ -4,9 +4,11 @@ A bar is the incumbent standard for one behavior on one measure: *field accuracy
 0.92*. Registering it makes "did this clear the bar" a question with an answer, rather than a
 judgement each reader makes from the number.
 
-**A bar is read by the interval, never the mean.** A cell misses its bar only when its whole interval
-falls short of the threshold by more than the measure's declared margin (its materiality threshold),
-and a proposal seeds the threshold from the incumbent's measured interval rather than its mean — see
+**A bar is read by the interval, never the mean, and three ways.** Against the threshold less the
+measure's declared margin (its materiality threshold), a cell clears when its whole interval is on the
+good side, misses when its whole interval is on the bad side, and is undecided when the interval
+straddles the line — neither a pass nor a failure. A proposal seeds the threshold at the incumbent's
+mean moved by the share of its interval its own error accounts for — see
 :func:`~threetears.evals.analysis.stats.interval_clears` and
 :func:`~threetears.evals.analysis.stats.bar_seed`. A threshold at the incumbent's mean, read against a
 cell's mean, failed an unchanged incumbent about half the time.
@@ -239,8 +241,8 @@ class BarRegistry(HostAttributed):
             behavior: The behavior the bar would govern.
             measure: The measure it is read on. Must be one this host declares — a proposal on a
                 measure nobody can see is a standard nobody can check.
-            observed: The incumbent configuration's measured baseline — the permissive end of its
-                interval (:func:`~threetears.evals.analysis.stats.bar_seed`), as
+            observed: The incumbent configuration's measured baseline — its mean moved toward the
+                permissive end of its interval (:func:`~threetears.evals.analysis.stats.bar_seed`), as
                 :func:`~threetears.evals.analysis.propose_bars` passes it.
             measures: The host's measure registry, which owns the better-direction and the range.
             rationale: Why this is the standard. Required for the same reason

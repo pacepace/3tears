@@ -455,8 +455,15 @@ class TestBarColumns:
         assert value.verdict_word == said
         assert value.model_dump(mode="json")["verdict_word"] == said
 
-    def test_a_value_with_no_interval_is_undecided_not_a_miss_and_not_no_data(self) -> None:
-        """One observation has a value and no interval: the bar decided nothing, and says which nothing (#593)."""
+    def test_an_interval_straddling_the_bar_reads_undecided_never_clears(self) -> None:
+        """An interval across the line is neither a pass nor a failure, and the word says so (#593)."""
+        surface = two_arm_surface()
+        surface.bars[0].verdicts = [verdict(c, 3.5, 0.25, None) for c in surface.cells]
+        value = build_surface_table(analysis(surface)).rows[0].values[0]
+        assert (value.verdict, value.verdict_word) == ("undecided", "undecided")
+
+    def test_a_value_with_no_interval_is_not_read_and_not_no_data(self) -> None:
+        """One observation has a value and no interval: the bar read nothing, and says which nothing (#593)."""
         surface = two_arm_surface()
         surface.bars[0].verdicts = [verdict(c, 3.5, None, None, interval=False) for c in surface.cells]
         value = build_surface_table(analysis(surface)).rows[0].values[0]

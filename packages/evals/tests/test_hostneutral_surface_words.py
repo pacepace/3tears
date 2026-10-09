@@ -22,10 +22,11 @@ class TestTheProvenanceSentenceIsServed:
 
 
 class TestEveryVerdictIsServedAsItsWord:
-    def test_the_words_are_the_four_a_reader_acts_on(self) -> None:
+    def test_the_words_are_the_five_a_reader_acts_on(self) -> None:
         assert VERDICT_WORDS == {
             "clears": "clears",
             "misses": "misses",
+            "undecided": "undecided",
             "no_interval": "no interval",
             "no_data": "no data",
         }

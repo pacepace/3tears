@@ -4,9 +4,9 @@ The toy campaign's cells are held to a registered ``field_accuracy`` bar, set he
 higher cell's own interval so each test places the threshold where the rule under test decides
 differently from the mean rule it replaced.
 
-Mutations that turn this file red: comparing the cell's mean with the threshold again; reading the
-interval's low end where a higher-is-better bar reads its high end; ignoring the declared margin;
-deciding a cell with one observation.
+Mutations that turn this file red: comparing the cell's mean with the threshold again; folding a
+straddling interval into cleared (or missed); reading the wrong end of the interval for either
+outcome; ignoring the declared margin; deciding a cell with one observation.
 """
 
 from __future__ import annotations
@@ -74,16 +74,27 @@ def _verdict_on(bundle: AnalysisContextBundle, mean: float) -> BarVerdict:
 
 
 class TestTheIntervalDecides:
-    def test_a_mean_under_the_bar_whose_interval_reaches_it_clears(self) -> None:
+    """Three outcomes, by where the cell's whole interval sits against the line."""
+
+    def test_an_interval_straddling_the_bar_is_undecided_not_cleared(self) -> None:
+        """The mean under the bar and the interval reaching past it: the data cannot say, and the verdict says so."""
         cell = _higher_cell()
         assert cell.mean is not None and cell.ci_high is not None
         threshold = (cell.mean + cell.ci_high) / 2
 
         verdict = _verdict_on(_bundle(threshold=threshold), cell.mean)
 
-        assert cell.mean < threshold <= cell.ci_high, "the mean alone would miss this bar"
-        assert verdict.cleared is True, "not shown to fall short"
+        assert cell.mean < threshold <= cell.ci_high
+        assert verdict.cleared is None and verdict.decision == "undecided"
         assert verdict.margin is None, "the host declared no margin on the measure"
+
+    def test_a_cell_whose_whole_interval_is_at_or_above_the_bar_clears(self) -> None:
+        cell = _higher_cell()
+        assert cell.mean is not None and cell.ci_low is not None
+
+        verdict = _verdict_on(_bundle(threshold=cell.ci_low), cell.mean)
+
+        assert verdict.cleared is True and verdict.decision == "cleared"
 
     def test_a_cell_whose_whole_interval_is_under_the_bar_misses(self) -> None:
         cell = _higher_cell()
@@ -91,9 +102,9 @@ class TestTheIntervalDecides:
 
         verdict = _verdict_on(_bundle(threshold=cell.ci_high + 0.01), cell.mean)
 
-        assert verdict.cleared is False, "shown to fall short"
+        assert verdict.cleared is False and verdict.decision == "missed"
 
-    def test_the_verdict_carries_the_cells_own_interval(self) -> None:
+    def test_the_verdict_carries_the_cells_own_interval_and_serves_its_decision(self) -> None:
         cell = _higher_cell()
         assert cell.mean is not None
 
@@ -101,17 +112,29 @@ class TestTheIntervalDecides:
 
         assert (verdict.ci_low, verdict.ci_high) == (cell.ci_low, cell.ci_high)
         assert not verdict.decided_on_the_mean
+        assert verdict.model_dump(mode="json")["decision"] == verdict.decision
+        assert BarVerdict.model_validate(verdict.model_dump(mode="json")) == verdict, "the echo is re-derived"
 
 
 class TestTheDeclaredMargin:
-    def test_a_shortfall_inside_the_margin_clears(self) -> None:
-        cell = _higher_cell()
-        assert cell.mean is not None and cell.ci_high is not None
+    """The margin moves the line toward the bad side by the shortfall too small to act on."""
 
-        verdict = _verdict_on(_bundle(threshold=cell.ci_high + 0.05, margin=0.06), cell.mean)
+    def test_an_interval_wholly_inside_the_margin_clears(self) -> None:
+        cell = _higher_cell()
+        assert cell.mean is not None and cell.ci_low is not None
+
+        verdict = _verdict_on(_bundle(threshold=cell.ci_low + 0.05, margin=0.06), cell.mean)
 
         assert verdict.margin == 0.06
         assert verdict.cleared is True
+
+    def test_without_the_margin_the_same_bar_is_not_cleared(self) -> None:
+        cell = _higher_cell()
+        assert cell.mean is not None and cell.ci_low is not None
+
+        verdict = _verdict_on(_bundle(threshold=cell.ci_low + 0.05, margin=0.04), cell.mean)
+
+        assert verdict.cleared is not True
 
     def test_a_shortfall_past_the_margin_still_misses(self) -> None:
         cell = _higher_cell()
@@ -131,4 +154,5 @@ class TestTooFewObservations:
         for verdict in bar.verdicts:
             assert verdict.n == 1 and verdict.value is not None
             assert (verdict.ci_low, verdict.ci_high, verdict.cleared) == (None, None, None)
+            assert verdict.decision == "no_interval"
             assert not verdict.decided_on_the_mean
