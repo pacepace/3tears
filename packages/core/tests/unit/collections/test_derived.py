@@ -16,13 +16,17 @@ this class's.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import sys
 import types
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
 
-from threetears.core.collections.derived import DerivedCollection
+from threetears.core.collections.derived import BuildLockHeld, DerivedCollection, LeaseBuildLock
+from threetears.core.coordination.lease import LeaseUnavailable
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
@@ -201,3 +205,125 @@ async def _elapsed(fn: Any) -> float:
     start = loop.time()
     await fn()
     return loop.time() - start
+
+
+class _HeldLock:
+    """a build lock another pod holds: every entry is refused."""
+
+    def __init__(self) -> None:
+        self.asked: list[str] = []
+
+    @asynccontextmanager
+    async def holding(self, key: str) -> AsyncIterator[None]:
+        self.asked.append(key)
+        raise BuildLockHeld(key)
+        yield  # pragma: no cover - never reached; makes this a generator
+
+
+class _FreeLock:
+    """a build lock nobody else holds: records each hold and its release."""
+
+    def __init__(self) -> None:
+        self.events: list[str] = []
+
+    @asynccontextmanager
+    async def holding(self, key: str) -> AsyncIterator[None]:
+        self.events.append(f"hold {key}")
+        try:
+            yield
+        finally:
+            self.events.append(f"release {key}")
+
+
+def _with_lock(lock: Any) -> _BucketCollection:
+    registry = CollectionRegistry()
+    registry.configure(l1_backend=None, l2_client=None, l3_pool=None)
+    return _BucketCollection(registry, DefaultCoreConfig(), None, None, build_lock=lock)
+
+
+class TestTheBuildLockIsInjected:
+    """a pod's collection takes a lock over a bucket the hub declared, not the bucket it may not declare."""
+
+    def test_a_free_lock_is_held_around_the_derivation_and_released(self) -> None:
+        lock = _FreeLock()
+        collection = _with_lock(lock)
+        assert asyncio.run(collection.fetch_from_store((3,))) == {"bucket": 3, "value": "derived-3"}
+        assert lock.events == ["hold buckets/3", "release buckets/3"]
+
+    def test_a_held_lock_waits_for_the_peers_value_and_does_not_derive(self) -> None:
+        lock = _HeldLock()
+        collection = _with_lock(lock)
+        collection.peer_poll_interval = 0.01
+
+        async def peer_lands() -> dict[str, Any] | None:
+            fetched = asyncio.create_task(collection.fetch_from_store((4,)))
+            await asyncio.sleep(0.03)
+            collection.store[(4,)] = {"bucket": 4, "value": "from-peer"}
+            return await fetched
+
+        assert asyncio.run(peer_lands()) == {"bucket": 4, "value": "from-peer"}
+        assert lock.asked == ["buckets/4"]
+        assert collection.compute_calls == []
+
+    def test_no_client_and_no_lock_derives_without_one(self, collection: _BucketCollection) -> None:
+        assert asyncio.run(collection.fetch_from_store((5,))) == {"bucket": 5, "value": "derived-5"}
+
+
+class _Handle:
+    def __init__(self, released: list[str], name: str) -> None:
+        self._released = released
+        self._name = name
+
+    async def __aenter__(self) -> _Handle:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        self._released.append(self._name)
+
+
+class _Lease:
+    """KVLease's acquire: a held name is refused fail-fast, as max_wait_seconds=0 asks."""
+
+    def __init__(self, held: set[str] | None = None) -> None:
+        self.held = held or set()
+        self.acquired: list[tuple[str, int, int]] = []
+        self.released: list[str] = []
+
+    async def acquire(self, key: str, ttl_seconds: int = 30, max_wait_seconds: int = 60) -> _Handle:
+        if key in self.held:
+            raise LeaseUnavailable(key)
+        self.acquired.append((key, ttl_seconds, max_wait_seconds))
+        return _Handle(self.released, key)
+
+
+class TestTheLeaseBuildLock:
+    def test_it_holds_the_lease_fail_fast_and_releases_it(self) -> None:
+        lease = _Lease()
+
+        async def hold() -> None:
+            async with LeaseBuildLock(lease, ttl_seconds=45).holding("answers/ID_v1_ab"):  # type: ignore[arg-type]
+                assert lease.released == []
+
+        asyncio.run(hold())
+        assert lease.acquired == [("answers/ID_v1_ab", 45, 0)]
+        assert lease.released == ["answers/ID_v1_ab"]
+
+    def test_a_held_lease_is_a_held_build_lock(self) -> None:
+        lease = _Lease(held={"answers/x"})
+
+        async def hold() -> None:
+            async with LeaseBuildLock(lease).holding("answers/x"):  # type: ignore[arg-type]
+                pytest.fail("entered a lock another pod holds")
+
+        with pytest.raises(BuildLockHeld):
+            asyncio.run(hold())
+
+    def test_a_key_outside_the_kv_grammar_is_hashed(self) -> None:
+        lease = _Lease()
+
+        async def hold() -> None:
+            async with LeaseBuildLock(lease).holding("answers/a b:c"):  # type: ignore[arg-type]
+                pass
+
+        asyncio.run(hold())
+        assert lease.acquired[0][0] == hashlib.sha256(b"answers/a b:c").hexdigest()

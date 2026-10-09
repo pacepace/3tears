@@ -267,6 +267,10 @@ _TABLES_NAMED_PER_INSTANCE: dict[str, str] = {
     ),
     "threetears.geo.collection.TileCollection": "one table per cache scope, geo_tiles_{scope}",
     "threetears.geo.features.FeatureCache": "one table per cache scope, geo_features_{scope}",
+    "threetears.core.collections.versioned_answers.VersionedAnswers": (
+        "one table per kind of answer, named by its owner (a report pod's enr_answers)"
+    ),
+    "threetears.core.collections.versioned_answers._AnswerIndex": "the index of one VersionedAnswers, {table}_index",
 }
 
 

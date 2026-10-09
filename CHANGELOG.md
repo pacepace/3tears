@@ -6,6 +6,77 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Core: answers computed once per version of their data, shared by every replica, retired when the version moves
+
+- **Added, `threetears.core.collections.versioned_answers.VersionedAnswers`**: a `DerivedCollection`
+  keyed by `(version, sha256 of the request)` whose value is the answer gzip-compressed, in L2 alone
+  (no L3: a miss computes; no L1). `answer(version, request, compute, order=)` returns the gzip bytes,
+  computing at most once across replicas under the build lock (a tool pod passes a
+  `LeaseBuildLock`); whatever `compute` raises reaches the caller and nothing is cached; `get` and
+  `get_for` refuse with `AnswerNotComputable`. Entries never expire (owner ruling, 2026-10-08).
+  `current_version(version, order)` retires every version of a LOWER order, never a higher one,
+  serialised and retried on the next call after a failure; `retire_older_than(order)` does it once.
+  Retirement reads an index the owner keeps as rows of an L2-only collection beside the answers,
+  changed only by `l2_cas_mutate` (a pod's grant on the shared bucket admits no key listing): each
+  version's order, a floor below which no version is recorded, and sixteen digest shards per
+  version. A computing replica records before it computes and takes its answer back if the version
+  was retired meanwhile; retirement raises the floor, then empties each shard by compare-and-set; so
+  no answer outlives its index under any interleaving. An index that cannot be written answers the
+  read uncached and stores nothing. A retired version leaves nothing behind: once retired, every key
+  it touched (answers and index shards) is purged by the owner's `purger` (a stream purge filtered
+  to the key's exact subject, which leaves no marker); with none, or one unreachable, the delete
+  markers stay and the miss is logged once. An answer is written to L2 while its writer holds the
+  key's build lock, and retirement drops a digest with no answer only when it can pause the key's
+  derivation (`DerivedCollection.derivation_paused`), so an answer whose writer is cancelled or dies
+  after writing it is still named, and the next retirement deletes it. A writer's take-back purge runs
+  off the read path; an unreadable floor counts as retired; no purger error fails a read or wedges a
+  retirement.
+- **Added, `DerivedCollection.derivation_paused(key)`**: holds off any derivation of a key for its body
+  (the in-process gate and the cross-pod build lock), raising `BuildLockHeld` when one is running.
+- **Added, `threetears.nats.collection_key_requests`** and `Subjects.hub_collection_keys_purge`
+  (`{ns}.hub.collection_keys.purge`): a tool pod asks the hub to purge keys it retired, named
+  relative to its own scope (`purge_pod_collection_keys`); the hub composes each subject under the
+  VERIFIED scope and purges exactly it (`purge_scoped_keys`; a key is literal tokens, never a
+  wildcard or an empty token). Every tool pod may publish the request and the hub subscribes it; no
+  KV or stream grant changes. A hub older than the request does not answer, and the pod keeps the
+  markers.
+- **Added, `BaseCollection.caches_in_l1`**: `False` declares a collection that takes no L1 backend,
+  whatever the registry offers.
+
+### Core: a derived collection takes its cross-pod build lock, so a tool pod can run one
+
+- **Added, `DerivedCollection(..., build_lock=)`** and `BuildLock` (`holding(key)`, raising
+  `BuildLockHeld` when another pod has the key). The default is unchanged: `NatsBuildLock` on
+  `build_lock_bucket`, which DECLARES its bucket, so only an infrastructure identity may use it. A
+  tool pod holds no stream-management verb and was refused at its first miss; it passes
+  `LeaseBuildLock(KVLease(nats, bucket_name="leases", create_if_missing=False, key_scope=...))`,
+  a fail-fast lease in the hub-declared bucket under its own key scope (a key outside the KV grammar
+  is hashed). Without a NATS client and no lock, a miss derives under the in-process gate alone, as
+  before.
+
+### Agent tools: a large answer crosses the bus compressed for a caller that reads it so, and one too large is refused aloud
+
+- **Added, `CallContext.accept_encoding`**: the encoding the caller reads a result in, `"gzip"` or
+  `None`. Set by a caller that serves the bytes on as they are (the hub's REST face, answering
+  `Content-Encoding: gzip`), never by an agent. Safe to roll out in any order: `CallContext` ignores
+  unknown fields, and neither the proof of possession nor the proxy assertion covers the context, so
+  an older proxy or pod drops the field and answers in plain text.
+- **Added, `threetears.agent.tools.content_encoding`**: `encode_for_caller`, `plain_content`,
+  `gzip_bytes`, `gzipped_content`, `accepts_gzip`, `CONTENT_ENCODING_METADATA_KEY`, `GZIP`,
+  `GZIP_MIN_BYTES`. On the wire a compressed result's content is base64 text and
+  `metadata["content_encoding"]` is `"gzip"`.
+- **Changed, `ToolServer`**: a success of `GZIP_MIN_BYTES` or more is compressed for a caller that
+  asked; a caller that did not ask gets plain text, a result its tool compressed itself
+  decompressed; an imported API's passthrough body is left alone.
+- **Added, `body_for_client`, `ContentEncodingError`, `DecodedTooLargeError`, `DECODED_MAX_BYTES`**:
+  every decode is guarded (bad base64, a corrupt or truncated gzip, text that is not UTF-8 raise
+  `ContentEncodingError`) and bounded (`DecodedTooLargeError` before the text is held, 64 MiB by
+  default); `body_for_client` is the one place a server chooses the gzip bytes or the text.
+- **Added, `TOOL_RESULT_TOO_LARGE`** (audited as the failure the caller received): an answer larger than the connected broker's `max_payload`
+  (less 64 KiB for the envelope the registry wraps it in) is refused with both sizes and logged,
+  instead of the broker refusing the reply after the tool ran while the caller waits out its timeout.
+  A hub maps it to an HTTP status in its error faces.
+
 ### Core, agent tools and enforcement: a pod's writes move its tables' write generations (migrate-writers stage)
 
 Stage 2 of `docs/epoch-task-06-collection-generations-by-default.md`. A pod may not write the epoch
