@@ -117,6 +117,14 @@ class CallContext(BaseModel):
         resolved from the same per-message channel-adapter source.
         consumers use it for number / currency / date formatting hints
     :ptype user_locale: str | None
+    :param accept_encoding: the content encoding the CALLER can read a result in, ``"gzip"`` or
+        ``None`` for plain text. Set by a caller that serves the result's bytes on as they are -- the
+        hub's REST face, which answers ``Content-Encoding: gzip`` -- never by an agent, whose model
+        reads the text. The tool server compresses a large enough success for such a caller
+        (:mod:`threetears.agent.tools.content_encoding`), so it crosses the bus compressed. Rollout
+        is safe in every order: this model ignores unknown fields, so an older proxy or pod drops
+        the field and answers in plain text, which every caller reads
+    :ptype accept_encoding: str | None
     """
 
     model_config = ConfigDict(frozen=True)
@@ -132,6 +140,7 @@ class CallContext(BaseModel):
     trace: dict[str, str] = Field(default_factory=dict)
     user_timezone: str | None = None
     user_locale: str | None = None
+    accept_encoding: str | None = None
 
     def with_trace(self, overlay: dict[str, str]) -> "CallContext":
         """return a new :class:`CallContext` with ``overlay`` merged over ``trace``.

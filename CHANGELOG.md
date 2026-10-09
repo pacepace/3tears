@@ -6,6 +6,25 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Agent tools: a large answer crosses the bus compressed for a caller that reads it so, and one too large is refused aloud
+
+- **Added, `CallContext.accept_encoding`**: the encoding the caller reads a result in, `"gzip"` or
+  `None`. Set by a caller that serves the bytes on as they are (the hub's REST face, answering
+  `Content-Encoding: gzip`), never by an agent. Safe to roll out in any order: `CallContext` ignores
+  unknown fields, and neither the proof of possession nor the proxy assertion covers the context, so
+  an older proxy or pod drops the field and answers in plain text.
+- **Added, `threetears.agent.tools.content_encoding`**: `encode_for_caller`, `plain_content`,
+  `gzip_bytes`, `gzipped_content`, `accepts_gzip`, `CONTENT_ENCODING_METADATA_KEY`, `GZIP`,
+  `GZIP_MIN_BYTES`. On the wire a compressed result's content is base64 text and
+  `metadata["content_encoding"]` is `"gzip"`.
+- **Changed, `ToolServer`**: a success of `GZIP_MIN_BYTES` or more is compressed for a caller that
+  asked; a caller that did not ask gets plain text, a result its tool compressed itself
+  decompressed; an imported API's passthrough body is left alone.
+- **Added, `TOOL_RESULT_TOO_LARGE`**: an answer larger than the connected broker's `max_payload`
+  (less 64 KiB for the envelope the registry wraps it in) is refused with both sizes and logged,
+  instead of the broker refusing the reply after the tool ran while the caller waits out its timeout.
+  A hub maps it to an HTTP status in its error faces.
+
 ### Core, epoch and nats: a table can carry a write generation a pod follows (expand stage)
 
 A row broadcast is at most once, and a pod that misses one serves its cached row until it

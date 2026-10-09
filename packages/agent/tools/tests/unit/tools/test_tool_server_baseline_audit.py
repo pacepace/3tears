@@ -53,6 +53,10 @@ class _FakeNats:
     path that the inbound dispatch needs.
     """
 
+    #: the broker's advertised limit, as ``NatsClient.max_payload`` reports it; ``None`` (unknown) leaves the
+    #: tool server's size guard off, as on a client that has not connected
+    max_payload: int | None = None
+
     published: list[tuple[Subject, BaseModel | bytes]] = field(default_factory=list)
     replies: list[tuple[str, BaseModel]] = field(default_factory=list)
     raise_on_publish: BaseException | None = None
