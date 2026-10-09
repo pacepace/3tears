@@ -191,7 +191,7 @@ def _assemble_user_prompt(subject_feed: str, catalog_feed: str) -> str:
 
 
 def _coerce_new_dim_axis(payload: Any, axis: RubricAxis) -> None:
-    """Stamp the proposer's axis onto every new-dim suggestion in ``payload``.
+    """Stamp the proposer's axis onto every new-dim suggestion and every drafted rubric dim in ``payload``.
 
     The axis ('capability' vs 'boundary') is determined by *which* axis the proposer ran on,
     not a judgment the drafting LLM should make. Models nonetheless sometimes
@@ -199,12 +199,23 @@ def _coerce_new_dim_axis(payload: Any, axis: RubricAxis) -> None:
     :data:`~threetears.evals.contracts.models.RubricAxis` validation and reject an otherwise-valid
     draft. Overwriting it before validation removes that failure mode at the
     cause (the field is server-determined, so the LLM's value is never trusted).
+
+    The drafted template's own rubric dims take it too: a boundary battery's dims are guardrails, and
+    the judge stamps a dim's axis onto every score it gives, so a boundary dim drafted as capability
+    would be averaged into the composite it must stay out of.
     """
     if not isinstance(payload, dict):
         return
     for sug in payload.get("new_dim_suggestions") or []:
         if isinstance(sug, dict):
             sug["axis"] = axis
+            if isinstance(sug.get("dim"), dict):
+                sug["dim"]["axis"] = axis
+    template = payload.get("template")
+    if isinstance(template, dict):
+        for dim in template.get("rubric") or []:
+            if isinstance(dim, dict):
+                dim["axis"] = axis
 
 
 __all__ = [

@@ -152,6 +152,23 @@ async def test_the_proposer_stamps_its_own_axis_whatever_the_model_wrote(axis, w
     assert [s.axis for s in proposal.new_dim_suggestions] == [axis]
 
 
+@pytest.mark.parametrize("axis", ["capability", "boundary"])
+async def test_the_drafted_rubric_dims_take_the_proposers_axis_too(axis):
+    """A boundary battery's own rubric dims are guardrails, so the judge must stamp them so; a draft that
+    left them capability would put them in the composite they must stay out of."""
+    draft = json.loads(_draft(suggestion_axis="graceful_decline"))
+    dim = draft["new_dim_suggestions"][0]["dim"]
+    draft["template"]["rubric"] = [{**dim, "axis": "capability" if axis == "boundary" else "boundary"}]
+    client = _RecordingClient(json.dumps(draft))
+
+    proposal, _spend = await propose_draft(
+        client, budget=_budget()[0], axis=axis, subject_id="s", system_prompt="", subject_feed="F", catalog_feed="C"
+    )
+
+    assert [d.axis for d in proposal.template.rubric] == [axis]
+    assert [s.dim.axis for s in proposal.new_dim_suggestions] == [axis]
+
+
 @pytest.mark.parametrize(
     ("axis", "refused_by"),
     [

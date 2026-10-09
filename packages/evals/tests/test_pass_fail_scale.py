@@ -172,7 +172,7 @@ class TestTheJudgeService:
             client_factory=lambda m, t: judge, failure_describer=withhold_failure_detail
         ).score_dimension(dim, _context())
 
-        assert outcome.score == RubricScore(dim="x.arc", scale="pass_fail", score=1, reasoning="r")
+        assert outcome.score == RubricScore(dim="x.arc", scale="pass_fail", axis="capability", score=1, reasoning="r")
         (system,) = judge.systems
         assert "Answer pass or fail." in system and "1 (worst) to 5 (best)" not in system
         assert "  pass: P" in system and "  fail: F" in system
@@ -183,7 +183,7 @@ class TestTheJudgeService:
             client_factory=lambda m, t: judge, failure_describer=withhold_failure_detail
         ).score_dimension(RubricDim(name="x.arc", description="d", scale="ordinal"), _context())
 
-        assert outcome.score == RubricScore(dim="x.arc", score=4, reasoning="r", scale="ordinal")
+        assert outcome.score == RubricScore(dim="x.arc", score=4, reasoning="r", scale="ordinal", axis="capability")
         assert "1 (worst) to 5 (best)" in judge.systems[0]
 
     async def test_a_number_given_to_a_pass_fail_dimension_scores_nothing(self):

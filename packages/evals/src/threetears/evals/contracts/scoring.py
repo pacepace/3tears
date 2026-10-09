@@ -43,7 +43,14 @@ from collections.abc import Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, TypedDict
 
-from threetears.evals.contracts.models import CellTermination, EvalResult, EvalRun, LatencyMetrics, RunCompleteness
+from threetears.evals.contracts.models import (
+    CellTermination,
+    EvalResult,
+    EvalRun,
+    LatencyMetrics,
+    RubricScore,
+    RunCompleteness,
+)
 from threetears.evals.contracts.result_condition import (
     ResultOutcome,
     candidate_failure_cause,
@@ -183,14 +190,26 @@ def reconstruct_completeness(run: EvalRun, results: Sequence[EvalResult]) -> Run
     )
 
 
-def result_composite(result: EvalResult) -> float | None:
-    """Normalize one result's rubric dims to a single 0–1 quality score.
+def capability_scores(result: EvalResult) -> list[RubricScore]:
+    """The result's rubric scores on the capability axis — the ones a composite or pass^k may combine.
 
-    Composite = mean of the result's ``rubric_scores``, each put on 0–1 by
-    :attr:`~threetears.evals.contracts.models.RubricScore.normalized`: ``(score - 1) / 4`` for a 1–5 dim, the
-    1 or 0 itself for a pass/fail one. Rubric dims only — the reserved
-    ``transcript_score`` / ``outcome_score`` axes are excluded, mirroring
-    :func:`~threetears.evals.contracts.scoring.compute_dimension_summary`.
+    A boundary dimension (:data:`~threetears.evals.contracts.models.RubricAxis`) is a guardrail: something the
+    candidate must not do. Averaged with capability it lets a gain on one pay for a loss on the other, so
+    every whole-trial measure reads this list and the boundary scores are decided on their own
+    (:attr:`~threetears.evals.analysis.bundle.AnalysisContextBundle.guardrails`). A score judged before the
+    axis was stamped (``axis`` None) is read as capability, which is how it was read then.
+    """
+    return [score for score in result.rubric_scores if score.axis != "boundary"]
+
+
+def result_composite(result: EvalResult) -> float | None:
+    """Normalize one result's capability rubric dims to a single 0–1 quality score.
+
+    Composite = mean of the result's capability ``rubric_scores`` (:func:`capability_scores`), each put on
+    0–1 by :attr:`~threetears.evals.contracts.models.RubricScore.normalized`: ``(score - 1) / 4`` for a 1–5
+    dim, the 1 or 0 itself for a pass/fail one. Capability rubric dims only — a boundary dim is a guardrail
+    and is never averaged in, and the reserved ``transcript_score`` / ``outcome_score`` axes are excluded,
+    mirroring :func:`~threetears.evals.contracts.scoring.compute_dimension_summary`.
 
     Three-way by error category (candidate vs infra):
       * **infra-excluded** (``infra_error`` / ``judge_error``) → ``None``. This
@@ -221,13 +240,16 @@ def result_composite(result: EvalResult) -> float | None:
         return None
     if outcome is ResultOutcome.CANDIDATE_FAIL:
         return 0.0
-    if not result.rubric_scores or trial_exclusion(result) is not None:
+    scores = capability_scores(result)
+    if not scores or trial_exclusion(result) is not None:
         return None
-    return sum(s.normalized for s in result.rubric_scores) / len(result.rubric_scores)
+    return sum(s.normalized for s in scores) / len(scores)
 
 
 def _result_passes(result: EvalResult, *, rubric_threshold: int) -> bool:
-    """A result passes iff every goal-state and every rubric dim cleared the bar.
+    """A result passes iff every goal-state and every capability rubric dim cleared the bar.
+
+    A boundary dim is a guardrail, decided on its own, and takes no part (:func:`capability_scores`).
 
     Only decides pass/fail for a result that is not infra-excluded — callers
     (:func:`compute_pass_hat_k`) drop ``INFRA_EXCLUDE`` before calling this, so a
@@ -246,11 +268,12 @@ def _result_passes(result: EvalResult, *, rubric_threshold: int) -> bool:
     """
     if candidate_failure_cause(result) is not None:
         return False
-    if not result.goal_state_outcomes and not result.rubric_scores:
+    scores = capability_scores(result)
+    if not result.goal_state_outcomes and not scores:
         return False
     if any(not o.passed for o in result.goal_state_outcomes):
         return False
-    if any(not s.clears(rubric_threshold) for s in result.rubric_scores):
+    if any(not s.clears(rubric_threshold) for s in scores):
         return False
     return True
 
@@ -265,7 +288,7 @@ def _already_failed(result: EvalResult, *, rubric_threshold: int) -> bool:
     """
     if any(not o.passed for o in result.goal_state_outcomes):
         return True
-    return any(not s.clears(rubric_threshold) for s in result.rubric_scores)
+    return any(not s.clears(rubric_threshold) for s in capability_scores(result))
 
 
 class PassHatPoint(TypedDict):
@@ -384,9 +407,10 @@ def compute_pass_hat_k(
 ) -> dict[tuple[str, str], dict[str, Any]]:
     """Estimate pass^k per ``(model, eval_run_id)`` — the chance that k attempts at a case ALL pass.
 
-    A result *passes* when every ``goal_state_outcomes`` entry passed AND every ``rubric_scores``
-    entry clears the bar: at or above ``rubric_threshold`` on a 1–5 dimension, a pass on a
-    pass/fail one.
+    A result *passes* when every ``goal_state_outcomes`` entry passed AND every capability
+    ``rubric_scores`` entry clears the bar: at or above ``rubric_threshold`` on a 1–5 dimension, a pass
+    on a pass/fail one. A boundary dimension is a guardrail and is not part of pass^k
+    (:func:`capability_scores`).
 
     **pass^k, not pass@k.** pass@k (Chen et al. 2021) is the chance that AT LEAST ONE of k attempts
     passes; pass^k (Yao et al. 2024, τ-bench) is the chance that ALL k do — the opposite end, and
@@ -1047,7 +1071,7 @@ def _group_case_composites(
         has_rubric.setdefault(key, False)  # register the group even if all-excluded
         if trial_exclusion(r) is not None:
             continue  # a fault, or the judge could not tell on a dim the composite needs — unmeasured, not zero
-        has_rubric[key] = has_rubric[key] or bool(r.rubric_scores)
+        has_rubric[key] = has_rubric[key] or bool(capability_scores(r))
         raw.setdefault(key, {}).setdefault(r.test_case_id, []).append(result_composite(r))
 
     out: dict[tuple[str, str], dict[str, Any]] = {}
@@ -1112,6 +1136,7 @@ def compute_per_case_composites(
 
 __all__ = [
     "CellSummary",
+    "capability_scores",
     "compute_composite_summary",
     "compute_cost_summary",
     "compute_dimension_summary",

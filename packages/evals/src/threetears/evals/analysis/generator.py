@@ -939,13 +939,20 @@ def _reject_unseparated_adoptions(document: AuthoredAnalysis, bundle: AnalysisCo
     it is ``untested`` — has no separation to adopt on either, and is refused saying so, since a
     reader of the arm table cannot tell an adoption resting on nothing from one resting on a test.
 
+    **A breached guardrail refuses the adoption whatever the arm gained** (``bundle.guardrails``): a guardrail
+    is what the arm must not get worse on, and it is held, never traded. An undecided guardrail does not
+    refuse it — at a few cases and no declared margin almost every guardrail is undecided, so refusing on
+    one would refuse nearly every adoption in any campaign that carries a guardrail — and it is never read
+    as held either: the report states it on the adopted decision.
+
     Adopting the declared control (keeping what is there) needs no separation, and a ``rejected`` or
     ``deferred`` decision, or one naming no cell, is not checked. Runs after cells are translated
     from aliases, so it reads full refs; the refusal names them, and the repair round renders them
     back into the writer's aliases.
 
     Raises:
-        SoundnessRefusal: An adopted decision names a non-control arm with no ``improved`` reading.
+        SoundnessRefusal: An adopted decision names a non-control arm with a breached guardrail, or with no
+            ``improved`` reading.
     """
     control = bundle.declared_design.control if bundle.declared_design else None
     comparisons = bundle.multiple_comparisons
@@ -963,6 +970,13 @@ def _reject_unseparated_adoptions(document: AuthoredAnalysis, bundle: AnalysisCo
                 arms.setdefault(variant, cell)
         for variant, cell in arms.items():
             arm = f"the arm at cell {cell}" + (f" ({names[variant]})" if variant in names else "")
+            if breached := bundle.guardrails.of_arm(variant).breached:
+                raise SoundnessRefusal(
+                    f"decisions[{index}] adopts {arm}, but it breached the guardrail{'s' if len(breached) > 1 else ''} "
+                    f"{', '.join(breached)} (`guardrails`: shown worse than the control by more than the margin), "
+                    "and no gain elsewhere pays for a guardrail; mark it `rejected`"
+                    + (", or adopt the control" if comparisons.families else "")
+                )
             against = [
                 comparison
                 for family in comparisons.families
