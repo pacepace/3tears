@@ -1861,6 +1861,11 @@ def _tool_pod(
         # authority: the hub verifies the forwarded token names a tool pod and moves a layer's tile
         # version only when the pod owns the provider namespace the layer is registered under.
         str(Subjects.hub_geo_layers_reloaded()),
+        # purging the keys this pod retired from its own scope of the shared collections bucket: a
+        # KV delete leaves a marker a filtered stream purge would not, and the purge is the hub's
+        # verb. The request names keys relative to the pod's scope and the hub composes each subject
+        # from the VERIFIED token, so this buys reach and never authority over another pod's keys.
+        str(Subjects.hub_collection_keys_purge()),
         # Path-2 consume: a consuming tool resolves an object id -> its stored
         # key (forwarding the invoking agent's identity token; the hub verifies
         # + tenant-scopes). NOT hub_object_commit -- commit is agent-side.
@@ -1965,6 +1970,19 @@ def _tool_pod(
             # that reason, since a refused ``STREAM.CREATE`` is never answered and costs a
             # JetStream deadline at every startup before falling through to the bind anyway.
             JsResource.kv(f"{ns}-collections", scope=scope, writable=True),
+            # the epoch bucket, READ ONLY, exactly as an agent pod holds it and for the same reason:
+            # its keys are platform-shared counters, and among them are the write generations of
+            # the collection tables a pod FOLLOWS (``{ns}.collections.{table}.epoch``) -- the four
+            # access tables behind its per-caller cache. A pod watches those keys
+            # (``threetears.epoch.follow_generation_key``) or reads them in a catch-up pass, to
+            # learn that it missed a row broadcast. It writes nothing here, and must not: a pod
+            # that could write could fake an advance every follower acts on. The hub's L3 broker
+            # advances a table's generation after it commits the pod's write.
+            #
+            # The whole bucket rather than the four keys, because nothing narrower is expressible
+            # today: ``KV_KEY_READ`` names one key that is one subject token, and a generation key
+            # is four; and its read is the direct get, which this bucket is not declared for.
+            JsResource.kv_bucket_keys(f"{ns}-epochs", writable=False),
             # the pod's OWN data-version entry, read and watched while it waits for an upgrade of
             # the tables it owns to finish. keyed on ``tool_pods.id`` -- pinned from the verified
             # key id, as the collections scope above is -- so replicas share one key and no pod can
@@ -2053,6 +2071,13 @@ def _registry(
             # This grant takes effect the moment that static user is narrowed
             # (``coll-task-05b``) or the registry moves onto the callout.
             JsResource.kv(f"{ns}-collections", scope=scope, writable=True),
+            # the epoch bucket, READ ONLY, as an agent pod and a tool pod hold it (owner,
+            # 2026-10-08): the registry's ``AclCache`` is derived from the four access tables, so
+            # it follows their write generations (``{ns}.collections.{table}.epoch``) by watching
+            # the keys, to learn that it missed a row broadcast. It writes nothing here; the hub
+            # advances every generation. The whole bucket, for the reason the tool pod's grant
+            # gives: nothing narrower can name a four-token key.
+            JsResource.kv_bucket_keys(f"{ns}-epochs", writable=False),
             # the registry is on BOTH sides of durable delivery: it consumes each pod's result and
             # publishes each agent's reply, so it needs the JetStream control-plane grant for this
             # stream in both roles. it is also the process that DECLARES the stream at startup,
@@ -2139,6 +2164,8 @@ def _hub(
         # a tool pod's own Object Store: responds to its asks to declare the bucket and retire objects
         str(Subjects.hub_object_store_declare()),
         str(Subjects.hub_object_store_retire()),
+        # a tool pod's retired collection keys: responds to its asks to purge them from its own scope
+        str(Subjects.hub_collection_keys_purge()),
         str(Subjects.hub_channel_installs()),
         str(Subjects.namespace_discover()),
         str(Subjects.agent_register()),

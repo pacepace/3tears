@@ -511,6 +511,260 @@ async def test_a_stuck_scope_whose_l3_epoch_is_below_its_pointer_stays_behind_on
     await snapshot.stop()
 
 
+_TX_VOTES = "SELECT votes FROM results WHERE state = 'TX'"
+
+
+def _read_versioned_now(snapshot: ScopedSnapshot) -> tuple[dict[str, int], dict[str, str], Any]:
+    """a versioned read's epochs, behind set and TX's rows; blocking, so run on a worker thread."""
+    with snapshot.read_versioned() as read:
+        return dict(read.epochs), dict(read.behind), read.cursor.execute(_TX_VOTES).fetchall()
+
+
+async def _versioned(snapshot: ScopedSnapshot) -> tuple[dict[str, int], dict[str, str], Any]:
+    return await asyncio.to_thread(_read_versioned_now, snapshot)
+
+
+async def _versioned_around(
+    snapshot: ScopedSnapshot, during: Callable[[], Any]
+) -> tuple[dict[str, int], dict[str, str], Any]:
+    """a versioned read opened on a worker thread, held open while the loop runs ``during``, then queried."""
+    opened, go = threading.Event(), threading.Event()
+
+    def read() -> tuple[dict[str, int], dict[str, str], Any]:
+        with snapshot.read_versioned() as versioned:
+            opened.set()
+            go.wait(10)
+            return dict(versioned.epochs), dict(versioned.behind), versioned.cursor.execute(_TX_VOTES).fetchall()
+
+    reading = asyncio.ensure_future(asyncio.to_thread(read))
+    await asyncio.to_thread(opened.wait, 5)
+    await during()
+    go.set()
+    return await reading
+
+
+async def _versioned_in_time(snapshot: ScopedSnapshot, seconds: float = 3.0) -> tuple[dict[str, int], Any]:
+    """a versioned read on a daemon thread that must finish in ``seconds``: one waiting on a swap
+    lock nobody will release fails the test rather than hanging the suite."""
+    out: list[tuple[dict[str, int], Any]] = []
+
+    def read() -> None:
+        epochs, _, rows = _read_versioned_now(snapshot)
+        out.append((epochs, rows))
+
+    thread = threading.Thread(target=read, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + seconds
+    while thread.is_alive() and time.monotonic() < deadline:
+        await asyncio.sleep(0.02)
+    assert out, f"a versioned read did not finish in {seconds} s: the swap lock was left held"
+    return out[0]
+
+
+def _slow_replace(
+    snapshot: ScopedSnapshot, *, fail: bool = False
+) -> tuple[threading.Event, threading.Event, threading.Event]:
+    """hold the snapshot's next L1 commits until released; ``fail`` makes each raise after the hold.
+
+    :return: (inside the commit, release it, the commit has returned or raised)
+    """
+    inside, release, returned = threading.Event(), threading.Event(), threading.Event()
+    backend = snapshot.backend
+    replace = backend.replace_partitions
+
+    def held(replacements: Any) -> int:
+        inside.set()
+        release.wait(5)
+        try:
+            if fail:
+                raise RuntimeError("the L1 refused the commit")
+            return replace(replacements)
+        finally:
+            returned.set()
+
+    backend.replace_partitions = held  # type: ignore[method-assign]
+    return inside, release, returned
+
+
+async def test_a_versioned_read_on_the_event_loop_is_refused_at_once() -> None:
+    """it blocks while a swap commits: on the loop it would freeze every other task, so it fails fast."""
+    snapshot, _, _, _ = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    with pytest.raises(RuntimeError, match="worker thread"), snapshot.read_versioned():
+        pass
+    await snapshot.stop()
+
+
+async def test_a_swap_whose_awaiter_is_cancelled_still_lets_versioned_reads_go() -> None:
+    snapshot, _, _, _ = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    inside, release, returned = _slow_replace(snapshot)
+    publishing = asyncio.ensure_future(
+        snapshot.publish("TX", 2, {"results": [{"county": "c1", "state": "TX", "votes": 20}]})
+    )
+    await asyncio.to_thread(inside.wait, 5)
+    publishing.cancel()
+    release.set()
+    await asyncio.to_thread(returned.wait, 5)
+    epochs, rows = await _versioned_in_time(snapshot)
+    assert (epochs["TX"], rows) == (2, [(20,)]), "the committed rows and their epoch must move together"
+    await snapshot.stop()
+
+
+async def test_a_swap_whose_commit_raises_lets_versioned_reads_go_and_keeps_the_old_epoch() -> None:
+    snapshot, _, _, _ = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    inside, release, returned = _slow_replace(snapshot, fail=True)
+    publishing = asyncio.ensure_future(
+        snapshot.publish("TX", 2, {"results": [{"county": "c1", "state": "TX", "votes": 20}]})
+    )
+    await asyncio.to_thread(inside.wait, 5)
+    release.set()
+    await asyncio.to_thread(returned.wait, 5)
+    with pytest.raises(RuntimeError, match="refused the commit"):
+        await publishing
+    epochs, rows = await _versioned_in_time(snapshot)
+    assert (epochs["TX"], rows) == (1, [(1,)])
+    await snapshot.stop()
+
+
+async def test_a_swap_whose_commit_task_is_cancelled_still_lets_versioned_reads_go() -> None:
+    """every task cancelled while the worker commits, the commit's own included (as a loop being torn
+    down cancels them): the worker still finishes, and nothing is left holding the lock."""
+    snapshot, _, _, _ = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    inside, release, returned = _slow_replace(snapshot)
+    publishing = asyncio.ensure_future(
+        snapshot.publish("TX", 2, {"results": [{"county": "c1", "state": "TX", "votes": 20}]})
+    )
+    await asyncio.to_thread(inside.wait, 5)
+    # every task but this one, as a loop being torn down cancels them: whichever runs the commit
+    for task in asyncio.all_tasks():
+        if task is not asyncio.current_task():
+            task.cancel()
+    await asyncio.sleep(0)
+    release.set()
+    await asyncio.to_thread(returned.wait, 5)
+    await asyncio.gather(publishing, return_exceptions=True)
+    epochs, rows = await _versioned_in_time(snapshot)
+    assert (epochs["TX"], rows) == (2, [(20,)]), "the committed rows and their epoch must move together"
+    await snapshot.stop()
+
+
+async def test_a_versioned_read_names_the_epoch_of_every_scope_it_reads() -> None:
+    snapshot, _, _, _ = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+
+    epochs, _, votes = await _versioned(snapshot)
+    assert (epochs, votes) == ({"TX": 1, "DE": 1}, [(1,)])
+
+    await snapshot.publish("TX", 2, {"results": [{"county": "c1", "state": "TX", "votes": 20}]})
+    epochs, _, votes = await _versioned(snapshot)
+    assert (epochs, votes) == ({"TX": 2, "DE": 1}, [(20,)])
+    await snapshot.stop()
+
+
+async def test_a_versioned_read_never_pairs_a_scopes_rows_with_another_epoch() -> None:
+    """a reader on another thread, while the scope moves epoch after epoch: rows and epoch always agree.
+
+    A scope at epoch ``n`` holds ``votes = 10 * n`` here, so a read whose rows are one epoch and whose
+    epochs say another is seen at once; the reads before and after each swap both land.
+    """
+    snapshot, _, _, _ = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    await snapshot.publish("TX", 2, {"results": [{"county": "c1", "state": "TX", "votes": 20}]})
+    stop = False
+    mismatches: list[tuple[int, int]] = []
+    seen: set[int] = set()
+
+    def reader() -> None:
+        while not stop:
+            with snapshot.read_versioned() as read:
+                (votes,) = read.cursor.execute("SELECT votes FROM results WHERE state = 'TX'").fetchone()
+                epoch = read.epochs["TX"]
+            seen.add(epoch)
+            if votes != 10 * epoch:
+                mismatches.append((epoch, votes))
+
+    reading = asyncio.ensure_future(asyncio.to_thread(reader))
+    for epoch in range(3, 30):
+        await snapshot.publish("TX", epoch, {"results": [{"county": "c1", "state": "TX", "votes": 10 * epoch}]})
+        await asyncio.sleep(0.005)
+    stop = True
+    await reading
+    await snapshot.stop()
+
+    assert mismatches == []
+    assert len(seen) > 5, f"the reader saw only epochs {sorted(seen)}; the test raced nothing"
+
+
+async def test_a_versioned_read_opened_during_a_long_swap_waits_for_it_and_reads_its_result() -> None:
+    """deterministic: a swap held open (as a large load is) never makes the read fail; it waits, then reads it."""
+    snapshot, _, _, _ = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    inside, release = threading.Event(), threading.Event()
+    backend = snapshot.backend
+    replace = backend.replace_partitions
+
+    def slow_replace(replacements: Any) -> int:
+        inside.set()
+        release.wait(5)  # a swap far longer than any spin budget
+        return replace(replacements)
+
+    backend.replace_partitions = slow_replace  # type: ignore[method-assign]
+    publishing = asyncio.ensure_future(
+        snapshot.publish("TX", 2, {"results": [{"county": "c1", "state": "TX", "votes": 20}]})
+    )
+    await asyncio.to_thread(inside.wait, 5)
+
+    def read() -> tuple[dict[str, int], Any]:
+        with snapshot.read_versioned() as versioned:
+            rows = versioned.cursor.execute("SELECT votes FROM results WHERE state = 'TX'").fetchall()
+            return dict(versioned.epochs), rows
+
+    reading = asyncio.ensure_future(asyncio.to_thread(read))
+    await asyncio.sleep(0.5)  # longer than the old 200-attempt budget
+    assert not reading.done(), "the read did not wait for the swap in progress"
+    release.set()
+    epochs, rows = await reading
+    await publishing
+    assert (epochs["TX"], rows) == (2, [(20,)])
+    await snapshot.stop()
+
+
+async def test_a_dropped_scope_leaves_the_versioned_reads_epochs() -> None:
+    """a scope L3 no longer holds is dropped by the catch-up, in the same step as its epoch."""
+    snapshot, pointers, _, l3 = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    await _until(lambda: "enr.rebuild" not in pointers.entries, what="the start's rebuild claim released")
+    l3.rows = [r for r in l3.rows if r["state"] != "TX"]
+    del l3.epochs["TX"]
+    await snapshot.catch_up_from_l3()
+    epochs, _, votes = await _versioned(snapshot)
+    assert (epochs, votes) == ({"DE": 1}, [])
+    await snapshot.stop()
+
+
+async def test_a_versioned_read_keeps_the_state_its_epochs_name_through_a_later_swap() -> None:
+    """deterministic: a swap committed after the read opened, before its first query, is not seen."""
+    snapshot, _, _, _ = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    epochs, _, votes = await _versioned_around(
+        snapshot, lambda: snapshot.publish("TX", 2, {"results": [{"county": "c1", "state": "TX", "votes": 20}]})
+    )
+    assert (epochs["TX"], votes) == (1, [(1,)])
+    await snapshot.stop()
+
+
 async def test_a_stuck_scope_whose_later_pointer_carries_other_columns_stays_behind_on_every_look() -> None:
     """another code version wrote TX at epoch 3 under other columns, with a chunk that reads fine, and
     L3's epochs still say 2: each rebuild of TX publishes nothing (a stale epoch) and the pointer's
@@ -603,6 +857,30 @@ async def test_a_read_carries_the_behind_set_of_the_data_it_reads() -> None:
     await snapshot.stop()
 
 
+async def test_a_versioned_read_carries_the_behind_set_of_the_data_it_reads() -> None:
+    """as a plain read: a scope applied while a versioned read is open is still behind for that read,
+    whose data and epoch are the old ones; a versioned read opened after sees it current."""
+    snapshot, pointers, store, _ = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    await _until(lambda: "enr.rebuild" not in pointers.entries, what="the first rebuild's claim released")
+    pointers.put_now("enr.rebuild", b"another replica")
+    _point_at_a_missing_chunk(pointers)
+    await _until(lambda: "TX" in snapshot.status().behind, what="TX behind")
+
+    async def tx_arrives() -> None:
+        store.objects["enr/TX/2/results.gone"] = _tx_chunk(5)
+        await _until(lambda: snapshot.applied_epoch("TX") == 2, what="TX applied at epoch 2")
+
+    epochs, behind, votes = await _versioned_around(snapshot, tx_arrives)
+    assert "TX" in behind, "the read's behind set changed under it"
+    assert (epochs["TX"], votes) == (1, [(1,)])
+    epochs, behind, votes = await _versioned(snapshot)
+    assert "TX" not in behind
+    assert (epochs["TX"], votes) == (2, [(5,)])
+    await snapshot.stop()
+
+
 # ----------------------------------------------------------------------
 # readers on other threads: the loop is the one writer of what they read
 # ----------------------------------------------------------------------
@@ -687,13 +965,20 @@ def _read_behind(snapshot: ScopedSnapshot) -> set[str]:
         return set(behind)
 
 
+def _read_versioned_epochs_and_behind(snapshot: ScopedSnapshot) -> tuple[dict[str, int], set[str]]:
+    with snapshot.read_versioned() as read:
+        return dict(read.epochs), set(read.behind)
+
+
 _READERS: dict[str, Callable[[ScopedSnapshot], Any]] = {
     "applied_epochs": lambda snapshot: snapshot.applied_epochs(),
+    "read_versioned": _read_versioned_epochs_and_behind,
     "status": lambda snapshot: _rows_and_behind(snapshot.status()),
     "read_with_behind": _read_behind,
 }
 _BEFORE: dict[str, Any] = {
     "applied_epochs": {"TX": 1, "DE": 1},
+    "read_versioned": ({"TX": 1, "DE": 1}, {"TX", "DE"}),
     "status": ({"results": 2}, {"TX", "DE"}),
     "read_with_behind": {"TX", "DE"},
 }
@@ -781,7 +1066,7 @@ async def test_a_read_during_a_long_write_neither_waits_for_it_nor_is_told_its_s
 # the state readers on any thread take, which the event loop alone writes, by rebinding
 _SHARED = frozenset({"_applied", "_behind", "_rows", "_progress"})
 # set once at construction, and safe to use from any thread
-_SET_AT_START = frozenset({"_backend", "_ready", "_name", "_tables", "_schema"})
+_SET_AT_START = frozenset({"_backend", "_ready", "_name", "_tables", "_schema", "_versioned"})
 # public, synchronous, and called on the event loop only, said so in its docstring
 _LOOP_ONLY = {"on_change": "registers a listener; the listener list is the loop's, read by _notify there"}
 _IN_PLACE = frozenset(
@@ -894,10 +1179,66 @@ def test_what_any_thread_may_call_reads_only_the_shared_state_each_once_and_runs
     for node in ast.walk(_module_tree()):
         if isinstance(node, ast.Call) and ast.unparse(node.func) == "asyncio.to_thread" and node.args:
             work = node.args[0]
-            if isinstance(work, ast.Lambda) or (_self_attr(work) is not None):
+            # what a worker may run: the backend's methods, and the versioned L1's (which owns its state)
+            owner = _self_attr(work.value) if isinstance(work, ast.Attribute) else None
+            if isinstance(work, ast.Lambda) or _self_attr(work) is not None or owner not in (None, *_OFF_LOOP):
                 wrong.append(
                     f"line {node.lineno}: to_thread runs {ast.unparse(work)}, the snapshot's own code, off the loop"
                 )
+    assert not wrong, "\n".join(wrong)
+
+
+# what the snapshot may hand a worker thread: the backend, and the versioned L1, whose state is its own
+_OFF_LOOP = frozenset({"_backend", "_versioned"})
+# the versioned L1's own state: its backend and lock, set once, and the epochs, rebound under the lock
+_VERSIONED_SET_AT_START = frozenset({"_backend", "_lock"})
+_VERSIONED_REBOUND = frozenset({"_held"})
+
+
+def test_the_versioned_l1_touches_only_its_own_state_and_rebinds_its_epochs_under_its_lock() -> None:
+    """it runs on worker threads: it reads nothing of the snapshot, sets its backend and lock once,
+    reads its epochs once per method, and only rebinds them (never in place), inside ``with self._lock``."""
+    versioned = _class_def("_VersionedL1")
+    methods = {n.name: n for n in versioned.body if isinstance(n, ast.FunctionDef)}
+    wrong: list[str] = []
+    for name, method in methods.items():
+        reads: dict[str, int] = {}
+        locked = {
+            id(inner)
+            for node in ast.walk(method)
+            if isinstance(node, ast.With) and any(ast.unparse(item.context_expr) == "self._lock" for item in node.items)
+            for inner in ast.walk(node)
+        }
+        for node in ast.walk(method):
+            attr = _self_attr(node)
+            if attr is None:
+                continue
+            if attr not in _VERSIONED_SET_AT_START | _VERSIONED_REBOUND:
+                wrong.append(f"_VersionedL1.{name} reaches self.{attr}, which is not the versioned L1's own state")
+            if attr in _VERSIONED_REBOUND and isinstance(node.ctx, ast.Load):
+                reads[attr] = reads.get(attr, 0) + 1
+                if name != "__init__" and id(node) not in locked:
+                    wrong.append(f"_VersionedL1.{name} reads self.{attr} outside the lock")
+        wrong.extend(f"_VersionedL1.{name} reads self.{a} {n} times" for a, n in reads.items() if n > 1)
+        for node in ast.walk(method):
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for target in targets:
+                    attr = _self_attr(target)
+                    if attr in _VERSIONED_SET_AT_START and name != "__init__":
+                        wrong.append(f"_VersionedL1.{name} rebinds self.{attr}, which is set once at construction")
+                    if attr in _VERSIONED_REBOUND:
+                        value = node.value
+                        built = (
+                            value.func.id if isinstance(value, ast.Call) and isinstance(value.func, ast.Name) else None
+                        )
+                        if isinstance(node, ast.AugAssign) or built not in _REBINDERS:
+                            wrong.append(f"_VersionedL1.{name} binds self.{attr} to a value not built read-only")
+                        if name != "__init__" and id(node) not in locked:
+                            wrong.append(f"_VersionedL1.{name} rebinds self.{attr} outside the lock")
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in _IN_PLACE:
+                if _self_attr(node.func.value) in _VERSIONED_REBOUND:
+                    wrong.append(f"_VersionedL1.{name}: {ast.unparse(node.func)} changes the epochs in place")
     assert not wrong, "\n".join(wrong)
 
 

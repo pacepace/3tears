@@ -139,6 +139,14 @@ from threetears.agent.acl.builtin_roles import (
     PLATFORM_BUILTIN_TOOL_USER_ROLE_PERMISSIONS,
     ensure_platform_builtin_tool_user_role,
 )
+from threetears.agent.acl.access_tables import ACCESS_TABLES, bind_acl_cache_to_access_tables
+from threetears.agent.acl.caller_cache import (
+    CallerAccessCache,
+    CallerKey,
+    CallerNamespaces,
+    CallerNamespacesUnavailable,
+    bind_caller_cache_to_access_tables,
+)
 from threetears.agent.acl.cache import (
     AclCache,
     ActorMembershipEntry,
@@ -159,12 +167,14 @@ from threetears.agent.acl.catalog import (
     validate_permissions,
 )
 from threetears.agent.acl.collections import (
+    GroupCascade,
     GroupCollection,
     GroupMemberCollection,
     ImpersonationGateCollection,
     ImpersonationGateStatus,
     NamespaceCollection,
     NamespaceRescope,
+    NamespaceRescopeNotAdvanced,
     NamespaceRescopeRefused,
     RoleAssignmentCollection,
     RoleCollection,
@@ -266,6 +276,7 @@ from threetears.agent.acl.write_eviction import evict_after_rbac_write
 __all__ = [
     "INTERNAL_AUDIENCE",
     "AccessDenied",
+    "ACCESS_TABLES",
     "AclCache",
     "ActorMembershipEntry",
     "ActorMembershipKey",
@@ -276,6 +287,12 @@ __all__ = [
     "publish_assignment_invalidation",
     "publish_membership_invalidation",
     "publish_role_invalidation",
+    "bind_acl_cache_to_access_tables",
+    "bind_caller_cache_to_access_tables",
+    "CallerAccessCache",
+    "CallerKey",
+    "CallerNamespaces",
+    "CallerNamespacesUnavailable",
     "subscribe_acl_invalidation",
     "unsubscribe_acl_invalidation",
     "AssignmentInvalidatePayload",
@@ -290,6 +307,7 @@ __all__ = [
     "ExternalAudienceNotSupported",
     "GrantLoader",
     "Group",
+    "GroupCascade",
     "GroupCollection",
     "GroupEntity",
     "GroupMemberCollection",
@@ -314,6 +332,7 @@ __all__ = [
     "NamespaceEntity",
     "NamespaceNotFound",
     "NamespaceRescope",
+    "NamespaceRescopeNotAdvanced",
     "NamespaceRescopeRefused",
     "PermissionCatalog",
     "PermissionEscalation",

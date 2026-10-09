@@ -353,9 +353,9 @@ class FeatureCache(BaseCollection[FeatureEntity]):
                 pinned.append(marker)
             found = dict(transient)
             for key in self._keys_in_bbox(layer, source_version, bounds):
-                row = self._rows.get(key)
-                if row is not None:
-                    found.setdefault(key, row)
+                held_row = self._rows.get(key)
+                if held_row is not None:
+                    found.setdefault(key, held_row)
             return self._within(found.values(), bounds)
         finally:
             for marker in pinned:
@@ -433,8 +433,8 @@ class FeatureCache(BaseCollection[FeatureEntity]):
             # there, so the held set must as well
             for x in range(row_min_x - 1, row_max_x + 2):
                 for y in range(row_min_y - 1, row_max_y + 2):
-                    chunk_bounds = contained.get((x, y))
-                    if chunk_bounds is not None and row_bounds.intersects(chunk_bounds):
+                    held_bounds = contained.get((x, y))
+                    if held_bounds is not None and row_bounds.intersects(held_bounds):
                         per_chunk[(x, y)][feature_id] = row
         entries = sum(max(1, len(held)) for held in per_chunk.values())
         if entries > self._read_cap:

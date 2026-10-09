@@ -83,6 +83,12 @@ close concurrency (DS-09-12 / DS-11-10):
   return; subsequent in-flight method calls raise :class:`RuntimeError`.
 - every cached connection is closed in a worker thread (NOT on the
   asyncio event loop) via the bridge.
+- every close, on whatever thread, goes through
+  :func:`_close_connection_sync`, which empties the thread's OpenSSL
+  error queue afterwards. closing a connection that is already dead
+  is a failed TLS write, and the record it leaves in that per-thread
+  queue is read as a broken pipe by every other TLS connection the
+  thread serves -- on the event loop, the whole process's.
 - :meth:`AsyncSyncBridge.close` uses ``shutdown(wait=False)``;
   ``wait=True`` would deadlock the event loop.
 
@@ -135,6 +141,7 @@ import contextlib
 import dataclasses
 import functools
 import socket
+import ssl
 import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping
 from typing import TYPE_CHECKING, Any
@@ -184,6 +191,12 @@ from threetears.datasources.drivers.base import (
     observed,
 )
 from threetears.datasources.drivers.connect_guard import ConnectGuard, guarded_connect
+from threetears.datasources.export import (
+    DriverExportUnsupportedError,
+    ExportConfig,
+    ExportResult,
+    redshift_unload_statement,
+)
 from threetears.datasources.drivers.errors import (
     DriverConnectError,
     DriverCredentialPausedError,
@@ -827,6 +840,71 @@ def _get_executor_saturation_gauge() -> Any:
 # ---------------------------------------------------------------------------
 
 
+#: a cipher name no OpenSSL build has, so selecting it always fails.
+_NO_SUCH_CIPHER = "threetears-no-such-cipher"
+
+
+def _clear_thread_tls_errors() -> None:
+    """empty the calling thread's OpenSSL error queue.
+
+    OpenSSL keeps one error queue per thread, shared by every TLS connection the thread
+    touches, and reads it to classify the next TLS call that returns no data. a write to a
+    dead TLS socket records its system error (``EPIPE`` / ``ECONNRESET``) there, and CPython
+    (seen on 3.14 with OpenSSL 3.5) raises the ``OSError`` and leaves the record behind. from
+    then on every TLS connection the thread serves reports that broken pipe in place of
+    "nothing to read yet" -- on an event loop thread, every asyncpg / NATS / HTTPS connection
+    in the process -- until something empties the queue.
+
+    ``ssl`` exposes no call that empties it, so this makes one whose failure path does:
+    selecting a cipher that does not exist, on a context made for the purpose and dropped.
+    it touches no connection. that the refusal empties the queue is CPython's behaviour, not
+    its promise; ``tests/unit/test_redshift_driver_tls_thread_state.py`` fails on an
+    interpreter where a dead connection's close still poisons the thread.
+
+    :return: nothing
+    :rtype: None
+    """
+    try:
+        ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).set_ciphers(_NO_SUCH_CIPHER)
+    except ssl.SSLError:
+        # NOSILENT: the refusal is the point -- raising it is what empties the queue.
+        pass
+
+
+def _close_connection_sync(conn: "RedshiftConnection") -> None:
+    """close ``conn``, leaving the calling thread's TLS state as it found it (sync).
+
+    THE one way this module closes a connection. ``redshift_connector.Connection.close``
+    writes a Terminate message and swallows the socket error when the connection is already
+    dead -- exactly the write that leaves the thread's OpenSSL error queue poisoned (see
+    :func:`_clear_thread_tls_errors`). whichever thread ends up here -- a bridge worker, the
+    default executor, the event loop running a cancel callback, the thread a finalizer
+    happens to fire on -- is clean again before it runs anything else.
+
+    :param conn: the connection to close
+    :ptype conn: RedshiftConnection
+    :return: nothing
+    :rtype: None
+    :raises Exception: whatever ``conn.close()`` raises (a second close raises
+        ``InterfaceError``); the thread is cleaned first
+    """
+    try:
+        conn.close()
+    finally:
+        _clear_thread_tls_errors()
+
+
+def _closer(conn: "RedshiftConnection") -> Callable[[], None]:
+    """:func:`_close_connection_sync` bound to ``conn``, for a bridge call or a cancel callback.
+
+    :param conn: the connection to close when called
+    :ptype conn: RedshiftConnection
+    :return: a zero-argument callable that closes ``conn``
+    :rtype: Callable[[], None]
+    """
+    return functools.partial(_close_connection_sync, conn)
+
+
 def _drain_cache_static(
     connections: Iterable["RedshiftConnection"],
 ) -> None:
@@ -857,7 +935,7 @@ def _drain_cache_static(
     # view of "what was in the cache at the moment we started".
     for conn in list(connections):
         try:
-            conn.close()
+            _close_connection_sync(conn)
         except Exception as exc:  # noqa: BLE001 -- defensive at finalize
             # finalize must not raise; log + continue so other cached
             # connections still get the close attempt.
@@ -1086,7 +1164,7 @@ class RedshiftDriver(Driver):
         sock = connection_socket(conn)
         if sock is None:
             with self._suppress_close():
-                conn.close()
+                _close_connection_sync(conn)
             raise DriverConnectError(
                 f"connected to {cfg.host}:{cfg.port}/{cfg.database} but redshift_connector exposes no socket "
                 f"to lift the {cfg.connect_timeout_seconds}s login timeout from, so every statement longer "
@@ -1139,7 +1217,7 @@ class RedshiftDriver(Driver):
             # we still wrap with from None so the original error
             # can't leak the password.
             with self._suppress_close():
-                conn.close()
+                _close_connection_sync(conn)
             raise DriverConnectError(
                 f"failed to set statement_timeout on {cfg.host}:{cfg.port}/{cfg.database}"
             ) from None
@@ -1166,7 +1244,7 @@ class RedshiftDriver(Driver):
             # still don't want to surface it to the agent because
             # the wrapper's message is the only thing callers see.
             with self._suppress_close():
-                conn.close()
+                _close_connection_sync(conn)
             raise DriverConnectError(f"failed to set search_path on {cfg.host}:{cfg.port}/{cfg.database}") from None
         # capture the server-side backend pid (best-effort) so the
         # cancel path can issue ``pg_terminate_backend(<pid>)`` from a
@@ -1299,8 +1377,13 @@ class RedshiftDriver(Driver):
                     cancel_cb=lambda: None,
                 )
             except Exception:
+                # off the loop, like every other close: it writes to a socket that is
+                # most likely dead (an idle cached connection the network dropped).
                 with self._suppress_close():
-                    conn.close()
+                    await self._bridge.to_thread_with_cancel(
+                        _closer(conn),
+                        cancel_cb=lambda: None,
+                    )
                 conn = None
         if conn is not None:
             hit_counter = _get_cache_hit_counter()
@@ -1464,7 +1547,7 @@ class RedshiftDriver(Driver):
             await self._terminate_backend(pid)
         try:
             await asyncio.wait_for(
-                asyncio.to_thread(checkout.conn.close),
+                asyncio.to_thread(_close_connection_sync, checkout.conn),
                 timeout=self._cancel_timeout_seconds,
             )
         except (asyncio.TimeoutError, Exception) as exc:  # noqa: BLE001
@@ -1494,7 +1577,7 @@ class RedshiftDriver(Driver):
         if self._closed:
             # driver is shutting down; just close the connection.
             await self._bridge.to_thread_with_cancel(
-                conn.close,
+                _closer(conn),
                 cancel_cb=lambda: None,
             )
             return
@@ -1508,7 +1591,7 @@ class RedshiftDriver(Driver):
         if evicted is not None:
             with self._suppress_close():
                 await self._bridge.to_thread_with_cancel(
-                    evicted.close,
+                    _closer(evicted),
                     cancel_cb=lambda: None,
                 )
 
@@ -1533,7 +1616,7 @@ class RedshiftDriver(Driver):
                 self._cache.remove(conn)
         with self._suppress_close():
             await self._bridge.to_thread_with_cancel(
-                conn.close,
+                _closer(conn),
                 cancel_cb=lambda: None,
             )
 
@@ -1569,7 +1652,7 @@ class RedshiftDriver(Driver):
                 cursor.close()
         finally:
             with self._suppress_close():
-                conn.close()
+                _close_connection_sync(conn)
 
     async def _terminate_backend_unit(self, pid: int) -> None:
         """log in under the guard, then terminate and close -- the whole cancel, as one task.
@@ -1905,7 +1988,7 @@ class RedshiftDriver(Driver):
         async def _op(conn: RedshiftConnection) -> Any:
             return await self._bridge.to_thread_with_cancel(
                 functools.partial(self._fetch_sync, conn, translated, params, timeout_seconds),
-                cancel_cb=conn.close,
+                cancel_cb=_closer(conn),
             )
 
         result: list[dict[str, Any]] = await self._acquire_and_run(
@@ -1958,7 +2041,7 @@ class RedshiftDriver(Driver):
         async def _op(conn: RedshiftConnection) -> Any:
             return await self._bridge.to_thread_with_cancel(
                 functools.partial(self._fetch_sync, conn, translated, params, timeout_seconds, max_rows),
-                cancel_cb=conn.close,
+                cancel_cb=_closer(conn),
             )
 
         result: list[dict[str, Any]] = await self._acquire_and_run(
@@ -1994,7 +2077,7 @@ class RedshiftDriver(Driver):
         async def _op(conn: RedshiftConnection) -> Any:
             return await self._bridge.to_thread_with_cancel(
                 functools.partial(self._execute_sync, conn, translated, params, timeout_seconds, commit=True),
-                cancel_cb=conn.close,
+                cancel_cb=_closer(conn),
             )
 
         await self._acquire_and_run(_op, timeout_overridden=timeout_seconds is not None)
@@ -2071,7 +2154,7 @@ class RedshiftDriver(Driver):
         result: list[dict[str, Any]] = await self._with_cancellation(
             lambda: self._bridge.to_thread_with_cancel(
                 functools.partial(self._fetch_sync, checkout.conn, translated, params, timeout_seconds),
-                cancel_cb=checkout.conn.close,
+                cancel_cb=_closer(checkout.conn),
             ),
             cancel_callback=lambda: self._cancel_checkout(checkout),
         )
@@ -2116,7 +2199,7 @@ class RedshiftDriver(Driver):
                     timeout_seconds,
                     commit=False,
                 ),
-                cancel_cb=checkout.conn.close,
+                cancel_cb=_closer(checkout.conn),
             ),
             cancel_callback=lambda: self._cancel_checkout(checkout),
         )
@@ -2221,7 +2304,7 @@ class RedshiftDriver(Driver):
         try:
             cursor, col_names = await self._bridge.to_thread_with_cancel(
                 _open_cursor,
-                cancel_cb=conn.close,
+                cancel_cb=_closer(conn),
             )
             # bind cursor into a non-Optional local so the inner
             # lambda's mypy inference doesn't trip on the | None type
@@ -2234,7 +2317,7 @@ class RedshiftDriver(Driver):
             while True:
                 chunk = await self._bridge.to_thread_with_cancel(
                     _pull_next,
-                    cancel_cb=conn.close,
+                    cancel_cb=_closer(conn),
                 )
                 if not chunk:
                     break
@@ -2309,7 +2392,7 @@ class RedshiftDriver(Driver):
         async def _op(conn: RedshiftConnection) -> Any:
             return await self._bridge.to_thread_with_cancel(
                 lambda: _do_sync(conn),
-                cancel_cb=conn.close,
+                cancel_cb=_closer(conn),
             )
 
         result: list[TableRow] = await self._acquire_and_run(_op)
@@ -2376,7 +2459,7 @@ class RedshiftDriver(Driver):
         async def _op(conn: RedshiftConnection) -> Any:
             return await self._bridge.to_thread_with_cancel(
                 lambda: _do_sync(conn),
-                cancel_cb=conn.close,
+                cancel_cb=_closer(conn),
             )
 
         result: list[ColumnRow] = await self._acquire_and_run(_op)
@@ -2455,11 +2538,69 @@ class RedshiftDriver(Driver):
         async def _op(conn: RedshiftConnection) -> Any:
             return await self._bridge.to_thread_with_cancel(
                 lambda: _do_sync(conn),
-                cancel_cb=conn.close,
+                cancel_cb=_closer(conn),
             )
 
         result: RelationFingerprint = await self._acquire_and_run(_op)
         return result
+
+    @property
+    def export_config(self) -> ExportConfig | None:
+        """the datasource's export configuration, as its connection config carries it.
+
+        :return: the export configuration, or None when it has none
+        :rtype: ExportConfig | None
+        """
+        return self._config.export
+
+    @traced
+    @observed(driver_type="redshift")
+    async def unload(self, select: str, destination: str, *, timeout_seconds: int | None = None) -> ExportResult:
+        """``UNLOAD`` ``select``'s rows as parquet under the datasource's export prefix, and count them.
+
+        The statement is :func:`~threetears.datasources.export.redshift_unload_statement`'s, its
+        options fixed there; the count is ``pg_last_unload_count()`` read on the same session, so it
+        is this statement's and nobody else's.
+
+        :param select: a plain ``SELECT``, already admitted as a read the caller may run
+        :ptype select: str
+        :param destination: where under the configured prefix, a relative path
+        :ptype destination: str
+        :param timeout_seconds: per-statement timeout, as :meth:`fetch` takes it
+        :ptype timeout_seconds: int | None
+        :return: the rows written and where they are
+        :rtype: ExportResult
+        :raises DriverExportUnsupportedError: when the datasource has no export configured
+        :raises ExportRefusedError: when the ``SELECT`` cannot be quoted or the destination is refused
+        :raises RuntimeError: if the driver was previously closed
+        """
+        if self._closed:
+            raise RuntimeError("RedshiftDriver is closed")
+        export = self._config.export
+        if export is None:
+            raise DriverExportUnsupportedError("this datasource has no export configured (connection_config.export)")
+        # refused here, before a connection is taken: a bad SELECT or destination is the caller's
+        statement, location = redshift_unload_statement(select, export, destination)
+        if timeout_seconds is not None:
+            build_set_local_statement_timeout_sql(timeout_seconds)
+
+        def _do_sync(conn: RedshiftConnection) -> int:
+            cursor = conn.cursor()
+            try:
+                self._apply_statement_timeout_sync(cursor, timeout_seconds)
+                cursor.execute(statement)
+                cursor.execute("SELECT pg_last_unload_count()")
+                row = cursor.fetchone()
+                conn.commit()
+            finally:
+                cursor.close()
+            return int(row[0]) if row is not None else 0
+
+        async def _op(conn: RedshiftConnection) -> Any:
+            return await self._bridge.to_thread_with_cancel(lambda: _do_sync(conn), cancel_cb=_closer(conn))
+
+        rows: int = await self._acquire_and_run(_op, timeout_overridden=timeout_seconds is not None)
+        return ExportResult(row_count=rows, **location.model_dump())
 
     async def table_hashes(self, schemas: list[str]) -> dict[tuple[str, str], str]:
         """per-table MD5 over the column shape (Tier-2 change-probe).
@@ -2513,7 +2654,7 @@ class RedshiftDriver(Driver):
         async def _op(conn: RedshiftConnection) -> Any:
             return await self._bridge.to_thread_with_cancel(
                 lambda: _do_sync(conn),
-                cancel_cb=conn.close,
+                cancel_cb=_closer(conn),
             )
 
         result: dict[tuple[str, str], str] = await self._acquire_and_run(_op)
@@ -2556,7 +2697,7 @@ class RedshiftDriver(Driver):
         async def _op(conn: RedshiftConnection) -> Any:
             return await self._bridge.to_thread_with_cancel(
                 lambda: _do_sync(conn),
-                cancel_cb=conn.close,
+                cancel_cb=_closer(conn),
             )
 
         try:
@@ -2596,7 +2737,7 @@ class RedshiftDriver(Driver):
         for conn in to_close:
             with self._suppress_close():
                 await self._bridge.to_thread_with_cancel(
-                    conn.close,
+                    _closer(conn),
                     cancel_cb=lambda: None,
                 )
         # bridge close uses shutdown(wait=False) -- contract.

@@ -90,6 +90,10 @@ class _BlockingTool(TearsTool):
 class _SilentNats:
     """swallows every publish surface; these tests observe the obligation count, not the wire."""
 
+    #: the broker's advertised limit, as ``NatsClient.max_payload`` reports it; ``None`` (unknown) leaves the
+    #: tool server's size guard off, as on a client that has not connected
+    max_payload: int | None = None
+
     async def publish(self, **kwargs: Any) -> None:
         del kwargs
 

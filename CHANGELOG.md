@@ -21,6 +21,403 @@ refused later, by the hub.
 - **Added, `threetears.datasources.layer_name_fits(name: str) -> bool`** (also in
   `threetears.datasources.geo_config`): the same rule for a caller holding only the name, so the
   hub can call it rather than keep its own copy.
+### Agent acl and agent tools: a tool pod's per-caller answer, followed through the access tables
+
+- **Added, `threetears.agent.acl.CallerAccessCache`**: one answer per caller (`CallerKey`: the
+  verified agent and person), in the process, with no age. Bound to the access tables
+  (`bind_caller_cache_to_access_tables`): a `group_members` row naming a user or an agent drops
+  those callers' answers; any other access-table row, a row that does not say what it names, and a
+  dropped table drop every answer. A read fence keeps an answer asked before an eviction from being
+  stored after it. It serves and keeps answers only while it is followed and every watch is running
+  (`trusted`); otherwise every question goes to the hub, and losing trust empties it.
+- **Added, `threetears.agent.acl.generation_follow.follow_caller_access_cache`**: binds the cache and
+  follows the access tables in one call, as `follow_access_tables` does for `AclCache`, and tells the
+  cache whether its watches are running (`AccessTableFollower.watching`: running, none failing; a key
+  never written is watched though never pushed).
+- **Added, `threetears.agent.acl.CallerNamespaces`**: the namespaces the hub's `namespace.discover`
+  lists for a caller, asked with the caller's own tokens, kept in a `CallerAccessCache`, and failing
+  closed (`CallerNamespacesUnavailable`) when the answer cannot be had.
+- **Added, `ToolResult` codes `PERMISSION_DENIED` (a part of the tool's data the caller's grants do
+  not reach; the hub answers 403) and `TOOL_AUTHORIZATION_UNAVAILABLE` (the tool could not confirm
+  what the caller may have; 503)**, both already mapped by the hub.
+- **Added, `RestAffordance.scope_node`**: the namespace node whose child tool nodes name the scopes a
+  reader may read at the edge; the hub issues edge tokens naming those scopes. An older hub ignores
+  the field.
+### Datasources: a warehouse export, read from S3 and proven whole
+
+A relation too large to page over the bus quickly can be exported by the warehouse itself and read
+from the export bucket. Granted apart from reads by the hub; nothing changes for a datasource with no
+export configured.
+
+- **Added, `threetears.datasources.export`**: `ExportConfig` (bucket, prefix, the role the warehouse
+  writes as) on `RedshiftConnectionConfig.export`; the one `UNLOAD` an export runs
+  (`redshift_unload_statement`: the caller's `SELECT` quoted as a literal, parquet, a verbose
+  manifest, the configured role, never `ALLOWOVERWRITE`); a destination grammar that cannot leave
+  the configured prefix; a `SELECT` or value holding a backslash or a NUL refused
+  (`ExportRefusedError`).
+- **Added, `Driver.unload`**: concrete and refusing (`DriverExportUnsupportedError`) on every
+  driver; `RedshiftDriver` runs the `UNLOAD` when its datasource has an export configured and counts
+  it with `pg_last_unload_count()` on the same session.
+- **Added, the export ask on the datasource wire**: `DatasourceQueryRequest.export`
+  (`DatasourceExportRequest`: a `SELECT` with no bind parameters and a relative destination),
+  answered in `DatasourceQueryResponse.export` (`DatasourceExportResult`), and
+  `DatasourceQueryClient.export`. A request that is not an export leaves the field off the wire, so
+  an older hub (which forbids unknown fields) still reads every query and fingerprint.
+- **Added, `threetears.datasources.export_read`** (the `export` extra, pyarrow): `export_part`
+  fingerprints a part, exports it, fingerprints it again and reads the parquet the manifest lists
+  through an object store the caller built, refusing (`IncompleteExportError`) a part that moved,
+  counts that disagree (warehouse, manifest, files, fingerprint), an answer at another destination
+  than the one asked for, or a manifest naming any file outside the export.
+- **Added, delete after load** (Pace's ruling, 2026-10-09): once a part is proven, `export_part` asks
+  the hub to delete every version under its destination (`DatasourceExportDeleteRequest`, the
+  `export_delete` ask, `DatasourceQueryClient.delete_export`); the hub deletes with a delete-only
+  grant (`ExportConfig.cleanup_access_key_ref`/`cleanup_secret_key_ref`, or its own role), so the
+  reader's keys stay read-only. A delete that fails raises `ExportNotDeletedError`; a refused export
+  is left for an operator. No timer and no lifecycle rule.
+- **Added, `S3ObjectStore.delete_versions(prefix)`**: every version and delete marker under a
+  non-empty prefix, by version id, raising any S3 refused.
+- **Added, `Driver.export_config`**, and one frozen `ExportResult` (with `ExportLocation`) that
+  `Driver.unload` returns and the wire carries (`DatasourceExportResult` is it). The refusal codes
+  `EXPORT_NOT_GRANTED`, `EXPORT_UNSUPPORTED` and `EXPORT_REFUSED` are published constants. Every
+  export grammar is matched whole, so a trailing newline is refused.
+
+### Agent acl, core, epoch, nats, registry and agent tools: the access tables are switched on (switch-on stage)
+
+Stage 3 of `docs/epoch-task-06-collection-generations-by-default.md`. Additive: the `acl.*`
+subjects and `AclCache`'s TTL stay until the contract stage.
+
+- **Changed, `groups`, `group_members`, `roles` and `role_assignments` carry write generations**
+  (`write_generation = WRITE_GENERATION` on `GroupCollection`, `GroupMemberCollection`,
+  `RoleCollection`, `RoleAssignmentCollection`). A membership row's broadcast carries
+  `member_type` and `member_id`, an assignment row's `group_id` (`invalidation_columns`).
+- **Changed, `RoleAssignmentCollection.ensure_group_role_assignment` and
+  `delete_by_group_and_scope`**: the rows their SQL wrote are evicted in one advance, naming their
+  group; a lost insert race announces the winning row, and a revocation that matches nothing sends
+  no `DELETE`.
+- **Added, `AclCache` row-by-row eviction**: `evict_group_member_row`, `evict_role_assignment_row`,
+  `evict_role_row`, `evict_group_row`, `drop_membership_layer`, `drop_assignment_layers`; a read
+  fence (`read_fence`, `put_*(fence=)`) so an entry computed before an eviction is not stored after
+  it; `GroupNamespaceEntry.role_ids`, recorded by the evaluator, so a role edit evicts exactly the
+  entries that read the role.
+- **Added, `threetears.agent.acl.bind_acl_cache_to_access_tables` and `ACCESS_TABLES`**, and
+  `threetears.agent.acl.generation_follow.AccessTableFollower` (one supervised generation-key watch
+  per table; `3tears-epoch` joins the `[bus]` extra).
+- **Changed, a broker reply carrying no generations field says the broker advanced nothing**
+  (owner, 2026-10-08): `BrokerGenerationSource.advance` returns `None`, the rows name no
+  generation, and a warning is logged once per table, so a pod switched on ahead of its hub still
+  writes. `GenerationSource.advance` may return `None`.
+- **Changed, grants**: the standalone registry (`_registry`) reads the whole `{ns}-epochs` bucket,
+  read only, as the tool pod does; its rbac stack follows the access tables and takes
+  `BrokerGenerationSource` with a reader.
+- **Changed, the tool pod's collection stack**: its `BrokerGenerationSource` reads through
+  `EpochGenerationReader`; `3tears-agent-tools` and `3tears-registry` depend on `3tears-epoch`.
+- **Changed, `namespaces` carries a write generation too** (`NamespaceCollection`): a per-namespace
+  access entry reads the row, so `rescope` (both keys of the moved row) and `ensure_namespace`'s
+  insert announce their row in one advance, and an `AclCache` evicts that namespace's entries.
+- **Added, `follow_access_tables(registry, cache, reader)`** in
+  `threetears.agent.acl.generation_follow`: binds and follows in one call, returning one handle
+  (`AccessTableFollowing`) whose `stop()` undoes both; refuses unless the registry's invalidation
+  listener runs (`CollectionRegistry.invalidation_listener_running`, added). `AccessTableFollower`
+  backs a failing watch off from one second to a sixty-second cap and exposes `WatchHealth` and
+  `healthy`; `DegradedEvictions` counts rows whose reach was unknown. `follow_generation_key` takes
+  any `threetears.epoch.GenerationWatcher`.
+- **Added, `GroupCollection.read_cascade` and `announce_cascade` (`GroupCascade`)**: a group delete
+  announces the memberships and assignments its database cascade removed, and announces them even
+  when its own advance fails.
+- **Changed, absence caching never takes "nothing advanced" as an advance**: for a collection that
+  caches absences, an advance that returns `None` fails, raised after the write path ran.
+- **Changed, `ensure_platform_builtin_tool_user_role`** announces its `INSERT`.
+
+### Core: answers computed once per version of their data, shared by every replica, retired when the version moves
+
+- **Added, `threetears.core.collections.versioned_answers.VersionedAnswers`**: a `DerivedCollection`
+  keyed by `(version, sha256 of the request)` whose value is the answer gzip-compressed, in L2 alone
+  (no L3: a miss computes; no L1). `answer(version, request, compute, order=)` returns the gzip bytes,
+  computing at most once across replicas under the build lock (a tool pod passes a
+  `LeaseBuildLock`); whatever `compute` raises reaches the caller and nothing is cached; `get` and
+  `get_for` refuse with `AnswerNotComputable`. Entries never expire (owner ruling, 2026-10-08).
+  `current_version(version, order)` retires every version of a LOWER order, never a higher one,
+  serialised and retried on the next call after a failure; `retire_older_than(order)` does it once.
+  Retirement reads an index the owner keeps as rows of an L2-only collection beside the answers,
+  changed only by `l2_cas_mutate` (a pod's grant on the shared bucket admits no key listing): each
+  version's order, a floor below which no version is recorded, and sixteen digest shards per
+  version. A computing replica records before it computes and takes its answer back if the version
+  was retired meanwhile; retirement raises the floor, then empties each shard by compare-and-set; so
+  no answer outlives its index under any interleaving. An index that cannot be written answers the
+  read uncached and stores nothing. A retired version leaves nothing behind: once retired, every key
+  it touched (answers and index shards) is purged by the owner's `purger` (a stream purge filtered
+  to the key's exact subject, which leaves no marker); with none, or one unreachable, the delete
+  markers stay and the miss is logged once. An answer is written to L2 while its writer holds the
+  key's build lock, and retirement drops a digest with no answer only when it can pause the key's
+  derivation (`DerivedCollection.derivation_paused`), so an answer whose writer is cancelled or dies
+  after writing it is still named, and the next retirement deletes it. A writer's take-back purge runs
+  off the read path; an unreadable floor counts as retired; no purger error fails a read or wedges a
+  retirement.
+- **Added, `DerivedCollection.derivation_paused(key)`**: holds off any derivation of a key for its body
+  (the in-process gate and the cross-pod build lock), raising `BuildLockHeld` when one is running.
+- **Added, `threetears.nats.collection_key_requests`** and `Subjects.hub_collection_keys_purge`
+  (`{ns}.hub.collection_keys.purge`): a tool pod asks the hub to purge keys it retired, named
+  relative to its own scope (`purge_pod_collection_keys`); the hub composes each subject under the
+  VERIFIED scope and purges exactly it (`purge_scoped_keys`; a key is literal tokens, never a
+  wildcard or an empty token). Every tool pod may publish the request and the hub subscribes it; no
+  KV or stream grant changes. A hub older than the request does not answer, and the pod keeps the
+  markers.
+- **Added, `BaseCollection.caches_in_l1`**: `False` declares a collection that takes no L1 backend,
+  whatever the registry offers.
+
+### Core: a derived collection takes its cross-pod build lock, so a tool pod can run one
+
+- **Added, `DerivedCollection(..., build_lock=)`** and `BuildLock` (`holding(key)`, raising
+  `BuildLockHeld` when another pod has the key). The default is unchanged: `NatsBuildLock` on
+  `build_lock_bucket`, which DECLARES its bucket, so only an infrastructure identity may use it. A
+  tool pod holds no stream-management verb and was refused at its first miss; it passes
+  `LeaseBuildLock(KVLease(nats, bucket_name="leases", create_if_missing=False, key_scope=...))`,
+  a fail-fast lease in the hub-declared bucket under its own key scope (a key outside the KV grammar
+  is hashed). Without a NATS client and no lock, a miss derives under the in-process gate alone, as
+  before.
+
+### Agent tools: a large answer crosses the bus compressed for a caller that reads it so, and one too large is refused aloud
+
+- **Added, `CallContext.accept_encoding`**: the encoding the caller reads a result in, `"gzip"` or
+  `None`. Set by a caller that serves the bytes on as they are (the hub's REST face, answering
+  `Content-Encoding: gzip`), never by an agent. Safe to roll out in any order: `CallContext` ignores
+  unknown fields, and neither the proof of possession nor the proxy assertion covers the context, so
+  an older proxy or pod drops the field and answers in plain text.
+- **Added, `threetears.agent.tools.content_encoding`**: `encode_for_caller`, `plain_content`,
+  `gzip_bytes`, `gzipped_content`, `accepts_gzip`, `CONTENT_ENCODING_METADATA_KEY`, `GZIP`,
+  `GZIP_MIN_BYTES`. On the wire a compressed result's content is base64 text and
+  `metadata["content_encoding"]` is `"gzip"`.
+- **Changed, `ToolServer`**: a success of `GZIP_MIN_BYTES` or more is compressed for a caller that
+  asked; a caller that did not ask gets plain text, a result its tool compressed itself
+  decompressed; an imported API's passthrough body is left alone.
+- **Added, `body_for_client`, `ContentEncodingError`, `DecodedTooLargeError`, `DECODED_MAX_BYTES`**:
+  every decode is guarded (bad base64, a corrupt or truncated gzip, text that is not UTF-8 raise
+  `ContentEncodingError`) and bounded (`DecodedTooLargeError` before the text is held, 64 MiB by
+  default); `body_for_client` is the one place a server chooses the gzip bytes or the text.
+- **Added, `TOOL_RESULT_TOO_LARGE`** (audited as the failure the caller received): an answer larger than the connected broker's `max_payload`
+  (less 64 KiB for the envelope the registry wraps it in) is refused with both sizes and logged,
+  instead of the broker refusing the reply after the tool ran while the caller waits out its timeout.
+  A hub maps it to an HTTP status in its error faces.
+
+### Core, agent tools and enforcement: a pod's writes move its tables' write generations (migrate-writers stage)
+
+Stage 2 of `docs/epoch-task-06-collection-generations-by-default.md`. A pod may not write the epoch
+bucket, so the hub's L3 broker advances each switched-on table a pod's commit wrote and names the
+token in its reply; this release is the pod's half. No table is switched on, so nothing advances
+that did not already.
+
+- **Added, `threetears.core.backends.BrokerGenerationSource`**: a pod's generation source.
+  `advance(table)` returns the token the broker's reply named for the commit this task just made,
+  once per table per commit (a second advance of the table for that commit raises), and raises
+  `GenerationUnavailableError` when the reply named none or listed the table as not advanced.
+  `current` reads through an optional `GenerationReader` (such as
+  `threetears.epoch.EpochGenerationReader`) and raises with none, or for a table with no generation
+  yet: a pod cannot mint one. Without a reader it says so (`reads_generations = False`).
+- **Changed, `NatsProxyL3Backend`**: every reply that ends a commit (a successful `l3.query` or
+  `l3.tx.commit`, and every `l3.batch` reply, a partly failed statement-by-statement batch
+  included) that ends a write replaces the calling task's record with its own generations, naming
+  any or not; a read's reply leaves it. A rolled-back transaction, a refused commit and a commit
+  whose request got no reply drop them all; a later advance then raises
+  `GenerationNotCommittedError`.
+- **Changed, `CallerTransaction`**: settling advances each table once, however many collection
+  instances of it the transaction wrote (`SharedAdvance`, `shared_advance_for`), and every row
+  broadcast carries the total row count.
+- **Changed, `AgentSkillCollection.bump_use_count`**: evicts its rows in one `invalidate_cache_many`,
+  one advance for its one UPDATE.
+- **Added, `threetears.core.exceptions.GenerationNotCommittedError`**, a `GenerationUnavailableError`
+  for an advance asked of a commit that landed nothing; a collection logs it at INFO.
+- **Added, reading as a capability of its own**: `GenerationSource` implementations may declare
+  `reads_generations = False`; `threetears.core.collections.generation.source_reads` and
+  `CollectionRegistry.readable_generation_source` read it. Absence caching (and the refusal to build
+  an absence-caching collection without a source) needs a source that reads, so a registry wired
+  with a reader-less source caches no absences, exactly as with no source.
+- **Added, wire names** in `threetears.core.backends.broker_generation`:
+  `GENERATIONS_REPLY_FIELD` (`generations`), `GENERATIONS_FAILED_REPLY_FIELD`
+  (`generations_failed`) and `GENERATION_UNAVAILABLE_ERROR_CODE` (`GENERATION_UNAVAILABLE`, on a
+  reply that is still a success, because the write committed and must not be retried).
+- **Added, `threetears.core.collections.tables_with_write_generation()`**: the tables named on
+  every live imported collection class that is switched on or caches absences. What the broker
+  reads. `threetears.core.collections.base.table_named_by_class` is the one derivation of a class's
+  table, shared with the census.
+- **Changed, `build_tool_pod_collection_stack`** (so `ToolServerBootstrap.install_collection_stack`)
+  wires `BrokerGenerationSource()` on the pod's registry.
+- **Added, `threetears.enforcement.collection_census`** (`run_census`, `find_census_problems`):
+  the one-class-per-table census, shipped so a product repository runs it over its own trees with
+  the framework's classes joined (`framework=True`). Replaces `tests/enforcement/_collection_census.py`.
+- **Wire:** additive. A pod built before this ignores the reply fields; a reply without them is read
+  as before.
+
+### Core, epoch and nats: a table can carry a write generation a pod follows (expand stage)
+
+A row broadcast is at most once, and a pod that misses one serves its cached row until it
+restarts. This is the first of five stages (`docs/epoch-task-06-collection-generations-by-default.md`)
+that let a pod detect that for any collection table. Everything ships here and nothing is on: no
+collection is switched on, so no table advances a generation it did not already, and nothing
+follows one. An unchanged collection writes exactly as before.
+
+- **Changed, `GenerationSource.advance`** (`threetears.core.collections.generation`) returns the
+  token it wrote, and `EpochGenerationSource.advance` returns the value its own compare-and-swap
+  put in the epoch bucket. Callers that ignored the `None` are unaffected. A source that still
+  returns nothing works: the write advances and its row messages name no generation.
+- **Added, `BaseCollection.write_generation`**: `WRITE_GENERATION` switches a table on,
+  `NoWriteGeneration(reason="...")` is the reasoned opt-out, and `WRITE_GENERATION_UNDECLARED`,
+  the default, changes nothing. A switched-on collection advances its table's generation once
+  per commit on every write path: `save_entity`, `delete`, a won `l2_cas_mutate`, a subscript
+  write, `invalidate_cache`, `invalidate_cache_many`, `bypassing_write`, a `CallerTransaction`
+  settling, and `flush_pending` (once per table per flush). Never once per row. It needs a
+  generation source on the registry; without one nothing advances. A collection built with
+  `NO_L2` advances nothing whatever it declares. A class that sets `negative_cache_max_age` and
+  opts out is refused when it is defined.
+- **Added, `BaseCollection.invalidation_columns`**: column names whose values ride on every row
+  message the collection publishes, from the row the write saw. A delete reads the row before
+  deleting it, and only for a collection that declares columns; so does
+  `SchemaBackedCollection.delete_rows`, once per key, on the caller's transaction.
+- **Added, `BaseCollection.L2_READ_THROUGH_LIMIT`** (10,000): how many keys read through from L3
+  since a table drop are remembered as trusted again. Past it the oldest is distrusted again and
+  costs one more L3 read.
+- **Added:** a failed advance after a committed write raises `GenerationUnavailableError` from
+  `delete`, `invalidate_cache`, `invalidate_cache_many`, `bypassing_write`, `CallerTransaction`
+  and `flush_pending`, on a switched-on collection only, after the rest of the write path has
+  run. `save_entity` and `l2_cas_mutate` already raised it for a collection that caches absences.
+- **Changed, `PeriodicFlusher`** (`threetears.core.coordination.flusher`): a write generation that
+  could not be advanced for a flush is logged as rows written with the generation unmoved, never
+  as "retrying", because `flush_pending` raises it only after the rows were acknowledged. The
+  interval loop carries on; the final flush in `aclose` raises it.
+- **Added, `CollectionRegistry`**: `follow_generation`, `generation_marks`, `account_generation`
+  and `settle_generation` keep and judge a per-table mark (`GenerationMarks`,
+  `GenerationVerdict`); `drop_table` drops a table's L1 rows, its cached scans and every cache
+  derived from it; `register_derived_cache(table, on_row=..., on_table_dropped=...)` tells a
+  derived cache about each changed row, this process's own writes included, and to drop
+  everything only when the table drops; `row_message` and `tell_derived_caches` are the pieces.
+  `publish_invalidation` takes `generation`, `bump_rows` and `columns`.
+- **Added, `BaseCollection.drop_cached_table`** and `announce_flushed`. After a table drop the
+  pod's own L2 entries for the table are not trusted until each has been read through from L3
+  once: a missed broadcast leaves the stale entry in place, and it would otherwise be cached
+  again by the next read. Not on a write-behind table or one a compare-and-swap orders, where L2
+  is ahead of L3 by design.
+- **Changed, `CollectionRegistry.register`** raises `ValueError` for a second collection for a
+  table that declares `write_generation` differently from the one it holds.
+- **Added, `threetears.epoch`**: `EpochGenerationReader` (binds the epoch bucket, reads or watches
+  a table's generation, never writes), `generation_catchup_tick(registry, reader)` (one pass per
+  call; the consumer schedules it; one table's failure does not abandon the rest; a generation
+  that cannot be read drops nothing), `follow_generation_key(registry, reader, table)` (follows
+  one table through `watch_key`, waiting `DEFAULT_BROADCAST_GRACE` for an advance's row
+  broadcasts before calling them missed), and `generation_kv_key(table)`.
+- **Changed, `threetears.nats.subject_permissions`**: a tool pod holds a read of the `{ns}-epochs`
+  bucket, as an agent pod already did, so it can follow the tables its per-caller cache is
+  derived from. No pod can write it.
+- **Wire:** additive. `CacheInvalidationMessage` gains `generation`, `bump_rows` and `columns`,
+  all optional. A receiver built before them ignores them; a message without them is handled as
+  before. A tool pod's minted NATS grant grows by the epoch bucket's read subjects.
+- **Not changed:** `AclCache`, the `acl.*.invalidate` subjects, `set_l1_max_age` and the scan
+  TTL. `save_entity(conn=)` and subscript writes stay refused on a collection that caches
+  absences.
+
+### Datasources: closing a dead Redshift connection no longer breaks the process's other TLS connections
+
+- **Fixed, `RedshiftDriver`**: a cached connection that had died while idle (a scheduled query every
+  five minutes, a network that drops idle connections sooner) was closed on reuse, and in the same
+  millisecond unrelated TLS connections on the event loop failed: asyncpg raised `connection was
+  closed in the middle of operation` out of `BrokenPipeError: [Errno 32] Broken pipe` from
+  `ssl.SSLObject.read`, mid-transaction, and the database logged `Connection reset by peer`. No file
+  descriptor is shared or closed twice. OpenSSL keeps one error queue per thread and reads it to
+  classify the next TLS call that returns no data; a write to a dead TLS socket records its
+  `EPIPE` / `ECONNRESET` there, and CPython (seen on 3.14.3 and 3.14.8 with OpenSSL 3.5) raises the
+  `OSError` and leaves the record behind. `redshift_connector`'s `Connection.close()` writes a
+  Terminate message and swallows the failure, so closing a dead connection is such a write, and
+  every TLS connection its thread serves then reads "nothing yet" as that broken pipe until
+  something empties the queue.
+- **Changed:** every close of a Redshift connection goes through one routine, which empties the
+  calling thread's OpenSSL error queue after `close()` returns or raises. That covers the bridge
+  workers, the default executor the cancel path closes on, the event loop thread a statement's
+  cancel callback runs on, and whichever thread the driver's finalizer fires on.
+- **Changed:** a cached connection found dead on reuse is closed on a bridge worker, as the module
+  already said every cached connection was. It was the one close made directly on the event loop.
+- **Not changed:** a statement that fails on a dead connection still leaves its own bridge worker's
+  queue as it was. Nothing but Redshift statements run on those threads, on blocking sockets that
+  are not affected, and a new login's handshake empties the queue itself.
+- **Wire:** none. No public API change.
+
+### Core and agent tools: answers an edge may cache, labelled with exactly the data they read
+
+- **Added:** `ScopedSnapshot.read_versioned()` yields a `VersionedRead(cursor, epochs, behind)`: a
+  read of the copy, as `read()`, the epoch of every scope whose rows the cursor sees, exactly (a
+  scope dropped is absent), and the scopes it is behind on, taken as `read_with_behind()` takes
+  them. A read opened while a swap commits waits for it and reads its result; it
+  never fails for a long swap, and a swap lets it go on every path (a failed commit, a cancelled
+  task). Blocking: call it from a worker thread; on the event loop it raises `RuntimeError` at once. Consumers: the hub's REST
+  face labels shareable answers with these epochs through the ENR pod (`enr.edge_rows`).
+- **Added:** `RestAffordance.cache_max_age` (whole seconds, 1 to `MAX_POINTER_AGE_SECONDS` = 60): a
+  short-lived pointer, the one unversioned read a shared cache may hold (an index naming the current
+  version). Refused beside `cache_version_param`, on a `PRIVATE` declaration and on a write.
+  `RestAffordance.resolve_cache_max_age(inherited)` is the sanctioned reader, beside
+  `resolve_cache_class`: the max age only where the effective class may reach a shared cache.
+- **Wire:** additive. A manifest without `cache_max_age` reads it as `None`; a hub built before it
+  ignores the field and serves the read origin-only.
+
+### Core: a collection can declare it has no L2 by design
+
+The geography pod's layer tables and the ENR pod's report tables are built L1+L3 only on purpose,
+as the integration guide documents, and every one of them logged `collection invalidation is
+silently disabled ... wiring gap: datasource-task-06 DS-06-04` on its first write.
+
+- **Added, `threetears.core.collections.NO_L2`** (and its type, `NoL2`): pass it as a collection's
+  `nats_client` to run it without L2 by design. It has no L2 client whatever the registry offers,
+  never logs the wiring-gap WARNING, and logs `collection runs without L2 by design: table=<t>`
+  once per table at INFO when the first such collection is built. An explicit `nats_client=None`
+  keeps its meaning and its WARNING, which now names `NO_L2` as the declaration for a deliberate
+  opt-out. Integration guide §8.2 says which to use.
+
+### Core: reads and deletes by many keys stay bounded on a hash-sharded key
+
+The geography pod's census tracts (84,091 polygons a generation, two or three generations held)
+stopped loading: on YugabyteDB a statement no key leads reads every row of the table, geometry
+included, and runs into the broker's five-second statement ceiling. The pod wrote the bounded
+forms itself; they are the collection's now.
+
+- **Added, `SchemaBackedCollection.read_rows_led_by(values, *, columns=None, max_values=None,
+  conn=None)`**: the rows whose leading key column is one of `values` (each read once), the key
+  columns and any `columns` named beside them, read from L3 around the caches. Every statement
+  is led by the key: `LED_READ_MAX_VALUES` (250) values a statement as
+  `WHERE <lead> = ANY($1::<type>[])`; an answer that reaches the transport's row cap is read again
+  in halves; and a single value that alone reaches it is paged by the rest of its key
+  (`WHERE <lead> = $1 AND (<rest>) > (...) ORDER BY <rest> LIMIT <cap>`), which is the key's own
+  order inside one hash bucket. A read that had to split or page logs it once at INFO with its
+  statement, split and paged-value counts. Through `KeyLedReadingStore.fetch_led_by` (new
+  protocol, which `SqlL3Backend` implements), or an equality `scan` a value at a time on a store
+  without it, which refuses a `conn` (`scan` takes none) rather than read outside the caller's
+  transaction. A `max_values` under one is refused. `schema_sql` gains `build_led_by_select_sql`,
+  `build_key_led_delete_sql`, `build_whole_key_delete_sql` and `key_array_type`;
+  `build_select_column_list` takes the columns to project.
+- **Added, `threetears.core.backends.protocol.L3_RAIL_ROW_CAP`** (1,000): the one owner of the L3
+  rail's row cap. `NatsProxyL3Backend.rows_per_statement` states it, `SqlL3Backend.rows_per_statement`
+  reads its transport's (`None` for one that never cuts; one that says nothing is taken to be the
+  rail), and `complete_copy.DEFAULT_PAGE_SIZE` is derived from it.
+- **Added, `threetears.core.keyset.read_keyset_pages`**: the one keyset pager. `read_l3_rows` and
+  the key-led read's paging of one value both page through it, each spelling names in its own
+  policy (`quote`, as `sql_fragments.equality_conditions` takes it).
+- **Changed, `SchemaBackedCollection.delete_rows`** (unreleased): its statements are key-led, in
+  place of a row-constructor `IN` list, which YugabyteDB need not look up by key. Whichever of two
+  forms needs fewer statements: keys grouped by all but one key column
+  (`<k> = ANY($1::<type>[]) AND <rest of the key> = $2 ...`, each fixed column with its write cast,
+  so a jsonb key column binds `$n::jsonb`), or whole keys
+  (`<k1> = ANY($1) AND (<key>) IN (SELECT * FROM unnest($1, $2, ...))`) for keys that share no
+  value. At most `ceil(keys / max_rows)` statements; a `max_rows` under one is refused.
+  `schema_sql.build_bulk_delete_sql` is gone.
+- Not changed: `complete_copy.read_l3_rows` still pages `ORDER BY` the whole key. It reads a table
+  whole by design, and on a hash-sharded key each page sorts every row its filters leave; its
+  docstring now says so and names `read_rows_led_by` for a key-bounded read.
+
+### Observe: a log line names the class of the instance that logged it
+
+- **Fixed, `ThreeTearsLogger`**: the call-site class a record carries (`call_site_class`, the
+  `Class` in `path/Class.func.line`) was cached by file and line, so a line in a base class named
+  the first instance's class on every record after: every layer table's missing-L2 warning read
+  `LayerShapeCollection[us_state_census2022]`, whichever table it was about. The class is now read
+  from the logging frame for each record. The shortened path is no longer cached either, so a
+  prefix added to `path_strip_prefixes` after a file first logged applies to its later records. The cost: a
+  stack walk per enabled record, measured at 6.47 us a record against 5.82 us with the cache (a
+  method logging to a no-op handler, best of five runs of 100,000).
 
 ### Testing: `FakeNatsClient.ensure_kv_bucket` takes `max_bytes` and `still_wanted`, and enforces the bound
 
@@ -298,7 +695,8 @@ so a starting replica loads them without reading L3, and a refresh moves only th
 - **Changed, after review, the snapshot's threads:** the state a reader on any thread takes (the
   applied pointers, the behind set, the row counts, the status) is changed only on the event loop, by
   rebinding a new read-only value, never in place, so `status()`, `read_with_behind()` and
-  `applied_epoch(s)` are safe from a worker thread; only the backend runs off the loop. A read never
+  `applied_epoch(s)` are safe from a worker thread; only the backend runs off the loop, and the
+  versioned L1 behind `read_versioned()`, which owns its lock and epochs, runs its commits there too. A read never
   waits on a write: `DuckDBBackend.read_snapshot()` opens its cursor from a connection no write
   locks, so a request on the event loop is not frozen behind a long replacement.
 - **Added, `OperationStatusTool(progress=)`** (the ENR pod's `enr.load_status`): what the operation
@@ -381,11 +779,13 @@ copies swapped in whole.
   that) but answered "requested", and the run in progress is followed by one more, which takes it
   even when the drain had already made its last look for requests.
 - **Added, `SchemaBackedCollection.delete_rows(keys, *, conn, max_rows=None)`** (the ENR pod's
-  refresh deletes the rows the warehouse no longer holds): rows deleted by key in multi-row
-  `DELETE ... WHERE (k1, k2) IN ((...), ...)` statements on the caller's transaction, settled with
-  the rest when it ends; through `BulkDeletingStore.delete_many` (new protocol, which
-  `SqlL3Backend` implements), or a key at a time through `delete` on a store without it.
-  `schema_sql.build_bulk_delete_sql` builds the statement.
+  refresh deletes the rows the warehouse no longer holds): rows deleted by key in key-led
+  statements on the caller's transaction, settled with the rest when it ends; through
+  `BulkDeletingStore.delete_many` (new protocol, which `SqlL3Backend` implements), or a key at a
+  time through `delete` on a store without it. Each statement is
+  `DELETE ... WHERE <k> = ANY($1::<type>[]) AND <rest of the key> = $2 ...`
+  (`schema_sql.build_key_led_delete_sql`): the keys are grouped by all but one key column, the one
+  leaving the fewest groups, so the ENR refresh's keys of one race go as one array of geographies.
 - **Added, `nats_proxy.LOCK_NOT_AVAILABLE_ERROR_CODE`**: the broker's code for a statement whose
   `NOWAIT` lock another transaction holds (SQLSTATE 55P03); the proxy rebuilds
   `asyncpg.LockNotAvailableError` from it, as a direct pool raises. The hub sends it from its

@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, ValidationError
 from threetears.nats import KV_KEY_SCOPE_GRAMMAR, Subjects
 from threetears.nats.errors import PublishError
+from threetears.core.collections.generation import (
+    GenerationMarks,
+    GenerationVerdict,
+    NoWriteGeneration,
+    WriteGeneration,
+    source_reads,
+)
 from threetears.core.collections.scan_cache import ScanCache
 from threetears.core.exceptions import InvalidL2ScopeError, L2ScopeNotConfiguredError
 from threetears.observe import get_logger
@@ -24,6 +33,7 @@ __all__ = [
     "DEFAULT_L1_MAX_AGE_SECONDS",
     "CacheInvalidationMessage",
     "CollectionRegistry",
+    "DerivedCacheRegistration",
 ]
 
 log = get_logger(__name__)
@@ -106,12 +116,70 @@ class CacheInvalidationMessage(BaseModel):
         the only copy newer than L3, so deleting it would move the counter
         backwards. ``None`` for every unfenced write, whose L2 put can land
         out of order and still needs the eviction to heal.
+    :ivar generation: the table's write generation as the commit this row
+        belongs to advanced it (:meth:`GenerationSource.advance`'s return).
+        ``None`` from a publisher that advanced nothing: a table not switched
+        on, or a release that predates the field. A receiver then evicts the
+        row exactly as it always did and counts nothing.
+    :ivar bump_rows: how many row messages the advance named in
+        ``generation`` covers, this one included. One commit, flush or
+        settled transaction advances a table once however many rows it
+        wrote, so a receiver that has counted this many messages for the
+        generation has heard all of that advance. Set whenever ``generation``
+        is.
+    :ivar columns: the values, as strings, of the columns the publishing
+        collection declares in :attr:`BaseCollection.invalidation_columns`,
+        taken from the row the write saw -- the row being deleted, for a
+        delete -- so a receiver whose own entries are keyed by something
+        other than the primary key needs no read to know which row this was.
+        ``None`` when the collection declares none, or the write saw no row
+        (an eviction that names only a key).
+
+    Every field after ``ids`` is optional and was added after the envelope first
+    shipped; a receiver that predates one ignores it, and a message without it is
+    handled as it was before the field existed.
     """
 
     table: str
     ids: list[str]
     origin: str | None = None
     l2_current_scope: str | None = None
+    generation: str | None = None
+    bump_rows: int | None = None
+    columns: dict[str, str | None] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DerivedCacheRegistration:
+    """how one cache derived from a collection table hears that table change.
+
+    :ivar on_row: called with each row message for the table -- a peer's broadcast, and this
+        process's own writes -- to evict exactly the entries that row reaches
+    :ivar on_table_dropped: called when the table is dropped in this process because the reach of
+        a change is unknown; the cache drops every entry derived from the table
+    """
+
+    on_row: Callable[[CacheInvalidationMessage], None]
+    on_table_dropped: Callable[[], None]
+
+
+def _write_generation_kind(collection: Any) -> str:
+    """which of the three write-generation declarations a collection carries.
+
+    Read off the instance rather than assumed, because a registry holds whatever was registered
+    with it: a stand-in with no declaration is undeclared.
+
+    :param collection: a registered collection, or a stand-in for one
+    :ptype collection: Any
+    :return: ``"on"``, ``"opted_out"`` or ``"undeclared"``
+    :rtype: str
+    """
+    declared = getattr(collection, "write_generation", None)
+    if isinstance(declared, WriteGeneration):
+        return "on"
+    if isinstance(declared, NoWriteGeneration):
+        return "opted_out"
+    return "undeclared"
 
 
 class CollectionRegistry:
@@ -156,6 +224,11 @@ class CollectionRegistry:
         # The write generation a negative-caching collection stamps its absences with. One per
         # registry: every collection on it answers to the same principal's view of the world.
         self._generation_source: GenerationSource | None = None
+        # Per followed table, the last write generation whose writes this registry has accounted
+        # for. Empty until a table is followed (:meth:`follow_generation`).
+        self._generation_marks = GenerationMarks()
+        # table_name -> the caches derived from it, in registration order.
+        self._derived_caches: dict[str, list[DerivedCacheRegistration]] = {}
         # Per-registry (effectively per-pod) identity stamped on every
         # invalidation this registry publishes, so its own listener can
         # skip self-published messages and avoid evicting rows it just
@@ -290,8 +363,35 @@ class CollectionRegistry:
         l2_client: Any = None,
         l3_pool: L3Backend | None = None,
     ) -> None:
-        """Register a collection instance with optional per-collection overrides."""
+        """Register a collection instance with optional per-collection overrides.
+
+        :param collection: the collection, keyed by its ``table_name``; a later one for the same
+            table replaces the earlier
+        :ptype collection: Any
+        :param l1_backend: L1 backend override for this table
+        :ptype l1_backend: Any
+        :param l2_client: L2 client override for this table
+        :ptype l2_client: Any
+        :param l3_pool: L3 pool override for this table
+        :ptype l3_pool: L3Backend | None
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when the registry already holds a collection for the table that
+            declares its write generation differently. One table has one generation, so two
+            classes for it that disagree would leave some of its writes advancing it and others
+            not, and a follower reading "the generation did not move" as "nothing changed" wrong
+        """
         table = collection.table_name
+        held = self._collections.get(table)
+        if held is not None and held is not collection:
+            ours, theirs = _write_generation_kind(collection), _write_generation_kind(held)
+            if ours != theirs:
+                raise ValueError(
+                    f"two collections for table {table!r} disagree on write_generation: "
+                    f"{type(held).__name__} is {theirs} and {type(collection).__name__} is {ours}. "
+                    f"a table has one write generation; give it one collection class, or declare "
+                    f"the same write_generation on both"
+                )
         self._collections[table] = collection
         if l1_backend or l2_client or l3_pool:
             self._overrides[table] = {}
@@ -441,6 +541,230 @@ class CollectionRegistry:
         """
         return self._generation_source
 
+    @property
+    def readable_generation_source(self) -> GenerationSource | None:
+        """the wired source when it can read a table's generation, for absence caching; else ``None``.
+
+        :return: the source, or ``None`` when none is wired or it can only advance
+            (:func:`~threetears.core.collections.generation.source_reads`)
+        :rtype: GenerationSource | None
+        """
+        return self._generation_source if source_reads(self._generation_source) else None
+
+    # ------------------------------------------------------------------
+    # Following a table's write generation
+    # ------------------------------------------------------------------
+
+    def follow_generation(self, table_name: str) -> None:
+        """start keeping this registry's mark for ``table_name``'s write generation.
+
+        A followed table's row broadcasts are counted against the generation each names, and a
+        catch-up pass (``threetears.epoch.generation_catchup_tick``, or the key watcher beside it)
+        judges the mark against the table's current generation and drops the table here when a
+        broadcast was missed. Following alone drops nothing: whoever follows a table also
+        schedules the pass. The table need not be registered as a collection -- an agent pod
+        follows the access tables it holds only derived caches of.
+
+        :param table_name: the table to follow
+        :ptype table_name: str
+        :return: nothing
+        :rtype: None
+        """
+        self._generation_marks.follow(table_name)
+
+    @property
+    def generation_marks(self) -> GenerationMarks:
+        """this registry's per-table generation marks, for the pass that judges them.
+
+        :return: the marks
+        :rtype: GenerationMarks
+        """
+        return self._generation_marks
+
+    def account_generation(self, table_name: str, token: str) -> None:
+        """record an advance one of this registry's own writes made.
+
+        A registry skips its own broadcasts, so the collection that advanced a generation says so
+        here; otherwise a registry that both writes and follows a table would find every one of
+        its own writes unheard.
+
+        :param table_name: the table advanced
+        :ptype table_name: str
+        :param token: the generation the advance wrote
+        :ptype token: str
+        :return: nothing
+        :rtype: None
+        """
+        self._generation_marks.account(table_name, token)
+
+    def settle_generation(self, table_name: str, token: str | None) -> GenerationVerdict:
+        """judge ``table_name``'s generation as just read, and drop the table here when it is behind.
+
+        The one decision a catch-up pass makes per table. Reading the generation is the pass's
+        job; a generation it could not read is never brought here, so nothing is dropped and the
+        mark does not move for it.
+
+        :param table_name: a followed table
+        :ptype table_name: str
+        :param token: the table's current generation, or ``None`` when its store holds none
+        :ptype token: str | None
+        :return: the verdict; the table was dropped when it :attr:`~GenerationVerdict.drops`
+        :rtype: GenerationVerdict
+        :raises KeyError: when ``table_name`` is not followed
+        """
+        verdict = self._generation_marks.settle(table_name, token)
+        if verdict.drops:
+            self.drop_table(table_name, reason=verdict.value)
+        return verdict
+
+    def drop_table(self, table_name: str, *, reason: str) -> None:
+        """drop everything this process holds of ``table_name``, because it cannot say what changed.
+
+        For when the reach of a change is unknown: a row broadcast was missed, or the store
+        holding the table's generation was replaced. A heard change never comes here; it evicts
+        its own row. Dropped, in this process only:
+
+        - every cached scan that depends on the table;
+        - every row of it in L1, through its collection, which also stops trusting this
+          process's own L2 entries for the table (:meth:`BaseCollection.drop_cached_table`);
+        - every entry of every cache derived from it (:meth:`register_derived_cache`).
+
+        Always safe: the next read of anything dropped goes back to the durable tier.
+
+        :param table_name: the table to drop
+        :ptype table_name: str
+        :param reason: why, for the log
+        :ptype reason: str
+        :return: nothing
+        :rtype: None
+        """
+        self.drop_local_scans(table_name)
+        collection = self._collections.get(table_name)
+        rows = collection.drop_cached_table() if collection is not None else 0
+        derived = tuple(self._derived_caches.get(table_name, ()))
+        for registration in derived:
+            registration.on_table_dropped()
+        log.warning(
+            "dropped a table from this process's caches; the next read of it goes to the durable tier",
+            extra={
+                "extra_data": {
+                    "table": table_name,
+                    "reason": reason,
+                    "l1_rows": rows,
+                    "derived_caches": len(derived),
+                }
+            },
+        )
+
+    def register_derived_cache(
+        self,
+        table_name: str,
+        *,
+        on_row: Callable[[CacheInvalidationMessage], None],
+        on_table_dropped: Callable[[], None],
+    ) -> Callable[[], None]:
+        """tell a cache derived from ``table_name`` about each row that changes, and when to drop it all.
+
+        A derived cache holds answers computed from a collection table's rows -- who may see
+        what, resolved from the access tables -- under keys that are not the table's primary
+        key. It registers, per table, how one row message reaches its own entries:
+
+        - ``on_row`` gets every row message for the table: each peer's broadcast, and each write
+          this process makes itself (a registry skips its own broadcasts, and the writer's cache
+          is as stale as anyone's). It evicts the entries that row reaches and nothing else. The
+          message's ``columns`` carry what the publishing collection declared in
+          :attr:`BaseCollection.invalidation_columns`; a message without them names only the
+          primary key.
+        - ``on_table_dropped`` is called only when the table is dropped here
+          (:meth:`drop_table`). That is the one time the cache empties everything derived from
+          the table.
+
+        Both run synchronously inside the handling of the change and must not block. One that
+        raises fails that handling: a peer's row is then not counted as heard, and the next
+        catch-up pass drops the table.
+
+        :param table_name: the table the cache is derived from
+        :ptype table_name: str
+        :param on_row: evicts the entries one row message reaches
+        :ptype on_row: Callable[[CacheInvalidationMessage], None]
+        :param on_table_dropped: drops every entry derived from the table
+        :ptype on_table_dropped: Callable[[], None]
+        :return: a call that removes the registration
+        :rtype: Callable[[], None]
+        """
+        registration = DerivedCacheRegistration(on_row=on_row, on_table_dropped=on_table_dropped)
+        registrations = self._derived_caches.setdefault(table_name, [])
+        registrations.append(registration)
+
+        def remove() -> None:
+            if registration in registrations:
+                registrations.remove(registration)
+
+        return remove
+
+    def has_derived_caches(self, table_name: str) -> bool:
+        """whether any cache derived from ``table_name`` is registered here.
+
+        For a caller about to build row messages only to hand them to derived caches: a bulk
+        load on a registry with none builds nothing.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :return: ``True`` when at least one derived cache is registered for the table
+        :rtype: bool
+        """
+        return bool(self._derived_caches.get(table_name))
+
+    def tell_derived_caches(self, message: CacheInvalidationMessage) -> None:
+        """hand one row message to every cache derived from its table.
+
+        :param message: the row message
+        :ptype message: CacheInvalidationMessage
+        :return: nothing
+        :rtype: None
+        """
+        for registration in tuple(self._derived_caches.get(message.table, ())):
+            registration.on_row(message)
+
+    def row_message(
+        self,
+        table_name: str,
+        entity_id: Any,
+        *,
+        l2_key_current: bool = False,
+        generation: str | None = None,
+        bump_rows: int | None = None,
+        columns: Mapping[str, str | None] | None = None,
+    ) -> CacheInvalidationMessage:
+        """build the row message this registry publishes for one changed row.
+
+        :param table_name: the row's table
+        :ptype table_name: str
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :param l2_key_current: whether a revision-fenced write left this registry's scoped L2 key
+            holding the newest value
+        :ptype l2_key_current: bool
+        :param generation: the write generation the row's commit advanced to, or ``None``
+        :ptype generation: str | None
+        :param bump_rows: how many row messages that advance covers, or ``None``
+        :ptype bump_rows: int | None
+        :param columns: the declared invalidation columns' values, or ``None``
+        :ptype columns: Mapping[str, str | None] | None
+        :return: the message, stamped with this registry's origin
+        :rtype: CacheInvalidationMessage
+        """
+        values = entity_id if isinstance(entity_id, tuple) else (entity_id,)
+        return CacheInvalidationMessage(
+            table=table_name,
+            ids=[str(v) for v in values],  # convert at border: invalidation wire-envelope pk values
+            origin=self._origin_id,
+            l2_current_scope=self._kv_key_scope if l2_key_current else None,
+            generation=generation,
+            bump_rows=bump_rows if generation is not None else None,
+            columns=dict(columns) if columns is not None else None,
+        )
+
     def get_l1_max_age(self, table_name: str) -> float | None:
         """Return the configured L1 max age for a collection, or ``None``.
 
@@ -526,7 +850,15 @@ class CollectionRegistry:
             # evict OTHER pods, which carry a different origin.
             if message.origin is not None and message.origin == self._origin_id:
                 return
+            await _evict_named_row(message)
+            # Counted as heard only once everything above has run to the end: a row whose
+            # eviction raised part-way is one this registry cannot vouch for, and leaving it
+            # uncounted is what makes the next catch-up pass drop the table. A message naming no
+            # generation -- a table not switched on, an older publisher -- counts nothing.
+            if message.generation is not None and message.bump_rows is not None:
+                self._generation_marks.hear(message.table, message.generation, message.bump_rows)
 
+        async def _evict_named_row(message: CacheInvalidationMessage) -> None:
             # Evict dependent SCANS first, and unconditionally. Every check
             # below returns early for a table this pod does not hold as a
             # collection -- and `role_assignments` / `group_members` are exactly
@@ -534,7 +866,16 @@ class CollectionRegistry:
             # must drop a cached visibility scan. Ordering this after those
             # guards would leave a revoked grant readable until the TTL lapsed.
             self.scan_cache.drop_for_table(message.table)
+            # Derived caches next, and for the same reason ahead of every guard below: a cache
+            # derived from the access tables lives on pods that hold none of them as collections.
+            # One that raises must not cost the row its eviction, so the row is evicted either
+            # way and the failure then surfaces, leaving the message uncounted.
+            try:
+                self.tell_derived_caches(message)
+            finally:
+                await _evict_collection_row(message)
 
+        async def _evict_collection_row(message: CacheInvalidationMessage) -> None:
             collection = self._collections.get(message.table)
             if collection is None:
                 # unknown-table receipts are expected during partial
@@ -654,6 +995,19 @@ class CollectionRegistry:
                     extra={"extra_data": {"table": table, "error": f"{type(exc).__name__}: {exc}"}},
                 )
 
+    @property
+    def invalidation_listener_running(self) -> bool:
+        """whether this registry's cross-pod invalidation listener is running.
+
+        What hears a peer's row broadcasts, so whatever judges this registry's followed tables, or
+        evicts a cache derived from them, needs it running first.
+
+        :return: ``True`` between :meth:`start_invalidation_listener` and
+            :meth:`stop_invalidation_listener`
+        :rtype: bool
+        """
+        return self._invalidation_subscription is not None
+
     async def stop_invalidation_listener(self) -> None:
         """drop this registry's cache-invalidation subscription.
 
@@ -702,6 +1056,9 @@ class CollectionRegistry:
         entity_id: Any,
         *,
         l2_key_current: bool = False,
+        generation: str | None = None,
+        bump_rows: int | None = None,
+        columns: Mapping[str, str | None] | None = None,
     ) -> None:
         """publish cache invalidation signal for an entity.
 
@@ -736,6 +1093,15 @@ class CollectionRegistry:
             sharing the scope keep it (see
             :attr:`CacheInvalidationMessage.l2_current_scope`)
         :ptype l2_key_current: bool
+        :param generation: the write generation the row's commit advanced the table to, when it
+            advanced one (:attr:`CacheInvalidationMessage.generation`)
+        :ptype generation: str | None
+        :param bump_rows: how many row messages that advance covers
+            (:attr:`CacheInvalidationMessage.bump_rows`); ignored without ``generation``
+        :ptype bump_rows: int | None
+        :param columns: the publishing collection's declared invalidation columns' values, from
+            the row the write saw (:attr:`CacheInvalidationMessage.columns`)
+        :ptype columns: Mapping[str, str | None] | None
         :return: nothing
         :rtype: None
         """
@@ -758,19 +1124,22 @@ class CollectionRegistry:
         # is not a broadcast and must not be skipped when there is no bus (devx,
         # tests, a pod whose NATS is down).
         self.drop_local_scans(table_name)
+        if nats_client is None and not self.has_derived_caches(table_name):
+            return
+        message = self.row_message(
+            table_name,
+            entity_id,
+            l2_key_current=l2_key_current,
+            generation=generation,
+            bump_rows=bump_rows,
+            columns=columns,
+        )
+        # A LOCAL write also reaches LOCAL derived caches, for the reason it reaches local scans:
+        # the listener skips this registry's own broadcasts, and a cache derived from the row is
+        # stale here the instant the write commits. Ahead of the `nats_client is None` return too.
+        self.tell_derived_caches(message)
         if nats_client is None:
             return
-        if isinstance(entity_id, tuple):
-            values = entity_id
-        else:
-            values = (entity_id,)
-        ids = [str(v) for v in values]  # convert at border: invalidation wire-envelope pk values
-        message = CacheInvalidationMessage(
-            table=table_name,
-            ids=ids,
-            origin=self._origin_id,
-            l2_current_scope=self._kv_key_scope if l2_key_current else None,
-        )
         try:
             await nats_client.publish(
                 subject=Subjects.cache_invalidate(),
@@ -837,6 +1206,8 @@ class CollectionRegistry:
         """
         self._collections.clear()
         self._overrides.clear()
+        self._derived_caches.clear()
+        self._generation_marks = GenerationMarks()
         # The bound keeps its own dict so ``register()`` cannot wipe it, but a
         # separate lifetime is not an unbounded one: a table re-registered after
         # a clear would otherwise inherit a bound nobody in the new setup asked

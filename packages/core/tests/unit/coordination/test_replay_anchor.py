@@ -87,9 +87,10 @@ class _FakeGenerations:
         del table_name
         return f"gen-{self.count}"
 
-    async def advance(self, table_name: str) -> None:
+    async def advance(self, table_name: str) -> str:
         del table_name
         self.count += 1
+        return f"gen-{self.count}"
 
 
 def _registry(nats: Any = None, store: _Store | None = None) -> CollectionRegistry:

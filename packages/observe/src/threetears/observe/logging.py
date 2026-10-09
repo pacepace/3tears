@@ -28,8 +28,6 @@ from datetime import UTC, datetime
 from types import FrameType
 from typing import Any
 
-from threetears.observe.build_once import BuildOnce
-
 __all__ = [
     "NOISY_LIBRARY_LOGGERS",
     "ContextFormatter",
@@ -110,13 +108,8 @@ def representative_exception(exc: BaseException) -> BaseException:
 
 
 # ---------------------------------------------------------------------------
-# Call-site cache -- shared by ThreeTearsLogger and ContextFormatter
+# Call-site detection -- read by ThreeTearsLogger and ContextFormatter
 # ---------------------------------------------------------------------------
-
-#: (filename, line) -> (shortened file, enclosing class, reserved). Built through ``BuildOnce``
-#: because a record is made on whichever thread logs, so a call site's first records can arrive
-#: from several threads at once.
-_call_site_cache: BuildOnce[tuple[str, int], tuple[str, str | None, str]] = BuildOnce()
 
 # Configurable path prefixes to strip from filenames for shorter log output.
 # Host apps can append to this list (e.g. ``path_strip_prefixes.append("myapp/src/")``).
@@ -221,18 +214,20 @@ class ContextFormatter(logging.Formatter):
 # ---------------------------------------------------------------------------
 
 
-def _find_call_site(fn: str, lno: int) -> tuple[str, str | None, str]:
+def _find_call_site_class(fn: str, lno: int) -> str | None:
     """walk the calling stack to the frame at *fn*:*lno* and name the class it runs in.
 
     the class comes from ``self`` or ``cls`` in that frame's locals; a frame with neither, or no
-    matching frame at all, has none.
+    matching frame at all, has none. walked for every record, never cached by call site: one line
+    of a base class logs for instances of every subclass, and a cached answer would name the
+    first one's class on all of them.
 
     :param fn: the call site's filename
     :ptype fn: str
     :param lno: the call site's line number
     :ptype lno: int
-    :return: ``(shortened file, enclosing class, "")``
-    :rtype: tuple[str, str | None, str]
+    :return: the enclosing class's name, or None
+    :rtype: str | None
     """
     call_site_class: str | None = None
     # the public spelling of ``sys._getframe()``: this function's own frame, or None on an
@@ -250,7 +245,7 @@ def _find_call_site(fn: str, lno: int) -> tuple[str, str | None, str]:
                     call_site_class = cls_obj.__name__
             break
         frame = frame.f_back
-    return (_shorten_path(fn), call_site_class, "")
+    return call_site_class
 
 
 class ThreeTearsLogger(logging.Logger):
@@ -258,7 +253,8 @@ class ThreeTearsLogger(logging.Logger):
 
     Overrides ``makeRecord`` to walk the stack and detect the actual call site,
     including class name detection via ``self``/``cls`` in local variables.
-    Results are cached by (filename, line_number) for performance.
+    Both are found per record, never cached by call site: one line of a base class logs for
+    instances of every subclass, and a cached class would name the first one's on all of them.
     """
 
     def makeRecord(  # noqa: N802
@@ -278,7 +274,8 @@ class ThreeTearsLogger(logging.Logger):
         call_site_line = lno
         call_site_func = func or "unknown"
 
-        call_site_file, call_site_class, _ = _call_site_cache.get((fn, lno), lambda: _find_call_site(fn, lno))
+        call_site_file = _shorten_path(fn)
+        call_site_class = _find_call_site_class(fn, lno)
 
         record = super().makeRecord(name, level, fn, lno, msg, args, exc_info, func, extra, sinfo)
 

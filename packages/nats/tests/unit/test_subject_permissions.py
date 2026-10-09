@@ -1047,8 +1047,12 @@ class TestScopedCollectionsGrant:
                 continue
             assert resource.scope is None, f"{principal}: {resource.name} would deny its own reads"
             # a pod binds what the hub declared and holds no stream verb; an infra identity that
-            # declares what it opens keeps the management grant.
-            expected = JsCapability.KV_BUCKET_KEYS if principal in _POD_PRINCIPALS else JsCapability.FULL
+            # declares what it opens keeps the management grant. The registry binds the epoch
+            # bucket the hub declared, read only, to follow the access tables' generations.
+            binds_only = principal in _POD_PRINCIPALS or (
+                principal is Principal.REGISTRY and resource.name == f"{_NS}-epochs"
+            )
+            expected = JsCapability.KV_BUCKET_KEYS if binds_only else JsCapability.FULL
             assert resource.capability is expected, f"{principal}: {resource.name}"
 
     def test_the_registry_holds_the_bucket_its_own_source_of_truth_collection_runs_on(self) -> None:
@@ -2734,3 +2738,17 @@ class TestToolPodObjectStore:
             assert subject not in pod.subscribe
             assert subject in hub.subscribe
             assert subject not in agent.publish
+
+
+class TestCollectionKeysPurgeRequest:
+    """every tool pod may ask the hub to purge its retired collection keys; only the hub answers."""
+
+    def test_the_purge_request_is_tool_pod_publish_hub_subscribe(self) -> None:
+        subject = f"{_NS}.hub.collection_keys.purge"
+        pod = _build(Principal.TOOL_POD)
+        hub = _build(Principal.HUB)
+        agent = _build(Principal.AGENT_POD)
+        assert subject in pod.publish
+        assert subject not in pod.subscribe
+        assert subject in hub.subscribe
+        assert subject not in agent.publish

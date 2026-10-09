@@ -608,8 +608,10 @@ class TestEnsureGroupRoleAssignment:
         pool.fetchrow.return_value = None
         pool.fetchval.side_effect = lambda sql, *args: args[1]
         coll = make_collection(RoleAssignmentCollection, l3_pool=pool)
+        coll.invalidate_cache_many = AsyncMock()
+        group_id = uuid7()
         assignment_id, created = await coll.ensure_group_role_assignment(
-            group_id=uuid7(),
+            group_id=group_id,
             role_id=uuid7(),
             scope_type="namespace",
             scope_id=uuid7(),
@@ -619,15 +621,20 @@ class TestEnsureGroupRoleAssignment:
         insert_sql = pool.fetchval.await_args_list[0].args[0]
         assert "ON CONFLICT DO NOTHING" in insert_sql
         assert pool.fetchval.await_count == 1
+        # the inserted row is announced, naming its group, in one advance
+        coll.invalidate_cache_many.assert_awaited_once_with(
+            [("customer", assignment_id)], rows=[{"group_id": group_id}]
+        )
 
     @pytest.mark.asyncio
     async def test_a_lost_race_answers_the_row_that_won(self) -> None:
         """the insert absorbed by the natural-key index: the winner is read back, created=False."""
         winner = uuid7()
         pool = AsyncMock()
-        pool.fetchrow.return_value = None
-        pool.fetchval.side_effect = [None, winner]
+        pool.fetchrow.side_effect = [None, {"row_scope": "platform", "assignment_id": winner}]
+        pool.fetchval.side_effect = [None]
         coll = make_collection(RoleAssignmentCollection, l3_pool=pool)
+        coll.invalidate_cache_many = AsyncMock()
         group_id, role_id, scope_id = uuid7(), uuid7(), uuid7()
         assignment_id, created = await coll.ensure_group_role_assignment(
             group_id=group_id,
@@ -637,16 +644,18 @@ class TestEnsureGroupRoleAssignment:
             managed_by="bootstrap",
         )
         assert (assignment_id, created) == (winner, False)
-        reread = pool.fetchval.await_args_list[1]
+        reread = pool.fetchrow.await_args_list[1]
         assert reread.args[1:] == (group_id, role_id, "namespace", scope_id, "bootstrap")
-        assert "row_scope" not in reread.args[0]
+        assert "WHERE row_scope" not in reread.args[0]
+        # through the broker the absorbed insert still advanced the table: the winner is announced
+        coll.invalidate_cache_many.assert_awaited_once_with([("platform", winner)], rows=[{"group_id": group_id}])
 
     @pytest.mark.asyncio
     async def test_an_absorbed_insert_with_no_winner_is_not_reported_as_found(self) -> None:
         """a conflict on something other than the grant is raised, never answered as the grant."""
         pool = AsyncMock()
-        pool.fetchrow.return_value = None
-        pool.fetchval.side_effect = [None, None]
+        pool.fetchrow.side_effect = [None, None]
+        pool.fetchval.side_effect = [None]
         coll = make_collection(RoleAssignmentCollection, l3_pool=pool)
         with pytest.raises(RuntimeError, match="no row holds that grant"):
             await coll.ensure_group_role_assignment(
@@ -705,41 +714,71 @@ class TestDeleteByGroupAndScope:
     @pytest.mark.asyncio
     async def test_returns_zero_on_empty_delete(self) -> None:
         pool = AsyncMock()
-        pool.execute.return_value = "DELETE 0"
+        pool.fetch.return_value = []
         coll = make_collection(RoleAssignmentCollection, l3_pool=pool)
+        coll.invalidate_cache_many = AsyncMock()
         n = await coll.delete_by_group_and_scope(
             group_id=uuid7(),
             scope_type="namespace",
             scope_id=uuid7(),
         )
         assert n == 0
+        # nothing matched, so no DELETE was sent (through the broker one would advance the table
+        # with no row to hear) and nothing is announced
+        statements = [call.args[0] for call in pool.fetch.await_args_list]
+        assert not [sql for sql in statements if "DELETE" in sql.upper()], statements
+        coll.invalidate_cache_many.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_returns_count_on_match(self) -> None:
+        ids = [uuid7(), uuid7(), uuid7()]
+        rows = [{"assignment_id": i} for i in ids]
         pool = AsyncMock()
-        pool.execute.return_value = "DELETE 3"
+        pool.fetch.side_effect = [rows, rows]
         coll = make_collection(RoleAssignmentCollection, l3_pool=pool)
+        coll.invalidate_cache_many = AsyncMock()
+        group_id = uuid7()
         n = await coll.delete_by_group_and_scope(
-            group_id=uuid7(),
+            group_id=group_id,
             scope_type="namespace",
             scope_id=uuid7(),
         )
         assert n == 3
+        # every deleted row announced, naming its group, in one advance
+        coll.invalidate_cache_many.assert_awaited_once_with(
+            [("customer", i) for i in ids], rows=[{"group_id": group_id}] * 3
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_row_a_concurrent_delete_took_is_still_announced(self) -> None:
+        ids = [uuid7(), uuid7()]
+        pool = AsyncMock()
+        pool.fetch.side_effect = [[{"assignment_id": i} for i in ids], [{"assignment_id": ids[0]}]]
+        coll = make_collection(RoleAssignmentCollection, l3_pool=pool)
+        coll.invalidate_cache_many = AsyncMock()
+        group_id = uuid7()
+        n = await coll.delete_by_group_and_scope(group_id=group_id, scope_type="all", scope_id=None)
+        assert n == 1
+        keys = coll.invalidate_cache_many.await_args.args[0]
+        assert keys == [("platform", ids[0]), ("platform", ids[1])]
 
     @pytest.mark.asyncio
     async def test_managed_by_filter_appended(self) -> None:
         """``managed_by`` argument adds a fifth predicate."""
         pool = AsyncMock()
-        pool.execute.return_value = "DELETE 1"
+        pool.fetch.side_effect = [[{"assignment_id": uuid7()}], []]
         coll = make_collection(RoleAssignmentCollection, l3_pool=pool)
+        coll.invalidate_cache_many = AsyncMock()
         await coll.delete_by_group_and_scope(
             group_id=uuid7(),
             scope_type="namespace",
             scope_id=uuid7(),
             managed_by="auto:agent-yaml",
         )
-        sql = pool.execute.await_args.args[0]
-        assert "managed_by = $5" in sql
+        delete = pool.fetch.await_args_list[1]
+        assert delete.args[0].lstrip().upper().startswith("DELETE")
+        assert "managed_by = $5" in delete.args[0]
+        assert delete.args[-1] == "auto:agent-yaml"
 
 
 # ---------------------------------------------------------------------------

@@ -62,6 +62,8 @@ dependencies = [
 redshift = ["redshift-connector>=2.1"]
 snowflake = ["snowflake-connector-python>=3.0"]
 bigquery = ["google-cloud-bigquery>=3.0"]
+# reading a warehouse export's parquet files (threetears.datasources.export_read)
+export = ["pyarrow>=17"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

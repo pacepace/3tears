@@ -520,8 +520,10 @@ ignore_missing_imports = true
 module = [
     "threetears.core.cache.sqlite",
     "threetears.core.cache.duckdb",
-    # pyarrow ships no py.typed marker; the scoped snapshot's chunk codec is its one importer.
+    # pyarrow ships no py.typed marker; the scoped snapshot's chunk codec and the export reader
+    # (a warehouse export's parquet files) import it.
     "threetears.core.collections.scoped_snapshot",
+    "threetears.datasources.export_read",
     "threetears.agent.tools.document",
     "threetears.agent.tools.builtin.calculator",
     # redshift_connector ships no py.typed/stubs; suppress its import-untyped

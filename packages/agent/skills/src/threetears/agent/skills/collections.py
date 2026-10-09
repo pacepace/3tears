@@ -720,8 +720,8 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
             agent_id,
             list(skill_ids),
         )
-        for skill_id in skill_ids:
-            await self.invalidate_cache((agent_id, skill_id))
+        # one call for every row: one commit's rows are one advance, and its broadcasts one count
+        await self.invalidate_cache_many([(agent_id, skill_id) for skill_id in skill_ids])
         return None
 
     async def increment_outcome_counts(

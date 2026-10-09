@@ -300,15 +300,26 @@ class TestCounterMutationInvalidation:
     """Counter bumps drop the pk from L1/L2 so stale reads cannot survive."""
 
     async def test_bump_use_count_invalidates_each_pk(self) -> None:
-        """Every bumped skill's pk is invalidated after the bulk UPDATE."""
+        """Every bumped skill's pk is invalidated after the bulk UPDATE, in one call.
+
+        One call: the UPDATE is one commit, so its rows are one write-generation advance whose
+        broadcasts all carry one count; a call per row would advance once per row.
+        """
         pool = _RecordingPool()
         coll, invalidated = _bare_skill_collection(pool)
+        batches: list[list[Any]] = []
+
+        async def _record_many(entity_ids: Any, **_: Any) -> None:
+            batches.append(list(entity_ids))
+
+        coll.invalidate_cache_many = _record_many  # type: ignore[method-assign]
         agent_id = _new_uuid()
         skill_a = _new_uuid()
         skill_b = _new_uuid()
         await coll.bump_use_count(agent_id, [skill_a, skill_b])
         assert len(pool.calls) == 1
-        assert invalidated == [(agent_id, skill_a), (agent_id, skill_b)]
+        assert batches == [[(agent_id, skill_a), (agent_id, skill_b)]]
+        assert invalidated == []
 
     async def test_bump_use_count_empty_batch_no_invalidation(self) -> None:
         """An empty batch short-circuits: no UPDATE, no invalidation."""

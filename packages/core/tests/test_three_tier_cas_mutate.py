@@ -138,8 +138,9 @@ class _FakeGenerations:
     async def current(self, table_name: str) -> str:
         return f"i:{self.count}"
 
-    async def advance(self, table_name: str) -> None:
+    async def advance(self, table_name: str) -> str:
         self.count += 1
+        return f"i:{self.count}"
 
 
 class _Nats(FakeNatsClient):

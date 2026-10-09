@@ -91,6 +91,7 @@ from threetears.core.http_cache import CacheClass, narrow_cache_class
 
 __all__ = [
     "CACHEABLE_METHODS",
+    "MAX_POINTER_AGE_SECONDS",
     "QUERY_METHODS",
     "HttpMethod",
     "ParameterBinding",
@@ -113,6 +114,11 @@ QUERY_METHODS: frozenset[str] = frozenset({"GET", "DELETE", "HEAD", "OPTIONS"})
 #: story for a POST, and claiming one is how a mutation gets replayed from an
 #: edge.
 CACHEABLE_METHODS: frozenset[str] = frozenset({"GET", "HEAD"})
+
+#: the longest a short-lived pointer may be held (:attr:`RestAffordance.cache_max_age`). a pointer is
+#: the one unversioned read a shared cache may hold, so it must be short: what it says is wrong for at
+#: most this long after the version it names moves on, and nothing purges it sooner.
+MAX_POINTER_AGE_SECONDS = 60
 
 
 class HttpMethod(StrEnum):
@@ -248,10 +254,22 @@ class RestAffordance(PathTemplateBinding):
         cache-invalidation scheme a shared edge honours without a purge API.
         must be one of ``path_params``: an HTTP shared cache keys on URL, so
         a version outside the URL cannot key anything
+    :ivar cache_max_age: seconds a shared cache may hold an UNVERSIONED read, for the small pointer
+        a client reads to learn the current version (an index naming each scope's epoch). from one
+        to :data:`MAX_POINTER_AGE_SECONDS`; never with ``cache_version_param`` (a versioned address
+        is immutable, not short-lived), never on a ``PRIVATE`` declaration, and only for a method a
+        shared cache may hold. ``None``: an unversioned read stays origin-only
+    :ivar scope_node: for an address a shared cache may hold, the namespace node whose child tool
+        nodes name the scopes a reader may read (``tools.enr.state``: a reader who can see
+        ``tools.enr.state.va.1-0`` may read scope ``va``). The hub issues each reader an edge token
+        naming the scopes discovery lists under it, every scope (``*``) when the reader sees every
+        node there; ``None`` keeps a token at every scope. A dotted namespace name, no empty segment
     """
 
     cache: CacheClass = CacheClass.INHERIT
     cache_version_param: str | None = None
+    cache_max_age: int | None = None
+    scope_node: str | None = None
 
     def __post_init__(self) -> None:
         """normalize the method, then check everything knowable without a schema.
@@ -289,6 +307,45 @@ class RestAffordance(PathTemplateBinding):
                 "URL, so a version outside the URL cannot key it"
             )
             raise RestAffordanceError(msg)
+        self._check_max_age()
+        node = self.scope_node
+        if node is not None and (not node or any(not part or part != part.strip() for part in node.split("."))):
+            raise RestAffordanceError(
+                f"REST affordance on {self.path_template!r}: scope_node {node!r} is not a namespace name "
+                "(dotted segments, none empty or padded)"
+            )
+
+    def _check_max_age(self) -> None:
+        """refuse a short-lived declaration that contradicts the rest of the declaration.
+
+        :return: nothing
+        :rtype: None
+        :raises RestAffordanceError: when ``cache_max_age`` is out of range, on a versioned or
+            private declaration, or on a method a shared cache may not hold
+        """
+        age = self.cache_max_age
+        problem: str | None = None
+        if age is None:
+            problem = None
+        elif isinstance(age, bool) or not isinstance(age, int) or not 1 <= age <= MAX_POINTER_AGE_SECONDS:
+            problem = (
+                f"cache_max_age must be whole seconds from 1 to {MAX_POINTER_AGE_SECONDS}, not {age!r}; a "
+                "longer-held unversioned copy is one only a purge could correct"
+            )
+        elif self.cache_version_param is not None:
+            problem = (
+                f"cache_max_age is declared beside cache_version_param {self.cache_version_param!r}; a "
+                "versioned address is immutable, never short-lived"
+            )
+        elif self.cache is CacheClass.PRIVATE:
+            problem = "cache_max_age is declared on a private read, which no shared cache holds at all"
+        elif self.method not in CACHEABLE_METHODS:
+            problem = (
+                f"cache_max_age is declared on method {self.method!r}; only {sorted(CACHEABLE_METHODS)} have a "
+                "shared-cache story"
+            )
+        if problem is not None:
+            raise RestAffordanceError(f"REST affordance on {self.path_template!r}: {problem}")
 
     def bind(self, input_schema: dict[str, Any]) -> ParameterBinding:
         """split a tool's declared properties into path, query and body.
@@ -358,3 +415,19 @@ class RestAffordance(PathTemplateBinding):
             :attr:`~threetears.core.http_cache.CacheClass.INHERIT`
         """
         return narrow_cache_class(inherited, self.cache)
+
+    def resolve_cache_max_age(self, inherited: CacheClass) -> int | None:
+        """the seconds a shared cache may hold this short-lived pointer, given the resource's own class.
+
+        The sanctioned way to read ``cache_max_age``, beside :meth:`resolve_cache_class`: a max age
+        is honoured only where the effective class may reach a shared cache at all, so a pointer
+        declared ``INHERIT`` over a resource that resolves ``PRIVATE`` is held nowhere.
+
+        :param inherited: the resolved resource's own classification
+        :ptype inherited: CacheClass
+        :return: the max age, or ``None`` when the read is not a short-lived shared one
+        :rtype: int | None
+        """
+        effective = self.resolve_cache_class(inherited)
+        shared = effective in (CacheClass.PUBLIC, CacheClass.AUTHENTICATED)
+        return self.cache_max_age if shared else None

@@ -15,6 +15,8 @@ dependencies = [
     "3tears>=0.66.0,<0.67.0",
     "3tears-agent-acl>=0.66.0,<0.67.0",
     "3tears-agent-tools>=0.66.0,<0.67.0",
+    # following the access tables' write generations from the epoch bucket
+    "3tears-epoch>=0.66.0,<0.67.0",
     # [client]: this package uses the NATS client at runtime, and nats-py is an
     # extra of 3tears-nats so an L1-SQLite-only consumer is not forced to build it.
     "3tears-nats[client]>=0.66.0,<0.67.0",
@@ -33,5 +35,6 @@ packages = ["src/threetears"]
 3tears = { workspace = true }
 3tears-agent-acl = { workspace = true }
 3tears-agent-tools = { workspace = true }
+3tears-epoch = { workspace = true }
 3tears-nats = { workspace = true }
 3tears-observe = { workspace = true }

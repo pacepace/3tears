@@ -416,10 +416,19 @@ async def wire_with_l2(pg_pool) -> None:
 > `registry.bind_table("widgets", l2_client=nats)` before the collection is built.
 > There is no per-table `kv_key_scope`: the scope names the PRINCIPAL, one process is
 > one principal, so it belongs on the registry -- and `bind_table` raises
-> `L2ScopeNotConfiguredError` if the registry has none yet. Or pass
-> `nats_client=None` to a hand-built collection to force L1+L3 for it. A
-> collection with no resolvable L2 client logs a one-shot warning on its first write
-> so the wiring gap is visible.
+> `L2ScopeNotConfiguredError` if the registry has none yet.
+>
+> **A table with no L2 by design** (nothing on another replica reads its rows by key
+> through a collection -- a loader's layer tables, a pod's report tables): build its
+> collection with `nats_client=NO_L2` (`from threetears.core.collections import NO_L2`).
+> It runs L1+L3 only, whatever L2 client the registry offers, and says so once per
+> table at INFO (`collection runs without L2 by design: table=...`).
+>
+> **`nats_client=None` is not that declaration.** It also forces L1+L3, but reads as a
+> client that should have been there: a collection with no resolvable L2 client and no
+> `NO_L2` logs a one-shot WARNING (`collection invalidation is silently disabled`) on
+> its first write that cannot broadcast, so a real wiring gap stays visible. Use `None`
+> only where a missing L2 is a gap you want reported.
 
 ### 8.3 L3 over a proxy (no DB credentials in the pod)
 
