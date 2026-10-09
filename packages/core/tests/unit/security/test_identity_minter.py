@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from threetears.core.security import (
     IdentityMinter,
     IdentityTokenError,
+    jwk_thumbprint,
     static_token_provider,
     verify_identity_token,
 )
@@ -222,3 +223,10 @@ def test_static_token_provider_returns_the_token_on_every_call() -> None:
     assert callable(provider)
     assert provider() == "static-hub-token"
     assert provider() == "static-hub-token"  # stable across reconnects (no per-call minting)
+
+
+def test_the_holder_key_is_the_key_its_tokens_verify_under() -> None:
+    """a pod proves its delegated token with the key its own identity tokens are signed with."""
+    key = Ed25519PrivateKey.generate()
+    minter = IdentityMinter.from_pem(_pem(key), kid="pod-1", issuer="tool-pod")
+    assert jwk_thumbprint(minter.holder_key.public_key()) == jwk_thumbprint(key.public_key())

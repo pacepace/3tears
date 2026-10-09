@@ -218,6 +218,20 @@ class IdentityMinter:
         token: str = sign_identity_token(claims, signing_key=self._signing_key, kid=self._kid)
         return token
 
+    @property
+    def holder_key(self) -> Ed25519PrivateKey:
+        """the principal's key, which also proves a delegated token bound to it at a platform door.
+
+        The registry binds each forwarded call's delegated token to the key a tool pod's verified
+        registration is signed with -- this one -- so the pod proves possession with the key it
+        already holds in custody, and no second key is provisioned
+        (:mod:`threetears.core.security.door_request`).
+
+        :return: the key
+        :rtype: Ed25519PrivateKey
+        """
+        return self._signing_key
+
     def jwks(self) -> dict[str, Any]:
         """the public JWKS the resolver verifies this minter's tokens against (public material only)."""
         jwks_doc: dict[str, Any] = build_jwks({self._kid: self._signing_key.public_key()})

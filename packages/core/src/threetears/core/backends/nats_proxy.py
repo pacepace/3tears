@@ -989,6 +989,17 @@ class NatsProxyL3Backend:
 
         return result
 
+    def current_holder_key(self) -> Ed25519PrivateKey | None:
+        """the key this backend's requests are proven with, read through its provider now.
+
+        For a second backend over the same principal, which borrows this provider exactly as it
+        borrows :meth:`forwarded_identity_token`.
+
+        :return: the key, or ``None`` when the backend has none
+        :rtype: Ed25519PrivateKey | None
+        """
+        return self._holder_key() if self._holder_key is not None else None
+
     def _encode(self, payload: dict[str, Any]) -> bytes:
         """the request's wire bytes, proven with the holder key when this backend has one.
 
@@ -1001,7 +1012,7 @@ class NatsProxyL3Backend:
         :rtype: bytes
         """
         text = json.dumps(payload, default=json_default)
-        key = self._holder_key() if self._holder_key is not None else None
+        key = self.current_holder_key()
         token = payload.get(DOOR_TOKEN_FIELD)
         if key is not None and isinstance(token, str) and token:
             text = json.dumps(DoorCredential(token=token, holder_key=key).present(json.loads(text)))

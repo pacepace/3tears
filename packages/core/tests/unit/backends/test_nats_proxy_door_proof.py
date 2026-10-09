@@ -73,3 +73,9 @@ async def test_a_key_provider_answering_none_sends_the_token_alone() -> None:
     backend, request_raw = _backend(lambda: None)
     await backend.fetch("SELECT 1")
     assert DOOR_PROOF_FIELD not in json.loads(request_raw.call_args.kwargs["payload"])
+
+
+def test_a_second_backend_borrows_the_key_provider() -> None:
+    backend, _ = _backend(lambda: _AGENT)
+    assert backend.current_holder_key() is _AGENT
+    assert _backend(None)[0].current_holder_key() is None
