@@ -132,8 +132,11 @@ candidate for a turn truncated at its output cap, and never excludes a trial a f
 
 **Prove a check can fail before trusting it passing.** A goal check giving the same verdict whether the
 candidate acted or did nothing grades nothing. Authoring requires a control end state for every goal check
-(`goal_check_controls`) and refuses a check that gives the same verdict on it and on the untouched seed; a
-template saved straight to the store can lack controls, and its checks then read as unproven. Calibrate any script that reads verdicts on a known pass and a known fail, and classify on
+(`goal_check_controls`) and refuses a check that gives the same verdict on it and on the untouched seed. A
+template saved straight to the store can lack controls, and so does every quick run's. A launch records each
+check as `proven`, `unproven` or `refuted` (`EvalRun.goal_check_proofs`). The run summary, the analysis
+bundle (`goal_check_proofs`) and the code-only report mark every check not proven beside its pass rate. A quick
+world run also states how many cases a candidate that did nothing would pass, read off each case's seed. Calibrate any script that reads verdicts on a known pass and a known fail, and classify on
 reported counts, not exit codes: a run that never happened and a run that failed both exit non-zero.
 *Evidence:* agent with tools, 2026-10, an audit found a hold check reading a parameter rather than its effect, and goal checks reading the static seed rather than the end state, single audit.
 

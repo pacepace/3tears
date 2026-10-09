@@ -131,7 +131,11 @@ catches a goal-check typo that would otherwise read a missing value and silently
 ([Zhu et al., 2025](https://arxiv.org/abs/2507.02825)): wherever success means leaving the state unchanged, doing
 nothing passes. A correct refusal is a legitimate probe; the defect is a check that cannot tell it from paralysis.
 Each goal check declares `act` or `hold` and names an authored end state where the behaviour happened, and the engine refuses at authoring
-any check that gives the same verdict there and on the untouched seed (`GoalCheckControls`).
+any check that gives the same verdict there and on the untouched seed (`GoalCheckControls`). A control proves only
+that the check can tell those two outcomes apart. It is not a reference solution and does not show the task can be
+solved: the authored end state is stated, never reached by a run. A check launched without a proving control (a
+template saved past authoring, or a quick run) is recorded as unproven on its run and marked wherever its pass
+rate is shown.
 
 **A refused call is not an action.** The [call ledger](concepts.md#goal-state-check) records only calls that
 succeeded; the trace keeps refusals for the judge. Stored runs re-grade from their ledgers (`recheck`) rather than

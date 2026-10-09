@@ -153,7 +153,7 @@ from threetears.evals.contracts.metrics import (
 from threetears.evals.contracts.base import EvalDocumentModel
 
 # At runtime for its field set, which tells a result-level measure from a row-level one.
-from threetears.evals.contracts.models import ApparatusProvenance, CalibrationRating, EvalResult
+from threetears.evals.contracts.models import ApparatusProvenance, CalibrationRating, EvalResult, GoalCheckProof
 from threetears.evals.contracts.provider import sum_optional_tokens
 from threetears.evals.contracts.result_condition import (
     JUDGE_CANNOT_TELL_OUTCOME,
@@ -1829,13 +1829,24 @@ class AnalysisContextBundle(EvalDocumentModel):
         default_factory=list,
         description=(
             "The evidence tier of each judge's readings on each judged dimension — a judge being a served model "
-            "and a judge config — decided by code from `judge_agreement` and `judge_self_agreement`: `calibrated` "
-            f"(agreement with people at least {format_number(CALIBRATION_MIN_AGREEMENT)} over at least "
-            f"{CALIBRATION_MIN_RESULTS} distinct results), `separation` (agreement with its own repeats at least "
-            f"{format_number(SEPARATION_MIN_AGREEMENT)} over at least {SEPARATION_MIN_RESULTS} distinct results), "
-            "`incidental` (both measured over enough results and both missed), or `undetermined` (too little "
-            "evidence to decide). Each entry carries both criteria. Every judged reading in `judged_measures` and "
-            "`cell_measures` carries the tier of the judges behind it; a finding citing one stands on it."
+            "and a judge config — decided by code from `judge_agreement` and `judge_self_agreement`, each criterion on "
+            "its agreement's 95% interval and never the point estimate: `calibrated` (the interval on agreement with "
+            f"people at or above {format_number(CALIBRATION_MIN_AGREEMENT)}, over at least {CALIBRATION_MIN_RESULTS} "
+            "distinct results), `separation` (the interval on agreement with its own repeats at or above "
+            f"{format_number(SEPARATION_MIN_AGREEMENT)}, over at least {SEPARATION_MIN_RESULTS} distinct results), "
+            "`incidental` (both intervals below their bars), or `undetermined` (not shown either way: too few "
+            "results, or an interval across a bar). Each entry carries both criteria and their intervals. Every "
+            "judged reading in `judged_measures` and `cell_measures` carries the tier of the judges behind it; a "
+            "finding citing one stands on it."
+        ),
+    )
+    goal_check_proofs: list[GoalCheckProofReading] = Field(
+        default_factory=list,
+        description=(
+            "Per goal check the member runs graded: whether it was shown, at launch, to tell its outcomes apart "
+            "(`proven`), or not (`unproven`: no control; `refuted`: a control it does not beat). The check's pass "
+            "rate is the measure `goal_state:<check>`; on any check not `proven` that rate may be what a candidate "
+            "that did nothing would score, so it never reads as the behaviour measured."
         ),
     )
     multiple_comparisons: MultipleComparisons = Field(
@@ -2678,6 +2689,63 @@ def _derived_leaves(result: EvalResult) -> Iterator[tuple[str, float | str, bool
         yield "orchestration_ms", partition.orchestration_ms, True, "latency", _PER_RESULT
     if (throughput := _candidate_output_throughput(result)) is not None:
         yield "candidate_output_tokens_per_s", throughput, True, "latency", _PER_RESULT
+
+
+class GoalCheckProofReading(EvalDocumentModel):
+    """Whether one goal check the campaign's runs graded was shown to beat doing nothing."""
+
+    check: str = Field(min_length=1, description="The goal check, as its template states it.")
+    measure_id: str = Field(min_length=1, description="The measure its pass rate is read as: `goal_state:<check>`.")
+    proof: GoalCheckProof = Field(
+        description=(
+            "`proven` only when every run that graded it recorded it proven at launch; `refuted` when any recorded "
+            "its control does not discriminate; otherwise `unproven` — including a run that recorded no proof."
+        )
+    )
+    runs: int = Field(ge=1, description="Member runs that graded it.")
+    unrecorded: int = Field(
+        ge=0, description="Of those, runs launched before proofs were recorded — read as unproven, never as proven."
+    )
+
+
+def goal_check_proofs_of(runs: Sequence[EvalRun], results: Iterable[EvalResult]) -> list[GoalCheckProofReading]:
+    """Each goal check the runs' results graded, with the proof its runs froze at launch, in the order first met.
+
+    Args:
+        runs: The member runs.
+        results: Their results.
+
+    Returns:
+        One reading per check.
+    """
+    graded: dict[str, list[str]] = {}
+    for result in results:
+        for outcome in result.goal_state_outcomes:
+            runs_of = graded.setdefault(outcome.expression, [])
+            if result.eval_run_id not in runs_of:
+                runs_of.append(result.eval_run_id)
+    by_id = {run.id: run for run in runs}
+    readings = []
+    for check, run_ids in graded.items():
+        recorded = [by_id[run_id].goal_check_proofs for run_id in run_ids if run_id in by_id]
+        proofs = [None if record is None else record.get(check, "unproven") for record in recorded]
+        proof: GoalCheckProof = (
+            "refuted"
+            if "refuted" in proofs
+            else "proven"
+            if proofs and all(each == "proven" for each in proofs)
+            else "unproven"
+        )
+        readings.append(
+            GoalCheckProofReading(
+                check=check,
+                measure_id=goal_check_measure(check),
+                proof=proof,
+                runs=max(len(run_ids), 1),
+                unrecorded=sum(1 for each in proofs if each is None),
+            )
+        )
+    return readings
 
 
 def _goal_check_leaves(result: EvalResult) -> Iterator[tuple[str, float | str, bool, str, str]]:
@@ -5929,6 +5997,7 @@ def assemble_context_bundle(
     bundle.judge_evidence_tiers = judge_evidence_tiers(
         bundle.judge_agreement, bundle.judge_self_agreement, _judged_keys(results)
     )
+    bundle.goal_check_proofs = goal_check_proofs_of(runs, results)
     # Judged quality and the bars, per cell. Both read the cell algebra's own grouping, so every
     # per-arm number here describes observations the bundle already calls one arm, and neither
     # enters `measures` or the catalog: judged dimensions stay off the ranking surface, and are
@@ -7479,6 +7548,7 @@ def _telemetry_rollup(
 __all__ = [
     "AnalysisContextBundle",
     "BundleInspection",
+    "GoalCheckProofReading",
     "LeverCoverageInput",
     "MeasureCollection",
     "MeasureMovement",
@@ -7489,4 +7559,5 @@ __all__ = [
     "TokenRollup",
     "assemble_context_bundle",
     "bundle_decision_surface",
+    "goal_check_proofs_of",
 ]

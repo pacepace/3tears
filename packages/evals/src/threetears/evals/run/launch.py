@@ -66,6 +66,7 @@ from threetears.evals.run.judge_service import JudgeService, judge_clients_for_r
 from threetears.evals.run.lifecycle import record_completeness
 from threetears.evals.run.metering import MeteredCallLedger
 from threetears.evals.contracts.offload import run_blocking, wait_through_cancellation
+from threetears.evals.run.check_controls import goal_check_proofs
 from threetears.evals.run.runner import DEFAULT_CELL_TIMEOUT_S, KindFactory, RunCallbacks, RunnerOptions, execute_run
 from threetears.evals.run.simulator import SIMULATOR_REQUEST_SETTINGS
 from threetears.observe import get_logger
@@ -2833,6 +2834,9 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                 resolved_world_seed=dict(template.world_seed.namespaces),
                 resolved_ambient_perturbation_turns=list(template.world_seed.ambient_perturbation_turns),
                 resolved_tools_allowed=list(template.tools_allowed) if template.tools_allowed is not None else None,
+                # Whether each goal check beats doing nothing, frozen as this run launched it: the controls are
+                # editable, and every surface showing a check's pass rate marks one that is not proven.
+                goal_check_proofs=goal_check_proofs(template, profile=host.eval_host.profile),
                 cassette_mode=request.cassette_mode,
                 cassette_corpus_id=request.cassette_corpus_id,
                 simulator_model=wiring.simulator_model,
