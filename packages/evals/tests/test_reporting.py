@@ -2537,8 +2537,36 @@ class TestPivotPoolingDisclosures:
         cell = self._cost_pivot([run], [self._result(run, case="tc-1"), seeded]).cells[0]
 
         assert cell.status == CELL_MEASURED
+        assert (cell.n_substituted, cell.n) == (1, 2)
+        assert cell.substitution_disclosure is not None and cell.substitution_disclosure.startswith("1 of the 2")
         rows = csv.DictReader(io.StringIO(export_projection(projection, fmt="csv").body))
         assert {(row["test_case_id"], row["substituted_deliveries"]) for row in rows} == {("tc-1", "0"), ("tc-2", "1")}
+
+    def test_a_cost_cell_built_only_from_substituted_deliveries_says_it_is_no_live_spend(self):
+        """The export column was the only place this showed; the cell is what is read, so the cell says it."""
+        run, _ = _run_with_results()
+        seeded = [
+            self._result(
+                run, case=case, async_deliveries=[AsyncDelivery(tool="scout", status="delivered", substituted=True)]
+            )
+            for case in ("tc-1", "tc-2")
+        ]
+
+        table = self._cost_pivot([run], seeded)
+        quality = self._cost_pivot([run], seeded, metric=METRIC_COMPOSITE)
+
+        (cell,) = table.cells
+        assert (cell.status, cell.n_substituted, cell.n) == (CELL_MEASURED, 2, 2)
+        assert cell.substitution_disclosure is not None and "no live run's spend" in cell.substitution_disclosure
+        assert "no live run's spend" in pivot_text(table)
+        assert quality.cells[0].n_substituted == 2, "counted on every metric"
+        assert quality.cells[0].substitution_disclosure is None, "the dollars sentence is the cost pivot's"
+
+    def test_a_cost_cell_with_nothing_substituted_carries_no_flag(self):
+        run, _ = _run_with_results()
+        (cell,) = self._cost_pivot([run], [self._result(run, case="tc-1")]).cells
+
+        assert (cell.n_substituted, cell.substitution_disclosure) == (0, None)
 
     def test_the_export_names_which_result_replayed(self):
         """#658: each row carries its run's cassette mode and its substituted-delivery count as columns."""

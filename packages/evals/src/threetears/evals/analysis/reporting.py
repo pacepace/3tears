@@ -2904,6 +2904,17 @@ class PivotCell(EvalBaseModel):
     #: entries differ are not comparable on cost, which :attr:`PivotTable.cost_compositions_differ`
     #: flags at the table. Empty on any other metric.
     cost_compositions: list[list[str]] = []
+    #: Of the ``n`` valued observations, how many carried a background delivery a harness supplied — seeded
+    #: or replayed (:func:`~threetears.evals.contracts.usage_capture.count_substituted_deliveries`). Counted on
+    #: every metric, because a substituted delivery is what the candidate read as well as what it did not pay
+    #: for. ``0`` on a cell whose observations ran every delivery live.
+    n_substituted: int = 0
+    #: On a cost pivot, the sentence a cell carries when ``n_substituted`` is above zero: a substituted delivery
+    #: spent none of its dollars, so the cell's spend leaves them out, and a cell built ONLY from such
+    #: observations is no live run's spend at all. ``None`` on any other metric and on a cell with none.
+    #: Stated on the cell rather than left to the export's ``substituted_deliveries`` column, because the cell
+    #: is what is read.
+    substitution_disclosure: str | None = None
     #: Identity key -> the predicate versions its observations here were stamped at, for each identity
     #: key (``variant_key``, ``context_key``) the table groups or filters on, and only where the cell
     #: pools more than one (#672). Two keys stamped at different versions cannot be shown FROM THE STAMP
@@ -3302,6 +3313,31 @@ def _identity_pooling_disclosure(cells: Sequence[PivotCell]) -> str | None:
     )
 
 
+def _substitution_disclosure(n_substituted: int, n_valued: int) -> str | None:
+    """The sentence a cost cell carries when some of its observations had a delivery a harness supplied.
+
+    Disclosed rather than withheld, for the reason :func:`_cost_withheld` gives: two arms over a seeded
+    template carry the same substitutions, so the comparison between their cells is honest. But a reader of
+    one cell's dollars needs to know they leave the substituted deliveries' spend out — and when every
+    observation substituted, that the figure describes no live run.
+
+    Args:
+        n_substituted: Valued observations carrying at least one substituted delivery.
+        n_valued: Valued observations in the cell.
+
+    Returns:
+        The sentence, or ``None`` when nothing was substituted.
+    """
+    if n_substituted == 0:
+        return None
+    share = "every one" if n_substituted == n_valued else f"{n_substituted}"
+    return (
+        f"{share} of the {n_valued} observation(s) behind this spend carried a background delivery a harness "
+        "supplied (seeded or replayed), which spent none of its dollars, so they are not in this figure"
+        + (": it is no live run's spend." if n_substituted == n_valued else ".")
+    )
+
+
 def _cost_withheld(records: Sequence[ScoreRecord]) -> str | None:
     """Why a cost mean over these valued observations is withheld, or ``None`` when it is reported (#658).
 
@@ -3319,8 +3355,9 @@ def _cost_withheld(records: Sequence[ScoreRecord]) -> str | None:
     **A substituted delivery within one mode is not a reason to withhold.** A seeded finding substitutes in
     a run that recorded ``off``, but it does so on the template's own cases, so two arms over those cases
     carry the same substitutions and the comparison between their cells is honest; the dollars it did not
-    spend were never measuring spend either. Each row's ``substituted_deliveries`` is an export column for a
-    reader who needs it. Withholding on it would blank the cost of every arm over a seeded template.
+    spend were never measuring spend either. The cell says so (:attr:`PivotCell.substitution_disclosure`), and
+    each row's ``substituted_deliveries`` is an export column. Withholding on it would blank the cost of every
+    arm over a seeded template.
 
     Args:
         records: The observations a cost mean would be taken over.
@@ -3568,10 +3605,15 @@ def compute_pivot(
 
             # What the value is drawn over is the valued observations, so the qualifiers below read those.
             valued = [record for record in at_cell if record.value is not None]
+            n_substituted = sum(1 for record in valued if record.substituted_deliveries > 0)
             qualifiers: dict[str, Any] = {
                 "cassette_modes": sorted({r.cassette_mode for r in valued if r.cassette_mode is not None}),
                 "cost_compositions": pooled_cost_compositions(valued) if metric == METRIC_COST_USD else [],
                 "identity_versions": identity_versions,
+                "n_substituted": n_substituted,
+                "substitution_disclosure": (
+                    _substitution_disclosure(n_substituted, len(valued)) if metric == METRIC_COST_USD else None
+                ),
             }
             withheld = _cost_withheld(valued) if metric == METRIC_COST_USD else None
             if withheld is not None:
