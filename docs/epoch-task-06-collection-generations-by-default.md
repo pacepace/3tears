@@ -1139,8 +1139,8 @@ until contract, the `acl.*` subjects and the TTL stay.
 - **Hub migrations** write these tables outside any collection and move no generation. Covered by
   the TTL until contract; the contract stage must put them on the epoch system (for example, the
   hub advancing every switched-on table a migration wrote, an unknown reach, once after it runs).
-- A product's per-caller cache in a tool pod (decision 4's second cache) is not in these
-  repositories; the framework gives it the reader and the follower.
+- A product's per-caller cache in a tool pod (decision 4's second cache): built since, see "The
+  Per-Caller Cache" below.
 - The hub's broker-backed registries in `aibots.hub.tools.registry_auth` take a reader-less
   `BrokerGenerationSource`; they hold none of these tables.
 - The stage-2 "one class per table" and enforcement items are unchanged by this stage.
@@ -1159,3 +1159,27 @@ Targeted, with each main checkout's locked tools and the worktrees first on the 
   cache primitives, unreleased-import gate). `ruff` clean.
 - SDK: the runtime stacks, devx runtime and the registry-source enforcement. `ruff` clean.
 
+
+## The Per-Caller Cache
+
+Built for the reports product's state limit (its wave 2 chunk 10), 2026-10-09, in
+`threetears.agent.acl.caller_cache`; the owner approved the rules below that day.
+
+- **`CallerAccessCache`** keeps one answer per caller, keyed by the call's verified agent and person
+  (`CallerKey`), in the process, with no age. It is a cache derived from all five access tables
+  (`register_derived_cache`):
+  - a `group_members` row naming a `user` or an `agent` drops the answers of the callers that are
+    that principal, and nobody else's;
+  - every other row drops every answer: a nested group's membership row, a group, a role, an
+    assignment, a namespace. An answer keyed by the person records none of the groups, grants and
+    namespaces it passed through, so the reach of those rows is unknown to it. This is the note's
+    "a group's row drops the callers resolved through it" made coarser on purpose: the hub's
+    discovery answer does not say which groups it passed through;
+  - a row that does not say what it names drops every answer and is counted (`DegradedEvictions`);
+  - a dropped table (a missed broadcast, a replaced bucket) drops every answer.
+  - The read fence: an answer asked before an eviction is not stored after it.
+- **`follow_caller_access_cache(registry, cache, reader)`** binds and follows in one call, the same
+  follower `follow_access_tables` runs for `AclCache`; both now share one private binder.
+- **`CallerNamespaces`** asks the hub's `namespace.discover` with the caller's own tokens, keeps the
+  names in a `CallerAccessCache`, and fails closed (`CallerNamespacesUnavailable`): no verified agent,
+  no token, a pod not connected yet or a failed discovery all refuse, and nothing is cached.

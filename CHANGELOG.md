@@ -6,6 +6,23 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Agent acl and agent tools: a tool pod's per-caller answer, followed through the access tables
+
+- **Added, `threetears.agent.acl.CallerAccessCache`**: one answer per caller (`CallerKey`: the
+  verified agent and person), in the process, with no age. Bound to the access tables
+  (`bind_caller_cache_to_access_tables`): a `group_members` row naming a user or an agent drops
+  those callers' answers; any other access-table row, a row that does not say what it names, and a
+  dropped table drop every answer. A read fence keeps an answer asked before an eviction from being
+  stored after it.
+- **Added, `threetears.agent.acl.generation_follow.follow_caller_access_cache`**: binds the cache and
+  follows the access tables in one call, as `follow_access_tables` does for `AclCache`.
+- **Added, `threetears.agent.acl.CallerNamespaces`**: the namespaces the hub's `namespace.discover`
+  lists for a caller, asked with the caller's own tokens, kept in a `CallerAccessCache`, and failing
+  closed (`CallerNamespacesUnavailable`) when the answer cannot be had.
+- **Added, `RestAffordance.scope_node`**: the namespace node whose child tool nodes name the scopes a
+  reader may read at the edge; the hub issues edge tokens naming those scopes. An older hub ignores
+  the field.
+
 ### Agent acl, core, epoch, nats, registry and agent tools: the access tables are switched on (switch-on stage)
 
 Stage 3 of `docs/epoch-task-06-collection-generations-by-default.md`. Additive: the `acl.*`
