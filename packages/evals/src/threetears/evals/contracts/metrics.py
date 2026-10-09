@@ -1016,8 +1016,9 @@ _SEED: tuple[MetricDescriptor, ...] = (
         unit="results",
         description=(
             "How many results measured a production-replicating cost — the denominator behind "
-            "mean_prod_cost_usd. Smaller than n_results by however many contributed nothing, which is the "
-            "number to read before comparing two configs' prod cost."
+            "mean_prod_cost_usd. Smaller than n_results by however many contributed nothing (no usage "
+            "decomposition, a substituted delivery, a call the model refused with no turn taken, or a cell the "
+            "harness faulted), which is the number to read before comparing two configs' prod cost."
         ),
     ),
     _d(
@@ -1198,7 +1199,8 @@ _SEED: tuple[MetricDescriptor, ...] = (
         description=(
             "Average program spend per PRICED result (blended, incl. judge + simulator). Its denominator is "
             "n_cost_usd, not n_results: a result whose spend went unpriced is absent from this mean rather than "
-            "dragging it toward a zero nobody paid."
+            "dragging it toward a zero nobody paid. Accounting, not a comparison: a result the harness faulted "
+            "keeps its dollars here, because they were spent."
         ),
     ),
     _d(
@@ -1218,7 +1220,9 @@ _SEED: tuple[MetricDescriptor, ...] = (
             "a knob production does not. The gap has no reliable sign, so this is not a floor either. A "
             "result with no usage decomposition, or one carrying a substituted delivery, is OMITTED rather "
             "than counted as zero — read n_prod_cost_usd for how many results this sums over; absent "
-            "entirely when none did."
+            "entirely when none did. A comparison figure, so a call the model refused with no turn taken and a "
+            "cell the harness faulted are left out too: a fault-shortened cell spends less, and keeping it would "
+            "let the rig make a config look cheaper. Program spend (total_cost_usd) keeps both."
         ),
     ),
     _d(
@@ -1234,7 +1238,9 @@ _SEED: tuple[MetricDescriptor, ...] = (
             "Average production-replicating spend per MEASURED result — the reporting default (what a config "
             "costs to run). Its denominator is n_prod_cost_usd, not n_results: a result with no usage "
             "decomposition is absent from this mean rather than dragging it toward a zero nobody observed, "
-            "which would rank the least-measured config cheapest."
+            "which would rank the least-measured config cheapest. Read over the turns the candidate took: a "
+            "result the harness faulted, or a call the model refused with no turn taken, is absent too, where "
+            "mean_cost_usd (program spend) keeps both."
         ),
     ),
     _d(

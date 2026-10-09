@@ -56,6 +56,7 @@ from threetears.evals.contracts.result_condition import (
     candidate_failure_cause,
     classify_result,
     counted_rubric_scores,
+    delivered_a_turn,
     trial_exclusion,
 )
 from threetears.evals.contracts.usage_capture import production_replicating_cost, resolve_result_usage
@@ -861,24 +862,30 @@ def compute_cost_summary(
     ``n_results`` counts them all — a group never disappears for want of a
     measurement.
 
-    **This aggregate deliberately does NOT drop infra-excluded results**, and is
-    the one place the family diverges: :func:`~threetears.evals.contracts.scoring.compute_pass_hat_k`,
-    :func:`compute_latency_summary`, :func:`compute_dimension_summary` and
-    :func:`compute_composite_summary` all drop them, because each answers "how
-    good / how fast is this configuration" and a harness failure is no evidence
-    either way. Cost answers a different question — what the program spent — and
-    the tokens burned by a cell that later died in the apparatus were still
-    billed. Dropping them would under-report the run's spend and, because
-    ``run_summary`` takes its group set from this function's keys, would delete
-    an all-excluded model's headline row from the report that exists to disclose
-    it. ``n_prod_cost_usd`` carries how well evidenced the prod figure is; the
-    exclusion state of a cell is recorded on the cell.
-
     Two cost axes are aggregated: the program spend (blended ``cost_usd``, incl.
     judge + simulator) and the ``production_replicating_cost`` (candidate +
     inner_agent + external only — what the subject would cost in prod), so a
     reporting view can lead with the prod-replicating number (what a config
     costs to *run*) while keeping program spend for the cost-management lens.
+
+    **The two axes keep different populations, because they answer different questions.**
+
+    - **Program spend keeps every result, infra-excluded ones included**, and is the one
+      place the family diverges: :func:`~threetears.evals.contracts.scoring.compute_pass_hat_k`,
+      :func:`compute_latency_summary`, :func:`compute_dimension_summary` and
+      :func:`compute_composite_summary` all drop them, because each answers "how good / how
+      fast is this configuration" and a harness failure is no evidence either way. Program
+      spend answers what the program spent, and the tokens burned by a cell that later died
+      in the apparatus were still billed. Dropping them would under-report the run's spend
+      and, because ``run_summary`` takes its group set from this function's keys, would
+      delete an all-excluded model's headline row from the report that exists to disclose it.
+    - **The production-replicating axis is a comparison axis, and reads only the turns the
+      candidate took** (:func:`~threetears.evals.contracts.result_condition.delivered_a_turn`),
+      the population every comparison cost in the engine reads (the frontier, the analysis
+      bundle's measure walk and run summaries). A cell an apparatus fault cut short spent
+      less than a whole one, so keeping it would let the rig make an arm look cheaper; a
+      call the candidate's model refused straight away took no turn, so its dollars are no
+      turn's spend. Both stay in program spend. (#619)
 
     **Both axes leave a result they cannot price out of their dollars, and count it.**
 
@@ -890,7 +897,8 @@ def compute_cost_summary(
     (``termination`` says which results stop short), so the total is a floor for those.
 
     ``production_replicating_cost`` returns ``None`` when no production role
-    observed a cost (or a delivery was substituted), which is a real unmeasured
+    observed a cost (or a delivery was substituted), or the result is outside the
+    delivered population above, which is a real unmeasured
     marker — so the prod axis honours it the way :func:`compute_latency_summary`
     honours a null component. Such a result is **absent from the prod mean rather
     than counted as a zero**, ``n_prod_cost_usd`` carries the denominator that mean
@@ -915,7 +923,11 @@ def compute_cost_summary(
         # The canonical resolution, so this aggregate answers "does this result have a
         # prod cost" the same way the single-result surfaces do.
         resolved_r = resolve_result_usage(r)
-        prod = production_replicating_cost(resolved_r.usage, substituted_deliveries=resolved_r.substituted_deliveries)
+        prod = (
+            production_replicating_cost(resolved_r.usage, substituted_deliveries=resolved_r.substituted_deliveries)
+            if delivered_a_turn(r)
+            else None
+        )
         grouped.setdefault((r.model, r.eval_run_id), []).append((r.cost_usd, prod))
 
     out: dict[tuple[str, str], dict[str, Any]] = {}
@@ -967,9 +979,10 @@ def compute_dimension_summary(
     configuration delivered no turn, so the judge's reading of what it left — silence
     scored as restraint — is not what the end user got.
 
-    :func:`compute_cost_summary` is the family's deliberate exception — it counts
-    every result, because program spend is accounting rather than a measurement
-    of the candidate: money spent on a cell the harness broke was still spent.
+    :func:`compute_cost_summary`'s program spend is the family's deliberate exception — it
+    counts every result, because program spend is accounting rather than a measurement
+    of the candidate: money spent on a cell the harness broke was still spent. Its
+    production-replicating axis compares configurations, and drops them like this does.
 
     Only the template rubric dimensions are aggregated: ``EvalResult.rubric_scores``
     holds the judge-scored template dims (the run loop assembles it from

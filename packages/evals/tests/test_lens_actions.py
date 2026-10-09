@@ -145,7 +145,8 @@ async def test_scope_pivot_returns_the_lens_table(evals: MountedTool) -> None:
     assert outcome.structured == direct.model_dump(mode="json")
     table = PivotTable.model_validate(outcome.structured)
     assert table.cells and table.n_observations == sum(cell.n for cell in table.cells)
-    assert outcome.text.startswith("pivot of cost_usd by test_case_id (rows) x model (columns)")
+    # cost_usd sums the judge's spend beside the candidate's, so the text labels it measuring spend.
+    assert outcome.text.startswith("pivot of cost_usd, measuring spend by test_case_id (rows) x model (columns)")
     assert "- doc-01 / extractor-v2: " in outcome.text
 
 

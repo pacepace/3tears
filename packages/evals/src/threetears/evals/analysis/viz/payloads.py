@@ -805,7 +805,8 @@ class FrontierVizPoint(BaseModel):
         description=(
             "The frontier lens's verdict on this point, copied rather than decided from the drawn means: "
             "`dominated`; `not_separated` — tested and not shown dominated, which says nothing about whether it is; "
-            "`untested`. None where the producer recorded none, which the chart states as not tested."
+            "`untested` — no test could decide (too few cases, or no spread over too few cases for an exact test to "
+            "reach α). None where the producer recorded none, which the chart states as not tested."
         ),
     )
     disqualified: bool = Field(

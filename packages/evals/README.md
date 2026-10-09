@@ -256,7 +256,8 @@ The verdict is one of five:
   good enough" gets shown. It needs a margin (`materiality_threshold`) on the measure.
 - **not separated from the control**: the cases could not tell the arms apart. It does not mean they are
   equal. Add cases (above all hard ones), or declare a margin so equivalence can be tested.
-- **untested**: no test could run (fewer than two cases on a side, or no spread at all). The row says why.
+- **untested**: no test could decide (fewer than two cases on a side, or no spread over too few cases for an
+  exact test to reach 0.05). The row says why.
 
 [Reading a comparison](docs/reading-reports.md#reading-a-comparison) has the details.
 `result.arms["candidate"]` is that arm's `EvalSummary`, and `result.campaign_id` names the campaign holding
@@ -316,7 +317,9 @@ all of its levels (`callable.prompt=v2, model=...`) and tests each one against t
 `against(arm)` re-reads the same runs against any other combination, and each reading corrects its own
 contrasts. Two things aren't tested yet: a factor's effect pooled over all the others (a main effect), and
 whether factors interact. The pivot read (`ops.scope_pivot`) averages a scope's results over any two
-factors, without a significance test. Whether a lever actually took effect, rather than just being set, is a
+factors, without a significance test. It says what a cell pools that is not one quantity: a cost cell names
+the role sets its dollars covered, a cost cell that pools replayed results with live ones is withheld, and a
+cell grouped on `variant_key` that spans an identity-version bump names the versions. Whether a lever actually took effect, rather than just being set, is a
 [mechanism check](docs/reading-reports.md#did-a-lever-take-effect-mechanism-checks-and-observed-mechanisms).
 
 Example: [`examples/prompt_x_model.py`](examples/prompt_x_model.py).

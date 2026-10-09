@@ -1116,12 +1116,12 @@ def test_compute_cost_summary_least_measured_config_does_not_rank_cheapest():
 
 
 def test_compute_cost_summary_still_counts_an_infra_excluded_cells_spend():
-    """Cost is the family's deliberate exception, and this pins it as a decision.
+    """Program spend is the family's deliberate exception, and this pins it as a decision.
 
     pass^k, latency, the dimension means and the composite all drop an
     infra-excluded cell, because none of them can read a harness failure as
-    evidence about the candidate. Cost answers a different question — what the
-    program spent — and the tokens a cell burned before its apparatus broke were
+    evidence about the candidate. Program spend answers a different question — what
+    the program spent — and the tokens a cell burned before its apparatus broke were
     still billed. ``run_summary`` also takes its group set from these keys, so
     dropping them would delete an all-excluded model's headline row from the
     report whose whole job is to disclose it.
@@ -1135,11 +1135,35 @@ def test_compute_cost_summary_still_counts_an_infra_excluded_cells_spend():
 
     assert row["n_results"] == 2
     assert row["total_cost_usd"] == pytest.approx(0.04)
-    assert row["n_prod_cost_usd"] == 2
 
     # And the group survives even when every one of its cells was excluded.
     all_excluded = compute_cost_summary([_cost_result(k=1, cost=0.02, infra_error="apparatus: seed failed")])
     assert all_excluded[("m1", "r1")]["n_results"] == 1
+
+
+def test_compute_cost_summary_a_faulted_cell_does_not_lower_the_comparison_cost():
+    """#619: the production-replicating axis compares configurations, so a fault-shortened cell is not in it.
+
+    The apparatus broke the second cell after it had spent a fraction of a whole one. Averaged in, the arm's
+    mean prod cost would halve on a fault of the rig; program spend still counts those dollars.
+    """
+    results = [
+        _cost_result(k=1, cost=0.02, prod_cost=0.010),
+        _cost_result(k=2, cost=0.02, prod_cost=0.010),
+        _cost_result(k=3, cost=0.002, prod_cost=0.001, infra_error="apparatus: cassette miss in replay mode"),
+    ]
+
+    row = compute_cost_summary(results)[("m1", "r1")]
+
+    assert row["mean_prod_cost_usd"] == pytest.approx(0.010)
+    assert row["n_prod_cost_usd"] == 2
+    assert row["total_cost_usd"] == pytest.approx(0.042)
+    assert row["n_cost_usd"] == 3
+
+    # A group whose every cell faulted keeps its row and its spend, and measures no comparison cost.
+    faulted = compute_cost_summary([_cost_result(k=1, cost=0.02, prod_cost=0.01, infra_error="apparatus: seed failed")])
+    assert faulted[("m1", "r1")]["total_cost_usd"] == pytest.approx(0.02)
+    assert "mean_prod_cost_usd" not in faulted[("m1", "r1")]
 
 
 def test_compute_cost_summary_empty_results():

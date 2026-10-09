@@ -58,6 +58,7 @@ from threetears.evals.analysis.reporting import (
     cross_subject_disclosure,
     measurement_window,
     measurement_window_disclosure,
+    pooled_cost_compositions,
     export_projection,
     normalize_bar,
     project_score_records,
@@ -849,7 +850,9 @@ def run_summary(
         measured a production-replicating cost, and ``n_prod_cost_usd`` is
         the denominator ``mean_prod_cost_usd`` was computed over — a result
         that observed no production-role cost is omitted from it rather than
-        counted as a zero. ``completeness`` and ``completeness_disclosure``
+        counted as a zero, and so is one that took no turn: a result the harness
+        faulted, or a call the model refused straight away. The program-cost pair
+        keeps both, because those dollars were spent. ``completeness`` and ``completeness_disclosure``
         are both null when the run carries no completeness record (it has not
         reached a terminal state), and the disclosure alone is null when the
         run delivered its whole matrix — it is the sentence to render when a
@@ -989,9 +992,12 @@ def compare_runs(
         "rows": [{"run_id", "model", "pass_hat_k", "k", "n_cases_at_k",
         "pass_hat_k_curve", "mean_total_ms", "total_cost_usd", "mean_cost_usd", "n_cost_usd",
         "total_prod_cost_usd", "mean_prod_cost_usd", "n_prod_cost_usd",
-        "n_results"},
-        ...]}``. The program-cost pair is ``None`` for a row whose group had no
-        priced result, and ``n_cost_usd`` is its denominator. The prod-cost trio is ``None`` for a row whose group
+        "n_results", "cost_compositions"},
+        ...], "cost_compositions_differ"}``. The program-cost pair is ``None`` for a row whose group had no
+        priced result, and ``n_cost_usd`` is its denominator. ``cost_compositions`` names the role sets the
+        row's priced results summed (:func:`~threetears.evals.analysis.reporting.pooled_cost_compositions`),
+        and ``cost_compositions_differ`` is True when the rows' dollars were not all summed over one set, so
+        a cheaper row may only have priced fewer things. The prod-cost trio is ``None`` for a row whose group
         measured no production-replicating cost, and ``n_prod_cost_usd`` is
         ``mean_prod_cost_usd``'s denominator — compare two rows' prod cost
         only after reading it. ``pass_hat_k`` is each row's pass^k at its own
@@ -1103,6 +1109,14 @@ def compare_runs(
                     "mean_prod_cost_usd": src.get("mean_prod_cost_usd"),
                     "n_prod_cost_usd": src.get("n_prod_cost_usd"),
                     "n_results": src.get("n_results"),
+                    # What this row's program dollars were summed over (#625): the priced results' role sets.
+                    "cost_compositions": pooled_cost_compositions(
+                        [
+                            result
+                            for result in results_by_run[run_id]
+                            if result.model == src["model"] and result.cost_usd is not None
+                        ]
+                    ),
                 }
             )
 
@@ -1117,6 +1131,9 @@ def compare_runs(
         # comparison page a second source for one statement. Built by the same function `comparison_sets` calls, so the two
         # surfaces cannot answer differently about one set of runs.
         "cassette_mode_disclosure": cassette_mode_disclosure({run.id: run.cassette_mode for run in runs}),
+        # Whether the rows' program dollars were summed over more than one role set, within a row or
+        # between rows: a cheaper row may then only have priced fewer things (#625).
+        "cost_compositions_differ": len({tuple(roles) for row in rows for roles in row["cost_compositions"]}) > 1,
         "completeness_disclosures": completeness_disclosures,
         # The host's own keys about the compared runs, in this position of the answer.
         **comparison_columns(runs),
