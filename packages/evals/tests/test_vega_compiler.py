@@ -51,7 +51,15 @@ from threetears.evals.vega.palette import (
 from threetears.evals.analysis.viz.payloads import PayloadError
 from threetears.evals.vega.spec_policy import RANKING_SPEC_NAME, check_spec
 from threetears.evals.vega.render import render_svg
-from threetears.evals.vega.text_metrics import fits, text_width
+from threetears.evals.vega.text_metrics import (
+    TextMetricsError,
+    fits,
+    load_chart_font,
+    packaged_font,
+    text_width,
+    write_font_metrics,
+)
+from threetears.evals.contracts.host import CHART_FONT_CHARACTERS, ChartFont
 from packages.evals.tests.chart_examples import (
     DELTA_TABLE,
     DISTRIBUTION,
@@ -4058,3 +4066,80 @@ class TestSweepRankingStatesItsOmissionInTheUnitTheAxisUses:
         """Non-vacuity: if the ladder stopped moving, both assertions above pass trivially."""
         chart = compile_chart("sweep_ranking", self.RESTATED)
         assert chart.unit == "s", f"the ranked measure was not restated, so the band's unit is untested: {chart.unit}"
+
+
+#: A face far wider than any real one, so every measured layout decision comes out differently in it:
+#: every name leaves the gutter, every multi-word title wraps, every value label needs more room.
+_HUGE = ChartFont(family="Huge Test Face", advances=dict.fromkeys(CHART_FONT_CHARACTERS, 5.0), fallback_advance=5.0)
+
+
+class TestEveryArmLaysOutInTheFontItIsGiven:
+    """#635: the layout is measured in the declared face, in every arm.
+
+    An arm that dropped the font on the floor would measure the packaged face's widths and be drawn in
+    the host's — labels measured to fit that do not. Compiled in a face five times an em wide, every arm
+    must lay out differently from the packaged face.
+    """
+
+    @pytest.mark.parametrize(
+        "viz_type",
+        [
+            pytest.param(
+                viz_type,
+                marks=pytest.mark.xfail(
+                    strict=True,
+                    raises=AssertionError,
+                    reason="the frontier arm does not take a font yet: its title wraps in the packaged face",
+                ),
+            )
+            if viz_type == "frontier"
+            else viz_type
+            for viz_type in sorted(EVERY_TYPE)
+        ],
+    )
+    def test_the_layout_follows_the_font(self, viz_type):
+        packaged = compile_chart(viz_type, EVERY_TYPE[viz_type]).spec
+        huge = compile_chart(viz_type, EVERY_TYPE[viz_type], font=_HUGE).spec
+        assert huge != packaged, f"{viz_type} laid out identically in a face five times wider"
+
+    def test_no_font_is_the_packaged_face(self):
+        for viz_type, payload in EVERY_TYPE.items():
+            assert compile_chart(viz_type, payload).spec == compile_chart(viz_type, payload, font=packaged_font()).spec
+
+
+class TestAHostMeasuresItsOwnFace:
+    """The measuring tool's output is what a host declares: written, read back, and refused when empty."""
+
+    def _measured(self) -> dict:
+        return {
+            "advances": dict.fromkeys(CHART_FONT_CHARACTERS, 0.6),
+            "fallback_advance": 0.6,
+            "worst_label": "WWWW",
+            "worst_ratio": 1.0,
+            "font": "Host Face, sans-serif",
+            "measured_with": "vl-convert-python test",
+            "probe_size": 1000,
+            "weights": [400, 600],
+        }
+
+    def test_a_written_table_reads_back_as_the_font(self, tmp_path):
+        path = write_font_metrics(**self._measured(), path=tmp_path / "host.json")
+        font = load_chart_font(path)
+        assert font.family == "Host Face, sans-serif"
+        assert text_width("abc", 10, font) == pytest.approx(18.0)
+
+    def test_a_table_with_no_advances_is_refused_rather_than_written(self, tmp_path):
+        with pytest.raises(TextMetricsError, match="declares no metrics"):
+            write_font_metrics(**(self._measured() | {"advances": {}}), path=tmp_path / "host.json")
+        assert not (tmp_path / "host.json").exists()
+
+    def test_a_metrics_file_with_no_advances_is_refused_on_load(self, tmp_path):
+        path = tmp_path / "host.json"
+        path.write_text(json.dumps({"font": "Host Face", "advances": {}, "fallback_advance": 1.0}), encoding="utf-8")
+        with pytest.raises(TextMetricsError, match="declares no metrics"):
+            load_chart_font(path)
+
+    def test_the_packaged_table_is_a_font(self):
+        """The packaged artifact passes the contract every host table is held to."""
+        assert isinstance(packaged_font(), ChartFont)
+        assert packaged_font().family.startswith("Liberation Sans")

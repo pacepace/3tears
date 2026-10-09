@@ -42,6 +42,7 @@ from threetears.evals.vega.compiler import (
     value_label_mark,
 )
 from threetears.evals.analysis.viz.intent import ChartIntent
+from threetears.evals.contracts.host import ChartFont
 from threetears.evals.vega.palette import font_weights, geometry
 
 #: How tall the cap at a known interval bound is drawn, in px.
@@ -81,7 +82,7 @@ _MARGINAL_FLOOR = 8
 _ESTIMATE_LABEL_LIFT = 16
 
 
-def compile_distribution(intent: ChartIntent) -> dict[str, Any]:
+def compile_distribution(intent: ChartIntent, *, font: ChartFont | None = None) -> dict[str, Any]:
     """Draw per-group spreads as one faceted panel over one shared value axis.
 
     **One panel, one axis, one quantity.** This type used to draw two: an interval
@@ -102,6 +103,7 @@ def compile_distribution(intent: ChartIntent) -> dict[str, Any]:
 
     Args:
         intent: The distribution's intent.
+        font: The typeface the chart is laid out in; ``None`` for the packaged face.
 
     Returns:
         The Vega-Lite spec.
@@ -109,9 +111,9 @@ def compile_distribution(intent: ChartIntent) -> dict[str, Any]:
     if intent.axis("value") is None:
         # Nothing places on a value axis, so there is no axis for a marginal to be
         # marginal TO: the counts are the chart rather than a duplicate of one.
-        return _compile_binned_distribution(intent)
+        return _compile_binned_distribution(intent, font=font)
     ordering = _identity(intent).order
-    categories = _Categories.of("label", ordering)
+    categories = _Categories.of("label", ordering, font=font)
     estimates_by_label = {str(row["label"]): row for row in intent.data if "mean" in row}
     samples: dict[str, list[float]] = {label: [] for label in ordering}
     for row in intent.data:
@@ -144,7 +146,7 @@ def compile_distribution(intent: ChartIntent) -> dict[str, Any]:
         # to a mark that is an interval rather than a bar. Anchoring it at the far end
         # put every number at an x-position it did not name.
         estimates.append(MarkValue(display=drawn, end=mean, text=format_number(mean)))
-    for placement, marks in centred_value_placements(estimates, value_axis).items():
+    for placement, marks in centred_value_placements(estimates, value_axis, font=font).items():
         rows.extend(
             {
                 DISPLAY_FIELD: mark.display,
@@ -157,7 +159,7 @@ def compile_distribution(intent: ChartIntent) -> dict[str, Any]:
 
     spec: dict[str, Any] = {
         "$schema": VEGA_LITE_SCHEMA,
-        "title": _title_spec(intent.title, categories.figure_width(), intent.footnote),
+        "title": _title_spec(intent.title, categories.figure_width(), intent.footnote, font=font),
         "data": {"values": rows},
         "facet": {
             "row": {
@@ -192,7 +194,7 @@ def compile_distribution(intent: ChartIntent) -> dict[str, Any]:
     return spec
 
 
-def _compile_binned_distribution(intent: ChartIntent) -> dict[str, Any]:
+def _compile_binned_distribution(intent: ChartIntent, *, font: ChartFont | None = None) -> dict[str, Any]:
     """Draw a distribution whose every group recorded only pre-binned counts.
 
     Bin ranges are label strings — the payload records them as names, not as edges —
@@ -201,11 +203,12 @@ def _compile_binned_distribution(intent: ChartIntent) -> dict[str, Any]:
 
     Args:
         intent: The distribution's intent, whose data is the counts per group and bin.
+        font: The typeface the chart is laid out in; ``None`` for the packaged face.
 
     Returns:
         The Vega-Lite spec.
     """
-    categories = _Categories.of("label", _identity(intent).order)
+    categories = _Categories.of("label", _identity(intent).order, font=font)
     rows = intent.data
     width, _height = categories.plot_size()
     # One domain across every cell: the cells are read against each other, so a bin
@@ -260,7 +263,7 @@ def _compile_binned_distribution(intent: ChartIntent) -> dict[str, Any]:
     # view whose one `title` slot would carry only one of them.
     return {
         "$schema": VEGA_LITE_SCHEMA,
-        "title": _title_spec(intent.title, categories.figure_width()),
+        "title": _title_spec(intent.title, categories.figure_width(), font=font),
         "vconcat": [panel],
         "spacing": geometry()["panel_gap"],
     }

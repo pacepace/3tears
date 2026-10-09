@@ -7,12 +7,14 @@ for a browser to draw needs nothing past the core. The core
 intents and adds a picture, and decides nothing a reader is told.
 
 - :class:`VegaRenderer` is the :class:`~threetears.evals.analysis.viz.ChartRenderer`: built once for a
-  host's style (:meth:`~VegaRenderer.for_style` — its declared palette, else the packaged one), it draws an intent (:meth:`~VegaRenderer.draw`), gives the browser its config, rasterises
+  host's style (:meth:`~VegaRenderer.for_style` — its declared palette and font, else the packaged ones), it draws an intent (:meth:`~VegaRenderer.draw`), gives the browser its config, rasterises
   (:meth:`~VegaRenderer.png`, :meth:`~VegaRenderer.svg`) and reads its drawing back for the core's
   conformance check (:func:`~threetears.evals.analysis.viz.renderer_disagreements`).
 - :mod:`compiler` draws through one arm per chart type (:mod:`arms`); :mod:`spec_policy` is this
   renderer's own gate on the spec; :mod:`palette`, :mod:`text_metrics` and :mod:`render` are its
-  theme, its measurements and its rasteriser.
+  theme, its measurements and its rasteriser. A host drawing in its own typeface measures it with
+  ``packages/evals/scripts/measure_font_metrics.py`` and declares it with :func:`load_chart_font`;
+  :func:`packaged_font` is the default face, Liberation Sans.
 
 **This module is the package's public root.** A host imports from here and from no module below it,
 and only the names in ``__all__``; ``tests/test_package_matrix.py`` holds that, and holds that nothing
@@ -26,7 +28,7 @@ from threetears.evals.vega.palette import PaletteError, Theme, packaged_palette,
 from threetears.evals.vega.render import register_fonts, render_png, render_svg
 from threetears.evals.vega.renderer import VegaRenderer
 from threetears.evals.vega.spec_policy import SpecPolicyError, check_spec
-from threetears.evals.vega.text_metrics import TextMetricsError, write_font_metrics
+from threetears.evals.vega.text_metrics import TextMetricsError, load_chart_font, packaged_font, write_font_metrics
 
 __all__ = [
     "CompiledChart",
@@ -39,6 +41,8 @@ __all__ = [
     "check_spec",
     "compile_chart",
     "draw_intent",
+    "load_chart_font",
+    "packaged_font",
     "packaged_palette",
     "register_fonts",
     "render_png",

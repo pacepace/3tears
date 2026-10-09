@@ -69,6 +69,7 @@ from threetears.evals.vega.palette import (
     geometry,
 )
 from threetears.evals.analysis.viz.intent import ChartAxis, ChartIdentity, ChartIntent, chart_intent
+from threetears.evals.contracts.host import ChartFont
 from threetears.evals.analysis.viz.payloads import PayloadError
 from threetears.evals.analysis.viz.quantities import strip_common_prefix
 from threetears.evals.vega.spec_policy import enforce_spec
@@ -309,7 +310,7 @@ class CompiledChart:
         return self.intent.values_as_drawn()
 
 
-def compile_chart(viz_type: str, payload: dict[str, Any]) -> CompiledChart:
+def compile_chart(viz_type: str, payload: dict[str, Any], *, font: ChartFont | None = None) -> CompiledChart:
     """Compile a finding's viz into a Vega-Lite spec, through the chart's intent.
 
     The intent is decided first (:func:`~threetears.evals.analysis.viz.intent.chart_intent` — the
@@ -319,6 +320,7 @@ def compile_chart(viz_type: str, payload: dict[str, Any]) -> CompiledChart:
     Args:
         viz_type: The ``Viz.type`` discriminator.
         payload: The open payload dict, as stored or generated.
+        font: The typeface the chart is laid out in; ``None`` for the packaged face.
 
     Returns:
         The compiled chart.
@@ -331,14 +333,16 @@ def compile_chart(viz_type: str, payload: dict[str, Any]) -> CompiledChart:
             rasteriser, and what authored text CLAIMS is never checked (prose is judged by the
             reporter eval, not refused by code). Callers treat the raise as a data problem.
     """
-    return draw_intent(chart_intent(viz_type, payload))
+    return draw_intent(chart_intent(viz_type, payload), font=font)
 
 
-def draw_intent(intent: ChartIntent) -> CompiledChart:
+def draw_intent(intent: ChartIntent, *, font: ChartFont | None = None) -> CompiledChart:
     """Draw a decided chart intent as a Vega-Lite spec — this renderer's one entry point.
 
     Args:
         intent: The chart's intent.
+        font: The typeface the chart is laid out in — every width the layout measures is that
+            face's — or ``None`` for the packaged face. Draw the result in the same font.
 
     Returns:
         The compiled chart.
@@ -352,7 +356,7 @@ def draw_intent(intent: ChartIntent) -> CompiledChart:
 
     # Every chart type has an arm — `ARMS` is held to the type vocabulary key for key by test — so a type
     # with none is a registration mistake, not a data problem, and raises as one.
-    spec = ARMS[intent.type](intent)
+    spec = ARMS[intent.type](intent, font=font)
     enforce_spec(spec)
     return CompiledChart(
         intent=intent,
@@ -452,12 +456,13 @@ class _Categories:
     """Whether the names are drawn above their marks rather than in the gutter."""
 
     @classmethod
-    def of(cls, field: str, ordering: Sequence[str]) -> _Categories:
+    def of(cls, field: str, ordering: Sequence[str], *, font: ChartFont | None = None) -> _Categories:
         """Decide one figure's labels from the categories it draws.
 
         Args:
             field: The row key holding each category's full identity.
             ordering: The categories, in drawn order.
+            font: The typeface the names are measured in; ``None`` for the packaged face.
 
         Returns:
             The resolved labels and placement.
@@ -469,7 +474,7 @@ class _Categories:
             field=field,
             ordering=tuple(ordering),
             display=display,
-            above=not all(fits(display[label], size, gutter) for label in ordering),
+            above=not all(fits(display[label], size, gutter, font) for label in ordering),
         )
 
     def drawn(self) -> list[str]:
@@ -623,7 +628,9 @@ class _Categories:
         return width
 
 
-def _title_spec(title: str, limit: float, footnote: str = "") -> str | list[str] | dict[str, Any]:
+def _title_spec(
+    title: str, limit: float, footnote: str = "", *, font: ChartFont | None = None
+) -> str | list[str] | dict[str, Any]:
     """A chart title bounded by the figure it sits above, and its footnote.
 
     The title is the payload's own measure name — generator prose, unbounded in
@@ -652,16 +659,17 @@ def _title_spec(title: str, limit: float, footnote: str = "") -> str | list[str]
         limit: The figure width to wrap inside, in px.
         footnote: A disclosure drawn under the title — what the chart did to its
             axis, in the picture rather than only beside it. Defaults to none.
+        font: The typeface the title is measured in; ``None`` for the packaged face.
 
     Returns:
         The title, as a string when it fits on one line, as one entry per line when
         it does not, and as a title object when it carries a footnote.
     """
-    lines = wrap_text(title, font_sizes()["title"], limit)
+    lines = wrap_text(title, font_sizes()["title"], limit, font)
     text: str | list[str] = title if len(lines) <= 1 else lines
     if not footnote:
         return text
-    subtitle = wrap_text(footnote, font_sizes()["footnote"], limit)
+    subtitle = wrap_text(footnote, font_sizes()["footnote"], limit, font)
     return {"text": text, "subtitle": footnote if len(subtitle) <= 1 else subtitle}
 
 
@@ -1121,7 +1129,9 @@ def _zero_rule(axis: ValueAxis) -> dict[str, Any] | None:
     }
 
 
-def value_label_layers(values: Sequence[MarkValue], axis: ValueAxis, identity: dict[str, Any]) -> list[dict[str, Any]]:
+def value_label_layers(
+    values: Sequence[MarkValue], axis: ValueAxis, identity: dict[str, Any], *, font: ChartFont | None = None
+) -> list[dict[str, Any]]:
     """Write each mark's value beside the mark, or nothing when there are too many.
 
     A value on its mark is the reason the grid can be as quiet as it is: the
@@ -1137,6 +1147,7 @@ def value_label_layers(values: Sequence[MarkValue], axis: ValueAxis, identity: d
         values: One entry per mark that carries a value.
         axis: The axis the marks are drawn against.
         identity: The category encoding, so each label lands on its own row.
+        font: The typeface the labels are measured in; ``None`` for the packaged face.
 
     Returns:
         One layer per distinct placement, or none. The count is whatever
@@ -1158,7 +1169,7 @@ def value_label_layers(values: Sequence[MarkValue], axis: ValueAxis, identity: d
                 "text": {"field": VALUE_TEXT_FIELD, "type": "nominal"},
             },
         }
-        for placement, marks in _aligned_values(values, axis).items()
+        for placement, marks in _aligned_values(values, axis, font).items()
     ]
 
 
@@ -1283,7 +1294,9 @@ class Placement(NamedTuple):
         return -self.lift
 
 
-def _aligned_values(values: Sequence[MarkValue], axis: ValueAxis) -> dict[Placement, list[MarkValue]]:
+def _aligned_values(
+    values: Sequence[MarkValue], axis: ValueAxis, font: ChartFont | None = None
+) -> dict[Placement, list[MarkValue]]:
     """Split each mark's value by the placement the room beyond its end decides.
 
     The decision, not the layer: a chart whose categories sit on an axis and one
@@ -1303,6 +1316,7 @@ def _aligned_values(values: Sequence[MarkValue], axis: ValueAxis) -> dict[Placem
     Args:
         values: One entry per mark that carries a value.
         axis: The axis the marks are drawn against.
+        font: The typeface the labels are measured in; ``None`` for the packaged face.
 
     Returns:
         Placement → the marks taking it, or an empty mapping where no value is
@@ -1318,7 +1332,7 @@ def _aligned_values(values: Sequence[MarkValue], axis: ValueAxis) -> dict[Placem
         # written in, and it is distance the text has to start beyond. `MarkValue.radius`
         # is zero for a mark that ends at its value, which is every bar.
         clearance = mark.radius + VALUE_LABEL_OFFSET
-        needed = max(sizes["value_label_clearance"], text_width(mark.text, size) + clearance)
+        needed = max(sizes["value_label_clearance"], text_width(mark.text, size, font) + clearance)
         outside = axis.room(mark.end) >= needed
         align = "left" if axis.points_right(mark.end) == outside else "right"
         # `inside` needs BOTH: the label was pushed inward AND the mark paints a fill
@@ -1361,7 +1375,9 @@ def _label_lift(thickness: float, font_size: float) -> float:
     return thickness / 2 + font_size / 2 if thickness else 0.0
 
 
-def centred_value_placements(values: Sequence[MarkValue], axis: ValueAxis) -> dict[str, list[MarkValue]]:
+def centred_value_placements(
+    values: Sequence[MarkValue], axis: ValueAxis, *, font: ChartFont | None = None
+) -> dict[str, list[MarkValue]]:
     """Group value labels anchored INSIDE a mark by the alignment that keeps each inside the plot.
 
     For a label lifted onto its own line above the mark and anchored at the value it
@@ -1385,6 +1401,7 @@ def centred_value_placements(values: Sequence[MarkValue], axis: ValueAxis) -> di
     Args:
         values: One entry per mark carrying a value, each anchored at the value it names.
         axis: The value axis the marks are drawn against.
+        font: The typeface the labels are measured in; ``None`` for the packaged face.
 
     Returns:
         ``center``/``left``/``right`` → the marks taking it, or an empty mapping where
@@ -1396,7 +1413,7 @@ def centred_value_placements(values: Sequence[MarkValue], axis: ValueAxis) -> di
     size = font_sizes()["value"]
     placed: dict[str, list[MarkValue]] = {}
     for mark in values:
-        half = text_width(mark.text, size) / 2
+        half = text_width(mark.text, size, font) / 2
         from_left = axis.offset(mark.end)
         from_right = axis.plot_span - from_left
         if from_left >= half and from_right >= half:

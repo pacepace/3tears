@@ -1,6 +1,5 @@
 {
   "$comment": "Packaged data: the chart palette as resolved sRGB hex, converted from the OKLCH design tokens it was drawn from — do not hand-edit single values. Hex, because the server-side chart renderer rasterises through resvg and cannot parse oklch(). To restyle charts, convert the whole palette from its token source and replace this file.",
-  "font": "Bricolage Grotesque",
   "font_size": {
     "title": 18,
     "label": 14,

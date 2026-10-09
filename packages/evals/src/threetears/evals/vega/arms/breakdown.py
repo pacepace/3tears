@@ -27,9 +27,10 @@ from threetears.evals.vega.compiler import (
     value_label_layers,
 )
 from threetears.evals.analysis.viz.intent import ChartIntent
+from threetears.evals.contracts.host import ChartFont
 
 
-def compile_breakdown(intent: ChartIntent) -> dict[str, Any]:
+def compile_breakdown(intent: ChartIntent, *, font: ChartFont | None = None) -> dict[str, Any]:
     """Draw a part-to-whole intent as a sorted horizontal bar chart.
 
     Horizontal because the parts are named things and their names are the identity channel — a column
@@ -37,6 +38,7 @@ def compile_breakdown(intent: ChartIntent) -> dict[str, Any]:
 
     Args:
         intent: The breakdown's intent.
+        font: The typeface the chart is laid out in; ``None`` for the packaged face.
 
     Returns:
         The Vega-Lite spec.
@@ -45,7 +47,7 @@ def compile_breakdown(intent: ChartIntent) -> dict[str, Any]:
     axis_title = _value_axis(intent, "value").quantity
     counted = intent.encoding("n") is not None
 
-    categories = _Categories.of("label", _identity(intent).order)
+    categories = _Categories.of("label", _identity(intent).order, font=font)
     width, height = categories.plot_size()
     # Zero-based, always: the intent declares the part a length.
     value_axis = ValueAxis.magnitude(axis_title, [_number(row["value"]) for row in rows], width)
@@ -74,8 +76,10 @@ def compile_breakdown(intent: ChartIntent) -> dict[str, Any]:
     return _composed(
         {
             "$schema": VEGA_LITE_SCHEMA,
-            "title": _title_spec(intent.title, categories.figure_width()),
-            "layer": _layers(_zero_rule(value_axis), bars, *value_label_layers(labels, value_axis, identity)),
+            "title": _title_spec(intent.title, categories.figure_width(), font=font),
+            "layer": _layers(
+                _zero_rule(value_axis), bars, *value_label_layers(labels, value_axis, identity, font=font)
+            ),
             "width": width,
             "height": height,
         },

@@ -188,8 +188,11 @@ values as drawn, which the HTML shows as a table.
 How a chart looks is the host's: a renderer reads the intent and the host's palette —
 `StyleProfile.chart_palette`, a renderer-neutral `ChartPalette` (the eight numbered series slots, slots
 1-4 validated; a sequential ramp; background, ink, muted, grid, rule, context and on-fill), every colour
-resolved `#rrggbb`. The presentation rules are checked on the intent (`check_intent`), so they hold for
-any renderer, and the core ships no charting library.
+resolved `#rrggbb` — and, optionally, its typeface, `StyleProfile.chart_font`. A `ChartFont` is a CSS
+family list plus the advance widths measured for its first face, because a renderer lays labels out from
+those widths: a font declared without them is refused, rather than fitted against another face's widths.
+The presentation rules are checked on the intent (`check_intent`), so they hold for any renderer, and the
+core ships no charting library.
 
 ## Did a lever take effect: mechanism checks and observed mechanisms
 
@@ -379,7 +382,8 @@ from pathlib import Path
 from threetears.evals.analysis import finding_chart_intent
 from threetears.evals.vega import VegaRenderer
 
-# The host's declared palette, bound once; a host declaring none draws in the packaged "dark" palette.
+# The host's declared palette and font, bound once; a host declaring none draws in the packaged "dark"
+# palette and the packaged face. `font_dir` holds the files of a host's own face; the packaged one needs none.
 renderer = VegaRenderer.for_style(host.profile.style, theme="dark", font_dir=Path("/srv/fonts"))
 intent = finding_chart_intent(host.storage, analysis_id, scope_id, "0")  # or a chart block's `intent`
 chart = renderer.draw(intent)   # a colourless Vega-Lite spec, chart.spec, for a browser to embed...
@@ -389,6 +393,23 @@ renderer.png(chart)             # or rasterised, for a surface that cannot run a
 
 Drawing a spec needs nothing past the core; only `png` and `svg` need the extra. Nothing in the core
 imports the adapter.
+
+The packaged face is Liberation Sans (`Liberation Sans, Arial, sans-serif`). The rasteriser embeds it, so
+a PNG draws it on a machine with no fonts installed, and it is metric-compatible with Arial, so a browser
+without it lays text out at the same widths. Its digits share one width, so numeric ticks line up. To
+draw in your own face, measure it with the tool in a checkout of this repository (dev tooling, not
+installed with the package; it needs the `[vega]` extra) and declare the result:
+
+```bash
+uv run python packages/evals/scripts/measure_font_metrics.py \
+    --family "Inter, Arial, sans-serif" --font-dir /srv/fonts --out inter_metrics.json
+```
+
+```python
+from threetears.evals.vega import load_chart_font
+
+style = StyleProfile(chart_font=load_chart_font(Path("inter_metrics.json")))
+```
 
 ## Bringing your own renderer
 

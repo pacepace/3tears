@@ -14,7 +14,16 @@ from __future__ import annotations
 from dataclasses import replace
 
 from threetears.evals.contracts import MeasureFamily, MetricDescriptor
-from threetears.evals.contracts.host import Bar, BarRegistry, ChartPalette, HostProfile, MeasureRegistry, StyleProfile
+from threetears.evals.contracts.host import (
+    CHART_FONT_CHARACTERS,
+    Bar,
+    BarRegistry,
+    ChartFont,
+    ChartPalette,
+    HostProfile,
+    MeasureRegistry,
+    StyleProfile,
+)
 from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRACT
 from packages.evals.tests.fixtures.toyhost.kind import FIELD_COUNT_ERROR
 from packages.evals.tests.fixtures.toyhost.sweepables import (
@@ -153,7 +162,7 @@ TOYHOST_BARS: tuple[Bar, ...] = (
 )
 
 #: A style deliberately unlike the default on every axis, so the prompt-purity test is asserting
-#: something: a different register, a different locale, and a palette of its own. If host style
+#: something: a different register, a different locale, a palette and a font of its own. If host style
 #: could leak into the prompt, this profile is what would show it — and the palette is what a renderer
 #: built for this host draws in, so it is a palette no packaged one shares a colour with.
 TOYHOST_PALETTE = ChartPalette(
@@ -168,7 +177,20 @@ TOYHOST_PALETTE = ChartPalette(
     on_fill="#0b1021",
 )
 
-TOYHOST_STYLE = StyleProfile(tone_register="executive", locale="en-GB", chart_palette=TOYHOST_PALETTE)
+#: The toy host's own chart face, declared with its metrics as every host font must be. A uniform
+#: table, wider than the packaged face's lowercase, so a layout taken from it differs visibly from one
+#: taken from the packaged table — which is what lets a test tell which table a chart was laid out in.
+#: The family is no real face, so a raster falls through to the generic family; a real host measures
+#: its face with ``packages/evals/scripts/measure_font_metrics.py`` and ships the directory beside it.
+TOYHOST_FONT = ChartFont(
+    family="Toyface Grotesk, sans-serif",
+    advances=dict.fromkeys(CHART_FONT_CHARACTERS, 0.7),
+    fallback_advance=0.7,
+)
+
+TOYHOST_STYLE = StyleProfile(
+    tone_register="executive", locale="en-GB", chart_palette=TOYHOST_PALETTE, chart_font=TOYHOST_FONT
+)
 
 #: A caveat kind the ENGINE does not own, registered for the reason the two opposite-direction
 #: bars are registered: the four engine kinds were derived from one product's caveats, and a
@@ -228,6 +250,7 @@ def toyhost_profile(
 __all__ = [
     "TOYHOST_BARS",
     "TOYHOST_EXTRACTION_FAMILY",
+    "TOYHOST_FONT",
     "TOYHOST_CAVEAT_KINDS",
     "TOYHOST_ID",
     "TOYHOST_MEASURES",

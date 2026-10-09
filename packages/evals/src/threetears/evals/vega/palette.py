@@ -40,7 +40,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
-from threetears.evals.contracts.host import ChartPalette, StyleError, require_resolved_colour
+from threetears.evals.contracts.host import ChartFont, ChartPalette, StyleError, require_resolved_colour
+from threetears.evals.vega.text_metrics import packaged_font
 from threetears.observe import get_logger
 
 log = get_logger(__name__)
@@ -296,8 +297,8 @@ def packaged_palette(theme: Theme) -> ChartPalette:
         raise PaletteError(f"the packaged {theme} palette is not a palette: {refused}") from refused
 
 
-def vega_config(palette: ChartPalette) -> dict[str, Any]:
-    """Build the Vega-Lite config that themes a compiled spec in ``palette``.
+def vega_config(palette: ChartPalette, font: ChartFont | None = None) -> dict[str, Any]:
+    """Build the Vega-Lite config that themes a compiled spec in ``palette``, set in ``font``.
 
     The spec itself carries no colour, so this is the whole of a chart's
     appearance on the server side — and the mirror of what the browser assembles
@@ -312,18 +313,22 @@ def vega_config(palette: ChartPalette) -> dict[str, Any]:
     complaining, so the symptom otherwise is only that the exported PNG stops looking
     like the report.
 
-    The colours are the palette's — a host's or :func:`packaged_palette` — and the type scale, weights
-    and font are this renderer's own, from the packaged artifact: a host themes colour, and the
-    renderer keeps the measurements its layout was taken at.
+    The colours are the palette's — a host's or :func:`packaged_palette` — and the type scale and
+    weights are this renderer's own, from the packaged artifact. The typeface is ``font``'s family list:
+    the face whose measured advances the spec's layout was computed from, which is why a typeface
+    arrives here only as a :class:`~threetears.evals.contracts.host.ChartFont` and never as a bare name.
+    Pass the same font the spec was compiled with.
 
     Args:
         palette: The colours to draw with.
+        font: The typeface the spec was laid out in; ``None`` for the packaged face
+            (:func:`~threetears.evals.vega.text_metrics.packaged_font`).
 
     Returns:
         A Vega-Lite ``config`` object.
     """
     artifact = load_palette()
-    font = artifact["font"]
+    font_family = (font if font is not None else packaged_font()).family
     # The chart type scale and weights, resolved to px by the token build. Charts read
     # their OWN scale rather than borrowing the page's: they previously took `font.size.xs`
     # for labels and `font.size.sm` for titles — the two steps the design system defines
@@ -340,7 +345,7 @@ def vega_config(palette: ChartPalette) -> dict[str, Any]:
     single = palette.series[0]
     return {
         "background": palette.background,
-        "font": font,
+        "font": font_family,
         # The default single-series mark colour. A chart whose identity channel is
         # its axis labels rather than its hues draws entirely in this one.
         #
@@ -367,8 +372,8 @@ def vega_config(palette: ChartPalette) -> dict[str, Any]:
         "title": {
             "color": ink,
             "subtitleColor": muted,
-            "font": font,
-            "subtitleFont": font,
+            "font": font_family,
+            "subtitleFont": font_family,
             "fontWeight": weights["title"],
             "anchor": "start",
             "fontSize": sizes["title"],
@@ -392,8 +397,8 @@ def vega_config(palette: ChartPalette) -> dict[str, Any]:
         "axis": {
             "labelColor": ink,
             "titleColor": ink,
-            "labelFont": font,
-            "titleFont": font,
+            "labelFont": font_family,
+            "titleFont": font_family,
             "labelFontSize": sizes["tick"],
             "labelFontWeight": weights["tick"],
             "titleFontSize": sizes["label"],
@@ -410,16 +415,16 @@ def vega_config(palette: ChartPalette) -> dict[str, Any]:
         "header": {
             "labelColor": ink,
             "titleColor": ink,
-            "labelFont": font,
-            "titleFont": font,
+            "labelFont": font_family,
+            "titleFont": font_family,
             "labelFontSize": sizes["facet-label"],
             "labelFontWeight": weights["facet-label"],
         },
         "legend": {
             "labelColor": ink,
             "titleColor": ink,
-            "labelFont": font,
-            "titleFont": font,
+            "labelFont": font_family,
+            "titleFont": font_family,
             "labelFontSize": sizes["label"],
             "labelFontWeight": weights["label"],
             "titleFontSize": sizes["label"],
@@ -459,7 +464,7 @@ def vega_config(palette: ChartPalette) -> dict[str, Any]:
         "view": {"stroke": None},
         # Values written on a mark, and words standing in for one. These are the numbers
         # the reader lands on first, so they sit a step above ticks and never in muted ink.
-        "text": {"color": ink, "font": font, "fontSize": sizes["value"], "fontWeight": weights["value"]},
+        "text": {"color": ink, "font": font_family, "fontSize": sizes["value"], "fontWeight": weights["value"]},
         # A named style is how a spec asks for the RULE ink without carrying a colour:
         # a zero line drawn in the series hue reads as data, and the spec may not say
         # which hex that is. The name travels in the spec; the value stays here, which

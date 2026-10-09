@@ -32,6 +32,7 @@ from threetears.evals.vega.compiler import (
     value_label_mark,
 )
 from threetears.evals.analysis.viz.intent import ChartIntent
+from threetears.evals.contracts.host import ChartFont
 from threetears.evals.vega.palette import font_sizes
 
 #: The interval rule's thickness, in px.
@@ -65,7 +66,7 @@ def _value_lift() -> float:
     return point_radius(_POINT_SIZE) + VALUE_LABEL_OFFSET + font_sizes()["value"] / 2
 
 
-def compile_null_result(intent: ChartIntent) -> dict[str, Any]:
+def compile_null_result(intent: ChartIntent, *, font: ChartFont | None = None) -> dict[str, Any]:
     """Draw an established null's intent: each arm as an interval, with any overlap shaded.
 
     The overlap band is drawn because the reader needs to see where the arms coincide. It is **not**
@@ -74,6 +75,7 @@ def compile_null_result(intent: ChartIntent) -> dict[str, Any]:
 
     Args:
         intent: The null result's intent.
+        font: The typeface the chart is laid out in; ``None`` for the packaged face.
 
     Returns:
         The Vega-Lite spec.
@@ -86,7 +88,7 @@ def compile_null_result(intent: ChartIntent) -> dict[str, Any]:
     overlap_high = min(_number(row["high"]) for row in rows)
     overlaps = overlap_high >= overlap_low
 
-    categories = _Categories.of("label", _identity(intent).order)
+    categories = _Categories.of("label", _identity(intent).order, font=font)
     # The taller step: each row carries its value on a line of its own above the mark.
     width, height = categories.plot_size(value_above=True)
     # A position, so the axis crops to the arms and states that it did.
@@ -130,7 +132,7 @@ def compile_null_result(intent: ChartIntent) -> dict[str, Any]:
         MarkValue(display=row[DISPLAY_FIELD], end=_number(row["mean"]), text=format_number(_number(row["mean"])))
         for row in categories.labelled(rows)
     ]
-    for placement, marks in centred_value_placements(estimates, value_axis).items():
+    for placement, marks in centred_value_placements(estimates, value_axis, font=font).items():
         layers.append(
             {
                 "data": {
@@ -151,7 +153,7 @@ def compile_null_result(intent: ChartIntent) -> dict[str, Any]:
     spec: dict[str, Any] = _composed(
         {
             "$schema": VEGA_LITE_SCHEMA,
-            "title": _title_spec(intent.title, categories.figure_width(), ""),
+            "title": _title_spec(intent.title, categories.figure_width(), "", font=font),
             "layer": layers,
             "width": width,
             "height": height,
