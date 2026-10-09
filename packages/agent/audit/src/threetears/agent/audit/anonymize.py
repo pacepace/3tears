@@ -191,6 +191,7 @@ SAFE_DETAIL_KEYS: Final[frozenset[str]] = frozenset(
         "customer_admin",  # user.create (hub)
         "declaration_persisted",  # agent.update_*_access (hub)
         "enabled",  # identity.connection.*, identity.email_settings.change (identity); channel, capture (hub)
+        "exclusive",  # agent.context_capture (hub)
         "is_blocked",  # identity.principal.disable (identity)
         "is_break_glass",  # identity.login.success (identity)
         "knowledge_rebound",  # datasource.rollover (hub)
@@ -358,6 +359,8 @@ _BUILT_IN_FAMILY_SAFE_KEYS: Final[Mapping[str, frozenset[str]]] = MappingProxyTy
         "rbac.assignment.move": frozenset({"reason"}),
         # allow / deny (hub)
         "rbac.introspect": frozenset({"decision"}),
+        # fixed "CAPTURE_ARMED_ELSEWHERE" on a refused exclusive arm, None otherwise (hub)
+        "agent.context_capture": frozenset({"refused"}),
         # the approval verdict, and the uuid of the user who approved or denied the paused tool
         # call -- an id, which erasure never changes. declared for this family rather than in
         # SAFE_DETAIL_KEYS because the name does not say it holds an id: another producer
