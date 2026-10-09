@@ -59,7 +59,7 @@ import functools
 import inspect
 import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
 from types import TracebackType
 from typing import Any, TypeAlias, TypedDict, TypeVar
 
@@ -70,6 +70,7 @@ from threetears.core.sql_fragments import quote_identifier
 from threetears.datasources.export import DriverExportUnsupportedError, ExportConfig, ExportResult
 
 __all__ = [
+    "DriverFingerprintGroupsUnsupportedError",
     "CallbackTransaction",
     "ColumnCoverage",
     "ColumnRow",
@@ -86,6 +87,10 @@ __all__ = [
 log = get_logger(__name__)
 
 F = TypeVar("F", bound=Callable[..., Awaitable[Any]])
+
+
+class DriverFingerprintGroupsUnsupportedError(NotImplementedError):
+    """the engine cannot fingerprint a relation's groups in one statement here; ask group by group."""
 
 
 # ---------------------------------------------------------------------------
@@ -1159,7 +1164,14 @@ class Driver(ABC):
         """
         return None
 
-    async def unload(self, select: str, destination: str, *, timeout_seconds: int | None = None) -> ExportResult:
+    async def unload(
+        self,
+        select: str,
+        destination: str,
+        *,
+        timeout_seconds: int | None = None,
+        partition_by: str | None = None,
+    ) -> ExportResult:
         """write ``select``'s rows to the datasource's export location, as parquet, and say where.
 
         Concrete, refusing: only an engine that can write a result to object storage itself, with an
@@ -1172,11 +1184,46 @@ class Driver(ABC):
         :ptype destination: str
         :param timeout_seconds: per-statement timeout, as :meth:`fetch` takes it
         :ptype timeout_seconds: int | None
+        :param partition_by: a column the files are divided by, one directory per value
+            (``column=value/``), the column kept in the files; None for one undivided export
+        :ptype partition_by: str | None
         :return: the rows written and where they are
         :rtype: ExportResult
         :raises DriverExportUnsupportedError: always, here
         """
         raise DriverExportUnsupportedError(f"{type(self).__name__} cannot export a query's rows to object storage")
+
+    async def relation_fingerprint_groups(
+        self,
+        relation: str,
+        key: list[str],
+        group_by: str,
+        where: Mapping[str, str] | None = None,
+        where_in: Mapping[str, Sequence[str]] | None = None,
+    ) -> dict[str | None, RelationFingerprint]:
+        """count and fingerprint every group of a relation (each value of ``group_by``) in one statement.
+
+        The same fingerprint :meth:`relation_fingerprint` takes of the rows ``group_by = value``,
+        for every value at once: a caller comparing a relation's parts asks once, not once a part.
+        Concrete, refusing: an engine overrides it where it can; a caller that is refused asks
+        group by group.
+
+        :param relation: schema-qualified relation name, a TRUSTED identifier
+        :ptype relation: str
+        :param key: the columns the digest covers, TRUSTED identifiers
+        :ptype key: list[str]
+        :param group_by: the column the groups are values of, a TRUSTED identifier
+        :ptype group_by: str
+        :param where: equality filters, column -> value
+        :ptype where: Mapping[str, str] | None
+        :param where_in: set filters, column -> the values it may hold
+        :ptype where_in: Mapping[str, Sequence[str]] | None
+        :return: each group's value (as text; ``None`` for NULL) -> its fingerprint; a value with no
+            rows is not named
+        :rtype: dict[str | None, RelationFingerprint]
+        :raises DriverFingerprintGroupsUnsupportedError: always, here
+        """
+        raise DriverFingerprintGroupsUnsupportedError(f"{type(self).__name__} cannot fingerprint a relation's groups")
 
     # -------------------------------------------------------------------
     # Concrete: value-coverage probe (datasource honesty)

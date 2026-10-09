@@ -143,7 +143,7 @@ import functools
 import socket
 import ssl
 import weakref
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 try:
@@ -173,6 +173,7 @@ from threetears.datasources.drivers.sync_bridge import AsyncSyncBridge
 from threetears.datasources.drivers.sql_fragments import (
     translate_placeholders,
     build_equality_filter,
+    build_filter,
     build_set_local_statement_timeout_sql,
     build_set_search_path_sql,
     build_set_statement_timeout_sql,
@@ -2544,6 +2545,80 @@ class RedshiftDriver(Driver):
         result: RelationFingerprint = await self._acquire_and_run(_op)
         return result
 
+    @traced
+    @observed(driver_type="redshift")
+    async def relation_fingerprint_groups(
+        self,
+        relation: str,
+        key: list[str],
+        group_by: str,
+        where: Mapping[str, str] | None = None,
+        where_in: Mapping[str, Sequence[str]] | None = None,
+    ) -> dict[str | None, RelationFingerprint]:
+        """count and fingerprint every value of ``group_by`` in ``relation``, in one statement.
+
+        Each group's digest is exactly what :meth:`relation_fingerprint` answers for the rows
+        ``group_by = value``: the same per-row hash, summed per group.
+
+        :param relation: schema-qualified relation name, a TRUSTED identifier
+        :ptype relation: str
+        :param key: the columns the digest covers, TRUSTED identifiers
+        :ptype key: list[str]
+        :param group_by: the grouping column, a TRUSTED identifier
+        :ptype group_by: str
+        :param where: equality filters
+        :ptype where: Mapping[str, str] | None
+        :param where_in: set filters
+        :ptype where_in: Mapping[str, Sequence[str]] | None
+        :return: each group's value as text (``None`` for NULL) -> its fingerprint
+        :rtype: dict[str | None, RelationFingerprint]
+        :raises ValueError: when ``key`` is empty
+        :raises RuntimeError: if the driver was previously closed
+        """
+        if self._closed:
+            raise RuntimeError("RedshiftDriver is closed")
+        relation_key_expression(key)
+        filters, values = build_filter(where, where_in)
+        known = self._boolean_columns.get(relation)
+
+        def _do_sync(conn: RedshiftConnection) -> dict[str | None, RelationFingerprint]:
+            cursor = conn.cursor()
+            try:
+                booleans = known if known is not None else _read_boolean_columns(cursor, relation)
+                sql = translate_placeholders(
+                    "SELECT g, COUNT(*) AS row_count, "  # noqa: S608 - relation, key and group_by are trusted identifiers
+                    "COALESCE(SUM(CAST(STRTOL(SUBSTRING(MD5(k), 1, 8), 16) AS DECIMAL(38,0))), 0) AS digest "
+                    f"FROM (SELECT {group_by} AS g, {relation_key_expression(key, boolean_columns=booleans)} AS k "
+                    f"FROM {relation}{filters}) AS fingerprint_source GROUP BY g",
+                    "pyformat",
+                )
+                try:
+                    if values:
+                        cursor.execute(sql, values)
+                    else:
+                        cursor.execute(sql)
+                    rows = cursor.fetchall()
+                except (
+                    Exception
+                ):  # prawduct:allow prawduct/broad-except -- forgets the column answer, then re-raises unchanged
+                    self._boolean_columns.pop(relation, None)
+                    raise
+                self._boolean_columns[relation] = booleans
+                return {
+                    (None if row[0] is None else str(row[0])): RelationFingerprint(
+                        row_count=int(row[1]), digest=str(row[2])
+                    )
+                    for row in rows
+                }
+            finally:
+                cursor.close()
+
+        async def _op(conn: RedshiftConnection) -> Any:
+            return await self._bridge.to_thread_with_cancel(lambda: _do_sync(conn), cancel_cb=_closer(conn))
+
+        result: dict[str | None, RelationFingerprint] = await self._acquire_and_run(_op)
+        return result
+
     @property
     def export_config(self) -> ExportConfig | None:
         """the datasource's export configuration, as its connection config carries it.
@@ -2555,7 +2630,14 @@ class RedshiftDriver(Driver):
 
     @traced
     @observed(driver_type="redshift")
-    async def unload(self, select: str, destination: str, *, timeout_seconds: int | None = None) -> ExportResult:
+    async def unload(
+        self,
+        select: str,
+        destination: str,
+        *,
+        timeout_seconds: int | None = None,
+        partition_by: str | None = None,
+    ) -> ExportResult:
         """``UNLOAD`` ``select``'s rows as parquet under the datasource's export prefix, and count them.
 
         The statement is :func:`~threetears.datasources.export.redshift_unload_statement`'s, its
@@ -2568,6 +2650,8 @@ class RedshiftDriver(Driver):
         :ptype destination: str
         :param timeout_seconds: per-statement timeout, as :meth:`fetch` takes it
         :ptype timeout_seconds: int | None
+        :param partition_by: a column to divide the files by, one directory per value; None for none
+        :ptype partition_by: str | None
         :return: the rows written and where they are
         :rtype: ExportResult
         :raises DriverExportUnsupportedError: when the datasource has no export configured
@@ -2580,7 +2664,7 @@ class RedshiftDriver(Driver):
         if export is None:
             raise DriverExportUnsupportedError("this datasource has no export configured (connection_config.export)")
         # refused here, before a connection is taken: a bad SELECT or destination is the caller's
-        statement, location = redshift_unload_statement(select, export, destination)
+        statement, location = redshift_unload_statement(select, export, destination, partition_by=partition_by)
         if timeout_seconds is not None:
             build_set_local_statement_timeout_sql(timeout_seconds)
 

@@ -19,7 +19,7 @@ target styles:
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Literal
 
 from threetears.core.fingerprint import relation_key_expression
@@ -28,6 +28,7 @@ from threetears.core.sql_fragments import as_written, equality_conditions, quote
 __all__ = [
     "PlaceholderStyle",
     "build_equality_filter",
+    "build_filter",
     "build_relation_key_expression",
     "build_reset_statement_timeout_sql",
     "build_search_path_value",
@@ -336,6 +337,35 @@ def build_equality_filter(where: Mapping[str, str] | None) -> tuple[str, list[st
     # unquoted, as the statement's relation and key columns are: every name in it folds case alike
     clause, values = equality_conditions(where, quote=as_written)
     return (f" WHERE {clause}" if clause else ""), values
+
+
+def build_filter(
+    where: Mapping[str, str] | None, where_in: Mapping[str, Sequence[str]] | None = None
+) -> tuple[str, list[str]]:
+    """a `` WHERE`` fragment keeping the rows whose columns equal ``where``'s values and are among ``where_in``'s.
+
+    As :func:`build_equality_filter`, with set membership too: ``column IN ($n, ...)``, each value
+    bound. An empty set keeps no row.
+
+    :param where: column -> value
+    :ptype where: Mapping[str, str] | None
+    :param where_in: column -> the values it may hold
+    :ptype where_in: Mapping[str, Sequence[str]] | None
+    :return: the fragment (empty when there are no filters) and its values in order
+    :rtype: tuple[str, list[str]]
+    """
+    clause, values = equality_conditions(where, quote=as_written)
+    conditions = [clause] if clause else []
+    for column, members in (where_in or {}).items():
+        members = list(members)
+        if not members:
+            conditions.append("1 = 0")
+            continue
+        first = len(values) + 1
+        placeholders = ", ".join(f"${first + index}" for index in range(len(members)))
+        conditions.append(f"{as_written(column)} IN ({placeholders})")
+        values.extend(members)
+    return (f" WHERE {' AND '.join(conditions)}" if conditions else ""), values
 
 
 #: render the ordering key of one row as a single text value, NULLs distinguished: the

@@ -6,6 +6,29 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Datasources: a relation read by parts in bulk, through one export or pages read side by side
+
+Reading a relation part by part (one state at a time) cost a fingerprint, a read and a fingerprint
+per part, one round trip after another; the round trips, not the bytes, were the time.
+
+- **Added, a grouped fingerprint**: `RelationFingerprintRequest.group_by` (and set filters,
+  `where_in`) answers every value's fingerprint in one ask (`DatasourceQueryResponse.fingerprint_groups`;
+  `DatasourceQueryClient.relation_fingerprint_groups`), each equal to the fingerprint of that value's
+  rows alone. `Driver.relation_fingerprint_groups` (Redshift, Postgres; others refuse with
+  `DriverFingerprintGroupsUnsupportedError`, answered `FINGERPRINT_GROUPS_UNSUPPORTED`).
+- **Added, a partitioned export**: `DatasourceExportRequest.partition_by` has the warehouse write one
+  directory of files per value (`UNLOAD ... PARTITION BY (column) INCLUDE`), still one statement,
+  one destination, one manifest. `threetears.datasources.partitioned_export.export_partitions` reads
+  every part (or the parts asked for) through one export, proven before the first part is handed back
+  (grouped fingerprints before and after, the warehouse's count, each part's manifest count), each
+  part's files read when it is reached and counted, and deletes the export once read or abandoned.
+- **Added, `partitioned_read.read_partitions`**: the rail's counterpart. One statement answers every
+  page start of a batch of parts; the pages are read side by side under the datasource's cap; each
+  batch is fingerprinted again in one ask before its parts are handed back.
+- **Wire, both orders**: `group_by`, `where_in` and `partition_by` are left off a request that does not
+  ask for them, so an older hub sees what it knows; one that is asked for them refuses
+  (`MALFORMED_REQUEST`), and a caller asks part by part instead.
+
 ### Scoped snapshot: chunks no pointer serves and no live write claims are retired, by state, never by age
 
 A tool pod's Object Store filled with chunks nothing served: a catch-up that failed part way (on a
