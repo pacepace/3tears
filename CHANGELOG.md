@@ -34,6 +34,10 @@ follows one. An unchanged collection writes exactly as before.
   `delete`, `invalidate_cache`, `invalidate_cache_many`, `bypassing_write`, `CallerTransaction`
   and `flush_pending`, on a switched-on collection only, after the rest of the write path has
   run. `save_entity` and `l2_cas_mutate` already raised it for a collection that caches absences.
+- **Changed, `PeriodicFlusher`** (`threetears.core.coordination.flusher`): a write generation that
+  could not be advanced for a flush is logged as rows written with the generation unmoved, never
+  as "retrying", because `flush_pending` raises it only after the rows were acknowledged. The
+  interval loop carries on; the final flush in `aclose` raises it.
 - **Added, `CollectionRegistry`**: `follow_generation`, `generation_marks`, `account_generation`
   and `settle_generation` keep and judge a per-table mark (`GenerationMarks`,
   `GenerationVerdict`); `drop_table` drops a table's L1 rows, its cached scans and every cache

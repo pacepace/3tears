@@ -573,8 +573,11 @@ it was saved, so peers sharing the scope keep the entry instead of deleting it.
 
 **A failed advance in a flush raises from `flush_pending`,** after every table has been
 attempted and every landed row acknowledged, so nothing is replayed for it. The coordination
-flusher logs it and carries on. Another caller of `flush_pending` must expect it once it
-switches on a write-behind table.
+flusher (`PeriodicFlusher`) logs it as what it is: the rows were written, and the generation
+did not move. On an interval there is no caller to raise to, so the loop carries on, as a
+subscript write does. The final flush in `aclose` raises it to whoever closes the flusher
+(`CollectionRegistry.close_collections` logs it and closes the rest). Another caller of
+`flush_pending` must expect it once it switches on a write-behind table.
 
 **`save_entity(conn=)` stays refused on a collection that caches absences,** and so do subscript
 writes. "Batching" says settling after the transaction lifts the reason for the first. It does,
