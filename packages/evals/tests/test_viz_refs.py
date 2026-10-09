@@ -460,13 +460,13 @@ def test_a_drawn_interval_states_the_level_its_width_was_computed_at(monkeypatch
         )
 
 
-def test_clustered_observations_are_named_in_the_variability():
+def test_a_clustered_cell_and_an_unclustered_one_draw_comparable_intervals():
+    """Every interval is over its cell's cases, so a cell repeating its cases needs no wording of its own (#590)."""
     cells = [_cell("A", n_independent=2), _cell("B"), _cell("C")]
     payload = build(VALID["distribution"], surface(cells))
 
-    by_label = {group["label"]: group["ci"]["variability"] for group in payload["groups"]}
-    assert "narrower than the clustering supports" in by_label[LABEL["A"]]
-    assert "clustering" not in by_label[LABEL["B"]]
+    variabilities = {group["ci"]["variability"] for group in payload["groups"]}
+    assert variabilities == {"the cell's cases (repeats of one case clustered)"}
 
 
 def test_a_null_result_carries_two_intervals_and_the_authored_mechanism():

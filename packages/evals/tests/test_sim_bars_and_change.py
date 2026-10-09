@@ -66,8 +66,9 @@ def _bar_rates(n: int, shortfall: float, *, higher_is_better: bool, margin: floa
     for _ in range(REPS):
         incumbent = _sample(rng, n, 0.0, higher_is_better=higher_is_better)
         candidate = _sample(rng, n, -shortfall, higher_is_better=higher_is_better)
-        incumbent_interval = observed_mean_interval(incumbent)
-        candidate_interval = observed_mean_interval(candidate)
+        # One observation per case: each value is its own case.
+        incumbent_interval = observed_mean_interval(incumbent, cases=range(n))
+        candidate_interval = observed_mean_interval(candidate, cases=range(n))
         assert incumbent_interval is not None and candidate_interval is not None, "every sample here has n >= 2"
         incumbent_mean, candidate_mean = sum(incumbent) / n, sum(candidate) / n
         threshold = bar_seed(incumbent_mean, incumbent_interval, higher_is_better=higher_is_better)

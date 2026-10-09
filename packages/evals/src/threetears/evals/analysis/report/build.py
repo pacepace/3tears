@@ -601,11 +601,11 @@ def _judged_rows(
 def _summary_text(summary: MeasureSummary, factor: float) -> str:
     """One measure's figure as a cell of the strata table, with the n it rests on.
 
-    A rate with its Wilson interval, which stays inside 0 to 1 at any n; a mean with its standard error, as
+    A rate with its interval over the cases (Wilson's shape, which stays inside 0 to 1 at any n); a mean with its standard error, as
     the decision surface's table spells one; and a categorical measure — a confusion matrix — as its counts,
     largest first.
     """
-    n = f"(n={summary.n})"
+    n = _n_text(summary.n, summary.n_independent)
     if summary.rate is not None:
         return f"{format_number(summary.rate)}{_interval(summary.ci_low, summary.ci_high)} {n}"
     if summary.mean is not None:
@@ -627,7 +627,14 @@ def _judged_text(reading: JudgedReading) -> str:
     if reading.mean is None:
         return f"no score (n={reading.n})"
     spread = f" ± {format_number(reading.sem)}" if reading.sem is not None else ""
-    return f"{format_number(reading.mean)}{spread} (n={reading.n})"
+    return f"{format_number(reading.mean)}{spread} {_n_text(reading.n, reading.n_independent)}"
+
+
+def _n_text(n: int, n_cases: int) -> str:
+    """A figure's n, and where cases repeat, how many cases it is over — the draws its spread counts."""
+    if 0 < n_cases < n:
+        return f"(n={n} over {n_cases} case{'' if n_cases == 1 else 's'})"
+    return f"(n={n})"
 
 
 def _method_blocks(analysis: EvalAnalysis) -> list[ReportBlock]:
@@ -973,7 +980,6 @@ def _label_blocks(surface: DecisionSurface, variant_index: Sequence[VariantIndex
     control = surface.control_variant_key
     labels = cell_arm_labels(surface, list(variant_index))
     figures: dict[str, dict[str, dict[str, MeasureSummary]]] = {}
-    clustered = False
     for cell in surface.cells:
         ref = cell_ref(cell.variant_key, cell.apparatus_class_id)
         for summary in cell.measures.measures:
@@ -981,7 +987,6 @@ def _label_blocks(surface: DecisionSurface, variant_index: Sequence[VariantIndex
                 continue
             statistic, label = classifier
             figures.setdefault(label, {}).setdefault(ref, {})[statistic] = summary
-            clustered = clustered or (cell.n_cases is not None and cell.n_cases < cell.n_observations)
     if not figures:
         return []
     order = sorted(
@@ -993,6 +998,7 @@ def _label_blocks(surface: DecisionSurface, variant_index: Sequence[VariantIndex
     classifying = {ref for by_cell in figures.values() for ref in by_cell}
     rows: list[dict[str, Cell]] = []
     missing = False
+    single_case = False
     for label in sorted(figures):
         for ref, cell in order:
             if ref not in classifying:
@@ -1006,18 +1012,21 @@ def _label_blocks(surface: DecisionSurface, variant_index: Sequence[VariantIndex
                 figure = by_statistic.get(statistic)
                 row[statistic] = None if figure is None else _summary_text(figure, 1.0)
                 missing = missing or figure is None
+                single_case = single_case or (
+                    figure is not None and figure.rate is not None and (figure.ci_low is None or figure.ci_high is None)
+                )
             rows.append(row)
-    spans = (
-        "the cell's observations, repeats of one case counted as independent (narrower than the clustering supports)"
-        if clustered
-        else "the cell's observations"
-    )
     said = [
         f"Precision is counted over the observations an arm predicted as the label and recall over those expected as "
-        f"it, each with its {with_unit(INTERVAL_LEVEL * 100, '%')} Wilson interval, which spans {spans}. F1 has no "
-        "interval by construction — one value computed from the cell's confusion counts, over the observations "
-        "predicted or expected as the label."
+        f"it, each with its {with_unit(INTERVAL_LEVEL * 100, '%')} Wilson interval over the cell's cases — widened by "
+        "the clustering it measured where a case was repeated, so a case's repeats are not counted as independent. "
+        "F1 has no interval by construction — one value computed from the cell's confusion counts, over the "
+        "observations predicted or expected as the label."
     ]
+    if single_case:
+        said.append(
+            "A rate counted over the repeats of a single case has no interval: one case has no between-case spread."
+        )
     if missing:
         said.append(
             "A label an arm never predicted has no precision, one it never met has no recall, and either has no F1: "

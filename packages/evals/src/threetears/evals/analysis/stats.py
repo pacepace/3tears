@@ -29,8 +29,9 @@ pooled SD.
 
 from __future__ import annotations
 
+import functools
 import math
-from collections.abc import Sequence
+from collections.abc import Hashable, Sequence
 from functools import lru_cache
 from statistics import NormalDist
 from typing import Final, Literal, NamedTuple
@@ -235,37 +236,69 @@ def t_critical_two_sided(confidence: float, df: float) -> float:
 INTERVAL_LEVEL = 0.95
 
 
-def ci_half_width(sem: float, n: int) -> float | None:
+@functools.cache
+def _cached_t_critical(confidence: float, df: int) -> float:
+    return t_critical_two_sided(confidence, df)
+
+
+def _t_multiplier(df: int) -> float:
+    """The two-sided t multiplier at :data:`INTERVAL_LEVEL` on ``df`` degrees of freedom.
+
+    Cached on the level and df: the bisection behind :func:`t_critical_two_sided` costs a few hundred
+    incomplete-beta evaluations, and every reading in a bundle asks again at one of a handful of case
+    counts. The level is read at call time, so the width always follows the declared level.
+    """
+    return _cached_t_critical(INTERVAL_LEVEL, df)
+
+
+def ci_half_width(sem: float, n_cases: int) -> float | None:
     """Half-width of the reported interval on a mean at :data:`INTERVAL_LEVEL`: the t multiplier times the SEM.
 
-    Returns ``None`` rather than 0.0 below two observations, taking the same position
+    Returns ``None`` rather than 0.0 below two cases, taking the same position
     :func:`standard_error_of_mean` already takes: the spread is *unestimable* there, not zero. A 0.0
     would render as a zero-width 95% interval — a point estimate wearing a confidence label, which is
     the strongest possible claim made from the least possible evidence.
 
-    The multiplier is t, not a fixed 1.96: an arm can be three observations, where the honest 95%
+    The multiplier is t, not a fixed 1.96: an arm can be three cases, where the honest 95%
     multiplier is ~4.30, and quoting the large-sample constant would publish an interval at under half
     its true width while labelling it "95%".
 
     Args:
-        sem: The standard error of the mean.
-        n: Observations behind it (``n - 1`` degrees of freedom).
+        sem: The standard error of the mean — over cases (:func:`clustered_standard_error`) when an
+            observation can repeat a case.
+        n_cases: Independent cases behind it (``n_cases - 1`` degrees of freedom). Where every case was
+            observed once that is the observation count; where cases repeat, it is the case count, never
+            the observations — counting k repeats as k draws is what narrows an interval below its truth.
 
     Returns:
         The half-width, or ``None`` where no interval is estimable.
     """
-    if n < 2:
+    if n_cases < 2:
         return None
-    return t_critical_two_sided(INTERVAL_LEVEL, n - 1) * sem
+    return _t_multiplier(n_cases - 1) * sem
+
+
+def _wilson_bounds(rate: float, n: float, critical: float) -> tuple[float, float]:
+    """The Wilson score bounds on ``rate`` over ``n`` (possibly an effective n) at multiplier ``critical``.
+
+    The bounds are pinned to contain the rate; see :func:`wilson_interval` for why.
+    """
+    denominator = 1 + critical * critical / n
+    centre = (rate + critical * critical / (2 * n)) / denominator
+    half = critical * math.sqrt(rate * (1 - rate) / n + critical * critical / (4 * n * n)) / denominator
+    return min(rate, max(0.0, centre - half)), max(rate, min(1.0, centre + half))
 
 
 def wilson_interval(n_true: int, n: int) -> tuple[float, float] | None:
-    """The Wilson score interval on a proportion at :data:`INTERVAL_LEVEL` — how a boolean measure's rate is bounded.
+    """The Wilson score interval on a proportion at :data:`INTERVAL_LEVEL` over ``n`` independent trials.
 
     Wilson rather than the normal approximation because a boolean measure's rate sits at 0 or 1
     exactly when it is most interesting (every encounter on target, none), where the normal interval
     collapses to a zero-width point and reads as certainty from three observations. Wilson stays
     inside [0, 1] and keeps a width at the ends.
+
+    The trials must be independent: one per case. A reading whose observations can repeat a case takes
+    :func:`proportion_interval`, which is this interval wherever every case was observed once.
 
     Args:
         n_true: Observations that held.
@@ -289,15 +322,119 @@ def wilson_interval(n_true: int, n: int) -> tuple[float, float] | None:
     if n == 0:
         return None
     z = NormalDist().inv_cdf(1 - (1 - INTERVAL_LEVEL) / 2)
-    rate = n_true / n
-    denominator = 1 + z * z / n
-    centre = (rate + z * z / (2 * n)) / denominator
-    half = z * math.sqrt(rate * (1 - rate) / n + z * z / (4 * n * n)) / denominator
-    return min(rate, max(0.0, centre - half)), max(rate, min(1.0, centre + half))
+    return _wilson_bounds(n_true / n, n, z)
+
+
+def _require_aligned(values: Sequence[object], cases: Sequence[Hashable]) -> None:
+    if len(values) != len(cases):
+        raise ValueError(f"every observation needs its case; got {len(values)} observations and {len(cases)} cases")
+
+
+def clustered_standard_error(values: Sequence[float], cases: Sequence[Hashable]) -> float | None:
+    """Standard error of the mean of observations that come in cases — the cluster-robust form.
+
+    Repeats of one case share everything about the case, so they are not independent draws, and the
+    plain SEM over them is too small by about the square root of the repeats when cases differ more
+    than repeats do. This is Miller's cluster-robust standard error ("Adding Error Bars to Evals",
+    2024) with the ``G / (G - 1)`` small-sample factor over ``G`` cases:
+    ``sqrt(G / (G - 1) * Σ_g (Σ_i (y_gi - ȳ))²) / N``. It is the SE of the mean every reading reports — the
+    mean over the observations — and it is read on ``G - 1`` degrees of freedom.
+
+    It reduces to the forms a reader already knows. With every case observed once it is
+    :func:`standard_error_of_mean` (and returns exactly that). With every case observed the same number
+    of times it equals the SEM of the case means, the statistic a comparison between arms runs on.
+
+    Args:
+        values: The observations.
+        cases: Each observation's case, aligned with ``values``.
+
+    Returns:
+        The standard error, or ``None`` below two cases: one case has no between-case spread to
+        estimate, however often it was repeated, and its repeats say nothing about another case.
+
+    Raises:
+        ValueError: ``values`` and ``cases`` differ in length.
+    """
+    _require_aligned(values, cases)
+    n = len(values)
+    distinct = set(cases)
+    if len(distinct) == n:
+        return standard_error_of_mean([float(value) for value in values])
+    groups = len(distinct)
+    if groups < 2:
+        return None
+    mean = sum(values) / n
+    residual_by_case: dict[Hashable, float] = {}
+    for value, case in zip(values, cases):
+        residual_by_case[case] = residual_by_case.get(case, 0.0) + (value - mean)
+    return math.sqrt(groups / (groups - 1) * sum(r * r for r in residual_by_case.values())) / n
+
+
+def proportion_interval(outcomes: Sequence[bool], cases: Sequence[Hashable]) -> tuple[float, float] | None:
+    """The interval on a rate at :data:`INTERVAL_LEVEL` over observations that come in cases.
+
+    With every case observed once it is :func:`wilson_interval`, unchanged. Where cases repeat, it is
+    the Wilson interval on the observed rate with the sample size replaced by the effective one — the
+    observations divided by the design effect the clustering measured — and the normal multiplier by
+    t on ``cases - 1`` degrees of freedom, because the spread is now estimated from the cases.
+    Wilson's shape is kept for the reason it was chosen: a perfect rate keeps a width.
+
+    **The design effect is estimated with two pseudo-cases added**, one that held on every repeat and
+    one that held on none, each of the mean repeat depth — the case-level analogue of Agresti and
+    Coull's two added successes and failures. A design effect read off a handful of minority outcomes
+    is mostly noise: one miss among forty observations says nothing about whether misses cluster, and
+    the raw estimate calls it unclustered and returns a narrow interval exactly when the cases seen
+    were the easy ones. The pseudo-cases pull a thin estimate toward full clustering, give a perfect
+    rate an effective size of about its case count without a special case, and matter less as cases
+    are added. The effective size never exceeds the observations: clustering never adds information.
+
+    In simulation over 2 to 15 cases at 2 to 5 repeats, with case rates spread from mostly-shared to
+    all-or-nothing, it covered the true rate at least 95% of the time in every configuration, where
+    the Wilson interval over observations covered as little as 67%
+    (``tests/test_sim_reading_intervals.py``).
+
+    Args:
+        outcomes: Each observation's outcome.
+        cases: Each observation's case, aligned with ``outcomes``.
+
+    Returns:
+        ``(low, high)``; ``None`` with no observations, or when the observations repeat a single case —
+        one case has no between-case spread to estimate.
+
+    Raises:
+        ValueError: ``outcomes`` and ``cases`` differ in length.
+    """
+    _require_aligned(outcomes, cases)
+    n = len(outcomes)
+    n_true = sum(1 for outcome in outcomes if outcome)
+    size_by_case: dict[Hashable, int] = {}
+    true_by_case: dict[Hashable, int] = {}
+    for outcome, case in zip(outcomes, cases):
+        size_by_case[case] = size_by_case.get(case, 0) + 1
+        true_by_case[case] = true_by_case.get(case, 0) + (1 if outcome else 0)
+    groups = len(size_by_case)
+    if groups == n:
+        return wilson_interval(n_true, n)
+    if groups < 2:
+        return None
+    depth = n / groups
+    held = [float(true_by_case[case]) for case in size_by_case] + [depth, 0.0]
+    sizes = [float(size) for size in size_by_case.values()] + [depth, depth]
+    total = n + 2 * depth
+    smoothed = (n_true + depth) / total
+    pooled_groups = groups + 2
+    variance = (
+        pooled_groups
+        / (pooled_groups - 1)
+        * sum((h - size * smoothed) ** 2 for h, size in zip(held, sizes))
+        / (total * total)
+    )
+    effective_n = min(float(n), smoothed * (1 - smoothed) / variance)
+    return _wilson_bounds(n_true / n, effective_n, _t_multiplier(groups - 1))
 
 
 def mean_interval(
-    mean: float, sem: float, n: int, *, value_range: tuple[float, float] | None = None
+    mean: float, sem: float, n_cases: int, *, value_range: tuple[float, float] | None = None
 ) -> tuple[float, float] | None:
     """The interval on a mean at :data:`INTERVAL_LEVEL`, kept inside the scale the measure is declared on.
 
@@ -309,14 +446,14 @@ def mean_interval(
 
     Args:
         mean: The point estimate.
-        sem: Its standard error.
-        n: Observations behind it.
+        sem: Its standard error — :func:`clustered_standard_error` where observations can repeat a case.
+        n_cases: Independent cases behind it; see :func:`ci_half_width`.
         value_range: The measure's declared inclusive bounds, or None when it declares none.
 
     Returns:
-        ``(low, high)``, or ``None`` below two observations, where no interval is estimable.
+        ``(low, high)``, or ``None`` below two cases, where no interval is estimable.
     """
-    half = ci_half_width(sem, n)
+    half = ci_half_width(sem, n_cases)
     if half is None:
         return None
     low, high = mean - half, mean + half
@@ -327,34 +464,44 @@ def mean_interval(
 
 
 def observed_mean_interval(
-    values: Sequence[float], *, value_range: tuple[float, float] | None = None
+    values: Sequence[float], *, cases: Sequence[Hashable], value_range: tuple[float, float] | None = None
 ) -> tuple[float, float] | None:
     """The interval on the mean of a numeric measure's observations — the ONE rule every numeric summary takes.
 
     Observations that are each 0 or 1 on a measure declared on ``[0, 1]`` are trials, and their mean
     is a proportion: ``accuracy``, derived from each observation's ``match``, is exactly that. A
-    proportion is bounded by :func:`wilson_interval`, the rule its boolean twin takes, so ``accuracy``
+    proportion is bounded by :func:`proportion_interval`, the rule its boolean twin takes, so ``accuracy``
     and ``match`` over the same observations state one interval rather than two different ones — and
     a perfect score keeps a width instead of the t interval's zero-width point. Every other numeric
-    measure takes :func:`mean_interval`, clipped to its declared scale.
+    measure takes :func:`mean_interval` on the :func:`clustered_standard_error` over its cases, clipped to
+    its declared scale.
 
     Args:
         values: The observations.
+        cases: Each observation's case, aligned with ``values`` — required, because whether fifteen
+            observations are fifteen cases or five cases three times is the difference between two
+            interval widths, and nothing in the values says which.
         value_range: The measure's declared inclusive bounds, or None when it declares none.
 
     Returns:
         ``(low, high)``, or ``None`` below two observations, where no interval is estimable — the
         position :func:`standard_error_of_mean` takes, held for a proportion too, so a numeric
-        measure's interval appears and disappears at one n whatever its values.
+        measure's interval appears and disappears at one n whatever its values — and ``None`` when the
+        observations all repeat one case, which has no between-case spread to estimate.
+
+    Raises:
+        ValueError: ``values`` and ``cases`` differ in length.
     """
+    _require_aligned(values, cases)
     n = len(values)
     if n < 2:
         return None
-    mean = sum(values) / n
     if value_range == (0.0, 1.0) and all(value in (0.0, 1.0) for value in values):
-        return wilson_interval(sum(1 for value in values if value == 1.0), n)
-    sem = standard_error_of_mean(list(values))
-    return None if sem is None else mean_interval(mean, sem, n, value_range=value_range)
+        return proportion_interval([value == 1.0 for value in values], cases)
+    sem = clustered_standard_error(values, cases)
+    if sem is None:
+        return None
+    return mean_interval(sum(values) / n, sem, len(set(cases)), value_range=value_range)
 
 
 #: How far below its own mean (above, where lower is better) an incumbent's bar is seeded, as a fraction of
@@ -900,6 +1047,7 @@ __all__ = [
     "SignificanceResult",
     "bar_seed",
     "ci_half_width",
+    "clustered_standard_error",
     "cohen_kappa",
     "composite_significance",
     "holm_adjust",
@@ -907,6 +1055,7 @@ __all__ = [
     "mean_interval",
     "observed_mean_interval",
     "paired_change",
+    "proportion_interval",
     "standard_error_of_mean",
     "t_critical_two_sided",
     "wilson_interval",

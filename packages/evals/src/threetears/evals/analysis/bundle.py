@@ -80,7 +80,7 @@ from threetears.evals.analysis.cells import (
     pool_observations,
     subject_key_instabilities,
 )
-from threetears.evals.analysis.confusion import confusion_matrix, label_statistics
+from threetears.evals.analysis.confusion import label_statistics
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.reporting import (
     METRIC_COMPOSITE,
@@ -105,12 +105,12 @@ from threetears.evals.analysis.reporting import (
 from threetears.evals.analysis.stats import (
     MULTIPLE_COMPARISON_CORRECTION,
     SIGNIFICANCE_ALPHA,
+    clustered_standard_error,
     composite_significance,
     holm_adjust,
     interval_clears,
     observed_mean_interval,
-    standard_error_of_mean,
-    wilson_interval,
+    proportion_interval,
 )
 from threetears.evals.contracts.analysis_measures import BarAdjudication, BarVerdict, MeasureCollection, MeasureSummary
 from threetears.evals.contracts.campaign import (
@@ -1018,8 +1018,8 @@ class JudgedArm(EvalDocumentModel):
     n_independent: int = Field(
         ge=0,
         description=(
-            "Distinct test cases behind those scores. Below n, the scores are repeats of the same cases "
-            "and `sem` is narrower than the data supports, exactly as on a telemetry measure."
+            "Distinct test cases behind those scores — the independent draws. Below n, the scores are repeats "
+            "of the same cases, and `sem` is computed over the cases, exactly as on a telemetry measure."
         ),
     )
     n_infra_excluded: int = Field(
@@ -1040,7 +1040,12 @@ class JudgedArm(EvalDocumentModel):
     )
     mean: float | None = Field(default=None, description="Mean score on the dimension's own scale. None when n is 0.")
     sem: float | None = Field(
-        default=None, description="Standard error of that mean. None below n=2, where no spread is estimable."
+        default=None,
+        description=(
+            "Standard error of that mean, over the test cases (cluster-robust: a case's repeats are not "
+            "independent draws), read on `n_independent - 1` degrees of freedom. None below two cases, where "
+            "no between-case spread is estimable."
+        ),
     )
     evidence_tier: JudgedEvidenceTier = Field(
         description=(
@@ -1622,7 +1627,7 @@ class AnalysisContextBundle(EvalDocumentModel):
     # A/B set spanning a bump must be read as spanning it. Why each earlier version moved is in
     # this file's history.
     schema_version: int = Field(
-        default=44, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=45, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -2937,6 +2942,10 @@ def _in_population(population: MeasurePopulation, result: EvalResult) -> bool:
     return True
 
 
+#: One measure's pooled observations: its descriptor, its values, and each value's test case.
+_PooledMeasure = tuple[MetricDescriptor, list[float | str], list[str]]
+
+
 def _measure_collection(
     results: list[EvalResult], *, profile: HostProfile, undeclared: MeasurePopulation
 ) -> MeasureCollection:
@@ -2993,19 +3002,19 @@ def _collect_measures(
     but could not summarise is named in ``unreported_observations`` — see that field for why
     silence there was the dangerous case.
     """
-    outer: dict[str, tuple[MetricDescriptor, list[float | str]]] = {}
-    inner: dict[str, tuple[MetricDescriptor, list[float | str]]] = {}
+    # Each observation is pooled beside its test case. `n` alone cannot distinguish 15 independent
+    # observations from 5 cases repeated 3 times, and the two license very different intervals —
+    # pooling k repeats as independent draws narrows every interval by roughly sqrt(k). So the
+    # summary computes its spread over the cases and counts them, from the very observations it
+    # pooled: a name's two levels never contribute cases to each other.
+    outer: dict[str, _PooledMeasure] = {}
+    inner: dict[str, _PooledMeasure] = {}
     unreported: set[str] = set()
     carriers_by_name: dict[str, set[str]] = {}
     inner_units: dict[str, str] = {}
-    # Distinct test cases behind each measure. `n` alone cannot distinguish 15 independent
-    # observations from 5 cases repeated 3 times, and the two license very different
-    # intervals — pooling k repeats as independent draws narrows every interval by roughly
-    # sqrt(k). Carried structurally so the reader is never in a position to assume.
-    cases_by_name: dict[str, set[str]] = {}
 
     def record(
-        level: dict[str, tuple[MetricDescriptor, list[float | str]]],
+        level: dict[str, _PooledMeasure],
         name: str,
         value: float | str,
         descriptor: MetricDescriptor,
@@ -3036,8 +3045,9 @@ def _collect_measures(
             return
         if carrier is not None:
             carriers_by_name.setdefault(name, set()).add(carrier)
-        cases_by_name.setdefault(name, set()).add(case_id)
-        level.setdefault(name, (descriptor, []))[1].append(value)
+        _, values, cases = level.setdefault(name, (descriptor, [], []))
+        values.append(value)
+        cases.append(case_id)
 
     for result in results:
         case_id = result.test_case_id
@@ -3082,16 +3092,16 @@ def _collect_measures(
     pooled = {**{name: entry for name, entry in inner.items() if name not in EvalResult.model_fields}, **outer}
 
     measures = [
-        _measure_summary(
-            *pooled[name],
-            n_independent=len(cases_by_name.get(name, ())),
-            population=summary_population(pooled[name][0], undeclared),
-        )
+        _measure_summary(*pooled[name], population=summary_population(pooled[name][0], undeclared))
         for name in sorted(pooled)
     ]
     confusion = next((measure for measure in measures if measure.name == CONFUSION_CELL_MEASURE), None)
     if confusion is not None:
-        measures = sorted([*measures, *_classifier_label_summaries(confusion)], key=lambda measure: measure.name)
+        _, cells, cell_cases = pooled[CONFUSION_CELL_MEASURE]
+        observations = [(str(cell), case) for cell, case in zip(cells, cell_cases)]
+        measures = sorted(
+            [*measures, *_classifier_label_summaries(confusion, observations)], key=lambda measure: measure.name
+        )
     present = {measure.attribution_scope for measure in measures}
     collection = MeasureCollection(
         measures=measures,
@@ -3107,16 +3117,18 @@ def _collect_measures(
     return collection, {name: units[name] for name in pooled}
 
 
-def _classifier_label_summaries(confusion: MeasureSummary) -> list[MeasureSummary]:
+def _classifier_label_summaries(
+    confusion: MeasureSummary, observations: Sequence[tuple[str, str]]
+) -> list[MeasureSummary]:
     """Each label's precision, recall and F1, derived from a cell's confusion matrix.
 
-    The matrix is the ``confusion_cell`` measure's category counts — one count per
-    ``expected → predicted`` pair — so the per-label statistics are counted from what the walk already
+    The matrix is the ``confusion_cell`` measure's observations — one ``expected → predicted`` pair
+    each, beside its test case — so the per-label statistics are counted from what the walk already
     pooled, over the same population, never re-read from the results, and counted by
     :func:`~threetears.evals.analysis.confusion.label_statistics`, the one count the run summary reads
     too. Precision and recall are
-    proportions, so each is a boolean-shaped summary: its rate, the count behind it, and the Wilson
-    interval. F1 is not a proportion of anything, so it is a numeric summary with a mean and no
+    proportions, so each is a boolean-shaped summary: its rate, the count behind it, and its interval
+    over the cases (:func:`~threetears.evals.analysis.stats.proportion_interval`). F1 is not a proportion of anything, so it is a numeric summary with a mean and no
     spread — it has none by construction, at any n. It is the harmonic mean of precision and recall, so a
     label missing either has no F1 either, rather than an F1 of 0.0 stated over no evidence; its ``n`` is
     the label's support across both — the observations predicted or expected as it
@@ -3124,18 +3136,25 @@ def _classifier_label_summaries(confusion: MeasureSummary) -> list[MeasureSummar
 
     Args:
         confusion: The ``confusion_cell`` summary.
+        observations: The ``(confusion_cell, test_case_id)`` observations it summarises.
 
     Returns:
         The derived summaries, named by :func:`~threetears.evals.contracts.metrics.classifier_label_measure`.
         A label never predicted has no precision; one never expected has no recall; either has no F1.
     """
     derived: list[MeasureSummary] = []
-    for statistics in label_statistics(confusion_matrix(confusion.categories)):
-        rates: tuple[tuple[ClassifierStatistic, int, float | None, tuple[float, float] | None], ...] = (
-            ("precision", statistics.predicted, statistics.precision, statistics.precision_interval),
-            ("recall", statistics.expected, statistics.recall, statistics.recall_interval),
+    for statistics in label_statistics(observations):
+        rates: tuple[tuple[ClassifierStatistic, int, int, float | None, tuple[float, float] | None], ...] = (
+            (
+                "precision",
+                statistics.predicted,
+                statistics.predicted_cases,
+                statistics.precision,
+                statistics.precision_interval,
+            ),
+            ("recall", statistics.expected, statistics.expected_cases, statistics.recall, statistics.recall_interval),
         )
-        for statistic, n, rate, interval in rates:
+        for statistic, n, cases, rate, interval in rates:
             if rate is not None:
                 derived.append(
                     MeasureSummary(
@@ -3144,6 +3163,7 @@ def _classifier_label_summaries(confusion: MeasureSummary) -> list[MeasureSummar
                         higher_is_better=True,
                         population=confusion.population,
                         n=n,
+                        n_independent=cases,
                         rate=rate,
                         n_true=statistics.correct,
                         ci_low=None if interval is None else interval[0],
@@ -3167,28 +3187,33 @@ def _classifier_label_summaries(confusion: MeasureSummary) -> list[MeasureSummar
 def _measure_summary(
     descriptor: MetricDescriptor,
     values: list[float | str],
+    cases: list[str],
     *,
-    n_independent: int = 0,
     population: MeasurePopulation,
 ) -> MeasureSummary:
     """Summarise one measure's observations in the shape its data type takes.
 
+    A spread is computed over the test cases, never over the observations as if each were its own
+    draw: the SEM is :func:`~threetears.evals.analysis.stats.clustered_standard_error`, and the interval
+    is read on ``n_independent - 1`` degrees of freedom. Where every case was observed once, both are
+    the unclustered forms exactly.
+
     Args:
         descriptor: The measure's registry descriptor, carried onto the summary.
         values: Its observations, at least one.
-        n_independent: Distinct test cases behind those observations.
+        cases: Each observation's test case, aligned with ``values``.
         population: The population those observations were drawn from, stated on the summary.
 
     Returns:
-        A categorical summary (counts), a boolean one (rate + Wilson interval), a text one (every
-        observation listed, nothing aggregated) or a numeric one (distribution + SEM).
+        A categorical summary (counts), a boolean one (rate + interval), a text one (every
+        observation listed, nothing aggregated) or a numeric one (distribution + SEM + interval).
     """
     shape: dict[str, Any]
     if descriptor.data_type == "text":
         shape = {"texts": [str(value) for value in values]}
     elif descriptor.data_type == "boolean":
         n_true = sum(1 for value in values if value is True)
-        interval = wilson_interval(n_true, len(values))
+        interval = proportion_interval([value is True for value in values], cases)
         shape = {
             "rate": n_true / len(values),
             "n_true": n_true,
@@ -3201,10 +3226,11 @@ def _measure_summary(
             counts[str(value)] = counts.get(str(value), 0) + 1
         shape = {"categories": counts}
     else:
-        numeric = sorted(float(value) for value in values)
+        observed = [float(value) for value in values]
+        numeric = sorted(observed)
         mean = sum(numeric) / len(numeric)
-        sem = standard_error_of_mean(numeric)
-        interval = observed_mean_interval(numeric, value_range=descriptor.value_range)
+        sem = clustered_standard_error(observed, cases)
+        interval = observed_mean_interval(observed, cases=cases, value_range=descriptor.value_range)
         shape = {
             "mean": mean,
             "p05": _percentile(numeric, 0.05),
@@ -3222,8 +3248,9 @@ def _measure_summary(
             # silently came back with no visualization at all. Interval of the mean,
             # not of the observations: it
             # answers "where does this arm's average sit", which is the question a
-            # null result asks. None below n=2, where `sem` itself is unestimable. Inside the measure's
-            # declared scale, and a 0/1 measure's is its proportion's Wilson interval — one rule,
+            # null result asks. Over the cases, not the observations, so k repeats of a case are not
+            # k draws. None below n=2, or over a single case, where `sem` itself is unestimable. Inside
+            # the measure's declared scale, and a 0/1 measure's is its proportion's interval — one rule,
             # `stats.observed_mean_interval`, so `accuracy` and the `match` it is derived from agree.
             "ci_low": None if interval is None else interval[0],
             "ci_high": None if interval is None else interval[1],
@@ -3234,7 +3261,7 @@ def _measure_summary(
         higher_is_better=descriptor.higher_is_better,
         population=population,
         n=len(values),
-        n_independent=n_independent,
+        n_independent=len(set(cases)),
         **shape,
     )
 
@@ -5049,9 +5076,11 @@ def _within_level_dispersion(
     statistic), and averages across levels. This is the noise the point estimate at
     a level carries — the "is this ±0.10 or ±0.01" signal the analysis wants — and it is
     lever-specific (a different grouping per lever), unlike a spread pooled across
-    every observation. ``standard_error_of_mean`` needs ≥2 values, so a level with a
-    lone observation contributes nothing; if no level clears that bar the spread is
-    unestimable and the field reads ``"unscored"`` (honest, not a fabricated 0).
+    every observation. The standard error is over test cases
+    (``clustered_standard_error``), since a level's repeats of one case are not independent
+    draws, and it needs ≥2 cases, so a level with a lone case contributes nothing; if no
+    level clears that bar the spread is unestimable and the field reads ``"unscored"``
+    (honest, not a fabricated 0).
 
     Args:
         composite_records: Score records for the composite metric, ``value`` present.
@@ -5062,11 +5091,13 @@ def _within_level_dispersion(
         ``"±"`` and the mean within-level SEM in :func:`~threetears.evals.analysis.numbers.format_number`'s spelling,
         or ``"unscored"``.
     """
-    by_level: dict[str, list[float]] = {}
+    by_level: dict[str, tuple[list[float], list[str]]] = {}
     for record in composite_records:
         if record.value is not None and (level := _lever_value(record, lever, effective_by_run)) is not None:
-            by_level.setdefault(level, []).append(record.value)
-    sems = [sem for values in by_level.values() if (sem := standard_error_of_mean(values)) is not None]
+            values, cases = by_level.setdefault(level, ([], []))
+            values.append(record.value)
+            cases.append(record.test_case_id)
+    sems = [sem for values, cases in by_level.values() if (sem := clustered_standard_error(values, cases)) is not None]
     if not sems:
         return "unscored"
     return f"±{format_number(sum(sems) / len(sems))}"
@@ -6160,7 +6191,9 @@ def _judged_measures(
             counted = [
                 row for row in rows if row.outcome not in (ResultOutcome.INFRA_EXCLUDE.value, JUDGE_CANNOT_TELL_OUTCOME)
             ]
-            values = [float(row.value) for row in counted if row.value is not None]
+            valued = [row for row in counted if row.value is not None]
+            values = [float(row.value) for row in valued if row.value is not None]
+            value_cases = [row.test_case_id for row in valued]
             # The whole judge behind each counted score — dimension, scale, served model and config — so an arm
             # can only carry a tier measured for the very judges that scored it.
             served = [
@@ -6174,11 +6207,11 @@ def _judged_measures(
                     apparatus_class_id=key[1],
                     run_ids=_member_run_ids(results_by_cell[key]),
                     n=len(values),
-                    n_independent=len({row.test_case_id for row in counted}),
+                    n_independent=len(set(value_cases)),
                     n_infra_excluded=len(rows) - len(counted) - len(cannot_tell),
                     n_cannot_tell=len(cannot_tell),
                     mean=sum(values) / len(values) if values else None,
-                    sem=standard_error_of_mean(values) if values else None,
+                    sem=clustered_standard_error(values, value_cases) if values else None,
                     evidence_tier=tier_for_judges(tiers, served),
                 )
             )
@@ -6323,12 +6356,13 @@ def _bar_reading(
     if not rows:
         return None
     values = [value for value, _ in rows]
+    cases = [case for _, case in rows]
     return (
         sum(values) / len(values),
-        standard_error_of_mean(values),
+        clustered_standard_error(values, cases),
         len(values),
-        len({case for _, case in rows}),
-        observed_mean_interval(values, value_range=bar.descriptor.value_range),
+        len(set(cases)),
+        observed_mean_interval(values, cases=cases, value_range=bar.descriptor.value_range),
     )
 
 

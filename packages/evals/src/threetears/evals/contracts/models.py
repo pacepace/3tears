@@ -1651,8 +1651,8 @@ class ContextComponents(EvalDocumentModel):
     # only in precision, and badging that as a context difference was a caveat about nothing.
     # A component this class does not compose has no business being on it: every field here
     # is read as "a dimension the key holds fixed". Depth is disclosed where it belongs, by
-    # the surfaces that own it (``Iters/case``, ``scored_iterations_min``/``max``, the
-    # completeness sentence).
+    # the surfaces that own it (``Iters/case``, the per-point case counts on the pass^k curve,
+    # the completeness sentence).
     tool_permissions: str | None = Field(
         default=None,
         description=(

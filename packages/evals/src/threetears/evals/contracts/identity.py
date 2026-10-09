@@ -148,15 +148,16 @@ if TYPE_CHECKING:
 #:   ``k`` is not a condition — it is how many repetitions were taken under one — so two runs at
 #:   k=1 and k=3 were measured identically and differ only in precision. Keeping it made a k=1
 #:   pilot badge ``context_differs`` against the k=3 run that followed, a caveat about nothing.
-#:   Depth is disclosed by the surfaces that own it (``Iters/case``, ``scored_iterations_min``/
-#:   ``max``, the completeness sentence), which is where a pass^k mixture belongs.
-#:   **Read this before assuming (c) changed pooling: it did not.** ``context_key`` gates no
-#:   grouping anywhere today — ``comparison_sets`` groups by ``(subject_id, template_id)`` and
+#:   Depth is disclosed by the surfaces that own it (``Iters/case``, the per-point case counts on
+#:   the pass^k curve, the completeness sentence).
+#:   **Read this before assuming (c) changed pooling: at the time it did not.** ``context_key``
+#:   gated no grouping then — ``comparison_sets`` groups by ``(subject_id, template_id)`` and
 #:   uses the key only to raise ``BADGE_CONTEXT_DIFFERS``, and the frontier pools by
-#:   ``variant_key``. So (c) removes a false badge and nothing else. In particular it does NOT
-#:   make three k=1 runs compose a pass^3 finding; ``compute_pass_k`` groups attempts by
-#:   ``(model, eval_run_id, test_case_id)``, so cross-run depth cannot compose regardless of any
-#:   key. That capability is unbuilt and unscoped — see the audit.
+#:   ``variant_key``. So (c) removed a false badge and nothing else; the pass^k of the day
+#:   (``compute_pass_k``) grouped attempts by ``(model, eval_run_id, test_case_id)``, so three k=1
+#:   runs could not compose a pass^3 finding under any key. Since #591 they can: the frontier's
+#:   pass^k pools a case's attempts across the runs of one variant that share a context key
+#:   (``scoring.pass_hat_k_cell``), and (c) is what lets runs at different k share one.
 #: - **v8** — the variant predicate stopped naming its inputs. It hashed ten fields of the first
 #:   host's subject snapshot plus a prompt-override map, so only a host with that subject shape
 #:   could produce a key; it now hashes whatever the host resolved for its own registered levers,

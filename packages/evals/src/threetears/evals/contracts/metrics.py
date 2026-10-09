@@ -40,7 +40,7 @@ remainder is only "unattributed" where the part EXHAUSTS the whole. ``total_ms``
 into three components, so differencing one of them leaves the other two's movement — which
 this catalog names, and is therefore attributed.
 
-``family`` does not determine ``transferability_class``. Both ``pass_at_k`` and
+``family`` does not determine ``transferability_class``. Both ``pass_hat_k`` and
 ``mean_composite`` are ``composite`` family, but pass^k is scenario-defined while the
 composite is judge-mediated — which is exactly why the class is recorded rather than
 inferred.
@@ -960,35 +960,10 @@ _SEED: tuple[MetricDescriptor, ...] = (
         attribution_scope="end_to_end",
         unit="iterations",
         description=(
-            "The deepest iteration this model attempted in this run — the k in pass^k on a run that "
-            "finished its matrix. It counts cells excluded as harness failures, so on a partial run it is "
-            "what was attempted rather than what was scored; read scored_iterations_min/max for that."
-        ),
-    ),
-    _d(
-        name="scored_iterations_min",
-        data_type="numeric",
-        family="mechanical",
-        transferability_class="mechanical",
-        attribution_scope="end_to_end",
-        unit="iterations",
-        description=(
-            "The fewest scored iterations any counted test case contributed to pass^k. Equal to "
-            "scored_iterations_max when every case was measured to the same depth."
-        ),
-    ),
-    _d(
-        name="scored_iterations_max",
-        data_type="numeric",
-        family="mechanical",
-        transferability_class="mechanical",
-        attribution_scope="end_to_end",
-        unit="iterations",
-        description=(
-            "The most scored iterations any counted test case contributed to pass^k. A gap to "
-            "scored_iterations_min means the run's cases were measured to uneven depths — cells execute in "
-            "a per-run shuffled order, so a run that stopped part-way leaves an arbitrary subset of its "
-            "matrix — and pass^k over uneven depths is a mixture that flatters the shallower cases."
+            "The depth the headline pass_hat_k is read at. On a run summary it is the deepest iteration this "
+            "model attempted in the run (the run's planned k once its matrix finished), counting cells excluded "
+            "as harness failures; a comparison reads every side at one shared depth. The cases actually scored "
+            "that deep are n_cases_at_k."
         ),
     ),
     _d(
@@ -1005,14 +980,17 @@ _SEED: tuple[MetricDescriptor, ...] = (
         ),
     ),
     _d(
-        name="fully_passing_cases",
+        name="n_cases_at_k",
         data_type="numeric",
-        family="composite",
+        family="mechanical",
         transferability_class="scenario_bound",
         attribution_scope="end_to_end",
-        higher_is_better=True,
         unit="cases",
-        description="Cases that passed on every non-excluded iteration — the numerator of pass^k.",
+        description=(
+            "The cases pass_hat_k averages over: those scored at least k times. The estimator is undefined "
+            "for a case measured fewer times, so a run stopped part-way leaves its shallow cases out of the "
+            "deep points rather than letting one passed attempt stand in for k."
+        ),
     ),
     _d(
         name="mean_total_ms",
@@ -1363,17 +1341,18 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     # ---- Composites ---------------------------------------------------------
     _d(
-        name="pass_at_k",
+        name="pass_hat_k",
         data_type="numeric",
         family="composite",
         transferability_class="scenario_bound",
         attribution_scope="end_to_end",
         higher_is_better=True,
         value_range=(0.0, 1.0),
-        formula="test cases passing every non-excluded k-iteration / test cases run",
+        formula="mean over cases scored at least k times of C(c, k) / C(n, k), n scored attempts and c passes",
         description=(
-            "Reliability, not average quality: a case counts only if every attempt cleared every rubric "
-            "dimension and every goal-state check. Infra-excluded iterations leave both sides of the ratio."
+            "pass^k (τ-bench): the chance that k attempts at a case ALL pass — never pass@k, the chance that at "
+            "least one does. An attempt passes only if it cleared every rubric dimension and every goal-state "
+            "check. Unbiased at any depth; infra-excluded attempts count toward no case's n."
         ),
     ),
     _d(
@@ -1664,7 +1643,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
 )
 
-_SEED = _SEED + _compare_trio("pass_at_k", "Reliability (pass^k)", "scenario_bound")
+_SEED = _SEED + _compare_trio("pass_hat_k", "Reliability (pass^k at the shared depth k)", "scenario_bound")
 _SEED = _SEED + _compare_trio("composite", "Mean composite quality", "judge_mediated")
 
 METRIC_DESCRIPTORS: dict[str, MetricDescriptor] = {d.name: d for d in _SEED}

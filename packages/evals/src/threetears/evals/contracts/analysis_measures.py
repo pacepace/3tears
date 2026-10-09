@@ -32,8 +32,8 @@ class MeasureSummary(EvalDocumentModel):
 
     - **numeric** — the distribution fields populated;
     - **categorical** — ``categories`` populated with counts;
-    - **boolean** — ``rate`` and ``n_true``, with ``ci_low``/``ci_high`` the Wilson interval on the
-      rate. A condition is counted, never averaged into a percentile;
+    - **boolean** — ``rate`` and ``n_true``, with ``ci_low``/``ci_high`` the interval on the rate
+      over its cases (Wilson's, where every case was observed once). A condition is counted, never averaged into a percentile;
     - **text** — ``texts``, every observation listed as evidence in observation order. Never
       aggregated: no mean, no mode, no count of distinct values stands in for what was said.
 
@@ -66,11 +66,10 @@ class MeasureSummary(EvalDocumentModel):
         default=0,
         ge=0,
         description=(
-            "Distinct TEST CASES behind those observations. When it is below `n`, the "
-            "observations are CLUSTERED (k repeats of the same case) and are NOT independent "
-            "draws: `sem`, `ci_low` and `ci_high` here are computed over `n` and are therefore "
-            "NARROWER than the clustering supports. Treat `n_independent` as the sample size "
-            "any claim of separation rests on."
+            "Distinct TEST CASES behind those observations — the independent draws. When it is below "
+            "`n`, the observations are CLUSTERED (k repeats of the same case), and `sem`, `ci_low` and "
+            "`ci_high` are computed over the cases, not the observations, so they already carry it. Treat "
+            "`n_independent` as the sample size any claim of separation rests on."
         ),
     )
     n_zero: int | None = Field(
@@ -95,15 +94,25 @@ class MeasureSummary(EvalDocumentModel):
     max: float | None = Field(default=None, description="Largest observed value (numeric only).")
     sem: float | None = Field(
         default=None,
-        description="Standard error of the mean (the dispersion requirement). None below n=2, where it is unestimable.",
+        description=(
+            "Standard error of the mean (the dispersion requirement), over the test cases: cluster-robust, so a "
+            "case's repeats are not counted as independent draws. None below n=2, or when every observation "
+            "repeats one case, where it is unestimable."
+        ),
     )
     ci_low: float | None = Field(
         default=None,
-        description="Low bound of the 95% interval on the MEAN (t-based, so honest at small n). None below n=2.",
+        description=(
+            "Low bound of the 95% interval on the MEAN (t on `n_independent - 1` degrees of freedom, so honest "
+            "at small n). None below n=2, or over a single case."
+        ),
     )
     ci_high: float | None = Field(
         default=None,
-        description="High bound of the 95% interval on the MEAN (t-based, so honest at small n). None below n=2.",
+        description=(
+            "High bound of the 95% interval on the MEAN (t on `n_independent - 1` degrees of freedom, so honest "
+            "at small n). None below n=2, or over a single case."
+        ),
     )
     categories: dict[str, int] = Field(
         default_factory=dict, description="Value counts for a categorical measure; empty for a numeric one."
@@ -114,7 +123,7 @@ class MeasureSummary(EvalDocumentModel):
         le=1.0,
         description=(
             "A boolean measure's share of observations that held (`n_true / n`), with `ci_low`/`ci_high` its "
-            "Wilson interval. None on every other shape."
+            "interval over the cases — Wilson's where every case was observed once. None on every other shape."
         ),
     )
     n_true: int | None = Field(
@@ -257,7 +266,10 @@ class BarVerdict(EvalDocumentModel):
         ),
     )
     sem: float | None = Field(
-        default=None, description="Standard error of that mean, so a margin inside the noise can be said to be one."
+        default=None,
+        description=(
+            "Standard error of that mean, over the test cases, so a margin inside the noise can be said to be one."
+        ),
     )
     n: int = Field(ge=0, description="Observations behind the value — the cell's non-faulted results only.")
     n_independent: int = Field(ge=0, description="Distinct test cases behind them.")

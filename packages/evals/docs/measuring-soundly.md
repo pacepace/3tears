@@ -7,7 +7,9 @@ classifier, a retrieval sub-agent it calls, and the engine's own analysis writer
 
 Each finding is a rule, its reason and an *Evidence:* line; "replicated" means two or more independent
 campaigns or arm pairs showed it. Terms are as [Concepts](concepts.md) defines them.
-**pass^k** is the share of cases that pass on every one of their k repeats.
+**pass^k** is the chance that k attempts at a case all pass: per case C(c, k) / C(n, k) from c passes in
+n ≥ k repeats, averaged over the cases measured that deep (field `pass_hat_k`). It is not pass@k, the chance
+that at least one of k passes.
 
 ## Variance, k and how many cases
 
@@ -20,11 +22,11 @@ one anchored on an observable order reproduced exactly, and one judging "the rig
 *Evidence:* retrieval sub-agent, 6 models, k=1 then k=3 over 3 cases, 2026-07, one model's two leading dimensions fell from 3.3 to 1.4, single campaign.
 
 **Add cases before repeats.** k measures consistency and cases measure coverage, so five cases at k=3 are not
-fifteen independent draws. The engine's interval is computed over observations, so it is too narrow when
-they cluster by case. It says so (`ResolvedReading.dispersion`), and you should read the case count. At n=5 a
+fifteen independent draws. The engine computes every reading's interval over the cases, so five cases at
+k=3 get the width of five draws, not fifteen; repeats narrow it only as far as they steady each case. At n=5 a
 paired test resolves only d_z ≈ 1.25, so "not significant" there says almost nothing. Size the bank from a
 measured effect: for d_z ≈ 0.74 about 16 cases reach 80% power, and 32 cases detect about 0.50.
-*Evidence:* agent with tools, two independent arm pairs at n=5, 2026-08, pass^k 0.2 → 0.8 gave p=0.174 and p=0.629, replicated; in simulation (2026-09) a 95% interval over observations from 5 cases × k=3 covered the truth 70.3% of the time, against 94.3% over case means.
+*Evidence:* agent with tools, two independent arm pairs at n=5, 2026-08, pass^k 0.2 → 0.8 gave p=0.174 and p=0.629, replicated; in simulation (2026-09) a 95% interval over observations from 5 cases × k=3 covered the truth 70.3% of the time, against 94.3% over case means; from 2 to 15 cases at k=1 to 5 the engine's interval over cases covered 95% on average for a mean, every configuration within Monte-Carlo error, and at least 96% for a rate, against as little as 51% and 67% over observations (`tests/test_sim_reading_intervals.py`, 2026-10).
 
 **A small bank flatters.** Widening it lowers the score and improves the measurement. See
 [How many cases](designing-classifier-evals.md#4-how-many-cases).
@@ -58,7 +60,7 @@ overlap in time (`measurement_window_disclosure`).
 ## Metrics that mislead
 
 **Keep the pass^k conjunction small and reliable.** A trial passes only when every goal-state check passes
-and every judged dimension clears the bar (`compute_pass_k`). So pass^k collapses to its weakest member, and
+and every judged dimension clears the bar (`compute_pass_hat_k`). So pass^k collapses to its weakest member, and
 judge noise counts as candidate unreliability. Conjoin checks a competent candidate clears and dimensions
 whose retest agreement you have measured. Ranking and diagnosis are two jobs.
 *Evidence:* agent with tools, 2 campaigns, 2026-07 and 2026-08, one never-clearing dimension held pass^k to 0.0 or 0.2 for every arm, and a strict check set pinned it at 0 for every arm; in simulation (2026-09) a perfect candidate with five dimensions, each falsely failing 5% of the time, shows pass^3 ≈ 0.46.

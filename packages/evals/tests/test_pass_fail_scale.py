@@ -27,7 +27,7 @@ from threetears.evals.contracts.models import (
     RubricScore,
 )
 from threetears.evals.contracts.provider import withhold_failure_detail
-from threetears.evals.contracts.scoring import compute_dimension_summary, compute_pass_k, result_composite
+from threetears.evals.contracts.scoring import compute_dimension_summary, compute_pass_hat_k, result_composite
 from threetears.evals.run.judge import SCALE_READERS, run_judge_llm
 from threetears.evals.run.judge_service import JudgeContext, JudgeService
 from packages.evals.tests.factories import make_eval_result, make_eval_run
@@ -215,9 +215,9 @@ class TestAggregation:
         passed = _result(rubric_scores=[RubricScore(dim="x.a", scale="pass_fail", score=1)])
         failed = _result(test_case_id="tc-2", rubric_scores=[RubricScore(dim="x.a", scale="pass_fail", score=0)])
 
-        [row] = compute_pass_k([passed, failed], rubric_threshold=5).values()
+        [row] = compute_pass_hat_k([passed, failed], rubric_threshold=5).values()
 
-        assert row["n_test_cases"] == 2 and row["pass_at_k"] == 0.5
+        assert row["n_test_cases"] == 2 and row["pass_hat_k"] == 0.5
 
     def test_a_dimension_summary_names_its_scale_and_its_mean_is_the_pass_rate(self):
         results = [

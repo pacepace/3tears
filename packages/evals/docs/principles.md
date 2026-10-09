@@ -57,8 +57,9 @@ price is unpriced, not free. See [rig failures](adopting-a-host.md#rig-failures-
 **Count test cases, not attempts.**
 Five cases run three times are five pieces of evidence, not fifteen: repeats of one case are correlated.
 Comparisons against the control run on per-case means, paired when both arms ran the same cases. A single
-reading's interval is still computed over trials and says "interval too narrow" instead
-([open problems](open-problems.md)).
+reading's interval is computed over cases too: a cluster-robust standard error on `n_cases − 1` degrees of
+freedom, and for a rate a Wilson interval on the effective sample size the clustering leaves. A reading of
+one case repeated has no interval.
 
 **A verdict comes from a corrected test, and "not separated" never means "no difference".**
 Each contrast against the control is `improved`, `regressed`, `not_separated` or `untested`, read off a

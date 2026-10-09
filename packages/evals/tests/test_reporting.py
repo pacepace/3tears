@@ -809,7 +809,10 @@ class TestPerDimensionRows:
                 WEIGHTING_EQUAL_PER_SCENARIO,
                 "the dispersion is over test-case means — a BASIS pooling does not change, though the means themselves do",
             ),
-            (WEIGHTING_SAMPLE_WEIGHTED, "and so is the dispersion"),
+            (
+                WEIGHTING_SAMPLE_WEIGHTED,
+                "the dispersion is clustered by test case, so the rows of one case are not independent draws",
+            ),
         ],
     )
     def test_the_pooled_caveat_names_the_dispersion_basis_the_weighting_actually_uses(self, weighting, expected):
@@ -1700,7 +1703,7 @@ class TestComparisonSets:
         under — a k=1 pilot and the k=3 run that followed it were measured identically and
         differ only in precision. Badging that told an operator the two were not comparable,
         which is a caveat about nothing. Depth is disclosed by the surfaces that own it
-        (``Iters/case``, ``scored_iterations_min``/``max``, the completeness sentence).
+        (``Iters/case``, the per-point case counts on the pass^k curve, the completeness sentence).
         """
         sets = compute_comparison_sets(
             [_stamped_run(k_runs=1), _stamped_run(k_runs=3)], profile=_JUDGED_HOST
@@ -4509,7 +4512,7 @@ class TestHistoryCostLeavesOutACallThatTookNoTurn:
 class TestFrontierLatencyExcludesTheHarnesssOwnCells:
     """The frontier RANKS on latency, so an apparatus fault must not move a contestant.
 
-    `compute_pass_k` and `compute_dimension_summary` drop infra-excluded cells and
+    `compute_pass_hat_k` and `compute_dimension_summary` drop infra-excluded cells and
     `compute_cost_summary` deliberately keeps them, so latency being the third policy
     was a real divergence rather than a style choice: domination is decided over
     pass^k x production-replicating cost x total latency, and an infra-excluded cell carries a REAL but
@@ -5275,7 +5278,7 @@ class TestFrontierTemplateSpan:
 
         assert verdict is not None
         assert verdict.model == "cheap"
-        assert verdict.pass_at_k == 1.0
+        assert verdict.pass_hat_k == 1.0
 
     def test_a_clean_verdict_says_nothing(self):
         run = _fr_run(template_id="tpl-1")
@@ -5445,8 +5448,8 @@ class TestFrontierCostIsProductionReplicating:
 
         point = compute_frontier([run], results).subjects[0].points[0]
 
-        # cost 0.5, pass^k 0.5 → 0.5 / 0.5 = 1.0
-        assert point.pass_at_k == pytest.approx(0.5)
+        # cost 0.5, pass^1 0.5 → 0.5 / 0.5 = 1.0
+        assert point.pass_hat_k == pytest.approx(0.5)
         assert point.cost_per_acceptable_outcome == pytest.approx(1.0)
 
     def test_cost_per_acceptable_outcome_is_none_when_nothing_passes(self):
@@ -5455,7 +5458,7 @@ class TestFrontierCostIsProductionReplicating:
 
         point = compute_frontier([run], [result]).subjects[0].points[0]
 
-        assert point.pass_at_k == 0.0
+        assert point.pass_hat_k == 0.0
         assert point.cost_per_acceptable_outcome is None
 
 
@@ -5495,7 +5498,7 @@ class TestFrontierPartialCost:
 class TestFrontierAllFailedVariantRanksAtZero:
     """A variant whose every result failed scores 0.0, not null, and is dominated."""
 
-    def test_a_contestant_with_no_scored_case_has_no_pass_at_k_and_clears_no_bar(self):
+    def test_a_contestant_with_no_scored_case_has_no_pass_hat_k_and_clears_no_bar(self):
         """Every iteration excluded is nothing measured: pass^k is absent, not 0.0.
 
         Beside it a candidate failure that WAS scored keeps its real 0.0, so the two states a
@@ -5520,9 +5523,9 @@ class TestFrontierAllFailedVariantRanksAtZero:
         result = compute_frontier([run], results, bar=0.0)
         pf = result.subjects[0]
 
-        assert _point_by_model(pf, "rig").pass_at_k is None
+        assert _point_by_model(pf, "rig").pass_hat_k is None
         assert _point_by_model(pf, "rig").cost_per_acceptable_outcome is None
-        assert _point_by_model(pf, "fails").pass_at_k == 0.0
+        assert _point_by_model(pf, "fails").pass_hat_k == 0.0
         assert pf.verdict is not None and pf.verdict.model == "fails"
 
     def test_candidate_failure_scores_zero_quality_and_ranks(self):
@@ -5546,7 +5549,7 @@ class TestFrontierAllFailedVariantRanksAtZero:
         pf = compute_frontier([run], results).subjects[0]
         broken = _point_by_model(pf, "broken")
 
-        assert broken.pass_at_k == 0.0
+        assert broken.pass_hat_k == 0.0
         assert broken.mean_composite == 0.0  # candidate failure is a real 0.0, not None
         assert broken.mean_total_ms is None
         assert broken.dominated is True
@@ -5611,6 +5614,87 @@ class TestFrontierBarValidation:
 
         with pytest.raises(FrontierError):
             compute_frontier([run], [result], bar=bad_bar)
+
+
+class TestFrontierPassHatKPoolsRepeatRuns:
+    """pass^k pools a contestant's attempts at a case across the runs of one cell (#591).
+
+    Summed per run, two runs of one configuration were two copies of each case at the shallow
+    depth; now they are one case measured twice, while the same case under another context
+    stays a case of its own beside it.
+    """
+
+    @staticmethod
+    def _run(context_key, *, k_runs=1):
+        return _fr_run(context_key=context_key, identity_version=IDENTITY_VERSION, k_runs=k_runs)
+
+    def test_two_runs_of_one_cell_add_depth_not_cases(self):
+        first, second = self._run("ctx-1"), self._run("ctx-1")
+        results = [
+            _fr_result(first, model="m", variant_key="vk", test_case_id="c1", passes=True),
+            _fr_result(second, model="m", variant_key="vk", test_case_id="c1", passes=False),
+        ]
+
+        point = compute_frontier([first, second], results).subjects[0].points[0]
+
+        assert (point.k, point.pass_hat_k, point.n_pass_cases) == (1, 0.5, 1)
+        assert [(p["k"], p["pass_hat_k"], p["n_cases"]) for p in point.pass_hat_k_curve] == [(1, 0.5, 1), (2, 0.0, 1)]
+
+    def test_runs_under_different_contexts_keep_one_case_as_two(self):
+        first, second = self._run("ctx-1"), self._run("ctx-2")
+        results = [
+            _fr_result(first, model="m", variant_key="vk", test_case_id="c1", passes=True),
+            _fr_result(second, model="m", variant_key="vk", test_case_id="c1", passes=False),
+        ]
+
+        point = compute_frontier([first, second], results).subjects[0].points[0]
+
+        assert (point.pass_hat_k, point.n_pass_cases) == (0.5, 2)
+        assert len(point.pass_hat_k_curve) == 1
+
+    def test_every_contestant_is_ranked_at_the_subject_depth(self):
+        """A k=1 run beside a k=3 run ranks the subject at pass^1 — one depth, never two."""
+        deep, pilot = self._run("ctx-1", k_runs=3), self._run("ctx-2")
+        results = [
+            *(
+                _fr_result(
+                    deep,
+                    model="deep",
+                    variant_key="vk-deep",
+                    test_case_id="c1",
+                    passes=p,
+                    k_iteration=i,
+                    roles={"candidate": 0.1},
+                )
+                for i, p in enumerate((True, True, False), start=1)
+            ),
+            _fr_result(
+                pilot, model="pilot", variant_key="vk-pilot", test_case_id="c1", passes=True, roles={"candidate": 0.2}
+            ),
+        ]
+
+        pf = compute_frontier([deep, pilot], results, bar=0.5).subjects[0]
+
+        assert pf.k == 1
+        assert _point_by_model(pf, "deep").pass_hat_k == pytest.approx(2 / 3)
+        assert _point_by_model(pf, "deep").pass_hat_k_curve[-1] == {"k": 3, "pass_hat_k": 0.0, "n_cases": 1}
+        # Both clear 0.5 at pass^1; the cheaper is named, and the verdict says which depth it was read at.
+        assert pf.verdict is not None and (pf.verdict.model, pf.verdict.k) == ("deep", 1)
+
+    def test_cost_per_acceptable_outcome_divides_by_one_attempts_pass_rate(self):
+        """One attempt's cost over one attempt's pass probability, whatever depth is ranked."""
+        run = self._run("ctx-1", k_runs=2)
+        results = [
+            _fr_result(
+                run, model="m", variant_key="vk", test_case_id="c1", passes=p, k_iteration=i, roles={"candidate": 0.5}
+            )
+            for i, p in enumerate((True, False), start=1)
+        ]
+
+        point = compute_frontier([run], results).subjects[0].points[0]
+
+        assert (point.k, point.pass_hat_k) == (2, 0.0)
+        assert point.cost_per_acceptable_outcome == pytest.approx(0.5 / 0.5)
 
 
 class TestFrontierHonestSampleSize:
@@ -6458,14 +6542,14 @@ class TestTheCatalogNameIsTheNameTheSurfacesAccept:
     def test_a_catalogued_measure_this_surface_cannot_series_is_still_refused(self):
         """Accepting catalog names does not mean accepting the whole catalog.
 
-        `pass_at_k` is a real registry measure and a real quantity — it is simply
+        `pass_hat_k` is a real registry measure and a real quantity — it is simply
         not one `history` can series per run from these rows. Answering it would be
         the empty-series-as-silent-nothing that `HistoryError` exists to prevent.
         """
         run, results = _hist_run(cases=["c1"], score=5, created_at="2026-07-01T00:00:00Z")
 
         with pytest.raises(HistoryError, match="unknown history metric"):
-            compute_history([run], results, metric="pass_at_k", profile=_JUDGED_HOST)
+            compute_history([run], results, metric="pass_hat_k", profile=_JUDGED_HOST)
 
     def test_the_refusal_names_both_vocabularies(self):
         """The refusal an operator reads must name the catalog name, or it sends them in a circle."""
