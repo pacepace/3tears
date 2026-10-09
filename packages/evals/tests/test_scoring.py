@@ -777,10 +777,17 @@ def test_compute_latency_summary_aggregates_per_model_run():
 def test_compute_latency_summary_median_and_tail_at_small_n():
     results = [_lat_result(k=i, total=float(t)) for i, t in enumerate([10, 20, 30, 40, 100], start=1)]
     stats = compute_latency_summary(results)[("m1", "r1")]
-    assert stats["median_total_ms"] == 30.0  # nearest-rank p50 of 5 values
+    assert stats["median_total_ms"] == 30.0  # the middle of 5 values
     # Five totals cannot give a 95th percentile; the slowest is reported under its own name, not as one.
     assert "p95_total_ms" not in stats
     assert stats["max_total_ms"] == 100.0
+
+
+def test_compute_latency_summary_median_of_an_even_count_is_the_mean_of_the_middle_two():
+    """Nearest-rank took the lower middle value (20); the median of 10, 20, 30, 40 is 25."""
+    results = [_lat_result(k=i, total=float(t)) for i, t in enumerate([40, 10, 30, 20], start=1)]
+    stats = compute_latency_summary(results)[("m1", "r1")]
+    assert stats["median_total_ms"] == 25.0
 
 
 def test_compute_latency_summary_p95_is_type_8_from_thirteen_totals():

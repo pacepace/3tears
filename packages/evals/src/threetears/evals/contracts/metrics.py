@@ -1034,10 +1034,14 @@ _SEED: tuple[MetricDescriptor, ...] = (
         attribution_scope="end_to_end",
         higher_is_better=False,
         unit="ms",
-        formula="nearest-rank median of total_ms, excluding cells a harness failure produced",
+        formula=(
+            "median of total_ms (the middle value, or the mean of the two middle values at an even count; Hyndman-Fan "
+            "type 8 at 0.5), excluding cells a harness failure produced"
+        ),
         description=(
             "Typical end-to-end wall-clock, less sensitive to one slow outlier than the mean. Over the same "
-            "candidate-measuring population as mean_total_ms: a cell an apparatus fault produced is excluded."
+            "candidate-measuring population as mean_total_ms: a cell an apparatus fault produced is excluded. A "
+            "figure computed before this rule was nearest-rank, the lower middle value at an even count."
         ),
     ),
     _d(
