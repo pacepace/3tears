@@ -63,13 +63,28 @@ ones it accepts. `read_only_tools(prefix)` mounts a tool an agent can only read 
   `condition_filter` narrows the rows to one condition, `total` counts the rows that match across every
   page, and `next_offset` is the offset of the next page. A page holds 50 rows unless `limit` asks for
   fewer or more, and never more than 200.
-- `result_get` reads one result back as stored. The response has the record with its per-role usage rows
-  and every error field, the condition with the sentence every surface shows for it, and the trace. The
-  trace is returned exactly as the kind stored it. For a kind whose candidate acts on tools, the trace
-  records each action the way the kind wrote it: whether it succeeded and what the tool returned. The
-  call ledger beside it holds only the calls that succeeded.
+- `result_get` reads one result back as stored, with one `part` of its trace:
+  - `record`, the default: the result record with its per-role usage rows and every error field, and its
+    condition with the sentence every surface shows for it. Each goal check is shown as evaluated, and
+    also as counted when the two differ: a candidate failure counts every check failed, and a harness
+    fault counts none. Then come the output documents exactly as the kind stored them, the call ledger
+    and the world's end state.
+  - `judge`: what the judge was sent.
+  - `spans`: the stored spans.
 
-A run or a result outside the caller's scope is not found. A listing never comes back empty in its place.
+  Every part's data carries the result record and its condition, so a reply always says whose part it is.
+
+  The default leaves the judge's evidence and the spans out of both the text and the data, because either
+  can outweigh everything else, and its text says how to ask for them.
+
+  The output documents hold whatever the kind wrote about each call. A failed call, with what the tool
+  returned, appears there only when the kind records failures. A kind that records only successes leaves
+  no sign of a refused call. The call ledger holds only the calls the kind recorded as succeeded.
+
+  A trace the record says was written but whose document is missing reads as missing, not as none stored.
+
+A run or a result outside the caller's scope is not found, and so is an id of another type, such as a run's
+id passed to `result_get`. A listing never comes back empty in place of not found.
 
 ## FastMCP
 

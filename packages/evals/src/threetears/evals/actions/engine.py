@@ -44,6 +44,7 @@ from threetears.evals.ops import (
     ReporterCaseListing,
     ResultDetail,
     ResultListing,
+    ResultPart,
     ResultRated,
     RunDeleted,
     RunLine,
@@ -219,10 +220,17 @@ class ResultsListParams(EvalBaseModel):
     limit: Limit = _RESULTS_PAGE_DEFAULT
 
 
-class ResultParams(EvalBaseModel):
-    """An action over one result."""
+class ResultGetParams(EvalBaseModel):
+    """``result_get``."""
 
     result_id: ResultId
+    part: Annotated[
+        ResultPart,
+        Field(
+            description="Which part of the stored trace to return: record (the output the kind stored, its call "
+            "ledger and end state, beside the result), judge (what the judge was sent) or spans (the stored spans)."
+        ),
+    ] = "record"
 
 
 class RunLaunchParams(LaunchArguments):
@@ -453,9 +461,15 @@ async def _results_list(host: OpsHost, caller: Caller, params: ResultsListParams
     )
 
 
-async def _result_get(host: OpsHost, caller: Caller, params: ResultParams) -> ResultDetail:
+async def _result_get(host: OpsHost, caller: Caller, params: ResultGetParams) -> ResultDetail:
     eval_host = host.eval_host
-    return await run_blocking(eval_host.blocking_executor, result_get, eval_host, params.result_id, caller.scope_id)
+    return await run_blocking(
+        eval_host.blocking_executor,
+        partial(result_get, part=params.part),
+        eval_host,
+        params.result_id,
+        caller.scope_id,
+    )
 
 
 async def _run_launch(host: OpsHost, caller: Caller, params: RunLaunchParams) -> JobsStarted:
@@ -821,7 +835,7 @@ def engine_actions() -> tuple[Action, ...]:
             params=ResultsListParams,
             result=ResultListing,
             handler=_results_list,
-            render=render.render_results,
+            render=partial(render.render_results, default_limit=_RESULTS_PAGE_DEFAULT),
             example={"run_id": run_id, "condition_filter": "candidate_fail"},
             detail=(
                 "Ordered by case, then repeat, then result id, so a finished run pages the same way every time; "
@@ -833,21 +847,23 @@ def engine_actions() -> tuple[Action, ...]:
         ),
         Action(
             name="result_get",
-            summary="Read one stored result whole: its record, usage rows, condition and trace, as stored.",
+            summary="Read one stored result: its record, usage rows and condition, and one part of its trace.",
             workflow=RUN,
             permission="read",
-            params=ResultParams,
+            params=ResultGetParams,
             result=ResultDetail,
             handler=_result_get,
             render=render.render_result,
             example={"result_id": "0193a1b2-result"},
             detail=(
-                "The trace is returned as the candidate's kind stored it: its output documents verbatim — for a "
-                "kind whose candidate acts on tools, each action as the kind recorded it, whether it succeeded "
-                "and what the tool said — beside the call ledger (the calls that succeeded), what the judge "
-                "read, the world's end state and the spans. The condition is resolved as every surface resolves "
-                "it, with the sentence a reader must not miss. A result not in the caller's scope is not found; "
-                "results_list names a run's results."
+                "part record (the default) returns the output documents exactly as the candidate's kind stored "
+                "them, beside the call ledger (only the calls the kind recorded as succeeded) and the world's end "
+                "state. What an output document says about each call is whatever the kind wrote: a failed call "
+                "appears there only when the kind records failures. part judge returns what the judge was sent, "
+                "and part spans the stored spans; the default leaves both out, text and data alike, since either "
+                "can outweigh the rest. The condition is resolved as every surface resolves it, with the sentence "
+                "a reader must not miss. A result not in the caller's scope is not found; results_list names a "
+                "run's results."
             ),
         ),
         Action(

@@ -56,11 +56,21 @@ from threetears.evals.contracts.usage_capture import blended_cost
 from threetears.evals.run import get_run, list_results
 
 
-def _dollars(amount: float) -> str:
+def dollars_text(amount: float) -> str:
     """Spend as a person reads it: cents for whole calls' worth, three significant figures below a cent.
 
     A cheap model's call costs a few hundred-thousandths of a dollar, so a fixed number of decimals either
-    shows it as $0.000000 or pads every larger amount with noise; the stored value is never rounded.
+    shows it as $0.000000 or pads every larger amount with noise, and a general format shows it in
+    exponent notation ($3e-05), which no one reads as money; the stored value is never rounded. Public
+    because two surfaces print spend — a run's summary and the agent-facing rendering of its results —
+    and one rule for both is what keeps one amount from reading two ways.
+
+    Args:
+        amount: Dollars, as stored.
+
+    Returns:
+        The amount with its dollar sign: ``$0`` for zero, two decimals from a cent up, three significant
+        figures below.
     """
     if amount == 0:
         return "$0"
@@ -233,14 +243,16 @@ class EvalSummary(BaseModel):
         lines.extend(f"  {_dimension_line(dimension)}" for dimension in self.judged)
         if self.judged:
             spend = (
-                "unknown: a judge call went unpriced" if self.judge_cost_usd is None else _dollars(self.judge_cost_usd)
+                "unknown: a judge call went unpriced"
+                if self.judge_cost_usd is None
+                else dollars_text(self.judge_cost_usd)
             )
             lines.append(f"  judge spend: {spend} over {self.judge_calls} call(s)")
         if self.candidate_calls:
             spend = (
                 "unknown: a candidate call went unpriced"
                 if self.candidate_cost_usd is None
-                else _dollars(self.candidate_cost_usd)
+                else dollars_text(self.candidate_cost_usd)
             )
             lines.append(f"  candidate spend: {spend} over {self.candidate_calls} call(s)")
         lines.extend(f"  goal check {goal.check}: passed {goal.passed}/{goal.n}" for goal in self.goal_checks)
@@ -410,4 +422,4 @@ def _goal_checks(results: list[EvalResult]) -> list[GoalCheckSummary]:
     return [GoalCheckSummary(check=check, passed=sum(verdicts), n=len(verdicts)) for check, verdicts in counted.items()]
 
 
-__all__ = ["DimensionSummary", "EvalSummary", "GoalCheckSummary", "MeasureSummary", "summarize_run"]
+__all__ = ["DimensionSummary", "EvalSummary", "GoalCheckSummary", "MeasureSummary", "dollars_text", "summarize_run"]

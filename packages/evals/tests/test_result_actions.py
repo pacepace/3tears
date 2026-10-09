@@ -7,12 +7,17 @@ path every transport takes:
 - **``results_list`` pages a run's results** as light rows in a stable order — by case, then repeat, then
   id — each with its coordinates, its condition and its headline measures; ``next_offset`` reads the next
   page, ``condition_filter`` narrows to one condition and ``total`` counts what matched across every page.
-- **``result_get`` reads one result whole**: the stored record with its usage rows, the condition every
-  surface resolves, and its trace as the kind stored it — so each action the kind recorded as failed reads
-  back failed, in the tool's own words, beside a call ledger that holds only what succeeded.
-- **Both answer only in the caller's scope**: a run or result in another scope is not found, never an
-  empty listing that would read as a run that produced nothing.
-- **A page is bounded for an agent**: a limit above the action's ceiling is refused, naming the parameter.
+- **``result_get`` reads one result and one part of its trace**: by default the stored record with its usage
+  rows, the condition every surface resolves, each goal check as evaluated and as counted, and the output its
+  kind stored — so an action the kind recorded as failed reads back failed, in the tool's own words, beside a
+  call ledger that holds only what succeeded. The judge's evidence and the spans come back only when their
+  part is asked for, in the text and the data alike; a trace the record promises and no document backs reads
+  as missing.
+- **Both answer only in the caller's scope, and only for an id of their own type**: a run or result in
+  another scope, or a run's id handed where a result's belongs, is not found — never an empty listing that
+  would read as a run that produced nothing, and never a validation error from inside the store.
+- **A page is bounded for an agent**: a limit above the action's ceiling is refused, naming the parameter,
+  and an impossible page is refused by the operation itself. Spend reads as money at any size.
 """
 
 from __future__ import annotations
@@ -28,11 +33,15 @@ from threetears.evals.contracts import (
     EvalResult,
     EvalTrace,
     GoalStateOutcome,
+    JudgedArtifact,
+    JudgeEvidence,
+    RecordedCall,
     ResultOutcome,
     RoleUsage,
     RubricScore,
     eval_trace_doc_id,
 )
+from threetears.evals.contracts.errors import ValidationFailedError
 from threetears.evals.ops import ResultDetail, ResultListing, results_list
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture
@@ -189,6 +198,42 @@ def test_the_condition_filter_offers_exactly_the_conditions_a_result_can_be_in(t
     assert sorted(offered) == sorted(outcome.value for outcome in ResultOutcome)
 
 
+async def test_a_filtered_page_hint_keeps_its_filter_and_its_size(tools: dict[str, Any]) -> None:
+    """Following the hint reads the next page of the same rows at the same size, not the first page of all of them."""
+    fixture = _seeded()
+    outcome = await _call(
+        tools["evals"], fixture, {"action": "results_list", "run_id": RUN_ID, "condition_filter": "ok", "limit": 1}
+    )
+    listing = ResultListing.model_validate(outcome.structured)
+    assert [line.id for line in listing.results] == ["res-all-refused"] and listing.next_offset == 1
+    assert f"More: action='results_list', run_id='{RUN_ID}', offset=1, condition_filter='ok', limit=1." in outcome.text
+    default = await _call(tools["evals"], fixture, {"action": "results_list", "run_id": RUN_ID})
+    assert "limit=" not in default.text, "a page of the default size needs no limit to repeat"
+
+
+async def test_an_offset_past_the_end_is_an_empty_last_page(tools: dict[str, Any]) -> None:
+    outcome = await _call(tools["evals"], _seeded(), {"action": "results_list", "run_id": RUN_ID, "offset": 10})
+    listing = ResultListing.model_validate(outcome.structured)
+    assert (listing.results, listing.total, listing.next_offset) == ([], 4, None)
+    assert outcome.text == f"results of run {RUN_ID}: 4, none from row 11"
+
+
+@pytest.mark.parametrize(
+    ("bounds", "message"), [({"offset": -1}, "offset is -1"), ({"limit": 0}, "limit is 0")], ids=["offset", "limit"]
+)
+def test_the_operation_refuses_a_page_that_cannot_exist(bounds: dict[str, int], message: str) -> None:
+    with pytest.raises(ValidationFailedError, match=message):
+        results_list(_seeded().host.eval_host, RUN_ID, TOYHOST_SCOPE, **bounds)
+
+
+async def test_a_spend_below_a_hundredth_of_a_cent_reads_as_money(tools: dict[str, Any]) -> None:
+    fixture = _seeded()
+    fixture.host.eval_host.storage.save_eval_result(_result("res-cheap", "tc-c", 1, cost_usd=0.00003))
+    outcome = await _call(tools["evals"], fixture, {"action": "results_list", "run_id": RUN_ID})
+    (line,) = [line for line in outcome.text.splitlines() if line.startswith("- res-cheap:")]
+    assert "cost $0.0000300;" in line and "e-" not in line
+
+
 def test_the_operation_lists_every_row_when_no_surface_bounds_it() -> None:
     """The bound is the agent surface's; a host reading through the operation pages as it chooses."""
     fixture = _seeded()
@@ -202,47 +247,138 @@ def test_the_operation_lists_every_row_when_no_surface_bounds_it() -> None:
 # =============================================================================
 
 
-async def test_a_result_whose_every_action_failed_reads_back_each_failure_as_stored(tools: dict[str, Any]) -> None:
-    """The shakedown's cell: delivered, so a summary counts it scored, and only its trace says why it did nothing."""
-    fixture = _seeded()
-    outcome = await _call(tools["evals"], fixture, {"action": "result_get", "result_id": "res-all-refused"})
-
+async def _get(tool: Any, fixture: OpsFixture, result_id: str, part: str | None = None) -> tuple[Any, ResultDetail]:
+    arguments = {"action": "result_get", "result_id": result_id} | ({} if part is None else {"part": part})
+    outcome = await _call(tool, fixture, arguments)
     assert not outcome.is_error, outcome.text
-    detail = ResultDetail.model_validate(outcome.structured)
+    return outcome, ResultDetail.model_validate(outcome.structured)
+
+
+async def test_a_result_whose_every_action_failed_reads_back_each_failure_as_stored(tools: dict[str, Any]) -> None:
+    """The shakedown's cell: delivered, so a summary counts it scored, and only its output says why it did nothing."""
+    outcome, detail = await _get(tools["evals"], _seeded(), "res-all-refused")
+
+    assert detail.part == "record" and detail.trace_state == "stored"
     assert detail.condition.scoring.value == "ok" and detail.condition.disclosure is None
-    assert detail.trace is not None
-    (turn,) = detail.trace.trace
+    assert detail.record is not None
+    (turn,) = detail.record.output
     assert [(action["success"], action["result"]) for action in turn["actions"]] == [
         (False, "notes is read-only for this account"),
         (False, "unknown parameter 'when'"),
         (False, "due time is in the past"),
     ]
-    assert detail.trace.call_ledger == CallLedger(), "the ledger holds only calls that succeeded: none did"
+    assert detail.record.call_ledger == CallLedger(), "the ledger holds only calls that succeeded: none did"
     (row,) = detail.result.usage
     assert (row.role, row.model, row.call_count, row.cost_usd) == ("candidate", "sonnet", 3, 0.004)
     for action in FAILED_TURN["actions"]:
         assert f'"result": "{action["result"]}", "success": false' in outcome.text
-    assert "call ledger (0 call(s) that succeeded):" in outcome.text
-    assert '"role": "candidate"' in outcome.text and "cost $0.004 over" in outcome.text
-    assert 'goal check call_count("notes.write") >= 1: failed' in outcome.text
+    assert "call ledger (0 call(s) the kind recorded as succeeded):" in outcome.text
+    assert '"role": "candidate"' in outcome.text and "cost $0.00400 over" in outcome.text
+    assert 'goal check call_count("notes.write") >= 1: failed\n' in outcome.text
 
 
-async def test_a_failed_results_condition_and_errors_read_as_every_surface_reads_them(tools: dict[str, Any]) -> None:
+async def test_a_failed_results_checks_read_as_evaluated_and_as_counted(tools: dict[str, Any]) -> None:
+    """A check that evaluated True on a candidate failure counts failed, as results_list counts it — both are said."""
     fixture = _seeded()
-    candidate = await _call(tools["evals"], fixture, {"action": "result_get", "result_id": "res-candidate"})
-    detail = ResultDetail.model_validate(candidate.structured)
+    candidate, detail = await _get(tools["evals"], fixture, "res-candidate")
     assert detail.condition.scoring.value == "candidate_fail" and detail.condition.disclosure
     assert detail.condition.disclosure in candidate.text
     assert "candidate error: model refused: 400 bad request" in candidate.text
+    assert (
+        "goal check state.shop.cart.length >= 1: passed as evaluated; counts failed (candidate failure)"
+        in candidate.text.splitlines()
+    )
 
-    harness = await _call(tools["evals"], fixture, {"action": "result_get", "result_id": "res-harness"})
-    detail = ResultDetail.model_validate(harness.structured)
-    assert detail.condition.scoring.value == "infra_exclude" and detail.trace is None
+    harness, detail = await _get(tools["evals"], fixture, "res-harness")
+    assert detail.condition.scoring.value == "infra_exclude" and detail.trace_state == "none" and detail.record is None
     assert "infra error: simulator timed out" in harness.text and harness.text.endswith("trace: none stored")
+    assert (
+        "goal check state.shop.cart.length >= 1: passed as evaluated; not counted (harness fault)"
+        in harness.text.splitlines()
+    )
+
+
+async def test_a_trace_its_record_promises_but_no_document_backs_reads_as_missing(tools: dict[str, Any]) -> None:
+    """Never as none stored: the marker is written from the trace write's own outcome, so the two disagreeing is a fault."""
+    fixture = _seeded()
+    storage = fixture.host.eval_host.storage
+    (stored,) = [
+        result for result in storage.query_eval_results_by_run(RUN_ID, TOYHOST_SCOPE) if result.id == "res-harness"
+    ]
+    storage.replace_eval_result(stored.model_copy(update={"has_trace": True}), if_match=None)
+
+    outcome, detail = await _get(tools["evals"], fixture, "res-harness")
+    assert detail.trace_state == "missing" and detail.record is None
+    assert outcome.text.endswith("trace: recorded but its document is missing")
+
+
+#: A judge's evidence and a run of spans, each heavier than everything else the record carries together.
+_ARTIFACT = "candidate: " + "the same long reply, over and over. " * 400
+_SPANS = [{"name": f"span-{n}", "attributes": {"payload": "x" * 200}} for n in range(50)]
+
+
+def _heavy(fixture: OpsFixture) -> None:
+    fixture.host.eval_host.storage.save_eval_result(
+        _result("res-heavy", "tc-c", 1),
+        EvalTrace(
+            id=eval_trace_doc_id("res-heavy"),
+            scope_id=TOYHOST_SCOPE,
+            result_id="res-heavy",
+            eval_run_id=RUN_ID,
+            trace=[{"turn": 1, "candidate": "short"}],
+            otel_trace=_SPANS,
+            judge_evidence=JudgeEvidence(subject="a concierge", case_material="the scenario", artifact=_ARTIFACT),
+            judged_artifact=JudgedArtifact.TRANSCRIPT,
+            call_ledger=CallLedger(calls=[RecordedCall(tool="notes", action="read", params={"id": 7})]),
+            end_state={"notes": {"count": 2}},
+        ),
+    )
+
+
+async def test_the_default_read_leaves_the_judges_evidence_and_the_spans_out_and_says_how_to_ask(
+    tools: dict[str, Any],
+) -> None:
+    fixture = _seeded()
+    _heavy(fixture)
+    outcome, detail = await _get(tools["evals"], fixture, "res-heavy")
+
+    assert detail.judge is None and detail.spans is None and detail.record is not None
+    assert (detail.record.judged_artifact, detail.record.span_count) == (JudgedArtifact.TRANSCRIPT, len(_SPANS))
+    assert "the same long reply" not in str(outcome.structured) and "span-0" not in str(outcome.structured)
+    assert "the same long reply" not in outcome.text and "span-0" not in outcome.text
+    assert "part='judge'" in outcome.text and "part='spans'" in outcome.text
+    assert len(outcome.text) < len(_ARTIFACT) / 4
+    assert 'end state: {"notes": {"count": 2}}' in outcome.text
+    assert '- notes.read {"id": 7}' in outcome.text
+
+
+async def test_the_judge_part_reads_what_the_judge_was_sent(tools: dict[str, Any]) -> None:
+    fixture = _seeded()
+    _heavy(fixture)
+    outcome, detail = await _get(tools["evals"], fixture, "res-heavy", "judge")
+
+    assert detail.part == "judge" and detail.record is None and detail.spans is None
+    assert detail.judge is not None and detail.judge.evidence.artifact == _ARTIFACT
+    assert "judge evidence (transcript):" in outcome.text and _ARTIFACT.strip() in outcome.text
+    assert "subject:\na concierge" in outcome.text and "case material:\nthe scenario" in outcome.text
+    assert "span-0" not in outcome.text and "usage (" not in outcome.text
+
+    unjudged, detail = await _get(tools["evals"], fixture, "res-all-refused", "judge")
+    assert detail.judge is None and unjudged.text.endswith("nothing was sent to a judge for this cell")
+
+
+async def test_the_spans_part_reads_the_spans(tools: dict[str, Any]) -> None:
+    fixture = _seeded()
+    _heavy(fixture)
+    outcome, detail = await _get(tools["evals"], fixture, "res-heavy", "spans")
+
+    assert detail.spans == _SPANS and detail.record is None and detail.judge is None
+    assert f"spans ({len(_SPANS)}):" in outcome.text and "span-49" in outcome.text
+    assert "the same long reply" not in outcome.text
 
 
 # =============================================================================
-# Scope
+# Scope, and an id of another type
 # =============================================================================
 
 
@@ -259,6 +395,24 @@ async def test_a_run_or_result_in_another_scope_is_not_found(tools: dict[str, An
     assert listed.is_error and "not found" in listed.text
     read = await _call(tools["evals"], fixture, {"action": "result_get", "result_id": "res-elsewhere"})
     assert read.is_error and "not found" in read.text
+
+
+@pytest.mark.parametrize(
+    ("action", "arguments"),
+    [
+        ("result_get", {"result_id": RUN_ID}),
+        ("result_get", {"result_id": eval_trace_doc_id("res-ok")}),
+        ("run_get", {"run_id": "res-ok"}),
+        ("results_list", {"run_id": "res-ok"}),
+    ],
+    ids=["result_get-a-run-id", "result_get-a-trace-id", "run_get-a-result-id", "results_list-a-result-id"],
+)
+async def test_an_id_of_another_type_is_not_found(
+    tools: dict[str, Any], action: str, arguments: dict[str, str]
+) -> None:
+    """Ids of every type share a scope, so a run's id handed where a result's belongs resolves — to the wrong document."""
+    outcome = await _call(tools["evals"], _seeded(), {"action": action, **arguments})
+    assert outcome.is_error and "not found" in outcome.text, outcome.text
 
 
 async def test_a_result_read_needs_its_id(tools: dict[str, Any]) -> None:

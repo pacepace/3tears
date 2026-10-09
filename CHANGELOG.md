@@ -10,18 +10,33 @@ packages (bumped in lock-step).
 
 - **New `results_list` read action and operation**, which takes a `run_id`, an optional `condition_filter`,
   an `offset` and a `limit` (default 50, at most 200 through the action; the operation is unbounded when
-  `limit` is `None`). It returns a `ResultListing` of light `ResultLine` rows: id, case, repeat, model,
-  variant key, condition (`ResultOutcome`: `ok` / `candidate_fail` / `infra_exclude`), termination, cost,
-  goal checks as every rate counts them, judge scores as given, and host measures. Rows are ordered by case,
-  then repeat, then id, with `total` and `next_offset`. A run outside the caller's scope is not found, never
-  listed as empty.
-- **New `result_get` read action and operation**, which returns a `ResultDetail`: the stored `EvalResult`
-  (its `usage` rows and error fields among it), its `ResultCondition` as `resolve_result_condition` gives
-  it, and its `EvalTrace` as stored, or `None` when the cell wrote none. The trace's output documents
-  are returned verbatim, so an action a kind recorded as failed reads back failed, with the tool's own
-  words. Before this, a cell whose candidate failed every action could be diagnosed only by reading
-  `eval_trace` in the database: `run_get` returns run-level measures alone. Both actions read through the
-  existing `get_run` / `list_results` / `get_result` / `get_result_trace`, so no store method changed.
+  `limit` is `None` and refuses a negative offset or a limit below 1). It returns a `ResultListing` of light
+  `ResultLine` rows: id, case, repeat, model, variant key, condition (`ResultOutcome`: `ok` / `candidate_fail`
+  / `infra_exclude`), termination, cost, goal checks as every rate counts them, judge scores as given, and
+  host measures. Rows are ordered by case, then repeat, then id, with `total` and `next_offset`. The text's
+  next-page hint repeats the filter, and the limit when it is not the default. A run outside the caller's
+  scope is not found, never listed as empty.
+- **New `result_get` read action and operation**, which takes a `result_id` and a `part` (`ResultPart`: `record`,
+  the default, or `judge` or `spans`). It returns a `ResultDetail`: the stored `EvalResult` (its `usage` rows and
+  error fields among it), its `ResultCondition` as `resolve_result_condition` gives it, a `trace_state`
+  (`stored`, `none`, or `missing` when the record says a trace was written and no document backs it), and the one
+  part asked for. `record` is a `TraceRecord` with the output documents verbatim, the call ledger, the end state,
+  what the judge read by declaration and a span count. `judge` is a `TraceJudge` with the judge's evidence, and
+  `spans` is the spans. The default leaves the judge's evidence and the spans out of the text and the data alike
+  and says how to ask for them. The text shows each goal check as evaluated, and as counted where the two differ.
+  The output holds whatever the kind wrote: a failed call appears there only when the kind records failures,
+  and the call ledger holds only the calls the kind recorded as succeeded. Before this, a cell whose candidate
+  failed every action could be diagnosed only by reading `eval_trace` in the database: `run_get` returns
+  run-level measures alone. Both actions read through the existing `get_run` / `list_results` / `get_result` /
+  `get_result_trace`, so no store method was added.
+- **A read by id names no document of another type.** `EvalStorage`'s loads by id (`load_eval_run`,
+  `load_eval_result`, `load_eval_trace`, `load_test_case`, the `_with_etag` reads, `get_cassette` and every
+  other `_load`) return `None` for a document whose `doc_type` is another model's, so a run's id passed to
+  `result_get`, or a result's id passed to `run_get`, is not found rather than a raw validation error.
+- **`EvalResult.judge_scores()`**: every score the judge gave, the template's dimensions then the two reserved
+  axes. `judge_score(dim)` now looks the dimension up in it.
+- **`dollars_text`** (`threetears.evals.ops`), the spend formatter a run's summary used privately, is public; the
+  result actions print spend with it, so a cost below a hundredth of a cent reads `$0.0000300`, not `$3e-05`.
 - `result_rate`'s `result_id` now says it is named by `results_list`; it is the same parameter on both.
 
 ### 3tears-evals: a swept lever is checked against the mechanism it acts on; a divergent reasoning share qualifies a model comparison (#577, #576)
