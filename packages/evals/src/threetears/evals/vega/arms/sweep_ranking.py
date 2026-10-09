@@ -40,6 +40,7 @@ from threetears.evals.vega.compiler import (
     value_label_layers,
 )
 from threetears.evals.analysis.viz.intent import ChartIntent
+from threetears.evals.contracts.host import ChartFont
 from threetears.evals.analysis.viz.intents.sweep_ranking import CONFIG_FIELD, LEVER_KEY_PREFIX
 from threetears.evals.vega.palette import CONTEXT_STYLE, SEQUENTIAL_RANGE, geometry
 from threetears.evals.analysis.viz.payloads import ABSENT_LEVEL
@@ -81,7 +82,7 @@ _POINT_SIZE = 120
 _POINT_RADIUS = point_radius(_POINT_SIZE)
 
 
-def compile_sweep_ranking(intent: ChartIntent) -> dict[str, Any]:
+def compile_sweep_ranking(intent: ChartIntent, *, font: ChartFont | None = None) -> dict[str, Any]:
     """Draw a ranked configuration sweep as a barcode beside a ranking.
 
     The configuration is drawn as a **fused barcode**: one cell per swept lever, cells
@@ -91,6 +92,7 @@ def compile_sweep_ranking(intent: ChartIntent) -> dict[str, Any]:
 
     Args:
         intent: The sweep's intent.
+        font: The typeface the chart is laid out in; ``None`` for the packaged face.
 
     Returns:
         The Vega-Lite spec.
@@ -141,8 +143,8 @@ def compile_sweep_ranking(intent: ChartIntent) -> dict[str, Any]:
     barcode = _barcode_panel(marks, identity, levers, set(ramps), height)
     return {
         "$schema": VEGA_LITE_SCHEMA,
-        "title": _title_spec(intent.title, sizes["figure_width"], intent.footnote),
-        "hconcat": [barcode, _ranking_panel(ranking, identity, value_axis, labels, height)],
+        "title": _title_spec(intent.title, sizes["figure_width"], intent.footnote, font=font),
+        "hconcat": [barcode, _ranking_panel(ranking, identity, value_axis, labels, height, font=font)],
         "spacing": _PANEL_GAP,
         # The rows must line up across the two panels or the barcode describes a
         # different configuration from the mark beside it. Vega-Lite resolves a
@@ -318,6 +320,8 @@ def _ranking_panel(
     value_axis: ValueAxis,
     labels: list[MarkValue],
     height: int,
+    *,
+    font: ChartFont | None = None,
 ) -> dict[str, Any]:
     """The measurement: one mark per configuration on the ranked axis.
 
@@ -332,6 +336,7 @@ def _ranking_panel(
         value_axis: The ranked measure's axis.
         labels: Each mark's value and where its mark ends.
         height: The panel height in px, shared with the barcode beside it.
+        font: The typeface the chart is laid out in; ``None`` for the packaged face.
 
     Returns:
         The ranking view.
@@ -355,7 +360,7 @@ def _ranking_panel(
                 "mark": {"type": "point", "filled": True, "size": _POINT_SIZE, "tooltip": True, "opacity": 1},
                 "encoding": {"x": value_axis.encoding("ranked"), "y": identity},
             },
-            *value_label_layers(labels, value_axis, identity),
+            *value_label_layers(labels, value_axis, identity, font=font),
         ],
     }
 

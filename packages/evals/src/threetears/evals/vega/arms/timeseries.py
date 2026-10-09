@@ -39,6 +39,7 @@ from threetears.evals.vega.compiler import (
     point_radius,
 )
 from threetears.evals.analysis.viz.intent import ChartIntent
+from threetears.evals.contracts.host import ChartFont
 from threetears.evals.analysis.viz.intents.timeseries import POSITION_FIELD
 from threetears.evals.vega.palette import font_sizes, font_weights, geometry
 
@@ -76,18 +77,19 @@ def _segments(intent: ChartIntent, order: list[str]) -> list[str]:
     return names
 
 
-def compile_timeseries(intent: ChartIntent) -> dict[str, Any]:
+def compile_timeseries(intent: ChartIntent, *, font: ChartFont | None = None) -> dict[str, Any]:
     """Draw one reading across the time axis as a panel per series, each point with its interval.
 
     Args:
         intent: The timeseries intent.
+        font: The typeface the chart is laid out in; ``None`` for the packaged face.
 
     Returns:
         The Vega-Lite spec.
     """
     sizes = geometry()
     time_axis = _value_axis(intent, "time")
-    categories = _Categories.of("series", _identity(intent).order)
+    categories = _Categories.of("series", _identity(intent).order, font=font)
     width = int(sizes["plot_width"])
     # A panel is a plot of its own, so it takes the floor a plot is never drawn below rather than a row step.
     height = int(sizes["plot_min_height"])
@@ -162,7 +164,7 @@ def compile_timeseries(intent: ChartIntent) -> dict[str, Any]:
     ]
     return {
         "$schema": VEGA_LITE_SCHEMA,
-        "title": _title_spec(intent.title, categories.figure_width()),
+        "title": _title_spec(intent.title, categories.figure_width(), font=font),
         "description": intent.intervals,
         "data": {"values": marks},
         "facet": {

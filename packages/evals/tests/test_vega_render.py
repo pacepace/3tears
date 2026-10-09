@@ -15,11 +15,12 @@ width this module asked for. Both decoders are deliberately dependency-free: the
 venv carries no image library, and adding one so a test can read four bytes would
 be a dependency bought for a single assertion.
 
-**No typeface is registered here.** The renderer owns none and takes a directory from
-its host, so every chart in this module draws in whatever face the machine resolves.
-The checks that need a particular host's face -- that it is the one registered, and
-that text laid out against its metrics stays inside its column -- belong to the host
-that supplies it.
+**No typeface is registered here, and none is needed.** The packaged face, Liberation
+Sans, is embedded in the rasteriser, so every chart in this module draws in the face its
+layout was measured in on any machine -- which :class:`TestThePackagedFaceDrawsEverywhere`
+holds. The checks that need a particular host's own face -- that it is the one
+registered, and that text laid out against its metrics stays inside its column -- belong
+to the host that supplies it.
 """
 
 import json
@@ -46,6 +47,7 @@ from threetears.evals.vega.palette import (
 )
 from threetears.evals.analysis.viz.payloads import PAYLOAD_MODELS
 from threetears.evals.vega.render import render_png, render_svg
+from threetears.evals.vega.text_metrics import SAFETY_MARGIN, packaged_font, text_width
 
 
 PAYLOAD = {
@@ -676,6 +678,125 @@ class TestPaletteArtifact:
             assert config["axis"]["labelColor"] == palette[theme]["ink"]
 
 
+class TestThePackagedFaceDrawsEverywhere:
+    """#635: the packaged face draws on any machine, and its table describes the face that draws.
+
+    The face this replaced was one host's brand face, which the package never shipped: on a machine
+    without it the rasteriser painted NO text at all — every title, tick, name and value missing from a
+    PNG of the right size — and a browser drew a substitute laid out against the wrong widths.
+    """
+
+    #: Strings a chart lays out, measured whole through the rasteriser and compared with the table.
+    CORPUS = (
+        "anthropic/claude-opus-4-20250514",
+        "openai/gpt-4o-2024-08-06",
+        "share of stops",
+        "budget_exhausted",
+        "p95 latency (s)",
+        "0.1234",
+        "1,234,567",
+        "+12.5%",
+    )
+
+    def test_the_default_face_draws_its_text_with_no_font_registered(self, spec):
+        """Read off the pixels: the value ink is painted. Under the old default it was painted nowhere."""
+        for theme in ("light", "dark"):
+            ink = _hex_to_rgb(load_palette()[theme]["ink"])
+            painted = sum(
+                pixel == ink for row in pixel_rows(render_png(spec, palette=packaged_palette(theme))) for pixel in row
+            )
+            assert painted > 200, f"{theme}: only {painted} pixels of text ink — the chart face did not draw"
+
+    def test_the_packaged_table_describes_the_face_that_draws(self):
+        """Each corpus string draws no wider than the table's estimate allows, and not far narrower.
+
+        The upper bound is the margin the layout trusts; the lower one is what fails when the table was
+        measured for a different face than the one drawn — a narrower face's table under-estimates the
+        drawn digits past the margin, a wider one's over-estimates everything far past the kerning slack.
+        """
+        import vl_convert as vlc
+
+        face = packaged_font().measured_face
+        for label in self.CORPUS:
+            probe = {
+                "$schema": "https://vega.github.io/schema/vega/v5.json",
+                "autosize": "pad",
+                "padding": 0,
+                "width": 0,
+                "height": 0,
+                "marks": [
+                    {
+                        "type": "text",
+                        "encode": {
+                            "enter": {
+                                "text": {"value": label},
+                                "align": {"value": "left"},
+                                "baseline": {"value": "top"},
+                                "font": {"value": face},
+                                "fontSize": {"value": 1000},
+                                "fontWeight": {"value": 500},
+                            }
+                        },
+                    }
+                ],
+            }
+            svg = vlc.vega_to_svg(json.dumps(probe))
+            drawn = float(re.search(r'<svg[^>]*\swidth="([\d.]+)"', svg).group(1))
+            estimated = text_width(label, 1000)
+            assert drawn <= estimated * (1 + SAFETY_MARGIN), f"{label!r} draws {drawn / estimated:.3f}x its estimate"
+            assert drawn >= estimated * 0.85, f"{label!r} draws {drawn / estimated:.3f}x its estimate — another face"
+
+    def test_numeric_ticks_are_set_in_tabular_figures(self):
+        """#634: every digit of the face numeric ticks are drawn in has one advance, so a column of ticks aligns.
+
+        Vega-Lite cannot ask for the ``tnum`` feature, so the figures are tabular because the FACE's are:
+        the axis label font is the packaged face, and its ten digits draw at one width through the
+        rasteriser itself. The face this replaced drew ``1`` at half the width of ``8``.
+        """
+        import vl_convert as vlc
+
+        config = vega_config(packaged_palette("dark"))
+        assert config["axis"]["labelFont"] == packaged_font().family
+        face = packaged_font().measured_face
+        widths = {}
+        for digit in "0123456789":
+            probe = {
+                "$schema": "https://vega.github.io/schema/vega/v5.json",
+                "autosize": "pad",
+                "padding": 0,
+                "width": 0,
+                "height": 0,
+                "marks": [
+                    {
+                        "type": "text",
+                        "encode": {
+                            "enter": {
+                                "text": {"value": f"H{digit}H"},
+                                "align": {"value": "left"},
+                                "baseline": {"value": "top"},
+                                "font": {"value": face},
+                                "fontSize": {"value": 1000},
+                                "fontWeight": {"value": config["axis"]["labelFontWeight"]},
+                            }
+                        },
+                    }
+                ],
+            }
+            svg = vlc.vega_to_svg(json.dumps(probe))
+            widths[digit] = float(re.search(r'<svg[^>]*\swidth="([\d.]+)"', svg).group(1))
+        # One px at 1000px is the SVG size's rounding, not a difference in the figures.
+        assert max(widths.values()) - min(widths.values()) <= 1, f"proportional figures: {widths}"
+        table = [packaged_font().advances[digit] for digit in "0123456789"]
+        assert max(table) - min(table) <= 0.001, f"the packaged table has proportional figures: {table}"
+
+    def test_the_face_and_its_table_have_one_source(self):
+        """The palette artifact names no typeface: the family travels with the table measured for it."""
+        assert "font" not in load_palette()
+        for theme in ("light", "dark"):
+            assert vega_config(packaged_palette(theme))["font"] == packaged_font().family
+        assert packaged_font().measured_face == "Liberation Sans"
+
+
 class TestSvgRender:
     def test_the_series_colour_reaches_the_svg_as_hex(self, spec):
         for theme in ("light", "dark"):
@@ -688,13 +809,13 @@ class TestSvgRender:
             assert "oklch" not in render_svg(spec, palette=packaged_palette(theme)).lower()
 
     def test_the_configured_family_reaches_the_svg_as_font_family(self, spec):
-        """That the theme's `font` key is honoured — NOT that the brand face drew the text.
+        """That the theme's `font` key is honoured — NOT that the face drew the text.
 
         vl-convert writes the configured family into every `font-family`
-        attribute whether or not a file providing it was ever registered, so this
-        assertion holds with no font directory registered and cannot see the
-        fallback `render.py` warns about. It is still worth pinning: it is what
-        fails if the `font` key stops reaching text marks at all.
+        attribute whether or not any face providing it exists, so this assertion
+        cannot see a missing face; :class:`TestThePackagedFaceDrawsEverywhere` reads
+        the pixels for that. It is still worth pinning: it is what fails if the
+        `font` key stops reaching text marks at all.
         """
         assert f'font-family="{vega_config(packaged_palette("dark"))["font"]}"' in render_svg(
             spec, palette=packaged_palette("dark")

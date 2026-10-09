@@ -51,7 +51,15 @@ from threetears.evals.vega.palette import (
 from threetears.evals.analysis.viz.payloads import PayloadError
 from threetears.evals.vega.spec_policy import RANKING_SPEC_NAME, check_spec
 from threetears.evals.vega.render import render_svg
-from threetears.evals.vega.text_metrics import fits, text_width
+from threetears.evals.vega.text_metrics import (
+    TextMetricsError,
+    fits,
+    load_chart_font,
+    packaged_font,
+    text_width,
+    write_font_metrics,
+)
+from threetears.evals.contracts.host import CHART_FONT_CHARACTERS, ChartFont
 from packages.evals.tests.chart_examples import (
     DELTA_TABLE,
     DISTRIBUTION,
@@ -2684,6 +2692,81 @@ class TestValuesAreWrittenOnTheMarks:
         }
         assert placed == {row["label"]: format_number(row["mean"]) for row in chart.rows}
 
+    #: Three arms, so the plot's row count rather than its floor decides its height.
+    THREE_ARM_NULL = {
+        "groups": [
+            {
+                "label": f"arm{index}",
+                "ci": {
+                    "low": 14.4 + index,
+                    "high": 19.96 + index,
+                    "mean": 17.18 + index,
+                    "variability": "across the 12 cases",
+                    "level": 0.95,
+                },
+                "n": 12,
+            }
+            for index in range(3)
+        ],
+        "metric": "score",
+        "mechanism": "The batch never fills before the deadline at any setting.",
+    }
+
+    def _null_labels(self, chart):
+        """``display -> (anchor, text, mark)`` for every value label a null result writes."""
+        return {
+            row[DISPLAY_FIELD]: (row[ANCHOR_FIELD], row[VALUE_TEXT_FIELD], layer["mark"])
+            for layer in _mark_layers(chart.spec, "text")
+            for row in _layer_rows(chart.spec, layer)
+            if VALUE_TEXT_FIELD in row
+        }
+
+    def test_a_null_result_writes_each_arm_at_the_mean_it_names(self):
+        """#618: the label sat at the interval's HIGH end while printing the mean.
+
+        An arm with mean 17.18 over a 14.4-19.96 interval printed "17.18" beside
+        x≈19.96, so a reader mapped each number to a value it does not state.
+        """
+        chart = compile_chart("null_result", self.THREE_ARM_NULL)
+        labels = self._null_labels(chart)
+        assert labels.keys() == {group["label"] for group in self.THREE_ARM_NULL["groups"]}
+        for group in self.THREE_ARM_NULL["groups"]:
+            anchor, text, _ = labels[group["label"]]
+            assert text == format_number(group["ci"]["mean"])
+            assert anchor == pytest.approx(group["ci"]["mean"]), "the label is anchored at the mean it prints"
+            assert anchor != pytest.approx(group["ci"]["high"]), "and not at the interval's upper bound"
+
+    def test_a_null_results_label_is_lifted_clear_of_its_point_and_rule(self):
+        """Anchored at the mean, the label sits where the point and the rule are, so it is
+        lifted onto its own line: its lower edge clears the point's top by the value-label gap."""
+        chart = compile_chart("null_result", self.THREE_ARM_NULL)
+        size = font_sizes()["value"]
+        for _, _, mark in self._null_labels(chart).values():
+            assert mark["baseline"] == "middle"
+            lower_edge = -mark["dy"] - size / 2
+            assert lower_edge >= point_radius(70) + VALUE_LABEL_OFFSET - 1e-9, (
+                f"the label's lower edge is {lower_edge:.1f}px above the row's centre, on its own point"
+            )
+
+    def test_a_null_results_rows_grow_to_hold_the_value_line(self):
+        """The value's own line above the mark takes the taller row step, so it stays inside its row."""
+        chart = compile_chart("null_result", self.THREE_ARM_NULL)
+        sizes = geometry()
+        assert chart.spec["height"] == max(3 * sizes["row_step_label_above"], sizes["plot_min_height"])
+        size = font_sizes()["value"]
+        for _, _, mark in self._null_labels(chart).values():
+            assert -mark["dy"] + size / 2 <= sizes["row_step_label_above"] / 2, "the value line leaves its row"
+
+    def test_a_null_results_names_above_their_marks_stack_above_the_value_line(self):
+        """With the names moved out of the gutter, each name is set clear of the value line under it."""
+        chart = compile_chart("null_result", _renamed("null_result", _wide_names))
+        size = font_sizes()["value"]
+        [value_dy] = {mark["dy"] for _, _, mark in self._null_labels(chart).values()}
+        names = [layer for layer in _mark_layers(chart.spec, "text") if layer["mark"]["baseline"] == "bottom"]
+        assert names, "this fixture must put the names above their marks"
+        for layer in names:
+            assert -layer["mark"]["dy"] >= -value_dy + size / 2, "a name is drawn through the value line"
+
     def _probe(self, room):
         """A two-bar breakdown whose second bar leaves exactly `room` px clear."""
         top = 100.0
@@ -3987,3 +4070,80 @@ class TestSweepRankingStatesItsOmissionInTheUnitTheAxisUses:
         """Non-vacuity: if the ladder stopped moving, both assertions above pass trivially."""
         chart = compile_chart("sweep_ranking", self.RESTATED)
         assert chart.unit == "s", f"the ranked measure was not restated, so the band's unit is untested: {chart.unit}"
+
+
+#: A face far wider than any real one, so every measured layout decision comes out differently in it:
+#: every name leaves the gutter, every multi-word title wraps, every value label needs more room.
+_HUGE = ChartFont(family="Huge Test Face", advances=dict.fromkeys(CHART_FONT_CHARACTERS, 5.0), fallback_advance=5.0)
+
+
+class TestEveryArmLaysOutInTheFontItIsGiven:
+    """#635: the layout is measured in the declared face, in every arm.
+
+    An arm that dropped the font on the floor would measure the packaged face's widths and be drawn in
+    the host's — labels measured to fit that do not. Compiled in a face five times an em wide, every arm
+    must lay out differently from the packaged face.
+    """
+
+    @pytest.mark.parametrize(
+        "viz_type",
+        [
+            pytest.param(
+                viz_type,
+                marks=pytest.mark.xfail(
+                    strict=True,
+                    raises=AssertionError,
+                    reason="the frontier arm does not take a font yet: its title wraps in the packaged face",
+                ),
+            )
+            if viz_type == "frontier"
+            else viz_type
+            for viz_type in sorted(EVERY_TYPE)
+        ],
+    )
+    def test_the_layout_follows_the_font(self, viz_type):
+        packaged = compile_chart(viz_type, EVERY_TYPE[viz_type]).spec
+        huge = compile_chart(viz_type, EVERY_TYPE[viz_type], font=_HUGE).spec
+        assert huge != packaged, f"{viz_type} laid out identically in a face five times wider"
+
+    def test_no_font_is_the_packaged_face(self):
+        for viz_type, payload in EVERY_TYPE.items():
+            assert compile_chart(viz_type, payload).spec == compile_chart(viz_type, payload, font=packaged_font()).spec
+
+
+class TestAHostMeasuresItsOwnFace:
+    """The measuring tool's output is what a host declares: written, read back, and refused when empty."""
+
+    def _measured(self) -> dict:
+        return {
+            "advances": dict.fromkeys(CHART_FONT_CHARACTERS, 0.6),
+            "fallback_advance": 0.6,
+            "worst_label": "WWWW",
+            "worst_ratio": 1.0,
+            "font": "Host Face, sans-serif",
+            "measured_with": "vl-convert-python test",
+            "probe_size": 1000,
+            "weights": [400, 600],
+        }
+
+    def test_a_written_table_reads_back_as_the_font(self, tmp_path):
+        path = write_font_metrics(**self._measured(), path=tmp_path / "host.json")
+        font = load_chart_font(path)
+        assert font.family == "Host Face, sans-serif"
+        assert text_width("abc", 10, font) == pytest.approx(18.0)
+
+    def test_a_table_with_no_advances_is_refused_rather_than_written(self, tmp_path):
+        with pytest.raises(TextMetricsError, match="declares no metrics"):
+            write_font_metrics(**(self._measured() | {"advances": {}}), path=tmp_path / "host.json")
+        assert not (tmp_path / "host.json").exists()
+
+    def test_a_metrics_file_with_no_advances_is_refused_on_load(self, tmp_path):
+        path = tmp_path / "host.json"
+        path.write_text(json.dumps({"font": "Host Face", "advances": {}, "fallback_advance": 1.0}), encoding="utf-8")
+        with pytest.raises(TextMetricsError, match="declares no metrics"):
+            load_chart_font(path)
+
+    def test_the_packaged_table_is_a_font(self):
+        """The packaged artifact passes the contract every host table is held to."""
+        assert isinstance(packaged_font(), ChartFont)
+        assert packaged_font().family.startswith("Liberation Sans")

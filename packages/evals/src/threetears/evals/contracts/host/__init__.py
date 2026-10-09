@@ -52,8 +52,10 @@ from threetears.evals.contracts.host.measures import MeasureRegistrationError, M
 from threetears.evals.contracts.host.profile import Coverage, HostProfile
 from threetears.evals.contracts.host.spend import ExternalSpend
 from threetears.evals.contracts.host.style import (
+    CHART_FONT_CHARACTERS,
     SERIES_SLOTS,
     VALIDATED_SLOTS,
+    ChartFont,
     ChartPalette,
     StyleError,
     StyleProfile,
@@ -122,6 +124,7 @@ from threetears.evals.contracts.schema_nesting import NestedSchema
 __all__ = [
     "CANDIDATE_KIND_LEVER",
     "CANDIDATE_MODEL_LEVER",
+    "CHART_FONT_CHARACTERS",
     "SERIES_SLOTS",
     "SHARED_CORE",
     "UNSEATED_LEVEL",
@@ -136,6 +139,7 @@ __all__ = [
     "CellIdentity",
     "CellTimeoutFactory",
     "CellTrace",
+    "ChartFont",
     "ChartPalette",
     "CheckName",
     "Comparability",

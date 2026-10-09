@@ -11,7 +11,9 @@ That is enforced structurally rather than promised:
 2. **Neither non-enum field can carry an instruction to a model.** ``locale`` is a ``str``, so it
    is validated against a BCP47 pattern at construction. ``chart_palette`` holds colours and
    nothing else: every value is checked to be resolved sRGB hex (:func:`require_resolved_colour`)
-   when the palette is built, so it has no room for a word. And it is structural besides:
+   when the palette is built, so it has no room for a word. ``chart_font`` names a typeface, so its
+   family list is shape-checked (:data:`_FONT_FAMILY_RE`) and bounded in length; the rest of it is
+   numbers. And it is structural besides:
    :func:`prompt_fragment` is the only function in this module that returns prompt text, it takes
    no argument but the register, and :func:`assert_no_style_text` proves no value from either
    field reaches a given prompt.
@@ -39,8 +41,10 @@ every consumer.
 
 from __future__ import annotations
 
+import math
 import re
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Literal
 
 #: The registers a host may pick from. Engine-owned and closed — the point of the enum is that a
@@ -184,6 +188,112 @@ class ChartPalette:
         ]
 
 
+#: A CSS font-family list: one or more family names of letters, digits, spaces, hyphens and
+#: underscores, comma-separated. No quotes, no punctuation a sentence needs — a family list names
+#: typefaces and nothing else — and :data:`_FONT_FAMILY_MAX` bounds it, so the one free-form string in
+#: a :class:`ChartFont` has no room for an instruction.
+_FONT_FAMILY_RE = re.compile(r"^[A-Za-z0-9_-]+(?: [A-Za-z0-9_-]+)*(?:, ?[A-Za-z0-9_-]+(?: [A-Za-z0-9_-]+)*)*$")
+
+#: The longest family list a :class:`ChartFont` may name, in characters.
+_FONT_FAMILY_MAX = 120
+
+#: The characters a :class:`ChartFont`'s metrics must cover: printable ASCII, space to tilde.
+#:
+#: Every model ID, measure name, number and unit a chart lays out is made of these. A character outside
+#: the table is laid out at the table's fallback advance, which is safe (it is the widest) but is not a
+#: measurement, so a table missing part of this range is refused rather than quietly estimated.
+CHART_FONT_CHARACTERS = "".join(chr(code) for code in range(0x20, 0x7F))
+
+
+@dataclass(frozen=True)
+class ChartFont:
+    """A typeface a renderer draws chart text in, with the advance widths its layout is computed from.
+
+    **A font is declared with its measurements, never without.** A chart renderer decides layout from
+    how wide a string draws — whether a category name fits its gutter, where a title wraps, which side of
+    a mark a value goes — and it computes that from a per-character advance table, not from the drawn
+    glyphs. A family name alone would be laid out against another face's widths: labels measured to fit
+    that draw truncated or overrun. So this type cannot be built without :attr:`advances`, and a
+    renderer refuses a font that is not one of these.
+
+    The table is produced by measuring the face through the renderer itself — for the Vega-Lite
+    renderer, ``packages/evals/scripts/measure_font_metrics.py`` writes one, and
+    ``threetears.evals.vega.load_chart_font`` reads it back as a :class:`ChartFont`.
+
+    Numeric ticks are set in this face too, and line up only if its figures are tabular — every digit one
+    advance — since a renderer cannot ask a face for tabular figures it does not draw by default.
+
+    Attributes:
+        family: The CSS font-family list a renderer emits, e.g. ``"Inter, Arial, sans-serif"``. The
+            FIRST family is the face :attr:`advances` was measured in; the rest are fallbacks for a
+            surface that lacks it, and are only correct if they are metric-compatible with it.
+        advances: Each character's advance width as a fraction of the font size, covering at least
+            :data:`CHART_FONT_CHARACTERS`. Kerning is not in it: a per-character sum is an estimate, and a
+            measuring tool should keep each character's widest measured context so the estimate leans long.
+        fallback_advance: The advance for a character the table does not hold — at least its widest entry,
+            so an unmeasured character errs toward "does not fit" rather than toward truncation.
+    """
+
+    family: str
+    advances: Mapping[str, float] = field(hash=False)
+    fallback_advance: float
+
+    def __post_init__(self) -> None:
+        """Refuse a font a renderer could not lay out against.
+
+        Raises:
+            StyleError: :attr:`family` is not a bounded CSS family list, :attr:`advances` is empty, misses
+                a character of :data:`CHART_FONT_CHARACTERS`, or holds an advance that is not a positive
+                finite number, or :attr:`fallback_advance` is narrower than the widest advance.
+        """
+        if (
+            not isinstance(self.family, str)
+            or len(self.family) > _FONT_FAMILY_MAX
+            or not _FONT_FAMILY_RE.match(self.family)
+        ):
+            raise StyleError(
+                f"chart_font.family {self.family!r} is not a CSS font-family list of at most {_FONT_FAMILY_MAX} "
+                "characters (family names of letters, digits, spaces, hyphens and underscores, comma-separated) — "
+                "this contract carries no free text"
+            )
+        if not self.advances:
+            raise StyleError(
+                f"chart_font {self.family!r} declares no metrics — a renderer lays chart text out from measured "
+                "advance widths, and without them it would fit every label against another face's widths. Measure "
+                "the face (packages/evals/scripts/measure_font_metrics.py) and declare the table with it"
+            )
+        frozen = dict(self.advances)
+        missing = [character for character in CHART_FONT_CHARACTERS if character not in frozen]
+        if missing:
+            raise StyleError(
+                f"chart_font {self.family!r} has no measured advance for {''.join(missing)!r} — its metrics must "
+                "cover printable ASCII, the characters every model ID, measure name and number is made of"
+            )
+        for character, advance in frozen.items():
+            if (
+                not isinstance(advance, int | float)
+                or isinstance(advance, bool)
+                or not (math.isfinite(advance) and advance > 0)
+            ):
+                raise StyleError(
+                    f"chart_font {self.family!r} gives {character!r} an advance of {advance!r}; an advance is a "
+                    "positive fraction of the font size"
+                )
+        widest = max(frozen.values())
+        if not math.isfinite(self.fallback_advance) or self.fallback_advance < widest:
+            raise StyleError(
+                f"chart_font {self.family!r} has a fallback advance of {self.fallback_advance!r}, narrower than "
+                f"its widest measured advance ({widest}) — an unmeasured character would be laid out as fitting "
+                "where it may not"
+            )
+        object.__setattr__(self, "advances", frozen)
+
+    @property
+    def measured_face(self) -> str:
+        """The face :attr:`advances` describes: the first family of :attr:`family`."""
+        return self.family.split(",")[0].strip()
+
+
 #: The engine-owned prompt fragment each register maps to. **This mapping is the reason
 #: ``tone_register`` can be safe:** the host picks a key and the engine supplies the words, so no
 #: host sentence ever reaches a model. Editing these is an engine change, reviewed as one.
@@ -214,6 +324,14 @@ class StyleProfile:
     ``None`` declares no palette: the host has chosen to draw in a renderer's packaged one, and a renderer
     built for this style (``VegaRenderer.for_style``) says so by taking it. That is the host's stated
     choice, not a substitute for something it declared — a declared palette is always the one drawn.
+    """
+
+    chart_font: ChartFont | None = None
+    """The typeface every chart renderer built for this style draws in, with its measured metrics.
+
+    ``None`` declares no font: the host draws in a renderer's packaged face, measured for it. A declared
+    font is always the one drawn and laid out against — a :class:`ChartFont` cannot exist without its
+    advance table, so a font with no metrics is refused when it is built, not discovered in a picture.
     """
 
     def __post_init__(self) -> None:
@@ -250,7 +368,8 @@ def assert_no_style_text(prompt: str, style: StyleProfile) -> None:
 
     **Scoped to the values a host writes**, which is what makes it safe to point at a whole assembled
     prompt rather than only at :func:`prompt_fragment`'s output: ``locale``, which is shape-checked,
-    and every colour of ``chart_palette``, each held to ``#rrggbb``. The closed enums are out — see
+    every colour of ``chart_palette``, each held to ``#rrggbb``, and ``chart_font``'s family list, held
+    to a bounded CSS family shape. The closed enums are out — see
     :func:`_host_supplied_strings` for why matching them reports the engine's own words as a leak.
 
     Args:
@@ -272,19 +391,26 @@ def _host_supplied_strings(style: StyleProfile) -> list[str]:
         style: The profile to walk.
 
     Returns:
-        ``locale`` and every colour of ``chart_palette`` (none when it declares no palette).
+        ``locale``, every colour of ``chart_palette`` (none when it declares no palette), and
+        ``chart_font``'s family list (none when it declares no font).
 
         ``tone_register`` is deliberately absent: it is a CLOSED engine-owned enum, so a host picks
         a key from a list and cannot hold a sentence in it, and a value that cannot carry an
         instruction is not what this check is for. The engine-owned tone fragment is absent for
         the opposite reason — it is the one thing that is *supposed* to reach a prompt.
     """
-    return [style.locale, *(style.chart_palette.colours() if style.chart_palette is not None else [])]
+    return [
+        style.locale,
+        *(style.chart_palette.colours() if style.chart_palette is not None else []),
+        *([style.chart_font.family] if style.chart_font is not None else []),
+    ]
 
 
 __all__ = [
+    "CHART_FONT_CHARACTERS",
     "SERIES_SLOTS",
     "VALIDATED_SLOTS",
+    "ChartFont",
     "ChartPalette",
     "StyleError",
     "StyleProfile",
