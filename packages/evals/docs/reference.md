@@ -234,6 +234,7 @@ The engine's contracts: the stored shapes, and the vocabulary every other packag
 - **`GuardrailReadings`** · model · Every guardrail, decided for each arm against the control — the pillar kept apart from capability.
 - **`JobStore`** · protocol · The run document's read-modify-write: what the job manager persists a run's status through.
 - **`JudgeConfig`** · model · Versioned judge configuration for one rubric dimension.
+- **`JudgeConfigTombstone`** · model · The record that a judge config slot was deleted, so a seed never writes it back.
 - **`JudgedArtifact`** · enum · What a judge reads of a kind's output — the kind's declaration, which picks the judged axes.
   <br>values: `'transcript'`, `'document'`, `'unjudged'`
 - **`JudgedDimensionFacts`** · model · What one judged dimension IS, frozen beside its scores — `MeasureFacts`' judged sibling.
@@ -1187,7 +1188,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`CallAdmission`** · type alias · Asked before each generator call is counted or sent, with `(system, user, response_format)`; raises to refuse that call.
   <br>`Callable[[str, str, 'dict[str, Any] | None'], None]`
 - **`ChangeLabel`** · literal · What a change between two paired samples reads as — see `ChangeVerdict`.
-  <br>`'improved'` | `'regressed'` | `'equivalent'` | `'below_threshold'` | `'not_separated'` | `'inconclusive'`
+  <br>`'improved'` | `'regressed'` | `'equivalent'` | `'below_threshold'` | `'not_separated'` | `'untested'`
 - **`ComparisonVerdict`** · literal · What one comparison in a family came to, read off its ADJUSTED p's.
   <br>`'improved'` | `'regressed'` | `'equivalent'` | `'not_separated'` | `'untested'`
 - **`CriterionDrift`** · literal · How a label's criterion compares with the template's today — see `LabelReading.criterion_drift`.
@@ -1261,7 +1262,6 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`= '__transcript__'`
 - **`NO_ANALYSIS`** · constant (str) · What the code-only report says in place of an analysis: that none was generated, and whose the numbers are.
 - **`PAIRED_TEST_NAME`** · constant (str) · The paired test the change classifier discloses, so a regression flag names the statistics it rests on rather than presenting a bare verdict.
-  <br>`= 'paired two-sided t-test on shared per-case values, α=0.05'`
 - **`PROJECTED_METRICS`** · constant (frozenset) · Every measure `project_score_records` can emit.
 - **`REPORT_VERSION`** · constant (int) · The report shape's version.
   <br>`= 5`
@@ -1727,7 +1727,7 @@ The Vega-Lite chart renderer — an optional adapter over eval's chart intent.
 - **`vega_config`** · function · Build the Vega-Lite config that themes a compiled spec in `palette`, set in `font`.
   <br>`vega_config(palette: ChartPalette, font: ChartFont | None = None) -> dict[str, Any]`
 - **`write_font_metrics`** · function · Commit a fresh measurement as a table `text_width` reads.
-  <br>`write_font_metrics(advances: dict[str, float], *, fallback_advance: float, worst_label: str, worst_ratio: float, font: str, measured_with: str, probe_size: int, weights: list[int], path: Path = PosixPath('/opt/3tears/.claude/wt/eval-docs-reference/packages/evals/src/threetears/evals/vega/font_metrics.json')) -> Path`
+  <br>`write_font_metrics(advances: dict[str, float], *, fallback_advance: float, worst_label: str, worst_ratio: float, font: str, measured_with: str, probe_size: int, weights: list[int], path: Path = Path('<package>/src/threetears/evals/vega/font_metrics.json')) -> Path`
 
 **Classes**
 
@@ -1925,7 +1925,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `judge_agreement` | `JudgeAgreement` | `JudgeAgreement(ratings_read=0, dimensions=[], unpaired=[])` | How the judge's scores agreed with people's calibration ratings of the same results, per judged dimension, judge model and judge config: n, distinct results, exact agreement, Cohen's kappa and, on 1-5 dimensions, quadratic-weighted kappa, each pooled over people by result — over every resolved member run's results. |
 | `judge_self_agreement` | `JudgeSelfAgreement` | `JudgeSelfAgreement(repeats_read=0, dimensions=[], unpaired=[])` | How the judge's repeated scores agreed with its own first scores of the same evidence, per judged dimension, judge model and judge config, read exactly as `judge_agreement` is (n, distinct results, exact agreement, kappa, weighted kappa, a "can't tell" repeat counted as a disagreement) — over every resolved member run's results. |
 | `judge_evidence_tiers` | `list[JudgeEvidenceTier]` | `[]` | The evidence tier of each judge's readings on each judged dimension — a judge being a served model and a judge config — decided by code from `judge_agreement` and `judge_self_agreement`, each criterion on confidence bounds for its agreement and never the point estimate: `calibrated` (the one-sided 95% lower bound on agreement with people at or above 0.6, over at least 20 distinct results), `separation` (that bound on agreement with its own repeats at or above 0.8, over at least 120 distinct results), `incidental` (both upper bounds below their bars), or `undetermined` (not shown either way: too few results, or bounds across a bar). |
-| `goal_check_proofs` | `list[GoalCheckProofReading]` | `[]` | Per goal check the member runs graded: whether it was shown, at launch, to tell its outcomes apart (`proven`), or not (`unproven`: no control; `refuted`: a control it does not beat). |
+| `goal_check_proofs` | `list[GoalCheckProofReading]` | `[]` | Per goal check the member runs graded: whether it was shown, at launch, to tell its outcomes apart (`proven`), or not (`unproven`: no control, or a proof recorded under an earlier rule (`stale`); `refuted`: a control it does not beat, or a check the grammar refused at launch (`refused`)). |
 | `multiple_comparisons` | `MultipleComparisons` | `MultipleComparisons(families=[], withheld=None)` | Each contrast tested against the control on every reading a live question asks about, per rig, with Holm correction inside each question's family: the family's size, each comparison's adjusted p and the verdict read off it. |
 | `guardrails` | `GuardrailReadings` | `GuardrailReadings(measures=[], dimensions=[], checks=[], withheld=None, unstamped_dimensions=[])` | The guardrails — boundary judged dimensions and measures declared `guardrail`, what the candidate must not get worse on — each decided for every arm against the control on its own 95% interval: `held` (shown no worse than its margin), `breached` (shown worse) or `undecided`. |
 | `reading_scope` | `ReadingScope` | `ReadingScope(questions_declared=False, exploratory_measures=[], exploratory_dimensions=[], disclosure=None)` | Which readings no declared question asked about: exploratory, reportable as leads and never as confirmed answers. |

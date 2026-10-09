@@ -44,8 +44,11 @@ from typing import Any, Literal
 from pydantic import BaseModel
 from pydantic_core import PydanticUndefined
 
+#: The package directory: what a path in a rendered default is written relative to.
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+
 #: The page this script writes.
-REFERENCE_PATH = Path(__file__).resolve().parents[1] / "docs" / "reference.md"
+REFERENCE_PATH = PACKAGE_ROOT / "docs" / "reference.md"
 
 #: The command that rewrites the page, as the page and the staleness test tell a reader.
 REGENERATE = "uv run python packages/evals/scripts/generate_reference.py"
@@ -117,7 +120,11 @@ def one_line(doc: str | None) -> str:
 
 
 def stable_repr(value: Any) -> str:
-    """A ``repr`` that is the same on every run: sets sorted, object addresses dropped."""
+    """A ``repr`` that is the same on every run and checkout: sets sorted, object addresses dropped, and a path
+    inside the package written relative to it, since an absolute one names the checkout the page was made in and
+    fails the staleness test in every other."""
+    if isinstance(value, Path) and value.is_absolute() and value.is_relative_to(PACKAGE_ROOT):
+        return f"Path('<package>/{value.relative_to(PACKAGE_ROOT).as_posix()}')"
     if isinstance(value, (set, frozenset)):
         if not value:
             return f"{type(value).__name__}()"
