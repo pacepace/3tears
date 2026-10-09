@@ -97,7 +97,7 @@ class WorldSession:
     read the stored cell back by, and the host never overrides ``fired_armed`` itself.
     """
 
-    def __init__(self, registry: WorldRegistry, *, provenance: ApparatusProvenance) -> None:
+    def __init__(self, registry: WorldRegistry, *, provenance: ApparatusProvenance, read_at_seed: bool = False) -> None:
         """Bind the session to the host's world, under the apparatus of the run its cell belongs to.
 
         Args:
@@ -107,9 +107,15 @@ class WorldSession:
                 when the runner drives the cell, ``witnessed`` when a host grades a session it observed.
                 Required, with no default, for the reason the run's own field has none — a default would
                 let a witnessed cell's firings read as a rig's.
+            read_at_seed: Read the world back through every attached dimension's ``read`` handle the moment
+                :meth:`seed` has settled it — the world at t=0, before the candidate's first turn — and keep
+                it as :attr:`seeded_state`. The runner asks for it when the template declares preconditions,
+                which it asserts against that reading; otherwise nothing is read until the end.
         """
         self._registry = registry
         self._provenance: ApparatusProvenance = provenance
+        self._read_at_seed = read_at_seed
+        self._seeded_state: dict[str, Any] | None = None
         self._bound = False
         self._attached: tuple[str, ...] | None = None
         self._seeded: tuple[str, ...] = ()
@@ -207,6 +213,14 @@ class WorldSession:
         return Firings.of(self._events, provenance=self._provenance)
 
     @property
+    def seeded_state(self) -> dict[str, Any] | None:
+        """The world as :meth:`seed` left it, read back before the first turn, a copy.
+
+        None unless the session was built with ``read_at_seed`` and has been seeded.
+        """
+        return copy.deepcopy(self._seeded_state)
+
+    @property
     def end_state_read(self) -> dict[str, Any] | None:
         """The end state once it has been read, a copy; None until then."""
         return copy.deepcopy(self._end_state)
@@ -277,6 +291,8 @@ class WorldSession:
         for carrier in self._attached:
             if (handle := settle.get(carrier)) is not None:
                 await self._registry.call(handle)
+        if self._read_at_seed:
+            self._seeded_state = await self._read_attached()
         return writes
 
     async def at_turn(self, turn: int) -> WorldEvent | None:
@@ -442,19 +458,27 @@ class WorldSession:
         if self._attached is None:
             raise WorldSessionError("this cell's world was never seeded, so it has no end state to read")
         if self._end_state is None:
-            attached = set(self._attached)
-            read = {
-                declared.name: await self._registry.call(declared.read)
-                for declared in self._registry.declarations
-                if declared.carrier in attached and declared.read is not None
-            }
-            try:
-                self._end_state = _END_STATE.validate_python(read)
-            except ValidationError as unstorable:
-                raise WorldSessionError(
-                    f"a read handle returned a value the end state cannot store as JSON: {unstorable}"
-                ) from unstorable
+            self._end_state = await self._read_attached()
         return copy.deepcopy(self._end_state)
+
+    async def _read_attached(self) -> dict[str, Any]:
+        """Every dimension of every attached carrier, read through its ``read`` handle, as storage holds it.
+
+        Raises:
+            WorldSessionError: A read handle returned a value storage cannot hold as JSON.
+        """
+        attached = set(self._attached or ())
+        read = {
+            declared.name: await self._registry.call(declared.read)
+            for declared in self._registry.declarations
+            if declared.carrier in attached and declared.read is not None
+        }
+        try:
+            return _END_STATE.validate_python(read)
+        except ValidationError as unstorable:
+            raise WorldSessionError(
+                f"a read handle returned a value the world state cannot store as JSON: {unstorable}"
+            ) from unstorable
 
     def _require_open(self, action: str) -> None:
         """Refuse to move a world that is not open, or that is already closed.

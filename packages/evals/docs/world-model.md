@@ -121,8 +121,11 @@ names a coupling, so `coherence` cannot become a waiver.
 
 **Preconditions are checked, and a failed one is excluded rather than scored.** The goal language has a closed
 grammar and an open host vocabulary, PDDL's split between domain and problem. A precondition carries `presumes`
-prose so an exclusion says what was presumed, and the engine asserts it at t=0. The same static check catches a
-goal-check typo that would otherwise read a missing value and silently score the subject down.
+prose so an exclusion says what was presumed. The engine asserts it at t=0 for every cell, after the kind's
+`prepare` and before the first turn, against the world its session read back once the seed settled. A host's
+kind need not assert it, and one that does gets the same answer. A failed presumption, or a cell whose kind never
+seeded through its session, is excluded as `precondition_failed` and counted, never scored. The same static check
+catches a goal-check typo that would otherwise read a missing value and silently score the subject down.
 
 **A goal check must beat a do-nothing control.** On τ-bench's airline split an agent that does nothing scores 38%
 ([Zhu et al., 2025](https://arxiv.org/abs/2507.02825)): wherever success means leaving the state unchanged, doing
