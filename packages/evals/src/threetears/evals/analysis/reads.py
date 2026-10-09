@@ -733,7 +733,7 @@ def export_results(
 
     all_runs, cohort, archived_run_ids = _corpus_and_cohort(list_runs, scope_id)
     # An explicitly named id is selected from the CORPUS, not the cohort: naming a run
-    # is deliberate, and every other by-id surface (get_run, run_summary, compare_runs,
+    # is deliberate, and every other by-id surface (get_run, run_summary, compare_two_runs,
     # bisect_runs) reads an archived run regardless. Narrowing through the cohort here
     # would answer a run the caller asked for by name with an empty CSV — and CSV
     # carries no exclusion channel to say why. The archive filter still applies to the

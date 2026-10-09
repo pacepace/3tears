@@ -2161,7 +2161,7 @@ class AnalysisContextBundle(EvalDocumentModel):
             "disjoint, and otherwise counts the disjoint pairs against the total and names the "
             "overlapping remainder. It also names each disjoint pair's gap magnitude, widest first. "
             "None when every pair overlaps or too few runs resolved a span. Built by the same helper "
-            "compare_runs banners from, on the same predicate, and listing every span rather than "
+            "runs_compare discloses from, on the same predicate, and listing every span rather than "
             "collapsing above the inline cap: the reader here cannot go and fetch the omitted ones. "
             "The PAIR list can still truncate — pairs grow quadratically where spans grow linearly — "
             "and says how many it did not name."
@@ -6213,7 +6213,7 @@ def assemble_context_bundle(
         observations, {c.apparatus_class_id: c for c in apparatus_classes.values()}
     )
 
-    # Only the runs that RESOLVED a span contribute, exactly as compare_runs does: a run
+    # Only the runs that RESOLVED a span contribute, exactly as runs_compare's do: a run
     # that produced nothing cannot say when it was measured, and letting that absence count
     # would report a difference on the strength of what one run could not say.
     # Sorted once, here, so the bundle's structured spans and the sentence rendered from them

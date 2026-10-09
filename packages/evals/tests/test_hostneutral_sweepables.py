@@ -154,6 +154,9 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
     # comparison family, and the readings no declared question asks about are labelled exploratory; the apparatus
     # partition is unchanged.
     ((46, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
+    # 47/10: the declaration's `controls` is renamed `held_fixed`, and the bundle's `controls_reading` with it
+    # (`held_fixed_reading`); the apparatus partition is unchanged.
+    ((47, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
 )
 
 

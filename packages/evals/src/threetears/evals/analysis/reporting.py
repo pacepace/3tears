@@ -303,7 +303,7 @@ def degraded_run_disclosures(runs: Iterable[EvalRun]) -> dict[str, str]:
 
     The seam the *pooling* surfaces read. :func:`completeness_disclosure` answers
     about one run, and the run-scoped surfaces (``get_run``, ``run_summary``,
-    ``compare_runs``) each call it for the run they are about. An aggregator has
+    ``runs_compare``) each call it for the run they are about. An aggregator has
     no such run: it pools dozens into a rate, and every one of them was silently
     admitted because nothing had asked the question over a *set*. This asks it
     once, so ``frontier``, ``results_pivot`` and ``history`` cannot come to
