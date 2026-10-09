@@ -13,7 +13,7 @@ pay for.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field
 
@@ -58,14 +58,38 @@ class CampaignListing(EvalBaseModel):
     campaigns: list[CampaignLine]
 
 
+#: What a declared design is, said once for the operation and the action that offer it.
+DECLARED_DESIGN_DESCRIPTION = (
+    "What the campaign sets out to learn, declared before it learns anything: axes (at least one: {axis_id, values: "
+    "[{content, display}], rationale?}, each axis_id a lever or open-family member this host declares), held_fixed "
+    "({stimulus: controlled|uncontrolled, stimulus_reason (required when uncontrolled), apparatus: "
+    "commissioned|witnessed}), and optionally questions ([{id, text, merit_axes?}]), bars ([{measure_id, threshold, "
+    "direction}], no looser than the registered ones), merit_priority and intended_repetitions. Validated and gated "
+    "as every campaign declaration is; omitted, the campaign is undeclared and its analysis infers the design from "
+    "the runs. Its control is named by control_run_id."
+)
+
+#: What the control run is, said once for the operation and the action.
+CONTROL_RUN_DESCRIPTION = (
+    "One of run_ids whose variant becomes the declared control, the cell every other is read against: its variant "
+    "key is resolved from the run, as designating a control on an existing campaign resolves it. Requires "
+    "declared_design."
+)
+
+
 class CampaignDefinition(EvalBaseModel):
-    """What creating a campaign names: what it is called, its subject and behaviour, and its runs."""
+    """What creating a campaign names: what it is called, its subject and behaviour, its runs, and what it set out to learn.
+
+    The declared design is optional: a campaign created without one is undeclared, a state every reader handles.
+    """
 
     name: str
     subject_id: str
     behavior: str
     description: str = ""
     run_ids: list[str] = Field(default_factory=list)
+    declared_design: dict[str, Any] | None = Field(default=None, description=DECLARED_DESIGN_DESCRIPTION)
+    control_run_id: str | None = Field(default=None, min_length=1, description=CONTROL_RUN_DESCRIPTION)
 
 
 class AnalysisLine(EvalBaseModel):
@@ -136,7 +160,7 @@ def campaigns_list(host: EvalHost, scope_id: str, *, archived: bool | None = Non
 
 
 def campaign_create(host: EvalHost, definition: CampaignDefinition, scope_id: str, *, created_by: str) -> CampaignLine:
-    """Create a campaign over runs already in the scope.
+    """Create a campaign over runs already in the scope, declared as it is created when the definition says so.
 
     Args:
         host: The host whose store the campaign is written to.
@@ -148,11 +172,17 @@ def campaign_create(host: EvalHost, definition: CampaignDefinition, scope_id: st
         The campaign as created.
 
     Raises:
-        ValidationFailedError: The definition fails campaign validation, or names a run not in the scope.
+        ValidationFailedError: The definition fails campaign validation, names a run not in the scope, declares a
+            design this host cannot honour, or names a control run with no design or outside its runs.
         StorageError: The campaign failed to persist.
     """
     campaign = create_campaign(
-        host.storage, definition.model_dump(), scope_id=scope_id, created_by=created_by, profile=host.profile
+        host.storage,
+        definition.model_dump(exclude={"control_run_id"}, exclude_none=True),
+        scope_id=scope_id,
+        created_by=created_by,
+        profile=host.profile,
+        control_run_id=definition.control_run_id,
     )
     return _campaign_line(campaign)
 

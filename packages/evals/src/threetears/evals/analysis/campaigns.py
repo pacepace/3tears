@@ -158,7 +158,13 @@ class DeclarableAxes(EvalBaseModel):
 
 
 def create_campaign(
-    storage: CampaignStore, definition: dict[str, Any], *, scope_id: str, created_by: str, profile: HostProfile
+    storage: CampaignStore,
+    definition: dict[str, Any],
+    *,
+    scope_id: str,
+    created_by: str,
+    profile: HostProfile,
+    control_run_id: str | None = None,
 ) -> EvalCampaign:
     """Create and persist a campaign from an authoring definition.
 
@@ -167,6 +173,12 @@ def create_campaign(
     from the surface rather than from the caller. ``name`` / ``subject_id`` /
     ``behavior`` are required (non-empty); the rest default per
     :class:`~threetears.evals.contracts.campaign.EvalCampaign`.
+
+    **A campaign may be declared as it is created.** A ``declared_design`` in ``definition`` is
+    validated by the campaign contract, stamped with its author, and gated as :func:`update_campaign`
+    gates one. Its control is a variant key, which nobody types: ``control_run_id`` names one of the
+    campaign's runs and the key is resolved from it exactly as :func:`set_campaign_control` resolves
+    one. A design that types ``control`` itself is held to the key's shape by the contract.
 
     Args:
         storage: The campaign store.
@@ -177,13 +189,19 @@ def create_campaign(
             records — which is the whole defect: the field existed for the campaign's entire
             life and neither surface ever wrote it.
         profile: The host whose vocabulary this reads.
+        control_run_id: One of ``definition``'s runs whose variant becomes the declared control, or
+            None. Requires a ``declared_design``, and one that does not type ``control`` itself.
 
     Returns:
         The persisted :class:`~threetears.evals.contracts.campaign.EvalCampaign`.
 
     Raises:
         ValidationFailedError: ``definition`` fails campaign validation, names a run that does
-            not exist in ``scope_id``, or declares a design this host cannot honour.
+            not exist in ``scope_id``, or declares a design this host cannot honour; or
+            ``control_run_id`` is given with no design, beside a typed ``control``, or names a run
+            the campaign does not hold.
+        LeverCoordinateError: ``control_run_id``'s run has no results and recorded no lever map, and
+            the host's variant map disagrees with its own registry.
         StorageError: The campaign failed to persist (a failed write must not
             read back as a created 201 for an id ``campaign_get`` then 404s).
     """
@@ -206,6 +224,23 @@ def create_campaign(
         campaign = EvalCampaign(**clean)
     except ValidationError as e:
         raise ValidationFailedError(f"invalid campaign definition: {e}") from e
+    _refuse_runs_outside_scope(storage, campaign.run_ids, scope_id)
+    if control_run_id is not None:
+        if campaign.declared_design is None:
+            raise ValidationFailedError(
+                "control_run_id names the run whose variant is the control, and the control lives on the "
+                "declaration — declare a design (`declared_design`) with it. A control is the reference point of a "
+                "comparison, so there is nothing for it to reference yet"
+            )
+        if campaign.declared_design.control is not None:
+            raise ValidationFailedError(
+                "the design types a `control` and control_run_id names one too — give one: the run (control_run_id), "
+                "whose variant key is resolved for you, or the key itself"
+            )
+        control = _resolve_control_variant(storage, campaign, control_run_id, profile=profile)
+        campaign = campaign.model_copy(
+            update={"declared_design": campaign.declared_design.model_copy(update={"control": control})}
+        )
     if campaign.declared_design is not None:
         campaign = campaign.model_copy(
             update={"declared_design": _stamp_declaration(campaign.declared_design, created_by)}
@@ -217,7 +252,6 @@ def create_campaign(
     # would run to completion and the defect would surface as a report nobody can act on.
     if campaign.declared_design is not None:
         _gate_declaration(storage, campaign, campaign.declared_design, profile=profile)
-    _refuse_runs_outside_scope(storage, campaign.run_ids, scope_id)
 
     storage.save_campaign(campaign)
     return campaign

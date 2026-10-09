@@ -270,13 +270,15 @@ class CampaignsListParams(EvalBaseModel):
 
 
 class CampaignCreateParams(EvalBaseModel):
-    """``campaign_create``."""
+    """``campaign_create`` — the operation's own definition, declared design and control run included."""
 
     name: Name
     subject_id: SubjectId
     behavior: Behavior
     description: Description = ""
     run_ids: RunIds = Field(default_factory=list)
+    declared_design: Annotated[dict[str, Any] | None, CampaignDefinition.model_fields["declared_design"]] = None
+    control_run_id: Annotated[str | None, CampaignDefinition.model_fields["control_run_id"]] = None
 
 
 class CampaignArchiveParams(EvalBaseModel):
@@ -900,7 +902,32 @@ def engine_actions() -> tuple[Action, ...]:
             result=CampaignLine,
             handler=_campaign_create,
             render=render.render_campaign,
-            example={"name": "model bake-off", "subject_id": "subject-1", "behavior": "accuracy", "run_ids": [run_id]},
+            example={
+                "name": "model bake-off",
+                "subject_id": "subject-1",
+                "behavior": "accuracy",
+                "run_ids": [run_id],
+                "declared_design": {
+                    "axes": [
+                        {
+                            "axis_id": "model",
+                            "values": [
+                                {"content": "model-a", "display": "model-a"},
+                                {"content": "model-b", "display": "model-b"},
+                            ],
+                        }
+                    ],
+                    "held_fixed": {"stimulus": "controlled", "apparatus": "commissioned"},
+                },
+                "control_run_id": run_id,
+            },
+            detail=(
+                "declared_design states what the campaign sets out to learn — its axes and what it held fixed, and "
+                "optionally its questions, bars and merit priority — and is refused, naming why, when this host "
+                "cannot honour it: an axis it does not declare, a bar looser than the registered one. control_run_id "
+                "names the run whose variant every other cell is read against. Omit both and the campaign is "
+                "undeclared, and its analysis infers the design from the runs."
+            ),
         ),
         Action(
             name="analysis_generate",
