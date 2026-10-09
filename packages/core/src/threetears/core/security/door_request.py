@@ -41,6 +41,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import BaseModel
 
 from threetears.nats.errors import KvError
+from threetears.nats.subjects import sanitize_subject_segment
 from threetears.observe import get_logger
 from threetears.observe.metrics import counter
 
@@ -109,12 +110,15 @@ APPROVAL_RECORD_OP: Final[str] = "record"
 def datasource_query_op(datasource_name: str) -> str:
     """the operation a query to one datasource is proven for, so a proof never reaches another.
 
-    :param datasource_name: the datasource, as its subject names it
+    The datasource is named as its subject names it (the sanitised segment), so the door, which
+    reads it off the subject, signs the same text.
+
+    :param datasource_name: the datasource's name
     :ptype datasource_name: str
     :return: the operation
     :rtype: str
     """
-    return f"{datasource_name}.query"
+    return f"{sanitize_subject_segment(datasource_name)}.query"
 
 
 def door_request_hash(body: Mapping[str, Any], *, door: str, op: str) -> str:

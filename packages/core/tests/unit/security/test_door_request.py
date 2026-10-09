@@ -357,3 +357,12 @@ class TestTheDoor:
     def test_a_ledger_that_forgets_an_id_before_its_proof_expires_fails_the_boot(self) -> None:
         with pytest.raises(ValueError, match="must remember an id"):
             _door(ledger=InProcessEnvelopeLedger(retention=DOOR_PROOF_REPLAY_TTL - timedelta(seconds=1)))
+
+
+def test_a_datasource_operation_is_named_as_its_subject_names_it() -> None:
+    """the door reads the datasource off its subject, so the operation uses the subject's segment."""
+    from threetears.core.security import datasource_query_op
+    from threetears.nats.subjects import sanitize_subject_segment
+
+    assert datasource_query_op("central.reporting") == f"{sanitize_subject_segment('central.reporting')}.query"
+    assert datasource_query_op("warehouse") == "warehouse.query"

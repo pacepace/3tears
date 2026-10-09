@@ -135,6 +135,7 @@ from threetears.core.security.door_request import (
     DoorVerdict,
     PopKey,
     RegistrationKey,
+    datasource_query_op,
     door_request_hash,
     verify_door_request,
 )
@@ -202,6 +203,7 @@ __all__ = [
     "DoorVerdict",
     "PopKey",
     "RegistrationKey",
+    "datasource_query_op",
     "door_request_hash",
     "verify_door_request",
     # turn assertions
