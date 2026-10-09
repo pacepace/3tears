@@ -127,8 +127,11 @@ from threetears.core.security.delegated_token import (
 )
 from threetears.core.security.door_request import (
     DOOR_PROOF_FIELD,
+    DOOR_PROOF_REPLAY_TTL,
     DOOR_TOKEN_FIELD,
     DoorCredential,
+    DoorRequestDoor,
+    DoorVerdict,
     door_request_hash,
     verify_door_request,
 )
@@ -188,8 +191,11 @@ __all__ = [
     "verify_door_caller",
     # door requests
     "DOOR_PROOF_FIELD",
+    "DOOR_PROOF_REPLAY_TTL",
     "DOOR_TOKEN_FIELD",
     "DoorCredential",
+    "DoorRequestDoor",
+    "DoorVerdict",
     "door_request_hash",
     "verify_door_request",
     # turn assertions

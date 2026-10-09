@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import date
 
 import pytest
 from pydantic import BaseModel, SecretStr, field_serializer
@@ -12,6 +13,9 @@ from threetears.core.security import (
     DOOR_PROOF_FIELD,
     DelegatedTokenError,
     DoorCredential,
+    DoorRequestDoor,
+    DoorVerdict,
+    InProcessEnvelopeLedger,
     ProofAbsentError,
     build_jwks,
     generate_signing_keypair,
@@ -20,6 +24,7 @@ from threetears.core.security import (
     sign_identity_token,
     verify_door_request,
 )
+from threetears.core.security.door_proof import DoorProofSwitch, DoorWindow
 from threetears.core.security.identity_token import IdentityClaims
 
 _REGISTRY, _REGISTRY_PUB = generate_signing_keypair()
@@ -155,3 +160,58 @@ def test_a_wire_model_carrying_another_token_is_not_proven() -> None:
 def test_a_wire_model_with_no_proof_field_is_a_wiring_error() -> None:
     with pytest.raises(ValueError, match="no identity_proof field"):
         DoorCredential(token="t", holder_key=_AGENT).presented(_NoProofField(identity_token="t"))
+
+
+# --- the door ---------------------------------------------------------------------------------
+
+_WINDOW = DoorWindow(door="l3", opened=date(2026, 10, 8), required_from=date(2027, 1, 5))
+
+
+def _door(*, today: date = date(2026, 10, 9), delegated: bool = True, jwks: object = _JWKS) -> DoorRequestDoor:
+    return DoorRequestDoor(
+        switch=DoorProofSwitch(_WINDOW, today=lambda: today),
+        jwks=lambda: jwks,  # type: ignore[return-value]
+        hub_issuer="hub",
+        replay_guard=InProcessEnvelopeLedger(),
+        accepts_delegated=delegated,
+    )
+
+
+async def test_the_door_serves_a_proven_request_once() -> None:
+    door = _door()
+    sent = DoorCredential(token=_agent_token(), holder_key=_AGENT).present(_BODY)
+    first = await door.admit(sent)
+    assert first.admitted
+    assert first.caller is not None
+    assert first.caller.agent_id == "agent-1"
+    assert not (await door.admit(sent)).admitted
+
+
+async def test_the_door_reads_the_bytes_as_sent() -> None:
+    sent = DoorCredential(token=_agent_token(), holder_key=_AGENT).present(_BODY)
+    sent["a_field_a_later_caller_adds"] = "x"
+    sent = DoorCredential(token=sent["identity_token"], holder_key=_AGENT).present(sent)
+    assert (await _door().admit_message(json.dumps(sent).encode())).admitted
+    assert not (await _door().admit_message(b"[]")).admitted
+
+
+async def test_a_bearer_request_is_served_while_the_window_is_open_and_refused_after() -> None:
+    sent = DoorCredential(token=_agent_token()).present(_BODY)
+    assert await _door().admit(sent) == DoorVerdict(admitted=True)
+    assert (await _door(today=date(2027, 1, 5)).admit(sent)).admitted is False
+
+
+async def test_a_delegated_token_has_no_bearer_form() -> None:
+    sent = DoorCredential(token=_delegated()).present(_BODY)
+    assert (await _door().admit(sent)).admitted is False
+
+
+async def test_a_door_no_pod_reaches_refuses_a_delegated_token() -> None:
+    sent = DoorCredential(token=_delegated(), holder_key=_POD).present(_BODY)
+    assert (await _door(delegated=False).admit(sent)).admitted is False
+    assert (await _door(delegated=True).admit(sent)).admitted is True
+
+
+async def test_a_proof_is_refused_while_the_key_set_is_not_loaded() -> None:
+    sent = DoorCredential(token=_agent_token(), holder_key=_AGENT).present(_BODY)
+    assert (await _door(jwks=None).admit(sent)).admitted is False

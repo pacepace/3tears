@@ -25,25 +25,50 @@ import hashlib
 import json
 import secrets
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any, Final, TypeVar
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import BaseModel
 
-from threetears.core.security.delegated_token import DelegatedTokenError, DoorCaller, verify_door_caller
+from threetears.nats.errors import KvError
+from threetears.observe import get_logger
+from threetears.observe.metrics import counter
+
+from threetears.core.security.delegated_token import (
+    DelegatedTokenError,
+    DoorCaller,
+    ProofAbsentError,
+    is_delegated_token,
+    verify_door_caller,
+)
+from threetears.core.security.door_proof import DoorProofSwitch, ProofOutcome
+from threetears.core.security.freshness import DEFAULT_PROOF_MAX_AGE, ISSUE_TIME_FUTURE_TOLERANCE
 from threetears.core.security.pop import access_token_hash, make_pop_proof
+from threetears.core.security.service_envelope import EnvelopeLedger
 
 __all__ = [
     "DOOR_PROOF_FIELD",
+    "DOOR_PROOF_REPLAY_TTL",
     "DOOR_TOKEN_FIELD",
     "DoorCredential",
+    "DoorRequestDoor",
+    "DoorVerdict",
     "door_request_hash",
     "verify_door_request",
 ]
 
 _M = TypeVar("_M", bound=BaseModel)
+
+log = get_logger(__name__)
+
+_REFUSED_COUNTER: Final[str] = "door_request_refused"
+
+#: how long a door's ledger remembers a proof's ``jti``: as long as the proof could still be
+#: accepted -- its age limit plus the clock tolerance ahead -- and a margin.
+DOOR_PROOF_REPLAY_TTL: Final[timedelta] = DEFAULT_PROOF_MAX_AGE + ISSUE_TIME_FUTURE_TOLERANCE + timedelta(seconds=5)
 
 #: the body field a door reads its caller's credential from.
 DOOR_TOKEN_FIELD: Final[str] = "identity_token"
@@ -195,3 +220,165 @@ def verify_door_request(
         door=door,
         body_hash=door_request_hash(body),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class DoorVerdict:
+    """what a door decided about one request's credential.
+
+    :ivar admitted: whether the door may go on to serve the request
+    :ivar caller: the proven caller when the request carried a proof that verified; ``None`` for a
+        bearer request the door's window still accepts, which the door verifies its own way, as before
+    """
+
+    admitted: bool
+    caller: DoorCaller | None = None
+
+
+class DoorRequestDoor:
+    """one platform door's check of a request's proof of possession, inside its dated window.
+
+    A request carrying ``identity_proof`` is served only when the proof verifies over the body and
+    its ``jti`` is spent in the ledger. A request without one is the window's to judge -- accepted,
+    and counted per claimed sender, while it is open; refused from its date -- and its token is
+    then verified by the door exactly as before. The per-door count of bearer callers is the fleet's
+    rollout signal, never a switch. The door never raises: its answer is a :class:`DoorVerdict`.
+
+    :param switch: the door's window, from the process's door registry; its door name is the
+        audience a delegated token must name
+    :ptype switch: DoorProofSwitch
+    :param jwks: answers the hub JWKS -- the hub's identity keys and the registry's delegated-token
+        key -- or ``None`` while it is not loaded
+    :ptype jwks: Callable[[], Mapping[str, Any] | None]
+    :param hub_issuer: the hub's identity-token issuer
+    :ptype hub_issuer: str
+    :param replay_guard: the door's single-use ledger of proof ids
+    :ptype replay_guard: EnvelopeLedger
+    :param accepts_delegated: whether a tool pod may act for its caller here with the call's
+        delegated token; a door no tool pod reaches as its caller refuses one
+    :ptype accepts_delegated: bool
+    :raises ValueError: when the ledger was not sized for the proof's clock tolerance
+    """
+
+    def __init__(
+        self,
+        *,
+        switch: DoorProofSwitch,
+        jwks: Callable[[], Mapping[str, Any] | None],
+        hub_issuer: str,
+        replay_guard: EnvelopeLedger,
+        accepts_delegated: bool,
+    ) -> None:
+        replay_guard.require_covers(ISSUE_TIME_FUTURE_TOLERANCE)
+        self._switch = switch
+        self._jwks = jwks
+        self._hub_issuer = hub_issuer
+        self._replay_guard = replay_guard
+        self._accepts_delegated = accepts_delegated
+
+    @property
+    def door(self) -> str:
+        """the door's name, its window's.
+
+        :return: the name
+        :rtype: str
+        """
+        return self._switch.door
+
+    async def admit(self, body: Mapping[str, Any], *, claimed_sender: str | None = None) -> DoorVerdict:
+        """decide ``body``, the request as received, its proof field included.
+
+        :param body: the parsed request
+        :ptype body: Mapping[str, Any]
+        :param claimed_sender: who the request says it is from, unverified, for the bearer count
+        :ptype claimed_sender: str | None
+        :return: the verdict
+        :rtype: DoorVerdict
+        """
+        token = body.get(DOOR_TOKEN_FIELD)
+        proof = body.get(DOOR_PROOF_FIELD)
+        if isinstance(proof, str) and proof:
+            verdict = await self._verified(body)
+        elif isinstance(token, str) and is_delegated_token(token):
+            # a delegated token is useless without its pod's key; there is no bearer form of one
+            verdict = self._refused("absent", "a delegated token arrived without its proof")
+        else:
+            outcome = self._switch.judge(presented=False, claimed_sender=claimed_sender)
+            verdict = (
+                DoorVerdict(admitted=True)
+                if outcome is ProofOutcome.ACCEPTED_WITHOUT_PROOF
+                else self._refused("absent", "the door requires a proof of possession")
+            )
+        return verdict
+
+    async def admit_message(self, data: bytes, *, claimed_sender: str | None = None) -> DoorVerdict:
+        """decide the request ``data``, hashed exactly as sent.
+
+        The door to use when the door's own request model is a tolerant reader, which would hash
+        less than the caller signed for a caller a release ahead.
+
+        :param data: the request bytes, a JSON object
+        :ptype data: bytes
+        :param claimed_sender: who the request says it is from, unverified, for the bearer count
+        :ptype claimed_sender: str | None
+        :return: the verdict; a body that is not a JSON object is refused
+        :rtype: DoorVerdict
+        """
+        try:
+            body = json.loads(data)
+        except ValueError, UnicodeDecodeError:
+            body = None
+        verdict = self._refused("malformed", "the request is not a JSON object")
+        if isinstance(body, dict):
+            verdict = await self.admit(body, claimed_sender=claimed_sender)
+        return verdict
+
+    async def _verified(self, body: Mapping[str, Any]) -> DoorVerdict:
+        """verify the proof and spend its id.
+
+        :param body: the parsed request, carrying a proof
+        :ptype body: Mapping[str, Any]
+        :return: the verdict
+        :rtype: DoorVerdict
+        """
+        jwks = self._jwks()
+        verdict: DoorVerdict
+        if jwks is None:
+            verdict = self._refused("keys_unavailable", "the hub key set is not loaded")
+        else:
+            try:
+                caller = verify_door_request(body, jwks=jwks, hub_issuer=self._hub_issuer, door=self.door)
+                fresh = await self._replay_guard.record_unique(caller.proof.jti, issued_at=caller.proof.issued_at)
+            except ProofAbsentError as exc:
+                verdict = self._refused("absent", f"{exc}")
+            except DelegatedTokenError as exc:
+                verdict = self._refused("unverified", f"{exc}")
+            except KvError as exc:
+                # the ledger cannot say whether the proof was used: refuse rather than admit a replay
+                verdict = self._refused("ledger_unavailable", type(exc).__name__)
+            else:
+                if not fresh:
+                    verdict = self._refused("replayed", "the proof was used before")
+                elif caller.pod_id is not None and not self._accepts_delegated:
+                    verdict = self._refused("delegated", "this door does not take a tool pod acting for its caller")
+                else:
+                    verdict = DoorVerdict(admitted=True, caller=caller)
+        return verdict
+
+    def _refused(self, cause: str, reason: str) -> DoorVerdict:
+        """log and count a refusal, and answer it.
+
+        :param cause: the refusal's class, the counter's ``cause`` label
+        :ptype cause: str
+        :param reason: what failed
+        :ptype reason: str
+        :return: a refusing verdict
+        :rtype: DoorVerdict
+        """
+        counter(
+            _REFUSED_COUNTER,
+            description="door requests refused for their proof of possession",
+            label_names=("door", "cause"),
+        ).labels(door=self.door, cause=cause).inc()
+        log.warning("door request refused", extra={"extra_data": {"door": self.door, "cause": cause, "reason": reason}})
+        return DoorVerdict(admitted=False)
