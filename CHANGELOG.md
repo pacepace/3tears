@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Core coordination: a fence on a producer's ready signal
+
+- **Added, `threetears.core.coordination.source_token`**: `SourceToken` (the producer's run and the
+  newest data it saw), `SourceTokenFence` (one row per signal in the owner's L3, advanced by one
+  `INSERT ... ON CONFLICT DO UPDATE ... WHERE` only to a newer token: a later run whose data is not
+  older; the work it starts runs in the same transaction, so a failed start does not spend the
+  token), `Advance`, and `source_tokens_schema(name)` for the owner to declare the table. Moved from
+  the reports product's ENR pod, where it was written while 3tears was closed; any pod woken by
+  another system's pipeline needs it.
+
 ### Datasources: a geo layer's name is refused when written unless it fits a NATS subject token
 
 A geo layer's name becomes a token of its tile epoch's NATS subject and a tile URL path segment.
