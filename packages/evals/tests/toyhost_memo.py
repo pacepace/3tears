@@ -189,11 +189,11 @@ def memo_payload(bundle: Any) -> dict[str, Any]:
         "decisions": [
             {
                 "proposal": "Keep the narrow chunk width in the extraction pipeline.",
-                "disposition": "adopted",
+                "disposition": "deferred",
                 "cells": [narrow],
                 "confidence": "high",
                 "rests_on": [0],
-                "revisit_when": "",
+                "revisit_when": "a run that declares the narrow width the control, so the wide one is tested against it",
             }
         ],
         "questions": [
