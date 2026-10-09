@@ -141,8 +141,9 @@ async def main() -> Comparison:
     for arm, summary in comparison.arms.items():
         print(f"--- {arm} ---\n{summary.render()}\n")
 
-    # The verdict on accuracy and on spend. A cheaper arm whose accuracy is "not separated from the
-    # control" is the case for switching, once there are enough hard cases.
+    # The verdict on accuracy and on spend. "Not separated" on accuracy does not say the cheaper arm is as
+    # accurate — only "equivalent", shown inside a declared margin, says that — so it is the case for switching
+    # only once enough hard cases make the interval on the difference narrow enough to live with.
     for row in comparison.contrasts():
         arm, control = (row[key].removeprefix("model=") for key in ("contrast", "control"))
         p = "" if row["p_adjusted"] is None else f" (p={row['p_adjusted']:.2g})"  # none when nothing varied
