@@ -73,6 +73,8 @@ class _Pointers:
         self._revision = 0
         self._queue: asyncio.Queue[KvKeyUpdate | None | Exception] = asyncio.Queue()
         self.update_fails: Exception | None = None
+        # the per-key TTL each key was last written with
+        self.ttls: dict[str, timedelta | None] = {}
 
     def end_watch(self) -> None:
         """end the pointer watch, as a lost connection does, while the bucket's reads and writes still answer."""
@@ -98,13 +100,19 @@ class _Pointers:
         return self.entries.get(key)
 
     async def create(self, *, key: str, value: bytes, ttl: timedelta | None = None) -> int | None:
-        return None if key in self.entries else self._put(key, value)
+        if key in self.entries:
+            return None
+        self.ttls[key] = ttl
+        return self._put(key, value)
 
     async def update(self, *, key: str, value: bytes, revision: int, ttl: timedelta | None = None) -> int | None:
         if self.update_fails is not None:
             raise self.update_fails
         entry = self.entries.get(key)
-        return self._put(key, value) if entry is not None and entry[1] == revision else None
+        if entry is None or entry[1] != revision:
+            return None
+        self.ttls[key] = ttl
+        return self._put(key, value)
 
     async def delete(self, *, key: str, revision: int | None = None) -> bool:
         entry = self.entries.get(key)
@@ -1581,4 +1589,41 @@ async def test_a_pointer_never_moves_onto_a_staged_chunk_that_is_gone() -> None:
 
     assert (moved, skipped) == ([], ["TX"])
     assert pointers.entries["enr.s.TX"][0] == before, "a pointer was moved onto a missing chunk"
+    await snapshot.stop()
+
+
+def _write_claims(pointers: _Pointers) -> list[str]:
+    return [key for key in pointers.entries if key.startswith("enr.w.")]
+
+
+async def test_every_write_is_its_own_claim_in_the_grammar_the_purge_reads_and_lapses_with_its_writer() -> None:
+    from threetears.nats.object_store_requests import is_write_claim_key
+
+    snapshot, pointers, _, _ = _retiring_snapshot()
+    await _started(snapshot, pointers)
+    texas = await snapshot.stage("TX", 3, _TX_ROWS)
+    delaware = await snapshot.stage("DE", 3, {"results": [{"county": "c2", "state": "DE", "votes": 6}]})
+
+    claims = _write_claims(pointers)
+    assert len(claims) == 2, f"two writes at one epoch hold one claim each: {claims}"
+    assert all(is_write_claim_key(key) for key in claims), f"the hub's purge cannot see these claims: {claims}"
+    assert all(pointers.ttls[key] is not None for key in claims), "a claim without a per-key TTL outlives its writer"
+
+    await snapshot.discard_staged([texas])
+    assert len(_write_claims(pointers)) == 1, "letting one write go released another write's claim at its epoch"
+    await snapshot.discard_staged([delaware])
+    assert _write_claims(pointers) == []
+    await snapshot.stop()
+
+
+async def test_a_write_claim_lost_while_its_writer_lives_is_taken_again() -> None:
+    snapshot, pointers, _, _ = _snapshot(claim_ttl=timedelta(seconds=1))
+    await _started(snapshot, pointers)
+    staged = await snapshot.stage("TX", 3, _TX_ROWS)
+
+    _writer_died(pointers)  # gone with its bucket, while this writer still writes
+    await _until(lambda: bool(_write_claims(pointers)), what="the lost write claim taken again", timeout=3)
+
+    await snapshot.discard_staged([staged])
+    assert _write_claims(pointers) == []
     await snapshot.stop()

@@ -77,12 +77,16 @@ listed), never a replica's view, which lags another replica's publish:
 | At an epoch a live write claims | Kept: it is being written, or waits for its pointer to move |
 | Anything else | Deleted: it serves nothing and nothing will point at it |
 
-- **A write claim** is a key `{name}.w.{epoch}.{replica}` in the pointer bucket, taken by the writer
-  before its first chunk at that epoch and held until a pointer names what it wrote (a staged
-  write: until `publish_staged`; a publish or rebuild: until its pointer moved). It is renewed while
-  the writer lives; a writer that dies stops renewing and its claim lapses, so it stops protecting
-  what the dead write staged. A claim lost with its bucket is taken again at the next renewal, and a
-  rebuild that follows a lost pointer bucket sweeps nothing, since the claims went with it.
+- **A write claim** is a key `{name}.w.{epoch}.{writer}` in the pointer bucket, one per write
+  (`writer` names the replica and the write), taken before the write's first chunk at that epoch
+  and held until a pointer names what it wrote (a staged write: until `publish_staged`, the claim
+  riding on its `StagedScope`; a publish or rebuild: until its pointer moved). Each is a `KVLease`
+  hold on the pointer bucket it was handed, written with a NATS per-key TTL and renewed at a third of
+  it while the writer lives; a writer that dies stops renewing and its KEY lapses, so it stops
+  protecting what the dead write staged and stops holding off the hub's orphan purge, which reads
+  only whether a claim key exists. A claim found gone while its writer lives (lost with its bucket,
+  or lapsed through an outage) is taken again at the next renewal, and a rebuild that follows a lost
+  pointer bucket sweeps nothing, since the claims went with it.
 - **Older chunks go as each pointer moves**, on every path (publish, staged publish, rebuild,
   catch-up), so a run that fails part way leaves nothing superseded behind for the scopes it moved.
 - **A write that will not commit gives its stages back** (`discard_staged`: its claims released,

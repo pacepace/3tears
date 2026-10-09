@@ -6,6 +6,22 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Coordination: a lease on a bucket it was handed, whose key lapses with its holder; snapshot write claims held on it
+
+- **Added, `KVLease(None, bucket=...)`**: a lease over a bucket already bound (one another owner
+  declared, such as a pod's pointer bucket), keyed exactly as told; the lease opens nothing.
+- **Added, `KVLease(expire_entries=True)`**: every entry is written with a NATS per-key TTL equal to
+  the lease's, so a holder that stops renewing loses the key itself, not only its envelope's expiry.
+  For buckets whose readers test whether a key exists. The bucket must allow per-key TTLs.
+- **Added, `KVLease.hold(retake=True)`** (and `LeaseHandle.retake`): a renewal that finds the entry
+  gone (lost with its bucket, or lapsed through an outage) takes it again instead of reporting the
+  lease lost; another holder on the entry still loses it. For keys that name their holder alone.
+- **Changed, scoped snapshot write claims**: each write holds its own claim, a `KVLease` hold on the
+  pointer bucket (`{name}.w.{epoch}.{writer}`, the grammar `is_write_claim_key` reads, unchanged), its
+  caller's to release; a stage's claim rides on its `StagedScope` (`claim`) until `publish_staged` or
+  `discard_staged`. No per-process claim table and no renewal loop of the snapshot's own remain, and
+  `ScopedSnapshot.stop` no longer ends the claims of stages a writer still holds.
+
 ### Datasources: a relation read by parts in bulk, through one export or pages read side by side
 
 Reading a relation part by part (one state at a time) cost a fingerprint, a read and a fingerprint
