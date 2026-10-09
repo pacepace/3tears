@@ -1,8 +1,8 @@
 # Concepts: the nouns of 3tears-evals, and how they fit together
 
-Read this when a word in the README or a guide stops you. It draws one picture of how the pieces relate,
-then defines every term of art the docs use, in plain words, with one running example. Nothing here
-assumes you have built an eval before. Why the pieces are shaped this way is in
+**For** anyone stopped by a word in the README or a guide. **Answers:** how the pieces relate (one picture),
+and what every term of art means, in plain words with one running example. Nothing here assumes you have
+built an eval before. Why the pieces are shaped this way is in
 [Design rationale](design-rationale.md) and [The world model](world-model.md).
 
 **The running example.** You own a support-ticket triage classifier: it reads a ticket's subject and body
@@ -112,7 +112,7 @@ and its **spec**, plus which **seats** of the rig its runs fill. *Example:*
 
 #### Overlay
 A knob a launch may turn for one kind's runs: a field of the kind's overlay model. Each field becomes a
-lever named `<kind>.<field>`, is frozen onto the run, and enters the variant key. *Example:*
+lever named `<prefix>.<field>` (the prefix is the kind's name unless its contract sets `prefix`), is frozen onto the run, and enters the variant key. *Example:*
 `ticket_router.prompt_version`, set to `"v2"` for one launch.
 
 #### Spec (kind spec)
@@ -124,9 +124,8 @@ measurement context, not the variant. *Example:* the label set `["billing", "bug
 A stateful environment the subject acts in, declared on the profile (`WorldRegistry`) and handed to each
 cell as a `WorldSession`. Seeded before the first turn and read back after the last. A classifier has none.
 *Example:* for a support *agent* (not the classifier), a ticketing system whose open tickets it can close.
-In `run_eval`, a `World` of `Dimension`s and `WorldTool`s, each case's starting state (`seed=`) and
-goal-state checks (`goal_checks=`): see `examples/world.py`. Why a subject runs in a seeded world at all:
-[The world model](world-model.md).
+In `run_eval`, `world=`, `seed=` and `goal_checks=` (`examples/world.py`). Why a subject runs in a seeded
+world at all: [The world model](world-model.md).
 
 ### What you vary, and what must hold still
 
@@ -140,8 +139,8 @@ A sweepable you deliberately change to see what it does (role `lever`). The engi
 itself, the candidate model (`model`) and the candidate kind (`candidate_kind`); your kind's overlays add
 more. *Example:* `model` and `ticket_router.prompt_version`.
 With no host of your own, `run_eval(..., levers={"prompt": "v2"})` states one beside the model, as
-`callable.prompt`, and `compare(..., factors=("model", "prompt"))` keys each arm by its level of both, so a
-2×2 of prompts and models is four arms on two declared axes (`examples/prompt_x_model.py`).
+`callable.prompt` (`callable-judged.prompt` on a judged run), and `compare(..., factors=("model", "prompt"))`
+keys each arm by its level of both (`examples/prompt_x_model.py`).
 
 #### Label (sweepable role)
 A sweepable that identifies a run without determining its score (role `label`), so a difference in it is
@@ -161,8 +160,8 @@ arm adds observations to the same arm rather than creating a new one. *Example:*
 #### Apparatus, rig
 The **rig** is the measuring setup around the thing under test; each of its inputs is an **apparatus**
 sweepable (role `apparatus`). It is supposed to hold still, and when it moves, a comparison stops being
-about the lever. The engine's own: the judge model and its settings, the temperature each judge call was sent
-at, the judge configs, the simulator model and its settings, and the per-run cost ceiling (`max_cost_usd`). *Example:* the v1 runs were judged by
+about the lever. The engine's own: the judge model and its settings, which judge each dimension was actually
+scored by (`judge_dim_divergence`), the temperature each judge call was sent at, the judge configs, the simulator model and its settings, and the per-run cost ceiling (`max_cost_usd`). *Example:* the v1 runs were judged by
 judge-a and the v2 runs by judge-b: the rig moved, so the report will not pool them as one condition.
 
 #### Apparatus class
@@ -178,7 +177,8 @@ of them and compared. *Example:* who sits in an adjudicator's seat: `{"adjudicat
 A place in the rig a kind's runs actually fill (`KindContract.seats`): a pinned role such as `judge` or
 `simulator`, or one apparatus dimension. A dimension a kind does not seat does not apply to its runs, so
 its blank there is not a confound. `None`, the default, holds the kind to every dimension. *Example:* the
-callable kind `run_eval` builds seats none of the judge, simulator or spend ceiling (`CALLABLE_UNSEATED`).
+callable kind `run_eval` builds seats none of the judge, simulator or spend ceiling (`CALLABLE_UNSEATED`); its
+judged kind, `callable-judged`, seats the judge and nothing else (`JUDGED_CALLABLE_UNSEATED`).
 
 #### Measurement context
 Everything pinned around a run that is not the variant: the subject and its state, the frozen case set, the
@@ -235,9 +235,7 @@ The universal templates, run as one pre-flighted set (`start_universal_battery`)
 #### Cassette
 A recording of what a candidate's tools answered. A run in `cassette_mode="capture"` records one; a run in
 `"replay"` is served that recording instead of calling the tools live, so two arms can face exactly the
-same tool answers. It records the tools only, never the candidate. On the quick path a candidate declares its
-tools to `run_eval` or `compare` (`tools=`) and is handed them beside each case; `examples/cassettes.py`
-captures once and replays the recording to two arms.
+same tool answers. It records the tools only, never the candidate (`examples/cassettes.py`).
 
 #### Simulator
 The engine's simulated user: the other side of a conversation a conversing kind holds
@@ -253,15 +251,13 @@ Long work started by an operation (a launch, an analysis generation), answered b
 A number code computes about a result, declared in your host's measure registry with its unit, direction
 (is higher better?) and family. `run_eval` makes one per scorer, named by the scorer's `__name__`. A
 classifier lands two core measures, `match` and `confusion_cell`, and the analysis derives `accuracy` from
-`match`. A host may not declare a measure named like a core one (`score`, `f1`, `cost_usd` and the rest):
-its readings would carry the core's meaning and pool with the engine's own, so the registry refuses it.
-*Example:* `match` is 1 when ticket 17 went to `billing`, else 0.
+`match`. A host may not declare a measure named like a core one (`score`, `f1`, `cost_usd` and the rest), whose
+readings would pool with the engine's own. *Example:* `match` is 1 when ticket 17 went to `billing`, else 0.
 
 #### Scorer
 In `run_eval`, a plain function `(case, answer) -> bool | number` that becomes one measure, named by its
-`__name__` and described by its docstring's first line. A scorer named like a core measure (`score`, `f1`,
-`accuracy`, `cost_usd` ...) is refused before anything runs; rename it. A scorer that raises excludes the cell
-(it is part of the rig, not the candidate).
+`__name__` (never a core measure's name) and described by its docstring's first line. A scorer that raises
+excludes the cell: it is part of the rig, not the candidate.
 
 #### Goal-state check
 A code check over a cell's end state (`state.<dimension>`), the calls the candidate made (`calls(...)`) and
@@ -307,7 +303,9 @@ the v1 variant, held fixed = one case battery on a commissioned rig.
 #### Analysis bundle
 Everything code computed about a campaign, assembled once and fingerprinted (`AnalysisContextBundle`), so
 two analysis prompts run over the same fingerprint are comparable. Nothing is fetched while an analysis is
-written: the bundle is the whole context. The CLI's `bundle` prints it.
+written: the bundle is the whole context. The CLI's `bundle` prints it inside a `BundleInspection` wrapper
+(campaign, scope, fingerprint, and the bundle as its `bundle` field); save the bundle alone with
+`bundle.to_json()`.
 
 #### Analysis
 Findings a model wrote over a bundle (`EvalAnalysis`): a headline, findings, decisions and next steps, with
@@ -338,7 +336,7 @@ read as data. Everything they read is below, with the way to state it outright i
 
 | What | Which part | Who reads it | To state it instead |
 |---|---|---|---|
-| A candidate's docstring | its first line | The [template](#template)'s intent. A [judge](#judge) reads it beside every answer (`**Intent:**` in its prompt), so rewording it can move judged scores. Unjudged (and `compare` seats no judge), nothing that grades reads it; a listing of templates shows it. With several arms, it is read only when every arm's docstring has the same first line; otherwise a generic sentence stands in. | `intent=` on `run_eval` or `compare`. A judged run's `summary.render()` prints the intent and where it came from: `intent (from answer's docstring): ...`, or `intent: ...` when stated. |
+| A candidate's docstring | its first line | The [template](#template)'s intent, which a [judge](#judge) reads beside every answer, so rewording it can move judged scores. With several arms, it is read only when every arm's docstring shares that first line. | `intent=` on `run_eval` or `compare`; a judged run's `summary.render()` prints the intent and where it came from. |
 | A candidate's `__name__` | the whole name | The arm's label: the run's candidate model, keyed into its variant. | `model=` on `run_eval`; `compare` labels each arm by its key. |
 | A scorer's `__name__` | the whole name | The [measure](#measure)'s name, in the summary, reports and the analysis bundle. | Rename the function. |
 | A scorer's docstring | its first line | The measure's description, in the analysis bundle's `measure_catalog`, which a model writing an [analysis](#analysis) reads for what the measure means. | Declare the measure, with its description, on a [host](#host) of your own (`host=`). |
