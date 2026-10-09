@@ -174,6 +174,11 @@ Skip this section if your subject is stateless (a classifier, an extractor). A w
 acts on something — a ticket queue it can close tickets in, a game table — whose state you want seeded
 before each cell and checked after it.
 
+Before building a host for one, try the quick path: `run_eval(..., world=World(...), seed=..., goal_checks=[...])`
+declares a small world, seeds each case's starting state through this same session, hands the candidate
+tools that act on it and grades the end state with the engine's goal-state checks (`examples/world.py`).
+What follows is the host-side contract that path is built on.
+
 **A world, through the cell's session.** A host whose subject lives in a stateful world declares it
 on the profile (`WorldRegistry`), and each cell's `prepare` is handed a `WorldSession` over it as
 `world` (`None` on a host with no world).

@@ -121,6 +121,8 @@ measurement context, not the variant. *Example:* the label set `["billing", "bug
 A stateful environment the subject acts in, declared on the profile (`WorldRegistry`) and handed to each
 cell as a `WorldSession`. Seeded before the first turn and read back after the last. A classifier has none.
 *Example:* for a support *agent* (not the classifier), a ticketing system whose open tickets it can close.
+In `run_eval`, a `World` of `Dimension`s and `WorldTool`s, each case's starting state (`seed=`) and
+goal-state checks (`goal_checks=`): see `examples/world.py`.
 
 ### What you vary, and what must hold still
 

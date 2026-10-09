@@ -50,6 +50,7 @@ from threetears.evals.ops.summary import EvalSummary
 from threetears.evals.quick.levers import refuse_unusable_lever_names
 from threetears.evals.quick.one_call import CALLABLE_KIND, Candidate, ExpectedLabel, Scorer, callable_host, run_eval
 from threetears.evals.quick.tools import Tool, ToolUsingCandidate
+from threetears.evals.quick.world import CaseSeed, World, WorldCandidate
 
 #: Who a :func:`compare` campaign and its control are recorded as created by, unless the caller says.
 COMPARE_CREATED_BY = "compare"
@@ -183,7 +184,9 @@ def _factors(factors: Sequence[str] | None) -> tuple[str, ...]:
 
 
 def _refuse_unusable_arms(
-    candidates: Mapping[ArmKey, Candidate | ToolUsingCandidate], control: ArmKey, factors: tuple[str, ...]
+    candidates: Mapping[ArmKey, Candidate | ToolUsingCandidate | WorldCandidate],
+    control: ArmKey,
+    factors: tuple[str, ...],
 ) -> None:
     if isinstance(candidates, str) or not isinstance(candidates, Mapping):
         raise ValueError("compare needs its candidates as a mapping of arm name to candidate")
@@ -268,7 +271,8 @@ def _declare(
 
 async def compare(
     cases: Sequence[Mapping[str, Any]],
-    candidates: Mapping[str, Candidate | ToolUsingCandidate] | Mapping[tuple[str, ...], Candidate | ToolUsingCandidate],
+    candidates: Mapping[str, Candidate | ToolUsingCandidate | WorldCandidate]
+    | Mapping[tuple[str, ...], Candidate | ToolUsingCandidate | WorldCandidate],
     scorers: Sequence[Scorer] = (),
     *,
     control: ArmKey,
@@ -282,6 +286,9 @@ async def compare(
     tools: Mapping[str, Tool] | None = None,
     cassette_mode: CassetteMode = "off",
     cassette_corpus_id: str | None = None,
+    world: World | None = None,
+    seed: CaseSeed | None = None,
+    goal_checks: Sequence[str] = (),
 ) -> Comparison:
     """Run each candidate over every case ``k`` times as one arm, test every arm against ``control``, and report.
 
@@ -311,6 +318,12 @@ async def compare(
             capture ``cassette_corpus_id`` names, so no difference between them is a difference in what
             their tools said.
         cassette_corpus_id: The capture every arm replays, made over the same cases in ``host`` and ``scope_id``.
+        world: The world every arm's candidate acts on, as :func:`~threetears.evals.quick.run_eval` takes it;
+            with no ``host``, the one built declares it.
+        seed: Each case's starting state, the same for every arm, as :func:`~threetears.evals.quick.run_eval`
+            takes it.
+        goal_checks: The checks every arm's end state is graded by, as :func:`~threetears.evals.quick.run_eval`
+            takes them.
 
     Returns:
         The comparison: every arm's summary, the campaign's id and its report.
@@ -322,11 +335,11 @@ async def compare(
         ValidationFailedError: The launch refused, or the host refuses the campaign's declaration.
     """
     named = _factors(factors)
-    arms_given: Mapping[ArmKey, Candidate | ToolUsingCandidate] = candidates  # type: ignore[assignment]
+    arms_given: Mapping[ArmKey, Candidate | ToolUsingCandidate | WorldCandidate] = candidates  # type: ignore[assignment]
     _refuse_unusable_arms(arms_given, control, named)
     levers = tuple(factor for factor in named if factor != CANDIDATE_MODEL_LEVER)
     if host is None:
-        host = callable_host(scorers, levers=levers)
+        host = callable_host(scorers, levers=levers, world=world)
     arms: dict[ArmKey, EvalSummary] = {}
     for arm, candidate in arms_given.items():
         coordinates = _coordinates(arm, named)
@@ -343,6 +356,9 @@ async def compare(
             tools=tools,
             cassette_mode=cassette_mode,
             cassette_corpus_id=cassette_corpus_id,
+            world=world,
+            seed=seed,
+            goal_checks=goal_checks,
         )
     if name is None:
         if named == _MODEL_ONLY:

@@ -13,7 +13,9 @@ campaign report tests every arm against the one named the control; keyed by thei
 factors (``factors=``), its arms are the cells of a factorial design, each factor a lever of its own. A candidate that calls tools declares them (``tools=``, each a
 :data:`Tool`) and is handed them beside each case (:data:`ToolUsingCandidate`); a run with
 ``cassette_mode='capture'`` records what they answered, and ``'replay'`` serves that recording to every arm
-in place of calling them.
+in place of calling them. Handed a :class:`World`, each case's starting state and goal-state checks,
+:func:`run_eval` seeds every cell's world, hands the candidate :class:`WorldTools` that act on it, and
+grades the state it leaves (:class:`GoalCheckSummary`).
 :func:`run_cli` is ``python -m threetears.evals``: ``run``, ``ls``, ``report``, ``bundle`` and ``spend`` over
 a host named ``module:factory``, or mounted under a product's own CLI with its host factory and any
 subcommands of its own (:class:`HostCommand`).
@@ -59,7 +61,8 @@ from threetears.evals.quick.one_call import (
 )
 from threetears.evals.quick.judged import CaseMaterial, Judge
 from threetears.evals.quick.tools import CandidateTools, Tool, ToolUsingCandidate
-from threetears.evals.ops.summary import DimensionSummary, EvalSummary, MeasureSummary, summarize_run
+from threetears.evals.quick.world import CaseSeed, Dimension, ToolRefused, World, WorldCandidate, WorldTool, WorldTools
+from threetears.evals.ops.summary import DimensionSummary, EvalSummary, GoalCheckSummary, MeasureSummary, summarize_run
 
 __all__ = [
     "CALLABLE_KIND",
@@ -80,11 +83,14 @@ __all__ = [
     "Candidate",
     "CandidateTools",
     "CaseMaterial",
+    "CaseSeed",
     "Comparison",
     "ConfusionCount",
+    "Dimension",
     "DimensionSummary",
     "EvalSummary",
     "ExpectedLabel",
+    "GoalCheckSummary",
     "HostCommand",
     "HostFactory",
     "Judge",
@@ -93,6 +99,11 @@ __all__ = [
     "Scorer",
     "Tool",
     "ToolUsingCandidate",
+    "ToolRefused",
+    "World",
+    "WorldCandidate",
+    "WorldTool",
+    "WorldTools",
     "build_parser",
     "callable_host",
     "callable_kind_contracts",
