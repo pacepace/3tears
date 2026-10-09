@@ -94,6 +94,7 @@ from threetears.evals.run import (
 )
 from threetears.evals.quick.answer import unwrap_answer
 from threetears.evals.quick.judged import Judge, judge_evidence
+from threetears.evals.quick.levers import CallableLevers, levers_model
 from threetears.evals.storage import InMemoryDocumentStore
 
 #: The candidate under test: an async callable taking one case and returning its answer.
@@ -218,7 +219,35 @@ def scorer_measure(scorer: Scorer) -> MetricDescriptor:
     )
 
 
-def callable_host(scorers: Sequence[Scorer] = ()) -> EvalHost:
+def callable_kind_contracts(levers: Sequence[str] = ()) -> tuple[KindContract, KindContract]:
+    """The contracts of both callable kinds, declaring ``levers`` as each run's levels beside its model.
+
+    With no levers, :data:`CALLABLE_KIND_CONTRACT` and :data:`JUDGED_CALLABLE_KIND_CONTRACT` themselves, so a
+    host declaring none keys its runs exactly as before. With levers, the same seats and an overlay model
+    (:func:`~threetears.evals.quick.levers.levers_model`) whose every field is a lever the engine names
+    ``callable.<name>`` (``callable-judged.<name>`` on a judged run), resolves into each run's variant key and
+    accepts as a campaign's axis. A host of the caller's own declares these on its profile's ``kinds`` to
+    take :func:`run_eval`'s ``levers=``.
+
+    Args:
+        levers: The levers' names.
+
+    Returns:
+        The unjudged kind's contract, then the judged kind's.
+
+    Raises:
+        ValueError: A lever name no overlay field could carry, ``model``, or one given twice.
+    """
+    if not levers:
+        return CALLABLE_KIND_CONTRACT, JUDGED_CALLABLE_KIND_CONTRACT
+    overlays = levers_model(levers)
+    return (
+        KindContract(CALLABLE_KIND, overlays=overlays, seats=CALLABLE_KIND_CONTRACT.seats),
+        KindContract(JUDGED_CALLABLE_KIND, overlays=overlays, seats=JUDGED_CALLABLE_KIND_CONTRACT.seats),
+    )
+
+
+def callable_host(scorers: Sequence[Scorer] = (), *, levers: Sequence[str] = ()) -> EvalHost:
     """The least host there is: the shared core, one measure per scorer, no world, an in-memory store.
 
     What :func:`run_eval` builds when it is handed no host. Its store lives as long as the returned
@@ -229,12 +258,15 @@ def callable_host(scorers: Sequence[Scorer] = ()) -> EvalHost:
 
     Args:
         scorers: The scorer functions whose measures the host declares.
+        levers: The levers every run in this host states a level of beside its model
+            (:func:`callable_kind_contracts`), each handed to :func:`run_eval` as ``levers=``.
 
     Returns:
         The host.
 
     Raises:
-        ValueError: A scorer has no usable name, two share one, or one takes a classifier measure's name.
+        ValueError: A scorer has no usable name, two share one, or one takes a classifier measure's name;
+            or a lever name is unusable or repeated.
     """
     _refuse_unnamed_or_repeated(scorers)
     return EvalHost(
@@ -242,7 +274,7 @@ def callable_host(scorers: Sequence[Scorer] = ()) -> EvalHost:
             host_id=CALLABLE_HOST_ID,
             host_sweepables=SHARED_CORE,
             measures=MeasureRegistry(scorer_measure(scorer) for scorer in scorers),
-            kinds=(CALLABLE_KIND_CONTRACT, JUDGED_CALLABLE_KIND_CONTRACT),
+            kinds=callable_kind_contracts(levers),
         ),
         storage=EvalStorage(InMemoryDocumentStore()),
         failure_describer=withhold_failure_detail,
@@ -469,10 +501,13 @@ def _refuse_an_undeclared_callable_contract(host: EvalHost, *, judged: bool) -> 
             f"host {profile.host_id!r} does not seat the judge for the {kind!r} kind, so two runs judged by "
             f"different models would compare as judged alike; {remedy}"
         )
-    if contract.overlays is not None or contract.spec is not None:
+    # The one overlay model a callable kind takes is a levers model: its levels are what run_eval's levers= turns.
+    if (
+        contract.overlays is not None and not issubclass(contract.overlays, CallableLevers)
+    ) or contract.spec is not None:
         raise ValueError(
             f"host {profile.host_id!r} declares overlays or a spec for the {kind!r} kind, which run_eval "
-            f"neither turns nor states; {remedy}"
+            f"neither turns nor states (its levers are declared with callable_kind_contracts); {remedy}"
         )
 
 
@@ -594,6 +629,7 @@ async def run_eval(
     host: EvalHost | None = None,
     k: int = DEFAULT_LAUNCH_K_RUNS,
     model: str | None = None,
+    levers: Mapping[str, str] | None = None,
 ) -> EvalSummary:
     """Run ``candidate`` on every case ``k`` times, grade each answer with every scorer and the judge, and summarise.
 
@@ -624,6 +660,11 @@ async def run_eval(
         k: Repeats per case.
         model: The arm's label, stored as the run's candidate model and keyed into its variant;
             ``None`` takes the candidate's ``__name__``.
+        levers: The run's level of every other lever, by name (``{"prompt": "v2"}``), each a non-blank
+            string naming the level. Each is frozen onto the run as an overlay and keyed into its variant
+            beside the model, as the lever ``callable.<name>``. With no host, the one built declares exactly
+            these levers; a host of the caller's own declares them through :func:`callable_kind_contracts`,
+            and every run in it states a level of each.
 
     Returns:
         The finished run's summary, read back from the store.
@@ -635,8 +676,10 @@ async def run_eval(
             :data:`UNUSABLE_ANSWER` label, a given host that declares no callable-kind contract
             (or one with no seats, a seat in :data:`CALLABLE_UNSEATED`, overlays or a spec), a judged call on
             a given host whose judged-kind contract is missing or seats too much or no judge, a scorer
-            the given host declares no measure for, or no ``model`` for a candidate that has no ``__name__``.
-        ValidationFailedError: The launch refused: a ``k`` outside the run's bounds.
+            the given host declares no measure for, no ``model`` for a candidate that has no ``__name__``, or an
+            unusable lever name.
+        ValidationFailedError: The launch refused: a ``k`` outside the run's bounds, or ``levers`` naming a
+            lever the host does not declare, leaving out one it does, or giving one a blank or non-string level.
     """
     plain_cases = _plain_cases(cases)
     if not scorers and expected is None and judge is None:
@@ -648,7 +691,7 @@ async def run_eval(
     labels = None if expected is None else _expected_labels(plain_cases, expected)
     template_id = _template_id(plain_cases, labels, judge)
     if host is None:
-        host = callable_host(scorers)
+        host = callable_host(scorers, levers=tuple(levers or ()))
     else:
         _refuse_an_undeclared_callable_contract(host, judged=judge is not None)
         _refuse_undeclared_measures(host, scorers)
@@ -690,6 +733,7 @@ async def run_eval(
         k_runs=k,
         scope_id=scope_id,
         judge_model=judge.model if judge is not None else None,
+        overlays=dict(levers) if levers else None,
     )
     try:
         await launch_host.job_manager.wait_for([run.id for run in runs])
@@ -716,5 +760,6 @@ __all__ = [
     "ExpectedLabel",
     "Scorer",
     "callable_host",
+    "callable_kind_contracts",
     "run_eval",
 ]

@@ -133,6 +133,9 @@ ships the ones every LLM product has (`SHARED_CORE`); you add your own.
 A sweepable you deliberately change to see what it does (role `lever`). The engine always resolves two
 itself, the candidate model (`model`) and the candidate kind (`candidate_kind`); your kind's overlays add
 more. *Example:* `model` and `ticket_router.prompt_version`.
+With no host of your own, `run_eval(..., levers={"prompt": "v2"})` states one beside the model, as
+`callable.prompt`, and `compare(..., factors=("model", "prompt"))` keys each arm by its level of both, so a
+2×2 of prompts and models is four arms on two declared axes (`examples/prompt_x_model.py`).
 
 #### Label (sweepable role)
 A sweepable that identifies a run without determining its score (role `label`), so a difference in it is
