@@ -49,6 +49,16 @@ which the published schema and the model both refuse. It holds:
 
 `Report.basis` says which a report is; `REPORT_VERSION` is 3.
 
+## Having a model write the analysis, over frozen evidence
+
+An analysis is written from the campaign's **bundle** alone (`AnalysisContextBundle`), and every figure
+in it is a reference code resolves against that bundle. Save the bundle (`bundle.to_json()`), reload it
+(`AnalysisContextBundle.from_json`) and its `fingerprint()` is unchanged, so `generate_analysis` over the
+saved file under a second prompt compares the two prompts and nothing else; each analysis records the
+fingerprint it read on `generation.bundle_fingerprint`. The insight-ledger cutoff (`bundle_assembled_at`),
+the generation time and its cost are on that provenance, not in the bundle.
+[`examples/llm_analysis.py`](../examples/llm_analysis.py) does all of it in one file.
+
 ## How an arm is named
 
 Every block that names an arm — decisions, evidence rows, the arm table, the decision surface, the
