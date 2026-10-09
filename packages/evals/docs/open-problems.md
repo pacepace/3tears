@@ -1,13 +1,15 @@
 # Open problems
 
 Read this when you plan work on the engine, or want to know whether a weakness in a report is known.
-Each entry is a gap in today's code: what is missing, why it matters, and the fix where one is known.
-Closing one deletes its entry in the same change. The figures behind several entries are in [measuring soundly](measuring-soundly.md),
+Each entry is a gap in today's code, or a limit chosen on purpose and marked as such: what is missing, why it
+matters, and the fix where one is known. Each has a tracking issue; the change that closes it deletes its entry. The figures behind several entries are in [measuring soundly](measuring-soundly.md),
 and the outside sources in [prior art](prior-art.md).
 
 ## Measurement
 
 ### A reading's interval ignores clustering
+
+Tracked in [#590](https://github.com/pacepace/3tears/issues/590).
 
 A single reading's interval is a t-interval over every observation, so `k` repeats of one case count as
 `k` independent draws. The reading says `N obs over M cases, interval too narrow`
@@ -19,6 +21,8 @@ with `n_cases − 1` degrees of freedom, or Miller's cluster-robust form, and dr
 *Evidence:* simulation, 5 cases × k=3, between-case σ 1.0 and repeat σ 0.3, 2026-09, coverage 70.3% vs 94.3%.
 
 ### pass^k is the all-pass indicator, stored under the opposite name
+
+Tracked in [#591](https://github.com/pacepace/3tears/issues/591).
 
 `compute_pass_k` (`contracts/scoring.py`) is the all-pass indicator per case, averaged: a case passes when
 every scored repeat passed. At uniform depth that is unbiased; a run stopped early leaves mixed depths, which flatter the shallow cases,
@@ -32,6 +36,8 @@ and the field renamed.
 
 ### A sub-threshold change in history reads "flat"
 
+Tracked in [#592](https://github.com/pacepace/3tears/issues/592).
+
 Campaign contrasts say `not_separated`, never "no difference". The history read does not:
 `paired_change` (`analysis/stats.py`) labels any move that misses significance or the magnitude gate
 `flat — real noise, not a finding`. At two to six cases almost nothing is significant, so `flat` becomes
@@ -39,6 +45,8 @@ the default claim. Fix: say `not_separated`; for a "no meaningful change" claim,
 equivalence test (TOST, Lakens 2017) against a declared margin.
 
 ### Bars compare means, not intervals
+
+Tracked in [#593](https://github.com/pacepace/3tears/issues/593).
 
 `propose_bars` (`analysis/bar_proposals.py`) seeds a bar at the incumbent's mean, and `BarVerdict.cleared`
 compares the cell's mean with the threshold, so an unchanged incumbent misses its own bar about half the
@@ -49,16 +57,22 @@ incumbent's measured interval.
 
 ### No power pre-flight
 
+Tracked in [#594](https://github.com/pacepace/3tears/issues/594).
+
 A launch is priced before it runs (see [cost and budgets](cost-and-budgets.md)), but nothing says what
 effect the campaign can detect, and power depends on variance components nobody measures in advance. Fix: a pre-flight beside the price ("with N cases
 and k repeats this campaign can detect Δ ≥ x"), using variance from earlier runs of the same template.
 
 ### The between-arm correlation is not reported
 
+Tracked in [#595](https://github.com/pacepace/3tears/issues/595).
+
 Pairing on the frozen case helps only as far as the arms' per-case results correlate; Miller recommends
 reporting the correlation so a reader sees what pairing bought. The engine pairs but reports none.
 
 ### Factors that move together are not grouped
+
+Tracked in [#596](https://github.com/pacepace/3tears/issues/596).
 
 The bundle lists each varying factor as a
 [confound](design-rationale.md#confounds-qualify-never-suppress) but not which moved together. In one campaign four factors moved in lockstep across all 22 runs, and
@@ -71,6 +85,8 @@ comparison separates them"). State that aliasing with an interaction (C = A⊕B)
 ## Judging
 
 ### No check for judge drift across configurations
+
+Tracked in [#597](https://github.com/pacepace/3tears/issues/597).
 
 A judge is a model and its config, and evidence tiers are keyed that way (see
 [evidence tiers](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers)). A re-judge
@@ -85,11 +101,15 @@ ruled permanently unanswerable.
 
 ### Human labels and judge scores are not combined
 
+Tracked in [#598](https://github.com/pacepace/3tears/issues/598).
+
 Calibration ratings (`CalibrationRating`) decide a judge's tier, but the estimate itself uses judge
 scores alone. Prediction-powered inference (Angelopoulos et al. 2023) combines a small human-labelled set
 with many judge scores into an estimate whose interval stays valid when the judge is biased. Not built.
 
 ### Pairwise judging (declined for now)
+
+Tracked in [#599](https://github.com/pacepace/3tears/issues/599).
 
 All judging scores one trial alone. For subjective comparisons (tone, style), practitioners find pairwise
 judging with position swap more reliable. It was deliberately not adopted, but "is arm B better than arm
@@ -98,6 +118,8 @@ A" is exactly the pairwise case.
 ## Host contract
 
 ### A shared third-party quota can still be exhausted (accepted limit)
+
+Tracked in [#600](https://github.com/pacepace/3tears/issues/600).
 
 The per-run metered-call ceiling (`run/metering.py`) refuses calls past a run's limit. It is in memory
 and per run, so concurrent runs, out-of-run calls and the host's live traffic can exhaust one provider
@@ -109,6 +131,8 @@ quota the host declares, shared across runs.
 
 ### No test checks the statistics against known answers
 
+Tracked in [#601](https://github.com/pacepace/3tears/issues/601).
+
 The statistics tests (`tests/test_stats.py`, `tests/test_multiple_comparisons.py`) pin outputs on fixed
 inputs. None simulates data with a known truth and checks coverage, false-positive rate or power; this
 page's figures came from a simulation outside the package. Fix: a seeded simulation suite that checks
@@ -116,17 +140,23 @@ interval coverage and test error rates at the sample sizes the engine actually s
 
 ### No paid analysis-generation lane
 
+Tracked in [#602](https://github.com/pacepace/3tears/issues/602).
+
 The analysis generator is exercised only against stubs, and a prompt, schema or fixture defect looks the
 same until a real model writes an analysis. Fix: an
 opt-in lane that generates one analysis with a real model whenever the generator or its prompt changes.
 
 ### No memory-bound probe
 
+Tracked in [#603](https://github.com/pacepace/3tears/issues/603).
+
 A run's peak memory should be bounded by its matrix, not its total trace volume. Fixes in the runner and
 scoring hold this today; no test does. Fix: a probe that runs a large
 synthetic matrix and asserts peak memory. Reinstate the accumulation to prove it fails.
 
 ### The report-writer prompt budget is unenforced
+
+Tracked in [#604](https://github.com/pacepace/3tears/issues/604).
 
 `analysis/gen_prompt.py` declares `PROMPT_CHAR_BUDGET = 28_000` and `PROMPT_RULE_BUDGET = 15`, and says
 the budget only falls. Nothing reads either constant, and rules, each added to fix one failure, accrete. Fix: a test that measures the seed prompt against
