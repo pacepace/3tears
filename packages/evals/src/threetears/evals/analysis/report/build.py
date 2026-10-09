@@ -871,7 +871,9 @@ def _comparison_blocks(bundle: AnalysisContextBundle, surface: DecisionSurface) 
                         else ""
                     )
                     + (
-                        " — immaterial: below the host's materiality threshold, too small to act on"
+                        # The observed delta, not the true one: only `equivalent` shows the difference is small.
+                        " — immaterial: the observed delta is below the host's materiality threshold, which does not "
+                        "show the true difference is that small"
                         if comparison.materiality == "immaterial"
                         else ""
                     ),

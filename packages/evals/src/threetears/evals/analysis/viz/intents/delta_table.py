@@ -60,7 +60,8 @@ def delta_table_intent(payload: DeltaTablePayload) -> ChartIntent:
         # host declared too small to act on, so a reader does not act on one.
         disclosures.append(
             f"{len(immaterial)} of {len(payload.rows)} changes are below their measure's materiality threshold "
-            f"({', '.join(immaterial)}) — immaterial: too small to act on, however clearly they clear their noise."
+            f"({', '.join(immaterial)}) — immaterial as observed, however clearly they clear their noise; an observed "
+            "change below the threshold does not show the true change is that small."
         )
     if interval := [row.metric for row in payload.rows if row.data_type == "numeric" and row.scale == "interval"]:
         disclosures.append(

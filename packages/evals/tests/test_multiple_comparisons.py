@@ -383,7 +383,8 @@ def test_the_report_and_the_writer_see_an_immaterial_verdict_labelled() -> None:
     (row,) = [row for row in table.rows if row["reading"] == "field_accuracy"]  # type: ignore[attr-defined]
 
     assert (
-        row["verdict"].startswith("improved") and "immaterial: below the host's materiality threshold" in row["verdict"]
+        row["verdict"].startswith("improved")
+        and "immaterial: the observed delta is below the host's materiality threshold" in row["verdict"]
     )
     assert '"materiality":"immaterial"' in build_user_message(bundle).replace(" ", "")
 
