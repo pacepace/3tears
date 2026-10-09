@@ -36,7 +36,7 @@ from threetears.core.backends.protocol import L3Backend
 from threetears.core.cache import MISSING
 from threetears.core.cache.base import CACHED_AT_COLUMN
 from threetears.core.collections.bypassing_write import BypassingWrite
-from threetears.core.collections.caller_transaction import CallerTransaction
+from threetears.core.collections.caller_transaction import CallerTransaction, shared_advance_for
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer
 from threetears.core.collections.generation import (
     WRITE_GENERATION_UNDECLARED,
@@ -1554,7 +1554,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         Only a switched-on collection advances here (:attr:`_write_generation_on`). The advance is
         this registry's own, so its mark for the table accounts for it without a broadcast.
 
-        :param rows: how many row messages the commit publishes
+        :param rows: how many row messages the commit publishes; inside a settling transaction that
+            more than one instance of the table wrote, the shared advance's count is stamped instead
         :ptype rows: int
         :return: the generation written and the row count to stamp on those messages; a failure for
             the caller to raise once its write path has run; or nothing, when nothing was advanced
@@ -1563,6 +1564,26 @@ class BaseCollection(ABC, Generic[EntityT]):
         registry = self.registry
         if not self._write_generation_on or registry is None or rows < 1:
             return _NO_BUMP
+        shared = shared_advance_for(self.table_name)
+        if shared is None:
+            return await self._advance_for_commit(registry, rows)
+        if not isinstance(shared.bump, _Bump):
+            # the first instance of the table to settle advances it for every instance's rows
+            shared.bump = await self._advance_for_commit(registry, shared.rows)
+        elif shared.bump.token is not None:
+            registry.account_generation(self.table_name, shared.bump.token)
+        return shared.bump
+
+    async def _advance_for_commit(self, registry: CollectionRegistry, rows: int) -> _Bump:
+        """advance this table's write generation once, for a commit whose messages number ``rows``.
+
+        :param registry: this collection's registry, which carries a generation source
+        :ptype registry: CollectionRegistry
+        :param rows: how many row messages the commit publishes, across every instance of the table
+        :ptype rows: int
+        :return: what the advance came to
+        :rtype: _Bump
+        """
         source = registry.generation_source
         assert source is not None  # narrow: _write_generation_on
         try:

@@ -15,17 +15,22 @@ that did not already.
 
 - **Added, `threetears.core.backends.BrokerGenerationSource`**: a pod's generation source.
   `advance(table)` returns the token the broker's reply named for the commit this task just made,
-  the same token to every advance of that table for that commit, and raises
+  once per table per commit (a second advance of the table for that commit raises), and raises
   `GenerationUnavailableError` when the reply named none or listed the table as not advanced.
   `current` reads through an optional `GenerationReader` (such as
   `threetears.epoch.EpochGenerationReader`) and raises with none, or for a table with no generation
   yet: a pod cannot mint one. Without a reader it says so (`reads_generations = False`).
 - **Changed, `NatsProxyL3Backend`**: every reply that ends a commit (a successful `l3.query` or
   `l3.tx.commit`, and every `l3.batch` reply, a partly failed statement-by-statement batch
-  included) has its generations kept for the calling task until a later reply names the same
-  table. A rolled-back transaction, a refused commit and a commit whose request got no reply drop
-  them all; a later advance then raises `GenerationNotCommittedError`. A reply that names none
-  changes nothing.
+  included) that ends a write replaces the calling task's record with its own generations, naming
+  any or not; a read's reply leaves it. A rolled-back transaction, a refused commit and a commit
+  whose request got no reply drop them all; a later advance then raises
+  `GenerationNotCommittedError`.
+- **Changed, `CallerTransaction`**: settling advances each table once, however many collection
+  instances of it the transaction wrote (`SharedAdvance`, `shared_advance_for`), and every row
+  broadcast carries the total row count.
+- **Changed, `AgentSkillCollection.bump_use_count`**: evicts its rows in one `invalidate_cache_many`,
+  one advance for its one UPDATE.
 - **Added, `threetears.core.exceptions.GenerationNotCommittedError`**, a `GenerationUnavailableError`
   for an advance asked of a commit that landed nothing; a collection logs it at INFO.
 - **Added, reading as a capability of its own**: `GenerationSource` implementations may declare

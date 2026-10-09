@@ -19,13 +19,23 @@ started while tokens are held (``asyncio.shield`` around a transaction's settlin
 tokens of the task that started it; one that makes a write request of its own starts its own
 record, and leaves the record it inherited as it was.
 
-**One commit, one token per table, taken as often as that commit's settling asks.** Every advance
-of a table for the same commit is handed the same token and raises nothing: a collection that
-updates many rows in one statement and then evicts them one by one, or two collection instances of
-one table settling one transaction, advance the table more than once for one bump on the wire. A
-token stays until the commit's scope ends: a later reply naming the same table replaces it, and a
-transaction that rolls back, a commit the broker refuses, and a commit whose reply never came back
-drop every token the task holds, so nothing settled after them is handed an earlier commit's.
+**One commit, one advance per table.** The broker advanced each table once for the commit, and a
+follower counts that advance complete once it has heard as many row broadcasts as the broadcasts
+say it covered. So a commit's token is handed out once per table, to the one advance that stamps
+every broadcast of that commit with their total: a collection that updates many rows in one
+statement evicts them in one call (``invalidate_cache_many``), and a
+:class:`~threetears.core.collections.caller_transaction.CallerTransaction` settling two collection
+instances of one table advances it once for the rows of both. A second advance of the table for
+the same commit raises :class:`~threetears.core.exceptions.GenerationUnavailableError` rather than
+publish rows under a count the first already gave.
+
+**A token belongs to the commit that produced it.** Every reply that ends a write -- an ``l3.query``
+whose statement writes, an ``l3.batch``, an ``l3.tx.commit`` -- replaces the task's record with its
+own, naming generations or not, so an advance after a commit whose reply named nothing for the
+table is never handed an earlier commit's token. A read's reply, which ends no write, leaves the
+record as it was. A transaction that rolls back, a commit the broker refuses, and a commit whose
+reply never came back leave a record that says so
+(:class:`~threetears.core.exceptions.GenerationNotCommittedError`).
 
 **What a reply says.** Every reply that ends a commit is read -- ``l3.query``, ``l3.batch`` (a batch
 run statement by statement that failed partway included, since the statements before the failure
@@ -48,8 +58,6 @@ keeps the two answers the same.
 
 from __future__ import annotations
 
-import asyncio
-import weakref
 from collections.abc import Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -88,62 +96,36 @@ GENERATION_UNAVAILABLE_ERROR_CODE: Final = "GENERATION_UNAVAILABLE"
 class _Committed:
     """the generations the broker named for one task's commits, until a collection takes them.
 
-    :ivar owner: the task whose requests filled this record; a task that writes and is not the
-        owner starts a record of its own rather than adding to an inherited one
     :ivar tokens: table to the token the broker wrote for it
     :ivar failed: table to why the broker could not advance it
     :ivar not_committed: why the task's last commit landed nothing (rolled back, refused, or its
-        outcome unknown), until a later reply names a generation; ``None`` otherwise
+        outcome unknown); ``None`` otherwise
+    :ivar taken: the tables whose token an advance was already handed
     """
 
-    owner: weakref.ReferenceType[asyncio.Task[Any]] | None
     tokens: dict[str, str] = field(default_factory=dict)
     failed: dict[str, str] = field(default_factory=dict)
     not_committed: str | None = None
+    taken: set[str] = field(default_factory=set)
 
 
 _COMMITTED: ContextVar[_Committed | None] = ContextVar("threetears_broker_committed_generations", default=None)
 
 
-def _current_task_ref() -> weakref.ReferenceType[asyncio.Task[Any]] | None:
-    """a weak reference to the running task, or ``None`` outside one.
+def record_reply_generations(response: Mapping[str, Any], *, ends_write: bool) -> None:
+    """make the generations a reply names this task's record of its last commit.
 
-    :return: the reference
-    :rtype: weakref.ReferenceType[asyncio.Task[Any]] | None
-    """
-    try:
-        task = asyncio.current_task()
-    except RuntimeError:
-        task = None
-    return None if task is None else weakref.ref(task)
-
-
-def _own_record() -> _Committed:
-    """this task's record, started here when the one in context belongs to another task or none.
-
-    :return: the record
-    :rtype: _Committed
-    """
-    owner = _current_task_ref()
-    running = None if owner is None else owner()
-    held = _COMMITTED.get()
-    holder = None if held is None or held.owner is None else held.owner()
-    if held is None or holder is not running:
-        held = _Committed(owner=owner)
-        _COMMITTED.set(held)
-    return held
-
-
-def record_reply_generations(response: Mapping[str, Any]) -> None:
-    """keep the generations a successful reply to a write names, for the collection that asked.
-
-    Called by the L3 proxy on every reply that ends a commit: a successful ``l3.query`` or
-    ``l3.tx.commit``, and every ``l3.batch`` reply, a statement-by-statement batch that failed
-    partway included. A reply that names none changes nothing. A table both named and listed failed
+    Called by the L3 proxy on every successful ``l3.query`` and ``l3.tx.commit`` reply and every
+    ``l3.batch`` reply, a statement-by-statement batch that failed partway included. A reply that
+    ends a write, or names a generation, replaces the task's record: what an earlier commit named is
+    not this one's. A read's reply that names none leaves it. A table both named and listed failed
     is failed.
 
     :param response: the parsed reply
     :ptype response: Mapping[str, Any]
+    :param ends_write: whether the request was a write's (a statement that writes, a batch, a
+        transaction's commit); its reply ends the scope of every earlier commit's tokens
+    :ptype ends_write: bool
     :return: nothing
     :rtype: None
     """
@@ -155,10 +137,10 @@ def record_reply_generations(response: Mapping[str, Any]) -> None:
         if isinstance(table, str) and isinstance(token, str) and token
     }
     unadvanced = [table for table in (failed if isinstance(failed, list) else ()) if isinstance(table, str)]
-    if not named and not unadvanced:
+    if not named and not unadvanced and not ends_write:
         return
-    held = _own_record()
-    held.not_committed = None
+    held = _Committed()
+    _COMMITTED.set(held)
     for table, token in named.items():
         held.tokens[table] = token
         held.failed.pop(table, None)
@@ -188,13 +170,15 @@ def forget_reply_generations(reason: str) -> None:
     :return: nothing
     :rtype: None
     """
-    _COMMITTED.set(_Committed(owner=_current_task_ref(), not_committed=reason))
+    _COMMITTED.set(_Committed(not_committed=reason))
 
 
 def _take_committed_generation(table_name: str) -> str:
-    """the token the broker wrote for ``table_name`` after the commit just made.
+    """the token the broker wrote for ``table_name`` after the commit just made, handed out once.
 
-    Not removed: every advance of the table for the same commit is handed the same token.
+    A second advance of the table for the same commit would publish its rows under a count the
+    first advance's broadcasts already gave, and a follower would count the advance complete before
+    hearing them; it raises instead.
 
     :param table_name: the table a collection is advancing
     :ptype table_name: str
@@ -203,12 +187,20 @@ def _take_committed_generation(table_name: str) -> str:
     :raises GenerationNotCommittedError: when the task's last commit landed nothing
     :raises GenerationUnavailableError: when the broker reported it could not advance the table, or
         named no generation for it: the broker is older than generations, or does not hold the
-        table's class switched on, or nothing this task committed wrote the table
+        table's class switched on, or nothing this task committed wrote the table; or when the
+        commit's token was already handed to an advance
     """
     held = _COMMITTED.get()
     if held is not None:
         token = held.tokens.get(table_name)
         if token is not None:
+            if table_name in held.taken:
+                raise GenerationUnavailableError(
+                    f"the write generation of {table_name!r} for the commit just made was already advanced; "
+                    f"settle every row of one commit of a table in one advance (invalidate_cache_many), so "
+                    f"its broadcasts carry one count"
+                )
+            held.taken.add(table_name)
             return token
         failure = held.failed.get(table_name)
         if failure is not None:
@@ -250,7 +242,8 @@ class BrokerGenerationSource:
     caching stays off on its registry, as it was with no source at all.
 
     :meth:`advance` makes no request. The broker advanced the table after committing the pod's
-    write and named the token in its reply; this hands that token to the collection advancing, once.
+    write and named the token in its reply; this hands that token to the collection advancing, once
+    per commit.
     :meth:`current` reads the epoch bucket through ``reader``, which a pod is granted; with no
     reader, or for a table that has no generation yet, it raises, so a collection that caches
     absences trusts none rather than one no advance can invalidate.

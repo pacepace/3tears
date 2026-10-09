@@ -903,7 +903,7 @@ class NatsProxyL3Backend:
         response = await self.nats_request(subject, payload)
         # before the success check: a batch run statement by statement commits each one that ran,
         # and the broker names the generations it advanced for them even when another failed.
-        record_reply_generations(response)
+        record_reply_generations(response, ends_write=True)
 
         if not response.get("success", False):
             self.raise_for_failed_reply(response, "batch query")
@@ -959,8 +959,9 @@ class NatsProxyL3Backend:
             self.raise_for_failed_reply(response, "L3 query")
 
         # a statement that wrote a switched-on table names the generation the broker advanced for
-        # it, whether it was sent to execute or, with ``RETURNING``, to fetch; a read names none.
-        record_reply_generations(response)
+        # it, whether it was sent to execute or, with ``RETURNING``, to fetch; a read names none, and
+        # ends no earlier write's scope.
+        record_reply_generations(response, ends_write=operation != "select" or _detect_operation(query) != "select")
         return response
 
     async def nats_request(
@@ -1570,7 +1571,7 @@ class _ProxyTransaction:
                 forget_reply_generations(f"its {action} got no reply")
                 raise
             if response.get("success", False) and action == "commit":
-                record_reply_generations(response)
+                record_reply_generations(response, ends_write=True)
             if not response.get("success", False):
                 # swallow the failure on the rollback path (we already
                 # have an exception in flight) but surface it on the

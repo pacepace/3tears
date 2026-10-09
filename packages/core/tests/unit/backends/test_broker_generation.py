@@ -3,7 +3,9 @@
 The contract this pins (epoch-task-06, stage 2):
 
 - a reply that ends a commit names the token the broker's advance wrote for each switched-on table,
-  and the collection advancing that table after its commit is handed exactly that token, once;
+  and the one advance of that table for the commit is handed exactly that token, and stamps every
+  row broadcast of the commit with their total, however many collection instances wrote them;
+- a token belongs to its commit: a later write's reply, naming generations or not, ends it;
 - every door that commits carries it: ``l3.query`` (an execute, or a fetch with ``RETURNING``),
   ``l3.batch`` and ``l3.tx.commit``; a rolled-back transaction, or a refused commit, hands out none;
 - a reply from a broker built before generations still works for the pod, and a switched-on
@@ -43,6 +45,7 @@ from threetears.core.collections import (
     CollectionRegistry,
     tables_with_write_generation,
 )
+from threetears.core.collections.generation import GenerationMarks
 from threetears.core.collections.schema_backed import STRING_TYPE, SchemaBackedCollection, TableSchema
 from threetears.core.collections.schema_backed import Column as SchemaColumn
 from threetears.core.config import DefaultCoreConfig
@@ -186,10 +189,35 @@ class TestNothingIsHandedOutForWhatDidNotCommit:
         with pytest.raises(GenerationNotCommittedError, match="refused"):
             await BrokerGenerationSource().advance(_TABLE)
 
-    async def test_one_commits_token_is_handed_to_every_advance_of_its_table(self) -> None:
+    async def test_one_commits_token_is_handed_to_one_advance_of_its_table(self) -> None:
         await _Broker(_wrote("inc:2")).proxy().execute("DELETE FROM group_members")
         source = BrokerGenerationSource()
-        assert [await source.advance(_TABLE) for _ in range(3)] == ["inc:2", "inc:2", "inc:2"]
+        assert await source.advance(_TABLE) == "inc:2"
+        with pytest.raises(GenerationUnavailableError, match="already advanced"):
+            await source.advance(_TABLE)
+
+    async def test_a_later_write_whose_reply_names_nothing_ends_the_earlier_commits_token(self) -> None:
+        # the first commit's token is never taken; the second commit wrote, and its reply names nothing
+        proxy = _Broker(_wrote("inc:2"), {"success": True, "row_count": 1}).proxy()
+        await proxy.execute("DELETE FROM group_members")
+        await proxy.execute("DELETE FROM group_members")
+        with pytest.raises(GenerationUnavailableError, match="named no write generation"):
+            await BrokerGenerationSource().advance(_TABLE)
+
+    async def test_a_later_transaction_commit_naming_nothing_ends_it_too(self) -> None:
+        broker = _Broker(_wrote("inc:2"), {"success": True, "tx_id": _TX_ID}, {"success": True})
+        proxy = broker.proxy()
+        await proxy.execute("DELETE FROM group_members")
+        async with proxy.transaction():
+            pass
+        with pytest.raises(GenerationUnavailableError, match="named no write generation"):
+            await BrokerGenerationSource().advance(_TABLE)
+
+    async def test_a_read_in_between_leaves_the_commits_token(self) -> None:
+        proxy = _Broker(_wrote("inc:2"), {"success": True, "rows": []}).proxy()
+        await proxy.execute("DELETE FROM group_members")
+        await proxy.fetch("SELECT id FROM group_members")
+        assert await BrokerGenerationSource().advance(_TABLE) == "inc:2"
 
     async def test_a_later_commit_of_the_table_replaces_its_token(self) -> None:
         broker = _Broker(_wrote("inc:2"), _wrote("inc:3"))
@@ -261,7 +289,9 @@ class TestEachTaskIsHandedItsOwnCommit:
         # CallerTransaction settles under asyncio.shield, which runs in a task of its own
         await _Broker(_wrote("inc:3")).proxy().execute("DELETE FROM group_members")
         assert await asyncio.shield(BrokerGenerationSource().advance(_TABLE)) == "inc:3"
-        assert await BrokerGenerationSource().advance(_TABLE) == "inc:3"
+        # taken for the writer: the commit's one advance has been made
+        with pytest.raises(GenerationUnavailableError, match="already advanced"):
+            await BrokerGenerationSource().advance(_TABLE)
 
     async def test_a_task_that_writes_does_not_add_to_the_record_it_inherited(self) -> None:
         await _Broker(_wrote("inc:3")).proxy().execute("DELETE FROM group_members")
@@ -418,15 +448,16 @@ class TestTheBrokerKnowsASwitchedOnTableFromItsClass:
         del _On, _Off, _Absences, _PerInstance
 
 
-class TestOneCommitAdvancedManyTimes:
-    async def test_one_update_then_an_eviction_per_row_all_carry_its_token(self) -> None:
-        # the shape of a bulk counter bump: one statement, then one invalidate_cache per row
-        bus = FakeNatsClient()
-        members = _pod(_SwitchedOnBrokeredMembers, _Broker(), bus)
-        await _Broker(_wrote("inc:5")).proxy().execute("UPDATE group_members SET n = n + 1 WHERE id = ANY($1)", ["a"])
-        await members.invalidate_cache("m1")
-        await members.invalidate_cache("m2")
-        assert [(m.ids, m.generation) for m in _messages(bus)] == [(["m1"], "inc:5"), (["m2"], "inc:5")]
+def _follower_at(token: str) -> GenerationMarks:
+    """a follower of the table whose mark stands at ``token``."""
+    marks = GenerationMarks()
+    marks.follow(_TABLE)
+    marks.settle(_TABLE, token)
+    return marks
+
+
+class TestOneCommitIsOneAdvanceWithOneCount:
+    """a follower counts an advance complete only once it has heard every row broadcast of it."""
 
     async def test_two_collections_of_one_table_settling_one_transaction(self) -> None:
         bus = FakeNatsClient()
@@ -437,7 +468,32 @@ class TestOneCommitAdvancedManyTimes:
             transaction.enroll(first, "m1")
             transaction.enroll(second, "m2")
         assert broker.subjects[-1] == "test.l3.tx.commit"
-        assert sorted((m.ids[0], m.generation) for m in _messages(bus)) == [("m1", "inc:6"), ("m2", "inc:6")]
+        messages = sorted(_messages(bus), key=lambda m: m.ids[0])
+        assert [(m.ids[0], m.generation, m.bump_rows) for m in messages] == [("m1", "inc:6", 2), ("m2", "inc:6", 2)]
+        follower = _follower_at("inc:5")
+        follower.hear(_TABLE, "inc:6", messages[0].bump_rows or 0)
+        assert follower.recorded(_TABLE) == "inc:5", "moved on before the other instance's row was heard"
+        follower.hear(_TABLE, "inc:6", messages[1].bump_rows or 0)
+        assert follower.recorded(_TABLE) == "inc:6"
+
+    async def test_a_bulk_update_settles_its_rows_in_one_advance(self) -> None:
+        bus = FakeNatsClient()
+        members = _pod(_SwitchedOnBrokeredMembers, _Broker(), bus)
+        await _Broker(_wrote("inc:5")).proxy().execute("UPDATE group_members SET n = n + 1 WHERE id = ANY($1)", ["a"])
+        await members.invalidate_cache_many(["m1", "m2"])
+        assert sorted((m.ids[0], m.generation, m.bump_rows) for m in _messages(bus)) == [
+            ("m1", "inc:5", 2),
+            ("m2", "inc:5", 2),
+        ]
+
+    async def test_a_second_advance_of_one_commit_raises_rather_than_split_its_count(self) -> None:
+        bus = FakeNatsClient()
+        members = _pod(_SwitchedOnBrokeredMembers, _Broker(), bus)
+        await _Broker(_wrote("inc:5")).proxy().execute("UPDATE group_members SET n = n + 1 WHERE id = ANY($1)", ["a"])
+        await members.invalidate_cache("m1")
+        with pytest.raises(GenerationUnavailableError, match="already advanced"):
+            await members.invalidate_cache("m2")
+        assert [(m.ids, m.generation) for m in _messages(bus)] == [(["m1"], "inc:5"), (["m2"], None)]
 
 
 class TestASourceThatCannotReadLeavesAbsenceCachingOff:

@@ -817,15 +817,28 @@ Two tasks writing one table each get their own token. A task started while one i
 the record object; a task that makes a write request of its own starts its own record and leaves
 the one it inherited as it was.
 
-**A commit's token per table may be taken more than once within that commit (owner, 2026-10-09).**
-Every advance of the same table for the same commit returns the same token and raises nothing. It
-is still one bump per table per commit on the wire. Two paths need it: one statement that updates
-many rows followed by an `invalidate_cache` per row (`AgentSkillCollection.bump_use_count`), and
-`CallerTransaction._settle`, which groups by collection instance, so two instances of one table
-advance it twice. The token is dropped when the commit's scope ends: a later reply naming the
-same table replaces it, and a rolled-back transaction (`tx.rollback`, sent by the pod, including
+**One commit, one advance per table, with one count (verify of the owner's 2026-10-09 rule).** The
+owner's rule was that every advance of a table for one commit is handed that commit's token. The
+verify (rev-20261009T044338Z-669a118d) showed what that cost: each advance stamped its own row
+count, so N advances under one token published N groups each claiming `bump_rows` of its own
+group, and a follower counted the advance complete after the first group and moved on before the
+others landed. So one commit's rows are settled in one advance that stamps them all with their
+total: `AgentSkillCollection.bump_use_count` evicts its rows in one `invalidate_cache_many`, and
+`CallerTransaction._settle` shares one advance (`SharedAdvance`) among the collection instances of
+one table, the first advancing for the rows of all of them. The token is handed out once; a second
+advance of the table for the same commit raises `GenerationUnavailableError` rather than publish
+rows under a count already given, and its rows are still evicted and broadcast, naming no
+generation.
+
+**A token belongs to the commit that produced it.** Every reply that ends a write (an `l3.query`
+whose statement writes, an `l3.batch`, an `l3.tx.commit`) replaces the task's record, naming
+generations or not, so an advance after a commit whose reply named nothing for the table raises
+`GenerationUnavailableError` (the broker named nothing, whose cause is the broker's) instead of
+being handed an earlier commit's token. It is not `GenerationNotCommittedError`: that one says the
+commit landed nothing and is logged at INFO, and this commit landed. A read's reply ends no write
+and leaves the record. A rolled-back transaction (`tx.rollback`, sent by the pod, including
 the acquire exit's safety net), a refused commit, and a commit whose request raised before any
-reply came back (a timeout, a closed client) drop every token the task holds. A collection settling
+reply came back (a timeout, a closed client) leave a record that says so. A collection settling
 after any of those is not handed an earlier commit's token: its advance raises
 `GenerationNotCommittedError`, a `GenerationUnavailableError` that says the commit landed nothing,
 which the collection logs at INFO rather than as a failed advance. A table the broker named nothing
