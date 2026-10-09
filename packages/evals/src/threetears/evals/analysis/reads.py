@@ -62,7 +62,7 @@ from threetears.evals.analysis.reporting import (
     normalize_bar,
     project_score_records,
 )
-from threetears.evals.analysis.stats import composite_significance
+from threetears.evals.analysis.stats import INTERVAL_LEVEL, composite_significance, difference_interval
 from threetears.evals.contracts.arguments import normalize_blank
 from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
 from threetears.evals.contracts.host.profile import HostProfile
@@ -1302,9 +1302,13 @@ def compare_two_runs(
         ``composite_comparability`` is the withholding disclosure, or
         ``None`` when the composites are comparable.
         The ``arm`` row carries ``model_{a,b}``, ``k``, ``pass_hat_k_{a,b,delta}``,
-        ``composite_{a,b,delta}``, ``count_{a,b}``, ``paired``, ``n_pairs``,
+        ``composite_{a,b,delta}``, ``composite_interval`` (at ``interval_level``),
+        ``n_cases_{a,b}``, ``n_left_out_{a,b}``, ``count_{a,b}``, ``paired``, ``n_pairs``,
         ``hedges_g``, ``p``, ``significant`` (nulls where a run scored nothing,
         a test is undefined, or the composites are not comparable).
+        ``composite_{a,b}`` and the delta are over the cases the test read —
+        when paired, only those both runs scored, which is not a run's own mean
+        when ``n_left_out`` is above 0; ``count_{a,b}`` is each run's own case count.
         JSON-safe.
 
     Raises:
@@ -1360,8 +1364,6 @@ def compare_two_runs(
         if entry_b is not None and common_k is not None
         else None
     )
-    composite_a = comp_a.get((model_a, run_a_id), {}).get("mean_composite")
-    composite_b = comp_b.get((model_b, run_b_id), {}).get("mean_composite")
     n_pairs: int | None = None
     if shared_cases:
         # Pair only cases scored in BOTH runs.
@@ -1376,8 +1378,17 @@ def compare_two_runs(
         sample_a = [v for (_m, r, _tc), v in per_case_a.items() if r == run_a_id]
         sample_b = [v for (_m, r, _tc), v in per_case_b.items() if r == run_b_id]
         paired = False
+    # The means and the delta are over the cases the test read, so the figures a reader is shown are the
+    # figures the test saw: paired, only the cases both runs scored, and each side says how many of its
+    # own it left out. The same rule a campaign contrast follows (`bundle._compare`).
+    composite_a = sum(sample_a) / len(sample_a) if sample_a else None
+    composite_b = sum(sample_b) / len(sample_b) if sample_b else None
+    n_scored_a = sum(1 for (_m, r, _tc) in per_case_a if r == run_a_id)
+    n_scored_b = sum(1 for (_m, r, _tc) in per_case_b if r == run_b_id)
+    interval: tuple[float, float] | None = None
     if composites_comparable:
         hedges_g, significant, p_value = composite_significance(sample_a, sample_b, paired=paired)
+        interval = difference_interval(sample_a, sample_b, paired=paired)
     else:
         # Not computed and then dropped: a t-test on two subjects'
         # composites has no referent, so there is no number to withhold.
@@ -1393,6 +1404,16 @@ def compare_two_runs(
         "composite_a": composite_a,
         "composite_b": composite_b,
         "composite_delta": _score_delta(composite_a, composite_b) if composites_comparable else None,
+        # The interval on `composite_delta` from the same test as `p`, at the engine's interval level. None
+        # wherever no test ran: too few cases, no spread, or composites that are not comparable.
+        "composite_interval": None if interval is None else list(interval),
+        "interval_level": INTERVAL_LEVEL,
+        # The cases each composite above was read over, and how many of each run's scored cases the test
+        # left out because the other run did not score them.
+        "n_cases_a": len(sample_a),
+        "n_cases_b": len(sample_b),
+        "n_left_out_a": n_scored_a - len(sample_a),
+        "n_left_out_b": n_scored_b - len(sample_b),
         "count_a": count_a,
         "count_b": count_b,
         # How the samples line up, which is what the test that ran on them was:
