@@ -854,6 +854,36 @@ a pod's reader-less `BrokerGenerationSource` leaves `CoordinationRevocationsColl
 `RevocationGuard`) exactly as with no source, and nothing on a pod caches absences until stage 3
 wires a reader.
 
+**The broker's advance, after review.** Only a success reply is stamped: a failed reply (a
+statement-by-statement batch whose later item was refused) keeps its own `error_code`, so a
+constraint violation still reaches the pod typed and is not retried as unavailability; its
+advances are still made and logged. The advances share the time left before the pod stops
+waiting for the commit's reply (`ReplyDeadline.seconds_left_to_answer`), and a table not reached
+in it is named failed, so a stalled epoch bucket neither turns a committed write into a timeout
+the pod retries nor holds an in-flight slot. The failure is logged with the door, principal,
+namespace, correlation id and session. A transaction session records how it ended (open,
+committing, committed, rolled back): a commit asked of a session that shutdown, the sweeper or a
+fence refusal rolled back while the commit waited is refused (`TX_SESSION_CLOSED`) and advances
+nothing.
+
+**Every hub-family registry has a source.** `aibots.hub.common.generation_sources` picks it by how
+the process writes: directly with the epoch bucket's write (the hub, the gateway):
+`EpochGenerationSource`; through the broker: `BrokerGenerationSource`; directly without the grant
+(the agent router, the dataset executor, the channel adapters, an operator's audit replay): a
+source that reads nothing and refuses every advance at once, naming the process. A table one of
+those processes writes cannot be switched on until the process is granted the bucket's write; the
+refusal says so rather than letting an ungranted JetStream call block to its deadline. An
+enforcement test holds every `CollectionRegistry()` in the hub to a source from that module.
+
+**The hub's knowledge subclasses inherit the framework's agent reads (accepted).** The framework's
+`PlaybookEntryCollection` and `ConceptCollection` carry the agent pod's reads
+(`list_visible_to_user`, `list_own_drafts`, `fetch_embeddings`, over the rbac proxy pool with
+`customer_scope`) beside the table's declaration, so the hub's subclasses inherit reads that do
+not run on the hub's pool. The hub's own reads are named `list_entities_visible_to_user` and
+`list_own_draft_entities`, and every hub docstring names those. Splitting the framework class into
+a declaration base and an agent-pod subclass would let the hub keep the shorter name; it is a
+3tears change with no behaviour in it, and is left for the stage that touches those classes again.
+
 **Pods read no generation yet.** The SDK and `3tears-agent-tools` do not depend on `3tears-epoch`,
 and adding it is a lock change this stage does not need: nothing on a pod caches absences.
 `BrokerGenerationSource()` is built without a reader, so `current` raises and a collection that
