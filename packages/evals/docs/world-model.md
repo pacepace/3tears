@@ -41,10 +41,11 @@ still hold:
   during prompt assembly. The invariant since: **one resolution path**, so candidate, judge and report read the same
   resolved world, frozen on the run as provenance.
 - **Cassettes cannot hold an open-ended case.** A cassette replays identical requests. An open-ended case is
-  valuable because the model chooses its own query, so the hit rate is close to zero. The chosen design delivers a
-  seeded payload in answer to *whatever* call the subject makes. There is no lookup key and so nothing to miss, and
-  the query is still recorded for separate grading. Unconditional delivery was rejected as incoherent when the
-  subject never asked. From this came the split between a rig failure (a replay miss, a malformed seed:
+  valuable because the model chooses its own query, so the hit rate is close to zero. The first host's answer was
+  to deliver a seeded payload in answer to *whatever* call the subject makes. There is no lookup key and so nothing
+  to miss, and the query is still recorded for separate grading. Unconditional delivery was rejected as incoherent
+  when the subject never asked. This is a technique a host builds into its own tools; the engine has no
+  payload-delivery feature. From this came the split between a rig failure (a replay miss, a malformed seed:
   [`ApparatusError`](adopting-a-host.md#rig-failures-a-broken-rig-costs-one-cell-never-the-run), excluded) and an
   in-world failure (a rate limit, an item not found: shown to the subject, which may be scored on how it copes).
 
@@ -76,8 +77,11 @@ optional paperwork, and "this host registers no world" becomes a claim a run rec
 
 **Seeded and perceived are derived from the run, never declared.** At registration, seedable × perceivable gives
 `representable`, `judge_only` or `witnessed`; the fourth combination is refused as a field, not a dimension. At run
-time the same two bits come from what this run seeded and which carriers this subject attached, recorded on the run
-as `world_placements`. *Rejected:* a per-run mode flag, which can disagree with the run and cannot express a run
+time the engine computes the same two bits (`WorldRegistry.place`) from what this run seeded and which carriers
+this subject attached, and records them on the run as `world_placements`. Those two inputs are not read off the
+cells: the host's `world_placements` callable on its `LaunchHost` supplies them for the assembled run, and the
+engine does not check them against what the cells seeded. "Derived from the run" holds as far as that callable is
+right. *Rejected:* a per-run mode flag, which can disagree with the run and cannot express a run
 that seeds some dimensions and witnesses others. Walking another application's code showed the need: its agent's
 memory is seedable in a commissioned run and only witnessed in production traffic, on one host. Witnessed state is
 a confound to disclose, and [commissioned and witnessed observations never pool](concepts.md#apparatus-class). A
