@@ -1,7 +1,7 @@
 # Principles
 
-Read this when you want the rules the engine keeps and why: before you design a campaign, extend the
-engine, or argue with one of its refusals. Where the package does not yet keep a
+**For** anyone about to design a campaign, extend the engine, or argue with one of its refusals. **Answers:**
+which rules the engine keeps, and why. Where the package does not yet keep a
 rule in full, the entry says so and points at [open problems](open-problems.md). Terms are as
 [concepts](concepts.md) defines them.
 
@@ -65,23 +65,18 @@ failure the candidate caused is the candidate's. Unknown is never shown as zero,
 price is unpriced, not free. See [rig failures](adopting-a-host.md#rig-failures-a-broken-rig-costs-one-cell-never-the-run).
 
 **Count test cases, not attempts.**
-Five cases run three times are five pieces of evidence, not fifteen: repeats of one case are correlated.
-Comparisons against the control run on per-case means, paired when both arms ran the same cases. A single
-reading's interval is computed over cases too: a cluster-robust standard error on `n_cases − 1` degrees of
-freedom, and for a rate a Wilson interval on the effective sample size the clustering leaves. A reading of
-one case repeated has no interval.
+Five cases run three times are five pieces of evidence, not fifteen: repeats of one case are correlated. So
+comparisons run on per-case means, every interval is computed over cases, and a reading of one case repeated
+has no interval.
 
 **A verdict comes from a corrected test, and "not separated" never means "no difference".**
 Each contrast against the control is `improved`, `regressed`, `equivalent`, `not_separated` or
 `untested`, read off a Holm-adjusted p within one family: one per declared question, or one campaign-wide
 over every reading on a merit axis (the rig's own readings, such as the judge's time and spend, are on none).
 `equivalent` takes an equivalence test (TOST) against the measure's declared margin, corrected in the same
-family. Twenty uncorrected
-tests find a chance "winner" more often than not. False-discovery control across a history of campaigns and
-sequential testing stay out. The run-history read follows the same rule: a step that misses significance is
-`not_separated`, and "no meaningful change" (`equivalent`) is claimed only by an equivalence test (TOST)
-against the measure's declared margin, its materiality threshold. The figures behind these rules are in
-[measuring soundly](measuring-soundly.md).
+family; the run-history read follows the same rule. Twenty uncorrected tests find a chance "winner" more often
+than not. False-discovery control across campaigns and sequential testing stay out. The methods are named in
+[reading reports](reading-reports.md#methods).
 
 **Trust in a judge is measured, not asserted, and nothing waits for calibration.**
 Code assigns every judged reading an [evidence tier](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers)
@@ -91,12 +86,10 @@ self-consistency measures precision, not accuracy.
 
 **Bars start where the incumbent performs ("never ship worse than what runs today") and only tighten.**
 A proposed bar is never adopted
-automatically, and one looser than the registered bar is refused. A bar decides by the interval against the
-measure's declared margin, never the mean, and three ways: cleared when the whole interval sits on the good
-side of the threshold less the margin, missed when it sits wholly on the bad side, and undecided when it
-straddles the line, which is neither a pass nor a failure. A proposal seeds the threshold at the incumbent's
-mean, moved by the share of its interval its own error accounts for. A bar at the mean, read on a cell's
-mean, failed an unchanged incumbent about half the time.
+automatically, and one looser than the registered bar is refused. A bar decides on the interval against the
+measure's declared margin, never the mean: cleared, missed, or undecided when the interval straddles the line,
+which is neither a pass nor a failure. A bar at the mean, read on a cell's mean, failed an unchanged incumbent
+about half the time.
 
 **What an arm would cost in production and what it cost to measure are kept apart.**
 Spend is recorded per role: the candidate's calls and the work they start are what production would pay;

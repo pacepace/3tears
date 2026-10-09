@@ -7,6 +7,9 @@ written as; what has actually shipped, and against which PR, is tracked in
 [`convergence-sequencing.md`](convergence-sequencing.md) (cross-repo phases)
 and [`search-spec.md` §7](search-spec.md#7-sequencing) (in-repo detail).
 Don't mirror status here -- one place, or they drift.
+**Evals (§4.2) shipped as one package, `3tears-evals`, not the four proposed.**
+Its current documentation is [`packages/evals/docs/`](../packages/evals/docs/),
+and its source is the authority wherever §4.2 differs from it.
 
 ---
 
@@ -286,31 +289,33 @@ the package split follows seams that already exist:
 Verified against discodon 2026-08-04, updated 2026-08-20 -- three findings that
 shape the extraction:
 
-- **The storage Protocol exists** (carved 2026-08-20).
-  `discodon/eval/store_port.py` declares `DocumentStore`; `store_adapter.py`
-  implements it over YugabyteDB and is **the only file in the package that
-  imports `discodon.db`**. The eval core imports the port only, so eval-contracts
-  lifts a proven port rather than minting the family's fourth store shape.
+- **The storage Protocol exists.** It was carved in discodon on 2026-08-20 and has
+  since moved into the package. **The authority is now
+  `packages/evals/src/threetears/evals/contracts/store_port.py`** (`DocumentStore`),
+  not this section. Read the Protocol and its module docstring rather than a summary
+  here: a method table copied into this bullet in August drifted, and a store built
+  from it could not serve the engine. The engine's in-memory adapter,
+  `threetears.evals.storage.InMemoryDocumentStore`, is the shape to compare against.
+  The store conformance kit, `threetears.evals.testing.STORE_CONFORMANCE_CASES`,
+  checks an adapter against every rule. Three properties an implementer must not miss
+  (as of 2026-10-09):
 
-  **It is seven methods, not the four designed in prose** (`upsert/get/query/delete`).
-  Take this shape -- the extra three are what a real store turned out to need:
-
-  | Method | Why it is in the contract |
-  |---|---|
-  | `get` / `upsert` / `delete` | point read and write, keyed by `(doc_id, pk)` |
-  | `get_with_etag` + `upsert(if_match=)` | optimistic concurrency; read-modify-write without exposing transactions |
-  | `get_many` | batch point read within one partition -- the bundle pipeline is N round-trips without it |
-  | `by_doc_type` / `iter_by_doc_type` | typed query, and an identity-only (`id, pk`) cross-partition sweep for operator wipes |
-
-  Storage-layer columns are stripped **in the adapter, on the way out**, so the
-  core receives documents it can hand straight to a model. That is part of the
-  port's contract, not a defensive habit in the caller.
-
-  **Keyed by `(doc_id, pk)`, not by `(scope, doc_type, id)`.** Partitioning and
-  tenancy live in the adapter: the scope a caller passes binds to the `pk` column,
-  and row-level security scopes every operation to the connection environment
-  independently of the SQL text. No query in the port carries an environment
-  predicate of its own.
+  - **Keyed by `(scope_id, doc_type, id)`.** Every method names its scope, except
+    `upsert`, which takes the scope from the document. How a scope maps onto
+    partitions and isolation is the adapter's business. Reads return documents
+    with storage-injected fields stripped. That is part of the contract, because every
+    stored eval model refuses a key it does not declare.
+  - **`merge_fields`** sets top-level fields on one stored document in place. The
+    write is unconditional, and it still mints a fresh etag, so a conditional writer
+    holding the old one is refused.
+  - **Projected reads.** `get_many` takes `exclude` (dotted paths to leave out) or
+    `keep` (top-level fields to keep), never both. `by_doc_type` takes `exclude`.
+    The meanings are `omit_paths` and `keep_fields`, defined beside the port. A
+    projected document carries no record of what it left out, so `EvalStorage`
+    marks each run such a read returns (`EvalRun.note_elided_payload`). A reader
+    that needs a left-out path then refuses, and saving the run back is refused,
+    rather than the run reading as whole. That marking is only as true as the
+    projection, so an adapter must honour `exclude` exactly.
 
   **The prerequisite this bullet named has since been met** (re-checked 2026-09-05;
   it read "still open -- 33 `universe_id` references and no `scope_id`" until then).

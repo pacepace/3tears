@@ -32,8 +32,8 @@ validator.
 
 **It is budgeted:** at most 28,000 characters and 15 rules (:data:`PROMPT_CHAR_BUDGET`,
 :data:`PROMPT_RULE_BUDGET`), and the budget only falls; ``tests/test_gen_prompt_budget.py`` fails the
-build past either. A new rule names the one it replaces, in the rule ledger planned as
-``GEN_PROMPT_RULES.md`` beside this module (until it exists, in the commit that changes the rule).
+build past either. A new rule names the one it replaces, in the rule ledger
+``GEN_PROMPT_RULES.md`` beside this module, which records what each rule prevents and why.
 
 **Worked examples are synthetic and few.** An example built from real generated output launders
 whatever was wrong with it into an instruction, and a model reproduces a prompt's canonical answer

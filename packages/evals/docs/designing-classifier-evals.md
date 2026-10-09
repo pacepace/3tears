@@ -1,8 +1,12 @@
 # Designing a classifier eval set
 
-Build a classifier eval set mostly from hard cases (boundaries between labels, lookalikes, contrast pairs and
+**For** anyone building their first eval of a classifier, or any feature whose answer code can grade.
+**Answers:** which cases to write, how many, how to feed them to the classifier, and how to read the results.
+It assumes no prior experience with evals.
+
+In short: build the set mostly from hard cases (boundaries between labels, lookalikes, contrast pairs and
 context), give every case a written reason, put at least ten cases behind each label, and run them through
-the same code production uses. This guide explains each of those and assumes no prior experience with evals.
+the same code production uses.
 
 A classifier takes an input and picks one label from a fixed set. Classifiers are among the easier LLM
 features to evaluate, because code can grade every answer: the label is either the expected one or it is
@@ -14,7 +18,7 @@ The examples come from these classifiers:
 
 | Classifier | Labels | Input |
 |---|---|---|
-| **Chat relevance**: should an assistant persona (a radio DJ called Kairo, in a community chat room) treat a message as meant for it? | `DIRECT`, `RELEVANT`, `NONE` | the messages it has not answered yet, plus a summary of what it did recently |
+| **Chat relevance**: should a chat assistant (a bot called Pip, in a gardening club's group chat) treat a message as meant for it? | `DIRECT`, `RELEVANT`, `NONE` | the messages it has not answered yet, plus a summary of what it did recently |
 | **Support triage**: which queue does a ticket go to? | `billing`, `bug`, `account`, `other` | the ticket's subject and body |
 | **Review sentiment** | `positive`, `negative`, `neutral` | one product review |
 
@@ -37,19 +41,18 @@ Most disagreements about a case are really disagreements about what a label mean
 first, in writing, and write each definition as a test someone could apply to an input:
 
 - **Make the labels exclusive.** Every input should get exactly one label. If two could both apply, write
-  the rule that picks between them. The chat classifier's rule: *does the message refer to Kairo at all, by
-  name or by asking about something only Kairo could answer? If not, it is never `DIRECT`, however much it is
-  about music.*
+  the rule that picks between them. The chat classifier's rule: *does the message refer to Pip at all, by
+  name or by asking about something only Pip could answer? If not, it is never `DIRECT`, however much it is
+  about gardening.*
 - **Cover everything.** Include a label for "none of the above" (`NONE`, `other`). Without one, the model
   has to pick a wrong label for every input you did not plan for, and the eval cannot see it happen.
 - **Write rulings for ambiguity.** Some inputs are ambiguous. Decide which way they go, write the ruling
   down, and make it part of the label's definition. "Ambiguous address resolves to `DIRECT`" is a ruling: a
   message that might be meant for the assistant is treated as if it is, because ignoring someone who was
   talking to you is the worse mistake.
-- **Decide which mistakes cost more.** A support ticket routed to `other` instead of `bug` might wait a day;
-  a `bug` routed to `billing` might get bounced twice. For the chat classifier, a false `DIRECT` makes the
-  assistant butt into a conversation that was not about it, and a false `NONE` ignores someone who spoke to
-  it. Write down which errors matter most *before* you see results, so the results cannot talk you out of it.
+- **Decide which mistakes cost more.** For the chat classifier, a false `DIRECT` makes the assistant butt into
+  a conversation that was not about it, and a false `NONE` ignores someone who spoke to it. Write down which
+  errors matter most *before* you see results, so the results cannot talk you out of it.
 
 Use the same definitions in the classifier's prompt. If the eval's idea of `RELEVANT` and the prompt's idea
 of `RELEVANT` differ, you are measuring how well the model guesses what you meant rather than how well it
@@ -63,16 +66,15 @@ sentences that cite the rule.
 ```json
 {
   "id": "relevance-017",
-  "messages": [{"author": "marisol", "text": "what was that last one?"}],
-  "recent_activity": ["Announced 'Aphex Twin — Rhubarb' and talked about the fade from the last track."],
+  "messages": [{"author": "marisol", "text": "what was that you said about the roses?"}],
+  "recent_activity": ["Answered a question about pruning roses in late winter."],
   "label": "DIRECT",
-  "why": "Names nobody, but asks about the assistant's own output, which only it knows."
+  "why": "Names nobody, but asks about the assistant's own earlier answer, which only it gave."
 }
 ```
 
-Writing the reason is how you notice that a case does not follow from the rules: if you cannot write it,
-the label is a guess. Reading it lets a reviewer check your work in seconds rather than re-deriving the
-label. And when a model gets the case wrong, the reason tells you whether the model failed or the case did.
+If you cannot write the reason, the label is a guess. A reviewer checks a reason in seconds, and when a model
+gets the case wrong, the reason tells you whether the model failed or the case did.
 
 **Leave out what you have not decided.** A case where reasonable people disagree on the label cannot grade
 a model, because whichever answer the model gives, someone thinks it is right. Mark such cases as
@@ -86,22 +88,20 @@ Most of the value of a case set is in its hard cases. Plan the set by kind, and 
 ### Plain cases
 
 Inputs whose label nobody would argue with: `"brb walking the dog"` is `NONE`; `"I was charged twice for
-March"` is `billing`. A few per label prove the plumbing works, but every model scores well on them. If
-most of your set is plain cases, your accuracy number mostly measures how many plain cases you wrote.
+March"` is `billing`. A few per label prove the plumbing works, but every model scores well on them.
 
 ### Boundary cases
 
 Inputs that sit between two labels and fall on one side because of a specific rule. Write them for **every
 pair of labels that can be confused**, not just the pair you think of first.
 
-- Chat, `DIRECT` vs `RELEVANT`: `"kairo's taste has gotten so much better since last month"` mentions the
-  assistant but talks *about* it to the room, so it is `RELEVANT`. `"kairo why'd you go from ambient straight
-  into breakbeat"` asks it about its own choice, so it is `DIRECT`.
-- Chat, `RELEVANT` vs `NONE`: `"why do so many records from that era sound like they were mixed inside a
-  shoebox"` is about music and asked of the room, so it is `RELEVANT`. `"anyone else's build failing on main"`
-  is asked of the same room and is `NONE`.
-- Chat, `RELEVANT` vs `DIRECT`, from the other side: a music question addressed to another person (`"@jeb do you
-  know a good live recording of…"`) stays `RELEVANT`, because an explicit addressee overrides how on-topic
+- Chat, `DIRECT` vs `RELEVANT`: `"pip's advice has got so much better lately"` mentions the assistant but talks
+  *about* it to the room, so it is `RELEVANT`. `"pip why did you say to prune the roses in autumn"` asks it about
+  its own answer, so it is `DIRECT`.
+- Chat, `RELEVANT` vs `NONE`: `"why do my tomato leaves keep curling"` is about gardening and asked of the room,
+  so it is `RELEVANT`. `"anyone else's car failing its inspection"` is asked of the same room and is `NONE`.
+- Chat, `RELEVANT` vs `DIRECT`, from the other side: a gardening question addressed to another person (`"@jeb do
+  you know a good compost supplier…"`) stays `RELEVANT`, because an explicit addressee overrides how on-topic
   it is.
 - Support, `bug` vs `account`: "I can't log in" is `account` when the password is wrong and `bug` when the
   login page errors. Write both.
@@ -114,9 +114,9 @@ case, so a set without lookalikes cannot tell the two apart.
 
 | Classifier | Input | Looks like | Is | Why |
 |---|---|---|---|---|
-| Chat | `"i always wanted to go to Cairo"` | `DIRECT` (sounds like the assistant's name) | `NONE` | A city, not the assistant |
-| Chat | `"this game is dumb"` then `"stop playing"` | `DIRECT` (a request to the DJ) | `NONE` | "Playing" is the game |
-| Chat | `"anyone know how to track a package from overseas?"` | `RELEVANT` ("track") | `NONE` | Shipping, not music, asked of the room |
+| Chat | `"my nephew Pip starts school tomorrow"` | `DIRECT` (the assistant's name) | `NONE` | A person, not the assistant |
+| Chat | `"the bulb in the hallway blew again"` | `RELEVANT` ("bulb") | `NONE` | A light bulb, not a plant |
+| Chat | `"we need to weed out the duplicates in this sheet"` | `RELEVANT` ("weed") | `NONE` | A figure of speech, asked of the room |
 | Support | `"Refund the hours I lost to your app crashing"` | `billing` ("refund") | `bug` | The complaint is the crash |
 | Support | `"Your invoice PDF won't open"` | `billing` ("invoice") | `bug` | The PDF is broken; the charge is fine |
 | Sentiment | `"Not bad at all."` | `negative` ("bad") | `positive` | Negated |
@@ -124,8 +124,8 @@ case, so a set without lookalikes cannot tell the two apart.
 
 Good sources of lookalikes:
 
-- words your domain shares with everyday speech (track, record, mix, drop, band, score, play; refund,
-  charge, account);
+- words your domain shares with everyday speech (plant, bulb, weed, bed, root, grow; refund, charge,
+  account);
 - names that sound like other things;
 - negation and sarcasm;
 - quoted text, such as a user reporting what someone else said;
@@ -139,12 +139,12 @@ halves by spotting a keyword, which makes contrast pairs some of the most useful
 
 | Input | Label |
 |---|---|
-| Alice: `this soccer game is awful` · Bob: `seriously can we get some scoring` | `NONE` |
-| Alice: `this stuff is awful` · Bob: `seriously can we get some Beatles` | `DIRECT` |
+| Alice: `pip, when should I sow tomatoes?` · Bob: `and peppers?` | `DIRECT` |
+| Alice: `I'm sowing tomatoes this weekend` · Bob: `and peppers?` | `RELEVANT` |
 
-Bob's request is nearly the same in both; what came before it decides whether it is about the game or a
-request to the DJ. Pair lookalikes with their real counterparts the same way: `"anyone know how to track a
-package from overseas?"` (`NONE`) beside `"what was the track before this one"` (`DIRECT`).
+Bob's line is the same in both; what came before it decides whether he is asking the assistant or Alice.
+Pair lookalikes with their real counterparts the same way: `"my nephew Pip starts school tomorrow"` (`NONE`)
+beside `"Pip, when do I plant garlic?"` (`DIRECT`).
 
 ### Context cases
 
@@ -153,19 +153,20 @@ customer's plan), write cases where the context decides it, like the pair above.
 **context-missing twins**: the same final input with the context removed.
 
 The twins test your production system rather than the model. Find out exactly what context production gives
-the classifier: how many earlier messages, whether messages the assistant already answered are included,
-and what is truncated. If Alice's line arrived before the assistant's last turn and production no longer
-passes it to the classifier, then Bob's `"seriously can we get some scoring"` is classified alone in
-production, every time. The twin reproduces that input. If the model fails it, the cause is the missing
-context, and the fix is in what production passes.
+the classifier (how many earlier messages, whether answered ones are included, what is truncated). If
+production no longer passes Alice's line, Bob's `"and peppers?"` is classified alone every time; the twin
+reproduces that input, and if the model fails it, the fix is in what production passes.
 
 ### Controls for shortcuts
 
 If your classifier gives a second judgment, or your labels correlate with something irrelevant, write cases
 that break the correlation. The chat classifier also rates each message `ROUTINE` or `COMPLEX` (does
 answering it need investigation?). Long messages tend to be complex, so a model can score well by rating
-length. `"does anyone know the current exchange rate for yen"` is short, off-topic and `COMPLEX`, since the
-answer is worthless unless it is current, so it tests the rule rather than the length.
+length. `"is it going to frost tonight"` is short and `COMPLEX`, since the answer is worthless unless it is
+current, so it tests the rule rather than the length. Grade that second judgment too: a set that grades only
+the first label cannot see the second fail. In one private campaign, once it was graded, the incumbent model
+recalled `COMPLEX` at 0.40 where a challenger reached 0.93; nothing had been measuring it. Every judgment the
+classifier emits needs its own expected value and its own figures.
 
 ### Batches
 
@@ -176,9 +177,8 @@ all-`NONE` batch with several messages, so a model cannot learn that more messag
 ## 4. How many cases
 
 Every rate an eval reports is an estimate, and how far it can be trusted depends on how many cases are
-behind it. The package reports a 95% interval beside each rate (a Wilson interval, over cases: run each case
-three times and the interval still counts the cases, widened by however much the repeats agree with each
-other). For a model that got 90% right, one run per case:
+behind it. The package reports a 95% interval beside each rate: a Wilson interval on the effective number of cases, so
+three runs of each case count for more than one case only as far as the repeats disagree with each other. For a model that got 90% right, one run per case:
 
 | Cases behind the rate | Correct | Interval |
 |---|---|---|
@@ -200,14 +200,15 @@ Ten cases cannot tell a 90% model from a 65% one, which shapes how you size the 
   like real traffic predicts production accuracy; a diagnostic slice over-sampling the rare labels, the
   boundaries and every contrast pair gives per-label recall. One mixed figure is neither: it predicts no
   traffic and still under-measures the rare labels. Keep the tiers as separate case sets, run and read apart
-  (a case's [stratum](concepts.md#stratum) stays free for its kind of case). When the set must shrink, cut the proportional tier evenly; never cut half a
-  contrast pair, or the question it asks goes unanswered at any size.
+  (a case's [stratum](concepts.md#stratum) stays free for its kind of case). When the set must shrink, cut the
+  proportional tier evenly; never cut half a contrast pair, or the question it asks goes unanswered at any size.
 - **Repeats do not add cases.** Three runs of six cases are six pieces of evidence, not eighteen: `k` measures
   how consistent the model is on those inputs, and only more cases widen what the rate covers. Below about six
-  cases a label's figure is a smoke test. An eight-case set once read 0.875 where twenty cases read 0.750 for
-  the same model.
+  cases a label's figure is a smoke test.
 - **Start with at least ten hand-written cases per label**, most of them boundary cases, lookalikes and
-  contrast pairs, then grow the set from production mistakes ([section 8](#8-maintaining-the-set)).
+  contrast pairs, then grow the set from production mistakes ([section 8](#8-maintaining-the-set)). The
+  package's examples use one to four cases per label so they run in seconds: they show the mechanics, and by
+  this rule their figures are smoke tests.
 
 ## 5. Feed the classifier exactly what production feeds it
 
@@ -221,25 +222,42 @@ well. Case authors need to know that, so they do not write a case whose deciding
 drop.
 
 Decide what an unusable answer is. A model that replies with prose, an empty string or a label outside the
-set did not classify. Give that outcome its own predicted label (for example `UNPARSEABLE`) so it shows in
-the confusion matrix as itself. Mapped to a real label, it would read as an ordinary wrong answer.
+set did not classify. Give that outcome its own predicted label so it shows in the confusion matrix as itself;
+mapped to a real label, it would read as an ordinary wrong answer. Use one label per cause, because each has a
+different fix: `TRUNCATED` (the reply hit its output cap: raise the cap or bound the reasoning), `UNPARSEABLE`
+(it finished but not in the format: fix the prompt or the parser, or choose another model) and `ERROR` (the
+call failed: fix the rig or the provider account). In one private campaign, truncations reported as
+unparseable answers pointed an operator at the wrong fix for fourteen days.
 
 ## 6. Generating more cases
 
-Hand-written cases define the set; generated variations add more wordings of them. A template's **variation
-axes** say how cases vary, and a launch with `n_variations` asks for that many new cases. An axis is one of:
+Generation does not reword your hand-written cases. It writes new cases from a template's **variation
+axes**, and a generated case is only a combination of axis values, with no input text and no expected label.
+A launch with `n_variations=N`:
 
-- `enum`: every listed value once (for example, how the person types: `as_typed`, `hurried`, `shouted`);
-- `sample`: values drawn from a list;
-- `llm`: new values written by a model you name with `variation_model` (for example, paraphrases).
+1. takes each axis's values: an `enum` axis gives every listed value, a `sample` axis draws up to N of its
+   listed values, and an `llm` axis asks the model named by `variation_model` for N new ones;
+2. forms every combination of one value per axis, shuffles them and keeps N;
+3. stores each as a test case whose `variation_params` map each axis to its value, reusing a stored case
+   with the same values.
 
-A generated case keeps its seed's expected label, so **every axis must preserve the label**. A paraphrase
-prompt should state the label and its definition and tell the writer to keep the meaning. A typing-style
-axis changes spelling, never content. Start variations from plain single-input cases with an unarguable
-label, never from a contrast pair or a context case, where a small rewording is exactly what flips the label.
+An `llm` axis's writer sees only that axis's name, its description and the values already stored for it: no
+case, no other axis, no label. So it cannot paraphrase a case, and its values are paired at random with every
+other axis's values.
 
-Read a sample of what the generator wrote before you trust a run over it. A paraphrase that drifted into
-another label is a wrong case, and the model that "got it wrong" was right.
+Your kind's `invoke` turns the params into the classifier's input, and it must derive the expected label from
+them too, since the case carries none. That shapes the axes:
+
+- **Make the label an axis**: an `enum` axis listing your labels, from which `invoke` builds an input with
+  that label (from a hand-written base message per label, say).
+- **Every other axis must leave the label alone, whatever it is paired with**: how the person types
+  (`as_typed`, `hurried`, `shouted`), a name, a time of day. An axis whose value can flip the label, such as a
+  model-written topic, yields cases whose expected label is wrong.
+- **Keep boundary cases, lookalikes, contrast pairs and context cases hand-written.** A small rewording is
+  exactly what flips their label.
+
+Read a sample of generated cases as `invoke` renders them before you trust a run over them. An input that does
+not have the label `invoke` gave it is a wrong case, and the model that "got it wrong" was right.
 
 Generated cases are priced before they are written and charged outside the runs' own cost caps; see
 [Spend outside any run](cost-and-budgets.md#spend-outside-any-run) in Cost and budgets, and
@@ -247,7 +265,7 @@ Generated cases are priced before they are written and charged outside the runs'
 
 ## 7. Reading the results
 
-**Run each case more than once.** Set `k` to 2 or 3. A classifier at a non-zero temperature can label the
+**Run each case more than once.** Keep `k` at 2 or more (the default is 3). A classifier at a non-zero temperature can label the
 same input differently on different calls. A case that flips between repeats is a finding by itself: the
 model is unsure, and users sending that message get different answers.
 
@@ -263,6 +281,14 @@ many were? F1 combines the two into one number and has no interval of its own, s
 **Compare arms on the same cases.** Running two models (or two prompts) over the same case set is what makes
 a difference between them meaningful. When their intervals overlap heavily, the eval has not shown a
 difference yet. Add cases where the arms disagree, not more cases where both are right.
+
+**Gate accuracy, latency and cost separately.** A cheaper or faster model is admissible only if it clears each
+bar on its own. Folded into one score, a large saving can buy back a real loss of accuracy.
+
+**Measure latency on calls that were not competing.** Accuracy and cost do not depend on how many calls run at
+once; latency does. The engine runs a run's cells one at a time but a launch's arms side by side, so arms on
+one provider account compete for it and for its rate limit. For a latency gate, read latency from a small run
+of the arm alone (a serial probe) beside the bulk comparison.
 
 **Read the wrong answers.** Open the cases a model missed and read their reasons. In a new case set, many
 "model errors" turn out to be cases that do not follow from the rules, or rules that do not say what was
@@ -291,20 +317,15 @@ the stratum, but it does see the case's input, and a case that says it is a look
 look out for.
 
 Run the whole set as one run, in a campaign, and read the campaign's report
-(`python -m threetears.evals report CAMPAIGN`). The report has a **By stratum** table beside the decision
-surface. Each arm has a row per reading (accuracy, the confusion matrix, each label's precision, recall and F1,
-and any judged dimension), with the figure over all cases first and then one column per stratum. Each arm's
-first row is `cases`: how many cases and results each column rests on.
+(`python -m threetears.evals report CAMPAIGN --host myapp.evals:build_host --scope dev`). Its **By stratum**
+table gives each arm's figures over all cases, then one column per stratum, each with the cases it rests on
+([Results by kind of case](reading-reports.md#results-by-kind-of-case-strata)). A stratum with fewer than 10
+cases is marked "too few cases to read alone": three lookalikes with one right give a recall interval of about
+6% to 79%. Add cases to it before acting on it.
 
-Read a stratum's figures with its count. A stratum with fewer than 10 cases is marked "too few cases to read
-alone" and is listed in a note below the table. Its figures are still shown, but their intervals are wide:
-three lookalikes with one right gives a recall interval of about 6% to 79%. Add cases to that stratum before
-acting on it.
-
-Cases that declare no stratum, in a set where others do, get their own "(no stratum)" column, so the strata's
-case counts add up to the count under "All cases". If you generate cases from a template, mark the variation axis that names the kind with
-`stratum=True`, and each generated case takes that axis's value as its stratum. `run_eval` cannot set a
-stratum yet, so strata need cases stored as test cases, as a classifier kind's are.
+For generated cases, mark the variation axis that names the kind with `stratum=True` and each generated case
+takes that axis's value as its stratum. `run_eval` cannot set a stratum yet, so strata need cases stored as test
+cases, as a classifier kind's are.
 
 ## 8. Maintaining the set
 
@@ -313,17 +334,19 @@ stratum yet, so strata need cases stored as test cases, as a classifier kind's a
   behaviour should agree with it.
 - **Turn production mistakes into cases.** Every misclassification a user reports is a case you were
   missing, usually a lookalike or a context case. Add it with its reason, then its contrast partner.
-- **Retire cases rather than editing them.** When a ruling changes, archive the cases it affects (a test
-  case's `archived` flag) and write new ones. That way a case id always means one input and one label, and
-  results from before and after the ruling are never read as the same measurement.
+- **Start a new case set rather than editing cases.** A stored case never changes, and a classifier's cases
+  cannot be retired in place (the `archived` flag on a test case applies only to the analysis writer's frozen
+  cases). When a ruling changes, write the set anew under a new template. That way a case id always means one
+  input and one label, and results from before and after the ruling are never read as the same measurement.
+  With `run_eval`, changing a case's expected label already makes its runs a different template.
 - **Re-check context twins when production changes.** If the classifier's input changes (a longer history, a
   new field), your context-missing twins test something different. Re-read them.
 
 ## 9. Wiring it into 3tears-evals
 
-### Rung zero
+### The quick path: `run_eval`
 
-`run_eval` ([Your first eval](../README.md#your-first-eval) in the README) runs a classifier function over a
+`run_eval` (the [README](../README.md)'s first example) runs a classifier function over a
 list of cases in one call. Pass `expected=`, a function that returns the label a case expects, and `run_eval`
 grades the function as a classifier:
 
@@ -338,31 +361,25 @@ summary = await run_eval(cases, classify, scope_id="dev", expected=lambda case: 
 print(summary.render())
 ```
 
-Each result records whether the answer was the expected label (`match`) and which cell of the confusion
-matrix it landed in (`confusion_cell`). These are the two measures a classifier kind lands, so the analysis
-reads a rung-zero run the same way. The summary reports:
+Each result records whether the answer was the expected label (`match`, reported as `accuracy`) and its cell
+of the confusion matrix (`confusion_cell`), the two measures a classifier kind lands. `summary.confusion` is the
+matrix and `summary.labels` gives each label's precision and recall with their intervals, and its F1 (a label
+never predicted has no precision, one never expected no recall, and neither has an F1); `render()` prints all
+of it. A call to `classify` that raises fails its result: it is counted in
+`summary.n_candidate_failed` and, as a miss, under `(unusable answer)` in the matrix, so a model that refuses
+the hard cases does not read as more accurate. A provider's rate-limit error counts against the model the same
+way, so retry transient errors inside `classify`.
 
-- `summary.confusion`: the confusion matrix, one `ConfusionCount` (expected label, predicted label, count)
-  per cell.
-- `summary.labels`: one `LabelStatistics` per label, with its counts, its precision and recall with their
-  intervals, and its F1. A label that was never predicted has no precision, and one that was never expected
-  has no recall. Neither of those has an F1.
-- The `match` measure. Its mean is the share of answers that matched. The analysis reports it as `accuracy`.
+An answer that is not a non-blank string (`None`, a blank string, a number) is counted under its own predicted
+label, `UNUSABLE_ANSWER` (printed `(unusable answer)`), and never matches: section 5's unusable label, applied
+for you. Any other string is a label exactly as written, so a label outside your set shows as itself, and
+`"DIRECT "` differs from `"DIRECT"`. Return what your production parser returns and do not clean it up in the
+eval, or the eval stops measuring the parser. To split unusable answers by cause (section 5), return a sentinel
+per cause, such as `"(truncated)"`; each counts as its own predicted label.
 
-`render()` prints all three. A call to `classify` that raises an exception fails its result. It is counted in
-`summary.n_candidate_failed` and is in no cell of the matrix.
-
-An answer that is not a non-blank string (`None`, an empty or blank string, a number) is counted under its own
-predicted label, `UNUSABLE_ANSWER` (printed as `(unusable answer)`), and never matches. This is the label for
-unusable answers from [section 5](#5-feed-the-classifier-exactly-what-production-feeds-it), applied for you.
-Any other string is a label exactly as written. A label outside your set shows as its own predicted label, and `"DIRECT "` is a
-different label from `"DIRECT"`. Return what your production parser returns and do not clean it up in the
-eval, or the eval stops measuring the parser.
-
-No case may expect `UNUSABLE_ANSWER`, and `run_eval` refuses an `expected=` that gives a case a blank or
-non-string label. Scorers still work beside `expected=`, for anything else you want to grade, such as answer
-length. Each is reported as its own measure. Two runs over the same cases are runs of one template, and so
-comparable, only when they expect the same labels.
+`run_eval` refuses an `expected=` that gives a case a blank, non-string or `UNUSABLE_ANSWER` label. Scorers
+still work beside `expected=`, each reported as its own measure. Two runs over the same cases are runs of one
+template, and so comparable, only when they expect the same labels.
 
 ### A classifier kind
 
@@ -411,6 +428,8 @@ input, expected label and reason in the test case's `host_payload`.
 - [ ] Each label has at least ten cases, and per-label figures are read, not just overall accuracy.
 - [ ] Each case declares its kind as its stratum, and each kind you act on has at least ten cases.
 - [ ] The eval calls the production request builder and parser, and unusable answers have their own label.
-- [ ] Variation axes preserve the label, start from plain single-input cases, and a sample was read.
+- [ ] Generated cases take their label from a label axis, every other axis leaves it alone, and a sample was read.
+- [ ] Every judgment the classifier emits is graded, and unusable answers are split by cause.
+- [ ] Accuracy, latency and cost each have their own bar, and latency comes from calls that were not competing.
 - [ ] `k` is 2 or more, and cases that flip between repeats were looked at.
 - [ ] The label owner has reviewed the set.
