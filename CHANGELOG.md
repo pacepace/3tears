@@ -14,7 +14,10 @@ packages (bumped in lock-step).
   computing at most once across replicas under the build lock (a tool pod passes a
   `LeaseBuildLock`); whatever `compute` raises reaches the caller and nothing is cached. Entries never
   expire: `retire_all_but(version)` deletes every other version's answers, and
-  `current_version(version)` schedules that once per change it sees.
+  `current_version(version)` schedules that once per change it sees. Retirement reads an index the
+  owner keeps under its own scope (the versions it holds, and per version the request digests,
+  changed by compare-and-set), never a key listing: a pod's grant on the shared bucket admits no
+  consumer.
 
 ### Core: a derived collection takes its cross-pod build lock, so a tool pod can run one
 

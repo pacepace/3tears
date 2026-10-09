@@ -16,6 +16,12 @@ keyed by ``(version, request digest)`` whose value is the answer gzip-compressed
   and carries no lifetime. When the data's version moves, :meth:`retire_all_but` deletes every entry
   of another version (:meth:`current_version` schedules it once per change seen). A replica still on
   the old version may compute an old entry again after that; the next retirement takes it.
+- **Retirement reads an index, never a listing.** A pod's grant on the shared bucket is key-addressed
+  (get, put, compare-and-set, delete under its own scope; no consumer), so the entries cannot be
+  listed. Each owner keeps, under its scope, the set of versions it holds answers for
+  (``{table}.versions``) and per version the set of request digests (``{table}.index.{version}``),
+  each a JSON list changed by compare-and-set; a computing replica records its key before it
+  computes, so an entry is never left out of the index.
 - **A failure is never cached.** ``compute`` raising (a conflict, a refusal, data not ready) reaches
   the caller and leaves nothing behind.
 """
@@ -27,6 +33,7 @@ import base64
 import gzip
 import hashlib
 import json
+import random
 import re
 from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar, Final
@@ -43,8 +50,13 @@ __all__ = ["VersionedAnswer", "VersionedAnswers"]
 
 log = get_logger(__name__)
 
-#: a version as a key segment: KV-grammar characters, and no ``_``, which joins the key's two parts
-_VERSION: Final = re.compile(r"^[-=.a-zA-Z0-9]+$")
+#: a version as a key segment: KV-grammar characters, and no ``_``, which joins the key's two parts, and
+#: no ``.``, which would make ``index.{version}`` more than one token
+_VERSION: Final = re.compile(r"^[-=a-zA-Z0-9]+$")
+
+#: compare-and-set rounds on an index set before giving up, and the jitter between them
+_INDEX_ATTEMPTS: Final = 20
+_INDEX_BACKOFF_SECONDS: Final = 0.02
 
 
 class VersionedAnswer(BaseEntity):
@@ -130,12 +142,19 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         :raises ValueError: when ``version`` cannot be a key segment
         """
         key = self.key_of(version, request)
+
+        async def recorded() -> str:
+            # in the index before the entry exists, so retirement can always find it
+            await self._add_to_set(self._index_key("versions"), version)
+            await self._add_to_set(self._index_key(f"index.{version}"), key[1])
+            return await compute()
+
         # any caller's compute serves the key: the answer is a function of the key alone
-        self._computing[key] = compute
+        self._computing[key] = recorded
         try:
             row = await self.ensure(key)
         finally:
-            if self._computing.get(key) is compute:
+            if self._computing.get(key) is recorded:
                 del self._computing[key]
         if row is None:
             raise RuntimeError(f"{self.table_name}: no answer for {key}; compute returned nothing")
@@ -150,10 +169,10 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         :ptype request: str
         :return: ``(version, sha256 hex of request)``
         :rtype: tuple[str, str]
-        :raises ValueError: when ``version`` is not KV-grammar characters without ``_``
+        :raises ValueError: when ``version`` is not KV-grammar characters without ``_`` or ``.``
         """
         if not _VERSION.match(version):
-            raise ValueError(f"{version!r} cannot be a version key segment: KV-grammar characters, no '_'")
+            raise ValueError(f"{version!r} cannot be a version key segment: KV-grammar characters, no '_' and no '.'")
         return version, hashlib.sha256(request.encode("utf-8")).hexdigest()
 
     def current_version(self, version: str) -> None:
@@ -177,30 +196,110 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
     async def retire_all_but(self, version: str) -> int:
         """delete every answer this owner holds at a version other than ``version``.
 
+        Reads the owner's index (see the module docstring): each other version's digests, each of
+        their entries deleted, then the version's index, then the version taken off the set.
+
         :param version: the version to keep
         :ptype version: str
         :return: how many answers were deleted
         :rtype: int
         """
-        scope = self._registry.kv_key_scope
         deleted = 0
         try:
             kv = await self._ensure_kv()
-            if kv is None or scope is None:
-                return 0
-            # a prefix ending on a token boundary: the server filters to this owner's own keys, the
-            # one listing a pod's grant admits
-            prefix = f"{scope}.{self.table_name}."
-            for key in await kv.list_keys(prefix=prefix):
-                kept_version = key[len(prefix) :].split("_", 1)[0]
-                if kept_version != version and await kv.delete(key=key):
-                    deleted += 1
+            if kv is not None:
+                versions_key = self._index_key("versions")
+                held, _ = await self._read_set(versions_key)
+                for old in sorted(held - {version}):
+                    index_key = self._index_key(f"index.{old}")
+                    digests, _ = await self._read_set(index_key)
+                    for digest in sorted(digests):
+                        if await kv.delete(key=self.l2_key((old, digest))):
+                            deleted += 1
+                    await kv.delete(key=index_key)
+                    await self._remove_from_set(versions_key, old)
         except KvError as exc:
             # NOSILENT: an answer left behind is only space until the next retirement; never wrong
             log.warning("retiring old answers failed: table=%s keep=%s error=%s", self.table_name, version, exc)
         if deleted:
             log.info("retired old answers: table=%s keep=%s deleted=%d", self.table_name, version, deleted)
         return deleted
+
+    def _index_key(self, name: str) -> str:
+        """an index key under this owner's scope: ``{scope}.{table}.{name}``.
+
+        :param name: ``versions`` or ``index.{version}``
+        :ptype name: str
+        :return: the key
+        :rtype: str
+        """
+        return f"{self._registry.kv_key_scope}.{self.table_name}.{name}"
+
+    async def _read_set(self, key: str) -> tuple[set[str], int]:
+        """an index set and the revision it was read at (``0`` when the key never held one).
+
+        :param key: the index key
+        :ptype key: str
+        :return: the members and the revision
+        :rtype: tuple[set[str], int]
+        """
+        kv = await self._ensure_kv()
+        if kv is None:
+            return set(), 0
+        value, revision = await kv.get_latest(key=key)
+        members: set[str] = set(json.loads(value)) if value else set()
+        return members, revision
+
+    async def _change_set(self, key: str, member: str, *, add: bool) -> None:
+        """add ``member`` to the index set at ``key``, or remove it, by compare-and-set.
+
+        :param key: the index key
+        :ptype key: str
+        :param member: the member
+        :ptype member: str
+        :param add: whether to add (else remove)
+        :ptype add: bool
+        :return: nothing
+        :rtype: None
+        :raises KvError: when the set kept changing under every attempt
+        """
+        kv = await self._ensure_kv()
+        if kv is None:
+            return
+        for _ in range(_INDEX_ATTEMPTS):
+            members, revision = await self._read_set(key)
+            if (member in members) == add:
+                return
+            changed = members | {member} if add else members - {member}
+            value = json.dumps(sorted(changed)).encode("utf-8")
+            if await kv.update(key=key, value=value, revision=revision) is not None:
+                return
+            await asyncio.sleep(random.uniform(0, _INDEX_BACKOFF_SECONDS))  # noqa: S311 - jitter, not secrecy
+        raise KvError(f"{key}: the index kept changing; {member!r} not {'added' if add else 'removed'}")
+
+    async def _add_to_set(self, key: str, member: str) -> None:
+        """add ``member`` to the index set at ``key``.
+
+        :param key: the index key
+        :ptype key: str
+        :param member: the member
+        :ptype member: str
+        :return: nothing
+        :rtype: None
+        """
+        await self._change_set(key, member, add=True)
+
+    async def _remove_from_set(self, key: str, member: str) -> None:
+        """remove ``member`` from the index set at ``key``.
+
+        :param key: the index key
+        :ptype key: str
+        :param member: the member
+        :ptype member: str
+        :return: nothing
+        :rtype: None
+        """
+        await self._change_set(key, member, add=False)
 
     # ------------------------------------------------------------------
     # DerivedCollection's contract

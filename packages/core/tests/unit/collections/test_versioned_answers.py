@@ -143,3 +143,27 @@ def test_the_request_is_digested_into_the_key() -> None:
     version, digest = answers.key_of("v1", "rows|contest|state=VA & county=Loudoun")
     assert version == "v1"
     assert len(digest) == 64 and all(c in "0123456789abcdef" for c in digest)
+
+
+@pytest.mark.asyncio
+async def test_retiring_never_lists_keys_a_pods_grant_cannot_list() -> None:
+    """a pod's grant on the shared bucket is key-addressed: no consumer, so no listing."""
+    nats = FakeNatsClient()
+    bucket = await nats.kv_bucket(name="collections")
+
+    async def refused(*, prefix: str = "") -> list[str]:
+        raise AssertionError(f"listed keys under {prefix!r}; a pod's grant refuses the consumer")
+
+    bucket.list_keys = refused  # type: ignore[method-assign]
+    answers = _replica(nats)
+    await answers.answer("v1", "a", _Computer("old"))
+    await answers.answer("v2", "a", _Computer("new"))
+    assert await answers.retire_all_but("v2") == 1
+    # the index forgets the retired version and keeps the current one
+    assert await answers.retire_all_but("v2") == 0
+    assert [key for key in bucket.keys() if key.endswith(".v1_" + answers.key_of("v1", "a")[1])] == []
+
+
+def test_a_version_with_a_dot_is_refused() -> None:
+    with pytest.raises(ValueError, match="version key segment"):
+        _replica(FakeNatsClient()).key_of("v1.2", "a")
