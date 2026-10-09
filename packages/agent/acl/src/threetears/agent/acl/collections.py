@@ -45,7 +45,7 @@ from typing import Any
 from typing import ClassVar
 from uuid import UUID, uuid7
 
-from threetears.core.collections import WRITE_GENERATION
+from threetears.core.collections import WRITE_GENERATION, DeleteCascade
 from threetears.core.collections.schema_backed import (
     BOOL_TYPE,
     DATETIMETZ_TYPE,
@@ -428,6 +428,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
         :return: group entity or ``None`` when no row exists
         :rtype: GroupEntity | None
         """
+        read_ticket = self.scan_ticket()  # before the first await
         result: GroupEntity | None = None
         if self.l3_pool is not None:
             row = await self.l3_pool.fetchrow(
@@ -436,7 +437,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             )
             if row is not None:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, from_lower_tier=True)
+                self.write_to_cache_sync(data, read_since=read_ticket)
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
 
@@ -464,6 +465,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
         :return: group entity or ``None`` when no group matches
         :rtype: GroupEntity | None
         """
+        read_ticket = self.scan_ticket()  # before the first await
         result: GroupEntity | None = None
         if self.l3_pool is not None:
             row = await self.l3_pool.fetchrow(
@@ -477,7 +479,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             )
             if row is not None:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, from_lower_tier=True)
+                self.write_to_cache_sync(data, read_since=read_ticket)
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
 
@@ -497,6 +499,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             ascending
         :rtype: list[GroupEntity]
         """
+        read_ticket = self.scan_ticket()  # before the first await
         result: list[GroupEntity] = []
         if self.l3_pool is not None:
             rows = await self.l3_pool.fetch(
@@ -510,7 +513,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             )
             for row in rows:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, from_lower_tier=True)
+                self.write_to_cache_sync(data, read_since=read_ticket)
                 result.append(
                     self.entity_class(data, is_new=False, collection=self),
                 )
@@ -539,6 +542,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             exist in L3); order is database-determined
         :rtype: list[GroupEntity]
         """
+        read_ticket = self.scan_ticket()  # before the first await
         result: list[GroupEntity] = []
         if self.l3_pool is not None and len(group_ids) > 0:
             rows = await self.l3_pool.fetch(
@@ -555,7 +559,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
                     data["group_id"] = _coerce_uuid(data["group_id"])
                 if "customer_id" in data:
                     data["customer_id"] = _coerce_uuid(data["customer_id"])
-                self.write_to_cache_sync(data, from_lower_tier=True)
+                self.write_to_cache_sync(data, read_since=read_ticket)
                 result.append(
                     self.entity_class(data, is_new=False, collection=self),
                 )
@@ -579,6 +583,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             ascending
         :rtype: list[GroupEntity]
         """
+        read_ticket = self.scan_ticket()  # before the first await
         result: list[GroupEntity] = []
         if self.l3_pool is not None:
             if customer_id is None:
@@ -601,7 +606,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
                 )
             for row in rows:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, from_lower_tier=True)
+                self.write_to_cache_sync(data, read_since=read_ticket)
                 result.append(
                     self.entity_class(data, is_new=False, collection=self),
                 )
@@ -859,6 +864,7 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
             ascending
         :rtype: list[GroupMemberEntity]
         """
+        read_ticket = self.scan_ticket()  # before the first await
         result: list[GroupMemberEntity] = []
         if self.l3_pool is not None:
             rows = await self.l3_pool.fetch(
@@ -871,7 +877,7 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
             )
             for row in rows:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, from_lower_tier=True)
+                self.write_to_cache_sync(data, read_since=read_ticket)
                 result.append(
                     self.entity_class(data, is_new=False, collection=self),
                 )
@@ -997,6 +1003,7 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
             ascending
         :rtype: list[RoleEntity]
         """
+        read_ticket = self.scan_ticket()  # before the first await
         result: list[RoleEntity] = []
         if self.l3_pool is not None:
             rows = await self.l3_pool.fetch(
@@ -1004,7 +1011,7 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
             )
             for row in rows:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, from_lower_tier=True)
+                self.write_to_cache_sync(data, read_since=read_ticket)
                 result.append(
                     self.entity_class(data, is_new=False, collection=self),
                 )
@@ -1020,6 +1027,7 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
             ascending
         :rtype: list[RoleEntity]
         """
+        read_ticket = self.scan_ticket()  # before the first await
         result: list[RoleEntity] = []
         if self.l3_pool is not None:
             rows = await self.l3_pool.fetch(
@@ -1031,7 +1039,7 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
             )
             for row in rows:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, from_lower_tier=True)
+                self.write_to_cache_sync(data, read_since=read_ticket)
                 result.append(
                     self.entity_class(data, is_new=False, collection=self),
                 )
@@ -1102,6 +1110,7 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
             ascending
         :rtype: list[RoleEntity]
         """
+        read_ticket = self.scan_ticket()  # before the first await
         result: list[RoleEntity] = []
         if self.l3_pool is not None:
             rows = await self.l3_pool.fetch(
@@ -1115,7 +1124,7 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
             )
             for row in rows:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, from_lower_tier=True)
+                self.write_to_cache_sync(data, read_since=read_ticket)
                 result.append(
                     self.entity_class(data, is_new=False, collection=self),
                 )
@@ -1275,6 +1284,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         :return: assignment entity or ``None`` when no row exists
         :rtype: RoleAssignmentEntity | None
         """
+        read_ticket = self.scan_ticket()  # before the first await
         result: RoleAssignmentEntity | None = None
         if self.l3_pool is not None:
             row = await self.l3_pool.fetchrow(
@@ -1283,7 +1293,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             )
             if row is not None:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, from_lower_tier=True)
+                self.write_to_cache_sync(data, read_since=read_ticket)
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
 
@@ -1721,6 +1731,11 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
     # by its rows (epoch-task-06)
     write_generation = WRITE_GENERATION
     primary_key_column: tuple[str, ...] = ("row_scope", "namespace_id")
+    # role_assignments.scope_namespace_id cascades (v001): a namespace's grants go with it, and
+    # every cached decision about them must go too
+    delete_cascades: ClassVar[tuple[DeleteCascade, ...]] = (
+        DeleteCascade("role_assignments", "scope_namespace_id", "CASCADE", parent_column="namespace_id"),
+    )
     partition_exempt_methods = frozenset(
         {
             "delete_from_store",
@@ -2075,6 +2090,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         :return: namespace entity or ``None`` when no row exists
         :rtype: NamespaceEntity | None
         """
+        read_ticket = self.scan_ticket()  # before the first await
         result: NamespaceEntity | None = None
         if self.l3_pool is not None:
             row = await self.l3_pool.fetchrow(
@@ -2083,7 +2099,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             )
             if row is not None:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, from_lower_tier=True)
+                self.write_to_cache_sync(data, read_since=read_ticket)
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
 
@@ -2201,6 +2217,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         :return: namespace entity or ``None`` if not found
         :rtype: NamespaceEntity | None
         """
+        read_ticket = self.scan_ticket()  # before the first await
         result: NamespaceEntity | None = None
         if self.l3_pool is not None:
             row = await self.l3_pool.fetchrow(
@@ -2209,7 +2226,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             )
             if row is not None:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, from_lower_tier=True)
+                self.write_to_cache_sync(data, read_since=read_ticket)
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
 
@@ -2234,6 +2251,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         :return: namespace entity or ``None`` if not found
         :rtype: NamespaceEntity | None
         """
+        read_ticket = self.scan_ticket()  # before the first await
         result: NamespaceEntity | None = None
         if self.l3_pool is not None:
             # private agent namespaces always live in the customer
@@ -2248,7 +2266,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             )
             if row is not None:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, from_lower_tier=True)
+                self.write_to_cache_sync(data, read_since=read_ticket)
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
 
@@ -2285,6 +2303,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             triple
         :rtype: NamespaceEntity | None
         """
+        read_ticket = self.scan_ticket()  # before the first await
         row_scope = row_scope_for_customer(customer_id)
         result: NamespaceEntity | None = None
         if self.l3_pool is not None:
@@ -2305,7 +2324,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             )
             if row is not None:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, from_lower_tier=True)
+                self.write_to_cache_sync(data, read_since=read_ticket)
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
 

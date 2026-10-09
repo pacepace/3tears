@@ -28,8 +28,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# The cross-process rbac invalidation bus (threetears.agent.acl.invalidation_bus), and following
-# the access tables' write generations (threetears.agent.acl.generation_follow).
+# Following the access tables' write generations (threetears.agent.acl.generation_follow).
 bus = ["3tears-nats[client]>=0.66.0,<0.67.0", "3tears-epoch>=0.66.0,<0.67.0"]
 
 [project.urls]

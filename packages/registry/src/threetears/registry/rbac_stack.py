@@ -19,17 +19,10 @@ needs to resolve ``tool.call`` decisions:
   ``RoleAssignment``).
 - :class:`CollectionMembershipLoader` + :class:`CollectionGrantLoader`
   fronting the four rbac metadata Collections.
-- :class:`AclCache` three-layer ttl cache with default 60s TTL.
-- NATS subscriptions on ``{ns}.acl.membership.invalidate`` /
-  ``{ns}.acl.assignment.invalidate`` / ``{ns}.acl.role.invalidate``,
-  bound by :func:`threetears.agent.acl.subscribe_acl_invalidation`
-  so cross-process rbac mutations purge the cache promptly instead
-  of waiting on TTL. this module used to carry its own copy of that
-  wiring -- three handlers, three hand-rolled
-  ``model_validate_json`` calls -- alongside identical copies in the
-  agent SDK and the hub broker. coll-task-07a deleted all three:
-  the shared function already did exactly this, and the copies had
-  begun to diverge in their log text and their control flow.
+- :class:`AclCache` three-layer cache, evicted row by row from the
+  access tables' row broadcasts and following their write generations
+  (:func:`threetears.agent.acl.generation_follow.follow_access_tables`);
+  nothing in it has an age.
 
 construction is synchronous; callers invoke
 :meth:`RegistryRbacStack.subscribe_invalidations` after start so the
@@ -59,9 +52,8 @@ factory receives its bound ``token`` as this stack's provider.
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from uuid import NAMESPACE_DNS, UUID, uuid5
 
 from threetears.agent.acl import (
@@ -73,8 +65,6 @@ from threetears.agent.acl import (
     NamespaceCollection,
     RoleAssignmentCollection,
     RoleCollection,
-    subscribe_acl_invalidation,
-    unsubscribe_acl_invalidation,
 )
 from threetears.agent.acl.generation_follow import AccessTableFollowing, follow_access_tables
 from threetears.core.backends import BrokerGenerationSource
@@ -84,7 +74,7 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.namespaces import PLATFORM_RBAC_READ_NAMESPACE
 from threetears.epoch import EpochGenerationReader
-from threetears.nats import NatsClient, Principal, Subscription, kv_key_scope_for
+from threetears.nats import NatsClient, Principal, kv_key_scope_for
 from threetears.observe import get_logger
 
 __all__ = [
@@ -167,7 +157,6 @@ class RegistryRbacStack:
     acl_cache: AclCache
     nats_client: NatsClient
     subject_namespace: str
-    _subscriptions: list[Subscription] = field(default_factory=list)
     _following: AccessTableFollowing | None = None
 
     @property
@@ -175,7 +164,7 @@ class RegistryRbacStack:
         """whether the acl cache is following every access table it is derived from.
 
         ``False`` before :meth:`subscribe_invalidations`, and while any table's generation watch
-        keeps failing (the cache then relies on the acl subjects and its TTL alone).
+        keeps failing (the cache then serves nothing it holds, and asks its loaders every time).
 
         :return: the follower's health
         :rtype: bool
@@ -183,74 +172,37 @@ class RegistryRbacStack:
         return self._following is not None and self._following.healthy
 
     async def subscribe_invalidations(self) -> None:
-        """bind the rbac invalidation subjects, and start the collection listener.
+        """start the collection listener, and follow the access tables with the acl cache.
 
-        Two channels, despite the name: the three ACL subjects below feed the
-        :class:`AclCache`, and :meth:`CollectionRegistry.start_invalidation_listener`
-        feeds this registry's five Collections' L1. Different subjects, different
-        publishers, one call because they share a lifecycle -- :meth:`close` releases
-        both.
+        The listener carries every collection write into this registry's five Collections' L1
+        and, through them, row by row into the :class:`AclCache`. This registry is L2-live --
+        every collection on it takes ``nats_client=`` directly -- so without the listener its L1
+        serves rows a peer replica has already replaced, for the life of the process.
 
-
-        cross-process rbac mutations (admin tools rewriting
-        ``role_assignments`` / ``group_members`` / ``roles``)
-        publish typed payloads on
-        ``{ns}.acl.membership.invalidate`` /
-        ``{ns}.acl.assignment.invalidate`` /
-        ``{ns}.acl.role.invalidate``. without these subscriptions the
-        registry's :class:`AclCache` stays warm with stale tuples for
-        up to ``ttl_seconds`` after a mutation.
-
-        the wiring itself is
-        :func:`threetears.agent.acl.subscribe_acl_invalidation` -- the
-        canonical publisher's own counterpart, so the subjects and the
-        payload models cannot drift from what the publisher sends. an
-        unparseable payload is deadlettered to
-        ``{ns}.deadletter.{subject}`` by the typed subscribe and the
-        cache is left alone; the local copy this replaced logged a
-        WARNING and dropped the message with no artefact.
+        The access tables carry write generations (epoch-task-06), followed by watching their
+        generation keys, so a missed broadcast drops what was derived from the table rather than
+        serving it. Nothing else invalidates the cache.
 
         :return: nothing
         :rtype: None
         """
-        self._subscriptions = await subscribe_acl_invalidation(
-            self.nats_client,
-            self.acl_cache,
-        )
-        # TWO channels, and subscribing one of them looks like subscribing both. the
-        # loop above carries ACL mutations into the AclCache; this carries COLLECTION
-        # writes into the five rbac Collections' L1. they are separate subjects with
-        # separate publishers, and this registry is L2-live -- every collection on it
-        # takes ``nats_client=`` directly -- so without this its L1 serves rows a peer
-        # replica has already replaced, for the life of the process. the heartbeat
-        # registry in ``server.py`` is the same shape and gained the same call.
         await self.registry.start_invalidation_listener(self.nats_client)
-        # the access tables carry write generations (epoch-task-06): the cache is evicted row by
-        # row from their broadcasts, which the listener above hears, and the tables are followed
-        # by watching their generation keys, so a missed broadcast drops what was derived from
-        # the table rather than serving it. Additive while the acl subjects above remain.
         if self._following is None:
             self._following = follow_access_tables(
                 self.registry, self.acl_cache, EpochGenerationReader(self.nats_client)
             )
-        log.info(
-            "registry rbac stack subscribed to invalidations",
-            extra={"extra_data": {"subjects": [sub.subject.path for sub in self._subscriptions]}},
-        )
+        log.info("registry rbac stack follows the access tables")
 
     async def close(self) -> None:
-        """release invalidation subscriptions and reset the L1 backend.
+        """stop following, stop the listener and reset the L1 backend.
 
         the registry owns the NATS client lifecycle separately; this
         method only releases the rbac stack's own resources.
-        idempotent: the handle list is emptied, so a second call
-        releases nothing.
+        idempotent: a second call releases nothing.
 
         :return: nothing
         :rtype: None
         """
-        await unsubscribe_acl_invalidation(self.nats_client, self._subscriptions)
-        self._subscriptions = []
         if self._following is not None:
             await self._following.stop()
             self._following = None
@@ -263,33 +215,6 @@ class RegistryRbacStack:
         await self.registry.close_collections()
         self.l1_backend.reset()
         log.info("registry rbac stack closed")
-
-
-def _resolve_acl_ttl_seconds() -> int:
-    """resolve the AclCache TTL from the registry's env knob.
-
-    :data:`THREETEARS_REGISTRY_ACL_TTL_SECONDS` overrides the default
-    (60 seconds, matching the hub-side cache). the env-var path is
-    bounded -- values <= 0 fall back to the default rather than
-    disabling the cache entirely (which would defeat the rbac
-    fast-path).
-
-    :return: TTL in seconds (>= 1)
-    :rtype: int
-    """
-    raw = os.environ.get("THREETEARS_REGISTRY_ACL_TTL_SECONDS", "")
-    result = 60
-    if raw:
-        try:
-            parsed = int(raw)
-            if parsed > 0:
-                result = parsed
-        except ValueError:
-            log.warning(
-                "THREETEARS_REGISTRY_ACL_TTL_SECONDS unparseable, falling back to default 60s: value=%s",
-                raw,
-            )
-    return result
 
 
 def _require_identity_token(identity_token: Callable[[], str | None] | None) -> None:
@@ -457,7 +382,6 @@ def build_registry_rbac_stack(
     acl_cache = AclCache(
         membership_loader=membership_loader,
         grant_loader=grant_loader,
-        ttl_seconds=_resolve_acl_ttl_seconds(),
     )
 
     return RegistryRbacStack(

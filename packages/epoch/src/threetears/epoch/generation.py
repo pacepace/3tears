@@ -201,6 +201,15 @@ class EpochGenerationReader:
         self._nats = nats_client
         self._create_if_missing = create_if_missing
 
+    @property
+    def closed(self) -> bool:
+        """whether the client's connection is closed, so no watch through it can deliver again.
+
+        :return: ``True`` once the client reports itself closed
+        :rtype: bool
+        """
+        return getattr(self._nats, "is_closed", False) is True
+
     async def _bucket(self) -> KvBucketLike:
         """the epoch bucket, opened as :class:`EpochGenerationSource` opens it but bound, not created.
 

@@ -22,15 +22,21 @@ is the whole reason the invalidation broadcast exists.
 **The dependency declaration is load-bearing for SECURITY, not just freshness.**
 A scan whose result depends on ``role_assignments`` must be evicted when a grant
 is revoked. Declaring only the data table would leave a revoked caller seeing
-rows until the TTL lapsed. The TTL is a backstop for anything the broadcast
-misses, never the primary mechanism.
+rows a broadcast for the grant never evicted.
+
+**Nothing here ages; an entry is served only while every table it depends on is
+followed** (epoch-task-06, the owner's ruling of 2026-10-09). A broadcast evicts the
+entries of its table; a broadcast that never arrives is caught by the table's write
+generation, which the registry follows, and the follower drops the table, scans
+included. So an entry is stored and served only while every dependency is followed
+with its watch running (``trusted``, supplied by the registry); otherwise the scan
+reads L3 every time. A dependency nobody follows is a scan nobody may cache.
 
 **A result is stored only if nothing it depends on was evicted while it was being
 read.** Eviction drops what is stored; it cannot drop what has not been stored yet.
 A scan that read L3 before a write committed, and reaches :meth:`ScanCache.put`
 after that write's eviction ran, would otherwise store the pre-write result where
-the eviction can no longer see it -- served until the TTL lapsed, with nothing
-left to correct it. So a reader takes a :class:`ScanReadToken` from
+the eviction can no longer see it -- served with nothing left to correct it. So a reader takes a :class:`ScanReadToken` from
 :meth:`ScanCache.begin_read` BEFORE it queries, and ``put`` refuses the store when
 any table the token names has been evicted since. The eviction and the refusal
 are counted per table, so an unrelated write never costs a reader its cache.
@@ -46,9 +52,10 @@ from sqlalchemy import Column, MetaData, String, Table, Text
 from threetears.observe import get_logger
 
 from threetears.core.backends.schema_sql import json_default
-from threetears.core.cache.base import entry_is_fresh
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
     from threetears.core.cache.base import L1Backend
 
 __all__ = ["ScanCache", "ScanCacheKey", "ScanReadToken"]
@@ -64,14 +71,18 @@ _scan_cache_table = Table(
     Column("owner_table", Text, nullable=False),
     Column("depends_on", Text, nullable=False),
     Column("payload", Text, nullable=False),
-    Column("stored_at_monotonic", Text, nullable=False),
 )
 
-#: Backstop only. Eviction is driven by the invalidation broadcast; this bounds
-#: the damage from a broadcast that never arrives (a pod that missed a message,
-#: a partial rollout). Deliberately short -- an RBAC change that slips the
-#: broadcast must not outlive a coffee break.
-DEFAULT_SCAN_TTL_SECONDS: float = 60.0
+
+def _never_trusted(_tables: Sequence[str]) -> bool:
+    """the trust of a cache nothing follows: none, so it caches nothing.
+
+    :param _tables: the tables a scan depends on
+    :ptype _tables: Sequence[str]
+    :return: ``False``
+    :rtype: bool
+    """
+    return False
 
 
 class ScanCacheKey:
@@ -133,23 +144,27 @@ class ScanCache:
     """Stores visibility-scan results in L1, evicted by table dependency.
 
     :ivar _l1: the pod's L1 backend, or ``None`` (caching disabled)
-    :ivar _ttl_seconds: backstop expiry
+    :ivar _trusted: whether every table of a dependency list is followed with its watch running
     :ivar _evictions: per-table count of :meth:`drop_for_table` calls, the clock a
         :class:`ScanReadToken` is checked against
     """
 
-    __slots__ = ("_evictions", "_l1", "_ttl_seconds")
+    __slots__ = ("_evictions", "_l1", "_trusted")
 
-    def __init__(self, l1_backend: L1Backend | None, *, ttl_seconds: float = DEFAULT_SCAN_TTL_SECONDS) -> None:
+    def __init__(
+        self, l1_backend: L1Backend | None, *, trusted: Callable[[Sequence[str]], bool] = _never_trusted
+    ) -> None:
         """initialize the scan cache over an L1 backend.
 
         :param l1_backend: the pod's L1 backend; ``None`` disables caching
         :ptype l1_backend: L1Backend | None
-        :param ttl_seconds: backstop expiry for entries the broadcast misses
-        :ptype ttl_seconds: float
+        :param trusted: whether every one of the given tables is followed with its watch running
+            (the registry's :meth:`~threetears.core.collections.registry.CollectionRegistry.tables_trusted`);
+            by default nothing is, and nothing is cached
+        :ptype trusted: Callable[[Sequence[str]], bool]
         """
         self._l1 = l1_backend
-        self._ttl_seconds = ttl_seconds
+        self._trusted = trusted
         # In process, not in L1, on purpose: the counts order THIS pod's reads against
         # THIS pod's evictions, and both happen in this process. Every pod's evictions
         # reach it through `drop_for_table` -- its own writes via `publish_invalidation`,
@@ -158,29 +173,19 @@ class ScanCache:
         if self._l1 is not None and not self._l1.has_table("collection_scan_cache"):
             self._l1.initialize(SCAN_CACHE_METADATA)
 
-    def get(self, key: ScanCacheKey, *, now_monotonic: float) -> list[dict[str, Any]] | None:
-        """return the cached rows for ``key``, or ``None`` on miss or expiry.
+    def get(self, key: ScanCacheKey) -> list[dict[str, Any]] | None:
+        """return the cached rows for ``key``, or ``None`` on a miss or while a dependency is not followed.
 
         :param key: the scan identity
         :ptype key: ScanCacheKey
-        :param now_monotonic: caller-supplied monotonic clock reading
-        :ptype now_monotonic: float
         :return: the cached rows, or ``None``
         :rtype: list[dict[str, Any]] | None
         """
         hit: list[dict[str, Any]] | None = None
         if self._l1 is not None:
             row = self._l1.select_by_id("collection_scan_cache", key.as_string(), "key")
-            if row is not None:
-                # the column is NOT NULL and written as text, so the parse
-                # always succeeds and the shared predicate never sees None.
-                stored_at = float(row["stored_at_monotonic"])
-                if entry_is_fresh(stored_at, now_monotonic=now_monotonic, max_age_seconds=self._ttl_seconds):
-                    hit = json.loads(row["payload"])
-                else:
-                    # expired: drop it now rather than leave a tombstone that
-                    # every later read has to re-evaluate.
-                    self._l1.delete_by_id("collection_scan_cache", key.as_string(), "key")
+            if row is not None and self._trusted(json.loads(row["depends_on"])):
+                hit = json.loads(row["payload"])
         return hit
 
     def begin_read(self, depends_on: tuple[str, ...]) -> ScanReadToken:
@@ -209,9 +214,8 @@ class ScanCache:
         rows: list[dict[str, Any]],
         *,
         token: ScanReadToken,
-        now_monotonic: float,
     ) -> bool:
-        """store a scan result under ``key``, unless a dependency was evicted during the read.
+        """store a scan result under ``key``, unless a dependency was evicted during the read or is not followed.
 
         A refused store is not an error: the rows are still the caller's answer for this
         read, they are just not safe to answer the NEXT read with, because a write the
@@ -223,8 +227,6 @@ class ScanCache:
         :ptype rows: list[dict[str, Any]]
         :param token: the token :meth:`begin_read` issued before the scan queried
         :ptype token: ScanReadToken
-        :param now_monotonic: monotonic clock reading taken before the scan queried
-        :ptype now_monotonic: float
         :return: whether the result was stored
         :rtype: bool
         :raises ValueError: if ``token`` was issued by a different cache
@@ -250,7 +252,7 @@ class ScanCache:
                     },
                 },
             )
-        elif self._l1 is not None:
+        elif self._l1 is not None and self._trusted(token.depends_on):
             self._l1.upsert(
                 "collection_scan_cache",
                 {
@@ -258,7 +260,6 @@ class ScanCache:
                     "owner_table": key.owner_table,
                     "depends_on": json.dumps(list(token.depends_on)),
                     "payload": json.dumps(rows, default=json_default),
-                    "stored_at_monotonic": str(now_monotonic),
                 },
                 "key",
             )

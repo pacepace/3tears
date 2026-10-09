@@ -61,21 +61,17 @@ _ALLOWLIST = (
     DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/collections/registry.py",
         class_name="CollectionRegistry",
-        attr_name="_overrides",
-        rationale=("per-collection backend overrides, IS the infrastructure"),
+        attr_name="_watching",
+        rationale=(
+            "per-table callables saying whether THIS process's generation watch on the table is "
+            "running; describes this process's own watch tasks, so it cannot be shared across pods"
+        ),
     ),
     DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/collections/registry.py",
         class_name="CollectionRegistry",
-        attr_name="_l1_max_ages",
-        rationale=(
-            "per-collection L1 staleness bounds: wiring alongside _overrides, IS the "
-            "infrastructure. deliberately a second dict rather than a key in _overrides, "
-            "because register() hard-resets that one and would silently drop a bound. "
-            "per-process by design -- it configures THIS pod's L1, which is itself "
-            "per-process, so a value shared across pods would be describing a cache that "
-            "does not exist on the others"
-        ),
+        attr_name="_overrides",
+        rationale=("per-collection backend overrides, IS the infrastructure"),
     ),
     DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/collections/registry.py",
