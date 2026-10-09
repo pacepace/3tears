@@ -167,7 +167,11 @@ from threetears.evals.contracts.surface import (
     TimeAxisBasis,
     TimePosition,
 )
-from threetears.evals.contracts.usage_capture import count_substituted_deliveries, production_replicating_cost
+from threetears.evals.contracts.usage_capture import (
+    count_substituted_deliveries,
+    production_replicating_cost,
+    spend_observed,
+)
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.contracts.host.measures import MeasureRegistry
@@ -257,6 +261,9 @@ _ATTRIBUTION_SCOPES: tuple[AttributionScope, ...] = ("end_to_end", "subsystem")
 # rides on, so two units compare equal only when one observation of each describes the same
 # thing. See ``_collect_measures``.
 _PER_RESULT = "result"
+
+# The result's blended spend, as a measure — the one lineage leaf that is read only where it was observed.
+_COST_MEASURE = "cost_usd"
 
 # The distinguishing clause of each reason a cross-scope difference is withheld. The reason
 # reaches the generator as a SENTENCE (see ``ScopeDivergence.unattributed_withheld``), and that
@@ -1115,6 +1122,13 @@ class ShortCell(EvalDocumentModel):
     sentence: str = Field(min_length=1, description="The disclosure a writer quotes about this cell.")
 
 
+class CellCoordinate(EvalDocumentModel):
+    """A cell named by its two coordinates and nothing else — an entry in a list of cells a fact holds for."""
+
+    variant_key: str = Field(min_length=1, description="The cell's variant coordinate.")
+    apparatus_class_id: str = Field(min_length=1, description="The cell's apparatus coordinate.")
+
+
 class MeritTier(EvalDocumentModel):
     """One axis of the declared merit priority, and the bars that give verdicts on it."""
 
@@ -1341,7 +1355,7 @@ class AnalysisContextBundle(EvalDocumentModel):
     # A/B set spanning a bump must be read as spanning it. Why each earlier version moved is in
     # this file's history.
     schema_version: int = Field(
-        default=40, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=41, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -1471,6 +1485,23 @@ class AnalysisContextBundle(EvalDocumentModel):
             "repetitions than the design set out to buy. Counted by each cell's least-repeated case. Empty when "
             "every cell met the intention — and empty too when the declaration states none, which makes a "
             "shortfall undetectable rather than zero (`declared_design.intended_repetitions` is null then)."
+        ),
+    )
+    cost_unmeasured_cells: list[CellCoordinate] = Field(
+        default_factory=list,
+        description=(
+            "Every cell where no result observed spend — no usage row in its cost roles carried dollars — ordered "
+            "by (variant_key, apparatus_class_id). Each result there stores a `cost_usd` of 0 that is the sum of "
+            "nothing, not a measured $0, so the cell carries no `cost_usd` reading: nothing charts it or tests it "
+            "against the control. A cell with a measured $0 (a row carrying 0 dollars) is not listed. A result "
+            "whose spend went unpriced is not listed either: its cost is unknown, which `cost_usd` null already says."
+        ),
+    )
+    cost_unmeasured: str | None = Field(
+        default=None,
+        description=(
+            "The sentence to quote about `cost_unmeasured_cells` — that cost was not measured there, and why a $0 "
+            "would mean nothing. None when every cell observed spend somewhere."
         ),
     )
     controls_reading: ControlsReading = Field(
@@ -2453,8 +2484,19 @@ def _lineage_leaves(result: EvalResult, *, profile: HostProfile) -> Iterator[tup
     here needs a hand-written exclusion list; but an *undescribed* name here is a version
     field rather than a lost measurement, which is why the caller does not report gaps
     from this source.
+
+    **``cost_usd`` is an observation only where the result observed spend**
+    (:func:`~threetears.evals.contracts.usage_capture.spend_observed`): a row in its cost roles carrying
+    dollars. Without one the stored 0.0 is the sum of nothing — a candidate that reported no spend, not one
+    that spent none — so it is left out here, and with it out of every cell, run, case and stratum this
+    walk summarises. Decided per result, so every slicing of the same results agrees; a cell where no
+    result observed spend carries no ``cost_usd`` reading at all, so nothing charts or tests it, and
+    :attr:`AnalysisContextBundle.cost_unmeasured` says why.
     """
+    observed = spend_observed(result.usage, result.cost_roles)
     for name, value in _scalar_leaves(result):
+        if name == _COST_MEASURE and not observed:
+            continue
         yield name, value, describe_measure(name, profile.measures)
 
 
@@ -4800,6 +4842,7 @@ def assemble_context_bundle(
     # enters `measures` or the catalog: judged dimensions stay off the ranking surface, and are
     # carried here so that staying off it is not read as never having been measured.
     results_by_cell = _results_by_cell(cells, results)
+    bundle.cost_unmeasured_cells, bundle.cost_unmeasured = _cost_unmeasured(results_by_cell)
     bundle.judged_measures = _judged_measures(
         projection.records, results_by_cell, campaign.declared_design, tiers=bundle.judge_evidence_tiers
     )
@@ -5317,6 +5360,48 @@ def _short_cells(cells: list[Cell], design: CampaignDesign | None) -> list[Short
             )
         )
     return short
+
+
+#: How a reader learns to report spend from the one candidate the engine cannot see into.
+_HOW_TO_REPORT_SPEND = "A quick candidate reports its spend by returning an Answer."
+
+
+def _cost_unmeasured(results_by_cell: dict[_CellKey, list[EvalResult]]) -> tuple[list[CellCoordinate], str | None]:
+    """Name every cell where no result observed spend, with the one sentence that says what that means.
+
+    A cell is listed when it holds a result storing a ``cost_usd`` and no result in it observed spend
+    (:func:`~threetears.evals.contracts.usage_capture.spend_observed`): every number it stores is the sum of
+    nothing, so the measure walk read none of them and the cell carries no ``cost_usd`` reading. A cell whose
+    every result went unpriced is not listed — its cost is unknown for a reason ``cost_usd`` null already
+    states — and neither is one where any result observed spend, whose own ``n`` discloses the rest. Read
+    over the results the harness did not fault, the population a cell's ``cost_usd`` reading is read over.
+
+    Args:
+        results_by_cell: Each cell's results, from :func:`_results_by_cell`.
+
+    Returns:
+        The unmeasured cells in coordinate order, and the sentence — None when there are none.
+    """
+    unmeasured: list[CellCoordinate] = []
+    for (variant_key, apparatus_class_id), members in sorted(results_by_cell.items()):
+        counted = _non_faulted(members)
+        stores_a_cost = any(result.cost_usd is not None for result in counted)
+        if stores_a_cost and not any(spend_observed(result.usage, result.cost_roles) for result in counted):
+            unmeasured.append(CellCoordinate(variant_key=variant_key, apparatus_class_id=apparatus_class_id))
+    if not unmeasured:
+        return [], None
+    if len(unmeasured) == len(results_by_cell):
+        sentence = (
+            "Cost was not measured: no result reported its spend, so the $0 each one stores is not a measurement "
+            "and cost is neither charted nor tested."
+        )
+    else:
+        sentence = (
+            f"Cost was not measured in {len(unmeasured)} of {len(results_by_cell)} cells: no result there reported "
+            "its spend, so the $0 those results store is not a measurement and cost is charted and tested only "
+            "where it was measured."
+        )
+    return unmeasured, f"{sentence} {_HOW_TO_REPORT_SPEND}"
 
 
 def _controls_reading(runs: list[EvalRun], design: CampaignDesign | None) -> ControlsReading:
