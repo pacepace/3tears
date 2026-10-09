@@ -106,13 +106,17 @@ class EpochGenerationSource:
         _parse(table_name, raw)
         return raw.decode("utf-8")
 
-    async def advance(self, table_name: str) -> None:
-        """move the table's write generation on by one.
+    async def advance(self, table_name: str) -> str:
+        """move the table's write generation on by one, and say what it became.
+
+        The token returned is the value this call's own compare-and-swap wrote, never one a
+        concurrent advance wrote after it: a writer stamps it on the row broadcasts of the commit
+        it advanced for, and a follower counts those rows against exactly this advance.
 
         :param table_name: the collection's table
         :ptype table_name: str
-        :return: None
-        :rtype: None
+        :return: the generation token this advance wrote, ``incarnation:count``
+        :rtype: str
         :raises GenerationUnavailableError: when the generation cannot be advanced within the retry
             budget, or the store is unreachable
         """
@@ -124,16 +128,15 @@ class EpochGenerationSource:
                 if entry is None:
                     # no generation yet (never read, or emptied): a new incarnation already
                     # invalidates every absence recorded under an old one, so starting at 1 is enough.
-                    if await bucket.create(key=key, value=f"{uuid7()}:1".encode()) is not None:
-                        return
+                    written = f"{uuid7()}:1"
+                    if await bucket.create(key=key, value=written.encode()) is not None:
+                        return written
                 else:
                     raw, revision = entry
                     incarnation, count = _parse(table_name, raw)
-                    if (
-                        await bucket.update(key=key, value=f"{incarnation}:{count + 1}".encode(), revision=revision)
-                        is not None
-                    ):
-                        return
+                    written = f"{incarnation}:{count + 1}"
+                    if await bucket.update(key=key, value=written.encode(), revision=revision) is not None:
+                        return written
                 await asyncio.sleep(random.uniform(0, _CAS_RETRY_BACKOFF_SECONDS))  # noqa: S311 - jitter, not security
         except KvError as exc:
             raise GenerationUnavailableError(

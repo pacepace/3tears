@@ -1951,9 +1951,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             keys.append(key if len(key) > 1 else key[0])
         if len(set(keys)) != len(keys):
             raise ValueError(f"{type(self).__name__}.save_rows: two rows share a key; one statement upserts a key once")
-        for key in keys:
+        for key, data in zip(keys, stamped, strict=True):
             # enrolled before the write, so a write whose outcome is unknown is settled with the rest
-            transaction.enroll(self, key)
+            transaction.enroll(self, key, row=data)
             self._evict_l1(key)
         written = 0
         if stamped and isinstance(store, BulkDurableStore):

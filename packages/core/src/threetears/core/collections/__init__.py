@@ -24,6 +24,16 @@ from threetears.core.collections.bypassing_write import BypassingWrite
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.durable_store import DurableStoreCollection
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer, flush_pending
+from threetears.core.collections.generation import (
+    WRITE_GENERATION,
+    WRITE_GENERATION_UNDECLARED,
+    GenerationMarks,
+    GenerationSource,
+    GenerationVerdict,
+    NoWriteGeneration,
+    UndeclaredWriteGeneration,
+    WriteGeneration,
+)
 from threetears.core.collections.merge import repoint_user_rows
 from threetears.core.collections.reapply import (
     REAPPLY_BACKOFF_SECONDS,
@@ -35,6 +45,7 @@ from threetears.core.collections.reapply import (
 from threetears.core.collections.registry import (
     CacheInvalidationMessage,
     CollectionRegistry,
+    DerivedCacheRegistration,
 )
 from threetears.core.collections.salience import apply_salience_decay
 from threetears.core.collections.schema_backed import (
@@ -88,14 +99,19 @@ __all__ = [
     "CollectionRegistry",
     "Column",
     "DATETIMETZ_TYPE",
+    "DerivedCacheRegistration",
     "DerivedCollection",
     "DurableStoreCollection",
     "ExponentialBackoff",
     "FlushStrategy",
+    "GenerationMarks",
+    "GenerationSource",
+    "GenerationVerdict",
     "INT_TYPE",
     "JSONB_TYPE",
     "NO_L2",
     "NoL2",
+    "NoWriteGeneration",
     "PartitionEnforcementError",
     "REAPPLY_BACKOFF_SECONDS",
     "REAPPLY_MAX_ATTEMPTS",
@@ -103,8 +119,12 @@ __all__ = [
     "SchemaBackedCollection",
     "TableSchema",
     "UUID_TYPE",
+    "UndeclaredWriteGeneration",
     "VECTOR_TYPE",
+    "WRITE_GENERATION",
+    "WRITE_GENERATION_UNDECLARED",
     "WriteBuffer",
+    "WriteGeneration",
     "apply_salience_decay",
     "bind_collections_bucket",
     "deserialize_from_json",
