@@ -21,12 +21,13 @@ from itertools import chain
 from threetears.evals.analysis.agreement import tier_sentence
 from threetears.evals.analysis.arms import ArmTable, arm_table, arm_table_of, short_digest
 from threetears.evals.analysis.bundle import (
+    NO_QUESTION_EXPLORATORY,
     AnalysisContextBundle,
     FamilyComparison,
     GoalCheckProofReading,
     bundle_decision_surface,
 )
-from threetears.evals.analysis.cells import cell_ref
+from threetears.evals.analysis.cells import cell_ref, variant_of_cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.references import cell_index, resolve_reading
 from threetears.evals.analysis.report.model import (
@@ -45,6 +46,7 @@ from threetears.evals.analysis.report.words import (
     ARM_STATUS_WORDS,
     COMPARISON_VERDICT_WORDS,
     CONFIDENCE_WORDS,
+    GUARDRAIL_DECISION_WORDS,
     arm_namer,
     positions,
     stands_on_words,
@@ -73,10 +75,12 @@ from threetears.evals.contracts.metrics import (
     ClassifierStatistic,
     classifier_label_of,
 )
+from threetears.evals.contracts.declaration import JUDGED_MERIT_AXIS, Question, exploratory_reading
 from threetears.evals.contracts.surface import (
     STRATUM_MIN_CASES,
     CellFacts,
     DecisionSurface,
+    GuardrailReadings,
     JudgedReading,
     MeasureFacts,
     StratumFacts,
@@ -98,9 +102,14 @@ def build_report(analysis: EvalAnalysis) -> Report:
     """
     document = analysis.document
     arm = arm_namer(analysis)
+    surface = analysis.decision_surface
+    questions = analysis.design_snapshot.live_questions() if analysis.design_snapshot is not None else []
     blocks: list[ReportBlock] = []
     if document.summary.strip():
         blocks.append(TextBlock(section="summary", role="summary", body=document.summary))
+    if not questions:
+        # Said once, at the top, rather than on every finding: a label on every row is one readers skip.
+        blocks.append(DisclosureBlock(section="summary", source="scope", text=NO_QUESTION_EXPLORATORY))
 
     blocks.extend(
         TextBlock(
@@ -120,6 +129,8 @@ def build_report(analysis: EvalAnalysis) -> Report:
         ]
         if decision.cells:
             facts.append(Fact(name="Arms", value="; ".join(arm(cell) for cell in decision.cells)))
+        if decision.disposition == "adopted" and (standing := _guardrail_standing(decision.cells, surface, arm)):
+            facts.append(Fact(name="Guardrails", value=standing))
         blocks.append(
             TextBlock(
                 section="decisions",
@@ -139,11 +150,22 @@ def build_report(analysis: EvalAnalysis) -> Report:
                 )
             )
 
+    blocks.extend(_guardrail_blocks(surface.guardrails, _cell_namer(surface, analysis.variant_index)))
+
     resolutions: list[FindingResolution | None] = (
         list(analysis.resolutions) if analysis.resolutions else [None] * len(document.findings)
     )
     for position, (finding, resolution) in enumerate(zip(document.findings, resolutions, strict=True)):
-        blocks.extend(_finding_blocks(analysis, position, finding, resolution, arm))
+        blocks.extend(
+            _finding_blocks(
+                analysis,
+                position,
+                finding,
+                resolution,
+                arm,
+                exploratory=bool(questions) and _rests_on_exploratory(resolution, surface, questions),
+            )
+        )
 
     blocks.extend(_arm_blocks(arm_table(analysis)))
     blocks.extend(_surface_blocks(build_surface_table(analysis)))
@@ -199,6 +221,8 @@ def _finding_blocks(
     finding: Finding,
     resolution: FindingResolution | None,
     arm: Callable[[str], str],
+    *,
+    exploratory: bool = False,
 ) -> list[ReportBlock]:
     """One finding: its title and the facts beside it, its body, its evidence, its chart, its caveats.
 
@@ -208,11 +232,15 @@ def _finding_blocks(
         finding: The authored finding.
         resolution: What code filled for it, or None for an analysis with no resolutions.
         arm: Names the arm a cell reference points at.
+        exploratory: The finding rests wholly on readings no declared question asked about, so it carries
+            the ``Scope`` fact saying so.
 
     Returns:
         The finding's blocks, in reading order.
     """
     facts = [Fact(name="Confidence", value=CONFIDENCE_WORDS[finding.confidence])]
+    if exploratory:
+        facts.append(Fact(name="Scope", value=EXPLORATORY_FINDING))
     if resolution is not None:
         facts.append(Fact(name="Stands on", value=stands_on_words(analysis, resolution.evidence_tier)))
     if finding.axes:
@@ -273,6 +301,153 @@ def _finding_blocks(
     )
     if finding.durable.strip():
         blocks.append(TextBlock(section="findings", role="carried_forward", finding=position, body=finding.durable))
+    return blocks
+
+
+#: The ``Scope`` fact on a finding resting wholly on readings no declared question asked about.
+EXPLORATORY_FINDING = (
+    "exploratory: it rests on no reading a declared question asked about, so it is a lead, not an answer"
+)
+
+#: How a guardrail is decided, said once beside the guardrails table.
+_GUARDRAILS_DISCLOSURE = (
+    "A guardrail is what an arm must not get worse on. Each is decided on its own 95% interval on the difference "
+    "from the control: held when the whole interval lies on the good side of the margin, breached when it lies "
+    "wholly beyond it, undecided otherwise. A measure's margin is its declared materiality threshold; a judged "
+    "dimension declares none and is held at zero change. Guardrails join no comparison and no composite, so no "
+    "gain elsewhere offsets one; an arm with a breached guardrail is not adopted, and an undecided guardrail is "
+    "not known to be safe."
+)
+
+
+def _rests_on_exploratory(
+    resolution: FindingResolution | None, surface: DecisionSurface, questions: Sequence[Question]
+) -> bool:
+    """Whether a finding's every reading lies outside the declared questions — none of them asked about it.
+
+    A finding citing no reading (a point about coverage or the rig) is not labelled; a guardrail reading is
+    never exploratory, since it is held because it was declared one. A reading the surface cannot describe is
+    read as on no axis, so it is labelled rather than passed as confirmed.
+    """
+    if resolution is None or not resolution.evidence:
+        return False
+    for row in resolution.evidence:
+        if row.reading == "judged":
+            dimension = surface.dimensions.get(row.measure_id)
+            if dimension is not None and dimension.axis == "boundary":
+                return False
+            if not exploratory_reading(JUDGED_MERIT_AXIS, questions):
+                return False
+        else:
+            measure = surface.measures.get(row.measure_id)
+            if measure is not None and measure.guardrail:
+                return False
+            if not exploratory_reading(measure.merit_axis if measure is not None else None, questions):
+                return False
+    return True
+
+
+def _guardrail_standing(cells: Sequence[str], surface: DecisionSurface, arm: Callable[[str], str]) -> str | None:
+    """What an adopted decision's arms leave not held among the guardrails, in words; None when every one held.
+
+    Stated by code on the decision, so an arm recommended over an undecided guardrail cannot be read as
+    shown safe. None too on a surface frozen before guardrails were decided, which says nothing either way.
+    """
+    guardrails = surface.guardrails
+    if guardrails is None:
+        return None
+    parts = []
+    for cell in cells:
+        variant = variant_of_cell_ref(cell)
+        if variant is None or variant == surface.control_variant_key:
+            continue
+        standing = guardrails.of_arm(variant)
+        said = []
+        if standing.breached:
+            said.append(f"breached {', '.join(standing.breached)}")
+        if standing.undecided:
+            said.append(f"undecided on {', '.join(standing.undecided)}, so not known to be safe")
+        if said:
+            parts.append(f"{arm(cell)}: {'; '.join(said)}")
+    return " | ".join(parts) or None
+
+
+def _cell_namer(surface: DecisionSurface, variant_index: Sequence[VariantIndexEntry]) -> Callable[[str, str], str]:
+    """Name a cell by its two coordinates as the charts do, or by short digests where no label exists."""
+    labels = cell_arm_labels(surface, list(variant_index))
+
+    def name(variant_key: str, apparatus_class_id: str) -> str:
+        ref = cell_ref(variant_key, apparatus_class_id)
+        return labels.get(ref) or f"{short_digest(variant_key)} (rig {short_digest(apparatus_class_id)})"
+
+    return name
+
+
+def _guardrail_blocks(guardrails: GuardrailReadings | None, arm: Callable[[str, str], str]) -> list[ReportBlock]:
+    """The guardrails section: each guardrail, held, breached or undecided for each arm against the control."""
+    if guardrails is None:
+        return []
+    blocks: list[ReportBlock] = []
+    if guardrails.withheld is not None:
+        blocks.append(DisclosureBlock(section="guardrails", source="guardrails", text=guardrails.withheld))
+    elif guardrails.checks:
+        rows: list[dict[str, Cell]] = [
+            {
+                "guardrail": f"{check.name} (judged)" if check.reading == "judged" else check.name,
+                "arm": arm(check.contrast.variant_key, check.contrast.apparatus_class_id),
+                "control_mean": check.control.mean,
+                "arm_mean": check.contrast.mean,
+                "cases": (
+                    f"{check.control.n_cases} paired"
+                    if check.test == "paired"
+                    else f"{check.contrast.n_cases} vs {check.control.n_cases}"
+                ),
+                "delta": check.delta,
+                "interval": None
+                if check.interval is None
+                else f"[{format_number(check.interval[0])}, {format_number(check.interval[1])}] at "
+                f"{format_number(100 * INTERVAL_LEVEL)}%"
+                + (" (bounded: every case moved alike)" if check.interval_basis == "bounded" else ""),
+                "margin": format_number(check.margin) if check.margin_declared else "0 (none declared)",
+                "decision": GUARDRAIL_DECISION_WORDS[check.decision]
+                + (f" ({check.undecided_reason})" if check.undecided_reason else ""),
+            }
+            for check in guardrails.checks
+        ]
+        blocks.append(
+            TableBlock(
+                section="guardrails",
+                name="guardrails",
+                title="Guardrails against the control",
+                columns=[
+                    TableColumn(key="guardrail", header="Guardrail"),
+                    TableColumn(key="arm", header="Arm"),
+                    TableColumn(key="control_mean", header="Control mean"),
+                    TableColumn(key="arm_mean", header="Arm mean"),
+                    TableColumn(key="cases", header="Cases read"),
+                    TableColumn(key="delta", header="Delta (arm − control)"),
+                    TableColumn(key="interval", header="Interval on delta"),
+                    TableColumn(key="margin", header="Margin"),
+                    TableColumn(key="decision", header="Decision"),
+                ],
+                rows=rows,
+                order="by guardrail, then rig, then arm",
+                total_rows=len(rows),
+            )
+        )
+        blocks.append(DisclosureBlock(section="guardrails", source="guardrails", text=_GUARDRAILS_DISCLOSURE))
+    if guardrails.unstamped_dimensions:
+        blocks.append(
+            DisclosureBlock(
+                section="guardrails",
+                source="guardrails",
+                text=(
+                    f"{_listed(guardrails.unstamped_dimensions)} carry scores judged before the rubric axis was "
+                    "recorded. They are read as capability, as they were then; a guardrail among them is not "
+                    "recognised until it is re-judged."
+                ),
+            )
+        )
     return blocks
 
 
@@ -722,6 +897,7 @@ def build_code_only_report(
     variant_index = bundle.variant_index
     blocks: list[ReportBlock] = [DisclosureBlock(section="summary", source="generation", text=NO_ANALYSIS)]
     blocks.extend(_question_blocks(bundle))
+    blocks.extend(_guardrail_blocks(bundle.guardrails, _cell_namer(surface, variant_index)))
     blocks.extend(
         _arm_blocks(
             arm_table_of(
@@ -772,37 +948,58 @@ def build_code_only_report(
 
 
 def _question_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:
-    """The declared questions, as the campaign declared them, each standing unanswered."""
+    """The declared questions, each standing unanswered, and which readings none of them asked about.
+
+    With no live question the whole campaign is exploratory, and that is said once, here, rather than on
+    every reading; with questions, the readings outside them are named, so a pattern in one is read as a
+    lead and not as an answer.
+    """
     design = bundle.declared_design
-    if design is None or not design.questions:
-        return []
-    rows: list[dict[str, Cell]] = [
-        {
-            "question": question.id,
-            "asks": question.text,
-            "axes": ", ".join(question.merit_axes) or None,
-            "status": "retired" if question.retired_at else "live",
-            "answer": "unanswered — no analysis",
-        }
-        for question in design.questions
-    ]
-    return [
-        TableBlock(
-            section="questions",
-            name="questions",
-            title="Declared questions",
-            columns=[
-                TableColumn(key="question", header="Question"),
-                TableColumn(key="asks", header="Asks"),
-                TableColumn(key="axes", header="Merit axes"),
-                TableColumn(key="status", header="Status"),
-                TableColumn(key="answer", header="Answer"),
-            ],
-            rows=rows,
-            order="as the campaign declared them",
-            total_rows=len(rows),
+    scope = bundle.reading_scope
+    blocks: list[ReportBlock] = []
+    if scope.disclosure is not None:
+        blocks.append(DisclosureBlock(section="questions", source="scope", text=scope.disclosure))
+    if design is not None and design.questions:
+        rows: list[dict[str, Cell]] = [
+            {
+                "question": question.id,
+                "asks": question.text,
+                "axes": ", ".join(question.merit_axes) or None,
+                "status": "retired" if question.retired_at else "live",
+                "answer": "unanswered — no analysis",
+            }
+            for question in design.questions
+        ]
+        blocks.append(
+            TableBlock(
+                section="questions",
+                name="questions",
+                title="Declared questions",
+                columns=[
+                    TableColumn(key="question", header="Question"),
+                    TableColumn(key="asks", header="Asks"),
+                    TableColumn(key="axes", header="Merit axes"),
+                    TableColumn(key="status", header="Status"),
+                    TableColumn(key="answer", header="Answer"),
+                ],
+                rows=rows,
+                order="as the campaign declared them",
+                total_rows=len(rows),
+            )
         )
-    ]
+    exploratory = [*scope.exploratory_measures, *(f"{name} (judged)" for name in scope.exploratory_dimensions)]
+    if exploratory:
+        blocks.append(
+            DisclosureBlock(
+                section="questions",
+                source="scope",
+                text=(
+                    f"Exploratory — no declared question asks about {_listed(exploratory)}: read a pattern in "
+                    "them as a lead for a question, not as an answer."
+                ),
+            )
+        )
+    return blocks
 
 
 def _comparison_cases(comparison: FamilyComparison) -> str:
@@ -840,11 +1037,7 @@ def _comparison_blocks(bundle: AnalysisContextBundle, surface: DecisionSurface) 
         if comparisons.withheld:
             return [DisclosureBlock(section="surface", source="comparisons", text=comparisons.withheld)]
         return []
-    labels = cell_arm_labels(surface, bundle.variant_index)
-
-    def arm(variant_key: str, apparatus_class_id: str) -> str:
-        ref = cell_ref(variant_key, apparatus_class_id)
-        return labels.get(ref) or f"{short_digest(variant_key)} (rig {short_digest(apparatus_class_id)})"
+    arm = _cell_namer(surface, bundle.variant_index)
 
     rows: list[dict[str, Cell]] = []
     for family in comparisons.families:

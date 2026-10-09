@@ -141,7 +141,7 @@ def test_the_published_schema_is_a_valid_draft_2020_12_schema() -> None:
 class TestTheToyReportsContent:
     async def test_the_sections_are_in_reading_order(self, toy: tuple[Any, Any, Report]) -> None:
         _, _, report = toy
-        order = ["summary", "questions", "decisions", "findings", "arms", "surface", "next", "methods"]
+        order = ["summary", "questions", "decisions", "guardrails", "findings", "arms", "surface", "next", "methods"]
         seen = list(dict.fromkeys(block.section for block in report.blocks))
         assert seen == [section for section in order if section in seen]
         assert set(seen) == set(order)
@@ -418,7 +418,7 @@ class TestTheBasisIsRefusedWhenTheReportDisagreesWithIt:
 
     def test_the_schema_holds_the_version(self) -> None:
         document = json.loads(_code_only().to_canonical_json())
-        assert document["report_version"] == REPORT_VERSION == 4
+        assert document["report_version"] == REPORT_VERSION == 5
         document["report_version"] = 3
         with pytest.raises(jsonschema.ValidationError):
             jsonschema.Draft202012Validator(published_report_schema()).validate(document)

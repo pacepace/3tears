@@ -31,7 +31,7 @@ this whole layer exists to avoid — the slot is shared, the word is not.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Collection, Iterator, Mapping
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
 from typing import TYPE_CHECKING, Any, Literal, get_args, get_origin
@@ -281,6 +281,48 @@ class Question(EvalDocumentModel):
         default=None,
         description="The question id this one replaces, when an edit minted it. None = originally asked.",
     )
+
+
+#: The merit axis a judged dimension serves. A judge scores how good an output is, so a capability dimension is
+#: always a quality reading; a boundary dimension is a guardrail and serves no axis.
+JUDGED_MERIT_AXIS: MeritAxis = "quality"
+
+
+def axis_in_question_scope(axis: MeritAxis | None, question_axes: Sequence[MeritAxis]) -> bool:
+    """Whether a reading on ``axis`` is one a question naming ``question_axes`` asks about.
+
+    The one rule for which readings a declared question covers: a reading on one of the axes it names, or on
+    any axis when it names none (an unscoped question asks about every axis — every axis, not every reading).
+    A reading on no axis — a guardrail, a diagnostic, the rig's own figures — is asked about by no question.
+    The bundle's comparison families read it, and so does the exploratory label, so the two cannot disagree
+    about which readings a question covers.
+
+    Args:
+        axis: The reading's merit axis, or None when it serves none.
+        question_axes: The axes the question names; empty for an unscoped question.
+
+    Returns:
+        True when the question covers the reading.
+    """
+    return axis is not None and (not question_axes or axis in question_axes)
+
+
+def exploratory_reading(axis: MeritAxis | None, questions: Sequence[Question]) -> bool:
+    """Whether a reading on ``axis`` lies outside every one of ``questions`` — exploratory, not confirmatory.
+
+    Only meaningful where the campaign declares questions: with none, every reading is exploratory, and that
+    is said once for the campaign rather than on every row (a label that fires on every row is one readers
+    learn to skip). A guardrail is never exploratory: it is held because it was declared one, not because
+    something happened to move.
+
+    Args:
+        axis: The reading's merit axis, or None when it serves none.
+        questions: The campaign's live questions.
+
+    Returns:
+        True when no question covers the reading.
+    """
+    return not any(axis_in_question_scope(axis, question.merit_axes) for question in questions)
 
 
 class ControlDeclaration(EvalDocumentModel):
@@ -1068,6 +1110,9 @@ __all__ = [
     "Question",
     "SweptAxis",
     "UnreadableBarName",
+    "JUDGED_MERIT_AXIS",
+    "axis_in_question_scope",
+    "exploratory_reading",
     "mechanism_measure_names",
     "reconcile_question_edits",
     "refuse_an_undeclarable_design",

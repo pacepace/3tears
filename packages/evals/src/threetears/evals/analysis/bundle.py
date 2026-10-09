@@ -109,6 +109,7 @@ from threetears.evals.analysis.stats import (
     clustered_standard_error,
     composite_significance,
     difference_interval,
+    guardrail_decision,
     holm_adjust,
     interval_clears,
     level_difference,
@@ -126,7 +127,15 @@ from threetears.evals.contracts.campaign import (
 )
 from threetears.evals.contracts.covariates import REASONING_RATIO_KEY
 from threetears.evals.contracts.scoring import median_unbiased_quantile
-from threetears.evals.contracts.declaration import BarName, CampaignDesign, UnreadableBarName, resolve_bar_name
+from threetears.evals.contracts.declaration import (
+    JUDGED_MERIT_AXIS,
+    BarName,
+    CampaignDesign,
+    UnreadableBarName,
+    axis_in_question_scope,
+    exploratory_reading,
+    resolve_bar_name,
+)
 from threetears.evals.contracts.hashing import canonical_digest, canonical_json
 from threetears.evals.contracts.host.profile import CANDIDATE_MODEL_LEVER, HostProfile
 from threetears.evals.contracts.host.values import SweepableValue
@@ -159,7 +168,13 @@ from threetears.evals.contracts.metrics import (
 from threetears.evals.contracts.base import EvalDocumentModel
 
 # At runtime for its field set, which tells a result-level measure from a row-level one.
-from threetears.evals.contracts.models import ApparatusProvenance, CalibrationRating, EvalResult, GoalCheckProof
+from threetears.evals.contracts.models import (
+    ApparatusProvenance,
+    CalibrationRating,
+    EvalResult,
+    GoalCheckProof,
+    RubricAxis,
+)
 from threetears.evals.contracts.provider import sum_optional_tokens
 from threetears.evals.contracts.result_condition import (
     JUDGE_CANNOT_TELL_OUTCOME,
@@ -172,6 +187,9 @@ from threetears.evals.contracts.result_condition import (
 from threetears.evals.contracts.surface import (
     CellFacts,
     DecisionSurface,
+    GuardrailCell,
+    GuardrailCheck,
+    GuardrailReadings,
     JudgedDimensionFacts,
     JudgedReading,
     MeasureFacts,
@@ -1149,6 +1167,13 @@ class JudgedMeasure(EvalDocumentModel):
         description="`interval` for a 1-5 score (only differences mean anything), `ratio` for a pass rate.",
     )
     higher_is_better: bool = Field(default=True, description="Which end of the scale is better.")
+    axis: RubricAxis = Field(
+        default="capability",
+        description=(
+            "`boundary` when any score on it was judged as a boundary dimension: a guardrail, decided in "
+            "`guardrails` and never in a comparison family or the composite. `capability` otherwise."
+        ),
+    )
     off_ranking_reason: str = Field(
         default=JUDGED_OFF_RANKING_REASON,
         description="Why this dimension is measured and reportable yet never a ranking measure. Absent from measure_catalog for this reason alone.",
@@ -1739,6 +1764,49 @@ class MultipleComparisons(EvalDocumentModel):
     )
 
 
+class ReadingScope(EvalDocumentModel):
+    """Which readings the campaign's declared questions asked about — and which it reads only exploratorily.
+
+    A reading no question asked about can still be reported, as a lead: it was not looked for, so a
+    pattern in it is the kind a reader finds in any data. Labelled where questions are declared, on the
+    readings outside them only; where none are, the whole campaign is exploratory and that is said once
+    (``disclosure``), never on every row — a label that fires on every row is one readers learn to skip.
+    """
+
+    questions_declared: bool = Field(
+        default=False, description="Whether the campaign declares at least one live question."
+    )
+    exploratory_measures: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Measures in `measure_catalog` on no axis a live question names, sorted — exploratory: reportable as "
+            "leads, never as a confirmed answer. Empty when no question is declared (see `disclosure`). A "
+            "guardrail is never listed: it is held because it was declared one."
+        ),
+    )
+    exploratory_dimensions: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Capability judged dimensions no live question covers (none names `quality`, and none is unscoped), "
+            "sorted. Empty when no question is declared."
+        ),
+    )
+    disclosure: str | None = Field(
+        default=None,
+        description=(
+            "Set when the campaign declares no live question: the one sentence saying every finding is "
+            "exploratory. None when questions are declared, where the two lists above carry the label."
+        ),
+    )
+
+
+#: The one sentence a campaign with no live question gets, in place of a label on every reading.
+NO_QUESTION_EXPLORATORY = (
+    "This campaign declares no live question, so every finding it supports is exploratory: nothing was asked "
+    "before the evidence was read, and a pattern found in it is a lead for a campaign that asks, not an answer."
+)
+
+
 class AnalysisContextBundle(EvalDocumentModel):
     """The closed context bundle a generation prompt runs over.
 
@@ -1777,7 +1845,7 @@ class AnalysisContextBundle(EvalDocumentModel):
     # A/B set spanning a bump must be read as spanning it. Why each earlier version moved is in
     # this file's history.
     schema_version: int = Field(
-        default=45, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=46, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -2025,6 +2093,24 @@ class AnalysisContextBundle(EvalDocumentModel):
             "Each contrast tested against the control on every reading a live question asks about, per rig, with "
             "Holm correction inside each question's family: the family's size, each comparison's adjusted p and "
             "the verdict read off it. A separation stands only where its verdict says so."
+        ),
+    )
+    guardrails: GuardrailReadings = Field(
+        default_factory=GuardrailReadings,
+        description=(
+            "The guardrails — boundary judged dimensions and measures declared `guardrail`, what the candidate must "
+            "not get worse on — each decided for every arm against the control on its own 95% interval: `held` "
+            "(shown no worse than its margin), `breached` (shown worse) or `undecided`. Kept out of every "
+            "comparison family and composite, so a capability gain cannot pay for a guardrail loss. An arm with a "
+            "breached guardrail is not adopted; an undecided one is never safe, and is stated wherever the arm is "
+            "recommended."
+        ),
+    )
+    reading_scope: ReadingScope = Field(
+        default_factory=ReadingScope,
+        description=(
+            "Which readings no declared question asked about: exploratory, reportable as leads and never as "
+            "confirmed answers. Where no question is declared, one sentence says every finding is exploratory."
         ),
     )
     verdict_order: VerdictOrder = Field(
@@ -6280,7 +6366,7 @@ def assemble_context_bundle(
     bundle.measure_catalog = _measure_catalog(bundle, profile=profile)
     # After the catalog, which says each measure's better direction and axis: a family is the readings a
     # question's axes name, and a reading with no better end has no verdict to correct.
-    bundle.multiple_comparisons = _multiple_comparisons(
+    bundle.multiple_comparisons, bundle.guardrails = _multiple_comparisons(
         campaign.declared_design,
         design,
         results_by_cell,
@@ -6290,6 +6376,7 @@ def assemble_context_bundle(
         observations=mechanisms,
         profile=profile,
     )
+    bundle.reading_scope = _reading_scope(campaign.declared_design, bundle.measure_catalog, bundle.judged_measures)
     # The frontier is always assembled without a bar, so its per-subject clearing count is a
     # default rather than a count. Said on the bundle, because a zero with no sentence beside it
     # was quoted as "no arm cleared the bar".
@@ -6466,6 +6553,7 @@ def _judged_measures(
     """
     result_by_id = {result.id: result for members in results_by_cell.values() for result in members}
     cell_of_result = {result.id: key for key, members in results_by_cell.items() for result in members}
+    boundary = _boundary_dimensions(result_by_id.values())
     scored: dict[str, dict[_CellKey, list[ScoreRecord]]] = {}
     for dimension, record in _judged_rows(records):
         key = cell_of_result.get(record.result_id)
@@ -6519,11 +6607,26 @@ def _judged_measures(
                 value_range=descriptor.value_range,
                 scale=descriptor.scale,
                 higher_is_better=bool(descriptor.higher_is_better),
+                axis="boundary" if dimension in boundary else "capability",
                 bar_threshold=bars.get(dimension),
                 arms=arms,
             )
         )
     return measures
+
+
+def _boundary_dimensions(results: Iterable[EvalResult]) -> set[str]:
+    """The judged dimensions any of ``results`` was scored on as a boundary dimension — the judged guardrails.
+
+    Any one boundary score makes the dimension a guardrail: a dimension stamped both ways was declared a
+    boundary somewhere, and reading it as a guardrail errs toward holding it rather than trading it.
+    """
+    return {score.dim for result in results for score in result.rubric_scores if score.axis == "boundary"}
+
+
+def _unstamped_dimensions(results: Iterable[EvalResult]) -> list[str]:
+    """The judged dimensions carrying a score judged before the rubric axis was stamped, sorted."""
+    return sorted({score.dim for result in results for score in result.rubric_scores if score.axis is None})
 
 
 #: A bar's per-cell reading: ``(mean, sem, n, n_independent, interval)``.
@@ -7055,9 +7158,12 @@ def _family_readings(
 
     A measure qualifies when it has a better end (a reading with none cannot improve or regress) and
     sits on one of the axes; a per-label classifier statistic does not, because it is computed from a
-    whole cell's confusion counts and has no per-case value to test. A judged dimension sits on the
-    quality axis. An unscoped question (no axes) asks about every axis — every axis, not every measure:
-    a measure that serves no merit axis contributes to no verdict (:data:`MeritAxis`), scoped or not.
+    whole cell's confusion counts and has no per-case value to test. A capability judged dimension sits on
+    the quality axis. A guardrail — a boundary judged dimension, or a measure declared one, which serves no
+    axis — is in no family: it is held, never traded against a gain, and is decided on its own
+    (:func:`_guardrails`). An unscoped question (no axes) asks about every axis — every axis, not every measure:
+    a measure that serves no merit axis contributes to no verdict (:data:`MeritAxis`), scoped or not
+    (:func:`~threetears.evals.contracts.declaration.axis_in_question_scope`).
     That is how the measuring apparatus's own readings stay out of a contrast between candidates: the
     judge phase's time (``judge_ms``), the drain wait, and ``cost_usd`` and ``program_cost``, which sum the
     judge's spend — what it cost to MEASURE an arm. The candidate's spend is ``production_replicating_cost``,
@@ -7075,12 +7181,32 @@ def _family_readings(
     for name, descriptor in catalog.items():
         if descriptor.higher_is_better is None or classifier_label_of(name) is not None:
             continue
-        if descriptor.merit_axis is not None and (not axes or descriptor.merit_axis in axes):
+        if axis_in_question_scope(descriptor.merit_axis, axes):
             readings[("measure", name)] = descriptor.higher_is_better
-    if not axes or "quality" in axes:
+    if axis_in_question_scope(JUDGED_MERIT_AXIS, axes):
         for measure in judged_measures:
-            readings[("judged", measure.name)] = measure.higher_is_better
+            if measure.axis == "capability":
+                readings[("judged", measure.name)] = measure.higher_is_better
     return readings
+
+
+def _test_samples(
+    control_values: Mapping[str, float], contrast_values: Mapping[str, float]
+) -> tuple[list[float], list[float], bool]:
+    """The two samples a contrast against the control reads, and whether they are paired.
+
+    Paired over the cases both cells ran when they share at least two — far more powerful, and the design
+    a fixed case set exists for — else each side's per-case values, unpaired. One choice for every reading
+    of a contrast, a comparison's and a guardrail's alike.
+
+    Returns:
+        ``(control sample, contrast sample, paired)``, the two aligned by case when paired.
+    """
+    shared = sorted(set(control_values) & set(contrast_values))
+    paired = len(shared) >= 2
+    a = [control_values[case] for case in shared] if paired else list(control_values.values())
+    b = [contrast_values[case] for case in shared] if paired else list(contrast_values.values())
+    return a, b, paired
 
 
 class _Tested(NamedTuple):
@@ -7127,10 +7253,7 @@ def _compare(
         test produced one) for the family's correction, and the samples the test read, for the interval.
     """
     (control_key, control_values), (contrast_key, contrast_values) = control, contrast
-    shared = sorted(set(control_values) & set(contrast_values))
-    paired = len(shared) >= 2
-    a = [control_values[case] for case in shared] if paired else list(control_values.values())
-    b = [contrast_values[case] for case in shared] if paired else list(contrast_values.values())
+    a, b, paired = _test_samples(control_values, contrast_values)
     hedges_g, significant, p_raw = composite_significance(a, b, paired=paired)
     mean_a = sum(a) / len(a) if a else None
     mean_b = sum(b) / len(b) if b else None
@@ -7282,14 +7405,17 @@ def _multiple_comparisons(
     judged_measures: list[JudgedMeasure],
     observations: _MechanismObservations,
     profile: HostProfile,
-) -> MultipleComparisons:
-    """Test each contrast against the control, per live question — or campaign-wide — and correct each family.
+) -> tuple[MultipleComparisons, GuardrailReadings]:
+    """Test each contrast against the control, per live question — or campaign-wide — and decide every guardrail.
 
     A question's family is every comparison it could draw a verdict from: each contrast cell against
     the control cell under the same rig (a contrast across rigs differs by its instrument too, so it is
     not this test), on every reading on the question's axes (:func:`_family_readings`). The family is
     corrected by Holm's method over the comparisons that carried a p, and each verdict is read off its
     adjusted p, so a family of ten cannot hand the writer a chance "difference" as a finding.
+
+    The guardrails are read over the same pairs and the same per-case values, and kept out of every
+    family: each is decided on its own (:func:`_guardrails`), so no capability gain can offset one.
 
     Args:
         declared: The campaign's declaration, for its live questions.
@@ -7303,10 +7429,18 @@ def _multiple_comparisons(
 
     Returns:
         One family per live question, in declaration order; one campaign-wide family over every reading when
-        the campaign declares no live question; or none, with the reason, when no control resolved.
+        the campaign declares no live question; or none, with the reason, when no control resolved. Beside
+        them, every guardrail decided for each arm against the control.
     """
+    guardrail_readings = _guardrail_readings(catalog, judged_measures)
+    unstamped = _unstamped_dimensions(result for members in results_by_cell.values() for result in members)
     if realized.control_arm is None:
-        return MultipleComparisons(withheld=_NO_CONTROL_TO_COMPARE_AGAINST)
+        return MultipleComparisons(withheld=_NO_CONTROL_TO_COMPARE_AGAINST), _guardrails_of(
+            guardrail_readings,
+            [],
+            unstamped=unstamped,
+            withheld=_NO_CONTROL_TO_HOLD_AGAINST if guardrail_readings else None,
+        )
     questions = declared.live_questions() if declared is not None else []
     # A campaign that asked nothing is not thereby licensed to report chance differences: its family is every
     # comparison it holds, on every reading, corrected as one.
@@ -7366,7 +7500,167 @@ def _multiple_comparisons(
                     one._replace(comparison=one.comparison.model_copy(update={"mechanism_confounds": confounds}))
                 )
         families.append(_corrected_family(question_id, axes, tested))
-    return MultipleComparisons(families=families)
+    checks = [
+        _guardrail_check(
+            reading,
+            guardrail_readings[reading],
+            (control_key, values[control_key].get(reading, {})),
+            (contrast_key, values[contrast_key].get(reading, {})),
+        )
+        for reading in sorted(guardrail_readings)
+        for control_key, contrast_key in sorted(pairs, key=lambda pair: (pair[0][1], pair[1][0]))
+        if values[control_key].get(reading) or values[contrast_key].get(reading)
+    ]
+    return MultipleComparisons(families=families), _guardrails_of(guardrail_readings, checks, unstamped=unstamped)
+
+
+def _reading_scope(
+    declared: CampaignDesign | None, catalog: dict[str, MetricDescriptor], judged_measures: list[JudgedMeasure]
+) -> ReadingScope:
+    """Label the readings no live question asks about exploratory — or, with no question, say so once.
+
+    The same rule the families are scoped by (:func:`~threetears.evals.contracts.declaration.exploratory_reading`),
+    so a reading is exploratory exactly when no question's family could test it.
+    """
+    questions = declared.live_questions() if declared is not None else []
+    if not questions:
+        return ReadingScope(questions_declared=False, disclosure=NO_QUESTION_EXPLORATORY)
+    return ReadingScope(
+        questions_declared=True,
+        exploratory_measures=sorted(
+            name
+            for name, descriptor in catalog.items()
+            if not descriptor.guardrail and exploratory_reading(descriptor.merit_axis, questions)
+        ),
+        exploratory_dimensions=sorted(
+            measure.name
+            for measure in judged_measures
+            if measure.axis == "capability" and exploratory_reading(JUDGED_MERIT_AXIS, questions)
+        ),
+    )
+
+
+#: Why no guardrail was checked, where some reading is one.
+_NO_CONTROL_TO_HOLD_AGAINST = (
+    "No control resolved, so there is no arm to hold another against and no guardrail was checked: every guardrail "
+    "here is unchecked, which is not the same as held."
+)
+
+
+class _Guardrail(NamedTuple):
+    """What a guardrail check needs to know about its reading."""
+
+    higher_is_better: bool
+    #: The declared margin, or None when the reading declares none (every judged dimension).
+    margin: float | None
+    value_range: tuple[float, float] | None
+
+
+def _guardrail_readings(
+    catalog: dict[str, MetricDescriptor], judged_measures: list[JudgedMeasure]
+) -> dict[tuple[ReadingKind, str], _Guardrail]:
+    """Every guardrail reading the bundle carries: the measures declared one and the boundary judged dimensions.
+
+    A measure's margin is its declared ``materiality_threshold``, the one margin a measure has; a judged
+    dimension declares none, so it is held at zero change.
+    """
+    readings: dict[tuple[ReadingKind, str], _Guardrail] = {
+        ("measure", name): _Guardrail(
+            descriptor.higher_is_better, descriptor.materiality_threshold, descriptor.value_range
+        )
+        for name, descriptor in catalog.items()
+        if descriptor.guardrail and descriptor.higher_is_better is not None
+    }
+    for measure in judged_measures:
+        if measure.axis == "boundary":
+            readings[("judged", measure.name)] = _Guardrail(measure.higher_is_better, None, measure.value_range)
+    return readings
+
+
+def _guardrail_check(
+    reading: tuple[ReadingKind, str],
+    guardrail: _Guardrail,
+    control: tuple[_CellKey, dict[str, float]],
+    contrast: tuple[_CellKey, dict[str, float]],
+) -> GuardrailCheck:
+    """Decide one guardrail for one arm against the control under one rig (:func:`~threetears.evals.analysis.stats.guardrail_decision`).
+
+    The samples are the ones a comparison on the same reading would read (:func:`_test_samples`), so a
+    guardrail and a comparison never disagree about which cases were compared. An undecided check says
+    why, in words that point at the remedy: more cases for a thin side, a declared range or margin for
+    a difference with no spread, and for a straddling interval the line it straddles.
+    """
+    (control_key, control_values), (contrast_key, contrast_values) = control, contrast
+    a, b, paired = _test_samples(control_values, contrast_values)
+    verdict = guardrail_decision(
+        a,
+        b,
+        paired=paired,
+        margin=guardrail.margin,
+        higher_is_better=guardrail.higher_is_better,
+        value_range=guardrail.value_range,
+    )
+    mean_a = sum(a) / len(a) if a else None
+    mean_b = sum(b) / len(b) if b else None
+    margin = guardrail.margin or 0.0
+    reason = None
+    if verdict.decision == "undecided":
+        if not b:
+            reason = "the arm carries no value of it, so it was not checked against the control"
+        elif not a:
+            reason = "the control carries no value of it, so the arm could not be checked against one"
+        elif len(a) < 2 or len(b) < 2:
+            reason = "fewer than two cases carry it on a side, so no interval on the difference exists"
+        elif verdict.interval is None:
+            reason = (
+                "every shared case moved by the same amount and the reading declares no range to bound that by"
+                if paired
+                else "each side's values are constant, so the difference has no spread to bound"
+            )
+        else:
+            line = -margin if guardrail.higher_is_better else margin
+            reason = (
+                f"the interval on the difference, [{format_number(verdict.interval[0])}, "
+                f"{format_number(verdict.interval[1])}], reaches both sides of {format_number(line)}"
+                + (" (the declared margin)" if guardrail.margin else " (no change: no margin is declared)")
+                + ", so the arm is shown neither within it nor beyond it"
+            )
+    return GuardrailCheck(
+        reading=reading[0],
+        name=reading[1],
+        higher_is_better=guardrail.higher_is_better,
+        control=GuardrailCell(
+            variant_key=control_key[0], apparatus_class_id=control_key[1], n_cases=len(a), mean=mean_a
+        ),
+        contrast=GuardrailCell(
+            variant_key=contrast_key[0], apparatus_class_id=contrast_key[1], n_cases=len(b), mean=mean_b
+        ),
+        test=("paired" if paired else "unpaired") if verdict.interval is not None else None,
+        delta=None if mean_a is None or mean_b is None else mean_b - mean_a,
+        interval=verdict.interval,
+        interval_basis=verdict.basis,
+        margin=margin,
+        margin_declared=guardrail.margin is not None,
+        decision=verdict.decision,
+        undecided_reason=reason,
+    )
+
+
+def _guardrails_of(
+    readings: dict[tuple[ReadingKind, str], _Guardrail],
+    checks: list[GuardrailCheck],
+    *,
+    unstamped: list[str],
+    withheld: str | None = None,
+) -> GuardrailReadings:
+    """The bundle's guardrail section, from the readings that are guardrails and the checks run on them."""
+    return GuardrailReadings(
+        measures=sorted(name for kind, name in readings if kind == "measure"),
+        dimensions=sorted(name for kind, name in readings if kind == "judged"),
+        checks=checks,
+        withheld=withheld,
+        unstamped_dimensions=unstamped,
+    )
 
 
 def _judged_by_cell(judged_measures: list[JudgedMeasure]) -> dict[_CellKey, list[JudgedReading]]:
@@ -7707,6 +8001,7 @@ def cell_measure_facts(bundle: AnalysisContextBundle) -> dict[str, MeasureFacts]
             materiality_threshold=bundle.measure_catalog[name].materiality_threshold,
             population=bundle.measure_catalog[name].population,
             scale=bundle.measure_catalog[name].scale,
+            guardrail=bundle.measure_catalog[name].guardrail,
         )
         for name in names
     }
@@ -7734,6 +8029,7 @@ def cell_dimension_facts(bundle: AnalysisContextBundle) -> dict[str, JudgedDimen
             higher_is_better=described[name].higher_is_better,
             value_range=described[name].value_range,
             scale=described[name].scale,
+            axis=described[name].axis,
         )
         for name in names
     }
@@ -7759,6 +8055,7 @@ def bundle_decision_surface(bundle: AnalysisContextBundle) -> DecisionSurface:
         measures=cell_measure_facts(bundle),
         dimensions=cell_dimension_facts(bundle),
         time_axis=bundle.time_axis,
+        guardrails=bundle.guardrails,
     )
 
 

@@ -17,6 +17,7 @@ from threetears.evals.analysis.bundle import ComparisonVerdict
 from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.viz_refs import cell_arm_labels
 from threetears.evals.contracts.campaign import ConfidenceTier, EvalAnalysis, EvidenceTier
+from threetears.evals.contracts.surface import GuardrailDecision
 
 
 def _literal_values(annotation: Any) -> frozenset[str]:
@@ -118,6 +119,18 @@ COMPARISON_VERDICT_WORDS = worded(
     },
     ComparisonVerdict,
     "a comparison verdict",
+)
+
+
+#: What a guardrail came to for an arm against the control, as a reader says it.
+GUARDRAIL_DECISION_WORDS = worded(
+    {
+        "held": "held: shown no worse than the control by more than the margin",
+        "breached": "breached: shown worse than the control by more than the margin",
+        "undecided": "undecided: not shown held, so not known to be safe",
+    },
+    GuardrailDecision,
+    "a guardrail decision",
 )
 
 

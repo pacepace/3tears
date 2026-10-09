@@ -12,6 +12,11 @@ A decision names what may change and what settles it. A campaign with no declare
 and its report leads with what the evidence taught. A watch re-runs a fixed suite against an earlier
 measurement; its value is the regression it catches, so most of its runs change nothing.
 
+**What nobody asked about is a lead, not an answer.**
+A reading no declared question names is labelled exploratory wherever a reader meets it, so a report
+cannot lead with it as if it were confirmed; a campaign that declares no question says once that every
+finding is exploratory, rather than on every row, where the label would be skipped.
+
 **A report shows tradeoffs, not a winner.**
 Every arm is placed on quality, reliability, cost and latency, and called best only against a declared
 bar or question: "best" with no axis named is a preference passed off as a finding.
@@ -46,6 +51,11 @@ tell" as an answer that excludes the trial from that criterion. Pairwise judging
 ([open problems](open-problems.md#pairwise-judging-declined-for-now)). Several judges per criterion is not
 adopted either: the error reduction claimed for it rests on a single study, and it would multiply judge
 spend and change how a trial's identity is computed.
+
+**What the subject must never do is held, never traded.**
+A guardrail (a boundary judged dimension, or a measure declared one) stays out of every composite and
+comparison family and is decided per arm against the control: a breached one keeps the arm from adoption
+whatever it gained, and an undecided one is never read as safe.
 
 ## Numbers
 

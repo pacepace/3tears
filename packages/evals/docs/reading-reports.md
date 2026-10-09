@@ -45,6 +45,7 @@ which the published schema and the model both refuse. It holds:
 
 - the arm table: each arm and every lever it ran, with no status column (every arm is unresolved, since
   nothing decided) and no finding column (there are no findings);
+- the guardrails, each decided for each arm against the control ([below](#reading-the-guardrails));
 - the decision surface;
 - the contrasts the evidence tested against the control;
 - a distribution chart per measure and judged dimension;
@@ -59,7 +60,7 @@ An analysis adds that reading: findings, each with the evidence it rests on and 
 a decision per declared question, with its confidence; which arm won and why; and what to run next. No
 headline, finding, decision or answer to a declared question appears in a code-only report.
 
-`Report.basis` says which a report is; `REPORT_VERSION` is 4.
+`Report.basis` says which a report is; `REPORT_VERSION` is 5.
 
 ## Reading a comparison
 
@@ -99,6 +100,36 @@ chance that any verdict in the family is wrong stays at 5%.
 A delta-table chart states each row's change relative to the baseline only on a ratio scale. A judged 1–5
 score (`MetricDescriptor.scale="interval"`) moves in points: one point up is +50% from 2 and +25% from 4,
 so no percent is stated for it.
+
+## Reading the guardrails
+
+A guardrail is something an arm must not get worse on: a judged dimension on the `boundary` axis, or a
+measure the host declared `guardrail`. The "Guardrails against the control" table (`guardrails` in the
+bundle, its own section of both reports) decides each one for each arm, on its own 95% interval on
+`arm − control`. Guardrails are never in the contrasts table, the composite or pass^k, so a gain there
+cannot hide a loss here.
+
+| Decision | Means | Do |
+|---|---|---|
+| held | the whole interval is on the good side of the margin | nothing; the arm did not get worse by more than you tolerate |
+| breached | the whole interval is beyond the margin | do not adopt the arm, whatever it gained; the analysis writer is refused if it tries |
+| undecided | the interval straddles the line, or no interval exists; the row says why | do not read it as safe. An arm can still be adopted, and the decision then carries a `Guardrails` fact naming it. To decide it, add cases or declare a margin |
+
+The margin is the measure's `materiality_threshold`. A judged dimension declares none, so it is held at zero
+change: `held` then needs the arm shown no worse at all, which a few cases rarely show. When every case
+moved by the same amount (both arms pass every case, or every case flipped), a t interval has no width; the
+row then reads `bounded` and uses the widest difference the scale allows for the cases that could still
+move. An `undecided` guardrail does not block adoption because at a few cases and no margin almost every
+guardrail is undecided, and a rule that blocked them all would block every adoption.
+
+## Readings no question asked about: exploratory
+
+A campaign's declared questions say what it set out to learn. A reading on no axis a live question names is
+**exploratory**: worth reporting as a lead for the next campaign, never as a confirmed answer. Where
+questions are declared, the bundle lists those readings (`reading_scope`), the code-only report names them
+under the questions, and a finding resting only on them carries a `Scope` fact. Where none are declared,
+every finding is exploratory, and the report says so once near the top rather than on every row. A
+guardrail is never exploratory.
 
 ## Having a model write the analysis, over frozen evidence
 

@@ -39,6 +39,8 @@ from functools import lru_cache
 from statistics import NormalDist
 from typing import Final, Literal, NamedTuple
 
+from threetears.evals.contracts.surface import GuardrailDecision
+
 # Two-sided p-value below which a composite delta is called significant.
 SIGNIFICANCE_ALPHA = 0.05
 
@@ -1018,6 +1020,69 @@ def difference_interval(
     return statistic.delta - half, statistic.delta + half
 
 
+class GuardrailVerdict(NamedTuple):
+    """What :func:`guardrail_decision` came to: the decision, the interval it read, and how that interval was formed."""
+
+    decision: GuardrailDecision
+    interval: tuple[float, float] | None
+    basis: Literal["t", "bounded"] | None
+
+
+def guardrail_decision(
+    control: Sequence[float],
+    contrast: Sequence[float],
+    *,
+    paired: bool,
+    margin: float | None,
+    higher_is_better: bool,
+    value_range: tuple[float, float] | None = None,
+) -> GuardrailVerdict:
+    """Decide one guardrail for an arm against the control: held, breached or undecided — non-inferiority.
+
+    The bar rule (:func:`interval_clears`) read on the difference instead of a level: the interval on
+    ``mean(contrast) − mean(control)`` at :data:`INTERVAL_LEVEL`, from the comparison test's own inversion
+    (:func:`difference_interval`), against a line at zero change less the margin on the worse side. ``held``
+    when the whole interval is on the good side of it — the arm is shown no worse than the control by more
+    than the margin; ``breached`` when the whole interval is beyond it; ``undecided`` when it straddles the
+    line or no interval exists. With no margin the line is zero change itself, so ``held`` needs the arm
+    shown no worse at all. Each one-sided claim errs at most 2.5% of the time at the interval's coverage.
+
+    **When every paired case moved by the same amount** the t interval has no width to give — the state of a
+    guardrail at its ceiling, where both arms pass every case, and of a blatant regression, where every case
+    flipped. For a reading with a declared range, the interval is then the one boundedness allows: no case
+    moved otherwise in ``n``, so the share that could is at most ``1 − 0.025^(1/n)`` (Clopper–Pearson with no
+    events, one-sided 2.5%), and each such case moves at most the full span of the scale either way. It is
+    wide by design — a perfect record over fifteen cases does not show a rare failure absent — and with no
+    range there is no such bound, so the guardrail is undecided.
+
+    Args:
+        control: The control's per-case values.
+        contrast: The arm's, aligned with ``control`` when ``paired``.
+        paired: Whether the two are one-to-one on the same cases.
+        margin: The reading's declared margin, in its units, or None when it declares none.
+        higher_is_better: Which way is better on the reading.
+        value_range: The reading's declared inclusive bounds, or None when it declares none.
+
+    Returns:
+        The decision, the interval it read (None when none exists) and the interval's basis.
+    """
+    interval = difference_interval(list(control), list(contrast), paired=paired)
+    basis: Literal["t", "bounded"] | None = "t" if interval is not None else None
+    if interval is None and paired and value_range is not None and len(control) == len(contrast) >= 2:
+        diffs = [float(b) - float(a) for a, b in zip(control, contrast)]
+        if _sample_std(diffs) == 0.0:
+            span = value_range[1] - value_range[0]
+            moved = diffs[0]
+            share = 1.0 - ((1.0 - INTERVAL_LEVEL) / 2.0) ** (1.0 / len(diffs))
+            interval = (moved - (moved + span) * share, moved + (span - moved) * share)
+            basis = "bounded"
+    if interval is None:
+        return GuardrailVerdict("undecided", None, None)
+    cleared = interval_clears(interval, 0.0, margin=margin, higher_is_better=higher_is_better)
+    decision: GuardrailDecision = "undecided" if cleared is None else ("held" if cleared else "breached")
+    return GuardrailVerdict(decision, interval, basis)
+
+
 def separation_p(sample_a: Sequence[float], sample_b: Sequence[float], *, paired: bool) -> float | None:
     """The two-sided p of the separation test between two samples, where one exists.
 
@@ -1571,6 +1636,7 @@ def lognormal_sum_prediction_band(history: Sequence[float], n_future: int) -> tu
 __all__ = [
     "BAR_SEED_HALF_WIDTH_FRACTION",
     "EQUIVALENCE_TEST_NAME",
+    "GuardrailVerdict",
     "INTERVAL_LEVEL",
     "MULTIPLE_COMPARISON_CORRECTION",
     "PAIRED_TEST_NAME",
@@ -1588,6 +1654,7 @@ __all__ = [
     "cohen_kappa",
     "composite_significance",
     "difference_interval",
+    "guardrail_decision",
     "hedges_j",
     "holm_adjust",
     "interval_clears",

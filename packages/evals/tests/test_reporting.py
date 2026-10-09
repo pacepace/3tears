@@ -5789,7 +5789,9 @@ class TestFrontierTwoPillarDisclosure:
 
         assert disclosure.boundary_pillar_available is False
         assert "capability" in disclosure.verdict_rests_on
-        assert "axis" in disclosure.reason
+        # Scores now carry their axis, so the gap is no longer a missing axis: it is that the frontier
+        # leaves boundary dimensions out and does not disqualify on them.
+        assert "does not disqualify" in disclosure.reason
 
     def test_disclosure_survives_an_empty_corpus(self):
         # Even with nothing to rank, the answer must state the pillar is absent —
