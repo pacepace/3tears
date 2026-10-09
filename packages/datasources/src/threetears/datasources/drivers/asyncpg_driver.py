@@ -149,13 +149,13 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import functools
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any, Final
 
 import asyncpg
 
-from threetears.core.fingerprint import postgres_fingerprint_sql
+from threetears.core.fingerprint import postgres_fingerprint_sql, relation_key_expression
 from threetears.core.config import DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS, DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS
 from threetears.core.utils.pg_pool_kwargs import (
     PoolStartupTimeoutError,
@@ -170,6 +170,7 @@ from threetears.datasources.config import (
 from threetears.datasources.drivers.sql_fragments import (
     translate_placeholders,
     build_equality_filter,
+    build_filter,
     build_reset_statement_timeout_sql,
     build_search_path_value,
     build_set_local_statement_timeout_sql,
@@ -1382,6 +1383,53 @@ class AsyncpgDriver(Driver):
         sql = translate_placeholders(postgres_fingerprint_sql(relation, key, filters), "asyncpg")
         record = await self._acquire_and_run(lambda conn: conn.fetchrow(sql, *values))
         return RelationFingerprint(row_count=int(record["row_count"]), digest=str(record["digest"]))
+
+    @traced
+    @observed(driver_type="asyncpg")
+    async def relation_fingerprint_groups(
+        self,
+        relation: str,
+        key: list[str],
+        group_by: str,
+        where: Mapping[str, str] | None = None,
+        where_in: Mapping[str, Sequence[str]] | None = None,
+    ) -> dict[str | None, RelationFingerprint]:
+        """count and fingerprint every value of ``group_by`` in ``relation``, in one statement.
+
+        Each group's digest is exactly what :meth:`relation_fingerprint` answers for its rows.
+
+        :param relation: schema-qualified relation name, a TRUSTED identifier
+        :ptype relation: str
+        :param key: the columns the digest covers, TRUSTED identifiers
+        :ptype key: list[str]
+        :param group_by: the grouping column, a TRUSTED identifier
+        :ptype group_by: str
+        :param where: equality filters
+        :ptype where: Mapping[str, str] | None
+        :param where_in: set filters
+        :ptype where_in: Mapping[str, Sequence[str]] | None
+        :return: each group's value as text (``None`` for NULL) -> its fingerprint
+        :rtype: dict[str | None, RelationFingerprint]
+        :raises ValueError: when ``key`` is empty
+        :raises RuntimeError: if the driver was previously closed
+        """
+        if self._closed:
+            raise RuntimeError("AsyncpgDriver is closed")
+        filters, values = build_filter(where, where_in)
+        sql = translate_placeholders(
+            "SELECT g, COUNT(*) AS row_count, "  # noqa: S608 - relation, key and group_by are trusted identifiers
+            "COALESCE(SUM(('x' || SUBSTR(MD5(k), 1, 8))::bit(32)::bigint), 0) AS digest "
+            f"FROM (SELECT {group_by} AS g, {relation_key_expression(key)} AS k FROM {relation}{filters}) "
+            "AS fingerprint_source GROUP BY g",
+            "asyncpg",
+        )
+        records = await self._acquire_and_run(lambda conn: conn.fetch(sql, *values))
+        return {
+            (None if r["g"] is None else str(r["g"])): RelationFingerprint(
+                row_count=int(r["row_count"]), digest=str(r["digest"])
+            )
+            for r in records
+        }
 
     @traced
     @observed(driver_type="asyncpg")

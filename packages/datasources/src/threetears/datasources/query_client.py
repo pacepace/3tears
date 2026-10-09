@@ -85,6 +85,8 @@ __all__ = [
     "EXPORT_NOT_GRANTED",
     "EXPORT_REFUSED",
     "EXPORT_UNSUPPORTED",
+    "FINGERPRINT_GROUPS_UNSUPPORTED",
+    "RelationFingerprintGroup",
     "DatasourceExportDeleteRequest",
     "DatasourceExportRequest",
     "DatasourceExportResult",
@@ -167,6 +169,62 @@ class RelationFingerprintRequest(BaseModel):
     #: equality filters, column -> value: the fingerprint describes only the matching rows.
     #: columns are identifiers (interpolated); values are bound as parameters, never as text
     where: dict[str, str] = Field(default_factory=dict)
+    #: set filters, column -> the values it may hold, bound as parameters as ``where``'s are
+    where_in: dict[str, list[str]] = Field(default_factory=dict)
+    #: fingerprint every value of this column apart, in one ask (answered as ``fingerprint_groups``).
+    #: A hub that predates it refuses the field as unknown (``MALFORMED_REQUEST``), so it is left off
+    #: the wire when not asked for, with ``where_in``
+    group_by: str | None = None
+
+    @field_validator("where_in")
+    @classmethod
+    def _where_in_columns_are_identifiers(cls, value: dict[str, list[str]]) -> dict[str, list[str]]:
+        """refuse a set-filter column that is not a plain identifier; values are parameters.
+
+        :param value: the filters
+        :ptype value: dict[str, list[str]]
+        :return: the value unchanged
+        :rtype: dict[str, list[str]]
+        :raises ValueError: if any column is not a plain identifier
+        """
+        bad = [c for c in value if not _IDENTIFIER_GRAMMAR.match(c)]
+        if bad:
+            raise ValueError(f"where_in columns {bad!r} are not plain SQL identifiers")
+        return value
+
+    @field_validator("group_by")
+    @classmethod
+    def _group_by_is_an_identifier(cls, value: str | None) -> str | None:
+        """refuse a grouping column that is not a plain identifier: it is interpolated.
+
+        :param value: the column
+        :ptype value: str | None
+        :return: the value unchanged
+        :rtype: str | None
+        :raises ValueError: if it is not a plain identifier
+        """
+        if value is not None and not _IDENTIFIER_GRAMMAR.match(value):
+            raise ValueError(f"group_by {value!r} is not a plain SQL identifier")
+        return value
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_grouping(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """leave ``group_by`` and ``where_in`` off the wire when they are not asked for.
+
+        A hub that predates them forbids unknown fields; omitted, a plain fingerprint is what that
+        hub knows, and the two upgrade in either order.
+
+        :param handler: pydantic's serializer for the fields
+        :ptype handler: SerializerFunctionWrapHandler
+        :return: the serialized request
+        :rtype: dict[str, Any]
+        """
+        data: dict[str, Any] = handler(self)
+        if self.group_by is None:
+            data.pop("group_by", None)
+        if not self.where_in:
+            data.pop("where_in", None)
+        return data
 
     @field_validator("where")
     @classmethod
@@ -264,6 +322,24 @@ class RelationFingerprintResult(BaseModel):
     digest: str
 
 
+class RelationFingerprintGroup(BaseModel):
+    """one group's fingerprint, in answer to a fingerprint asked ``group_by``.
+
+    :param value: the group's value, as text; ``None`` for NULL
+    :ptype value: str | None
+    :param row_count: rows in the group
+    :ptype row_count: int
+    :param digest: the group's digest, as :class:`RelationFingerprintResult` holds one
+    :ptype digest: str
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    value: str | None
+    row_count: int
+    digest: str
+
+
 class DatasourceExportRequest(BaseModel):
     """ask the hub to have the warehouse write a ``SELECT``'s rows to the datasource's export bucket.
 
@@ -287,6 +363,38 @@ class DatasourceExportRequest(BaseModel):
 
     select: str
     destination: str
+    #: divide the files by this column, one directory per value (``column=value/``). A hub that
+    #: predates it refuses the field as unknown, so it is left off the wire when not asked for
+    partition_by: str | None = None
+
+    @field_validator("partition_by")
+    @classmethod
+    def _partition_by_is_an_identifier(cls, value: str | None) -> str | None:
+        """refuse a partition column that is not a plain identifier.
+
+        :param value: the column
+        :ptype value: str | None
+        :return: the value unchanged
+        :rtype: str | None
+        :raises ValueError: if it is not a plain identifier
+        """
+        if value is not None and not _IDENTIFIER_GRAMMAR.match(value):
+            raise ValueError(f"partition_by {value!r} is not a plain SQL identifier")
+        return value
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_partition(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """leave ``partition_by`` off the wire when it is not asked for, for a hub that predates it.
+
+        :param handler: pydantic's serializer for the fields
+        :ptype handler: SerializerFunctionWrapHandler
+        :return: the serialized request
+        :rtype: dict[str, Any]
+        """
+        data: dict[str, Any] = handler(self)
+        if self.partition_by is None:
+            data.pop("partition_by", None)
+        return data
 
     @field_validator("destination")
     @classmethod
@@ -503,6 +611,8 @@ class DatasourceQueryResponse(BaseModel):
     #: comparing two readings must not have to know which column the digest landed in
     #: or what the driver called it.
     fingerprint: RelationFingerprintResult | None = None
+    #: set only in answer to a ``fingerprint`` request asked ``group_by``: every group's fingerprint
+    fingerprint_groups: list[RelationFingerprintGroup] | None = None
     #: set only in answer to an ``export`` request
     export: DatasourceExportResult | None = None
     #: set only in answer to an ``export_delete`` request: the versions and delete markers deleted
@@ -730,6 +840,75 @@ class DatasourceQueryClient:
             )
         return response.fingerprint
 
+    async def relation_fingerprint_groups(
+        self,
+        datasource_name: str,
+        *,
+        relation: str,
+        key: Sequence[str],
+        group_by: str,
+        where: Mapping[str, str] | None = None,
+        where_in: Mapping[str, Sequence[str]] | None = None,
+        correlation_id: UUID | None = None,
+    ) -> dict[str | None, RelationFingerprintResult]:
+        """count and fingerprint every value of ``group_by`` in a relation, in one ask.
+
+        Each group's fingerprint is the one :meth:`relation_fingerprint` answers for the rows
+        ``group_by = value`` (with the same filters), so the two compare equal. A value with no rows
+        is not named.
+
+        :param datasource_name: the datasource
+        :ptype datasource_name: str
+        :param relation: schema-qualified relation name
+        :ptype relation: str
+        :param key: the columns the digest covers
+        :ptype key: Sequence[str]
+        :param group_by: the column whose values are the groups
+        :ptype group_by: str
+        :param where: equality filters
+        :ptype where: Mapping[str, str] | None
+        :param where_in: set filters, column -> the values it may hold
+        :ptype where_in: Mapping[str, Sequence[str]] | None
+        :param correlation_id: trace id to carry; generated when omitted
+        :ptype correlation_id: UUID | None
+        :return: each group's value (``None`` for NULL) -> its fingerprint
+        :rtype: dict[str | None, RelationFingerprintResult]
+        :raises DatasourceQueryError: on a refusal (``FINGERPRINT_GROUPS_UNSUPPORTED`` from an engine
+            that cannot, ``MALFORMED_REQUEST`` from a hub that predates grouping), a transport failure,
+            or a success carrying no groups
+        """
+        request = DatasourceQueryRequest(
+            correlation_id=correlation_id if correlation_id is not None else uuid7(),
+            identity_token=SecretStr(self.forwarded_identity_token()),
+            fingerprint=RelationFingerprintRequest(
+                relation=relation,
+                key_columns=list(key),
+                where=dict(where or {}),
+                where_in={column: list(values) for column, values in (where_in or {}).items()},
+                group_by=group_by,
+            ),
+        )
+        subject = Subjects.datasource_query(datasource_name)
+        try:
+            response = await self._ask(subject, request)
+        except RequestError as exc:
+            raise DatasourceQueryError("REQUEST_FAILED", f"grouped fingerprint on {datasource_name!r}: {exc}") from exc
+        if not response.success:
+            raise DatasourceQueryError(
+                response.error_code or "UNKNOWN",
+                response.error_message or f"grouped fingerprint on {datasource_name!r} was refused",
+            )
+        if response.fingerprint_groups is None:
+            # a hub that answered a grouped ask without groups did not group: taking none as every
+            # group's answer would read as a relation with no rows
+            raise DatasourceQueryError(
+                "MALFORMED_RESPONSE", f"grouped fingerprint on {datasource_name!r} returned success with no groups"
+            )
+        return {
+            group.value: RelationFingerprintResult(row_count=group.row_count, digest=group.digest)
+            for group in response.fingerprint_groups
+        }
+
     @traced
     async def export(
         self,
@@ -737,6 +916,7 @@ class DatasourceQueryClient:
         select: str,
         *,
         destination: str,
+        partition_by: str | None = None,
         correlation_id: UUID | None = None,
     ) -> DatasourceExportResult:
         """have the warehouse write ``select``'s rows to the datasource's export bucket, as parquet.
@@ -752,6 +932,9 @@ class DatasourceQueryClient:
         :param destination: where under the datasource's export prefix; a fresh path per export,
             because files already there are never replaced
         :ptype destination: str
+        :param partition_by: divide the files by this column, one directory per value; a hub that
+            predates it refuses the ask (``MALFORMED_REQUEST``)
+        :ptype partition_by: str | None
         :param correlation_id: trace id to carry; generated when omitted
         :ptype correlation_id: UUID | None
         :return: how many rows the warehouse wrote and where the files are
@@ -768,7 +951,7 @@ class DatasourceQueryClient:
         request = DatasourceQueryRequest(
             correlation_id=correlation_id if correlation_id is not None else uuid7(),
             identity_token=SecretStr(self.forwarded_identity_token()),
-            export=DatasourceExportRequest(select=select, destination=destination),
+            export=DatasourceExportRequest(select=select, destination=destination, partition_by=partition_by),
         )
         subject = Subjects.datasource_query(datasource_name)
         try:
@@ -984,6 +1167,11 @@ EXPORT_NOT_GRANTED: Final = "EXPORT_NOT_GRANTED"
 #: the hub's refusal of an export from a datasource that cannot export: no ``export`` on its connection
 #: config, or an engine with none. A reader that treats the export as optional falls back to the rail
 EXPORT_UNSUPPORTED: Final = "EXPORT_UNSUPPORTED"
+
+#: the hub's refusal of a fingerprint asked ``group_by`` that the datasource's engine cannot answer in
+#: one statement; the caller asks group by group. A hub that predates grouping answers
+#: ``MALFORMED_REQUEST`` instead (the field is unknown to it)
+FINGERPRINT_GROUPS_UNSUPPORTED: Final = "FINGERPRINT_GROUPS_UNSUPPORTED"
 
 #: the hub's refusal of an export whose ``SELECT`` cannot sit in a quoted literal, or whose destination
 #: would leave the configured prefix

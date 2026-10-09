@@ -96,7 +96,12 @@ class ExportStore(Protocol):
         ...
 
 
-def export_select(relation: str, columns: Sequence[str], where: Mapping[str, str] | None = None) -> str:
+def export_select(
+    relation: str,
+    columns: Sequence[str],
+    where: Mapping[str, str] | None = None,
+    where_in: Mapping[str, Sequence[str]] | None = None,
+) -> str:
     """the ``SELECT`` an export of one part runs: the columns, the relation, equality filters as literals.
 
     An export binds no parameters (the warehouse's ``UNLOAD`` cannot), so each filter value is
@@ -109,16 +114,26 @@ def export_select(relation: str, columns: Sequence[str], where: Mapping[str, str
     :ptype columns: Sequence[str]
     :param where: column -> value; every row when None
     :ptype where: Mapping[str, str] | None
+    :param where_in: column -> the values it may hold, each written in as a literal
+    :ptype where_in: Mapping[str, Sequence[str]] | None
     :return: the statement
     :rtype: str
     :raises ValueError: when a name is not a plain identifier
     :raises ExportRefusedError: when a value cannot be written as a literal
     """
-    checked = RelationFingerprintRequest(relation=relation, key_columns=list(columns), where=dict(where or {}))
+    checked = RelationFingerprintRequest(
+        relation=relation,
+        key_columns=list(columns),
+        where=dict(where or {}),
+        where_in={column: list(values) for column, values in (where_in or {}).items()},
+    )
     statement = f"SELECT {', '.join(checked.key_columns)} FROM {checked.relation}"  # noqa: S608 - identifiers checked
-    if checked.where:
-        conditions = " AND ".join(f"{column} = {sql_string_literal(value)}" for column, value in checked.where.items())
-        statement += f" WHERE {conditions}"
+    conditions = [f"{column} = {sql_string_literal(value)}" for column, value in checked.where.items()]
+    for column, values in checked.where_in.items():
+        members = ", ".join(sql_string_literal(value) for value in values)
+        conditions.append(f"{column} IN ({members})" if values else "1 = 0")
+    if conditions:
+        statement += f" WHERE {' AND '.join(conditions)}"
     return statement
 
 

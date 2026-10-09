@@ -49,6 +49,8 @@ from threetears.core.security.secret_refs import validate_ref
 
 __all__ = [
     "DESTINATION_GRAMMAR",
+    "PARTITION_COLUMN_GRAMMAR",
+    "check_partition_column",
     "DriverExportUnsupportedError",
     "ExportConfig",
     "ExportLocation",
@@ -274,12 +276,35 @@ def check_destination(destination: str) -> str:
     return destination
 
 
-def redshift_unload_statement(select: str, config: ExportConfig, destination: str) -> tuple[str, ExportLocation]:
+#: a column an export may be partitioned by: one plain identifier
+PARTITION_COLUMN_GRAMMAR: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][A-Za-z0-9_$]{0,126}")
+
+
+def check_partition_column(column: str) -> str:
+    """refuse a partition column that is not one plain identifier.
+
+    :param column: the column
+    :ptype column: str
+    :return: the column unchanged
+    :rtype: str
+    :raises ExportRefusedError: when it is not a plain identifier
+    """
+    if not PARTITION_COLUMN_GRAMMAR.fullmatch(column):
+        raise ExportRefusedError(f"an export's partition column {column!r} must be one plain identifier")
+    return column
+
+
+def redshift_unload_statement(
+    select: str, config: ExportConfig, destination: str, *, partition_by: str | None = None
+) -> tuple[str, ExportLocation]:
     """the one ``UNLOAD`` an export runs, and where its files will be.
 
     Allow-listed: the ``SELECT`` quoted as a literal, the configured bucket and prefix, the
     configured role, parquet, a verbose manifest (it lists each file's row count), and no
-    ``ALLOWOVERWRITE``, so an export never replaces files already at its destination.
+    ``ALLOWOVERWRITE``, so an export never replaces files already at its destination. Partitioned
+    (``partition_by``), the files sit one directory per value under the destination
+    (``column=value/``) and keep the column (``INCLUDE``); still one statement, one destination,
+    one manifest.
 
     :param select: the ``SELECT``, already admitted as a read the caller may run
     :ptype select: str
@@ -287,18 +312,21 @@ def redshift_unload_statement(select: str, config: ExportConfig, destination: st
     :ptype config: ExportConfig
     :param destination: the relative destination
     :ptype destination: str
+    :param partition_by: a column to divide the files by, one directory per value; None for none
+    :ptype partition_by: str | None
     :return: the statement, and where its files will be
     :rtype: tuple[str, ExportLocation]
     :raises ExportRefusedError: when the ``SELECT`` cannot be quoted or the destination is refused
     """
     check_embeddable(select, "the export's SELECT")
     check_destination(destination)
+    partitioned = "" if partition_by is None else f" PARTITION BY ({check_partition_column(partition_by)}) INCLUDE"
     object_prefix = f"{config.prefix}{destination}/"
     quoted = select.replace("'", "''")
     role = "default" if config.iam_role == DEFAULT_ROLE else f"'{config.iam_role}'"
     statement = (
         f"UNLOAD ('{quoted}') TO 's3://{config.bucket}/{object_prefix}' "
-        f"IAM_ROLE {role} FORMAT AS PARQUET MANIFEST VERBOSE"
+        f"IAM_ROLE {role} FORMAT AS PARQUET{partitioned} MANIFEST VERBOSE"
     )
     location = ExportLocation(
         bucket=config.bucket, object_prefix=object_prefix, manifest_path=f"{object_prefix}manifest"
