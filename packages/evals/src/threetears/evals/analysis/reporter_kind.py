@@ -688,7 +688,13 @@ class _RecordingClient:
         return result
 
     def telemetry(self, bound_model: str) -> CandidateTelemetry:
-        """What every call this cell made cost, as the candidate role's usage.
+        """What every call this cell made cost, as the candidate role's usage, and how many returned.
+
+        Each generator call that returned is a turn the candidate delivered (``turns_delivered``), so a memo
+        refused for soundness, cut at its output cap, or failed in its repair call AFTER a call returned and
+        was billed keeps that call's time and spend in the arm's cost and latency
+        (:func:`~threetears.evals.contracts.result_condition.delivered_a_turn`). Zero when the first call
+        itself raised: nothing was delivered, and nothing is averaged in.
 
         Args:
             bound_model: The model to attribute a call to when the provider named none.
@@ -706,7 +712,7 @@ class _RecordingClient:
                 cost_usd=getattr(result, "cost_usd", None),
                 price_source=getattr(result, "price_source", None),
             )
-        return CandidateTelemetry(usage=ledger.rows())
+        return CandidateTelemetry(usage=ledger.rows(), turns_delivered=len(self.results))
 
     def progress(self, bound_model: str) -> Callable[[], CandidateOutput]:
         """The reading a cell registers with its sink: every call returned so far, and its cost.

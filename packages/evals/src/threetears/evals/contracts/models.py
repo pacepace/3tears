@@ -96,10 +96,11 @@ what tier it stood on, so nothing written under v7 loads.
 **Within v8, not a bump**: ``EvalResult.turns_delivered`` joined as an OPTIONAL field — how many turns the
 candidate delivered, which decides whether a model failure's time and spend are a turn's. A result written
 before it carries none and still means what it says; it reads as None, "nothing counted", and every reader
-falls back to the failure's cause alone (``delivered_a_turn``). This is the one deliberate exception to v6's
-"no field is read as absent because older": requiring it would drop every stored result to learn a count
-the old ones never had, and their honest reading is "unknown", which None states. Likewise the decision
-surface's ``CellFacts.n_candidate_failed`` and ``n_no_turn``, None on an analysis frozen before them.
+falls back to the failure's cause alone (``delivered_a_turn``). It, and the decision surface's
+``CellFacts.n_candidate_failed`` and ``n_no_turn`` (and their ``StratumFacts`` twins), None on an analysis
+frozen before them, are deliberate exceptions to v6's "no field is read as absent because older": requiring
+them would drop every stored document to learn counts the old ones never had, and their honest reading is
+"unknown", which None states.
 """
 
 

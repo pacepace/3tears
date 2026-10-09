@@ -45,7 +45,7 @@ from threetears.evals.contracts import (
     SweptAxis,
     resolve_variant_identity,
 )
-from threetears.evals.contracts.metrics import MetricDescriptor
+from threetears.evals.contracts.metrics import MeasurePopulation, MetricDescriptor
 from threetears.evals.contracts.host import (
     MeasureRegistry,
     CANDIDATE_MODEL_LEVER,
@@ -312,13 +312,13 @@ class TestALeverIsCheckedAgainstTheMechanismItDeclares:
         assert _row(bundle, "model").mechanism.reason == "not_declared"
 
 
-#: A host-declared, per-result latency measure a lever can act on, declaring ``scored`` — which a turn's time
-#: is read as ``delivered``, so a call the model refused straight away is no observation of it.
+#: A host-declared, per-result latency measure a lever can act on. Declaring ``scored`` or nothing, a turn's
+#: time is read as ``delivered``, so a call the model refused straight away is no observation of it.
 _RETRIEVE_MS = "retrieve_ms"
 
 
-def _retrieve_profile() -> HostProfile:
-    """The toy profile, with ``chunk_tokens`` acting on a host latency measure that declares ``scored``."""
+def _retrieve_profile(population: MeasurePopulation | None) -> HostProfile:
+    """The toy profile, with ``chunk_tokens`` acting on a host latency measure declaring ``population``."""
     descriptor = MetricDescriptor(
         name=_RETRIEVE_MS,
         data_type="numeric",
@@ -329,7 +329,7 @@ def _retrieve_profile() -> HostProfile:
         higher_is_better=False,
         unit="ms",
         merit_axis="latency",
-        population="scored",
+        population=population,
     )
     declarations = tuple(
         replace(declared, acts_on=_RETRIEVE_MS) if declared.name == "chunk_tokens" else declared
@@ -360,14 +360,17 @@ def _retrieved(*, refuse: tuple[str, ...] = ()) -> Callable[[EvalResult], EvalRe
 class TestAMechanismOnATurnsTimeIsReadOverTurnsTaken:
     """A lever acting on a latency measure is checked over the turns its levels took, as the cells read it."""
 
-    def test_a_refused_call_s_round_trip_does_not_move_the_mechanism(self) -> None:
+    @pytest.mark.parametrize("population", ["scored", None])
+    def test_a_refused_call_s_round_trip_does_not_move_the_mechanism(
+        self, population: MeasurePopulation | None
+    ) -> None:
         refused = TOYHOST_DOCUMENTS[: len(TOYHOST_DOCUMENTS) // 2]
         bundle = _bundle(
             [
                 _Arm(_chunk_batch(256), alter=_retrieved(refuse=refused)),
                 _Arm(_chunk_batch(1024), alter=_retrieved()),
             ],
-            profile=_retrieve_profile(),
+            profile=_retrieve_profile(population),
         )
         mechanism = _row(bundle, "chunk_tokens").mechanism
         # Read over every result, the refusals' 50 ms would pull the narrow level's mean far below 1 s.
