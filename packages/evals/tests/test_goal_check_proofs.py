@@ -12,22 +12,32 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import pytest
+
 from threetears.evals.analysis import assemble_context_bundle
 from threetears.evals.analysis.bundle import goal_check_proofs_of
 from threetears.evals.analysis.report import DisclosureBlock, build_code_only_report
-from threetears.evals.contracts import ControlEndState, EvalRun, GoalCheckControls, GoalStateOutcome
+from threetears.evals.contracts import ControlEndState, EvalRun, EvalTestCase, GoalCheckControls, GoalStateOutcome
+from threetears.evals.contracts.errors import ValidationFailedError
+from threetears.evals.contracts.models import stored_variation
 from threetears.evals.contracts.storage import EvalStorage
 from threetears.evals.ops.summary import GoalCheckSummary, summarize_run
 from threetears.evals.run import start_run
-from threetears.evals.run.check_controls import goal_check_proofs
+from threetears.evals.run.check_controls import (
+    check_discriminations,
+    control_end_state,
+    goal_check_proofs,
+    refuse_non_discriminating_checks,
+)
 from threetears.evals.run.launch import LaunchHost
+from threetears.evals.run.runner import grade_goal_checks
 from threetears.evals.storage.memory import InMemoryDocumentStore
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_SUBJECT, ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.launch import toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template
+from packages.evals.tests.fixtures.toyhost.run import EVERY_FIELD_EMITTED, RUN_MODELS, toyhost_template
 
 
 def _uncontrolled() -> Any:
@@ -170,3 +180,84 @@ class TestTheBundleFoldsEachCheckAcrossItsRuns:
         disclosed = [text for text in texts if text.startswith("Goal check ")]
         assert len(disclosed) == len(checks)
         assert all("is not shown to measure the behaviour" in text for text in disclosed)
+
+
+# --- a control reads its parameters as a case stores them ---------------------------------------------
+
+
+def _reading_variation(tail: str, stated: Any) -> tuple[Any, str]:
+    """The toy template with one act check that also reads a case parameter, its control stating ``stated``."""
+    template = toyhost_template()
+    controls = template.goal_check_controls
+    assert controls is not None
+    (entry,) = controls.checks
+    check = f"{EVERY_FIELD_EMITTED} and {tail}"
+    end_state = controls.end_states[entry.control].model_copy(update={"variation": {"p": stated}})
+    return (
+        template.model_copy(
+            update={
+                "goal_state_checks": [check],
+                "goal_check_controls": GoalCheckControls(
+                    checks=[entry.model_copy(update={"check": check})], end_states={entry.control: end_state}
+                ),
+            }
+        ),
+        check,
+    )
+
+
+def _on_a_case(template: Any, check: str, stated: Any) -> bool:
+    """The check's verdict on a cell that did what the control states, under a case stored with ``stated``."""
+    profile = toyhost_profile()
+    controls = template.goal_check_controls
+    case = EvalTestCase(
+        scope_id=TOYHOST_SCOPE, template_id=template.id, variation_params=stored_variation({"p": stated})
+    )
+    acted = control_end_state(template, next(iter(controls.end_states.values())), world=profile.world)
+    (outcome,) = grade_goal_checks(
+        [check],
+        ledger=acted.ledger,
+        end_state=acted.end_state,
+        fired=acted.fired,
+        variation=case.variation_params,
+        world=profile.world,
+    )
+    return outcome.passed
+
+
+class TestAControlCannotProveACheckOnATypeNoCaseHolds:
+    """A control may state any JSON value as a parameter, but a case stores each as one string (#665).
+
+    A check reading a parameter as a number, a list or a bool passed its control and was stamped proven,
+    then failed every real case: a report showing a proven check at a 0% pass rate.
+    """
+
+    @pytest.mark.parametrize(
+        ("tail", "stated", "named"),
+        [
+            ("variation.p == 3", 3, "int"),
+            ('variation.p == ["eu", "us"]', ["eu", "us"], "list"),
+            ("variation.p == True", True, "bool"),
+        ],
+    )
+    def test_it_is_refuted_at_launch_and_refused_at_authoring(self, tail: str, stated: Any, named: str) -> None:
+        template, check = _reading_variation(tail, stated)
+        profile = toyhost_profile()
+
+        assert not _on_a_case(template, check, stated), "the premise: no stored case can pass this check"
+        assert goal_check_proofs(template, profile=profile) == {check: "refuted"}
+        (discrimination,) = check_discriminations(template, profile=profile)
+        assert not discrimination.controlled.passed, "the control was evaluated on a type no case holds"
+        with pytest.raises(ValidationFailedError, match=f"states variation.p as a {named}"):
+            refuse_non_discriminating_checks(template, profile=profile)
+
+    def test_a_string_parameter_is_proven_and_grades_the_same_on_a_case(self) -> None:
+        template, check = _reading_variation('variation.p == "3"', "3")
+        assert goal_check_proofs(template, profile=toyhost_profile()) == {check: "proven"}
+        assert _on_a_case(template, check, "3")
+
+    def test_a_check_reading_a_parameter_as_a_list_is_refused_before_it_is_proven(self) -> None:
+        template, check = _reading_variation('intersects(["eu"], variation.p)', "eu")
+        assert goal_check_proofs(template, profile=toyhost_profile()) == {check: "refuted"}
+        with pytest.raises(ValidationFailedError, match=r"intersects\(\) over variation.p"):
+            refuse_non_discriminating_checks(template, profile=toyhost_profile())

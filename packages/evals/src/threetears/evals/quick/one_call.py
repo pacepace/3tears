@@ -86,6 +86,7 @@ from threetears.evals.contracts import (
     confusion_cell,
     withhold_failure_detail,
 )
+from threetears.evals.contracts.models import stored_variation
 from threetears.evals.contracts.host import (
     SHARED_CORE,
     ApparatusError,
@@ -677,11 +678,6 @@ def _case_payload(case: dict[str, Any], label: str | None, seed: dict[str, Any] 
     return {_CASE_KEY: case, **labelled, **seeded}
 
 
-def _flat(value: Any) -> str:
-    """One case field as the engine's flat-string view of what varies."""
-    return value if isinstance(value, str) else json.dumps(value, sort_keys=True)
-
-
 @dataclass(frozen=True)
 class CallableArm:
     """One arm a one-call launch runs: the candidate, the model its run is labelled by, and its other levers.
@@ -1070,7 +1066,7 @@ async def run_arms(
             id=f"{template_id}-{index}",
             scope_id=scope_id,
             template_id=template_id,
-            variation_params={key: _flat(value) for key, value in case.items()},
+            variation_params=stored_variation(case),
             host_payload=_case_payload(
                 case, None if labels is None else labels[index], None if seeds is None else seeds[index]
             ),

@@ -18,6 +18,7 @@ change they are dropped and regenerated, not migrated.
 
 from __future__ import annotations
 
+import json
 import math
 import uuid
 from collections.abc import Callable, Mapping
@@ -505,7 +506,9 @@ class ControlEndState(EvalDocumentModel):
         default_factory=dict,
         description=(
             "The case parameters the checks are evaluated under, for a check that reads variation.*. "
-            "The do-nothing control is evaluated under the same parameters, so only the behaviour differs."
+            "The do-nothing control is evaluated under the same parameters, so only the behaviour differs. "
+            "Each value is a string, as a case stores it: a control stating another type is refused, since "
+            "a check proven under it would grade differently on every case."
         ),
     )
     fired: list[str] = Field(
@@ -1486,6 +1489,24 @@ class CatalogRubricDim(EvalDocumentModel):
         if v != "rubric_dim":
             raise ValueError(f"doc_type must be 'rubric_dim', got '{v}'")
         return v
+
+
+def stored_variation(params: Mapping[str, Any]) -> dict[str, str]:
+    """Case parameters as a case stores them: each a string, a non-string one as its sorted-key JSON.
+
+    ``EvalTestCase.variation_params`` is a flat string map, so whatever a parameter was, a goal check reads
+    it as one string. Whatever else evaluates a check under parameters (a control end state's) goes through
+    here, so it reads the types a real case holds and cannot pass on one no case could have.
+
+    Args:
+        params: The parameters, by name.
+
+    Returns:
+        The same names, each value a string: verbatim when it already is one.
+    """
+    return {
+        name: value if isinstance(value, str) else json.dumps(value, sort_keys=True) for name, value in params.items()
+    }
 
 
 # =============================================================================
@@ -4237,6 +4258,7 @@ class EvalCassette(EvalDocumentModel):
 
 
 __all__ = [
+    "stored_variation",
     "ApparatusSettingValue",
     "MeteredCallOrigin",
     "CANDIDATE_SPEAKER",
