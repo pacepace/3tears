@@ -71,9 +71,13 @@ from threetears.core.security.identity_token import (
     principal_from_claims,
     verify_identity_token,
 )
-from threetears.core.security.delegated_token import DelegatedTokenError, verify_delegation_at_pod
+from threetears.core.security.delegated_token import (
+    DelegatedKeyNotFoundError,
+    DelegatedTokenError,
+    verify_delegation_at_pod,
+)
 from threetears.core.security.door_request import RegistrationKey
-from threetears.core.security.identity_token import PLATFORM_CUSTOMER_SENTINEL
+from threetears.core.security.identity_token import principal_from
 from threetears.core.security.proxy_assertion import verify_proxy_assertion
 from threetears.nats import (
     SYNC_REPLY_BUDGET_SECONDS,
@@ -2875,19 +2879,24 @@ class ToolServer:
                 claims = verify_delegation_at_pod(
                     token, jwks=self._load_pod_jwks(request.tool_name), pod_id=self._pod_id, correlation_id=correlation
                 )
-            except DelegatedTokenError:
-                # a registry re-key, or a stale cache: refresh once (debounced there) and verify again
+            except DelegatedKeyNotFoundError:
+                # a registry re-key, or a stale cache, and only that: refresh once (debounced there)
                 if self._jwks_refresh is not None:
                     await self._jwks_refresh()
                 claims = verify_delegation_at_pod(
                     token, jwks=self._load_pod_jwks(request.tool_name), pod_id=self._pod_id, correlation_id=correlation
                 )
-            customer = None if claims.customer_id == PLATFORM_CUSTOMER_SENTINEL else UUID(claims.customer_id)
+            # the conversation the agent's user assertion used to bind: the registry signs it in
+            conversation = str(context.conversation_id) if context.conversation_id is not None else None
+            if claims.conversation_id != conversation:
+                raise DelegatedTokenError("the delegation was minted for another conversation than the call's")
+            # the one reading a token's principal gets, so a tool pod's call keeps its mark
+            principal = principal_from(claims.agent_id, claims.customer_id)
             verified_context = context.model_copy(
                 update={
-                    "agent_id": UUID(claims.agent_id),
+                    "agent_id": principal.principal_id,
                     "user_id": UUID(claims.user_id) if claims.user_id is not None else None,
-                    "customer_id": customer,
+                    "customer_id": principal.customer_id,
                 }
             )
         except (DelegatedTokenError, IdentityTokenError, ValueError) as exc:
@@ -2898,7 +2907,7 @@ class ToolServer:
             )
             result = (request, f"delegation verification failed ({reason})", False)
         else:
-            result = (request.model_copy(update={"context": verified_context}), None, False)
+            result = (request.model_copy(update={"context": verified_context}), None, principal.is_tool_pod)
         return result
 
     async def _verify_proxy_assertion(self, request: CallRequest) -> _AssertionGateRefusal | None:

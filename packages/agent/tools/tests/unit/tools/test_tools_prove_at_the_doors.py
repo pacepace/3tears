@@ -20,7 +20,7 @@ from threetears.core.security import (
     sign_identity_token,
     verify_door_request,
 )
-from threetears.core.security.identity_token import IdentityClaims
+from threetears.core.security.identity_token import PLATFORM_CUSTOMER_SENTINEL, IdentityClaims
 from threetears.core.testing.replay_guard import FakeReplayGuard
 from threetears.media.contracts import ObjectHandle
 
@@ -311,11 +311,19 @@ async def test_the_tool_server_proves_a_calls_delegation_with_its_registration_k
 
 
 class TestADeclaringPodTakesItsCallerFromTheDelegation:
-    """Chunk 10e, per pod: a pod given the delegation in place of the agent's token verifies it itself."""
+    """a pod given the delegation in place of the agent's token verifies it itself."""
 
     @staticmethod
-    def _payload(*, pod_id: str, act: str, corr: str | None = None) -> dict[str, Any]:
-        payload = signed_call_payload(pod_id=pod_id, customer_id=_CUSTOMER)
+    def _payload(
+        *,
+        pod_id: str,
+        act: str,
+        corr: str | None = None,
+        customer: str | None = None,
+        conversation: UUID | None = None,
+        minted_conversation: UUID | None = None,
+    ) -> dict[str, Any]:
+        payload = signed_call_payload(pod_id=pod_id, customer_id=_CUSTOMER, conversation_id=conversation)
         context = payload["context"]
         now = int(time.time())
         context["delegated_token"] = mint_delegated_token(
@@ -323,7 +331,8 @@ class TestADeclaringPodTakesItsCallerFromTheDelegation:
             kid="registry-1",
             agent_id="06ac4016-baf3-7422-8000-31513802654e",
             pod_id=act,
-            customer_id=f"{_CUSTOMER}",
+            customer_id=customer if customer is not None else f"{_CUSTOMER}",
+            conversation_id=f"{minted_conversation}" if minted_conversation is not None else None,
             user_id=None,
             doors=("hub.object.resolve",),
             holder_jkt=jwk_thumbprint(_POD_PUB),
@@ -356,6 +365,37 @@ class TestADeclaringPodTakesItsCallerFromTheDelegation:
         assert scope.context.customer_id == _CUSTOMER
         assert scope.context.identity_token is None
         assert scope.door_credential() == DoorCredential(token=scope.context.delegated_token, holder_key=_POD)
+        assert scope.principal_is_tool_pod is False
+
+    async def test_a_tool_pod_caller_keeps_its_mark(self) -> None:
+        """the platform sentinel reads as a tool pod here exactly as on the caller's own token."""
+        server, rec, tool = self._server(declares=True)
+        payload = self._payload(pod_id="door-pod", act="door-pod", customer=PLATFORM_CUSTOMER_SENTINEL)
+        await deliver_call(server, payload, pod_id="door-pod")
+        assert rec.last_reply[1].success is True, rec.last_reply[1].error
+        (scope,) = tool.scopes
+        assert scope.principal_is_tool_pod is True
+        assert scope.context.customer_id is None
+
+    async def test_the_call_is_held_to_the_conversation_the_registry_signed(self) -> None:
+        conversation = UUID("06ac4016-baf3-7422-8000-000000000c01")
+        server, rec, tool = self._server(declares=True)
+        await deliver_call(
+            server,
+            self._payload(
+                pod_id="door-pod", act="door-pod", conversation=conversation, minted_conversation=conversation
+            ),
+            pod_id="door-pod",
+        )
+        assert rec.last_reply[1].success is True, rec.last_reply[1].error
+        for minted in (UUID("06ac4016-baf3-7422-8000-000000000c02"), None):
+            server, rec, tool = self._server(declares=True)
+            payload = self._payload(
+                pod_id="door-pod", act="door-pod", conversation=conversation, minted_conversation=minted
+            )
+            await deliver_call(server, payload, pod_id="door-pod")
+            assert rec.last_reply[1].success is False
+            assert tool.scopes == []
 
     @pytest.mark.parametrize(("act", "corr"), [("another-pod", None), ("door-pod", "another-call")])
     async def test_a_delegation_for_another_pod_or_call_is_refused(self, act: str, corr: str | None) -> None:
@@ -363,6 +403,33 @@ class TestADeclaringPodTakesItsCallerFromTheDelegation:
         await deliver_call(server, self._payload(pod_id="door-pod", act=act, corr=corr), pod_id="door-pod")
         assert rec.last_reply[1].success is False
         assert tool.scopes == []
+
+    async def test_only_a_registry_key_the_pod_has_not_seen_refreshes_its_keys(self) -> None:
+        """a re-key is found by one refresh; a token that fails for any other reason fetches nothing."""
+        stale = {"keys": list(jwks_provider()["keys"])}
+        refreshes: list[int] = []
+
+        async def _refresh() -> bool:
+            refreshes.append(1)
+            stale["keys"] = [*jwks_provider()["keys"], *build_jwks({"registry-1": _REGISTRY_PUB})["keys"]]
+            return True
+
+        server, rec = recording_tool_server(
+            pod_id="door-pod",
+            jwks_provider=lambda: stale,
+            jwks_refresh=_refresh,
+            assertion_replay_guard=FakeReplayGuard(),
+            registration_key=lambda: RegistrationKey(_POD),
+        )
+        server.register(ScopeRecordingTool())
+        await deliver_call(server, self._payload(pod_id="door-pod", act="door-pod"), pod_id="door-pod")
+        assert rec.last_reply[1].success is True, rec.last_reply[1].error
+        assert refreshes == [1]
+        await deliver_call(
+            server, self._payload(pod_id="door-pod", act="door-pod", corr="another-call"), pod_id="door-pod"
+        )
+        assert rec.last_reply[1].success is False
+        assert refreshes == [1]
 
     async def test_a_pod_that_does_not_declare_refuses_a_call_without_the_agents_token(self) -> None:
         server, rec, tool = self._server(declares=False)

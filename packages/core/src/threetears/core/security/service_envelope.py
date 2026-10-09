@@ -41,6 +41,7 @@ from threetears.observe import get_logger
 from threetears.core.security.door_skeleton import (
     DoorAccounting,
     KeysUnavailableError,
+    ServiceEnvelopeError,
     json_object,
     keys_naming,
     window_admits,
@@ -101,10 +102,6 @@ _REFUSED_COUNTER: Final[str] = "service_envelope_refused"
 
 _ALG: Final[str] = "EdDSA"
 _REQUIRED: Final[tuple[str, ...]] = ("iss", "aud", "op", "bh", "jti", "iat", "exp")
-
-
-class ServiceEnvelopeError(Exception):
-    """a service envelope did not verify, or was already used; the reason names the check."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -602,7 +599,7 @@ class EnvelopeJwksSource(Protocol):
         :ptype refresh: bool
         :return: the JWKS
         :rtype: Mapping[str, Any]
-        :raises ServiceEnvelopeError: when no trusted key set is available
+        :raises KeysUnavailableError: when no trusted key set is available
         """
         ...
 
@@ -631,10 +628,10 @@ class PinnedEnvelopeJwks:
         :ptype refresh: bool
         :return: the JWKS
         :rtype: Mapping[str, Any]
-        :raises ServiceEnvelopeError: when no key is pinned
+        :raises KeysUnavailableError: when no key is pinned
         """
         if self._jwks is None:
-            raise ServiceEnvelopeError("no public key is pinned for this sender")
+            raise KeysUnavailableError("no public key is pinned for this sender")
         return self._jwks
 
 

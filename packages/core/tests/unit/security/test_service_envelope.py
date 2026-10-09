@@ -543,3 +543,41 @@ class TestARequiredDoor:
         _, jwks = _keys()
         with pytest.raises(ValueError, match="needs a name"):
             ServiceEnvelopeDoor(switch=None, issuer="i", audience="a", jwks=_Jwks(jwks), replay_guard=FakeReplayGuard())
+
+
+def _envelope_refused(cause: str) -> float:
+    from prometheus_client import REGISTRY  # noqa: PLC0415
+
+    value = REGISTRY.get_sample_value("service_envelope_refused_total", {"door": "claim_grant", "cause": cause})
+    return value or 0.0
+
+
+class TestServiceEnvelopeDoorCauses:
+    """each refusal is counted under its own cause, the same causes the door-request door uses."""
+
+    @pytest.mark.parametrize("source", ["pinned-none", "source-fails"])
+    async def test_no_keys_is_counted_as_keys_unavailable(self, source: str) -> None:
+        from threetears.core.security import PinnedEnvelopeJwks  # noqa: PLC0415
+
+        class _Fails:
+            async def get_jwks(self, *, refresh: bool = False):
+                raise ServiceEnvelopeError("the sender's JWKS could not be fetched")
+
+        priv, _ = _keys()
+        before = _envelope_refused("keys_unavailable")
+        keys = PinnedEnvelopeJwks(None) if source == "pinned-none" else _Fails()
+        assert await _door(keys).admit(_with_envelope(_mint(priv)), op="ensure") is False
+        assert _envelope_refused("keys_unavailable") == before + 1
+
+    async def test_a_message_that_is_not_a_json_object_is_counted_as_malformed(self) -> None:
+        _, jwks = _keys()
+        before = _envelope_refused("malformed")
+        assert await _door(_Jwks(jwks)).admit_message(b"[]", op="ensure") is False
+        assert _envelope_refused("malformed") == before + 1
+
+    async def test_a_forgery_is_counted_as_unverified_not_as_missing_keys(self) -> None:
+        forger, _ = _keys()
+        _, jwks = _keys()
+        before = (_envelope_refused("unverified"), _envelope_refused("keys_unavailable"))
+        assert await _door(_Jwks(jwks)).admit(_with_envelope(_mint(forger)), op="ensure") is False
+        assert (_envelope_refused("unverified"), _envelope_refused("keys_unavailable")) == (before[0] + 1, before[1])

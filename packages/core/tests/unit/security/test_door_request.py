@@ -343,6 +343,44 @@ class TestTheDoor:
         door = _door(keys=_Keys(first={}))
         assert not (await _counted("keys_unavailable", door.admit(sent, op="query"))).admitted
 
+    @pytest.mark.parametrize("source", ["pinned-none", "source-fails"])
+    async def test_a_key_source_that_has_no_keys_is_counted_as_keys_unavailable(self, source: str) -> None:
+        """the source protocol's "no keys" is one error, so the door refuses rather than raising."""
+        from threetears.core.security import PinnedEnvelopeJwks, ServiceEnvelopeError  # noqa: PLC0415
+
+        class _Fails:
+            async def get_jwks(self, *, refresh: bool = False) -> Mapping[str, Any]:
+                raise ServiceEnvelopeError("the hub JWKS could not be fetched")
+
+        keys = PinnedEnvelopeJwks(None) if source == "pinned-none" else _Fails()
+        sent = DoorCredential(token=_agent_token(), holder_key=_AGENT).present(_BODY, door="l3", op="query")
+        assert not (await _counted("keys_unavailable", _door(keys=keys).admit(sent, op="query"))).admitted
+
+    @pytest.mark.parametrize(
+        ("fields", "expected"),
+        [
+            ({"identity_token": "own"}, "agent-1"),
+            ({"user_identity_token": "own"}, "agent-1"),
+            ({}, "unclaimed"),
+            ({"identity_token": "not-a-token"}, "unclaimed"),
+        ],
+    )
+    async def test_a_request_without_a_proof_is_counted_under_the_sender_its_token_claims(
+        self, fields: dict[str, str], expected: str
+    ) -> None:
+        """the door reads the sender off the token it already reads; no caller attributes it by hand."""
+        switch = DoorProofSwitch(_WINDOW, today=lambda: date(2026, 10, 9))
+        door = DoorRequestDoor(
+            switch=switch,
+            jwks=_Keys(first=_JWKS),
+            hub_issuer="hub",
+            replay_guard=InProcessEnvelopeLedger(retention=DOOR_PROOF_REPLAY_TTL),
+            accepts_delegated=True,
+        )
+        body = {**_BODY, **{name: _agent_token() if value == "own" else value for name, value in fields.items()}}
+        assert (await door.admit(body, op="query")).admitted
+        assert [sender.claimed_sender for sender in switch.absent_senders()] == [expected]
+
     async def test_a_hub_rekey_is_found_by_one_refresh(self) -> None:
         keys = _Keys(first=build_jwks({"old-1": generate_signing_keypair()[1]}), after_refresh=_JWKS)
         sent = DoorCredential(token=_agent_token(), holder_key=_AGENT).present(_BODY, door="l3", op="query")
@@ -366,8 +404,8 @@ def test_a_datasource_operation_is_read_off_its_subject() -> None:
 
     set_default_namespace("test")
     assert datasource_query_op(Subjects.datasource_query("warehouse")) == "warehouse.query"
-    dotted = Subjects.datasource_query("central.reporting")
-    assert datasource_query_op(dotted) == f"{dotted.path.split('.')[-2]}.query"
+    # a dot in the name would split the subject; the builder writes it as a hyphen, and the op follows
+    assert datasource_query_op(Subjects.datasource_query("central.reporting")) == "central-reporting.query"
 
 
 class TestTheHashFrameIsInjective:

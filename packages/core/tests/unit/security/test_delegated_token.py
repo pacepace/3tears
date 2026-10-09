@@ -160,3 +160,59 @@ class TestThePodVerifiesItsOwnDelegation:
         )
         with pytest.raises(DelegatedTokenError, match="not an EdDSA delegated token"):
             verify_delegation_at_pod(token, jwks=_JWKS, pod_id="pod-1", correlation_id="corr-1")
+
+
+class TestThePodsChecksStandOnTheirOwn:
+    """each check the pod makes refuses on its own, not only behind the audience."""
+
+    @staticmethod
+    def _signed(**overrides: object) -> str:
+        import jwt  # noqa: PLC0415
+
+        from threetears.core.security import DELEGATED_TOKEN_ISSUER, DELEGATED_TOKEN_TYPE  # noqa: PLC0415
+
+        now = int(time.time())
+        payload: dict[str, object] = {
+            "iss": DELEGATED_TOKEN_ISSUER,
+            "aud": ["l3.query", "tool-pod:pod-1"],
+            "sub": "agent-1",
+            "act": "pod-1",
+            "customer_id": "cust-1",
+            "user_id": None,
+            "cnf": "jkt-1",
+            "corr": "corr-1",
+            "iat": now,
+            "exp": now + 60,
+            **overrides,
+        }
+        return jwt.encode(
+            payload, key=_REGISTRY, algorithm="EdDSA", headers={"kid": "registry-1", "typ": DELEGATED_TOKEN_TYPE}
+        )
+
+    def test_a_delegation_addressed_to_this_pod_but_naming_another_actor_is_refused(self) -> None:
+        from threetears.core.security import verify_delegation_at_pod  # noqa: PLC0415
+
+        token = self._signed(act="pod-2")
+        with pytest.raises(DelegatedTokenError, match="another pod as its actor"):
+            verify_delegation_at_pod(token, jwks=_JWKS, pod_id="pod-1", correlation_id="corr-1")
+
+    def test_the_conversation_travels_signed(self) -> None:
+        from threetears.core.security import verify_delegation_at_pod  # noqa: PLC0415
+
+        token = self._signed(conversation_id="conv-1")
+        claims = verify_delegation_at_pod(token, jwks=_JWKS, pod_id="pod-1", correlation_id="corr-1")
+        assert claims.conversation_id == "conv-1"
+        bare = verify_delegation_at_pod(self._signed(), jwks=_JWKS, pod_id="pod-1", correlation_id="corr-1")
+        assert bare.conversation_id is None
+
+    def test_only_an_unknown_key_is_told_apart_for_a_refresh(self) -> None:
+        from threetears.core.security import DelegatedKeyNotFoundError, verify_delegation_at_pod  # noqa: PLC0415
+
+        with pytest.raises(DelegatedKeyNotFoundError):
+            verify_delegation_at_pod(
+                self._signed(), jwks=build_jwks({"hub-1": _HUB_PUB}), pod_id="pod-1", correlation_id="corr-1"
+            )
+        expired = self._signed(iat=int(time.time()) - 600, exp=int(time.time()) - 300)
+        with pytest.raises(DelegatedTokenError) as caught:
+            verify_delegation_at_pod(expired, jwks=_JWKS, pod_id="pod-1", correlation_id="corr-1")
+        assert not isinstance(caught.value, DelegatedKeyNotFoundError)

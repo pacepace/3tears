@@ -43,6 +43,7 @@ __all__ = [
     "DELEGATED_TOKEN_MAX_LIFETIME",
     "DELEGATED_TOKEN_TYPE",
     "DelegatedClaims",
+    "DelegatedKeyNotFoundError",
     "DelegatedTokenError",
     "DelegatedTokenSigner",
     "DoorCaller",
@@ -93,6 +94,10 @@ class DelegatedTokenError(Exception):
     """a delegated token, or a caller's proof, did not verify; the reason names the check."""
 
 
+class DelegatedKeyNotFoundError(DelegatedTokenError):
+    """no key in the verifier's JWKS carries the delegated token's kid: a refresh may find it."""
+
+
 class ProofAbsentError(DelegatedTokenError):
     """the caller presented a token and no proof of possession: the door's window decides."""
 
@@ -107,6 +112,8 @@ class DelegatedClaims:
     :ivar user_id: the user the call runs as, if any
     :ivar holder_jkt: the pod key's thumbprint the pod must prove
     :ivar correlation_id: the call it was minted for
+    :ivar conversation_id: the conversation the call belongs to, if any; a pod sent the delegation
+        in place of the agent's token and user assertion holds the call to it
     """
 
     agent_id: str
@@ -115,6 +122,7 @@ class DelegatedClaims:
     user_id: str | None
     holder_jkt: str
     correlation_id: str
+    conversation_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,6 +171,7 @@ def mint_delegated_token(
     correlation_id: str,
     deadline: int,
     now: int | None = None,
+    conversation_id: str | None = None,
 ) -> str:
     """sign a delegated token for one forwarded call.
 
@@ -188,6 +197,8 @@ def mint_delegated_token(
     :ptype deadline: int
     :param now: unix-seconds issue time; the current time when ``None``
     :ptype now: int | None
+    :param conversation_id: the call's conversation, if it has one
+    :ptype conversation_id: str | None
     :return: the compact JWS
     :rtype: str
     :raises ValueError: when the deadline is not after now, or further than the maximum, or no door is named
@@ -209,6 +220,7 @@ def mint_delegated_token(
         "user_id": user_id,
         "cnf": holder_jkt,
         "corr": correlation_id,
+        "conversation_id": conversation_id,
         "iat": issued,
         "exp": deadline,
     }
@@ -270,6 +282,7 @@ class DelegatedTokenSigner:
         correlation_id: str,
         lifetime: timedelta,
         doors: Iterable[str] = DEFAULT_DELEGATED_DOORS,
+        conversation_id: str | None = None,
     ) -> str:
         """a delegated token for one forwarded call, living ``lifetime`` (capped at the maximum).
 
@@ -289,6 +302,8 @@ class DelegatedTokenSigner:
         :ptype lifetime: timedelta
         :param doors: the doors the call may reach
         :ptype doors: Iterable[str]
+        :param conversation_id: the call's conversation, if it has one
+        :ptype conversation_id: str | None
         :return: the compact JWS
         :rtype: str
         """
@@ -306,6 +321,7 @@ class DelegatedTokenSigner:
             correlation_id=correlation_id,
             deadline=now + seconds,
             now=now,
+            conversation_id=conversation_id,
         )
 
 
@@ -322,6 +338,23 @@ def verify_delegated_token(token: str, *, jwks: Mapping[str, Any], door: str) ->
     :rtype: DelegatedClaims
     :raises DelegatedTokenError: naming the check that failed
     """
+    return _verified_delegation(token, jwks=jwks, audience=door)
+
+
+def _verified_delegation(token: str, *, jwks: Mapping[str, Any], audience: str) -> DelegatedClaims:
+    """verify ``token`` as a delegation addressed to ``audience`` -- a door, or a pod.
+
+    :param token: the compact JWS
+    :ptype token: str
+    :param jwks: the hub JWKS, which publishes the registry's key
+    :ptype jwks: Mapping[str, Any]
+    :param audience: a door's name, or :func:`pod_audience` of a pod
+    :ptype audience: str
+    :return: the verified claims
+    :rtype: DelegatedClaims
+    :raises DelegatedKeyNotFoundError: when no key in ``jwks`` carries the token's kid
+    :raises DelegatedTokenError: naming any other check that failed
+    """
     try:
         header = jwt.get_unverified_header(token)
     except jwt.PyJWTError as exc:
@@ -335,7 +368,7 @@ def verify_delegated_token(token: str, *, jwks: Mapping[str, Any], door: str) ->
             key=_public_key(jwks, kid),
             algorithms=["EdDSA"],  # literal pin -- never widen
             issuer=DELEGATED_TOKEN_ISSUER,
-            audience=door,
+            audience=audience,
             leeway=int(ISSUE_TIME_FUTURE_TOLERANCE.total_seconds()),
             options={"require": list(_REQUIRED)},
         )
@@ -344,6 +377,7 @@ def verify_delegated_token(token: str, *, jwks: Mapping[str, Any], door: str) ->
     if int(payload["exp"]) - int(payload["iat"]) > DELEGATED_TOKEN_MAX_LIFETIME.total_seconds():
         raise DelegatedTokenError("the delegated token claims a longer life than the maximum")
     user = payload.get("user_id")
+    conversation = payload.get("conversation_id")
     return DelegatedClaims(
         agent_id=str(payload["sub"]),
         pod_id=str(payload["act"]),
@@ -351,6 +385,7 @@ def verify_delegated_token(token: str, *, jwks: Mapping[str, Any], door: str) ->
         user_id=str(user) if user is not None else None,
         holder_jkt=str(payload["cnf"]),
         correlation_id=str(payload["corr"]),
+        conversation_id=str(conversation) if conversation is not None else None,
     )
 
 
@@ -374,56 +409,29 @@ def verify_delegation_at_pod(
 
     A pod that declares it proves (its registration manifest's ``proves_delegation``) is sent the
     call's delegated token in place of the agent's own token, and takes the caller from it: the
-    registry signed the agent, customer and user from the caller's verified token. The token must
-    be addressed to this pod (:func:`pod_audience`), name it as its actor, and name this call's
-    correlation id.
+    registry signed the agent, customer, user and conversation from the caller's verified tokens. The
+    token must be addressed to this pod (:func:`pod_audience`), name it as its actor, and name this
+    call's correlation id.
 
     :param token: the compact JWS
     :ptype token: str
     :param jwks: the hub JWKS, which publishes the registry's delegated-token key
     :ptype jwks: Mapping[str, Any]
-    :param pod_id: this pod's id, which the token's ``act`` must name
+    :param pod_id: this pod's id, which the token's audience and ``act`` must name
     :ptype pod_id: str
     :param correlation_id: the call's correlation id, which the token's ``corr`` must name
     :ptype correlation_id: str
     :return: the verified claims
     :rtype: DelegatedClaims
-    :raises DelegatedTokenError: naming the check that failed
+    :raises DelegatedKeyNotFoundError: when no key in ``jwks`` carries the token's kid
+    :raises DelegatedTokenError: naming any other check that failed
     """
-    try:
-        header = jwt.get_unverified_header(token)
-    except jwt.PyJWTError as exc:
-        raise DelegatedTokenError(f"malformed delegated token header ({type(exc).__name__})") from exc
-    kid = header.get("kid")
-    if header.get("alg") != _ALG or header.get("typ") != DELEGATED_TOKEN_TYPE or not isinstance(kid, str) or not kid:
-        raise DelegatedTokenError("not an EdDSA delegated token with a kid")
-    try:
-        payload = jwt.decode(
-            token,
-            key=_public_key(jwks, kid),
-            algorithms=["EdDSA"],  # literal pin -- never widen
-            issuer=DELEGATED_TOKEN_ISSUER,
-            audience=pod_audience(pod_id),
-            leeway=int(ISSUE_TIME_FUTURE_TOLERANCE.total_seconds()),
-            options={"require": list(_REQUIRED)},
-        )
-    except jwt.PyJWTError as exc:
-        raise DelegatedTokenError(f"the delegated token does not verify ({type(exc).__name__})") from exc
-    if int(payload["exp"]) - int(payload["iat"]) > DELEGATED_TOKEN_MAX_LIFETIME.total_seconds():
-        raise DelegatedTokenError("the delegated token claims a longer life than the maximum")
-    if payload.get("act") != pod_id:
+    claims = _verified_delegation(token, jwks=jwks, audience=pod_audience(pod_id))
+    if claims.pod_id != pod_id:
         raise DelegatedTokenError("the delegated token names another pod as its actor")
-    if payload.get("corr") != correlation_id:
+    if claims.correlation_id != correlation_id:
         raise DelegatedTokenError("the delegated token was minted for another call")
-    user = payload.get("user_id")
-    return DelegatedClaims(
-        agent_id=str(payload["sub"]),
-        pod_id=str(payload["act"]),
-        customer_id=str(payload["customer_id"]),
-        user_id=str(user) if user is not None else None,
-        holder_jkt=str(payload["cnf"]),
-        correlation_id=str(payload["corr"]),
-    )
+    return claims
 
 
 def verify_door_caller(
@@ -490,7 +498,7 @@ def _public_key(jwks: Mapping[str, Any], kid: str) -> Ed25519PublicKey:
     :ptype kid: str
     :return: the key
     :rtype: Ed25519PublicKey
-    :raises DelegatedTokenError: when no Ed25519 key carries that id
+    :raises DelegatedKeyNotFoundError: when no Ed25519 key carries that id
     """
     try:
         key_set = jwt.PyJWKSet.from_dict(dict(jwks))
@@ -498,5 +506,5 @@ def _public_key(jwks: Mapping[str, Any], kid: str) -> Ed25519PublicKey:
         raise DelegatedTokenError(f"malformed JWKS ({type(exc).__name__})") from exc
     found = next((jwk.key for jwk in key_set.keys if jwk.key_id == kid), None)
     if not isinstance(found, Ed25519PublicKey):
-        raise DelegatedTokenError("no Ed25519 key in the JWKS carries the delegated token's kid")
+        raise DelegatedKeyNotFoundError("no Ed25519 key in the JWKS carries the delegated token's kid")
     return found

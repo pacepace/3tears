@@ -86,10 +86,12 @@ class _ScopeRecordingTool(TearsTool):
 
     def __init__(self) -> None:
         self.contexts: list[Any] = []
+        self.pod_marks: list[bool] = []
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         scope = current_scope()
         self.contexts.append(scope.context if scope is not None else None)
+        self.pod_marks.append(scope.principal_is_tool_pod if scope is not None else False)
         return ToolResult(success=True, content=json.dumps(kwargs))
 
     def mcp_schema(self) -> MCPToolDefinition:
@@ -329,7 +331,7 @@ class TestAToolsOwnRefusalCode:
 
 
 class TestTheForwardedCallCarriesADelegatedToken:
-    """Chunk 10b: the tool pod gets a call-scoped token bound to its own key, not just the caller's."""
+    """the tool pod gets a call-scoped token bound to its own key, not just the caller's."""
 
     @staticmethod
     async def _forward(
@@ -427,11 +429,18 @@ class TestTheForwardedCallCarriesADelegatedToken:
                 iat=int(time.time()),
             )
 
-        door = verify_door_caller(delegated, _proof(pod_key), jwks=jwks, hub_issuer="hub", door="hub.object.resolve", body_hash=body)
+        door = verify_door_caller(
+            delegated, _proof(pod_key), jwks=jwks, hub_issuer="hub", door="hub.object.resolve", body_hash=body
+        )
         assert (door.agent_id, door.pod_id) == (f"{caller}", _SERVING_POD)
         with pytest.raises(DelegatedTokenError):
             verify_door_caller(
-                delegated, _proof(Ed25519PrivateKey.generate()), jwks=jwks, hub_issuer="hub", door="hub.object.resolve", body_hash=body
+                delegated,
+                _proof(Ed25519PrivateKey.generate()),
+                jwks=jwks,
+                hub_issuer="hub",
+                door="hub.object.resolve",
+                body_hash=body,
             )
 
     @pytest.mark.asyncio
@@ -441,7 +450,7 @@ class TestTheForwardedCallCarriesADelegatedToken:
 
     @pytest.mark.asyncio
     async def test_a_declaring_pod_runs_the_call_as_its_caller_without_the_token(self) -> None:
-        """Chunk 10e, per pod: a pod that declares it proves gets the delegation in place of the agent's token."""
+        """a pod that declares it proves gets the delegation in place of the agent's token."""
         pod_key = Ed25519PrivateKey.generate()
         hop, _jwks, caller, tool = await self._forward(pod_key=pod_key, declares=True)
         forwarded = hop.forwarded[0].context
@@ -452,6 +461,9 @@ class TestTheForwardedCallCarriesADelegatedToken:
         (context,) = tool.contexts
         assert context.agent_id == caller
         assert context.identity_token is None
+        # the caller is a tool pod (the platform sentinel): it keeps its mark without its own token
+        assert tool.pod_marks == [True]
+        assert context.customer_id is None
 
     @pytest.mark.asyncio
     async def test_a_pod_that_does_not_declare_is_unchanged(self) -> None:
@@ -475,3 +487,30 @@ class TestTheForwardedCallCarriesADelegatedToken:
         assert forwarded.identity_token
         (context,) = tool.contexts
         assert context.identity_token
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_hub_jwks_keeps_the_token_on_the_call_and_says_so_once(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """the registry cannot tell whether the hub publishes its key, so it strips nothing."""
+        from threetears.core.security import DelegatedTokenSigner  # noqa: PLC0415
+
+        def _unreadable() -> dict[str, Any]:
+            raise RuntimeError("the hub is unreachable")
+
+        delegated_key = Ed25519PrivateKey.generate()
+        proxy = CallProxy(
+            ToolCatalog(),
+            AllowAllAuthorizer(),
+            FakeReplayGuard(),
+            limit_guard=AllowAllLimitGuard(),
+            namespace=_NS,
+            jwks_provider=_unreadable,
+            delegated_signer=DelegatedTokenSigner(
+                signing_key=delegated_key, kid=jwk_thumbprint(delegated_key.public_key())
+            ),
+        )
+        with caplog.at_level("WARNING"):
+            assert proxy.hub_publishes_delegation_key() is False
+            assert proxy.hub_publishes_delegation_key() is False
+        assert sum("hub JWKS unreadable" in record.getMessage() for record in caplog.records) == 1

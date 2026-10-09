@@ -412,6 +412,7 @@ class CallProxy:
         self._usage_emitter = usage_emitter
         self._routing_strategy: RoutingStrategy = routing_strategy or LeastConnectionsStrategy()
         self._jwks_provider = jwks_provider
+        self._jwks_unreadable_logged = False
         self._jwks_refresh = jwks_refresh
         self._proxy_signer = proxy_signer
         self._delegated_signer = delegated_signer
@@ -1860,7 +1861,7 @@ class CallProxy:
             )
         return result
 
-    def _hub_publishes_delegation_key(self) -> bool:
+    def hub_publishes_delegation_key(self) -> bool:
         """whether the hub JWKS publishes this registry's delegated-token key, so a pod can verify it.
 
         A pod sent the delegation in place of the agent's token verifies it against the hub JWKS; a
@@ -1875,10 +1876,14 @@ class CallProxy:
             try:
                 published = self._delegated_signer.kid in _published_kids(self._jwks_provider())
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- a provider failure keeps the agent's token on the call, the safe side; logged
-                log.warning(
-                    "hub JWKS unreadable; the agent's token stays on the call",
-                    extra={"extra_data": {"detail": str(exc)}},
-                )
+                if not self._jwks_unreadable_logged:
+                    self._jwks_unreadable_logged = True
+                    log.warning(
+                        "hub JWKS unreadable; the agent's token stays on calls to declaring pods until it is",
+                        extra={"extra_data": {"detail": str(exc)}},
+                    )
+            else:
+                self._jwks_unreadable_logged = False
         return published
 
     def _with_delegation(
@@ -1919,9 +1924,10 @@ class CallProxy:
                 holder_jkt=holder,
                 correlation_id=str(context.correlation_id) if context.correlation_id is not None else "",
                 lifetime=timedelta(seconds=effective_timeout),
+                conversation_id=str(context.conversation_id) if context.conversation_id is not None else None,
             )
             forwarded: dict[str, str | None] = {"delegated_token": token}
-            if endpoint is not None and endpoint.proves_delegation and self._hub_publishes_delegation_key():
+            if endpoint is not None and endpoint.proves_delegation and self.hub_publishes_delegation_key():
                 forwarded |= {"identity_token": None, "user_identity_token": None}
             result = request.model_copy(update={"context": context.model_copy(update=forwarded)})
         return result

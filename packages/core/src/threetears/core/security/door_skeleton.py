@@ -24,13 +24,33 @@ from threetears.core.security.door_proof import DoorProofSwitch, ProofOutcome
 if TYPE_CHECKING:
     from threetears.core.security.service_envelope import EnvelopeJwksSource
 
-__all__ = ["DoorAccounting", "KeysUnavailableError", "json_object", "keys_naming", "window_admits"]
+__all__ = [
+    "DoorAccounting",
+    "KeysUnavailableError",
+    "ServiceEnvelopeError",
+    "json_object",
+    "keys_naming",
+    "window_admits",
+]
 
 log = get_logger(__name__)
 
 
-class KeysUnavailableError(Exception):
-    """the sender's key set is empty: nothing can verify yet, which is not a forgery."""
+class ServiceEnvelopeError(Exception):
+    """a signed message did not verify, or was already used; the reason names the check.
+
+    Defined here, beside the shared door pieces, so a key source's "no keys" can be one of its kinds;
+    :mod:`threetears.core.security.service_envelope` re-exports it under its own name.
+    """
+
+
+class KeysUnavailableError(ServiceEnvelopeError):
+    """the sender's key set is empty or cannot be had: nothing can verify yet, which is not a forgery.
+
+    What every :class:`~threetears.core.security.service_envelope.EnvelopeJwksSource` raises for "no
+    keys", so every door refuses it as ``keys_unavailable``; a subclass of
+    :class:`ServiceEnvelopeError`, so a caller catching that one still catches it.
+    """
 
 
 class DoorAccounting:
@@ -118,11 +138,18 @@ async def keys_naming(source: EnvelopeJwksSource, kid: Any) -> Mapping[str, Any]
     :ptype kid: Any
     :return: the key set
     :rtype: Mapping[str, Any]
-    :raises KeysUnavailableError: when the set is empty even after the refresh
+    :raises KeysUnavailableError: when the set is empty even after the refresh, or the source cannot
+        produce one -- whatever kind of :class:`ServiceEnvelopeError` it raised, so every door counts
+        it the same way
     """
-    jwks = await source.get_jwks()
-    if not any(isinstance(key, Mapping) and key.get("kid") == kid for key in jwks.get("keys", ())):
-        jwks = await source.get_jwks(refresh=True)
+    try:
+        jwks = await source.get_jwks()
+        if not any(isinstance(key, Mapping) and key.get("kid") == kid for key in jwks.get("keys", ())):
+            jwks = await source.get_jwks(refresh=True)
+    except KeysUnavailableError:
+        raise
+    except ServiceEnvelopeError as exc:
+        raise KeysUnavailableError(f"the sender's key set is unavailable: {exc}") from exc
     if not jwks.get("keys"):
         raise KeysUnavailableError("the sender's key set is not loaded")
     return jwks

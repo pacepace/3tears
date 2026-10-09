@@ -71,6 +71,7 @@ __all__ = [
     "AUDIT_ANONYMIZE_OP",
     "DOOR_PROOF_FIELD",
     "DOOR_PROOF_REPLAY_TTL",
+    "DOOR_SENDER_FIELDS",
     "DOOR_TOKEN_FIELD",
     "DoorCredential",
     "DoorProofLedger",
@@ -81,6 +82,7 @@ __all__ = [
     "OBJECT_RESOLVE_OP",
     "PopKey",
     "RegistrationKey",
+    "claimed_sender_of",
     "datasource_query_op",
     "door_request_hash",
     "l3_request_op",
@@ -99,6 +101,10 @@ DOOR_PROOF_REPLAY_TTL: Final[timedelta] = DEFAULT_PROOF_MAX_AGE + ISSUE_TIME_FUT
 
 #: the body field a door reads its caller's credential from.
 DOOR_TOKEN_FIELD: Final[str] = "identity_token"
+
+#: the request fields a door reads its unverified sender from, for the count of callers without a
+#: proof: the caller's own token, then the user assertion a request may carry in its place.
+DOOR_SENDER_FIELDS: Final[tuple[str, ...]] = (DOOR_TOKEN_FIELD, "user_identity_token")
 
 #: the body field carrying the proof of possession over the rest of the body.
 DOOR_PROOF_FIELD: Final[str] = "identity_proof"
@@ -175,6 +181,25 @@ def door_request_hash(body: Mapping[str, Any], *, door: str, op: str) -> str:
     return str(base64.urlsafe_b64encode(digest).rstrip(b"="), "ascii")
 
 
+def _unverified_payload(token: str) -> Mapping[str, Any] | None:
+    """the claims ``token`` carries, read WITHOUT verifying it -- for routing and counting only.
+
+    :param token: a compact JWS
+    :ptype token: str
+    :return: its payload, or ``None`` when it does not parse as one
+    :rtype: Mapping[str, Any] | None
+    """
+    payload: Any = None
+    parts = token.split(".")
+    if len(parts) == 3:
+        segment = parts[1]
+        try:
+            payload = json.loads(base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4)))
+        except ValueError, TypeError:
+            payload = None
+    return payload if isinstance(payload, dict) else None
+
+
 def _bound_thumbprint(token: str) -> str | None:
     """the key thumbprint ``token`` binds (its ``cnf``), read without verifying it.
 
@@ -187,18 +212,32 @@ def _bound_thumbprint(token: str) -> str | None:
     :return: the thumbprint, or ``None`` when the token binds none or does not parse
     :rtype: str | None
     """
-    jkt: str | None = None
-    parts = token.split(".")
-    if len(parts) == 3:
-        segment = parts[1]
-        try:
-            payload = json.loads(base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4)))
-        except ValueError, TypeError:
-            payload = None
-        cnf = payload.get("cnf") if isinstance(payload, dict) else None
-        bound = cnf.get("jkt") if isinstance(cnf, dict) else cnf
-        jkt = bound if isinstance(bound, str) and bound else None
-    return jkt
+    payload = _unverified_payload(token)
+    cnf = payload.get("cnf") if payload is not None else None
+    bound = cnf.get("jkt") if isinstance(cnf, dict) else cnf
+    return bound if isinstance(bound, str) and bound else None
+
+
+def claimed_sender_of(body: Mapping[str, Any]) -> str | None:
+    """who a request says it is from, unverified, for a door's count of callers without a proof.
+
+    The ``sub`` of the request's own token, else of its user assertion. The count is the fleet's
+    rollout signal -- it names the principals still sending a token without its proof -- and never
+    an authorization input.
+
+    :param body: the request as received
+    :ptype body: Mapping[str, Any]
+    :return: the claimed sender, or ``None`` when neither token carries one
+    :rtype: str | None
+    """
+    sender: str | None = None
+    for name in DOOR_SENDER_FIELDS:
+        token = body.get(name)
+        payload = _unverified_payload(token) if isinstance(token, str) else None
+        claimed = payload.get("sub") if payload is not None else None
+        if sender is None and isinstance(claimed, str) and claimed:
+            sender = claimed
+    return sender
 
 
 @dataclass(frozen=True, slots=True)
@@ -536,15 +575,16 @@ class DoorRequestDoor:
         """
         return self._switch.door
 
-    async def admit(self, body: Mapping[str, Any], *, op: str, claimed_sender: str | None = None) -> DoorVerdict:
+    async def admit(self, body: Mapping[str, Any], *, op: str) -> DoorVerdict:
         """decide ``body``, the request as received, its proof field included, for ``op``.
+
+        A request without a proof is counted under its claimed sender (:func:`claimed_sender_of`),
+        read here off the token the door already reads, so no door attributes it by hand.
 
         :param body: the parsed request
         :ptype body: Mapping[str, Any]
         :param op: the operation the door is about to perform, as the sender signed it
         :ptype op: str
-        :param claimed_sender: who the request says it is from, unverified, for the bearer count
-        :ptype claimed_sender: str | None
         :return: the verdict
         :rtype: DoorVerdict
         """
@@ -558,12 +598,12 @@ class DoorRequestDoor:
         else:
             verdict = (
                 DoorVerdict(admitted=True)
-                if window_admits(self._switch, claimed_sender=claimed_sender)
+                if window_admits(self._switch, claimed_sender=claimed_sender_of(body))
                 else self._refused("absent", "the door requires a proof of possession", op=op)
             )
         return verdict
 
-    async def admit_message(self, data: bytes, *, op: str, claimed_sender: str | None = None) -> DoorVerdict:
+    async def admit_message(self, data: bytes, *, op: str) -> DoorVerdict:
         """decide the request ``data`` for ``op``, hashed exactly as sent.
 
         The door to use when the door's own request model is a tolerant reader, which would hash
@@ -573,14 +613,12 @@ class DoorRequestDoor:
         :ptype data: bytes
         :param op: the operation the door is about to perform
         :ptype op: str
-        :param claimed_sender: who the request says it is from, unverified, for the bearer count
-        :ptype claimed_sender: str | None
         :return: the verdict; a body that is not a JSON object is refused
         :rtype: DoorVerdict
         """
         body = json_object(data)
         verdict = (
-            await self.admit(body, op=op, claimed_sender=claimed_sender)
+            await self.admit(body, op=op)
             if body is not None
             else self._refused("malformed", "the request is not a JSON object", op=op)
         )

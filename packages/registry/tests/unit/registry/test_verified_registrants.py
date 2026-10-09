@@ -538,7 +538,7 @@ class TestATransientRefusalWithdrawsNothing:
 
 
 class TestTheVerifiedPodsKeyIsRemembered:
-    """Chunk 10b: a delegated token for a call to a pod binds the key its verified registration was signed with."""
+    """a delegated token for a call to a pod binds the key its verified registration was signed with."""
 
     @pytest.mark.asyncio
     async def test_the_copy_records_the_key_the_verifier_named(self) -> None:
@@ -557,7 +557,7 @@ class TestTheVerifiedPodsKeyIsRemembered:
 
     @pytest.mark.asyncio
     async def test_a_declaration_is_honoured_only_for_a_verified_pod_with_a_known_key(self) -> None:
-        """Chunk 10e, per pod: the registry strips the agent's token only for a pod it can bind."""
+        """the registry strips the agent's token only for a pod it can bind."""
         import json  # noqa: PLC0415
 
         def declaring(raw: bytes) -> bytes:
