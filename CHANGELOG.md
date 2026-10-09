@@ -19,6 +19,9 @@ packages (bumped in lock-step).
 - **Added, `threetears.agent.acl.CallerNamespaces`**: the namespaces the hub's `namespace.discover`
   lists for a caller, asked with the caller's own tokens, kept in a `CallerAccessCache`, and failing
   closed (`CallerNamespacesUnavailable`) when the answer cannot be had.
+- **Added, `ToolResult` codes `PERMISSION_DENIED` (a part of the tool's data the caller's grants do
+  not reach; the hub answers 403) and `TOOL_AUTHORIZATION_UNAVAILABLE` (the tool could not confirm
+  what the caller may have; 503)**, both already mapped by the hub.
 - **Added, `RestAffordance.scope_node`**: the namespace node whose child tool nodes name the scopes a
   reader may read at the edge; the hub issues edge tokens naming those scopes. An older hub ignores
   the field.
