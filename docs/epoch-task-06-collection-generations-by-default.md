@@ -1066,6 +1066,25 @@ hub. Its rbac stack's `AclCache` follows the access tables like every other.
   generation_reader=)`), the agent pod (`ThreeTierStack.subscribe_invalidations`) and the standalone
   registry (`RegistryRbacStack.subscribe_invalidations`); each stops it at teardown, the hub's
   shutdown now included. `follow_generation_key` takes any `GenerationWatcher`.
+  `follow_access_tables` refuses unless the registry's invalidation listener is running
+  (`CollectionRegistry.invalidation_listener_running`): the hub and the gateway start following
+  after their listener (`BrokerAclGateway.start_following`) and stop before it, and the agent pod
+  follows from `subscribe_collection_invalidations`. `BrokerAclGateway` with a NATS client and no
+  registry or reader is a construction error; `aibots.hub.common.generation_sources.generation_reader_for`
+  is the one place a hub-family process gets its reader (the hub may create the bucket, every other
+  process binds it). The agent pod reports `aibots_agent_access_tables_followed` and
+  `aibots_agent_acl_degraded_evictions` on its metrics endpoint.
+
+**A failed advance raises last.** Every site that writes and then announces does the announcing
+first -- `acl.*` publishes, audits, the cascade's rows -- and raises the advance's
+`GenerationUnavailableError` after: `GroupCollection.delete` (its own advance and its cascade's),
+`move_subtree_scopes`, `announce_cascaded_grants`, the emitter's reap and rescope, the namespace
+teardown, the `shared_agent` teardown, and the user merge (whose platform transaction committed
+before `CallerTransaction` raised: its rows are recorded and evicted, then the failure raised).
+
+**The registry's grant reaches the static NATS users.** The standalone registry runs as a static
+user, so every `CONF_TARGETS` member is re-rendered with the read of `{ns}-epochs`, and those values
+must reach cobalt before a hub image whose registry follows.
 - **Readers**: every SDK pod registry is built by `broker_collection_registry(epoch_nats=...)`; the
   agent pod and the owner-data stack pass their client, so their `BrokerGenerationSource` reads;
   the devx workspace runtime passes `None` (the dev `tooling` user holds no read of the bucket).
@@ -1087,6 +1106,10 @@ per table per commit, each broadcast naming what the row reaches:
 - 3tears `NamespaceCollection.ensure_namespace` (its `INSERT`, announced whether or not a conflict
   absorbed it, since the broker advanced either way) and `rescope` (both keys of the moved row, in
   one advance).
+- Hub `namespaces` writes outside a collection: `provider_nodes`' insert and the api-key namespace's
+  insert and rollback `DELETE` announce their row through the namespace collection; the
+  `shared_agent` namespace teardown (`agents/endpoints.py`) reads its grants before the delete and
+  announces them after it.
 - 3tears `GroupCollection.delete`: the memberships and assignments its cascade removes are read
   before the delete (`read_cascade`) and announced after it (`announce_cascade`) through the
   registry's `group_members` and `role_assignments` collections. The hub's `HubGroupCollection`
@@ -1111,10 +1134,6 @@ until contract, the `acl.*` subjects and the TTL stay.
 
 ### Still Open
 
-- **Hub writes to `namespaces` outside a collection**: `aibots.hub.tools.provider_nodes`'s and
-  `aibots.hub.security.api_key_namespace`'s `INSERT`s and `api_key_endpoints`' `DELETE` (which also
-  cascades that namespace's `role_assignments`). The hub writes directly, so these advance nothing
-  and no follower drops; the TTL covers them until contract, which must put them on the system.
 - **Hub migrations** write these tables outside any collection and move no generation. Covered by
   the TTL until contract; the contract stage must put them on the epoch system (for example, the
   hub advancing every switched-on table a migration wrote, an unknown reach, once after it runs).

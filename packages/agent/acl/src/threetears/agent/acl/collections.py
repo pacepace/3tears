@@ -58,6 +58,7 @@ from threetears.core.collections.schema_backed import (
     SchemaBackedCollection,
     TableSchema,
 )
+from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.namespaces import namespace_contains
 from threetears.observe import get_logger
 
@@ -324,8 +325,22 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
         """
         group_id = UUID(f"{self.normalize_pk(entity_id)[self.primary_key_columns.index('group_id')]}")
         cascade = await self.read_cascade(group_id)
-        deleted = await super().delete(entity_id)
-        await self.announce_cascade(cascade)
+        deletion_failure: GenerationUnavailableError | None = None
+        deleted = True
+        try:
+            deleted = await super().delete(entity_id)
+        except GenerationUnavailableError as exc:
+            # the group is gone; only the groups table's advance failed. Its cascade is announced
+            # all the same, and the failure raised once it has been.
+            deletion_failure = exc
+        try:
+            await self.announce_cascade(cascade)
+        except GenerationUnavailableError:
+            # the first failure is the one raised; this one was logged where it happened
+            if deletion_failure is None:
+                raise
+        if deletion_failure is not None:
+            raise deletion_failure
         return deleted
 
     async def read_cascade(self, group_id: UUID) -> GroupCascade:

@@ -995,6 +995,19 @@ class CollectionRegistry:
                     extra={"extra_data": {"table": table, "error": f"{type(exc).__name__}: {exc}"}},
                 )
 
+    @property
+    def invalidation_listener_running(self) -> bool:
+        """whether this registry's cross-pod invalidation listener is running.
+
+        What hears a peer's row broadcasts, so whatever judges this registry's followed tables, or
+        evicts a cache derived from them, needs it running first.
+
+        :return: ``True`` between :meth:`start_invalidation_listener` and
+            :meth:`stop_invalidation_listener`
+        :rtype: bool
+        """
+        return self._invalidation_subscription is not None
+
     async def stop_invalidation_listener(self) -> None:
         """drop this registry's cache-invalidation subscription.
 

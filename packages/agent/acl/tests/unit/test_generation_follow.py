@@ -108,9 +108,17 @@ async def test_a_watch_that_is_pushed_a_value_is_healthy() -> None:
     from threetears.agent.acl.generation_follow import follow_access_tables
     from threetears.agent.acl import AclCache
 
+    from threetears.core.testing.kv import FakeNatsClient
+
     registry = CollectionRegistry()
+    bus = FakeNatsClient()
+    registry.configure(l2_client=bus, kv_key_scope="pod")
     loader: Any = object()
-    following = follow_access_tables(registry, AclCache(membership_loader=loader, grant_loader=loader), _Pushing())
+    cache = AclCache(membership_loader=loader, grant_loader=loader)
+    with pytest.raises(RuntimeError, match="invalidation listener"):
+        follow_access_tables(registry, cache, _Pushing())
+    await registry.start_invalidation_listener(bus)  # type: ignore[arg-type]
+    following = follow_access_tables(registry, cache, _Pushing())
     try:
         for _ in range(100):
             if following.healthy:

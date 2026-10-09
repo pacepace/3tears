@@ -298,8 +298,8 @@ def follow_access_tables(
 ) -> AccessTableFollowing:
     """bind ``cache`` to the access tables' row broadcasts on ``registry`` and follow the tables.
 
-    The one call a consumer makes. ``registry``'s invalidation listener must be running (or be
-    started before the first write that matters): it is what hears the rows.
+    The one call a consumer makes, once ``registry``'s invalidation listener is running: it is what
+    hears the rows. Stop the returned handle before stopping the listener.
 
     :param registry: the registry whose listener hears the rows, and which follows the tables
     :ptype registry: CollectionRegistry
@@ -315,7 +315,13 @@ def follow_access_tables(
     :ptype max_restart_delay: timedelta
     :return: the handle that stops both
     :rtype: AccessTableFollowing
+    :raises RuntimeError: when the registry's invalidation listener is not running
     """
+    if not registry.invalidation_listener_running:
+        raise RuntimeError(
+            "follow_access_tables needs the registry's invalidation listener running first: it hears "
+            "the rows each watch judges against, and an advance judged without them reads as missed"
+        )
     degraded = DegradedEvictions()
     unbind = bind_acl_cache_to_access_tables(registry, cache, degraded=degraded)
     follower = AccessTableFollower(
