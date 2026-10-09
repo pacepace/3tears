@@ -353,6 +353,13 @@ NO_JUDGE_CONFIGS = "(none — no result was scored by a versioned judge config)"
 #: observation, and an empty collection would read as an absence.
 NO_JUDGE_DIM_DIVERGENCE = "(none — every scored dim used the run's judge pin)"
 
+#: What a run reports for its spend ceiling when it records that it ran uncapped
+#: (``EvalRun.max_cost_usd_origin == "uncapped"``: cost enforcement was off). Explicit for the
+#: reason :data:`NO_JUDGE_CONFIGS` is: a null ``max_cost_usd`` has two causes, and the origin says
+#: which. "No ceiling was in force" is an observation two uncapped runs share, so it reads as this
+#: level; only a run whose writer recorded no ceiling at all (origin ``None``) stays blank.
+UNCAPPED_SPEND = "uncapped — no spend ceiling was in force (cost enforcement was off)"
+
 
 class RegistrationError(ValueError):
     """A declaration contradicts what this module promises, raised where it is written."""
@@ -1180,6 +1187,23 @@ def _is_blank(value: Any) -> bool:
     return isinstance(value, Collection) and len(value) == 0
 
 
+def _max_cost_usd(run: EvalRun, _results: Sequence[EvalResult]) -> float | str | None:
+    """The spend ceiling in force for a run: the number, :data:`UNCAPPED_SPEND`, or blank.
+
+    Args:
+        run: The run.
+        _results: Unused: the ceiling is declared on the run.
+
+    Returns:
+        :data:`UNCAPPED_SPEND` when the run records it ran uncapped, whatever number it also carries,
+        since none bound it; else ``max_cost_usd``, which is ``None`` only for a run whose writer
+        recorded no ceiling and no origin — the one blank this dimension cannot decide.
+    """
+    if run.max_cost_usd_origin == "uncapped":
+        return UNCAPPED_SPEND
+    return run.max_cost_usd
+
+
 def _judge_config_ids(_run: EvalRun, results: Sequence[EvalResult]) -> list[str] | str:
     """Every judge-config id OBSERVED across a run's results, sorted.
 
@@ -1444,13 +1468,14 @@ CORE_SWEEPABLES: tuple[Sweepable, ...] = (
         ),
         indeterminate_when_blank=True,
     ),
-    # Indeterminate when blank: None has TWO causes on this field — "the run was uncapped" and
-    # "the run's writer recorded no ceiling" — and they are not the same fact. One empty standing for two
-    # states cannot be compared for equality without choosing one of them silently.
+    # Indeterminate when blank ONLY for the genuine absence. A null ``max_cost_usd`` has two causes —
+    # "the run was uncapped" and "the run's writer recorded no ceiling" — and ``max_cost_usd_origin``
+    # records which. The reader says the first with UNCAPPED_SPEND, so two uncapped runs agree, and
+    # leaves blank only the second, which cannot be compared without choosing a state silently.
     Sweepable(
         name="max_cost_usd",
         role="apparatus",
-        read=lambda run, _results: run.max_cost_usd,
+        read=_max_cost_usd,
         reader_prose="the spend ceiling in force for the run",
         confounds="a different spend ceiling was in force, which can stop a run before it finishes its cases",
         indeterminate_when_blank=True,
@@ -1490,6 +1515,7 @@ __all__ = [
     "NO_JUDGE_DIM_DIVERGENCE",
     "SHARED_CORE",
     "SIMULATOR_INPUTS",
+    "UNCAPPED_SPEND",
     "Comparability",
     "FamilyMemberTest",
     "IntervalScale",
