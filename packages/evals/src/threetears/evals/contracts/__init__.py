@@ -42,6 +42,7 @@ from threetears.evals.contracts.candidate_kind import (
 from threetears.evals.contracts.cassettes import ActionSeam, CassetteSeams, CellCassettes, DeliverySeam, SyncActionSeam
 from threetears.evals.contracts.covariates import (
     DROPPED_TOOL_CALLS_KEY,
+    REASONING_RATIO_KEY,
     REFUSED_TOOL_ATTACHES_KEY,
     TRUNCATED_ROUNDS_KEY,
     TURN_BUDGET_ENDED_KEY,
@@ -368,6 +369,7 @@ __all__ = [
     "PROSE_SCHEMA_KEY",
     "RESERVED_DIM_IDS",
     "DROPPED_TOOL_CALLS_KEY",
+    "REASONING_RATIO_KEY",
     "REFUSED_TOOL_ATTACHES_KEY",
     "ROUND_DONE",
     "RaterKind",

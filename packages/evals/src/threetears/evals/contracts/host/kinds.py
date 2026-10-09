@@ -108,6 +108,20 @@ class Interval:
     unit: str | None = None
 
 
+@dataclass(frozen=True)
+class ActsOn:
+    """Name the measure or covariate an overlay knob is supposed to move — its lever's ``acts_on``.
+
+    The overlay twin of :attr:`~threetears.evals.contracts.host.sweepables.Sweepable.acts_on`, written
+    as a marker beside ``Ordinal`` and ``Interval``: ``Annotated[Literal["low", "high"], ActsOn("reasoning_ratio")]``.
+    The lever it marks gets the same mechanism check, the same refusals (an unknown, non-numeric or
+    per-row name is refused when the profile is built) and the same identity guarantee — it is not a
+    level, so it moves no variant key. Refused on a map field, whose entries are distinct knobs.
+    """
+
+    measure: str
+
+
 class KindContractError(TypeError):
     """A kind's model cannot be read the way the engine promises to read it — raised where it is declared."""
 
@@ -123,6 +137,7 @@ class _Knob:
     ordinal_levels: tuple[Any, ...] | None
     interval_unit: str | None
     numeric: bool
+    acts_on: str | None
 
 
 @dataclass(frozen=True)
@@ -289,7 +304,13 @@ class KindContract:
         declared: list[Sweepable] = []
         for knob in self._knobs:
             declared.append(
-                Sweepable(name=knob.lever, role="lever", read=self._reader(knob.field_name), reader_prose=knob.prose)
+                Sweepable(
+                    name=knob.lever,
+                    role="lever",
+                    read=self._reader(knob.field_name),
+                    reader_prose=knob.prose,
+                    acts_on=knob.acts_on,
+                )
             )
             if knob.family:
                 member_prefix = f"{knob.lever}."
@@ -466,6 +487,7 @@ def _read_knob(prefix: str, name: str, info: FieldInfo) -> tuple[_Knob | None, l
     annotation = _unwrap_optional(info.annotation)
     ordinal = any(isinstance(marker, Ordinal) for marker in info.metadata)
     interval = next((marker for marker in info.metadata if isinstance(marker, Interval)), None)
+    acts_on = [marker.measure for marker in info.metadata if isinstance(marker, ActsOn)]
     numeric = annotation in (int, float)
     family = typing.get_origin(annotation) in (dict, Mapping)
     levels: tuple[Any, ...] | None = None
@@ -477,6 +499,10 @@ def _read_knob(prefix: str, name: str, info: FieldInfo) -> tuple[_Knob | None, l
         problems.append("is marked Interval but is not an int or a float")
     if family and typing.get_args(annotation)[:1] != (str,):
         problems.append("is a map keyed by something other than str, and each key names a lever")
+    if family and acts_on:
+        problems.append("is a map marked ActsOn, and its entries are distinct knobs one mechanism cannot speak for")
+    if len(acts_on) > 1:
+        problems.append("is marked ActsOn more than once, and a lever names one mechanism")
     if problems:
         return None, problems
     return (
@@ -488,6 +514,7 @@ def _read_knob(prefix: str, name: str, info: FieldInfo) -> tuple[_Knob | None, l
             ordinal_levels=levels,
             interval_unit=interval.unit if interval is not None else None,
             numeric=numeric,
+            acts_on=acts_on[0] if acts_on else None,
         ),
         [],
     )

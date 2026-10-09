@@ -69,6 +69,12 @@ _MEASUREMENTS: dict[int, _ArmMeasurements] = {
     TOYHOST_WIDE: {"cost_usd": 0.03, "total_ms": 1400.0, "field_accuracy": 0.91, "layout_fidelity": 4},
 }
 
+#: How much context each arm carried into extraction, per document — the mechanism ``chunk_tokens``
+#: declares it acts on (``acts_on="context_tokens_in"``). Wider chunks carry more, so the bundle's check on
+#: that lever reads ``moved``: the knob took effect, and whatever the outcome measures say about it is about
+#: a lever that was actually exercised.
+_CONTEXT_TOKENS_IN: dict[int, int] = {TOYHOST_NARROW: 2_400, TOYHOST_WIDE: 7_600}
+
 #: The spend ceiling the campaign holds itself to, per document. Between the two arms' spend on
 #: purpose, so the bar has one arm on each side of it: a bar every arm clears, or every arm fails,
 #: cannot show that the verdict was computed rather than defaulted. Lower-is-better, the direction
@@ -160,7 +166,10 @@ def toyhost_campaign(
         batches,
         {
             batch.id: toyhost_measurements(
-                batch, profile=profile if profile is not None else toyhost_profile(), **_MEASUREMENTS[level]
+                batch,
+                profile=profile if profile is not None else toyhost_profile(),
+                covariates={"context_tokens_in": _CONTEXT_TOKENS_IN[level]},
+                **_MEASUREMENTS[level],
             )
             for batch, level in zip(batches, (TOYHOST_NARROW, TOYHOST_WIDE), strict=True)
         },

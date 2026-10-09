@@ -2,7 +2,7 @@
 
 | Declaration | What it exercises |
 |---|---|
-| ``chunk_tokens`` | a numeric lever with real spacing |
+| ``chunk_tokens`` | a numeric lever with real spacing, naming the covariate it acts on (``acts_on``) |
 | ``retriever_top_k`` | the same, at a second arity |
 | ``extraction_schema`` | content-addressing an opaque blob |
 | ``ocr_engine_version`` | the ``unknown`` state, by design: a value a host cannot always record |
@@ -65,11 +65,17 @@ TOYHOST_SWEEPABLES: tuple[Sweepable, ...] = (
         ),
         reader_prose="the extraction prompt the subject carried, by content",
     ),
+    # A lever that names its MECHANISM: a wider chunk is supposed to carry more context into extraction,
+    # so the engine's own covariate `context_tokens_in` should move across its levels. A sweep where it
+    # did not is a knob that never took effect, and the bundle reports it as `inert` rather than letting
+    # "chunk width does not matter" stand as a finding. Any registered measure or covariate will do; a
+    # name neither the engine nor this host declares is refused when the profile is built.
     Sweepable(
         name="chunk_tokens",
         role="lever",
         read=_reader("chunk_tokens"),
         reader_prose="how many tokens each document chunk carried into extraction",
+        acts_on="context_tokens_in",
     ),
     Sweepable(
         name="retriever_top_k",

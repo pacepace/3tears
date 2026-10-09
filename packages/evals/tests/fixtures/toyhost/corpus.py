@@ -416,6 +416,7 @@ def toyhost_measurements(
     total_ms: float,
     field_accuracy: float,
     layout_fidelity: int | None = None,
+    covariates: Mapping[str, float] | None = None,
 ) -> list[EvalResult]:
     """The observations one toy-host batch produced — three repeats over each document.
 
@@ -443,6 +444,9 @@ def toyhost_measurements(
             a JUDGED dimension, scored by people rather than computed, which the engine carries
             off the ranking surface. ``None`` means the pool scored nothing, which is the state
             a batch nobody reviewed is in.
+        covariates: The measurement-condition covariates every observation of this batch recorded,
+            by the engine's covariate names (``context_tokens_in``, ``reasoning_ratio``). ``None``
+            records none, which says nothing was measured rather than that anything was zero.
 
     Returns:
         Thirty-six observations — three repeats × twelve documents.
@@ -462,7 +466,8 @@ def toyhost_measurements(
             eval_run_id=batch.id,
             scope_id=TOYHOST_SCOPE,
             test_case_id=document,
-            model=TOYHOST_EXTRACTOR,
+            # The model the batch declared: one batch is one arm, and an arm runs one model.
+            model=batch.candidate_model,
             k_iteration=repeat,
             subject_id=TOYHOST_SUBJECT.subject_id,
             # The toy host's own dimension, scored by its reviewer pool; one point higher on the
@@ -500,11 +505,11 @@ def toyhost_measurements(
             candidate_kind=TOY_EXTRACTOR_KIND,
             # What a completed cell's capture states: it ran to the end, its spend is the
             # candidate's alone (no judge, no simulator, no background work), and it carried no
-            # per-role usage rows, covariates or phase timings.
+            # per-role usage rows or phase timings — and only the covariates the caller names.
             termination="completed",
             cost_roles=["candidate"],
             usage=[],
-            covariates={},
+            covariates=dict(covariates or {}),
             phase_timings={},
             variant_key=variant.variant_key,
             identity_version=variant.identity_version,
