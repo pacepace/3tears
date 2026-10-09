@@ -25,6 +25,7 @@ from threetears.agent.tools.call_scope import (
     build_call_scope,
     enter_call_scope,
 )
+from threetears.agent.tools.content_encoding import encode_for_caller, plain_content
 from threetears.agent.tools.context_envelope import CallContext, bind_log_context
 from threetears.agent.tools.config import (
     get_jwks_request_timeout,
@@ -107,6 +108,7 @@ __all__ = [
     "ToolCallFailure",
     "ToolManifestEntry",
     "ToolRegistrationRefused",
+    "TOOL_RESULT_TOO_LARGE",
     "ToolServer",
     "nats_connect",
     "refusal_is_final",
@@ -234,6 +236,12 @@ _RESULT_DELIVERY_ATTEMPTS = 3
 # pace between those attempts -- long enough for a reconnect to complete, short enough to fit several
 # tries inside any caller's timeout.
 _RESULT_DELIVERY_RETRY_SECONDS = 2.0
+# room a result leaves below the broker's max_payload for the envelope around it: the registry echoes
+# the call context (its identity tokens included) on the next hop, and headers ride with the message.
+_RESULT_ENVELOPE_HEADROOM_BYTES = 64 * 1024
+
+#: the code a result too large for the bus is refused with, by the pod that computed it
+TOOL_RESULT_TOO_LARGE = "TOOL_RESULT_TOO_LARGE"
 
 
 # ---------------------------------------------------------------------------
@@ -3437,10 +3445,15 @@ class ToolServer:
             try:
                 scope = await self._build_call_scope(request, principal_is_tool_pod=principal_is_tool_pod)
                 tool_result = await self._run_tool_guarded(tool, request, scope)
+                # compressed for a caller that reads it so (the hub's REST face), plain for any other
+                if tool_result.success:
+                    content, metadata = encode_for_caller(tool_result.content, tool_result.metadata, request.context)
+                else:
+                    content, metadata = plain_content(tool_result.content, tool_result.metadata)
                 response = CallResponse(
                     success=tool_result.success,
-                    content=tool_result.content,
-                    metadata=tool_result.metadata,
+                    content=content,
+                    metadata=metadata,
                     error=tool_result.error,
                     error_code=tool_result.error_code,
                     context=request.context,
@@ -3492,7 +3505,12 @@ class ToolServer:
                 outcome = "error"
                 failure_reason = f"tool execution failed: {exc}"
 
-            await self._answer(msg, response, delivery_subject)
+            sent = await self._answer(msg, response, delivery_subject)
+            if sent is not response:
+                # the answer was refused on its size after the tool succeeded: the audit says what
+                # the caller received, not what the tool returned
+                outcome = "failure"
+                failure_reason = sent.error
         finally:
             duration_ms = (time.monotonic() - start_monotonic) * 1000.0
             await self._publish_baseline_audit(
@@ -3529,7 +3547,7 @@ class ToolServer:
         msg: IncomingMessage,
         response: CallResponse,
         delivery_subject: Subject | None,
-    ) -> None:
+    ) -> CallResponse:
         """route one dispatch's answer to wherever this call agreed it would go.
 
         one function for both paths so every branch of the dispatch -- a rejection, an unknown tool,
@@ -3544,13 +3562,55 @@ class ToolServer:
         :param delivery_subject: the durable subject this call was accepted for, or ``None`` for the
             synchronous reply-inbox path
         :ptype delivery_subject: Subject | None
-        :return: nothing
-        :rtype: None
+        :return: what was sent: ``response``, or the refusal that replaced it (:meth:`_carriable`)
+        :rtype: CallResponse
         """
+        sent = self._carriable(response)
         if delivery_subject is None:
-            await self._respond(msg, response)
+            await self._respond(msg, sent)
         else:
-            await self._deliver(delivery_subject, response)
+            await self._deliver(delivery_subject, sent)
+        return sent
+
+    def _carriable(self, response: CallResponse) -> CallResponse:
+        """the answer, or a refusal naming its size when the bus could not carry it.
+
+        A reply over the broker's ``max_payload`` is refused by the broker after the tool has run, and
+        the caller waits out its timeout on a reply that never comes. Refused here instead, as
+        ``TOOL_RESULT_TOO_LARGE`` with both sizes, so the caller hears at once why, and the pod's log
+        says so. A caller that reads gzip already gets a large success compressed
+        (:func:`~threetears.agent.tools.content_encoding.encode_for_caller`); this is the case even
+        that does not fit. Room is left for the envelope the registry wraps the answer in on the next
+        hop.
+
+        :param response: the answer
+        :ptype response: CallResponse
+        :return: the answer, or the refusal
+        :rtype: CallResponse
+        """
+        limit = self._nc.max_payload if self._nc is not None else None
+        if limit is None:
+            return response
+        size = len(response.model_dump_json().encode("utf-8"))
+        room = limit - _RESULT_ENVELOPE_HEADROOM_BYTES
+        if size <= room:
+            return response
+        log.error(
+            "tool result is larger than the bus carries; refused rather than lost (bytes=%d limit=%d pod_id=%s)",
+            size,
+            limit,
+            self._pod_id,
+        )
+        return CallResponse(
+            success=False,
+            content="",
+            error=(
+                f"the tool's answer is {size} bytes, more than the {room} bytes a result may be on this bus "
+                f"(max_payload {limit}); it was not sent"
+            ),
+            error_code=TOOL_RESULT_TOO_LARGE,
+            context=response.context,
+        )
 
     async def _deliver(self, subject: Subject, response: CallResponse) -> None:
         """publish an answer to the pod's own durable subject, retrying a transient failure.

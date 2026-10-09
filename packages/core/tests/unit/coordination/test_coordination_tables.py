@@ -95,9 +95,10 @@ class _FakeGenerations:
         del table_name
         return f"i:{self.count}"
 
-    async def advance(self, table_name: str) -> None:
+    async def advance(self, table_name: str) -> str:
         del table_name
         self.count += 1
+        return f"i:{self.count}"
 
 
 class _Nats(FakeNatsClient):

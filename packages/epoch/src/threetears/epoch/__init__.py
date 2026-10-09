@@ -34,7 +34,12 @@ except _PackageNotFoundError:  # pragma: no cover - dev fallback
 
 from threetears.epoch.client import DurableEpoch, EpochClient, PoolLike
 from threetears.epoch.generation import EpochGenerationReader, EpochGenerationSource, generation_kv_key
-from threetears.epoch.generation_tick import DEFAULT_BROADCAST_GRACE, follow_generation_key, generation_catchup_tick
+from threetears.epoch.generation_tick import (
+    DEFAULT_BROADCAST_GRACE,
+    GenerationWatcher,
+    follow_generation_key,
+    generation_catchup_tick,
+)
 from threetears.epoch.listener import BumpCallback, EpochListener, ResetCallback
 from threetears.epoch.tick import catchup_tick
 from threetears.epoch.wire import EpochBumpMessage
@@ -44,6 +49,7 @@ __all__ = [
     "ResetCallback",
     "catchup_tick",
     "DEFAULT_BROADCAST_GRACE",
+    "GenerationWatcher",
     "EpochBumpMessage",
     "DurableEpoch",
     "EpochClient",

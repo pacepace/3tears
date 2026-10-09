@@ -7,7 +7,7 @@ that blocks to its deadline rather than a refusal anyone reads.
 
 The contract this pins:
 
-- an agent pod and a tool pod may FOLLOW: bind the epoch bucket, read a generation key, and watch
+- an agent pod, a tool pod and the standalone registry may FOLLOW: bind the epoch bucket, read a generation key, and watch
   one through a named consumer filtered on that key;
 - neither may write a generation key. A pod that could would fake an advance every follower acts
   on; the hub's L3 broker advances for a pod's write;
@@ -81,13 +81,14 @@ def _permissions(principal: str) -> PrincipalPermissions:
             pod_id="01947100-0000-7000-8000-000000000001",
         ),
         "tool_pod": lambda: build_permissions(Principal.TOOL_POD, pod_id="01947100-0000-7000-8000-000000000002"),
+        "registry": lambda: build_permissions(Principal.REGISTRY, conn_id="reg-1"),
         "hub": lambda: build_permissions(Principal.HUB, conn_id="conn-1"),
         "gateway": lambda: build_permissions(Principal.GATEWAY, conn_id="conn-2"),
     }
     return built[principal]()
 
 
-@pytest.mark.parametrize("principal", ["agent_pod", "tool_pod"])
+@pytest.mark.parametrize("principal", ["agent_pod", "tool_pod", "registry"])
 @pytest.mark.parametrize("table", _ACCESS_TABLES)
 class TestAPodMayFollowAndMayNotAdvance:
     def test_it_may_bind_the_bucket(self, principal: str, table: str) -> None:

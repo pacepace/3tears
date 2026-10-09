@@ -44,6 +44,7 @@ from threetears.core.collections.generation import (
     UndeclaredWriteGeneration,
     WriteGeneration,
     WriteGenerationDeclaration,
+    source_reads,
 )
 from threetears.core.collections.l2_order import (
     L2_ORDER_COLUMNS,
@@ -190,6 +191,21 @@ class _Bump:
 
 #: no advance was made and none was owed.
 _NO_BUMP: Final = _Bump()
+
+
+def _unadvanced_absence_error(table_name: str) -> GenerationUnavailableError:
+    """the failure of an advance that moved nothing, for a table whose absences trust its generation.
+
+    :param table_name: the table
+    :ptype table_name: str
+    :return: the error the write path raises once it has run
+    :rtype: GenerationUnavailableError
+    """
+    return GenerationUnavailableError(
+        f"the write generation of {table_name!r} was not advanced after a committed write (the broker "
+        f"advanced nothing for it); absences recorded under the unmoved generation would stay trusted"
+    )
+
 
 #: every collection class defined in this process whose committed writes advance its table's write
 #: generation: switched on (``write_generation = WRITE_GENERATION``), or caching absences. Appended
@@ -585,6 +601,12 @@ class BaseCollection(ABC, Generic[EntityT]):
     #: what the row was. A write that saw no row (an eviction naming only a key) carries none.
     invalidation_columns: ClassVar[tuple[str, ...]] = ()
 
+    #: Whether this collection keeps a copy of its rows in the process's L1. ``False`` declares a
+    #: collection that caches nowhere in L1 -- one whose rows are read from L2 every time, such as
+    #: a cache of computed answers each replica's caller keeps in memory itself -- so it takes no
+    #: L1 backend whatever the registry offers, the way :data:`NO_L2` declares the absence of L2.
+    caches_in_l1: ClassVar[bool] = True
+
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """refuse, at class definition, a declaration that cannot work.
 
@@ -677,7 +699,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         self._flush_strategy = FlushStrategy(config.collection_flush)
         self._flush_tables = frozenset(t.strip() for t in config.collection_flush_tables.split(",") if t.strip())
         # Resolve L1 and L3 from registry
-        self._l1 = registry.get_l1_backend(self.table_name)
+        self._l1 = registry.get_l1_backend(self.table_name) if type(self).caches_in_l1 else None
         self._l1_change_listeners = []
         self.l3_pool = registry.get_l3_pool(self.table_name)
         self._next_absent_marker_sweep = 0.0
@@ -1522,7 +1544,12 @@ class BaseCollection(ABC, Generic[EntityT]):
         if source is None:
             return None
         try:
-            await source.advance(self.table_name)
+            token = await source.advance(self.table_name)
+            if token is None:
+                # a source that advanced nothing (a pod whose broker names no generation for the
+                # table). A switched-on table may write on regardless; an absence cache may not,
+                # because every absence recorded under the unmoved generation stays trusted.
+                raise _unadvanced_absence_error(self.table_name)
         except GenerationUnavailableError as exc:
             log.error(
                 "write generation could not be advanced after a committed write; absences recorded "
@@ -1603,6 +1630,16 @@ class BaseCollection(ABC, Generic[EntityT]):
             )
             return _Bump(failure=exc)
         if not isinstance(token, str) or not token:
+            if self._negative_cache_writes_advance and source_reads(source):
+                # this table also caches absences, and those trust an unmoved generation: an
+                # advance that moved nothing is a failed one for them
+                unadvanced = _unadvanced_absence_error(self.table_name)
+                log.error(
+                    "write generation was not advanced after a committed write; absences recorded "
+                    "before it stay trusted until they expire",
+                    extra={"extra_data": {"table": self.table_name, "rows": rows, "error": str(unadvanced)}},
+                )
+                return _Bump(failure=unadvanced)
             # a source that does not say what it wrote: advanced, but nothing to stamp or count.
             return _NO_BUMP
         registry.account_generation(self.table_name, token)

@@ -54,6 +54,10 @@ class _FakeNats:
     dispatch chose, so the double records both and nothing else.
     """
 
+    #: the broker's advertised limit, as ``NatsClient.max_payload`` reports it; ``None`` (unknown) leaves the
+    #: tool server's size guard off, as on a client that has not connected
+    max_payload: int | None = None
+
     def __init__(self, *, jetstream_failures: int = 0) -> None:
         self.replies: list[tuple[str, Any]] = []
         self.delivered: list[tuple[str, bytes]] = []

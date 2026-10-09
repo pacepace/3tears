@@ -28,8 +28,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# The cross-process rbac invalidation bus (threetears.agent.acl.invalidation_bus).
-bus = ["3tears-nats[client]>=0.66.0,<0.67.0"]
+# The cross-process rbac invalidation bus (threetears.agent.acl.invalidation_bus), and following
+# the access tables' write generations (threetears.agent.acl.generation_follow).
+bus = ["3tears-nats[client]>=0.66.0,<0.67.0", "3tears-epoch>=0.66.0,<0.67.0"]
 
 [project.urls]
 Repository = "https://github.com/pacepace/3tears"
@@ -39,6 +40,7 @@ packages = ["src/threetears"]
 
 [tool.uv.sources]
 3tears-nats = { workspace = true }
+3tears-epoch = { workspace = true }
 3tears = { workspace = true }
 3tears-observe = { workspace = true }
 

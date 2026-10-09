@@ -203,12 +203,14 @@ dependencies = [
 
 [package.optional-dependencies]
 bus = [
+    { name = "3tears-epoch" },
     { name = "3tears-nats", extra = ["client"] },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "3tears", editable = "packages/core" },
+    { name = "3tears-epoch", marker = "extra == 'bus'", editable = "packages/epoch" },
     { name = "3tears-nats", extras = ["client"], marker = "extra == 'bus'", editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "pydantic", specifier = ">=2.0" },
@@ -369,6 +371,7 @@ dependencies = [
     { name = "3tears" },
     { name = "3tears-agent-audit" },
     { name = "3tears-agent-memory" },
+    { name = "3tears-epoch" },
     { name = "3tears-langgraph" },
     { name = "3tears-media-contracts" },
     { name = "3tears-nats", extra = ["client"] },
@@ -428,6 +431,7 @@ requires-dist = [
     { name = "3tears", editable = "packages/core" },
     { name = "3tears-agent-audit", editable = "packages/agent/audit" },
     { name = "3tears-agent-memory", editable = "packages/agent/memory" },
+    { name = "3tears-epoch", editable = "packages/epoch" },
     { name = "3tears-langgraph", editable = "packages/langgraph" },
     { name = "3tears-media-contracts", editable = "packages/media-contracts" },
     { name = "3tears-nats", extras = ["client"], editable = "packages/nats" },
@@ -980,6 +984,7 @@ dependencies = [
     { name = "3tears" },
     { name = "3tears-agent-acl" },
     { name = "3tears-agent-tools" },
+    { name = "3tears-epoch" },
     { name = "3tears-nats", extra = ["client"] },
     { name = "3tears-observe" },
     { name = "nats-py" },
@@ -991,6 +996,7 @@ requires-dist = [
     { name = "3tears", editable = "packages/core" },
     { name = "3tears-agent-acl", editable = "packages/agent/acl" },
     { name = "3tears-agent-tools", editable = "packages/agent/tools" },
+    { name = "3tears-epoch", editable = "packages/epoch" },
     { name = "3tears-nats", extras = ["client"], editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "nats-py", specifier = ">=2.0" },
