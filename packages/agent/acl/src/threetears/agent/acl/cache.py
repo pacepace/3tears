@@ -262,7 +262,9 @@ class AclCache:
 
         Set by :func:`~threetears.agent.acl.generation_follow.follow_access_tables`; a caller does
         not call it. Once followed, the cache is :attr:`trusted` only while ``watching`` answers
-        ``True``, and after ``None`` never again.
+        ``True``, and after ``None`` not until it is followed again. The first follow empties the
+        cache: what it held was cached while nothing could tell it of a write, and a table whose
+        generation was never written pushes no first value whose drop would remove it.
 
         :param watching: answers whether every table's watch is running now; ``None`` when the
             follower has stopped
@@ -271,10 +273,10 @@ class AclCache:
         :rtype: None
         """
         with self._lock:
+            if watching is None or not self._ever_followed:
+                self._empty_locked()
             self._watching = watching
             self._ever_followed = True
-            if watching is None:
-                self._empty_locked()
 
     @property
     def trusted(self) -> bool:

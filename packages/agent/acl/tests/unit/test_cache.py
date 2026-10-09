@@ -483,6 +483,16 @@ class TestTrust:
         cache.put_membership(key, (), fence=fence)
         assert cache.get_membership(key) is None
 
+    def test_what_it_held_before_it_was_first_followed_is_dropped(self) -> None:
+        """nothing could tell it of a write then, and a never-written table pushes no drop."""
+        cache = _make_cache()
+        keys = _put_one_of_each(cache)
+        cache.followed_by(lambda: True)
+        assert cache.size == 0
+        assert not _all_served(cache, keys)
+        _put_one_of_each(cache)
+        assert cache.size == 3
+
     def test_once_its_follower_stops_it_is_never_trusted_again(self) -> None:
         cache = _make_cache()
         cache.followed_by(lambda: True)

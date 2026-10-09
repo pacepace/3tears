@@ -1220,7 +1220,10 @@ switch-on release: images built from 3tears `5173b662`, hub `e6b3f9f2` and SDK `
   `{ns}-epochs` already rendered to cobalt (the switch-on stage's requirement).
 - **identity-core** writes these tables only through the hub's RPCs, so the hub covers it.
 
-Within the contract release the pieces upgrade in any order: a contract hub publishes no `acl.*`,
+A hub, gateway or registry still on the switch-on build, once its static grants are rendered from
+this release, still subscribes to `acl.*` and logs one refused-subscribe ERROR per connect; the
+connection stays up and nothing is lost, since nothing publishes those subjects. Within the
+contract release the pieces upgrade in any order: a contract hub publishes no `acl.*`,
 and a switch-on pod still subscribes but follows the generations; a contract pod subscribes nothing.
 **Rolling a hub or gateway back below switch-on, while any contract follower runs, is not safe.**
 
@@ -1258,7 +1261,8 @@ watches had failed and which also missed a broadcast; without it nothing would. 
 serves nothing it holds and asks its loaders (and is emptied, so nothing held across the failure is
 served after), and a cache whose follower stopped is never trusted again. A cache nobody ever
 followed is trusted: that is a scratch cache scoped to one request (the hub's RBAC dry run, a test),
-which no write can reach while it lives. `BrokerAclGateway` takes `registry=` and
+which no write can reach while it lives. The first follow empties the cache, since what it held
+was cached while nothing could tell it of a write. `BrokerAclGateway` takes `registry=` and
 `generation_reader=` together or neither, so a production gateway cannot be built half-followed.
 
 **The platform migrations are announced at every hub start, unconditionally**
