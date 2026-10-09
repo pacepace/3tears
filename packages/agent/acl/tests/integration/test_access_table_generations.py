@@ -33,10 +33,12 @@ from threetears.agent.acl import (
     GroupMemberCollection,
     GroupNamespaceKey,
     RoleAssignmentCollection,
+    NamespaceCollection,
     RoleCollection,
     bind_acl_cache_to_access_tables,
 )
-from threetears.agent.acl.generation_follow import AccessTableFollower
+from threetears.agent.acl import ACCESS_TABLES
+from threetears.agent.acl.generation_follow import AccessTableFollower, follow_access_tables
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.testing.kv import FakeNatsClient
@@ -98,8 +100,31 @@ _DDL = (
         PRIMARY KEY (row_scope, assignment_id)
     )
     """,
+    """
+    CREATE TABLE namespaces (
+        row_scope varchar(8) NOT NULL,
+        namespace_id uuid NOT NULL UNIQUE,
+        name varchar(255) NOT NULL,
+        namespace_type varchar(20) NOT NULL,
+        owner_agent_id uuid,
+        owner_namespace varchar(255),
+        customer_id uuid,
+        schema_name varchar(100),
+        metadata jsonb DEFAULT '{}'::jsonb,
+        tool_eligible boolean NOT NULL DEFAULT true,
+        skill_eligible boolean NOT NULL DEFAULT false,
+        face_api boolean NOT NULL DEFAULT false,
+        face_mcp boolean NOT NULL DEFAULT false,
+        face_platform_tool boolean NOT NULL DEFAULT true,
+        face_rest boolean NOT NULL DEFAULT false,
+        face_rest_declaration jsonb,
+        date_created timestamptz NOT NULL,
+        date_updated timestamptz NOT NULL,
+        PRIMARY KEY (row_scope, namespace_id)
+    )
+    """,
 )
-_TABLES = ("role_assignments", "roles", "group_members", "groups")
+_TABLES = ("role_assignments", "roles", "group_members", "groups", "namespaces")
 
 
 @pytest.fixture(autouse=True)
@@ -154,6 +179,7 @@ class _Writer:
         self.members = GroupMemberCollection(self.registry, _config(), nats_client=bus)
         self.roles = RoleCollection(self.registry, _config(), nats_client=bus)
         self.assignments = RoleAssignmentCollection(self.registry, _config(), nats_client=bus)
+        self.namespaces = NamespaceCollection(self.registry, _config(), nats_client=bus)
 
     async def add_member(self, group_id: uuid.UUID, member_type: str, member_id: uuid.UUID) -> uuid.UUID:
         row_id = uuid.uuid4()
@@ -184,7 +210,7 @@ class _Follower:
 
     async def start(self) -> None:
         await self.registry.start_invalidation_listener(self.bus)  # type: ignore[arg-type]
-        for table in ("groups", "group_members", "roles", "role_assignments"):
+        for table in ACCESS_TABLES:
             self.registry.follow_generation(table)
         await generation_catchup_tick(self.registry, self.reader)
 
@@ -355,6 +381,36 @@ class TestARoleOrGroupRowEvictsWhatWasResolvedThroughIt:
         assert follower.holds_group(other, ns)
 
 
+class TestANamespaceRowEvictsWhatWasResolvedForIt:
+    async def test_ensuring_a_namespace_is_announced_and_heard(self, pool: asyncpg.Pool, bus: _Lossy) -> None:
+        writer, follower = await _pods(pool, bus)
+        before = await _count(bus, "namespaces")
+        await writer.namespaces.ensure_namespace(
+            namespace_id=uuid.uuid4(), name="tool.x", namespace_type="tool", owner_agent_id=None, customer_id=None
+        )
+        assert await _count(bus, "namespaces") == (before or 0) + 1
+        assert await generation_catchup_tick(follower.registry, follower.reader) == 0
+
+    async def test_a_rescope_evicts_every_group_entry_for_that_namespace_and_no_other(
+        self, pool: asyncpg.Pool, bus: _Lossy
+    ) -> None:
+        writer, follower = await _pods(pool, bus)
+        ns, other_ns, group = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        await writer.namespaces.ensure_namespace(
+            namespace_id=ns, name="tool.y", namespace_type="tool", owner_agent_id=None, customer_id=None
+        )
+        follower.seed(
+            groups=((group, ns, frozenset()), (uuid.uuid4(), ns, frozenset()), (group, other_ns, frozenset()))
+        )
+        before = await _count(bus, "namespaces")
+        outcome = await writer.namespaces.rescope(ns, customer_id=uuid.uuid4())
+        assert outcome.moved
+        assert await _count(bus, "namespaces") == (before or 0) + 1
+        assert follower.cache.group_namespace_size == 1
+        assert follower.holds_group(group, other_ns)
+        assert await generation_catchup_tick(follower.registry, follower.reader) == 0
+
+
 class TestAMissedBroadcastEmptiesOnlyItsTablesLayer:
     async def test_by_one_pass(self, pool: asyncpg.Pool, bus: _Lossy) -> None:
         writer, follower = await _pods(pool, bus)
@@ -393,3 +449,42 @@ class TestAMissedBroadcastEmptiesOnlyItsTablesLayer:
         finally:
             await follower_.stop()
         assert not follower_.running
+
+
+class TestOneCallBindsAndFollows:
+    async def test_follow_access_tables_evicts_heard_rows_drops_missed_ones_and_reports_health(
+        self, pool: asyncpg.Pool, bus: _Lossy
+    ) -> None:
+        writer = _Writer(pool, bus)
+        for table in _TABLES:
+            await writer.registry.generation_source.advance(table)  # type: ignore[union-attr]
+        registry = CollectionRegistry()
+        registry.configure(l2_client=bus, kv_key_scope="pod")
+        await registry.start_invalidation_listener(bus)  # type: ignore[arg-type]
+        loader: Any = object()
+        cache = AclCache(membership_loader=loader, grant_loader=loader)
+        following = follow_access_tables(registry, cache, EpochGenerationReader(bus), grace=timedelta(milliseconds=50))
+        try:
+            for _ in range(50):
+                if following.healthy:
+                    break
+                await asyncio.sleep(0.02)
+            assert following.healthy
+            ada, bob = uuid.uuid4(), uuid.uuid4()
+            cache.put_membership(ActorMembershipKey("user", ada), ())
+            cache.put_membership(ActorMembershipKey("user", bob), ())
+            await writer.add_member(uuid.uuid4(), "user", ada)
+            assert cache.get_membership(ActorMembershipKey("user", ada)) is None
+            assert cache.get_membership(ActorMembershipKey("user", bob)) is not None
+            bus.deaf = True
+            await writer.add_member(uuid.uuid4(), "user", uuid.uuid4())
+            bus.deaf = False
+            for _ in range(50):
+                if cache.membership_size == 0:
+                    break
+                await asyncio.sleep(0.02)
+            assert cache.membership_size == 0
+        finally:
+            await following.stop()
+        assert not following.follower.running
+        assert not registry.has_derived_caches("group_members")

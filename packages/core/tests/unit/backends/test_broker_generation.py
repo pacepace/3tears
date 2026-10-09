@@ -247,19 +247,20 @@ class TestABrokerBuiltBeforeGenerations:
         await _Broker({"success": True, "row_count": 1}).proxy().execute("DELETE FROM group_members")
         assert await BrokerGenerationSource().advance(_TABLE) is None
 
-    async def test_it_is_warned_about_once_per_table(
-        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from threetears.core.backends import broker_generation  # noqa: PLC0415 -- the once-per-table record
-
-        monkeypatch.setattr(broker_generation, "_WARNED_UNADVANCED", set())
+    async def test_it_is_warned_about_once_per_table(self, caplog: pytest.LogCaptureFixture) -> None:
+        # a table no other test advances, so no earlier warning for it can hide this one
+        table = f"warned_once_{uuid.uuid4().hex}"
         proxy = _Broker({"success": True, "row_count": 1}, {"success": True, "row_count": 1}).proxy()
         with caplog.at_level("WARNING"):
-            await proxy.execute("DELETE FROM group_members")
-            assert await BrokerGenerationSource().advance(_TABLE) is None
-            await proxy.execute("DELETE FROM group_members")
-            assert await BrokerGenerationSource().advance(_TABLE) is None
-        warned = [r for r in caplog.records if "advanced no write generation" in r.getMessage()]
+            await proxy.execute(f"DELETE FROM {table}")
+            assert await BrokerGenerationSource().advance(table) is None
+            await proxy.execute(f"DELETE FROM {table}")
+            assert await BrokerGenerationSource().advance(table) is None
+        warned = [
+            r
+            for r in caplog.records
+            if "advanced no write generation" in r.getMessage() and getattr(r, "extra_data", {}).get("table") == table
+        ]
         assert len(warned) == 1
 
     async def test_a_broker_that_names_generations_and_not_the_table_still_raises(self) -> None:
@@ -410,7 +411,9 @@ class _SwitchedOnBrokeredMembers(_BrokeredMembers):
     write_generation = WRITE_GENERATION
 
 
-def _pod(cls: type[_BrokeredMembers], broker: _Broker, bus: FakeNatsClient) -> _BrokeredMembers:
+def _pod(
+    cls: type[_BrokeredMembers], broker: _Broker, bus: FakeNatsClient, *, source: BrokerGenerationSource | None = None
+) -> _BrokeredMembers:
     metadata = MetaData()
     Table(
         _TABLE,
@@ -423,7 +426,7 @@ def _pod(cls: type[_BrokeredMembers], broker: _Broker, bus: FakeNatsClient) -> _
     l1.initialize(metadata)
     registry = CollectionRegistry()
     registry.configure(l1_backend=l1, l2_client=bus, l3_pool=object(), kv_key_scope="pod")  # type: ignore[arg-type]
-    registry.set_generation_source(BrokerGenerationSource())
+    registry.set_generation_source(source if source is not None else BrokerGenerationSource())
     return cls(registry, broker.proxy())
 
 
@@ -555,3 +558,39 @@ class TestASourceThatCannotReadLeavesAbsenceCachingOff:
 
     def test_a_source_that_reads_caches_absences(self) -> None:
         assert isinstance(self._guard(BrokerGenerationSource(_Reader("inc:1"))), RevocationGuard)
+
+
+class _AbsenceCachingBrokeredMembers(_BrokeredMembers):
+    """caches absences, as ``CoordinationRevocationsCollection`` does, and is not switched on."""
+
+    negative_cache_max_age: ClassVar[timedelta | None] = timedelta(seconds=60)
+
+
+class _SwitchedOnAbsenceCachingBrokeredMembers(_AbsenceCachingBrokeredMembers):
+    write_generation = WRITE_GENERATION
+
+
+class TestAnAbsenceCacheIsNeverToldNothingAdvancedIsFine:
+    """the owner's (A) lets a switched-on write go on when its broker advanced nothing; an absence
+    cache trusts an unmoved generation by design, so for it that is a failed advance."""
+
+    @pytest.mark.parametrize("cls", [_AbsenceCachingBrokeredMembers, _SwitchedOnAbsenceCachingBrokeredMembers])
+    async def test_a_reply_with_no_generations_field_fails_its_advance(self, cls: type[_BrokeredMembers]) -> None:
+        bus = FakeNatsClient()
+        members = _pod(
+            cls, _Broker({"success": True, "row_count": 1}), bus, source=BrokerGenerationSource(_Reader("inc:1"))
+        )
+        with pytest.raises(GenerationUnavailableError, match="not advanced"):
+            await members.save_entity(members.create({"id": "m1"}))
+        # the row was still written and announced
+        assert [message.ids for message in _messages(bus)] == [["m1"]]
+
+    async def test_a_named_generation_advances_it_cleanly(self) -> None:
+        bus = FakeNatsClient()
+        members = _pod(
+            _AbsenceCachingBrokeredMembers,
+            _Broker(_wrote("inc:2")),
+            bus,
+            source=BrokerGenerationSource(_Reader("inc:1")),
+        )
+        await members.save_entity(members.create({"id": "m1"}))

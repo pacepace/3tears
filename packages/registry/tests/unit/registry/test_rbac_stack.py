@@ -422,10 +422,24 @@ class TestTheAccessTablesAreFollowed:
         stack = self._stack()
         await stack.subscribe_invalidations()
         watches = [task for task in asyncio.all_tasks() if task.get_name().startswith("follow-generation:")]
-        assert len(watches) == 4
+        from threetears.agent.acl import ACCESS_TABLES
+
+        assert len(watches) == len(ACCESS_TABLES)
         await stack.close()
         assert not stack.registry.has_derived_caches("group_members")
         assert all(task.done() for task in watches)
+
+    @pytest.mark.asyncio
+    async def test_it_reports_whether_the_tables_are_followed(self) -> None:
+        stack = self._stack()
+        assert not stack.access_tables_followed
+        await stack.subscribe_invalidations()
+        try:
+            # the mocked client cannot watch, so every watch keeps failing: not followed
+            await asyncio.sleep(0.05)
+            assert not stack.access_tables_followed
+        finally:
+            await stack.close()
 
     def test_the_registry_reads_generations(self) -> None:
         from threetears.core.collections.generation import source_reads

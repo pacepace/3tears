@@ -1013,6 +1013,12 @@ That is lockstep, and the rollout rule is that pieces upgrade in any order.
 - No follower is misled by (A): the stage-3 rule already forbids reading "did not move" as "nothing
   changed" while any writer of the table is on an older release, and the `acl.*` subjects and the
   TTL remain until contract.
+- **(A) does not reach absence caching** (found in review). Absence caching is the other reader of
+  "did not move", and it trusts an unmoved generation by design; stage 3 gives pod sources a reader,
+  so `CoordinationRevocationsCollection` caches absences on pods. For a collection that caches
+  absences, an advance that returns `None` is a failed advance: the write path raises
+  `GenerationUnavailableError` once it has run (`_unadvanced_absence_error`), as it did before (A),
+  so a revocation written through an older hub is never reported as a clean advance.
 
 **The standalone registry reads the epoch bucket.** `_registry` is granted
 `JsResource.kv_bucket_keys(f"{ns}-epochs", writable=False)`, the tool pod's grant, for the tool
@@ -1021,8 +1027,9 @@ hub. Its rbac stack's `AclCache` follows the access tables like every other.
 
 ### What Exists Now
 
-- **Switched on**: the four framework classes declare `WRITE_GENERATION`; the hub's `Hub*`
-  subclasses and the SDK inherit it. `GroupMemberCollection.invalidation_columns =
+- **Switched on**: the four framework classes declare `WRITE_GENERATION`, and so does
+  `NamespaceCollection` (a per-namespace access entry reads the namespace row's customer and type,
+  so a rescope must reach the cache); the hub's `Hub*` subclasses and the SDK inherit it. `GroupMemberCollection.invalidation_columns =
   ("member_type", "member_id")`, `RoleAssignmentCollection.invalidation_columns = ("group_id",)`.
   `groups` and `roles` name what they reach in their primary keys.
 - **Row to entries, in `AclCache`** (`evict_*_row`, wired by `bind_acl_cache_to_access_tables`):
@@ -1038,19 +1045,27 @@ hub. Its rbac stack's `AclCache` follows the access tables like every other.
   - `groups`: the group's assignment entries, its own parent entry, and every membership entry that
     names it. The last is what a group delete needs: its cascade removes membership rows in the
     database, and an actor entry still naming the group would walk to the deleted group's parents.
-  - A row whose broadcast does not say what it names (an older writer) empties only the layer
-    derived from its table. A dropped table (a missed broadcast, a replaced bucket) empties what was
+  - `namespaces`: every per-namespace entry for that namespace (`invalidate_namespace`).
+  - A row whose broadcast does not say what it names (an older writer, a `member_type` that does
+    not parse as a `MemberType`, a key that does not parse) empties only the layer derived from its
+    table, and is counted per table (`DegradedEvictions`) and logged at WARNING, at most once a
+    minute per table. Table names and key positions are read off the collection classes. A dropped table (a missed broadcast, a replaced bucket) empties what was
     derived from it. ALL never answers a heard, named change.
 - **The read fence** (`AclCache.read_fence`, `put_*(fence=)`): the derived-cache rule's
   "record the tokens before the read, refuse the store if one moved", as an eviction counter. An
   entry whose loader read began before any eviction is not stored.
-- **Following**: `threetears.agent.acl.generation_follow.AccessTableFollower` follows the four
-  tables on a registry and runs one `follow_generation_key` watch per table as a task, starting a
-  watch again (after a one-second retry delay, not an age on any cached value) when it ends or
-  fails. Wired in the hub and the gateway (`BrokerAclGateway(registry=, generation_reader=)`), the
-  agent pod (`ThreeTierStack.subscribe_invalidations`) and the standalone registry
-  (`RegistryRbacStack.subscribe_invalidations`); each stops it at teardown, the hub's shutdown now
-  included.
+- **Following, one call**: `threetears.agent.acl.generation_follow.follow_access_tables(registry,
+  cache, reader)` binds the cache and follows the tables, returning one handle whose `stop()` undoes
+  both; each half alone is unsafe. `AccessTableFollower` runs one `follow_generation_key` watch per
+  table as a task and starts it again when it ends or fails, after a delay that doubles from one
+  second to a sixty-second cap and resets when the watch is pushed a value. That delay is the
+  watch's liveness, not an age on any cached value. Each table's `WatchHealth` (consecutive
+  failures, pushes, last error) and `healthy` are readable; the standalone registry exposes it as
+  `RegistryRbacStack.access_tables_followed`. A fence-skipped store is counted
+  (`AclCache.fence_skipped_stores`). Wired in the hub and the gateway (`BrokerAclGateway(registry=,
+  generation_reader=)`), the agent pod (`ThreeTierStack.subscribe_invalidations`) and the standalone
+  registry (`RegistryRbacStack.subscribe_invalidations`); each stops it at teardown, the hub's
+  shutdown now included. `follow_generation_key` takes any `GenerationWatcher`.
 - **Readers**: every SDK pod registry is built by `broker_collection_registry(epoch_nats=...)`; the
   agent pod and the owner-data stack pass their client, so their `BrokerGenerationSource` reads;
   the devx workspace runtime passes `None` (the dev `tooling` user holds no read of the bucket).
@@ -1068,8 +1083,14 @@ per table per commit, each broadcast naming what the row reaches:
   announces the winner, because through the broker the absorbed insert still advanced the table)
   and `delete_by_group_and_scope` (reads the matching rows first and issues no `DELETE` when there
   are none, so no advance goes unheard).
-- Hub `HubGroupCollection.delete`: the memberships and assignments its cascade removes, read before
-  the delete, through the registry's `group_members` and `role_assignments` collections.
+- 3tears `ensure_platform_builtin_tool_user_role`: its `INSERT INTO roles` announces the row.
+- 3tears `NamespaceCollection.ensure_namespace` (its `INSERT`, announced whether or not a conflict
+  absorbed it, since the broker advanced either way) and `rescope` (both keys of the moved row, in
+  one advance).
+- 3tears `GroupCollection.delete`: the memberships and assignments its cascade removes are read
+  before the delete (`read_cascade`) and announced after it (`announce_cascade`) through the
+  registry's `group_members` and `role_assignments` collections. The hub's `HubGroupCollection`
+  extends `announce_cascade` with its `acl.*` publishes.
 - Hub `HubRoleAssignmentCollection.announce_cascaded_grants` (a namespace delete or rescope):
   `NamespaceScopeGrant` now carries the row's key.
 - Hub `move_subtree_scopes`: one advance for the move's rows, not one per row with no group.
@@ -1090,6 +1111,10 @@ until contract, the `acl.*` subjects and the TTL stay.
 
 ### Still Open
 
+- **Hub writes to `namespaces` outside a collection**: `aibots.hub.tools.provider_nodes`'s and
+  `aibots.hub.security.api_key_namespace`'s `INSERT`s and `api_key_endpoints`' `DELETE` (which also
+  cascades that namespace's `role_assignments`). The hub writes directly, so these advance nothing
+  and no follower drops; the TTL covers them until contract, which must put them on the system.
 - **Hub migrations** write these tables outside any collection and move no generation. Covered by
   the TTL until contract; the contract stage must put them on the epoch system (for example, the
   hub advancing every switched-on table a migration wrote, an unknown reach, once after it runs).

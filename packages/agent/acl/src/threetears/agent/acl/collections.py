@@ -82,6 +82,7 @@ from threetears.agent.acl.types import (
 log = get_logger(__name__)
 
 __all__ = [
+    "GroupCascade",
     "GroupCollection",
     "GroupMemberCollection",
     "ImpersonationGateCollection",
@@ -153,13 +154,29 @@ def _coerce_role_permissions(raw: Any) -> dict[str, frozenset[str]]:
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class GroupCascade:
+    """the rows deleting a group cascades away in the database, read before the delete.
+
+    :ivar group_id: the group deleted
+    :ivar members: its ``group_members`` rows: ``member_type``, ``member_id``, ``id``
+    :ivar assignments: its ``role_assignments`` rows: ``row_scope``, ``assignment_id``
+    """
+
+    group_id: UUID
+    members: tuple[dict[str, Any], ...]
+    assignments: tuple[dict[str, Any], ...]
+
+
 class GroupCollection(SchemaBackedCollection[GroupEntity]):
     """three-tier collection for ``groups`` rows.
 
     groups use hard-delete. cascading FKs on ``group_members`` and
     ``role_assignments`` (``ON DELETE CASCADE``) clean up member +
-    assignment rows in the same transaction, so the collection only
-    needs to delete the group row itself. CRUD comes from the
+    assignment rows in the same transaction. the database moves no write
+    generation for them, so :meth:`delete` reads the rows the cascade is
+    about to remove and announces them afterwards through those tables'
+    collections (:meth:`read_cascade`, :meth:`announce_cascade`). CRUD comes from the
     declarative :class:`TableSchema`; the evaluator-loader / introspection
     helpers (``list_by_customer`` / ``list_all`` / ``get_many`` /
     ``get_by_name``) stay on the canonical class because every
@@ -207,6 +224,12 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             "save_entity",
             "create",
             "find_by_id",
+            # rationale: a group's cascade spans both partitions of its members and its
+            # assignments; the group is the key, and the rows are read only to be announced
+            "read_cascade",
+            "announce_cascade",
+            # rationale: deletes by its full primary key, which carries the partition
+            "delete",
         }
     )
     # v0.8.0 hygiene enrichment: date_created/date_updated carry the
@@ -288,6 +311,76 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
                 "row_scope": row_scope_for_customer(data.get("customer_id")),
             }
         return super().create(data)
+
+    async def delete(self, entity_id: Any) -> bool:
+        """delete one group, then announce every membership and assignment its cascade removed.
+
+        :param entity_id: the group's primary key, ``(row_scope, group_id)``
+        :ptype entity_id: Any
+        :return: what the framework's own ``delete`` returns
+        :rtype: bool
+        :raises GenerationUnavailableError: when a cascaded table's write generation could not be
+            advanced; every row was still evicted and broadcast
+        """
+        group_id = UUID(f"{self.normalize_pk(entity_id)[self.primary_key_columns.index('group_id')]}")
+        cascade = await self.read_cascade(group_id)
+        deleted = await super().delete(entity_id)
+        await self.announce_cascade(cascade)
+        return deleted
+
+    async def read_cascade(self, group_id: UUID) -> GroupCascade:
+        """the memberships and assignments deleting ``group_id`` will cascade away, read before the delete.
+
+        :param group_id: the group about to be deleted
+        :ptype group_id: UUID
+        :return: the rows, by key; empty without an L3 pool
+        :rtype: GroupCascade
+        """
+        members: list[Any] = []
+        assignments: list[Any] = []
+        if self.l3_pool is not None:
+            # cache-bypass: the rows a cascade is about to remove, by group across both partitions
+            members = await self.l3_pool.fetch(
+                "SELECT member_type, member_id, id FROM group_members WHERE group_id = $1", group_id
+            )
+            # cache-bypass: the same cascade's assignments, by group across both partitions
+            assignments = await self.l3_pool.fetch(
+                "SELECT row_scope, assignment_id FROM role_assignments WHERE group_id = $1", group_id
+            )
+        return GroupCascade(
+            group_id=group_id,
+            members=tuple(dict(row) for row in members),
+            assignments=tuple(dict(row) for row in assignments),
+        )
+
+    async def announce_cascade(self, cascade: GroupCascade) -> None:
+        """evict the rows a group delete cascaded away, each table in one advance, naming what each reaches.
+
+        Through the registry's ``group_members`` and ``role_assignments`` collections: a membership
+        row names its member, an assignment row its group, so a cache derived from those tables
+        evicts exactly what they reached, and a pod following them hears the change. A subclass
+        that announces the cascade on another channel too extends this and calls it.
+
+        :param cascade: what :meth:`read_cascade` read before the delete
+        :ptype cascade: GroupCascade
+        :return: nothing
+        :rtype: None
+        :raises GenerationUnavailableError: when a table's write generation could not be advanced;
+            every row was still evicted and broadcast
+        """
+        registry = self.registry
+        members = None if registry is None else registry.get_collection(GroupMemberCollection.schema.name)
+        assignments = None if registry is None else registry.get_collection(RoleAssignmentCollection.schema.name)
+        if cascade.members and members is not None:
+            await members.invalidate_cache_many(
+                [(cascade.group_id, row["id"]) for row in cascade.members],
+                rows=[{"member_type": row["member_type"], "member_id": row["member_id"]} for row in cascade.members],
+            )
+        if cascade.assignments and assignments is not None:
+            await assignments.invalidate_cache_many(
+                [(row["row_scope"], row["assignment_id"]) for row in cascade.assignments],
+                rows=[{"group_id": cascade.group_id} for _ in cascade.assignments],
+            )
 
     async def find_by_id(
         self,
@@ -1569,6 +1662,10 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
     deploying-app subclasses.
     """
 
+    # a per-namespace access decision reads the namespace row (its customer, its type), so the
+    # table carries a write generation like the four access tables, and ``AclCache`` is evicted
+    # by its rows (epoch-task-06)
+    write_generation = WRITE_GENERATION
     primary_key_column: tuple[str, ...] = ("row_scope", "namespace_id")
     partition_exempt_methods = frozenset(
         {
@@ -1886,7 +1983,9 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             )
             moved = written is not None
             if moved:
-                await self.invalidate_cache((previous_scope, namespace_id))
+                # the row's key changed with its partition: both keys go, in the one advance the
+                # UPDATE owes, so a cache derived from the row (its customer decides access) hears it
+                await self.invalidate_cache_many([(previous_scope, namespace_id), (target_scope, namespace_id)])
         return NamespaceRescope(
             namespace_id=namespace_id,
             moved=moved,
@@ -2000,6 +2099,10 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                 _json.dumps(dict(metadata or {})),
                 now,
             )
+            # announced whether or not a conflict absorbed it: through the L3 broker the INSERT
+            # advanced the table's write generation either way, and an advance no row is heard for
+            # drops the table on every follower
+            await self.invalidate_cache(("platform" if customer_id is None else "customer", namespace_id))
             existing = await self.find_by_id(namespace_id)
             if existing is None:
                 # absorbed by a unique index other than the id's -- the name, or any unique column the

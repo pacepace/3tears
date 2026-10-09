@@ -160,6 +160,7 @@ from threetears.agent.acl.catalog import (
     validate_permissions,
 )
 from threetears.agent.acl.collections import (
+    GroupCascade,
     GroupCollection,
     GroupMemberCollection,
     ImpersonationGateCollection,
@@ -293,6 +294,7 @@ __all__ = [
     "ExternalAudienceNotSupported",
     "GrantLoader",
     "Group",
+    "GroupCascade",
     "GroupCollection",
     "GroupEntity",
     "GroupMemberCollection",

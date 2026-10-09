@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from uuid import UUID, uuid4
 
+import pytest
+
 from threetears.agent.acl import (
     ActorMembershipKey,
     EvaluationContext,
@@ -29,6 +31,16 @@ from threetears.agent.acl import (
     bind_acl_cache_to_access_tables,
     evaluate_decision,
 )
+from threetears.agent.acl import (
+    ACCESS_TABLES,
+    GroupCollection,
+    GroupMemberCollection,
+    GroupTypeCustomerKey,
+    NamespaceCollection,
+    RoleAssignmentCollection,
+    RoleCollection,
+)
+from threetears.agent.acl.access_tables import DegradedEvictions
 from threetears.core.collections import CacheInvalidationMessage, CollectionRegistry
 
 from .fake_loaders import FakeStore, make_cache
@@ -144,21 +156,73 @@ class TestAnUnknownReachEmptiesOnlyItsTablesLayer:
         assert cache.group_namespace_size == 0  # type: ignore[attr-defined]
         assert cache.membership_size == 1  # type: ignore[attr-defined]
 
-    def test_a_named_row_empties_nothing(self) -> None:
-        registry, cache = _bound()
+    def test_a_named_row_evicts_exactly_its_entry(self) -> None:
+        registry = CollectionRegistry()
+        cache = make_cache(FakeStore())
+        bind_acl_cache_to_access_tables(registry, cache)
+        named, other, group, other_group, ns = uuid4(), uuid4(), uuid4(), uuid4(), uuid4()
+        cache.put_membership(ActorMembershipKey("user", named), ())
+        cache.put_membership(ActorMembershipKey("user", other), ())
+        cache.put_group_namespace(GroupNamespaceKey(group, ns), frozenset(), (), role_ids=frozenset())
+        cache.put_group_namespace(GroupNamespaceKey(other_group, ns), frozenset(), (), role_ids=frozenset())
         registry.tell_derived_caches(
             CacheInvalidationMessage(
                 table="group_members",
                 ids=[f"{uuid4()}", f"{uuid4()}"],
-                columns={"member_type": "user", "member_id": f"{uuid4()}"},
+                columns={"member_type": "user", "member_id": f"{named}"},
             )
         )
         registry.tell_derived_caches(
             CacheInvalidationMessage(
-                table="role_assignments", ids=["customer", f"{uuid4()}"], columns={"group_id": f"{uuid4()}"}
+                table="role_assignments", ids=["customer", f"{uuid4()}"], columns={"group_id": f"{group}"}
             )
         )
-        assert cache.size == 2  # type: ignore[attr-defined]
+        assert cache.get_membership(ActorMembershipKey("user", named)) is None
+        assert cache.get_membership(ActorMembershipKey("user", other)) is not None
+        assert cache.get_group_namespace(GroupNamespaceKey(group, ns)) is None
+        assert cache.get_group_namespace(GroupNamespaceKey(other_group, ns)) is not None
+
+    def test_a_member_type_that_does_not_parse_is_an_unknown_reach_and_is_counted(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        registry = CollectionRegistry()
+        cache = make_cache(FakeStore())
+        degraded = DegradedEvictions()
+        bind_acl_cache_to_access_tables(registry, cache, degraded=degraded)
+        cache.put_membership(ActorMembershipKey("user", uuid4()), ())
+        with caplog.at_level("WARNING"):
+            registry.tell_derived_caches(
+                CacheInvalidationMessage(
+                    table="group_members",
+                    ids=[f"{uuid4()}", f"{uuid4()}"],
+                    columns={"member_type": "robot", "member_id": f"{uuid4()}"},
+                )
+            )
+        assert cache.membership_size == 0
+        assert degraded.counts == {"group_members": 1}
+        assert any("did not say what it reaches" in r.getMessage() for r in caplog.records)
+
+    def test_a_role_or_group_row_whose_key_does_not_parse(self) -> None:
+        registry, cache = _bound()
+        registry.tell_derived_caches(CacheInvalidationMessage(table="roles", ids=["not-a-uuid"]))
+        assert (cache.membership_size, cache.group_namespace_size) == (1, 0)  # type: ignore[attr-defined]
+        registry, cache = _bound()
+        registry.tell_derived_caches(CacheInvalidationMessage(table="groups", ids=["platform"]))
+        assert cache.size == 0  # type: ignore[attr-defined]
+        registry, cache = _bound()
+        registry.tell_derived_caches(CacheInvalidationMessage(table="namespaces", ids=["customer"]))
+        assert (cache.membership_size, cache.group_namespace_size) == (1, 0)  # type: ignore[attr-defined]
+
+    def test_a_namespace_row_evicts_its_entries_and_no_other(self) -> None:
+        registry = CollectionRegistry()
+        cache = make_cache(FakeStore())
+        bind_acl_cache_to_access_tables(registry, cache)
+        ns, other_ns, group = uuid4(), uuid4(), uuid4()
+        cache.put_group_namespace(GroupNamespaceKey(group, ns), frozenset(), (), role_ids=frozenset())
+        cache.put_group_namespace(GroupNamespaceKey(group, other_ns), frozenset(), (), role_ids=frozenset())
+        registry.tell_derived_caches(CacheInvalidationMessage(table="namespaces", ids=["customer", f"{ns}"]))
+        assert cache.get_group_namespace(GroupNamespaceKey(group, ns)) is None
+        assert cache.get_group_namespace(GroupNamespaceKey(group, other_ns)) is not None
 
     def test_a_dropped_table_empties_what_was_derived_from_it(self) -> None:
         registry, cache = _bound()
@@ -166,3 +230,72 @@ class TestAnUnknownReachEmptiesOnlyItsTablesLayer:
         assert (cache.membership_size, cache.group_namespace_size) == (0, 1)  # type: ignore[attr-defined]
         registry.drop_table("roles", reason="missed")
         assert cache.group_namespace_size == 0  # type: ignore[attr-defined]
+
+
+class TestTheTablesAndKeysAreTheCollections:
+    def test_the_tables_are_the_collections_tables(self) -> None:
+        assert set(ACCESS_TABLES) == {
+            cls.schema.name
+            for cls in (
+                GroupCollection,
+                GroupMemberCollection,
+                RoleCollection,
+                RoleAssignmentCollection,
+                NamespaceCollection,
+            )
+        }
+
+    def test_a_group_row_is_read_at_its_declared_key_position(self) -> None:
+        registry = CollectionRegistry()
+        cache = make_cache(FakeStore())
+        bind_acl_cache_to_access_tables(registry, cache)
+        group, kept = uuid4(), uuid4()
+        cache.put_membership(ActorMembershipKey("group", group), ())
+        cache.put_membership(ActorMembershipKey("group", kept), ())
+        key = dict(zip(GroupCollection.primary_key_column, ("customer", f"{group}"), strict=True))
+        ordered = [
+            "customer" if column == "row_scope" else key[column] for column in GroupCollection.primary_key_column
+        ]
+        registry.tell_derived_caches(CacheInvalidationMessage(table="groups", ids=ordered))
+        assert cache.get_membership(ActorMembershipKey("group", group)) is None
+        assert cache.get_membership(ActorMembershipKey("group", kept)) is not None
+
+
+class TestARoleRowEmptiesTheTypeCustomerLayer:
+    def test_it_records_no_roles_so_any_role_edit_reaches_it(self) -> None:
+        cache = make_cache(FakeStore())
+        key = GroupTypeCustomerKey(uuid4(), "workspace", uuid4())
+        cache.put_group_type_customer(key, frozenset(), ())
+        cache.evict_role_row(uuid4())
+        assert cache.get_group_type_customer(key) is None
+
+
+class TestTheOtherFenceSites:
+    async def test_an_assignment_change_during_the_grant_read_keeps_the_group_entry_out(self) -> None:
+        store, namespace, user, _role, group = _granted_store()
+        cache = make_cache(store)
+        load = store.load_assignments_for_groups
+
+        async def load_then_revoked(**kwargs: object) -> object:
+            rows = await load(**kwargs)  # type: ignore[arg-type]
+            cache.evict_role_assignment_row(group.id)
+            return rows
+
+        store.load_assignments_for_groups = load_then_revoked  # type: ignore[assignment,method-assign]
+        await evaluate_decision(EvaluationContext(namespace=namespace, action="read", user_id=user), cache=cache)
+        assert cache.get_group_namespace(GroupNamespaceKey(group.id, namespace.id)) is None
+
+    async def test_an_unnesting_during_the_parent_read_keeps_the_parent_entry_out(self) -> None:
+        store, namespace, user, _role, group = _granted_store()
+        cache = make_cache(store)
+        load = store.load_for_group
+
+        async def load_then_unnested(group_id: UUID) -> tuple[GroupMembership, ...]:
+            rows = await load(group_id)
+            cache.evict_group_member_row("group", group_id)
+            return rows
+
+        store.load_for_group = load_then_unnested  # type: ignore[method-assign]
+        await evaluate_decision(EvaluationContext(namespace=namespace, action="read", user_id=user), cache=cache)
+        assert cache.get_membership(ActorMembershipKey("group", group.id)) is None
+        assert cache.fence_skipped_stores >= 1

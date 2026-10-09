@@ -245,6 +245,7 @@ class AclCache:
         self._lock = RLock()
         # moved by every eviction; see :meth:`read_fence`
         self._evictions = 0
+        self._fence_skipped_stores = 0
 
     # -----------------------------------------------------------------
     # the read fence
@@ -267,7 +268,27 @@ class AclCache:
         :return: ``True`` when the entry must not be stored
         :rtype: bool
         """
-        return fence is not None and fence != self._evictions
+        moved = fence is not None and fence != self._evictions
+        if moved:
+            self._fence_skipped_stores += 1
+            log.debug(
+                "acl cache entry not stored: an eviction landed while it was being computed",
+                extra={"extra_data": {"fence_skipped_stores": self._fence_skipped_stores}},
+            )
+        return moved
+
+    @property
+    def fence_skipped_stores(self) -> int:
+        """how many computed entries were not stored because an eviction overtook their read.
+
+        A count that climbs with every lookup means evictions arrive faster than entries can be
+        computed, so the cache is not caching.
+
+        :return: the count since the cache was built
+        :rtype: int
+        """
+        with self._lock:
+            return self._fence_skipped_stores
 
     # -----------------------------------------------------------------
     # membership layer

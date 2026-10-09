@@ -73,11 +73,10 @@ from threetears.agent.acl import (
     NamespaceCollection,
     RoleAssignmentCollection,
     RoleCollection,
-    bind_acl_cache_to_access_tables,
     subscribe_acl_invalidation,
     unsubscribe_acl_invalidation,
 )
-from threetears.agent.acl.generation_follow import AccessTableFollower
+from threetears.agent.acl.generation_follow import AccessTableFollowing, follow_access_tables
 from threetears.core.backends import BrokerGenerationSource
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 from threetears.core.cache.sqlite import SQLiteBackend
@@ -169,8 +168,19 @@ class RegistryRbacStack:
     nats_client: NatsClient
     subject_namespace: str
     _subscriptions: list[Subscription] = field(default_factory=list)
-    _follower: AccessTableFollower | None = None
-    _unbind_acl_cache: Callable[[], None] | None = None
+    _following: AccessTableFollowing | None = None
+
+    @property
+    def access_tables_followed(self) -> bool:
+        """whether the acl cache is following every access table it is derived from.
+
+        ``False`` before :meth:`subscribe_invalidations`, and while any table's generation watch
+        keeps failing (the cache then relies on the acl subjects and its TTL alone).
+
+        :return: the follower's health
+        :rtype: bool
+        """
+        return self._following is not None and self._following.healthy
 
     async def subscribe_invalidations(self) -> None:
         """bind the rbac invalidation subjects, and start the collection listener.
@@ -219,11 +229,10 @@ class RegistryRbacStack:
         # row from their broadcasts, which the listener above hears, and the tables are followed
         # by watching their generation keys, so a missed broadcast drops what was derived from
         # the table rather than serving it. Additive while the acl subjects above remain.
-        if self._unbind_acl_cache is None:
-            self._unbind_acl_cache = bind_acl_cache_to_access_tables(self.registry, self.acl_cache)
-        if self._follower is None:
-            self._follower = AccessTableFollower(self.registry, EpochGenerationReader(self.nats_client))
-            self._follower.start()
+        if self._following is None:
+            self._following = follow_access_tables(
+                self.registry, self.acl_cache, EpochGenerationReader(self.nats_client)
+            )
         log.info(
             "registry rbac stack subscribed to invalidations",
             extra={"extra_data": {"subjects": [sub.subject.path for sub in self._subscriptions]}},
@@ -242,12 +251,9 @@ class RegistryRbacStack:
         """
         await unsubscribe_acl_invalidation(self.nats_client, self._subscriptions)
         self._subscriptions = []
-        if self._follower is not None:
-            await self._follower.stop()
-            self._follower = None
-        if self._unbind_acl_cache is not None:
-            self._unbind_acl_cache()
-            self._unbind_acl_cache = None
+        if self._following is not None:
+            await self._following.stop()
+            self._following = None
         # paired with the start in :meth:`subscribe_invalidations`. released BEFORE the
         # L1 reset below, so no handler can be mid-evict against a backend being torn
         # out from under it.

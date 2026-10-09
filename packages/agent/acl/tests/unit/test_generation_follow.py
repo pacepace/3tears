@@ -55,3 +55,71 @@ async def test_every_table_is_followed_and_a_failed_or_ended_watch_is_started_ag
         await follower.stop()
     assert not follower.running
     await follower.stop()  # idempotent
+
+
+class _FailingWatches:
+    """every watch fails at once; records when each attempt started."""
+
+    def __init__(self) -> None:
+        self.started: list[float] = []
+
+    async def __call__(self, registry: Any, reader: Any, table: str, *, grace: timedelta) -> None:
+        self.started.append(asyncio.get_running_loop().time())
+        raise ConnectionError("no grant on the epoch bucket")
+
+
+async def test_a_watch_that_keeps_failing_backs_off_to_a_cap_and_reports_unhealthy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    watches = _FailingWatches()
+    monkeypatch.setattr(generation_follow, "follow_generation_key", watches)
+    follower = AccessTableFollower(
+        CollectionRegistry(),
+        object(),  # type: ignore[arg-type]
+        tables=("groups",),
+        restart_delay=timedelta(milliseconds=10),
+        max_restart_delay=timedelta(milliseconds=40),
+    )
+    follower.start()
+    try:
+        while len(watches.started) < 6:
+            await asyncio.sleep(0.005)
+    finally:
+        await follower.stop()
+    gaps = [later - earlier for earlier, later in zip(watches.started, watches.started[1:], strict=False)]
+    # 10ms, 20ms, 40ms, then held at the 40ms cap
+    assert gaps[1] > gaps[0] * 1.5
+    assert all(gap < 0.04 * 3 for gap in gaps)
+    health = follower.health["groups"]
+    assert health.consecutive_failures >= 5
+    assert health.last_error is not None and "no grant" in health.last_error
+    assert not follower.healthy
+
+
+class _Pushing:
+    """a watcher that pushes one generation per table and then waits."""
+
+    async def watch(self, table_name: str) -> Any:
+        yield "inc:1"
+        await asyncio.Event().wait()
+
+
+async def test_a_watch_that_is_pushed_a_value_is_healthy() -> None:
+    from threetears.agent.acl.generation_follow import follow_access_tables
+    from threetears.agent.acl import AclCache
+
+    registry = CollectionRegistry()
+    loader: Any = object()
+    following = follow_access_tables(registry, AclCache(membership_loader=loader, grant_loader=loader), _Pushing())
+    try:
+        for _ in range(100):
+            if following.healthy:
+                break
+            await asyncio.sleep(0.01)
+        assert following.healthy
+        assert all(h.pushes >= 1 for h in following.follower.health.values())
+        assert registry.has_derived_caches("group_members")
+    finally:
+        await following.stop()
+    assert not registry.has_derived_caches("group_members")
+    assert not following.healthy
