@@ -407,7 +407,7 @@ def render_campaign(campaign: CampaignLine) -> str:
     archived = ", archived" if campaign.archived else ""
     return (
         f"- {campaign.id}: {campaign.name} — subject {campaign.subject_id}, {campaign.behavior}; "
-        f"{campaign.run_count} run(s), {campaign.status}{archived}"
+        f"{campaign.run_count} run(s){archived}"
     )
 
 

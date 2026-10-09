@@ -114,7 +114,10 @@ launched before it, read as unproven.
 
 **Within v8, not a bump: fields retired** (``__retired_fields__``, read only by a stored read — see
 :mod:`threetears.evals.contracts.base`). ``LeverCoverage.confidence`` is removed: it was a fixed lookup on the
-lever's ``status``, so a stored analysis loses nothing when the key is discarded on read.
+lever's ``status``, so a stored analysis loses nothing when the key is discarded on read. ``EvalCampaign.status``
+(open / closed) is removed: nothing could change it after creation and nothing enforced it, so a stored
+campaign's ``closed`` froze nothing and discarding it changes no membership and no analysis; the one thing it
+fed, ``list_campaigns``'s ``status`` filter, is gone with it.
 """
 
 

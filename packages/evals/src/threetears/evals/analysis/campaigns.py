@@ -80,7 +80,6 @@ class CampaignStore(Protocol):
         *,
         subject_id: str | None = None,
         behavior: str | None = None,
-        status: str | None = None,
         archived: bool | None = None,
     ) -> list[EvalCampaign]:
         """Campaigns in a scope, newest first; each keyword is an optional equality filter."""
@@ -546,12 +545,11 @@ def list_campaigns(
     *,
     subject_id: str | None = None,
     behavior: str | None = None,
-    status: str | None = None,
     archived: bool | None = None,
 ) -> list[EvalCampaign]:
     """List campaigns in a scope, newest first.
 
-    ``subject_id`` / ``behavior`` / ``status`` / ``archived`` are optional
+    ``subject_id`` / ``behavior`` / ``archived`` are optional
     equality filters; all ``None`` returns every campaign.
 
     Args:
@@ -559,7 +557,6 @@ def list_campaigns(
         scope_id: The scope to list.
         subject_id: Only campaigns over this subject.
         behavior: Only campaigns measuring this behavior.
-        status: Only campaigns in this status.
         archived: Only archived (``True``) or only active (``False``) campaigns.
 
     Returns:
@@ -569,7 +566,6 @@ def list_campaigns(
         scope_id,
         subject_id=subject_id,
         behavior=behavior,
-        status=status,
         archived=archived,
     )
 

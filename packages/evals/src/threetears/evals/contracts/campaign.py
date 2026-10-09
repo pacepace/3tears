@@ -161,6 +161,12 @@ class CampaignWindow(EvalDocumentModel):
 class EvalCampaign(EvalDocumentModel):
     """A curated set of eval runs under one subject×behavior — the analysis hub.
 
+    A campaign has no open/closed status. ``status`` was retired within schema v8: nothing could
+    change it after creation and nothing enforced it — runs were added to, and analyses generated
+    over, a ``closed`` campaign alike — so it was a label that read as frozen membership while
+    freezing nothing. A stored campaign carrying it loads with it discarded. ``archived`` is the
+    lifecycle a campaign has.
+
     Lives in one ``scope_id``, and so do its member runs: a run in another scope is
     refused at attachment (:mod:`threetears.evals.analysis.campaigns`), because every
     read of a campaign's members is a read within one scope. Membership (``run_ids``)
@@ -191,6 +197,8 @@ class EvalCampaign(EvalDocumentModel):
     resolves through whichever observation carries it — and nothing on this model is
     a pointer at a run whose deletion could dangle it.
     """
+
+    __retired_fields__: ClassVar[dict[str, str | None]] = {"status": None}
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["eval_campaign"] = "eval_campaign"
@@ -231,7 +239,6 @@ class EvalCampaign(EvalDocumentModel):
             "that declared nothing are still analysable."
         ),
     )
-    status: Literal["open", "closed"] = Field(default="open")
     archived: bool = Field(default=False)
     created_at: str = Field(default_factory=utc_now_iso)
     created_by: str = Field(

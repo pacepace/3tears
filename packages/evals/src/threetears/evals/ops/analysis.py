@@ -49,7 +49,6 @@ class CampaignLine(EvalBaseModel):
     subject_id: str
     behavior: str
     run_count: int
-    status: str
     archived: bool
 
 
@@ -116,7 +115,6 @@ def _campaign_line(campaign: EvalCampaign) -> CampaignLine:
         subject_id=campaign.subject_id,
         behavior=campaign.behavior,
         run_count=len(campaign.run_ids),
-        status=campaign.status,
         archived=campaign.archived,
     )
 

@@ -683,12 +683,11 @@ class EvalStorage:
         *,
         subject_id: str | None = None,
         behavior: str | None = None,
-        status: str | None = None,
         archived: bool | None = None,
     ) -> list[EvalCampaign]:
         """Query campaigns in a scope, newest first.
 
-        ``subject_id`` / ``behavior`` / ``status`` / ``archived`` are optional
+        ``subject_id`` / ``behavior`` / ``archived`` are optional
         equality filters; all ``None`` returns every campaign in the scope.
         """
         field_eq: dict[str, Any] = {}
@@ -696,8 +695,6 @@ class EvalStorage:
             field_eq["subject_id"] = subject_id
         if behavior is not None:
             field_eq["behavior"] = behavior
-        if status is not None:
-            field_eq["status"] = status
         if archived is not None:
             field_eq["archived"] = archived
         items = self._store.by_doc_type("eval_campaign", scope_id, order_by="created_at", descending=True, **field_eq)
