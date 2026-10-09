@@ -37,7 +37,7 @@ async def classify(case: dict) -> str:
     return "neutral"
 
 
-def decisive(case: dict, label: str) -> bool:
+def decisive(case: dict, label: str) -> bool:  # the engine reads its docstring's first line: the measure's description
     """Whether the classifier committed to a polarity rather than answering neutral."""
     return label != "neutral"
 

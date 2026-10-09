@@ -17,7 +17,9 @@ confusion matrix and each label's precision, recall and F1, counted by
 
 **A judged run's rubric is read too.** Each dimension a judge scored is summarised over the results that
 carry its score, beside how many the judge could not tell on, and the judge's spend is the sum of the
-results' ``judge`` usage rows — unknown, never zero, when any judge call went unpriced.
+results' ``judge`` usage rows — unknown, never zero, when any judge call went unpriced. So is the
+template's intent, which the judge reads beside every answer: an unjudged run's is read by nothing that
+grades it, so its summary leaves it out.
 
 **So is what the candidate reported spending.** A kind's own ``candidate`` usage rows — a
 :func:`~threetears.evals.quick.run_eval` candidate's :class:`~threetears.evals.quick.Answer` — are summed
@@ -138,6 +140,13 @@ class EvalSummary(BaseModel):
             for an unjudged run.
         goal_checks: Each goal-state check the results carry, in the order first met; empty for a run
             with none.
+        intent: The template's intent, which a judged run's judge read beside every answer; ``None`` for an
+            unjudged run, and for a template edited since the run launched, whose intent is no longer the one
+            the judge read.
+        intent_source: Where the intent came from, as the caller that wrote the template says it
+            (:func:`~threetears.evals.quick.run_eval`: ``"from <candidate>'s docstring"`` or a generic
+            default); ``None`` for an intent stated outright, and for a summary read back from the store,
+            which keeps the intent but not its source.
         judge_calls: How many judge calls the results' ``judge`` usage rows count.
         judge_cost_usd: What those calls cost, as their client priced them; ``None`` when any went
             unpriced, and for a run no judge was called in.
@@ -170,6 +179,8 @@ class EvalSummary(BaseModel):
     candidate_calls: int = 0
     candidate_cost_usd: float | None = None
     goal_checks: list[GoalCheckSummary] = []
+    intent: str | None = None
+    intent_source: str | None = None
     errors: list[str]
 
     def render(self) -> str:
@@ -202,6 +213,9 @@ class EvalSummary(BaseModel):
             )
             lines.append("  per label:")
             lines.extend(f"    {_label_line(statistics)}" for statistics in self.labels)
+        if self.intent is not None:
+            source = "" if self.intent_source is None else f" ({self.intent_source})"
+            lines.append(f"  intent{source}: {' '.join(self.intent.split())}")
         lines.extend(f"  {_dimension_line(dimension)}" for dimension in self.judged)
         if self.judged:
             spend = (
@@ -309,6 +323,9 @@ def summarize_run(host: EvalHost, run_id: str, scope_id: str) -> EvalSummary:
     )
     confusion = confusion_matrix(cells)
     judge_rows = [row for result in results for row in result.usage if row.role == "judge"]
+    template = None
+    if run.judge_model is not None and run.template_id is not None:
+        template = host.storage.load_template(run.template_id, scope_id)
     candidate_rows = [row for result in results for row in result.usage if row.role == "candidate"]
     return EvalSummary(
         run_id=run.id,
@@ -331,6 +348,8 @@ def summarize_run(host: EvalHost, run_id: str, scope_id: str) -> EvalSummary:
         candidate_calls=sum(row.call_count or 0 for row in candidate_rows),
         candidate_cost_usd=blended_cost(candidate_rows, _CANDIDATE_ROLE) if candidate_rows else None,
         goal_checks=_goal_checks(results),
+        # Templates are edited in place: one edited since the launch no longer holds what the judge read.
+        intent=template.intent if template is not None and template.updated_at <= run.created_at else None,
         errors=errors,
     )
 

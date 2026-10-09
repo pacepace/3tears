@@ -34,7 +34,8 @@ async def test_with_no_api_key_the_example_runs_offline_and_says_so(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    summary = await _load().main()
+    module = _load()
+    summary = await module.main()
     assert isinstance(summary, EvalSummary)
     assert summary.status == "completed"
     assert (summary.n_cases, summary.k_runs, summary.n_results, summary.n_scored) == (5, 2, 10, 10)
@@ -44,6 +45,8 @@ async def test_with_no_api_key_the_example_runs_offline_and_says_so(
     assert all(dimension.n == 10 for dimension in summary.judged)
     assert summary.judge_calls == 20 and summary.judge_cost_usd == 0.0
     assert summary.errors == []
+    # The intent is stated, so the judge read it rather than a candidate's docstring.
+    assert (summary.intent, summary.intent_source) == (module.INTENT, None)
     out = capsys.readouterr().out
     assert out.startswith("ANTHROPIC_API_KEY is not set: running OFFLINE")
     assert summary.render() in out
