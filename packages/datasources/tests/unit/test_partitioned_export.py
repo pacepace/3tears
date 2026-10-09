@@ -20,7 +20,7 @@ from pydantic import SecretStr
 
 from threetears.datasources.drivers.sql_fragments import build_filter
 from threetears.datasources.export import DEFAULT_ROLE, ExportConfig, ExportRefusedError, redshift_unload_statement
-from threetears.datasources.export_read import IncompleteExportError, export_select
+from threetears.datasources.export_read import ExportNotDeletedError, IncompleteExportError, export_select
 from threetears.datasources.partitioned_export import export_partitions
 from threetears.datasources.query_client import (
     DatasourceExportRequest,
@@ -82,16 +82,25 @@ class _Client:
         self.asked.append(("groups", kwargs))
         return self._groups.pop(0)
 
+    result_fields: dict[str, Any] = {}
+    delete_fails: bool = False
+
     async def export(
         self, datasource_name: str, select: str, *, destination: str, partition_by: str | None = None
     ) -> Any:
         self.asked.append(("export", (select, destination, partition_by)))
-        return DatasourceExportResult(
-            row_count=self._row_count, bucket=_BUCKET, object_prefix=_PREFIX, manifest_path=f"{_PREFIX}manifest"
-        )
+        fields = {
+            "row_count": self._row_count,
+            "bucket": _BUCKET,
+            "object_prefix": _PREFIX,
+            "manifest_path": f"{_PREFIX}manifest",
+        }
+        return DatasourceExportResult(**{**fields, **self.result_fields})
 
     async def delete_export(self, datasource_name: str, *, destination: str) -> int:
         self.deleted.append(destination)
+        if self.delete_fails:
+            raise RuntimeError("the bucket refused the delete")
         return 3
 
 
@@ -150,7 +159,7 @@ async def test_a_part_that_moved_during_the_export_is_refused_before_any_part_is
 
     with pytest.raises(IncompleteExportError, match="changed while they were exported"):
         await _read(client, store)
-    assert client.deleted == [], "a refused export was deleted; an operator should be able to look at it"
+    assert client.deleted == [_DESTINATION], "a refused export outlived its load"
 
 
 @pytest.mark.asyncio
@@ -229,3 +238,84 @@ def test_a_request_that_asks_neither_grouping_nor_partitions_is_what_an_older_hu
     assert json.loads(grouped.model_dump_json())["group_by"] == "s"
     with pytest.raises(ValueError):
         RelationFingerprintRequest(relation="r.t", key_columns=["a"], group_by="s; DROP")
+
+
+def _proof_case(**change: Any) -> tuple[_Client, _Store]:
+    groups = {"DE": _fp(2), "TX": _fp(3)}
+    client = _Client([groups, dict(groups)], row_count=5)
+    parts = change.pop("parts", {"TX": [_rows("TX", 3)], "DE": [_rows("DE", 2)]})
+    client.result_fields = change
+    return client, _Store(_export(parts))
+
+
+@pytest.mark.parametrize(
+    ("change", "match"),
+    [
+        ({"object_prefix": "exports/reports-warehouse/elsewhere/"}, "not the destination"),
+        ({"row_count": 6}, "exported 6 rows, the parts hold 5"),
+        ({"bucket": "another-bucket"}, "not this reader's"),
+        ({"manifest_path": f"{_PREFIX}other-manifest"}, "not this reader's"),
+        ({"parts": {"TX": [_rows("TX", 3)], "DE": [_rows("DE", 2)], "VA": [[]]}}, "parts no fingerprint counted"),
+        ({"parts": {"TX": [_rows("TX", 3)], "DE": [_rows("DE", 1)]}}, "manifest counts 1 rows"),
+    ],
+)
+async def test_each_proof_refuses_the_export_and_it_is_deleted_all_the_same(
+    change: dict[str, Any], match: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    client, store = _proof_case(**change)
+    with caplog.at_level("WARNING"), pytest.raises(IncompleteExportError, match=match):
+        await _read(client, store)
+    assert client.deleted == [_DESTINATION], "a refused export outlived its load"
+    assert "refused" in caplog.text, "the refusal was not logged for an operator"
+
+
+async def test_files_holding_fewer_rows_than_their_part_are_refused_and_deleted() -> None:
+    groups = {"DE": _fp(2), "TX": _fp(3)}
+    client = _Client([groups, dict(groups)], row_count=5)
+    objects = _export({"TX": [_rows("TX", 3)], "DE": [_rows("DE", 2)]})
+    manifest = json.loads(objects[f"{_PREFIX}manifest"])
+    for entry in manifest["entries"]:
+        entry["meta"].pop("record_count")  # a manifest that does not count leaves the files to prove it
+    objects[f"{_PREFIX}manifest"] = json.dumps(manifest).encode()
+    objects[f"{_PREFIX}join_state_code=TX/0000_part_00.parquet"] = _parquet(_rows("TX", 2))
+    with pytest.raises(IncompleteExportError, match="files hold 2 rows, the part holds 3"):
+        await _read(client, _Store(objects))
+    assert client.deleted == [_DESTINATION]
+
+
+async def test_a_delete_that_fails_while_a_refusal_unwinds_does_not_mask_it() -> None:
+    client, store = _proof_case(row_count=6)
+    client.delete_fails = True
+    with pytest.raises(IncompleteExportError, match="exported 6 rows"):
+        await _read(client, store)
+
+
+async def test_a_delete_that_fails_after_a_whole_read_is_its_own_failure() -> None:
+    client, store = _proof_case()
+    client.delete_fails = True
+    with pytest.raises(ExportNotDeletedError, match="could not be deleted"):
+        await _read(client, store)
+
+
+async def test_a_failure_after_the_export_before_any_proof_still_deletes_it() -> None:
+    groups = {"DE": _fp(2)}
+    client = _Client([groups], row_count=2)  # the second grouped fingerprint finds nothing to answer
+    with pytest.raises(IndexError):
+        await _read(client, _Store(_export({"DE": [_rows("DE", 2)]})))
+    assert client.deleted == [_DESTINATION]
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda: RelationFingerprintRequest(
+            relation="r.t", key_columns=["a"], group_by="s", where_in={"s; DROP": ["x"]}
+        ),
+        lambda: RelationFingerprintRequest(relation="r.t", key_columns=["a"], where_in={"s": ["x"]}),
+        lambda: export_select("r.t", ["a"], where_in={"s) OR (1=1": ["x"]}),
+        lambda: DatasourceExportRequest(select="SELECT 1", destination="d", partition_by="s) INCLUDE --"),
+    ],
+)
+def test_an_interpolated_identifier_that_is_not_one_is_refused(build: Any) -> None:
+    with pytest.raises(ValueError):
+        build()

@@ -21,16 +21,18 @@ Each part's files are then read when the caller reaches it, and the part is hand
 hold exactly its count. A part asked for that holds no rows is handed back empty, so a caller can
 tell "now empty" from "not read".
 
-**Then deleted**, once every part was handed back, or the caller stopped early or failed after the
-proof (Pace's ruling: delete after load, no timer). A refused export is not deleted, so an operator
-can look at it; the hub knows it (its claim) either way.
+**Then deleted, always**: once every part was handed back, when the caller stops early or fails, and
+when a proof refuses it -- from the moment the warehouse answered the export, no way out leaves a
+copy of warehouse rows behind (Pace's ruling: delete after load, no timer). A refused export is
+logged at WARNING with what was refused (the proof, the counts and fingerprints) so an operator can
+tell why without the files.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from typing import Any, Final
 from urllib.parse import unquote
 
@@ -195,6 +197,124 @@ async def export_partitions(
     before = await grouped()
     select = export_select(relation, columns, where_in=where_in)
     result = await client.export(datasource_name, select, destination=destination, partition_by=partition_by)
+    # from here every way out deletes the export, refused or read, failed or stopped: no copy of
+    # warehouse rows outlives the load (delete after load, Pace's ruling)
+    read = 0
+    asked: list[str | None] = []
+    refused: IncompleteExportError | None = None
+    unwinding: BaseException | None = None
+    pending: asyncio.Task[list[dict[str, Any]]] | None = None
+    try:
+        try:
+            files = await _proven(
+                client,
+                store,
+                result,
+                before,
+                grouped,
+                bucket=bucket,
+                destination=destination,
+                relation=relation,
+                partition_by=partition_by,
+            )
+        except IncompleteExportError as exc:
+            refused = exc
+            raise
+        asked = sorted(set(before) | set(parts or ()), key=lambda value: (value is not None, value or ""))
+
+        def start(value: str | None) -> asyncio.Task[list[dict[str, Any]]]:
+            keys = files.get(value, ([], 0))[0]
+            return asyncio.ensure_future(_read_part(store, keys, file_concurrency))
+
+        # the next part is read while the caller works on this one
+        pending = start(asked[0]) if asked else None
+        for index, value in enumerate(asked):
+            current, pending = pending, (start(asked[index + 1]) if index + 1 < len(asked) else None)
+            rows = await current if current is not None else []
+            held = before[value].row_count if value in before else 0
+            if len(rows) != held:
+                refused = IncompleteExportError(
+                    f"{relation} {partition_by}={value}: the export's files hold {len(rows)} rows, the part holds {held}"
+                )
+                raise refused
+            read += len(rows)
+            yield value, rows
+    except BaseException as exc:
+        unwinding = exc
+        raise
+    finally:
+        if pending is not None and not pending.done():
+            pending.cancel()
+            await asyncio.wait({pending})
+        if refused is not None:
+            log.warning(
+                "a partitioned export was refused; it is deleted all the same",
+                extra={
+                    "extra_data": {
+                        "datasource": datasource_name,
+                        "relation": relation,
+                        "object_prefix": result.object_prefix,
+                        "proof": str(refused),
+                        "warehouse_rows": result.row_count,
+                        "parts": {str(v): [f.row_count, f.digest] for v, f in before.items()},
+                    }
+                },
+            )
+        deleted: int | None = None
+        try:
+            deleted = await client.delete_export(datasource_name, destination=destination)
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- raised as the named failure when nothing else is; logged when an error already unwinds, which wins
+            log.error(
+                "an export could not be deleted; its rows are still in the bucket",
+                extra={
+                    "extra_data": {
+                        "datasource": datasource_name,
+                        "object_prefix": result.object_prefix,
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "unwinding": None if unwinding is None else type(unwinding).__name__,
+                    }
+                },
+            )
+            if unwinding is None:
+                raise ExportNotDeletedError(
+                    f"{relation}: the export was read, but it could not be deleted and is still at "
+                    f"s3://{result.bucket}/{result.object_prefix}: {type(exc).__name__}: {exc}"
+                ) from exc
+        if refused is None and unwinding is None:
+            log.info(
+                "partitioned export read",
+                extra={
+                    "extra_data": {
+                        "datasource": datasource_name,
+                        "relation": relation,
+                        "partition_by": partition_by,
+                        "parts": len(asked),
+                        "rows": read,
+                        "object_prefix": result.object_prefix,
+                        "versions_deleted": deleted,
+                    }
+                },
+            )
+
+
+async def _proven(
+    client: DatasourceQueryClient,
+    store: ExportStore,
+    result: DatasourceExportResult,
+    before: Mapping[str | None, RelationFingerprintResult],
+    grouped: Callable[[], Awaitable[dict[str | None, RelationFingerprintResult]]],
+    *,
+    bucket: str,
+    destination: str,
+    relation: str,
+    partition_by: str,
+) -> dict[str | None, tuple[list[str], int | None]]:
+    """every proof an export must pass before its first part is handed back; its parts' files.
+
+    :return: part -> its files and the rows the manifest counts for it
+    :rtype: dict[str | None, tuple[list[str], int | None]]
+    :raises IncompleteExportError: naming the proof that failed
+    """
     if not result.object_prefix.endswith(f"/{destination}/"):
         raise IncompleteExportError(
             f"the hub answered an export at {result.object_prefix!r}, not the destination {destination!r} asked for"
@@ -226,53 +346,4 @@ async def export_partitions(
                 f"{relation} {partition_by}={value}: the manifest counts {counted} rows, the part holds "
                 f"{before[value].row_count}"
             )
-    asked: list[str | None] = sorted(set(before) | set(parts or ()), key=lambda value: (value is not None, value or ""))
-    read = 0
-
-    def start(value: str | None) -> asyncio.Task[list[dict[str, Any]]]:
-        keys = files.get(value, ([], 0))[0]
-        return asyncio.ensure_future(_read_part(store, keys, file_concurrency))
-
-    # the next part is read while the caller works on this one
-    pending: asyncio.Task[list[dict[str, Any]]] | None = start(asked[0]) if asked else None
-    try:
-        for index, value in enumerate(asked):
-            current, pending = pending, (start(asked[index + 1]) if index + 1 < len(asked) else None)
-            rows = await current if current is not None else []
-            held = before[value].row_count if value in before else 0
-            if len(rows) != held:
-                raise IncompleteExportError(
-                    f"{relation} {partition_by}={value}: the export's files hold {len(rows)} rows, the part holds {held}"
-                )
-            read += len(rows)
-            yield value, rows
-    finally:
-        if pending is not None and not pending.done():
-            pending.cancel()
-            await asyncio.wait({pending})
-        deleted: int | None = None
-        try:
-            deleted = await client.delete_export(datasource_name, destination=destination)
-        except Exception as exc:  # prawduct:allow prawduct/broad-except -- raised as the named failure, cause chained; logged first, since an error already unwinding wins
-            log.error(
-                "a proven export could not be deleted",
-                extra={"extra_data": {"datasource": datasource_name, "object_prefix": result.object_prefix}},
-            )
-            raise ExportNotDeletedError(
-                f"{relation}: the export was proven, but it could not be deleted and is still at "
-                f"s3://{result.bucket}/{result.object_prefix}: {type(exc).__name__}: {exc}"
-            ) from exc
-        log.info(
-            "partitioned export read",
-            extra={
-                "extra_data": {
-                    "datasource": datasource_name,
-                    "relation": relation,
-                    "partition_by": partition_by,
-                    "parts": len(asked),
-                    "rows": read,
-                    "object_prefix": result.object_prefix,
-                    "versions_deleted": deleted,
-                }
-            },
-        )
+    return files
