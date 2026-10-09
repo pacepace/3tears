@@ -13,15 +13,21 @@ for the arm table.
 **Persisted: the facts. Derived: the table.** Computed on every read and never written back, so a
 stored analysis carries no layout a later reader would have to un-decide.
 
-**What a surface still does itself: style the row and mark the control.** A row's name is served
+**What a surface still does itself: style the row and place the control's mark.** A row's name is served
 as ``label``, computed by :func:`~threetears.evals.analysis.arms.arm_label` over the analysis's
 :func:`~threetears.evals.analysis.arms.arm_names` — the labeller the arm
 table's rows are served through — so the page and the MCP render print one spelling rather than
 each re-spelling the arm, and a surface whose two tables named one arm two ways would tell its
 reader they were two arms.
 
-**The words are served for the same reason.** The provenance sentence above the table and the word
-under each bar's verdict are fields of the table (``provenance``, ``verdict_word``). If each render
+**The row order is a rule, and the table states it.** The control's cells lead as the reference every
+other arm is read against, marked :data:`REFERENCE_MARK`; the other arms follow alphabetically by name
+(:func:`~threetears.evals.analysis.arms.surface_order`). A reader short on time takes the top row for the
+pick, so the order must say nothing about the evidence, and the table says so in ``order``. The bundle
+orders the writer's ``cell_measures`` by the same rule, so the frozen surface is laid out alike.
+
+**The words are served for the same reason.** The provenance sentence above the table, its row order and the word
+under each bar's verdict are fields of the table (``provenance``, ``order``, ``verdict_word``). If each render
 kept its own copy, a rewording in one would leave the two surfaces saying different things about the
 same numbers.
 """
@@ -41,6 +47,7 @@ from threetears.evals.analysis.arms import (
     multi_rig_variants,
     naming_levels,
     short_digest,
+    surface_order,
 )
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.viz.quantities import display_scale
@@ -100,6 +107,37 @@ NO_SUCCESSFUL_RESULTS = "no successful results"
 #: table that states numbers, so the surfaces showing it print one sentence rather than each keeping a
 #: copy.
 SURFACE_PROVENANCE = "Computed from the campaign's cells by code — no number here was written by the model."
+
+
+#: What marks the control's row: it is the reference every other row is read against, never the pick.
+#: Spelled once here for the decision surface and its strata table.
+REFERENCE_MARK = "(control: the reference)"
+
+#: The row order, stated on the table — every surface that lays out the decision surface prints it, so no
+#: reader takes the top row for a recommendation. :func:`~threetears.evals.analysis.arms.surface_order` is
+#: the rule it states.
+SURFACE_ORDER = (
+    "The control first, as the reference every other arm is read against; then the other arms in alphabetical "
+    "order of their names, each arm's rigs by id. Row order is not a ranking."
+)
+
+#: :data:`SURFACE_ORDER` for a table with no control row, which therefore has no reference row to lead with.
+SURFACE_ORDER_NO_CONTROL = (
+    "No row is the control, so none is a reference; the arms are in alphabetical order of their names, each "
+    "arm's rigs by id. Row order is not a ranking."
+)
+
+
+def surface_order_sentence(*, has_control_row: bool) -> str:
+    """The row-order sentence for a table laid out by :func:`~threetears.evals.analysis.arms.surface_order`.
+
+    Args:
+        has_control_row: Whether the table holds a row of the declared control.
+
+    Returns:
+        :data:`SURFACE_ORDER` or :data:`SURFACE_ORDER_NO_CONTROL`.
+    """
+    return SURFACE_ORDER if has_control_row else SURFACE_ORDER_NO_CONTROL
 
 
 class SurfaceColumn(EvalDocumentModel):
@@ -311,7 +349,10 @@ class SurfaceTable(EvalDocumentModel):
     )
     rows: list[SurfaceRow] = Field(
         default_factory=list,
-        description="One per cell: the control's cells first, then every other by (variant_key, apparatus_class_id).",
+        description=(
+            "One per cell: the control's cells first, as the reference, then every other arm in alphabetical order "
+            "of its `label` (case-folded), each arm's rigs by id. Not a ranking; `order` says so on the table."
+        ),
     )
     unadjudicated_bars: list[SurfaceUnadjudicatedBar] = Field(
         default_factory=list, description="Every bar with no verdict, in the surface's bar order."
@@ -332,6 +373,17 @@ class SurfaceTable(EvalDocumentModel):
     def provenance(self) -> str:
         """:data:`SURFACE_PROVENANCE` — every analysis carries the surface it was generated from."""
         return SURFACE_PROVENANCE
+
+    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
+        description=(
+            "The row order in words, stated on the table so no reader takes the top row for the pick: the control "
+            "first as the reference, then the other arms alphabetically by name. Row order is not a ranking."
+        )
+    )
+    @property
+    def order(self) -> str:
+        """:func:`surface_order_sentence` for this table's rows."""
+        return surface_order_sentence(has_control_row=any(row.is_control for row in self.rows))
 
     @model_validator(mode="after")
     def _consistent(self) -> Self:
@@ -557,7 +609,8 @@ def surface_table_of(surface: DecisionSurface, variant_index: Sequence[VariantIn
     """
 
     control = surface.control_variant_key
-    cells = sorted(surface.cells, key=lambda c: (c.variant_key != control, c.variant_key, c.apparatus_class_id))
+    names = arm_names(variant_index)
+    cells = surface_order(surface.cells, control=control, names=names)
     unadjudicated = [
         SurfaceUnadjudicatedBar(
             measure_id=bar.measure_id, source=bar.source, state=bar.state, reason=bar.reason or bar.state
@@ -574,7 +627,6 @@ def surface_table_of(surface: DecisionSurface, variant_index: Sequence[VariantIn
 
     index = {entry.variant_key: entry for entry in variant_index}
     distinguishing = distinguishing_axes(variant_index)
-    names = arm_names(variant_index)
     multi_rig = multi_rig_variants(cells)
 
     rows = []
@@ -632,6 +684,9 @@ def _all_failed_disclosure(rows: list[SurfaceRow]) -> str | None:
 __all__ = [
     "NO_CELLS",
     "NO_SUCCESSFUL_RESULTS",
+    "REFERENCE_MARK",
+    "SURFACE_ORDER",
+    "SURFACE_ORDER_NO_CONTROL",
     "SURFACE_PROVENANCE",
     "VERDICT_WORDS",
     "SurfaceColumn",
@@ -643,5 +698,6 @@ __all__ = [
     "SurfaceValue",
     "SurfaceVerdict",
     "build_surface_table",
+    "surface_order_sentence",
     "surface_table_of",
 ]

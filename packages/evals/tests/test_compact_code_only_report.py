@@ -257,14 +257,14 @@ class TestTheArmsTableHasNoColumnNothingFilled:
         page = report_html(report)
         assert '<th scope="col">Arm</th><th scope="col">Every lever it ran</th>' in page
         assert '<th scope="col">Status</th>' not in page and "Rests on finding" not in page
-        assert "winner, then ruled out" not in markdown + page
+        assert "winner, then" not in markdown + page
 
     def test_an_analysis_report_whose_arms_have_verdicts_keeps_both_columns(self) -> None:
         report = build_report(analysis(two_arm_surface()))
         arms = _table(report, "arms")
         assert arms is not None
         assert [column.key for column in arms.columns] == ["arm", "status", "findings", "levers"]
-        assert arms.order == "winner, then ruled out, then replaced incumbent, then unresolved"
+        assert arms.order == "winner, then contradicted, then ruled out, then replaced incumbent, then unresolved"
         by_status = {row["status"]: row["findings"] for row in arms.rows}
         # The winner rests on the decision's finding; the incumbent it replaced rests on none, a dash.
         assert by_status == {"winner": "1", "replaced incumbent": None}

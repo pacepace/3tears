@@ -305,9 +305,8 @@ class TestWhatAFamilyCovers:
             "Where the bundle carries no family (`multiple_comparisons.withheld` says why), no comparison between arms is separated"
             in (EVAL_ANALYSIS_GEN_DEFAULT)
         )
-        assert (
-            "in a campaign that declares no question, on every reading on a merit axis, as one campaign-wide family"
-            in (EVAL_ANALYSIS_GEN_DEFAULT)
+        assert "with no question declared, on every merit-axis reading as one campaign-wide family" in (
+            EVAL_ANALYSIS_GEN_DEFAULT
         )
 
     def test_a_contrast_is_paired_with_the_control_on_its_own_rig_only(self) -> None:

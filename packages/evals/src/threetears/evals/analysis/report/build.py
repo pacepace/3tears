@@ -19,7 +19,7 @@ from collections.abc import Callable, Sequence
 from itertools import chain
 
 from threetears.evals.analysis.agreement import tier_sentence
-from threetears.evals.analysis.arms import ArmTable, arm_table, arm_table_of, short_digest
+from threetears.evals.analysis.arms import ArmTable, arm_names, arm_table, arm_table_of, short_digest, surface_order
 from threetears.evals.analysis.bundle import (
     NO_QUESTION_EXPLORATORY,
     AnalysisContextBundle,
@@ -53,8 +53,10 @@ from threetears.evals.analysis.report.words import (
 )
 from threetears.evals.analysis.surface_table import (
     NO_SUCCESSFUL_RESULTS,
+    REFERENCE_MARK,
     SurfaceTable,
     build_surface_table,
+    surface_order_sentence,
     surface_table_of,
 )
 from threetears.evals.analysis.viz.intent import Cell, chart_intent
@@ -516,10 +518,28 @@ def _arm_blocks(table: ArmTable) -> list[ReportBlock]:
                 TableColumn(key="levers", header="Every lever it ran"),
             ],
             rows=rows,
-            order="winner, then ruled out, then replaced incumbent, then unresolved" if decided else "by arm",
+            order=(
+                "winner, then contradicted, then ruled out, then replaced incumbent, then unresolved"
+                if decided
+                else "by arm"
+            ),
             total_rows=len(rows),
         )
     ]
+    if contradicted := [row for row in table.rows if row.status == "contradicted"]:
+        blocks.append(
+            DisclosureBlock(
+                section="arms",
+                source="arms",
+                text=(
+                    "This analysis both adopts and rejects "
+                    + "; ".join(row.label for row in contradicted)
+                    + ", so neither verdict stands and no winner is shown for "
+                    + ("it" if len(contradicted) == 1 else "them")
+                    + "."
+                ),
+            )
+        )
     if table.unplaced_coordinates:
         blocks.append(
             DisclosureBlock(
@@ -575,7 +595,7 @@ def _surface_blocks(table: SurfaceTable, *, provenance: bool = True) -> list[Rep
         rows: list[dict[str, Cell]] = []
         for row in table.rows:
             cells: dict[str, Cell] = {
-                "arm": f"{row.label} (control)" if row.is_control else row.label,
+                "arm": f"{row.label} {REFERENCE_MARK}" if row.is_control else row.label,
                 "replication": row.replication,
             }
             for index, value in enumerate(row.values):
@@ -597,7 +617,7 @@ def _surface_blocks(table: SurfaceTable, *, provenance: bool = True) -> list[Rep
                 title="Decision surface",
                 columns=columns,
                 rows=rows,
-                order="the control's cells first, then every other cell by arm and rig",
+                order=table.order,
                 total_rows=len(rows),
             )
         )
@@ -644,9 +664,8 @@ def _strata_blocks(surface: DecisionSurface, variant_index: Sequence[VariantInde
         campaign whose cases declare no stratum reads exactly as it did before strata existed.
     """
     control = surface.control_variant_key
-    cells = sorted(
-        (cell for cell in surface.cells if cell.strata),
-        key=lambda c: (c.variant_key != control, c.variant_key, c.apparatus_class_id),
+    cells = surface_order(
+        (cell for cell in surface.cells if cell.strata), control=control, names=arm_names(variant_index)
     )
     if not cells:
         return []
@@ -661,7 +680,7 @@ def _strata_blocks(surface: DecisionSurface, variant_index: Sequence[VariantInde
     for cell in cells:
         # Every cell on the surface is named, so the lookup cannot miss.
         arm = labels[cell_ref(cell.variant_key, cell.apparatus_class_id)]
-        arm = f"{arm} (control)" if cell.variant_key == control else arm
+        arm = f"{arm} {REFERENCE_MARK}" if cell.variant_key == control else arm
         by_name = {stratum.stratum: stratum for stratum in cell.strata}
         cases: dict[str, Cell] = {"arm": arm, "reading": "cases", "all": _cases_text(cell.n_observations, cell.n_cases)}
         for name, stratum in by_name.items():
@@ -686,8 +705,8 @@ def _strata_blocks(surface: DecisionSurface, variant_index: Sequence[VariantInde
                 *(TableColumn(key=columns[name], header=_stratum_word(name)) for name in names),
             ],
             rows=rows,
-            order="the control's cells first, then every other cell by arm and rig; within each, its cases, then each "
-            "measure by name, then each judged dimension",
+            order=surface_order_sentence(has_control_row=any(cell.variant_key == control for cell in cells))
+            + " Within each arm: its cases, then each measure by name, then each judged dimension.",
             total_rows=len(rows),
         )
     ]

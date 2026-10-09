@@ -62,6 +62,38 @@ headline, finding, decision or answer to a declared question appears in a code-o
 
 `Report.basis` says which a report is; `REPORT_VERSION` is 5.
 
+## Reading the arm table
+
+An analysis's arm table gives each arm a status, read off the decisions that name its cells:
+
+| Status | What it means |
+|---|---|
+| winner | an adopted decision names it |
+| contradicted | one decision adopts it and another rejects it |
+| ruled out | a rejected decision names it |
+| replaced incumbent | the control, when some other arm won |
+| unresolved | no decision reached a verdict on it; a deferred decision is not a verdict |
+
+The analysis writer is refused when it adopts and rejects one arm, so only an analysis stored before that
+refusal can carry **contradicted**. Neither verdict is shown as standing: the arm is never shown as the
+winner, the control is not shown as replaced on its account, and a disclosure below the table names it.
+
+## Reading the decision surface
+
+The decision surface is a row per cell (an arm under one rig) with every bar's verdict and the cost and
+latency figures. **Its row order is not a ranking**, and the table says so in its caption (`order` on the
+table block):
+
+- The control's rows come first, marked `(control: the reference)`: every other arm is read against them.
+  They lead because they are the reference, not because they were picked.
+- The other arms follow in alphabetical order of their names, and an arm measured under several rigs lists
+  its rigs by id.
+- With no control row, no row is the reference, and the caption says that instead.
+
+Read which arm the evidence favours from the contrasts against the control and the analysis's decisions,
+never from which row is on top. The results by stratum follow the same order, and so does the analysis
+writer's `cell_measures`, so when the control was measured its first cell (`c1`) is the control's.
+
 ## Reading a comparison
 
 The "Contrasts against the control" table (`multiple_comparisons` in the bundle) tests each arm against

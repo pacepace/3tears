@@ -20,6 +20,8 @@ from pydantic import ValidationError
 
 from threetears.evals.analysis.arms import arm_table
 from threetears.evals.analysis.cells import cell_ref
+from threetears.evals.analysis.report import build_report
+from threetears.evals.analysis.report.model import DisclosureBlock, TableBlock
 from threetears.evals.contracts.authored import NO_CHART, AuthoredAnalysis, EvidenceRef
 from threetears.evals.contracts.campaign import (
     EvalAnalysis,
@@ -286,6 +288,54 @@ class TestTheJoinProducesAllFourRowKinds:
         assert table.rows == []
         assert table.unplaced_decision_cells == sorted([_cell(_WINNER), _cell(_DEARER), _cell(_FASTER)]), (
             "with nothing indexed every cell a decision names strands, and that is the fact both renders owe"
+        )
+
+
+class TestAnArmBothAdoptedAndRejectedIsContradicted:
+    """A stored analysis predating the generation-time refusal (#669) can carry one; it never reads as a winner."""
+
+    def _contradicting(self) -> EvalAnalysis:
+        """``_WINNER`` adopted on finding 0 and rejected on finding 1 — the adoption listed first, as precedence read it."""
+        return _analysis(
+            document=_document(
+                [
+                    _decision("adopted", [_cell(_WINNER)], [0]),
+                    _decision("rejected", [_cell(_WINNER), _cell(_FASTER)], [1]),
+                ]
+            )
+        )
+
+    def test_the_arm_reads_contradicted_and_the_control_is_not_replaced(self) -> None:
+        """No arm won, so the incumbent was replaced by nobody; the other rejected arm is still ruled out."""
+        table = arm_table(self._contradicting())
+
+        assert _by_model(table) == {
+            _WINNER: "contradicted",
+            _FASTER: "ruled_out",
+            _DEARER: "unresolved",
+            _INCUMBENT: "unresolved",
+        }
+        row = next(r for r in table.rows if r.status == "contradicted")
+        assert row.finding_ids == ["0", "1"], "both decisions' findings, the adopting one first"
+        assert table.rows[0] is row, "with no winner, the contradiction is the first thing a reader meets"
+
+    def test_the_order_of_the_two_decisions_does_not_decide_it(self) -> None:
+        document = _document(
+            [_decision("rejected", [_cell(_WINNER)], [1]), _decision("adopted", [_cell(_WINNER)], [0])]
+        )
+
+        assert _by_model(arm_table(_analysis(document=document)))[_WINNER] == "contradicted"
+
+    def test_the_report_shows_the_status_in_words_and_says_neither_verdict_stands(self) -> None:
+        report = build_report(self._contradicting())
+        (arms,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "arms"]
+        statuses = {row["arm"]: row["status"] for row in arms.rows}
+        winner = f"{_AXIS}={_WINNER}"
+        assert statuses[winner] == "contradicted: one decision adopts it and another rejects it"
+        assert "winner" not in statuses.values()
+        disclosures = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "arms"]
+        assert any(
+            f"both adopts and rejects {winner}" in text and "neither verdict stands" in text for text in disclosures
         )
 
 

@@ -21,8 +21,13 @@ from pydantic import ValidationError
 
 from threetears.evals.analysis.arms import arm_table
 from threetears.evals.analysis.cells import cell_ref
+from threetears.evals.analysis.report import build_report, report_markdown
+from threetears.evals.analysis.report.model import TableBlock
 from threetears.evals.analysis.surface_table import (
     NO_CELLS,
+    REFERENCE_MARK,
+    SURFACE_ORDER,
+    SURFACE_ORDER_NO_CONTROL,
     SURFACE_PROVENANCE,
     SurfaceColumn,
     SurfaceRow,
@@ -254,8 +259,62 @@ class TestTheProvenanceSentence:
         assert served["provenance"] == SURFACE_PROVENANCE
 
 
+def _four_arm_analysis(*, control: str | None = "model-z-incumbent") -> EvalAnalysis:
+    """Four arms whose raw score, key and name orders all disagree, the control's name sorting last.
+
+    The bar's raw values rank ``model-q`` first and ``model-c`` last, which is exactly the order a reader
+    must not be handed as a ranking: nothing here says any arm separated from the control.
+    """
+    models = ["model-q", "model-c", "model-z-incumbent", "model-g"]
+    raw = {"model-q": 4.0, "model-g": 3.0, "model-z-incumbent": 2.5, "model-c": 1.0}
+    cells = [cell(model) for model in models]
+    bar = BarAdjudication(
+        measure_id="delivered_items",
+        threshold=3,
+        direction="higher_is_better",
+        source="declared",
+        state="adjudicated",
+        verdicts=[verdict(c, raw[m], 0.5, None) for m, c in zip(models, cells, strict=True)],
+    )
+    surface = DecisionSurface(
+        control_variant_key=key(control) if control else None, cells=cells, bars=[bar], measures=measures()
+    )
+    design = CampaignDesign(
+        axes=[SweptAxis(axis_id=AXIS, values=[level(model) for model in models])],
+        control=key(control) if control else None,
+        controls=ControlDeclaration(stimulus="controlled", apparatus="commissioned"),
+    )
+    return analysis(surface, design_snapshot=design, variant_index=[entry(model) for model in models])
+
+
+def _models(table: SurfaceTable) -> list[str]:
+    return [row.levels[0].display for row in table.rows]
+
+
 class TestRowOrder:
-    """The control's cells first, then every other by (variant_key, apparatus_class_id)."""
+    """The control first, as the reference; then every other arm alphabetically by name; stated on the table (#645)."""
+
+    def test_the_reference_leads_then_the_arms_by_name_never_by_score_or_key(self) -> None:
+        subject = _four_arm_analysis()
+        by_key = [m for m in sorted(["model-q", "model-c", "model-g"], key=key)]
+        assert by_key != ["model-c", "model-g", "model-q"], "the fixture must tell a name order from a key order"
+
+        table = build_surface_table(subject)
+
+        assert _models(table) == ["model-z-incumbent", "model-c", "model-g", "model-q"]
+        assert [row.is_control for row in table.rows] == [True, False, False, False]
+
+    def test_the_order_is_stated_on_the_table_and_says_it_is_not_a_ranking(self) -> None:
+        table = build_surface_table(_four_arm_analysis())
+        assert table.order == SURFACE_ORDER
+        assert "the reference" in table.order and "Row order is not a ranking." in table.order
+        assert table.model_dump(mode="json")["order"] == SURFACE_ORDER, "served, so every surface prints one rule"
+
+    def test_without_a_control_row_no_row_is_called_the_reference(self) -> None:
+        table = build_surface_table(_four_arm_analysis(control=None))
+        assert _models(table) == ["model-c", "model-g", "model-q", "model-z-incumbent"]
+        assert not any(row.is_control for row in table.rows)
+        assert table.order == SURFACE_ORDER_NO_CONTROL
 
     def test_the_control_leads_even_when_its_key_sorts_last(self) -> None:
         # Only exercised when the control's key sorts LAST — a deriver that merely sorted by key
@@ -267,18 +326,17 @@ class TestRowOrder:
         assert [row.variant_key for row in table.rows] == [key(last), key(first)]
         assert [row.is_control for row in table.rows] == [True, False]
 
-    def test_without_a_control_the_rows_follow_the_cell_key(self) -> None:
-        surface = two_arm_surface()
-        surface.control_variant_key = None
-        surface.cells.reverse()
-        table = build_surface_table(analysis(surface))
-        assert [row.variant_key for row in table.rows] == sorted(key(m) for m in (CANDIDATE, INCUMBENT))
-        assert not any(row.is_control for row in table.rows)
-
     def test_two_rigs_of_one_arm_order_by_rig(self) -> None:
         surface = DecisionSurface(cells=[cell(CANDIDATE, rig=RIG_B), cell(CANDIDATE, rig=RIG)], measures=measures())
         table = build_surface_table(analysis(surface))
         assert [row.apparatus_class_id for row in table.rows] == [RIG, RIG_B]
+
+    def test_the_report_prints_the_rule_and_marks_the_reference_row(self) -> None:
+        report = build_report(_four_arm_analysis())
+        (surface,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "surface"]
+        assert surface.order == SURFACE_ORDER
+        assert surface.rows[0]["arm"] == f"{AXIS}=model-z-incumbent {REFERENCE_MARK}"
+        assert f"**Decision surface** ({SURFACE_ORDER})" in report_markdown(report)
 
 
 class TestWhatARowCarriesForItsLabel:

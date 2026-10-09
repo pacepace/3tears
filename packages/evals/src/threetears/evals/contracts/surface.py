@@ -454,7 +454,9 @@ class TimePosition(EvalDocumentModel):
     run_ids: list[str] = Field(min_length=1, description="The runs at this position that measured something, sorted.")
     cells: list[CellFacts] = Field(
         min_length=1,
-        description="Every cell measured at this position, ordered by (variant_key, apparatus_class_id).",
+        description=(
+            "Every cell measured at this position, in the decision surface's row order (see `DecisionSurface.cells`)."
+        ),
     )
 
 
@@ -677,7 +679,12 @@ class DecisionSurface(EvalDocumentModel):
         default=None, description="The declared control's variant, or None when the campaign declared none."
     )
     cells: list[CellFacts] = Field(
-        default_factory=list, description="One entry per cell, ordered by (variant_key, apparatus_class_id)."
+        default_factory=list,
+        description=(
+            "One entry per cell: the control's cells first as the reference, then every other arm alphabetically by "
+            "name, each arm's rigs by id. A surface frozen before bundle schema 47 is ordered by (variant_key, "
+            "apparatus_class_id); the surface and strata tables order the cells themselves, so either lays out alike."
+        ),
     )
     bars: list[BarAdjudication] = Field(
         default_factory=list, description="Every bar the campaign is held to, each adjudicated against every cell."

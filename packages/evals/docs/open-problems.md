@@ -142,11 +142,3 @@ Tracked in [#603](https://github.com/pacepace/3tears/issues/603).
 A run's peak memory should be bounded by its matrix, not its total trace volume. Fixes in the runner and
 scoring hold this today; no test does. Fix: a probe that runs a large
 synthetic matrix and asserts peak memory. Reinstate the accumulation to prove it fails.
-
-### The report-writer prompt budget is unenforced
-
-Tracked in [#604](https://github.com/pacepace/3tears/issues/604).
-
-`analysis/gen_prompt.py` declares `PROMPT_CHAR_BUDGET = 28_000` and `PROMPT_RULE_BUDGET = 15`, and says
-the budget only falls. Nothing reads either constant, and rules, each added to fix one failure, accrete. Fix: a test that measures the seed prompt against
-both constants.
