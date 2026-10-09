@@ -263,9 +263,9 @@ class TestPerceptionAB:
         assert result.proved
 
     async def test_a_witnessed_dimension_is_unproved_where_the_host_cannot_perturb_it(self) -> None:
-        """samsung-frame-art-loader will carry this one forever, and that is the point.
+        """A host driving a physical device can carry this one forever, and that is the point.
 
-        A brightness sensor, a heartbeat and a human with a remote all move its world. The limit
+        An ambient-light sensor, a heartbeat and a person with a remote control all move its world. The limit
         is a proven property of a real consumer, so it must be recorded rather than waived — and
         it must never look like the proved case above.
         """

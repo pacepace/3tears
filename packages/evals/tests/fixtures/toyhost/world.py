@@ -272,7 +272,7 @@ def toyhost_world(
             host capabilities — no way to perturb the witnessed dimension, no way to fire the
             triggered one, no ambient perturbation. This is the *hosts-without* half of the
             obligations table, and it is a real shape rather than a degraded one:
-            samsung-frame-art-loader will never be able to perturb its own television. What it
+            a host driving a physical display can never perturb the display itself. What it
             must produce is ``unavailable`` records, never silence.
         faults: Which defects this world is suffering from. See :class:`ToyWorldFaults`.
 

@@ -110,8 +110,8 @@ Outcome = Literal["passed", "failed", "unavailable"]
 #: * ``not_instantiable_unattended`` — the condition is a person doing something. An answer about
 #:   representability, not a failed declaration.
 #: * ``no_perturbation_binding`` — the proof needed the host to move state no run controls, and
-#:   this host cannot. samsung-frame-art-loader will carry this one forever: a brightness sensor, a
-#:   heartbeat and a human with a remote all move its world.
+#:   this host cannot. A host driving a physical device can carry this one forever: an ambient-light
+#:   sensor, a heartbeat and a person with a remote control all move its world.
 #: * ``nothing_to_observe`` — there is no surface for the check to watch: no dimension here is
 #:   perceived, or (for stillness) the dimension is perceived by every surface the registry names, or
 #:   every other surface also perceives a sibling that moved with it. Recorded rather than passed,
