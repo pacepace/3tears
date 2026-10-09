@@ -471,12 +471,10 @@ class EvalStorage:
 
         A point read is by id alone (:meth:`~threetears.evals.contracts.store_port.DocumentStore.get`),
         and ids of different types share a scope: a run's id, its results' ids and each result's
-        ``<id>:trace`` all resolve there. Handed to the wrong model's validator, a document of another
-        type is refused as malformed, so a caller that named a run where a result belongs met a raw
-        validation error from deep in the store instead of the not-found every read surface answers. A
-        document of another type is not the document asked for, so it reads as none: every load by id
-        goes through here, and every caller's absent branch (``NotFoundError`` at a read surface) is the
-        answer. A document with no ``doc_type`` at all is left to the model's own validation.
+        ``<id>:trace`` all resolve there. A document of another type is not the document asked for, so
+        it reads as none rather than reaching the wrong model's validator: every load by id goes through
+        here, and every caller's absent branch (``NotFoundError`` at a read surface) is the answer. A
+        document with no ``doc_type`` at all is left to the model's own validation.
         """
         if data is None:
             return None
