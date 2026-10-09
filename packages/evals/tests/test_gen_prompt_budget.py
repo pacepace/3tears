@@ -17,9 +17,8 @@ paragraphs above that heading, and the bullets inside a rule, are not rules. The
 with no gap or repeat, so a rule cannot hide from the count by being misnumbered.
 
 **A new rule names the one it replaces.** The budget only falls, so a rule added at the ceiling must retire
-or absorb another. The ledger of which rule replaced which is planned as a maintainer file beside the
-prompt, ``packages/evals/src/threetears/evals/analysis/GEN_PROMPT_RULES.md``; until it exists, the commit
-that changes a rule says what it replaced.
+or absorb another. The ledger of which rule replaced which, and what each prevents, is the maintainer file
+beside the prompt, ``packages/evals/src/threetears/evals/analysis/GEN_PROMPT_RULES.md``.
 """
 
 from __future__ import annotations
@@ -56,7 +55,7 @@ class TestThePromptIsWithinItsBudget:
         count = len(_rule_numbers(EVAL_ANALYSIS_GEN_DEFAULT))
         assert count <= PROMPT_RULE_BUDGET, (
             f"the writer prompt carries {count} rules, over its budget of {PROMPT_RULE_BUDGET}: a new rule names "
-            "the one it replaces (the ledger is planned as analysis/GEN_PROMPT_RULES.md)"
+            "the one it replaces, in the ledger analysis/GEN_PROMPT_RULES.md"
         )
 
     def test_the_rules_are_numbered_one_to_n_so_the_count_is_honest(self) -> None:
