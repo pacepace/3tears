@@ -109,6 +109,8 @@ class TestAPodMayFollowAndMayNotAdvance:
         permissions = _permissions(principal)
         for verb in ("CREATE", "UPDATE", "DELETE", "PURGE"):
             assert not _may(permissions, f"$JS.API.STREAM.{verb}.{_STREAM}")
+        # deleting one stored message by sequence would erase a generation as surely as a write
+        assert not _may(permissions, f"$JS.API.STREAM.MSG.DELETE.{_STREAM}")
 
 
 @pytest.mark.parametrize("principal", ["hub", "gateway"])
