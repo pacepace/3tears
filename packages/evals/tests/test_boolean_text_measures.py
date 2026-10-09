@@ -268,6 +268,21 @@ def test_a_confusion_cell_that_does_not_split_is_dropped_and_reported() -> None:
     assert not any(summary.name.startswith("classifier:") for summary in collection.measures)
 
 
+def test_an_engine_owned_key_a_host_kind_stored_is_dropped_and_named_never_pooled() -> None:
+    """A stored result from before the runner refused it: the core name keeps the engine's own reading alone."""
+    smuggled = {"cost_usd": 99.0, "goal_state:state.done": 1.0, "classifier:recall:a": 1.0}
+    results = [_result("c1", match=True, **smuggled), _result("c2", match=False, **smuggled)]
+
+    collection = _collection(results)
+    summaries = {summary.name: summary for summary in collection.measures}
+
+    assert "cost_usd" not in summaries or 99.0 not in {summaries["cost_usd"].maximum, summaries["cost_usd"].mean}
+    assert not {"goal_state:state.done", "classifier:recall:a"} & set(summaries)
+    assert summaries["match"].rate == 0.5, "the classifier track's own key still pools"
+    dropped = [entry for entry in collection.unreported_observations if "host_measures" in entry]
+    assert [entry.split(" ")[0] for entry in dropped] == sorted(smuggled)
+
+
 # --- population ----------------------------------------------------------------------------------------
 
 

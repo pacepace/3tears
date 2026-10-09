@@ -390,7 +390,8 @@ return CandidateOutput(
 ```
 
 From those two, the engine derives `accuracy`, the confusion matrix, each label's support, precision and
-recall with their intervals, and F1. Don't land `accuracy` yourself; the runner refuses a kind that does.
+recall with their intervals, and F1. Don't land `accuracy` yourself; the runner refuses a kind that does,
+and any other core-named key (`cost_usd`, `score`, a `goal_state:` or `classifier:` name) beside these two.
 
 Put the label set in your kind's **spec**, the model a template of that kind declares. It is validated when
 the template is written and frozen onto each run. Check each case's expected label against it when the case

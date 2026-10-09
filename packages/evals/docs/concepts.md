@@ -255,6 +255,10 @@ A number code computes about a result, declared in your host's measure registry 
 classifier lands two core measures, `match` and `confusion_cell`, and the analysis derives `accuracy` from
 `match`. A host may not declare a measure named like a core one (`score`, `f1`, `cost_usd` and the rest):
 its readings would carry the core's meaning and pool with the engine's own, so the registry refuses it.
+For the same reason the runner refuses a kind that lands any core-named key on `host_measures`, or one in the
+engine's minted `goal_state:` and `classifier:` namespaces, other than the classifier's own `match` and
+`confusion_cell`. A result stored before that refusal has the key dropped when it is read, named in
+`unreported_observations`, never pooled.
 *Example:* `match` is 1 when ticket 17 went to `billing`, else 0.
 
 #### Scorer

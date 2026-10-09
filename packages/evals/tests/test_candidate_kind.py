@@ -1499,6 +1499,37 @@ async def test_the_runner_refuses_a_kind_landing_the_derived_accuracy_before_pay
     assert judge.calls == []
 
 
+@pytest.mark.parametrize("name", ["cost_usd", "score", "goal_state:state.done", "classifier:recall:a"])
+async def test_the_runner_refuses_a_kind_landing_any_engine_owned_measure_before_paying_its_judge(name: str) -> None:
+    """No host can declare a core-named measure, so a kind landing one would pool into the engine's own reading."""
+    from threetears.evals.contracts.models import JudgeEvidence, RubricDim
+    from threetears.evals.run import JudgeService
+
+    kind = _FakeSingleShotKind(
+        CandidateOutput(
+            output=[{"document": "report"}],
+            judge_evidence=JudgeEvidence(case_material="the material", artifact="the report"),
+            host_measures={"match": True, "confusion_cell": "a → a", name: 1.0},
+        ),
+        judged_artifact=JudgedArtifact.DOCUMENT,
+    )
+    judge = _RecordingJudgeLLM()
+    service = JudgeService(
+        client_factory=lambda model, temperature: judge, configs={}, failure_describer=withhold_failure_detail
+    )
+    template = _template(rubric=[RubricDim(name="doc.groundedness", description="grounded", scale="ordinal")])
+    with pytest.raises(ValueError, match=f"landed {name!r} on host_measures, which only the engine measures"):
+        await _run(kind, template, judge_service=service)
+    assert judge.calls == []
+
+
+def test_the_classifier_track_s_own_keys_are_the_only_core_named_host_measures() -> None:
+    from threetears.evals.contracts.metrics import undeclarable_host_measures
+
+    assert undeclarable_host_measures(["match", "confusion_cell", "my_own_rate"]) == []
+    assert undeclarable_host_measures(["llm_ms", "match", "goal_state:x"]) == ["goal_state:x", "llm_ms"]
+
+
 async def test_the_runner_refuses_double_reported_background_spend_before_paying_its_judge() -> None:
     """Assembly folds the rows after judging, so the runner's refusal must come first or the judge is paid for nothing."""
     from threetears.evals.contracts.models import JudgeEvidence, RubricDim

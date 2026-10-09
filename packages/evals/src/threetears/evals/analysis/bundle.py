@@ -166,6 +166,7 @@ from threetears.evals.contracts.metrics import (
     partition_components,
     remainder_withheld_reason,
     summary_population,
+    undeclarable_host_measures,
 )
 from threetears.evals.contracts.base import EvalDocumentModel
 
@@ -3248,12 +3249,35 @@ def _open_map_leaves(
     # because `record()` appends into one bucket per name at this level. So a host may not
     # DECLARE a measure named like a core one: `MeasureRegistry._defects` refuses it, and
     # `run_eval` refuses a scorer so named. A core name still arrives here legitimately — the
-    # classifier track lands `match` and `confusion_cell` as host measures — so this walk does
-    # not drop core names; a host kind reporting a core name it could not have declared is
-    # trusted to mean the core's measure.
+    # classifier track lands `match` and `confusion_cell` as host measures — and those pass. Any
+    # other engine-owned key is one no host could have declared: the runner refuses a kind landing
+    # one, and a result stored before that refusal has it dropped here and named as unreported
+    # (`_undeclarable_host_entries`), never pooled into the engine's own observations of the name.
+    smuggled = set(undeclarable_host_measures(result.host_measures))
     for name, value in result.host_measures.items():
-        if name.strip():
+        if name.strip() and name not in smuggled:
             yield name, value, describe_measure(name, profile.measures)
+
+
+def _undeclarable_host_entries(results: Sequence[EvalResult]) -> list[str]:
+    """The unreported-observation entries for host-measure keys the walk dropped as engine-owned.
+
+    Each entry is the key with its reason in parentheses, the form
+    :attr:`~threetears.evals.contracts.analysis_measures.MeasureCollection.unreported_observations` reads —
+    the plain name could not carry it, because the engine's own measure of that name is usually pooled
+    beside it and the bare name would read as a gap in the engine's reading rather than a drop of the host's.
+
+    Args:
+        results: The results the walk read.
+
+    Returns:
+        One entry per dropped key, sorted.
+    """
+    names = {name for result in results for name in undeclarable_host_measures(result.host_measures)}
+    return [
+        f"{name} (a host kind reported it on host_measures, where only the engine measures it; dropped, not pooled)"
+        for name in sorted(names)
+    ]
 
 
 def _in_population(population: MeasurePopulation, result: EvalResult) -> bool:
@@ -3447,7 +3471,11 @@ def _collect_measures(
     collection = MeasureCollection(
         measures=measures,
         absent_scopes=[scope for scope in _ATTRIBUTION_SCOPES if scope not in present],
-        unreported_observations=sorted((unreported - set(pooled)) | set(_withheld_derived(results, pooled))),
+        unreported_observations=sorted(
+            (unreported - set(pooled))
+            | set(_withheld_derived(results, pooled))
+            | set(_undeclarable_host_entries(results))
+        ),
     )
     # Outer names describe the result itself by construction; an inner name keeps whatever
     # the walk saw carrying it, and loses to the outer level on a collision — the same

@@ -89,7 +89,7 @@ from threetears.evals.contracts.host.subject import SubjectSnapshot
 from threetears.evals.contracts.host.timeouts import EvalCellTimeout
 from threetears.evals.contracts.host.traces import CellIdentity, CellTrace, TraceSink
 from threetears.evals.contracts.identity import DerivedVariantIdentity, resolve_variant_identity
-from threetears.evals.contracts.metrics import ACCURACY_MEASURE, MATCH_MEASURE
+from threetears.evals.contracts.metrics import ACCURACY_MEASURE, MATCH_MEASURE, undeclarable_host_measures
 from threetears.evals.contracts.models import (
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
@@ -1596,17 +1596,33 @@ def refuse_engine_derived_host_measures(host_measures: Mapping[str, bool | float
     on the walk's precedence rather than on what was measured. Called by the runner before its judge
     phase pays for anything, and by the assembly every completed cell takes, a witnessed one included.
 
+    **Every other engine-owned name is refused too**
+    (:func:`~threetears.evals.contracts.metrics.undeclarable_host_measures`): a core measure (``cost_usd``,
+    ``score`` …) or a name in a namespace the engine mints (``goal_state:…``, ``classifier:…``). A host
+    cannot declare one, so a kind landing it reports a value no host described, and the analysis walk would pool it into the engine's own
+    observations of that name with ``n`` inflated. Refused rather than dropped: a kind's measures are its own
+    code, so every cell would carry the same key, and a run whose numbers silently lost a measure the kind
+    meant to report is worse than one that stops before paying for a judge. The classifier track's own keys
+    (``match``, ``confusion_cell``) are the one legitimate core-named write. A result stored before this
+    refusal is held to the same rule where it is read: the walk drops the key and names it as unreported.
+
     Args:
         host_measures: What the kind measured, by name.
 
     Raises:
-        ValueError: ``host_measures`` names ``accuracy``.
+        ValueError: ``host_measures`` names ``accuracy`` or any other engine-owned measure.
     """
     if ACCURACY_MEASURE in host_measures:
         raise ValueError(
             f"a candidate kind landed {ACCURACY_MEASURE!r} on host_measures, which the engine derives from each "
             f"observation's {MATCH_MEASURE!r}; land the bool {MATCH_MEASURE!r} and the engine reports "
             f"{ACCURACY_MEASURE!r} from it"
+        )
+    if taken := undeclarable_host_measures(host_measures):
+        raise ValueError(
+            f"a candidate kind landed {', '.join(repr(name) for name in taken)} on host_measures, which only the "
+            "engine measures — a host cannot declare a measure so named, and its values would pool into the "
+            "engine's own observations of it; declare the host's measure under a name of its own"
         )
 
 
