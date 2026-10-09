@@ -426,6 +426,22 @@ renderer.png(chart)             # or rasterised, for a surface that cannot run a
 Drawing a spec needs nothing past the core; only `png` and `svg` need the extra. Nothing in the core
 imports the adapter.
 
+The packaged palette is a brand-neutral default with a light and a dark variant (`packaged_palette("light")`,
+`packaged_palette("dark")`). Its hues are a published, validated default categorical palette, used
+unchanged, in an order chosen so that the four validated slots can be told apart as a set. The package's
+tests measure these rules on it:
+
+- text (`ink`, `muted`) clears 4.5:1 against the chart surface, and `on_fill` clears 4.5:1 over slot 1;
+- slot 1, the colour of every single-series mark, clears 3:1 against the surface, as do `highlight` and
+  `context`;
+- every pair of slots 1-4 differs by at least OKLab ΔE 6 under simulated protanopia and deuteranopia and
+  ΔE 15 under normal vision, and every pair of neighbouring slots across all eight by ΔE 8 and ΔE 15.
+
+Several categorical slots fall below 3:1 on the light surface, so the chart vocabulary never relies on
+colour alone to identify a category: it labels the marks directly, or names the level in the values table.
+A host declaring its own `ChartPalette` is held to the contract's shape only; whether its colours separate
+is for the host to measure.
+
 The packaged face is Liberation Sans (`Liberation Sans, Arial, sans-serif`). The rasteriser embeds it, so
 a PNG draws it on a machine with no fonts installed, and it is metric-compatible with Arial, so a browser
 without it lays text out at the same widths. Its digits share one width, so numeric ticks line up. To

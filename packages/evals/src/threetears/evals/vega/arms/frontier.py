@@ -19,8 +19,8 @@ why the recession is the second channel and never the only one.
 **The recession is asked for by NAME, not stated as an opacity.** The recessive
 marks are their own layer wearing the ``chart-context`` style, so each renderer
 decides what receding looks like on the surface it is painting — the same alpha is
-not the same recession on obsidian and on pearl, and this one spec is drawn onto
-both.
+not the same recession on a near-black surface and on a near-white one, and this
+one spec is drawn onto both.
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ from threetears.evals.vega.compiler import (
 )
 from threetears.evals.analysis.viz.intent import ChartIntent
 from threetears.evals.analysis.viz.intents.frontier import CLASS_FIELD, CLASS_SHAPES, DISPLAY_FIELD, EMPHATIC_CLASSES
+from threetears.evals.contracts.host import ChartFont
 from threetears.evals.vega.palette import CONTEXT_STYLE, font_weights, geometry
 
 #: The classes drawn in the context neutral rather than in the chart's own ink.
@@ -95,11 +96,13 @@ def _by_weight(drawn: list[dict[str, Any]]) -> list[tuple[bool, list[str]]]:
     return partitions
 
 
-def compile_frontier(intent: ChartIntent) -> dict[str, Any]:
+def compile_frontier(intent: ChartIntent, *, font: ChartFont | None = None) -> dict[str, Any]:
     """Draw a cost-against-quality intent as a point plot.
 
     Args:
         intent: The frontier's intent.
+        font: The typeface the chart is laid out in; ``None`` for the packaged face. Its one measured
+            layout decision is where the title wraps.
 
     Returns:
         The Vega-Lite spec.
@@ -194,7 +197,7 @@ def compile_frontier(intent: ChartIntent) -> dict[str, Any]:
     # way a reader of a point plot consults: the labelled ticks.
     return {
         "$schema": VEGA_LITE_SCHEMA,
-        "title": _title_spec(intent.title, width),
+        "title": _title_spec(intent.title, width, font=font),
         "data": {"values": drawn},
         "layer": layers,
         "width": width,

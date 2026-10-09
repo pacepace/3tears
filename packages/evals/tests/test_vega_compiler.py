@@ -1353,8 +1353,9 @@ class TestTheDumbbellIsAPointOnAConnector:
     def test_a_value_label_never_asks_for_the_knockout_here(self):
         """What this arm draws at a value is a 3px connector and a point, so there is no fill.
 
-        The knockout IS the chart surface, so a label taking it inward of these marks
-        is painted on the background in the background's own colour. It is reachable on
+        The on-fill ink is chosen against a fill, not the surface — in the packaged dark
+        palette it IS the surface colour — so a label taking it inward of these marks
+        can be painted on the background in the background's own colour. It is reachable on
         every chart of this type: the row that decides the axis has only the point's
         radius beyond it, which is far short of the label clearance, so its number is
         always the one pushed inward.
@@ -2823,13 +2824,12 @@ class TestValuesAreWrittenOnTheMarks:
         assert not _mark_layers(compile_chart("breakdown", over).spec, "text")
 
     def test_a_mark_that_paints_no_fill_never_asks_for_the_knockout(self):
-        """The knockout IS the chart surface, so on an unfilled mark it is invisible.
+        """The on-fill ink is chosen for a fill, so on an unfilled mark it can be invisible.
 
         A point or a bare interval rule has nothing under an inward label but the
-        plot background — and `chart.fg-on-fill` resolves to exactly that background
-        (dark `#140a29` is the dark surface; light `#ffffff` is the light one). So a
-        label that took the knockout there would be painted on the background in the
-        background's own colour: 1:1, gone.
+        plot background — and the packaged dark palette's `on_fill` is exactly that
+        background (`#1a1a19`). So a label that took the on-fill ink there would be
+        painted on the background in the background's own colour: 1:1, gone.
 
         Reachable, not theoretical: on a cropped position axis the outermost mark sits
         about 57px from the edge, `needed` is at least the 56px clearance, and
@@ -2851,7 +2851,7 @@ class TestValuesAreWrittenOnTheMarks:
         `filled` defaults True so the length arms — breakdown and attribution — do not
         each restate the obvious. That default is load-bearing in a way a
         false-only test cannot see: if it ever flipped, every bar's inside label would
-        quietly take chart ink again at 2.53:1 and no test naming `filled=False` would
+        quietly take chart ink again, under 4.5:1 over slot 1, and no test naming `filled=False` would
         notice.
         """
         axis = ValueAxis.magnitude("m", [100.0], geometry()["plot_width"])
@@ -2864,7 +2864,7 @@ class TestValuesAreWrittenOnTheMarks:
         `null_result` draws a rule and a point; `sweep_ranking`'s ranking panel draws
         points; `delta_table` draws a 3px connector and a point. None has a fill under
         an inward label, and the flag is what the placement decision reads — a default
-        that quietly reverted would put the knockout back on the chart surface.
+        that quietly reverted would put the on-fill ink back on the chart surface.
         """
         for viz_type, payload in (
             ("null_result", NULL_RESULT),
@@ -2883,10 +2883,10 @@ class TestValuesAreWrittenOnTheMarks:
         raise AssertionError(f"no value label for {display}")
 
     def test_a_value_on_the_fill_asks_for_the_knockout_ink(self):
-        """Chart ink over the mark's own fill is 2.53:1 in dark and 3.36:1 in light.
+        """Chart ink over the mark's own fill is under 4.5:1 (packaged: 4.46:1 light, 3.64:1 dark).
 
-        The palette admits a third chart ink for exactly this case, so the label asks for it by NAME — the spec still carries no colour, and
-        what a knockout resolves to stays the renderer's to decide.
+        The palette carries a third text ink for exactly this case, so the label asks for it by NAME — the spec still carries no colour, and
+        what that ink resolves to stays the renderer's to decide.
         """
         clearance = geometry()["value_label_clearance"]
         assert self._style_of(self._probe(clearance - 1), "probe") == VALUE_ON_FILL_STYLE
@@ -3195,7 +3195,7 @@ class TestACompiledSpecStatesNoAppearanceValue:
     def test_a_receding_mark_asks_by_name_rather_than_stating_an_opacity(self, viz_type):
         """Recession is a per-THEME decision, so the compiler may not take it.
 
-        The same alpha is not the same recession on obsidian and on pearl, so a
+        The same alpha is not the same recession on near-black and on near-white, so a
         compiled `0.35` is right on at most one of the two surfaces this one
         artifact is drawn on. `chart-context` is how a mark says "I carry no
         identity" and lets the renderer decide what that looks like.
@@ -3810,10 +3810,10 @@ class TestSweepRankingStatesWhatTheBarcodeCannotSay:
 
         Nothing asserted it, so a reversed scale domain would have drawn every
         ordered column backwards with a full suite green and a caption still
-        saying "light-to-dark". The direction is not arbitrary: `chart.seq` is
-        authored lightest at stop 1 through darkest at stop 5, and `chart.context`
-        — the neutral for a level a configuration never set — is pale, so a
-        lightest-is-most ramp would draw the highest level and an absence alike.
+        saying "light-to-dark". The direction is not arbitrary: a palette's
+        `sequential` ramp is authored lightest at stop 1 through darkest at its last
+        stop, and the reader takes the strongest tone for "most", so a
+        lightest-is-most ramp would read every ordered column upside down.
 
         Asserted through the rank, which is what the scale actually reads: rank 0
         is the lowest level and must land on `domain[0]`, the range's first and
@@ -4085,22 +4085,7 @@ class TestEveryArmLaysOutInTheFontItIsGiven:
     must lay out differently from the packaged face.
     """
 
-    @pytest.mark.parametrize(
-        "viz_type",
-        [
-            pytest.param(
-                viz_type,
-                marks=pytest.mark.xfail(
-                    strict=True,
-                    raises=AssertionError,
-                    reason="the frontier arm does not take a font yet: its title wraps in the packaged face",
-                ),
-            )
-            if viz_type == "frontier"
-            else viz_type
-            for viz_type in sorted(EVERY_TYPE)
-        ],
-    )
+    @pytest.mark.parametrize("viz_type", sorted(EVERY_TYPE))
     def test_the_layout_follows_the_font(self, viz_type):
         packaged = compile_chart(viz_type, EVERY_TYPE[viz_type]).spec
         huge = compile_chart(viz_type, EVERY_TYPE[viz_type], font=_HUGE).spec

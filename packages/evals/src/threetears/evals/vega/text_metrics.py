@@ -59,11 +59,10 @@ from threetears.evals.contracts.host import ChartFont, StyleError
 
 #: The measured artifact, beside the module that reads it.
 #:
-#: This is the pattern the chart palette was later moved onto, and the two are now
-#: siblings here for the same reason: a package that must be installable reads only
-#: what ships with it. They are still produced by different tools — nothing in the
-#: token pipeline produces this one, and the token build does not regenerate it.
-#: Each artifact names its own generator in its own ``$comment``.
+#: The chart palette ships the same way, and the two are siblings here for the same
+#: reason: a package that must be installable reads only what ships with it. This one
+#: is measured by ``packages/evals/scripts/measure_font_metrics.py``, and names its
+#: generator in its own ``$comment``.
 METRICS_PATH = Path(__file__).resolve().parent / "font_metrics.json"
 
 #: How far over its estimate a string is allowed to draw before the estimate is

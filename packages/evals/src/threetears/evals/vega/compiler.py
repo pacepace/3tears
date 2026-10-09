@@ -9,15 +9,15 @@ identical on both. This adapter (with its arms, palette, text metrics, rasterise
 optional — the ``[vega]`` extra — and nothing in the core imports it.
 
 **The spec carries no colour.** Every consumer supplies the palette as a
-Vega-Lite ``config``: the browser reads it from the CSS custom properties, so it
-cannot drift from the design tokens, and the server reads resolved sRGB hex from
-the generated palette artifact, because its rasteriser cannot parse the OKLCH the
-tokens are authored in. A colour literal compiled into the spec would defeat both.
+Vega-Lite ``config``: a browser host builds it from its own stylesheet, and the
+server builds it from a :class:`~threetears.evals.contracts.host.ChartPalette` —
+the host's, or the packaged default — as resolved sRGB hex, because its rasteriser
+cannot parse OKLCH. A colour literal compiled into the spec would defeat both.
 
 **Identity never rides on colour here.** Every chart puts its categories on an
 axis instead, which is not a stylistic preference. The palette never refuses to
 draw — the number of series is a property of the data — so past its four validated
-hues it takes a derived second tier and past eight it recycles, and a
+hues it takes a second tier and past eight it recycles, and a
 colour-per-category chart therefore has a point beyond which two categories look
 alike. An axis has no such point. What keeps recycling honest is therefore that
 IDENTITY has left the hue channel before the hue channel weakens — not the absence
@@ -748,7 +748,7 @@ class MarkValue:
 
     **The arm knows and the clearance arithmetic does not, which is why this is a
     field rather than a derivation.** A bar has length under its inward label, so a
-    value written there is on velvet and needs the knockout ink. A POINT, a bare
+    value written there is on the mark's colour and needs the on-fill ink. A POINT, a bare
     interval rule or a dumbbell's connector does not: `sweep_ranking`'s ranking panel
     draws points, and `delta_table` draws a 3px connector under a point — inward of
     those marks there is nothing but the chart surface.
@@ -760,9 +760,10 @@ class MarkValue:
     label wider than about 51px flips to inward. ``format_number`` writes
     ``1.235e-05`` at about 64px and a seven-digit whole number at about 57px, so one value
     under 1e-4, or of a million or more, is enough.
-    That label would then ask for the knockout, which IS each mode's chart surface —
-    so the number would be painted on the background in the background's own colour
-    and vanish at 1:1. Defaulting to ``True`` keeps the length arms correct without
+    That label would then ask for the on-fill ink, which is chosen against the fill
+    rather than the surface — in the packaged dark palette it is the surface colour
+    itself — so the number would be painted on the background in the background's own
+    colour and vanish at 1:1. Defaulting to ``True`` keeps the length arms correct without
     each restating the obvious; the arms that draw no fill say so.
 
     **It does not say the label has clear surface under it.** A mark that paints no
@@ -783,7 +784,7 @@ class MarkValue:
 
     Zero where the mark draws nothing along the row between the value and the
     baseline — ``sweep_ranking``'s bare points — and zero for the length arms, whose
-    bar is a fill and takes the knockout instead. Stated by the arm for the same
+    bar is a fill and takes the on-fill ink instead. Stated by the arm for the same
     reason ``radius`` is: what is drawn at a value is the arm's own fact, and a
     compiler inferring it would be a second answer free to disagree.
     """
@@ -1177,8 +1178,8 @@ def value_label_mark(placement: Placement, **overrides: Any) -> dict[str, Any]:
     """The text mark one placement's value labels are drawn with.
 
     Shared rather than restated per arm for the reason the placement type exists: a
-    label on a mark's fill has to ask for the knockout ink, and an arm that built its
-    own text mark would be one arm away from drawing 2.53:1 grey-on-velvet again.
+    label on a mark's fill has to ask for the on-fill ink, and an arm that built its
+    own text mark would be one arm away from drawing chart ink on slot 1 below 4.5:1.
 
     Args:
         placement: Where these labels sit relative to their marks.
@@ -1195,9 +1196,9 @@ def value_label_mark(placement: Placement, **overrides: Any) -> dict[str, Any]:
     }
     if placement.inside:
         # A style NAME, not a colour. The value is drawn ON the mark's own fill, where
-        # chart ink measures 2.53:1 in dark and 3.36:1 in light against the single-series
-        # hue — so it takes the knockout instead, which the renderer resolves for the
-        # surface it is painting. Same division as the zero rule: the name travels in the
+        # chart ink can fall under 4.5:1 against the single-series hue (packaged: 4.46:1
+        # in light, 3.64:1 in dark) — so it takes the on-fill ink instead, which the
+        # renderer resolves from the palette it is painting with. Same division as the zero rule: the name travels in the
         # spec, the colour stays with whichever renderer is drawing.
         mark["style"] = VALUE_ON_FILL_STYLE
     if placement.lift:
@@ -1216,7 +1217,7 @@ class Placement(NamedTuple):
     whether it is drawn over the mark's fill. They are not recoverable from each
     other — a bar growing LEFT from zero and labelled outside is right-aligned, and so
     is a right-growing bar labelled inside. Reading "inside" off ``align == "right"``
-    would give the knockout ink to the first of those and withhold it from the second.
+    would give the on-fill ink to the first of those and withhold it from the second.
 
     ``clearance`` is a third and equally independent one — how FAR from the anchor the
     text starts, which is a fact about the mark's size rather than about which side it
@@ -1341,9 +1342,9 @@ def _aligned_values(
         #
         # A mark that paints no fill is not therefore empty under the label: the two
         # dumbbells draw a 3px line along the row, and a number written on that line
-        # is a number with a rule through it. Lifted off it instead — the knockout is
-        # not an option at that thickness, since surface-coloured glyphs would be
-        # legible over the 3px stripe and invisible above and below it.
+        # is a number with a rule through it. Lifted off it instead — the on-fill ink is
+        # not an option at that thickness, since glyphs inked for the fill would be
+        # legible over the 3px stripe and could vanish into the surface above and below it.
         lift = 0.0 if outside or mark.filled else _label_lift(mark.thickness, size)
         placement = Placement(align=align, inside=not outside and mark.filled, clearance=clearance, lift=lift)
         aligned.setdefault(placement, []).append(mark)

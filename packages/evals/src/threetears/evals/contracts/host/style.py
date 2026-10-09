@@ -65,7 +65,7 @@ class StyleError(ValueError):
 #:
 #: Part of eval's chart vocabulary, not of any palette: a chart intent names colour SLOTS, never colours,
 #: and a palette supplies the hues. Slots 1-4 are the ones a palette must separate for colourblind
-#: readers and against its background; 5-8 are a derived second tier that need not; past
+#: readers and against its background; 5-8 are a second tier that need not; past
 #: :data:`SERIES_SLOTS` a renderer recycles from slot 1. The core decides what a slot promises and the
 #: palette keeps the promise.
 VALIDATED_SLOTS = 4

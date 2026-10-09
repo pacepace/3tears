@@ -37,16 +37,6 @@ class Arm(Protocol):
         ...
 
 
-def _frontier(intent: ChartIntent, *, font: ChartFont | None = None) -> dict[str, Any]:
-    """The frontier arm, which does not take a typeface yet and lays out in the packaged face.
-
-    Its one measured layout decision is where its title wraps. Under a host's own face that title is
-    wrapped against the packaged face's widths, which can overrun the figure or wrap early; nothing
-    else on the figure is measured. Threading ``font`` into ``compile_frontier`` retires this.
-    """
-    return compile_frontier(intent)
-
-
 #: ``Viz.type`` → the arm that draws it.
 #:
 #: Keyed by the same strings as ``PAYLOAD_MODELS`` so the two registries can be
@@ -56,7 +46,7 @@ ARMS: dict[str, Arm] = {
     "breakdown": compile_breakdown,
     "delta_table": compile_delta_table,
     "distribution": compile_distribution,
-    "frontier": _frontier,
+    "frontier": compile_frontier,
     "null_result": compile_null_result,
     "sweep_ranking": compile_sweep_ranking,
     "timeseries": compile_timeseries,
