@@ -6,6 +6,32 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Datasources: a warehouse export, read from S3 and proven whole
+
+A relation too large to page over the bus quickly can be exported by the warehouse itself and read
+from the export bucket. Granted apart from reads by the hub; nothing changes for a datasource with no
+export configured.
+
+- **Added, `threetears.datasources.export`**: `ExportConfig` (bucket, prefix, the role the warehouse
+  writes as) on `RedshiftConnectionConfig.export`; the one `UNLOAD` an export runs
+  (`redshift_unload_statement`: the caller's `SELECT` quoted as a literal, parquet, a verbose
+  manifest, the configured role, never `ALLOWOVERWRITE`); a destination grammar that cannot leave
+  the configured prefix; a `SELECT` or value holding a backslash or a NUL refused
+  (`ExportRefusedError`).
+- **Added, `Driver.unload`**: concrete and refusing (`DriverExportUnsupportedError`) on every
+  driver; `RedshiftDriver` runs the `UNLOAD` when its datasource has an export configured and counts
+  it with `pg_last_unload_count()` on the same session.
+- **Added, the export ask on the datasource wire**: `DatasourceQueryRequest.export`
+  (`DatasourceExportRequest`: a `SELECT` with no bind parameters and a relative destination),
+  answered in `DatasourceQueryResponse.export` (`DatasourceExportResult`), and
+  `DatasourceQueryClient.export`. A request that is not an export leaves the field off the wire, so
+  an older hub (which forbids unknown fields) still reads every query and fingerprint.
+- **Added, `threetears.datasources.export_read`** (the `export` extra, pyarrow): `export_part`
+  fingerprints a part, exports it, fingerprints it again and reads the parquet the manifest lists
+  through an object store the caller built, refusing (`IncompleteExportError`) a part that moved,
+  counts that disagree (warehouse, manifest, files, fingerprint), or a manifest naming any file
+  outside the export.
+
 ### Core, agent tools and enforcement: a pod's writes move its tables' write generations (migrate-writers stage)
 
 Stage 2 of `docs/epoch-task-06-collection-generations-by-default.md`. A pod may not write the epoch

@@ -67,6 +67,8 @@ from threetears.observe import BuildOnce, get_logger
 
 from threetears.core.sql_fragments import quote_identifier
 
+from threetears.datasources.export import DriverExportUnsupportedError, UnloadResult
+
 __all__ = [
     "CallbackTransaction",
     "ColumnCoverage",
@@ -1143,6 +1145,29 @@ class Driver(ABC):
         :return: nothing
         :rtype: None
         """
+
+    # -------------------------------------------------------------------
+    # Concrete: export (a warehouse that writes a query's rows to S3 itself)
+    # -------------------------------------------------------------------
+
+    async def unload(self, select: str, destination: str, *, timeout_seconds: int | None = None) -> UnloadResult:
+        """write ``select``'s rows to the datasource's export location, as parquet, and say where.
+
+        Concrete, refusing: only an engine that can write a result to object storage itself, with an
+        export configured on its datasource, overrides it (:mod:`threetears.datasources.export`).
+        Every other driver answers this, so a caller asks once and branches on the type.
+
+        :param select: a plain ``SELECT``, already admitted as a read the caller may run
+        :ptype select: str
+        :param destination: where under the configured prefix, a relative path
+        :ptype destination: str
+        :param timeout_seconds: per-statement timeout, as :meth:`fetch` takes it
+        :ptype timeout_seconds: int | None
+        :return: the rows written and where they are
+        :rtype: UnloadResult
+        :raises DriverExportUnsupportedError: always, here
+        """
+        raise DriverExportUnsupportedError(f"{type(self).__name__} cannot export a query's rows to object storage")
 
     # -------------------------------------------------------------------
     # Concrete: value-coverage probe (datasource honesty)

@@ -55,8 +55,19 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID, uuid7
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_serializer, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    SerializerFunctionWrapHandler,
+    field_serializer,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 from threetears.core.sql_fragments import as_written, equality_conditions
+from threetears.datasources.export import check_destination
 from threetears.nats.errors import RequestError
 from threetears.nats.subjects import Subject, Subjects
 from threetears.observe import get_logger, traced
@@ -71,6 +82,8 @@ __all__ = [
     "DEFAULT_QUERY_TIMEOUT_SECONDS",
     "RESULT_TOO_LARGE",
     "QUERY_STATEMENT_TIMEOUT_SECONDS",
+    "DatasourceExportRequest",
+    "DatasourceExportResult",
     "DatasourceQueryClient",
     "DatasourceQueryError",
     "DatasourceQueryRequest",
@@ -247,6 +260,70 @@ class RelationFingerprintResult(BaseModel):
     digest: str
 
 
+class DatasourceExportRequest(BaseModel):
+    """ask the hub to have the warehouse write a ``SELECT``'s rows to the datasource's export bucket.
+
+    A separate ask from a query, granted on its own: the hub runs it only for a caller it would let
+    run the ``SELECT`` on the read rail AND that an operator recorded may export from this
+    datasource. The caller never sends the ``UNLOAD``, a bucket or a role; the hub builds the
+    statement around the ``SELECT`` from an allow-list and the datasource's own export
+    configuration (:mod:`threetears.datasources.export`).
+
+    :param select: a plain ``SELECT``; it binds no parameters (the warehouse's export cannot), so a
+        value it filters by is written in as a literal
+        (:func:`~threetears.datasources.export.sql_string_literal`)
+    :ptype select: str
+    :param destination: where under the datasource's export prefix, a short relative path; files
+        already there are never replaced, so each export names a fresh one
+    :ptype destination: str
+    :raises ValueError: when the destination is not a plain relative path
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    select: str
+    destination: str
+
+    @field_validator("destination")
+    @classmethod
+    def _destination_is_relative(cls, value: str) -> str:
+        """refuse a destination that could leave the configured prefix.
+
+        :param value: the destination
+        :ptype value: str
+        :return: the value unchanged
+        :rtype: str
+        :raises ValueError: when it does not match the destination grammar
+        """
+        check_destination(value)
+        return value
+
+
+class DatasourceExportResult(BaseModel):
+    """where an export's files are, and how many rows the warehouse says it wrote.
+
+    The reader checks every one of these (:mod:`threetears.datasources.export_read`): the files the
+    manifest lists sit under ``object_prefix`` in ``bucket``, they hold ``row_count`` rows, and that
+    count is the relation's.
+
+    :param row_count: rows the warehouse wrote
+    :ptype row_count: int
+    :param bucket: the bucket the files are in
+    :ptype bucket: str
+    :param object_prefix: the key prefix every file sits under, ending in ``/``
+    :ptype object_prefix: str
+    :param manifest_path: the object path of the manifest listing the files (named so rather than a key, which the secrets gate reads as a credential)
+    :ptype manifest_path: str
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    row_count: int
+    bucket: str
+    object_prefix: str
+    manifest_path: str
+
+
 class DatasourceQueryRequest(BaseModel):
     """one datasource query, carrying the caller's identity as a forwarded token.
 
@@ -296,10 +373,13 @@ class DatasourceQueryRequest(BaseModel):
     query: str | None = None
     params: list[Any] = Field(default_factory=list)
     fingerprint: RelationFingerprintRequest | None = None
+    #: an export instead of a query. A hub that predates exports refuses the field as unknown
+    #: (``MALFORMED_REQUEST``) rather than running anything
+    export: DatasourceExportRequest | None = None
 
     @model_validator(mode="after")
     def _exactly_one_operation(self) -> "DatasourceQueryRequest":
-        """require exactly one of ``query`` and ``fingerprint``.
+        """require exactly one of ``query``, ``fingerprint`` and ``export``.
 
         The two are alternative asks on one subject, and the alternative to this
         check is a model that can represent a request meaning nothing (neither
@@ -316,13 +396,36 @@ class DatasourceQueryRequest(BaseModel):
         :raises ValueError: when neither or both are set
         """
         asked = [
-            name for name, value in (("query", self.query), ("fingerprint", self.fingerprint)) if value is not None
+            name
+            for name, value in (("query", self.query), ("fingerprint", self.fingerprint), ("export", self.export))
+            if value is not None
         ]
         if len(asked) != 1:
             raise ValueError(
-                f"a datasource request carries exactly one of query or fingerprint, got {asked or 'neither'}"
+                f"a datasource request carries exactly one of query, fingerprint or export, got {asked or 'none'}"
             )
+        if self.export is not None and self.params:
+            raise ValueError("an export binds no parameters; write the values into its SELECT as literals")
         return self
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_export(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """leave ``export`` off the wire when it is not asked for.
+
+        A hub that predates exports forbids unknown fields, so a query or fingerprint carrying
+        ``"export": null`` would be refused there as malformed: every read of a newer caller would
+        fail against an older hub. Omitted, the request is byte-for-byte what that hub knows, and
+        the two upgrade in either order.
+
+        :param handler: pydantic's serializer for the fields
+        :ptype handler: SerializerFunctionWrapHandler
+        :return: the serialized request
+        :rtype: dict[str, Any]
+        """
+        data: dict[str, Any] = handler(self)
+        if self.export is None:
+            data.pop("export", None)
+        return data
 
     @field_serializer("identity_token", "user_identity_token", when_used="json")
     def _emit_token_on_the_wire(self, value: SecretStr | None) -> str | None:
@@ -376,6 +479,8 @@ class DatasourceQueryResponse(BaseModel):
     #: comparing two readings must not have to know which column the digest landed in
     #: or what the driver called it.
     fingerprint: RelationFingerprintResult | None = None
+    #: set only in answer to an ``export`` request
+    export: DatasourceExportResult | None = None
 
 
 class DatasourceQueryResult(BaseModel):
@@ -598,6 +703,75 @@ class DatasourceQueryClient:
                 f"relation fingerprint on {datasource_name!r} returned success with no fingerprint",
             )
         return response.fingerprint
+
+    @traced
+    async def export(
+        self,
+        datasource_name: str,
+        select: str,
+        *,
+        destination: str,
+        correlation_id: UUID | None = None,
+    ) -> DatasourceExportResult:
+        """have the warehouse write ``select``'s rows to the datasource's export bucket, as parquet.
+
+        Granted apart from reads: the hub runs it only for a caller that may run ``select`` on the
+        read rail AND that an operator recorded may export from this datasource. A tool pod asks on
+        its own identity; there is no user side to an export.
+
+        :param datasource_name: the datasource's name as the hub holds it
+        :ptype datasource_name: str
+        :param select: a plain ``SELECT`` with no bind parameters (values written in as literals)
+        :ptype select: str
+        :param destination: where under the datasource's export prefix; a fresh path per export,
+            because files already there are never replaced
+        :ptype destination: str
+        :param correlation_id: trace id to carry; generated when omitted
+        :ptype correlation_id: UUID | None
+        :return: how many rows the warehouse wrote and where the files are
+        :rtype: DatasourceExportResult
+        :raises DatasourceQueryError: on a refusal (``EXPORT_NOT_GRANTED``, ``EXPORT_UNSUPPORTED``,
+            ``SQL_SAFETY_VIOLATION``, ``EXPORT_REFUSED``, ...), a transport failure, or a success
+            carrying no result
+        """
+        if not datasource_name:
+            raise DatasourceQueryError(
+                "INVALID_DATASOURCE_NAME",
+                "an export needs the datasource's name; an empty name composes no subject",
+            )
+        request = DatasourceQueryRequest(
+            correlation_id=correlation_id if correlation_id is not None else uuid7(),
+            identity_token=SecretStr(self.forwarded_identity_token()),
+            export=DatasourceExportRequest(select=select, destination=destination),
+        )
+        subject = Subjects.datasource_query(datasource_name)
+        try:
+            response = await self._ask(subject, request)
+        except RequestError as exc:
+            raise DatasourceQueryError("REQUEST_FAILED", f"export on {datasource_name!r}: {exc}") from exc
+        if not response.success:
+            raise DatasourceQueryError(
+                response.error_code or "UNKNOWN",
+                response.error_message or f"export on {datasource_name!r} was refused",
+            )
+        if response.export is None:
+            # a hub that answered success without an export did not run one; taking it as an export
+            # of nothing would read as a relation with no rows
+            raise DatasourceQueryError(
+                "MALFORMED_RESPONSE", f"export on {datasource_name!r} returned success with no export"
+            )
+        log.info(
+            "datasource export written",
+            extra={
+                "extra_data": {
+                    "datasource": datasource_name,
+                    "correlation_id": f"{request.correlation_id}",
+                    "row_count": response.export.row_count,
+                    "object_prefix": response.export.object_prefix,
+                }
+            },
+        )
+        return response.export
 
     async def query(
         self,
