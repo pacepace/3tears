@@ -55,6 +55,7 @@ import json
 import math
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from functools import partial
 from typing import Any, cast
 
 from threetears.evals.contracts import (
@@ -102,10 +103,12 @@ from threetears.evals.run import (
     LaunchHost,
     LaunchRequest,
     LaunchArgument,
+    LaunchGroup,
     LaunchSettings,
     RunJudge,
     build_judge_service,
     default_job_timeout,
+    launch_as_group,
     launch_run,
     start_run,
 )
@@ -191,20 +194,21 @@ JUDGED_CALLABLE_UNSEATED: frozenset[str] = frozenset(
 _JUDGE_SEATS = next(role for role in SHARED_CORE.roles if role.name == "judge")
 
 
-def _launch_settings() -> LaunchSettings:
-    """The launch settings of the one-call path.
+def _launch_settings(arms: int = 1) -> LaunchSettings:
+    """The launch settings of the one-call path, for a launch of ``arms`` arms.
 
-    One arm, one admitted run at a time, and the cost and metered-call ceilings off: the candidate is
-    an opaque callable whose spend the engine sees only after the fact, and only when it reports it (an
-    :class:`~threetears.evals.quick.answer.Answer`), so a ceiling could neither price an arm before it
-    runs nor bind a candidate that reports nothing. A judge scores one dimension at a time. The
+    Every arm of the launch admitted and started together (:func:`run_eval` launches one,
+    :func:`~threetears.evals.quick.compare` one per arm), and the cost and metered-call ceilings off: the
+    candidate is an opaque callable whose spend the engine sees only after the fact, and only when it
+    reports it (an :class:`~threetears.evals.quick.answer.Answer`), so a ceiling could neither price an arm
+    before it runs nor bind a candidate that reports nothing. A judge scores one dimension at a time. The
     ceiling values are required by the settings model and, with enforcement off, recorded as absent
     on the run rather than as caps; the out-of-run one binds nothing either, since the callable kind
     declines ``n_variations`` and so never generates.
     """
     return LaunchSettings(
-        max_launch_arms=1,
-        max_admitted_runs=1,
+        max_launch_arms=arms,
+        max_admitted_runs=arms,
         judge_concurrency=1,
         enforcement_enabled=False,
         max_cost_usd=1.0,
@@ -637,17 +641,45 @@ def _flat(value: Any) -> str:
     return value if isinstance(value, str) else json.dumps(value, sort_keys=True)
 
 
+@dataclass(frozen=True)
+class _Arm:
+    """One arm a one-call launch runs: the candidate, the model its run is labelled by, and its other levers.
+
+    Attributes:
+        candidate: The candidate under test.
+        model: The arm's label, stored as its run's candidate model; ``None`` takes the candidate's ``__name__``.
+        levers: The arm's level of every other lever, by name, or ``None`` for none.
+    """
+
+    candidate: Candidate | ToolUsingCandidate | WorldCandidate
+    model: str | None = None
+    levers: Mapping[str, str] | None = None
+
+
+@dataclass(frozen=True)
+class _WiredArm:
+    """One arm as its launcher wires it: the levels its run is launched at, and the factory building its cells' kind."""
+
+    model: str
+    levers: dict[str, Any]
+    kind_factory: KindFactory
+
+
 def _launch_host(
     host: EvalHost,
-    kind_factory: KindFactory,
-    subject: SubjectSnapshot,
+    arms: Sequence[_WiredArm],
     cases: list[EvalTestCase],
     judge: Judge | None,
     world: World | None = None,
     *,
     calls_tools: bool = False,
 ) -> LaunchHost:
-    """``host`` as a launching host whose one kind runs ``kind_factory``'s kind over ``cases``, judged by ``judge`` when given.
+    """``host`` as a launching host whose one kind runs each arm's kind over ``cases``, judged by ``judge`` when given.
+
+    Every arm is launched into one group (:func:`_launch_arms`), each through its own
+    :func:`~threetears.evals.run.start_run` call, so the launcher is asked once per arm and wires the arm the
+    request names: the one at the request's candidate model and overlays. Its subject is its model, as a
+    one-arm launch's is.
 
     A judged kind's launcher builds its judge as every judged launcher does, with
     :func:`~threetears.evals.run.build_judge_service` over the run's template, on a host whose client
@@ -665,7 +697,15 @@ def _launch_host(
         # Every case of a world run sets every dimension, through the one carrier the world is.
         return declared.place(seeded=world.dimension_names, carriers=(world.name,))
 
+    def arm_of(request: LaunchRequest) -> _WiredArm:
+        levels = {} if request.overlays is None else request.overlays.model_dump(mode="json")
+        for arm in arms:
+            if arm.model == request.candidate_model and arm.levers == levels:
+                return arm
+        raise ValueError(f"no arm of this launch runs model {request.candidate_model!r} at levers {levels!r}")
+
     async def launch(request: LaunchRequest) -> EvalRun:
+        arm = arm_of(request)
         run_judge: RunJudge | None = None
         if judge is not None:
             run_judge = build_judge_service(
@@ -674,10 +714,11 @@ def _launch_host(
                 judge.model,
                 judged_artifact=JudgedArtifact.DOCUMENT,
             )
+        subject = SubjectSnapshot(subject_id=arm.model, subject_label=arm.model, state={})
         return await launch_run(
             launch_host,
             request,
-            KindWiring(kind_factory=kind_factory, subject=subject, test_cases=cases, judge=run_judge),
+            KindWiring(kind_factory=arm.kind_factory, subject=subject, test_cases=cases, judge=run_judge),
         )
 
     # The judge pin is the one launch argument a judged kind honours: run_eval names its judge's model. A
@@ -690,7 +731,7 @@ def _launch_host(
     launch_host = LaunchHost(
         eval_host=host,
         kinds={kind_name: LaunchableKind(launch=launch, unhonoured_launch_arguments=frozenset(unhonoured))},
-        settings=_launch_settings,
+        settings=partial(_launch_settings, len(arms)),
         job_timeout_factory=default_job_timeout,
         world_placements=place if declared is not None else None,
     )
@@ -849,6 +890,65 @@ async def run_eval(
             level, a replay naming no corpus or one that is no capture of these cases in this scope, or a
             corpus named off replay.
     """
+    (summary,) = await _run_arms(
+        cases,
+        [_Arm(candidate, model, levers)],
+        scorers,
+        scope_id=scope_id,
+        expected=expected,
+        judge=judge,
+        world=world,
+        seed=seed,
+        goal_checks=goal_checks,
+        host=host,
+        k=k,
+        tools=tools,
+        cassette_mode=cassette_mode,
+        cassette_corpus_id=cassette_corpus_id,
+    )
+    return summary
+
+
+def _template_intent(candidates: Sequence[object], graded_by: str) -> str:
+    """What the template says its cases ask: the candidates' docstring, when they share one first line."""
+    firsts = {doc.splitlines()[0] if (doc := inspect.getdoc(candidate)) else None for candidate in candidates}
+    first = next(iter(firsts)) if len(firsts) == 1 else None
+    return first or f"Answer each case so that {graded_by} the answer well."
+
+
+async def _run_arms(
+    cases: Sequence[Mapping[str, Any]],
+    arms: Sequence[_Arm],
+    scorers: Sequence[Scorer] = (),
+    *,
+    scope_id: str,
+    expected: ExpectedLabel | None = None,
+    judge: Judge | None = None,
+    world: World | None = None,
+    seed: CaseSeed | None = None,
+    goal_checks: Sequence[str] = (),
+    host: EvalHost | None = None,
+    k: int = DEFAULT_LAUNCH_K_RUNS,
+    tools: Mapping[str, Tool] | None = None,
+    cassette_mode: CassetteMode = "off",
+    cassette_corpus_id: str | None = None,
+) -> list[EvalSummary]:
+    """Run every arm over every case ``k`` times as ONE launch, and summarise each arm's run, in arm order.
+
+    :func:`run_eval` is the launch of one arm, and :func:`~threetears.evals.quick.compare` the launch of
+    several. The arms share the template, the case set, the host and the launch: one launch group, every
+    arm's run prepared (every refusal made) before any starts, and all of them started together
+    (:func:`~threetears.evals.run.launch_as_group`) — so a comparison's arms are measured side by side,
+    and a refusal on the last arm leaves none run. Each arm is its own
+    :func:`~threetears.evals.run.start_run` call into that group, because ``start_run`` launches every run
+    it starts at one set of overlays and the arms of a factorial differ in theirs.
+
+    Args and Raises as :func:`run_eval`, every argument but the arms the same for every arm. The arms
+    are distinct — no two at one model and one level of every lever — which the caller holds.
+
+    Returns:
+        Each arm's finished run's summary, read back from the store, in arm order.
+    """
     plain_cases = _plain_cases(cases)
     goal_checks = list(goal_checks)
     if not scorers and expected is None and judge is None and not goal_checks:
@@ -868,21 +968,24 @@ async def run_eval(
     seeds = _world_seeds(plain_cases, world, seed, goal_checks, host)
     template_id = _template_id(plain_cases, labels, judge, seeds, goal_checks)
     if host is None:
-        host = callable_host(scorers, levers=tuple(levers or ()), world=world)
+        host = callable_host(scorers, levers=tuple(arms[0].levers or ()), world=world)
     else:
         _refuse_an_undeclared_callable_contract(host, judged=judge is not None)
         _refuse_undeclared_measures(host, scorers)
-    if model is None:
-        model = getattr(candidate, "__name__", None)
-        if not model:
-            raise ValueError(f"{candidate!r} has no __name__ to label its arm by; pass model=")
-    doc = inspect.getdoc(candidate)
+    models: list[str] = []
+    for arm in arms:
+        model = arm.model
+        if model is None:
+            model = getattr(arm.candidate, "__name__", None)
+            if not model:
+                raise ValueError(f"{arm.candidate!r} has no __name__ to label its arm by; pass model=")
+        models.append(model)
     graded_by = "every scorer grades" if judge is None else "the judge and every scorer grade"
     template = EvalTemplate(
         id=template_id,
         scope_id=scope_id,
         name=f"run_eval over {len(plain_cases)} case(s)",
-        intent=doc.splitlines()[0] if doc else f"Answer each case so that {graded_by} the answer well.",
+        intent=_template_intent([arm.candidate for arm in arms], graded_by),
         candidate_kind=CALLABLE_KIND if judge is None else JUDGED_CALLABLE_KIND,
         rubric=list(judge.dims) if judge is not None else [],
         goal_state_checks=goal_checks,
@@ -902,32 +1005,56 @@ async def run_eval(
     host.storage.save_template(template)
     for test_case in test_cases:
         host.storage.save_test_case(test_case)
-    subject = SubjectSnapshot(subject_id=model, subject_label=model, state={})
-    kind_factory = _kind_factory(
-        candidate, scorers, classifies=labels is not None, judge=judge, world=world, tools=tools
-    )
-    launch_host = _launch_host(host, kind_factory, subject, test_cases, judge, world, calls_tools=tools is not None)
-    runs = await start_run(
+    wired = [
+        _WiredArm(
+            model=model,
+            levers=dict(arm.levers or {}),
+            kind_factory=_kind_factory(
+                arm.candidate, scorers, classifies=labels is not None, judge=judge, world=world, tools=tools
+            ),
+        )
+        for arm, model in zip(arms, models, strict=True)
+    ]
+    launch_host = _launch_host(host, wired, test_cases, judge, world, calls_tools=tools is not None)
+
+    async def form() -> tuple[LaunchGroup, None]:
+        # Every arm's model is a candidate of the launch, which is what its judge is chosen against.
+        return LaunchGroup(candidate_models=list(dict.fromkeys(models))), None
+
+    async def prepare(group: LaunchGroup, _formed: None) -> list[EvalRun]:
+        prepared: list[EvalRun] = []
+        for arm, model in zip(arms, models, strict=True):
+            prepared += await start_run(
+                launch_host,
+                template_id=template_id,
+                subject_id=model,
+                models=[model],
+                k_runs=k,
+                scope_id=scope_id,
+                judge_model=judge.model if judge is not None else None,
+                overlays=dict(arm.levers) if arm.levers else None,
+                cassette_mode=cassette_mode,
+                cassette_corpus_id=cassette_corpus_id,
+                launch_group=group,
+            )
+        return prepared
+
+    runs = await launch_as_group(
         launch_host,
-        template_id=template_id,
-        subject_id=model,
-        models=[model],
-        k_runs=k,
-        scope_id=scope_id,
-        judge_model=judge.model if judge is not None else None,
-        overlays=dict(levers) if levers else None,
-        cassette_mode=cassette_mode,
-        cassette_corpus_id=cassette_corpus_id,
+        len(arms),
+        settings=launch_host.settings(),
+        form=form,
+        prepare=prepare,
+        event="eval.run_eval",
     )
     try:
         await launch_host.job_manager.wait_for([run.id for run in runs])
     except asyncio.CancelledError:
-        # This call owns the run it started: cancelled, it settles the run as cancelled rather than
-        # leaving a pending one behind in a store that outlives it.
+        # This call owns the runs it started: cancelled, it settles them as cancelled rather than
+        # leaving pending ones behind in a store that outlives it.
         await launch_host.job_manager.shutdown()
         raise
-    (run,) = runs
-    return summarize_run(host, run.id, scope_id)
+    return [summarize_run(host, run.id, scope_id) for run in runs]
 
 
 __all__ = [
