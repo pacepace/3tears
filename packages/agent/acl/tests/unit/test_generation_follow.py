@@ -337,3 +337,19 @@ async def test_the_registry_trusts_a_followed_table_only_while_its_watch_runs(
     finally:
         await following.stop()
     assert not registry.tables_trusted(scanned)
+
+
+async def test_a_second_follower_of_a_table_neither_hides_nor_withdraws_the_first() -> None:
+    from threetears.agent.acl.generation_follow import follow_tables
+
+    watches = _Silent()
+    registry = await _listening_registry()
+    first = follow_tables(registry, watches, ("concepts",))  # type: ignore[arg-type]
+    second = follow_tables(registry, watches, ("concepts",))  # type: ignore[arg-type]
+    try:
+        assert registry.tables_trusted(("concepts",))
+        await second.stop()
+        assert registry.tables_trusted(("concepts",)), "the first follower still watches"
+    finally:
+        await first.stop()
+    assert not registry.tables_trusted(("concepts",))

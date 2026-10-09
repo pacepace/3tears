@@ -180,6 +180,8 @@ class AccessTableFollower:
         self._source = reader
         self._reader = _ObservedWatcher(reader, self._health)
         self._tasks: list[asyncio.Task[None]] = []
+        # table -> what this follower registered with the registry, withdrawn by stop()
+        self._watching_by_table: dict[str, Callable[[], bool]] = {}
 
     @property
     def running(self) -> bool:
@@ -250,10 +252,11 @@ class AccessTableFollower:
         # every table followed first, then one watch task each: start() does not yield, so no watch is
         # pushed a value before its table is followed. The tasks are a fixed set, one per table, held to
         # be stopped -- nothing is accumulated or flushed
+        # what a cache derived from each table reads to know whether it may serve what it holds
+        self._watching_by_table = {table: functools.partial(self._table_watching, table) for table in self._tables}
         for table in self._tables:
             self._registry.follow_generation(table)
-            # what a cache derived from the table reads to know whether it may serve what it holds
-            self._registry.watched_by(table, functools.partial(self._table_watching, table))
+            self._registry.watched_by(table, self._watching_by_table[table])
         self._tasks = [
             asyncio.create_task(self._watch(table), name=f"follow-generation:{table}") for table in self._tables
         ]
@@ -269,8 +272,9 @@ class AccessTableFollower:
         :rtype: None
         """
         tasks, self._tasks = self._tasks, []
-        for table in self._tables:
-            self._registry.watched_by(table, None)
+        watching_by_table, self._watching_by_table = self._watching_by_table, {}
+        for table, watching in watching_by_table.items():
+            self._registry.not_watched_by(table, watching)
         for task in tasks:
             task.cancel()
         if tasks:

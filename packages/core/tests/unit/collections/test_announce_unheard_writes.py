@@ -54,3 +54,23 @@ async def test_every_table_is_attempted_and_the_failures_are_raised_together() -
         await announce_unheard_writes(source, ["groups", "group_members", "roles", "role_assignments"])
     assert source.counts == {"group_members": 1, "role_assignments": 1}
     assert "groups" in str(raised.value) and "roles" in str(raised.value)
+
+
+class _SaysNothing(_Source):
+    """advances, but returns no generation for the tables it is told to."""
+
+    def __init__(self, silent: frozenset[str]) -> None:
+        super().__init__()
+        self.silent = silent
+
+    async def advance(self, table_name: str) -> str | None:
+        token = await super().advance(table_name)
+        return None if table_name in self.silent else token
+
+
+async def test_an_advance_that_returns_no_generation_fails_the_announcement() -> None:
+    """an announcement that may have reached no follower leaves every one serving the old rows."""
+    source = _SaysNothing(silent=frozenset({"roles"}))
+    with pytest.raises(GenerationUnavailableError, match="roles"):
+        await announce_unheard_writes(source, ["groups", "roles"])
+    assert source.counts == {"groups": 1, "roles": 1}, "every table is still attempted"

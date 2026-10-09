@@ -209,8 +209,8 @@ class CollectionRegistry:
         # Per followed table, the last write generation whose writes this registry has accounted
         # for. Empty until a table is followed (:meth:`follow_generation`).
         self._generation_marks = GenerationMarks()
-        # table -> whether its generation watch is running now, set by whoever watches it
-        self._watching: dict[str, Callable[[], bool]] = {}
+        # table -> every follower's answer to whether its generation watch is running now
+        self._watching: dict[str, list[Callable[[], bool]]] = {}
         # table_name -> the caches derived from it, in registration order.
         self._derived_caches: dict[str, list[DerivedCacheRegistration]] = {}
         # Per-registry (effectively per-pod) identity stamped on every
@@ -516,38 +516,59 @@ class CollectionRegistry:
         """
         self._generation_marks.follow(table_name)
 
-    def watched_by(self, table_name: str, watching: Callable[[], bool] | None) -> None:
-        """say whether ``table_name``'s generation watch is running, or ``None`` once nobody watches it.
+    def watched_by(self, table_name: str, watching: Callable[[], bool]) -> None:
+        """say that a follower watches ``table_name``'s generation, and how to ask whether it still does.
 
-        Set by the follower that runs the watch (``AccessTableFollower``). A cache derived from the
-        table trusts what it holds only while this answers ``True`` (:meth:`tables_trusted`).
+        Called by each follower that runs a watch on the table (``AccessTableFollower``); more than
+        one may. A cache derived from the table trusts what it holds only while every one of them
+        answers ``True`` (:meth:`tables_trusted`). The follower withdraws with :meth:`not_watched_by`.
 
         :param table_name: the table
         :ptype table_name: str
-        :param watching: answers whether the watch is running now; ``None`` when it stopped
-        :ptype watching: Callable[[], bool] | None
+        :param watching: answers whether this follower's watch is running now
+        :ptype watching: Callable[[], bool]
         :return: nothing
         :rtype: None
         """
-        if watching is None:
-            self._watching.pop(table_name, None)
+        self._watching.setdefault(table_name, []).append(watching)
+
+    def not_watched_by(self, table_name: str, watching: Callable[[], bool]) -> None:
+        """withdraw one follower's watch on ``table_name``, as given to :meth:`watched_by`. Idempotent.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param watching: the callable the follower registered
+        :ptype watching: Callable[[], bool]
+        :return: nothing
+        :rtype: None
+        """
+        followers = self._watching.get(table_name)
+        if followers is None:
+            return
+        remaining = [each for each in followers if each is not watching]
+        if remaining:
+            self._watching[table_name] = remaining
         else:
-            self._watching[table_name] = watching
+            del self._watching[table_name]
 
     def tables_trusted(self, table_names: Sequence[str]) -> bool:
-        """whether every one of ``table_names`` is followed here with its watch running.
+        """whether every one of ``table_names`` is followed here and every watch on it is running.
 
         A cache derived from them may serve and store only while this holds: a broadcast that
-        never arrives is caught by the table's generation only while it is followed and watched.
+        never arrives is caught by the table's generation only while it is followed and watched,
+        and a table one follower claims is not trusted while that follower's watch is down, even
+        when another's runs.
 
         :param table_names: the tables
         :ptype table_names: Sequence[str]
-        :return: ``True`` when every table is followed and watched now
+        :return: ``True`` when every table is followed and all its watches run now
         :rtype: bool
         """
         for table in table_names:
-            watching = self._watching.get(table)
-            if not self._generation_marks.follows(table) or watching is None or not watching():
+            followers = self._watching.get(table)
+            if not self._generation_marks.follows(table) or not followers:
+                return False
+            if not all(watching() for watching in followers):
                 return False
         return True
 

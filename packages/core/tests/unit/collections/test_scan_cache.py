@@ -136,15 +136,51 @@ class TestNoAgeOnlyTrust:
         registry.follow_generation("concepts")
         assert not registry.tables_trusted(("concepts",)), "followed but nobody watches it"
         watching = [True]
-        registry.watched_by("concepts", lambda: watching[0])
+
+        def watch() -> bool:
+            return watching[0]
+
+        registry.watched_by("concepts", watch)
         assert registry.tables_trusted(("concepts",))
         watching[0] = False
         assert not registry.tables_trusted(("concepts",))
-        registry.watched_by("concepts", None)
+        registry.not_watched_by("concepts", watch)
         watching[0] = True
         assert not registry.tables_trusted(("concepts",))
         key = ScanCacheKey("concepts", "user-1")
         assert registry.scan_cache.put(key, _ROWS, token=registry.scan_cache.begin_read(("concepts",))) is False
+
+    def test_a_table_two_followers_watch_is_trusted_only_while_both_watches_run(self) -> None:
+        """a second follower must not hide the first one's failed watch, nor its withdrawal the second's."""
+        from threetears.core.collections.registry import CollectionRegistry
+
+        registry = CollectionRegistry()
+        registry.configure(l1_backend=SQLiteBackend())
+        registry.follow_generation("concepts")
+        first, second = [True], [True]
+
+        def first_watch() -> bool:
+            return first[0]
+
+        def second_watch() -> bool:
+            return second[0]
+
+        registry.watched_by("concepts", first_watch)
+        registry.watched_by("concepts", second_watch)
+        assert registry.tables_trusted(("concepts",))
+        first[0] = False
+        assert not registry.tables_trusted(("concepts",)), "the first follower's watch is down"
+        first[0] = True
+        second[0] = False
+        assert not registry.tables_trusted(("concepts",)), "the second follower's watch is down"
+        second[0] = True
+        registry.not_watched_by("concepts", second_watch)
+        assert registry.tables_trusted(("concepts",)), "the first follower still watches"
+        first[0] = False
+        assert not registry.tables_trusted(("concepts",))
+        registry.not_watched_by("concepts", first_watch)
+        first[0] = True
+        assert not registry.tables_trusted(("concepts",)), "nobody watches it now"
 
 
 class TestDisabled:

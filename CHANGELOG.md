@@ -42,8 +42,11 @@ see "What Must Already Be Deployed Everywhere" in the note.
 - **Changed, breaking:** `ScanCache` has no TTL (`DEFAULT_SCAN_TTL_SECONDS`, `ttl_seconds=`, the
   `now_monotonic=` of `get` / `put` are gone): it stores and serves an entry only while every table
   it depends on is followed with its watch running (`trusted=`, which the registry supplies from
-  the new `CollectionRegistry.watched_by` / `tables_trusted`). A `ScanCache` built without
-  `trusted=` caches nothing.
+  the new `CollectionRegistry.watched_by` / `not_watched_by` / `tables_trusted`; every follower of
+  a table is tracked, and the table is trusted only while all of them are watching). A `ScanCache`
+  built without `trusted=` caches nothing.
+- **Changed:** `announce_unheard_writes` fails (`GenerationUnavailableError`, after attempting every
+  table) when an advance returns no generation, as it does when an advance raises.
 - **Switched on:** `concepts`, `playbook_entries` (`threetears.agent.knowledge`), `datasources` and
   `datasource_tables` (`threetears.datasources`). A process caching knowledge scans follows them
   beside the access tables: `generation_follow.follow_tables(registry, reader,

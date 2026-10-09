@@ -95,7 +95,7 @@ class GenerationSource(Protocol):
         ...
 
 
-async def announce_unheard_writes(source: GenerationSource, tables: Iterable[str]) -> dict[str, str | None]:
+async def announce_unheard_writes(source: GenerationSource, tables: Iterable[str]) -> dict[str, str]:
     """advance each table once for writes that no collection made and no row broadcast names.
 
     For a writer that changes rows it cannot list -- a schema migration, a restore, a bulk repair
@@ -112,16 +112,24 @@ async def announce_unheard_writes(source: GenerationSource, tables: Iterable[str
     :param tables: the tables written; each is advanced once
     :ptype tables: Iterable[str]
     :return: each table's token, as :meth:`GenerationSource.advance` returned it
-    :rtype: dict[str, str | None]
-    :raises GenerationUnavailableError: when any table could not be advanced, naming each
+    :rtype: dict[str, str]
+    :raises GenerationUnavailableError: when any table could not be advanced, or its advance returned
+        no generation, naming each
     """
-    tokens: dict[str, str | None] = {}
+    tokens: dict[str, str] = {}
     failed: dict[str, str] = {}
     for table in sorted(set(tables)):
         try:
-            tokens[table] = await source.advance(table)
+            token = await source.advance(table)
         except GenerationUnavailableError as exc:
             failed[table] = str(exc)
+            continue
+        if not isinstance(token, str) or not token:
+            # a source that does not say what it wrote may have moved nothing, and an announcement
+            # that reached no follower leaves every one serving the old rows: a failure
+            failed[table] = f"the source advanced {table} without returning a generation"
+            continue
+        tokens[table] = token
     if failed:
         raise GenerationUnavailableError(
             "writes no collection announced could not be put on the epoch system; followers keep what "
