@@ -71,7 +71,7 @@ from typing import TYPE_CHECKING, Any, TypeIs, get_args
 from pydantic import BaseModel, Field, ValidationError
 
 from threetears.evals.analysis import viz_refs
-from threetears.evals.analysis.arms import arm_names, writer_arms
+from threetears.evals.analysis.arms import arm_names, contradicted_arms, writer_arms
 from threetears.evals.analysis.bundle import (
     AnalysisContextBundle,
     FamilyComparison,
@@ -802,10 +802,11 @@ def _resolved_analysis(
         The stored analysis and the insights it mints.
 
     Raises:
-        SoundnessRefusal: A cell, reading or position points nowhere, or a decision adopts an arm no
-            reading separated from the control (repaired once).
+        SoundnessRefusal: A cell, reading or position points nowhere, one arm is both adopted and
+            rejected, or a decision adopts an arm no reading separated from the control (repaired once).
     """
     document = _with_cell_refs(document, surface)
+    _reject_contradicted_arms(document, bundle)
     _reject_unseparated_adoptions(document, bundle)
     document = render_prose_figures(document, surface)
     resolutions = [
@@ -920,6 +921,34 @@ def _reject_mismatched_question_answers(document: AuthoredAnalysis, bundle: Anal
                 else "; it declares none, so `questions` is empty"
             )
         )
+
+
+def _reject_contradicted_arms(document: AuthoredAnalysis, bundle: AnalysisContextBundle) -> None:
+    """Refuse an analysis in which one decision adopts an arm and another rejects it.
+
+    The arm table reads each verdict off the cells a decision names, so a memo adopting and rejecting
+    one arm states a winner its own decisions also rule out. That is a defect in the memo's structure,
+    not a reading of its prose: it is found from dispositions and cell variants alone
+    (:func:`~threetears.evals.analysis.arms.contradicted_arms`), and refused through the repair round
+    like any other. Runs after cells are translated from aliases, so the refusal names a full ref,
+    which the repair round renders back into the writer's alias.
+
+    Raises:
+        SoundnessRefusal: Some arm is named by an ``adopted`` and a ``rejected`` decision.
+    """
+    contradicted = contradicted_arms(document.decisions)
+    if not contradicted:
+        return
+    names = arm_names(bundle.variant_index)
+    variant, adopting, rejecting = contradicted[0]
+    cell = next(c for c in document.decisions[adopting].cells if variant_of_cell_ref(c) == variant)
+    arm = f"the arm at cell {cell}" + (f" ({names[variant]})" if variant in names else "")
+    more = f" ({len(contradicted) - 1} other arm(s) likewise)" if len(contradicted) > 1 else ""
+    raise SoundnessRefusal(
+        f"decisions[{adopting}] adopts {arm} and decisions[{rejecting}] rejects it{more}; one arm takes one "
+        "verdict, so keep the decision the findings support and drop or re-scope the other — or, if the "
+        "evidence settles neither, mark it `deferred`"
+    )
 
 
 def _reject_unseparated_adoptions(document: AuthoredAnalysis, bundle: AnalysisContextBundle) -> None:

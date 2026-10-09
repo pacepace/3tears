@@ -215,6 +215,64 @@ class TestAnAdoptionNoReadingSeparatedIsRefused:
         assert _status(analysis, bundle, TOYHOST_WIDE) == "unresolved"
 
 
+def _contradicting_memo(bundle: AnalysisContextBundle, cells: list[str], *, then_reject: bool = True) -> str:
+    """The toy memo deciding twice: adopt ``cells``, then reject them (or, without ``then_reject``, defer them)."""
+    payload = memo_payload(bundle)
+    adopt = {
+        "proposal": "Use this chunk width in the extraction pipeline.",
+        "disposition": "adopted",
+        "cells": cells,
+        "confidence": "medium",
+        "rests_on": [0],
+        "revisit_when": "",
+    }
+    second = {
+        "proposal": "Keep this chunk width out of the extraction pipeline.",
+        "disposition": "rejected" if then_reject else "deferred",
+        "cells": cells,
+        "confidence": "medium",
+        "rests_on": [0],
+        "revisit_when": "" if then_reject else "a run with more documents per width",
+    }
+    payload["decisions"] = [adopt, second]
+    return json.dumps(payload)
+
+
+class TestAnArmAdoptedAndRejectedIsRefused:
+    """One arm under two verdicts is a structural defect in the memo (#669), refused through the repair round."""
+
+    async def test_the_refusal_names_both_decision_positions(self):
+        """The wide width improves on accuracy, so the adoption alone would stand: the contradiction is what is refused."""
+        bundle = _toy_bundle(control=True)
+        with pytest.raises(SoundnessRefusal) as refused:
+            await _generate(bundle, FixturedClient(_contradicting_memo(bundle, [alias_at(bundle, TOYHOST_WIDE)])))
+        message = str(refused.value)
+        assert "decisions[0] adopts the arm at cell" in message
+        assert "and decisions[1] rejects it" in message
+        assert "one arm takes one verdict" in message
+
+    async def test_it_is_read_off_the_arm_not_the_cell_list(self):
+        """Adopting the control while rejecting it is as contradictory as any other arm, needing no separation."""
+        bundle = _toy_bundle(control=True)
+        narrow = alias_at(bundle, TOYHOST_NARROW)
+        with pytest.raises(SoundnessRefusal, match=r"decisions\[0\] adopts .* and decisions\[1\] rejects it"):
+            await _generate(bundle, FixturedClient(_contradicting_memo(bundle, [narrow])))
+
+    async def test_the_repair_round_settles_it_and_the_arm_reads_as_the_winner(self):
+        bundle = _toy_bundle(control=True)
+        wide = alias_at(bundle, TOYHOST_WIDE)
+        client = _MemoSequence(
+            _contradicting_memo(bundle, [wide]), _contradicting_memo(bundle, [wide], then_reject=False)
+        )
+
+        analysis = await _generate(bundle, client)
+
+        assert len(client.calls) == 2
+        refusal = analysis.generation.repaired_refusal
+        assert refusal is not None and f"decisions[0] adopts the arm at cell {wide} " in refusal
+        assert _status(analysis, bundle, TOYHOST_WIDE) == "winner"
+
+
 class TestAnArmNoTestCouldReachHasNoSeparationToAdoptOn:
     """No family, no comparison naming the arm, or only untested ones: nothing separated it, so it is refused."""
 

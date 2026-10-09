@@ -516,10 +516,28 @@ def _arm_blocks(table: ArmTable) -> list[ReportBlock]:
                 TableColumn(key="levers", header="Every lever it ran"),
             ],
             rows=rows,
-            order="winner, then ruled out, then replaced incumbent, then unresolved" if decided else "by arm",
+            order=(
+                "winner, then contradicted, then ruled out, then replaced incumbent, then unresolved"
+                if decided
+                else "by arm"
+            ),
             total_rows=len(rows),
         )
     ]
+    if contradicted := [row for row in table.rows if row.status == "contradicted"]:
+        blocks.append(
+            DisclosureBlock(
+                section="arms",
+                source="arms",
+                text=(
+                    "This analysis both adopts and rejects "
+                    + "; ".join(row.label for row in contradicted)
+                    + ", so neither verdict stands and no winner is shown for "
+                    + ("it" if len(contradicted) == 1 else "them")
+                    + "."
+                ),
+            )
+        )
     if table.unplaced_coordinates:
         blocks.append(
             DisclosureBlock(

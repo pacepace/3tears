@@ -99,6 +99,7 @@ def stands_on_words(analysis: EvalAnalysis, tier: EvidenceTier) -> str:
 ARM_STATUS_WORDS = worded(
     {
         "winner": "winner",
+        "contradicted": "contradicted: one decision adopts it and another rejects it",
         "ruled_out": "ruled out",
         "replaced_incumbent": "replaced incumbent",
         "unresolved": "unresolved",

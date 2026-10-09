@@ -62,6 +62,22 @@ headline, finding, decision or answer to a declared question appears in a code-o
 
 `Report.basis` says which a report is; `REPORT_VERSION` is 5.
 
+## Reading the arm table
+
+An analysis's arm table gives each arm a status, read off the decisions that name its cells:
+
+| Status | What it means |
+|---|---|
+| winner | an adopted decision names it |
+| contradicted | one decision adopts it and another rejects it |
+| ruled out | a rejected decision names it |
+| replaced incumbent | the control, when some other arm won |
+| unresolved | no decision reached a verdict on it; a deferred decision is not a verdict |
+
+The analysis writer is refused when it adopts and rejects one arm, so only an analysis stored before that
+refusal can carry **contradicted**. Neither verdict is shown as standing: the arm is never shown as the
+winner, the control is not shown as replaced on its account, and a disclosure below the table names it.
+
 ## Reading a comparison
 
 The "Contrasts against the control" table (`multiple_comparisons` in the bundle) tests each arm against
