@@ -139,6 +139,13 @@ including a quantity recorded per usage row (`reasoning_tokens`: declare `reason
 run (`p95_total_ms`). For a call cap, report the calls each case used as a host measure and name that. The
 declaration enters no variant key. A lever naming no mechanism reads `unchecked`, never as having taken effect.
 
+A knob your host also records resolved, as a lever of its own (`ResolvesInto(...)` on a kind's overlay field, or
+`resolves_into` on a `Sweepable`), is reported as one lever where the runs show the resolved lever moved only with
+the knob. The resolved lever then has no coverage row and is named in no confound, and the arm is named by the
+knob, with the resolved lever listed in its variant-index entry's `folded`. Where it also moved while the knob was
+held at one level, it is reported as a lever of its own and named as a confound on the knob's row. Where a run did
+not record it, it is named as an `undecided` confound.
+
 A comparison across candidate models can also differ in what the models did while no setting differed. A
 reasoning effort is a word each vendor maps to its own budget, so two models at one effort setting can reason very
 differently. The bundle reads each arm's mean reasoning share (`reasoning_ratio`) into `arm_mechanisms`. Where two

@@ -221,30 +221,49 @@ class Sweepable:
     """
 
     resolves_into: str | None = None
-    """The fixed lever this family's members are WRITTEN INTO, when the host declares one as well.
+    """The fixed lever this declaration's levels are WRITTEN INTO, when the host declares one as well.
 
-    A host can register one change twice without meaning to: once as the member a launch named
-    (``search.max_rounds``) and once as the resolved surface that member was merged into (the
-    subject's whole tool configuration, levelled by content hash). Both are honest levers — the
-    member is what a campaign swept, the surface is what would ship — and both move whenever the
-    member does, so an engine that reads them as two levers reports every single-key arm as having
-    moved two things and every such comparison as confounded by itself.
+    A host can register one change twice without meaning to: once as the knob a launch named
+    (``search.max_rounds``, ``reasoning_effort``) and once as the resolved surface that knob was
+    merged into (the subject's whole tool configuration, its resolved model parameters, levelled by
+    content hash). Both are honest levers — the knob is what a campaign swept, the surface is what
+    would ship — and both move whenever the knob does, so an engine that reads them as two levers
+    reports every single-knob arm as having moved two things and every such comparison as
+    confounded by itself.
 
-    Naming the surface here is what lets the engine tell that apart from a genuine second change:
-    it asks :attr:`read_residual` for the surface with the swept members taken out, and only where
-    those residuals AGREE across a cohort is the surface's movement the members' movement seen
-    again. Where they disagree, something besides the swept knobs changed and the surface stays a
-    lever of its own. Nothing is folded by inference: an unreadable residual folds nothing.
+    Naming the surface here is what lets the engine tell that apart from a genuine second change,
+    and how it tells depends on what declares it:
 
-    Must name a ``lever`` this registry declares that is not itself an open family, and may be
-    named by at most one family — a surface two families write into would need both families'
-    members removed at once, which is a shape no host has and the engine does not guess.
+    * **An open family** has members to take back out, so it asks :attr:`read_residual` for the
+      surface with the swept members removed, and only where those residuals AGREE across a cohort
+      is the surface's movement the members' movement seen again.
+    * **A fixed lever** has no members, and the surface with the knob removed is not something the
+      engine could ask for, so the runs answer instead: the surface folds into the knob where it is
+      constant within each of the knob's levels across the cohort — it moved only where the knob
+      did. Where it differs between runs that held the knob at one level, something else wrote into
+      it. A kind contract's overlay field declares this with the
+      :class:`~threetears.evals.contracts.host.kinds.ResolvesInto` marker, and a map field's marker
+      rides on the map's own lever, whose level is the members a launch set.
+
+    Either way, where the surface moved on its own it stays a lever of its own, and nothing is folded
+    by inference: a residual that cannot be read, or a surface a run did not record (its reader
+    returned ``None``), folds nothing.
+
+    Must name a ``lever`` this registry declares that is not itself an open family, and may be named
+    by at most one declaration — a surface two knobs write into would need both knobs taken out at
+    once, which is a shape no host has and the engine does not guess. Valid on a ``lever`` only, and a
+    fixed lever naming one must carry a coordinate of its own (no :attr:`no_own_coordinate`), because
+    once its surface folds away the arm is named by the knob. A surface a fixed lever names may not
+    itself name one: a chain of fixed levers would fold whichever link its runs happened to agree on,
+    and a cycle would fold both levers out of every report.
     """
 
     read_residual: ResidualReader | None = None
     """Read :attr:`resolves_into`'s surface off a run with the given member names removed.
 
-    Required exactly when :attr:`resolves_into` is set. The engine compares what this returns
+    On an :attr:`open_family` declaration, required exactly when :attr:`resolves_into` is set; on a
+    fixed lever, refused — it has no members to remove, and its surface is folded by what the runs
+    show instead (see :attr:`resolves_into`). The engine compares what this returns
     across a cohort and never inspects it, so any JSON-safe content will do provided two runs
     whose surfaces differ only in the removed members return equal values. ``None`` means the run
     does not carry the surface at all — a run older than the host's capture of it — and is read as
@@ -475,36 +494,45 @@ class SweepableRegistry(HostAttributed):
     def _resolution_defects(self) -> list[str]:
         """Check every :attr:`Sweepable.resolves_into` names a surface a lens could fold.
 
-        Across declarations rather than per declaration, because the surface a family names is
+        Across declarations rather than per declaration, because the surface a knob names is
         another entry in the same set — and a host extending a core adds both halves in one
-        :meth:`extend`, so the union is the only place the pair can be checked.
+        :meth:`extend`, so the union is the only place the pair can be checked. A kind contract's
+        knob is the common case of that: the profile adds the knob to a registry that already holds
+        the host's surface, and only the union can say whether the name it carries is declared.
 
         Returns:
             One sentence per defect; empty when every named surface is sound.
         """
         defects: list[str] = []
         claimed: dict[str, str] = {}
-        for family in self._declarations:
-            surface = family.resolves_into
-            if family.open_family is None or surface is None:
+        for claimant in self._declarations:
+            surface = claimant.resolves_into
+            if surface is None or claimant.role != "lever":
+                # Off a lever, _family_defects has already named the declaration itself as the defect.
                 continue
             target = self._by_declared_name(surface)
             if target is None:
                 defects.append(
-                    f"{family.name!r} resolves into {surface!r}, which is not declared — the engine would fold a "
+                    f"{claimant.name!r} resolves into {surface!r}, which is not declared — the engine would fold a "
                     "lever no run ever resolves, so the defect it exists to remove could never be removed"
                 )
             elif target.role != "lever" or target.open_family is not None:
                 defects.append(
-                    f"{family.name!r} resolves into {surface!r}, which is not a fixed lever — only a fixed lever "
-                    "reaches a contrast as a level of its own, so there is nothing a residual could fold"
+                    f"{claimant.name!r} resolves into {surface!r}, which is not a fixed lever — only a fixed lever "
+                    "reaches a contrast as a level of its own, so there is nothing to fold"
                 )
-            owner = claimed.setdefault(surface, family.name)
-            if owner != family.name:
+            elif claimant.open_family is None and target.resolves_into is not None:
                 defects.append(
-                    f"{surface!r} is named as the resolved surface of both {owner!r} and {family.name!r} — its residual "
-                    "would need both families' members removed at once, and which ones is not something the engine "
-                    "can decide"
+                    f"{claimant.name!r} resolves into {surface!r}, which itself resolves into "
+                    f"{target.resolves_into!r} — a chain of fixed levers would fold whichever link its runs happened "
+                    "to agree on, and a cycle would fold every lever in it out of every report"
+                )
+            owner = claimed.setdefault(surface, claimant.name)
+            if owner != claimant.name:
+                defects.append(
+                    f"{surface!r} is named as the resolved surface of both {owner!r} and {claimant.name!r} — a surface "
+                    "two knobs write into would need both taken out at once to show either one moved it, and which "
+                    "is not something the engine can decide"
                 )
         return defects
 
@@ -630,10 +658,21 @@ class SweepableRegistry(HostAttributed):
                     f"{declared.name!r} declares owns_member and is not an open family — a fixed declaration's "
                     "only member is its own name, so nothing would ever ask the test"
                 )
-            if declared.resolves_into is not None or declared.read_residual is not None:
+            if declared.read_residual is not None:
                 defects.append(
-                    f"{declared.name!r} declares a resolved surface and is not an open family — only a family has "
-                    "members to take back out of one, so the residual would be the surface itself"
+                    f"{declared.name!r} declares read_residual and is not an open family — only a family has "
+                    "members to take back out of a surface, so the residual would be the surface itself; a fixed "
+                    "lever's surface is folded by what the runs show instead"
+                )
+            if declared.resolves_into is not None and declared.role != "lever":
+                defects.append(
+                    f"{declared.name!r} is a {declared.role} and declares resolves_into — only a swept knob is "
+                    "written into a surface, and the rig or a label never is"
+                )
+            if declared.resolves_into is not None and declared.no_own_coordinate is not None:
+                defects.append(
+                    f"{declared.name!r} declares resolves_into and no_own_coordinate — where its surface folds "
+                    "away the arm is named by this lever, and a lever with no coordinate of its own names nothing"
                 )
             return defects
         if (declared.resolves_into is None) != (declared.read_residual is None):
@@ -711,23 +750,28 @@ class SweepableRegistry(HostAttributed):
 
     @property
     def resolution_surfaces(self) -> dict[str, Sweepable]:
-        """Surface lever name → the open family whose members are written into it.
+        """Surface lever name → the declaration whose levels are written into it.
 
         The set a lens consults before counting a surface as a lever that moved on its own — see
-        :attr:`Sweepable.resolves_into`. Empty for a host that declares none, which is every host
-        whose families do not also register what they resolve into.
+        :attr:`Sweepable.resolves_into`. The declaration is an open family (folded by its
+        :attr:`Sweepable.read_residual`) or a fixed lever (folded by whether the surface held one
+        level within each of the lever's), and its ``open_family`` says which. Empty for a host
+        that declares none, which is every host whose knobs do not also register what they resolve
+        into.
         """
         return {
-            family.resolves_into: family
-            for family in self.open_families
-            if family.resolves_into is not None and family.read_residual is not None
+            declared.resolves_into: declared
+            for declared in self._declarations
+            if declared.resolves_into is not None
+            and declared.role == "lever"
+            and (declared.open_family is None or declared.read_residual is not None)
         }
 
     def read_residual(self, surface: str, run: EvalRun, results: Sequence[EvalResult], removed: frozenset[str]) -> Any:
         """Read ``surface`` off one run with the ``removed`` member names taken out.
 
         Args:
-            surface: A name in :attr:`resolution_surfaces`.
+            surface: A name in :attr:`resolution_surfaces` that an open family resolves into.
             run: The run to read.
             results: That run's results.
             removed: Member names of the family that resolves into ``surface``.
@@ -737,7 +781,8 @@ class SweepableRegistry(HostAttributed):
             ``None`` when this run does not carry the surface.
 
         Raises:
-            KeyError: No family resolves into ``surface``.
+            KeyError: No open family resolves into ``surface`` — including a surface a fixed lever
+                resolves into, which has no members to take out and so no residual.
         """
         family = self.resolution_surfaces.get(surface)
         if family is None or family.read_residual is None:

@@ -111,6 +111,31 @@ What a kind adds to the engine's own fields is two Pydantic models you name once
 - Its **spec** is what a template of that kind declares (`kind_spec`), such as a label set or a table
   setup: refused by field at authoring, then validated again and frozen onto each run.
 
+An overlay field takes markers beside its type, in `Annotated[...]`: `Ordinal()` ranks a `Literal` or `Enum`
+in declaration order, `Interval(unit=...)` names a number's unit, `ActsOn(measure)` names the measure the knob
+is supposed to move, and `ResolvesInto(lever)` names the host lever the knob is written into.
+
+`ResolvesInto` is for a knob whose effect your host also records, resolved, as a lever of its own: a
+`reasoning_effort` overlay and an `llm_parameters` lever that hashes the model parameters it resolved into, say,
+or a `tool_configs` map and the resolved tool configuration. Without it the two move together, so every sweep of
+the knob reports two moved levers, each confounded by the other. With
+`Annotated[Literal["low", "high"], ResolvesInto("llm_parameters")]`, the surface folds into the knob wherever the
+compared runs show it moved only where the knob did: every level of the knob carries one level of the surface.
+Then it gets no coverage row or confound of its own, the contrast moved one lever, and the arm is named by the
+knob (the surface is listed in the variant index's `folded` and stays in the key). Where runs that held the knob
+at one level carried different surfaces, something else wrote into it, and it stays a lever and a confound. A run
+whose surface reader returned `None` folds nothing. On a map field the marker rides on the map's own lever, whose
+level is the members a launch set.
+
+The fold has one blind spot. A comparison with one run per level satisfies it trivially, so a second change made
+in exactly the runs where the knob changed folds along with the knob. Run a level of the knob more than once,
+under the other conditions you suspect, to see whether something else moved the surface.
+
+The lever named must be a fixed `lever` your host declares, not an open family, and not one another knob or
+family already names. The profile refuses anything else (`RegistrationError`), and a field marked twice is
+refused where the kind is declared (`KindContractError`). The marker moves no variant key. A host's own fixed
+lever declares the same thing as `Sweepable(resolves_into=...)`.
+
 You register neither anywhere else: the profile adds the contract's levers to its `sweepables`, and the
 engine resolves every run's level of them — with its `candidate_model` and its `candidate_kind` — into the
 variant key. Your profile's `host_sweepables` (the shared core extended with your own levers) and its

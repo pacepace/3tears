@@ -6,6 +6,28 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: an overlay knob and the host lever it is written into read as one lever
+
+- **`ResolvesInto(lever)`** (`threetears.evals.contracts.host`), a marker for a kind contract's overlay field beside
+  `Ordinal`, `Interval` and `ActsOn`: the fixed host lever the knob is written into. A `reasoning_effort` overlay
+  and the host's `llm_parameters` lever (a hash of the resolved model parameters) moved in lockstep, so every effort
+  sweep reported two moved levers, each confounding the other. With the marker, the surface folds into the knob
+  wherever the compared runs show it constant within each of the knob's levels. It then gets no coverage row, no
+  confound, no scope divergence and no `moved` entry of its own, and is listed in the arm's `folded` (the knob names
+  the arm, `swept` stays empty). Where runs holding the knob at one level carried different surfaces, it stays a
+  lever and a confound, with a catalog reason saying so; a run whose surface reads `None` makes it an `undecided`
+  confound. A cohort with one run per level satisfies the rule trivially, so a second change made exactly where the
+  knob changed folds with it. On a map field the marker rides on the map's own lever, whose level is the members a
+  launch set; the map still folds into its members by the family's residual, as before.
+- **`Sweepable.resolves_into` is now valid on a fixed `lever`** (folded by the rule above) as well as on an open
+  family (folded by its `read_residual`, still required there). Refused (`RegistrationError`): a surface that is not
+  declared, not a fixed lever, or already named by another knob or family; `resolves_into` on an apparatus or label,
+  or on a lever with `no_own_coordinate`; `read_residual` on a fixed lever; and a fixed lever naming a surface that
+  itself names one (a chain or cycle). `ResolvesInto` twice on one field is refused where the kind is declared
+  (`KindContractError`). The marker enters no variant key.
+- **`SweepableRegistry.resolution_surfaces`** maps each surface to the declaration written into it, a fixed lever
+  or an open family; `read_residual` still answers only for a family's surface.
+
 ### 3tears-evals: a swept lever is checked against the mechanism it acts on; a divergent reasoning share qualifies a model comparison (#577, #576)
 
 - **`Sweepable.acts_on`** (optional), and **`ActsOn(measure)`** for a kind contract's overlay field (beside
