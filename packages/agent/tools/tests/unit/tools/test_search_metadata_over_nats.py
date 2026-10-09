@@ -96,6 +96,10 @@ class _StubSearchTransport:
 class _FakeNats:
     """captures what the pod published, as bytes wherever the transport carries bytes."""
 
+    #: the broker's advertised limit, as ``NatsClient.max_payload`` reports it; ``None`` (unknown) leaves the
+    #: tool server's size guard off, as on a client that has not connected
+    max_payload: int | None = None
+
     def __init__(self) -> None:
         self.replies: list[tuple[str, Any]] = []
 

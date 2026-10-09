@@ -1861,6 +1861,11 @@ def _tool_pod(
         # authority: the hub verifies the forwarded token names a tool pod and moves a layer's tile
         # version only when the pod owns the provider namespace the layer is registered under.
         str(Subjects.hub_geo_layers_reloaded()),
+        # purging the keys this pod retired from its own scope of the shared collections bucket: a
+        # KV delete leaves a marker a filtered stream purge would not, and the purge is the hub's
+        # verb. The request names keys relative to the pod's scope and the hub composes each subject
+        # from the VERIFIED token, so this buys reach and never authority over another pod's keys.
+        str(Subjects.hub_collection_keys_purge()),
         # Path-2 consume: a consuming tool resolves an object id -> its stored
         # key (forwarding the invoking agent's identity token; the hub verifies
         # + tenant-scopes). NOT hub_object_commit -- commit is agent-side.
@@ -2159,6 +2164,8 @@ def _hub(
         # a tool pod's own Object Store: responds to its asks to declare the bucket and retire objects
         str(Subjects.hub_object_store_declare()),
         str(Subjects.hub_object_store_retire()),
+        # a tool pod's retired collection keys: responds to its asks to purge them from its own scope
+        str(Subjects.hub_collection_keys_purge()),
         str(Subjects.hub_channel_installs()),
         str(Subjects.namespace_discover()),
         str(Subjects.agent_register()),

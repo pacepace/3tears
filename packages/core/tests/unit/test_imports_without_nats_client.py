@@ -28,3 +28,10 @@ def test_derived_collection_imports_without_the_nats_client() -> None:
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "imported"
+
+
+def test_versioned_answers_import_without_the_nats_client() -> None:
+    code = BLOCK_CLIENT + "import threetears.core.collections.versioned_answers\nprint('imported')"
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "imported"
