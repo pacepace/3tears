@@ -185,7 +185,7 @@ class TestTheToyReportsContent:
         _, _, report = toy
         (decision,) = [block for block in report.blocks if isinstance(block, TextBlock) and block.role == "decision"]
         assert decision.rests_on == [0]
-        assert ("Disposition", "adopted") in [(fact.name, fact.value) for fact in decision.facts]
+        assert ("Disposition", "deferred") in [(fact.name, fact.value) for fact in decision.facts]
 
     async def test_the_methods_appendix_says_how_the_analysis_was_generated(
         self, toy: tuple[Any, EvalAnalysis, Report]
