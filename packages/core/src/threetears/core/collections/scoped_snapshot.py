@@ -47,10 +47,20 @@ drops scopes L3 no longer holds. A rebuild reads L3 only while no write is in pr
 it read only when no write committed meanwhile (``settled``, the writer's seqlock).
 
 **Retirement.** Chunks are deleted by the bucket's declarer, since a delete is a purge no pod holds
-(``retire``), in batches the declarer accepts, and only as one rule allows (``_Sweeper.deletable``), judged
-against the scope's pointer as KV holds it: never a chunk the pointer names or one above its epoch
-(a writer's stage), always a superseded one below it, and an unnamed one at its epoch or of a scope
-with no pointer only once it is older than ``stray_age``. A reader that lost the race to a retired
+(``retire``), in batches the declarer accepts, and only as one rule allows (``_Sweeper.deletable``),
+judged by state as KV holds it when the sweep runs, never by age: a chunk its scope's pointer names
+is served, and one at an epoch a live write claims is being written or waits for its pointer
+(``{name}.w.{epoch}.{replica}``, held by the writer from before its first chunk until a pointer
+names them, and renewed while it lives: a writer that dies stops renewing, and its claim lapses);
+every other chunk serves nothing and goes. A scope's older chunks go as soon as its pointer moves,
+whichever path moved it, so a run that fails part way leaves nothing superseded behind for the
+scopes it did move. A write that will not commit gives its stages back
+(:meth:`ScopedSnapshot.discard_staged`); a writer taking over a dead one may name its epoch
+(:meth:`ScopedSnapshot.discard_epoch`). A store found full is swept by the same rule and the write
+tried once more: it recovers when what fills it is chunks no pointer serves and no live write
+claims; pieces of a torn write wait for the declarer's orphan purge. No pointer is ever moved onto a
+chunk that is not there: a staged publish and a publish that found its chunk already written check
+it first, and leave the scope to the catch-up rather than move. A reader that lost the race to a retired
 chunk reads the scope's pointer again and fetches its current chunks; a scope whose chunks still
 cannot be read is shown behind, retried at the recheck, and rebuilt from L3 after three failures.
 
@@ -74,7 +84,7 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final
 
-from threetears.nats.object_store_requests import MAX_RETIRED_OBJECTS
+from threetears.nats.object_store_requests import MAX_RETIRED_OBJECTS, WRITE_CLAIM_SEGMENT
 from threetears.observe import get_logger
 
 from threetears.core.sql_fragments import quote_identifier
@@ -85,7 +95,7 @@ if TYPE_CHECKING:
     from threetears.core.backends.protocol import L3Reader
     from threetears.nats.client import NatsClient
     from threetears.nats.kv import NatsKvBucket
-    from threetears.nats.object_store import NatsObjectStore, ObjectInfo
+    from threetears.nats.object_store import NatsObjectStore
 
 __all__ = [
     "ScopeChange",
@@ -131,9 +141,6 @@ _HISTORY: Final = 20
 #: how many passes in a row a scope's chunks may fail to apply before it is rebuilt from L3
 _BEHIND_REBUILD_AFTER: Final = 3
 
-#: how old a chunk no pointer can vouch for must be before it may be deleted: one a writer staged for a
-#: scope with no pointer yet, or a rebuild wrote at its scope's epoch under other columns, is that young
-_DEFAULT_STRAY_AGE: Final = timedelta(hours=1)
 
 #: the options :func:`open_tool_pod_snapshot` wires itself, refused when a caller gives them
 _POD_WIRED_OPTIONS: Final = frozenset({"store", "pointers", "ensure_buckets", "retire"})
@@ -560,8 +567,8 @@ class _Layout:
     """every key and object name of one snapshot, and how each is read back: the one place each
     grammar lives, so a writer and the sweep that judges what it wrote can never disagree.
 
-    Keys: ``{name}.index``, ``{name}.rebuild`` (the claim) and ``{name}.s.{token}`` (a scope's
-    pointer). Objects: ``{name}/{token}/{epoch}/{table}.{column digest}``. ``token`` is
+    Keys: ``{name}.index``, ``{name}.rebuild`` (the claim), ``{name}.s.{token}`` (a scope's
+    pointer) and ``{name}.w.{epoch}.{replica}`` (a replica's write claim on an epoch). Objects: ``{name}/{token}/{epoch}/{table}.{column digest}``. ``token`` is
     :func:`scope_token` of the scope.
     """
 
@@ -582,6 +589,21 @@ class _Layout:
     def claim_key(self) -> str:
         """the rebuild claim's key."""
         return f"{self.name}.rebuild"
+
+    @property
+    def write_claims_prefix(self) -> str:
+        """the prefix of every write claim's key; the declarer's orphan sweep reads the same grammar
+        (:func:`~threetears.nats.object_store_requests.is_write_claim_key`)."""
+        return f"{self.name}.{WRITE_CLAIM_SEGMENT}."
+
+    def write_claim_key(self, epoch: int, owner: str) -> str:
+        """the key of one replica's claim on an epoch it writes chunks at."""
+        return f"{self.write_claims_prefix}{epoch}.{owner}"
+
+    def epoch_of_write_claim(self, key: str) -> int | None:
+        """the epoch a write claim's key names; ``None`` for any other key."""
+        head = key[len(self.write_claims_prefix) :].split(".", 1)[0] if key.startswith(self.write_claims_prefix) else ""
+        return int(head) if head.isdigit() else None
 
     def pointer_key(self, scope: str) -> str:
         """a scope's pointer key."""
@@ -629,11 +651,145 @@ class _Layout:
         return self.epoch_in_token(scope_token(scope), object_name)
 
 
-class _Sweeper:
-    """retires the chunks the one deletion rule (:meth:`deletable`) allows, each judged against its
-    scope's pointer as KV holds it, through the declarer's retire, in batches it accepts.
+class _WriteClaims:
+    """the epochs this replica is writing chunks at, each claimed in KV while it writes and until a
+    pointer names what it wrote (or it gives them back): the state the sweep spares them by.
 
-    Apart from the replica so the rule and both sweeps can be read, and changed, on their own: they
+    One KV entry per epoch held, ``{name}.w.{epoch}.{replica}``, created with a lifetime and renewed
+    at a third of it while held. A replica that dies stops renewing, so its entries lapse and stop
+    protecting what it wrote: that is a lost lease, a fact about the writer, never an age of the
+    data. Held by count, so a write's stages and a publish at the same epoch share one entry.
+    """
+
+    def __init__(self, bucket: NatsKvBucket, layout: _Layout, *, owner: bytes, ttl: timedelta) -> None:
+        self._bucket = bucket
+        self._layout = layout
+        self._owner = owner
+        self._ttl = ttl
+        # epoch -> (holds, the entry's revision)
+        self._held: dict[int, tuple[int, int]] = {}
+        self._renewal: asyncio.Task[None] | None = None
+        self._lock = asyncio.Lock()
+
+    def _key(self, epoch: int) -> str:
+        return self._layout.write_claim_key(epoch, self._owner.decode("utf-8"))
+
+    async def hold(self, epoch: int) -> None:
+        """claim ``epoch`` (or count one more hold on it), before a chunk is written at it.
+
+        :param epoch: the epoch
+        :ptype epoch: int
+        :return: nothing
+        :rtype: None
+        :raises RuntimeError: when the claim cannot be written: writing chunks no claim protects
+            would let a sweep take them
+        """
+        async with self._lock:
+            held = self._held.get(epoch)
+            if held is not None:
+                self._held[epoch] = (held[0] + 1, held[1])
+                return
+            key = self._key(epoch)
+            revision = await self._bucket.create(key=key, value=self._owner, ttl=self._ttl)
+            if revision is None:
+                # this replica's own key from an earlier hold that was lost: take it over
+                entry = await self._bucket.get_entry(key=key)
+                revision = (
+                    None
+                    if entry is None
+                    else await self._bucket.update(key=key, value=self._owner, revision=entry[1], ttl=self._ttl)
+                )
+            if revision is None:
+                raise RuntimeError(f"the write claim {key} could not be taken; no chunk is written without it")
+            self._held[epoch] = (1, revision)
+            if self._renewal is None or self._renewal.done():
+                self._renewal = asyncio.create_task(self._renew(), name=f"snapshot-write-claims:{self._layout.name}")
+
+    async def release(self, epoch: int) -> None:
+        """drop one hold on ``epoch``; the last one deletes its claim. Never raises.
+
+        :param epoch: the epoch
+        :ptype epoch: int
+        :return: nothing
+        :rtype: None
+        """
+        async with self._lock:
+            held = self._held.get(epoch)
+            if held is None:
+                return
+            if held[0] > 1:
+                self._held[epoch] = (held[0] - 1, held[1])
+                return
+            del self._held[epoch]
+            try:
+                await self._bucket.delete(key=self._key(epoch), revision=held[1])
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- a claim left behind lapses once nothing renews it; logged
+                log.warning("releasing write claim %s failed; it lapses unrenewed: %s", self._key(epoch), exc)
+
+    async def _renew(self) -> None:
+        """renew every held claim at a third of its lifetime until none is held.
+
+        :return: nothing
+        :rtype: None
+        """
+        interval = max(self._ttl.total_seconds() / 3, 0.2)
+        while self._held:
+            await asyncio.sleep(interval)
+            async with self._lock:
+                for epoch, (holds, revision) in list(self._held.items()):
+                    try:
+                        renewed = await self._bucket.update(
+                            key=self._key(epoch), value=self._owner, revision=revision, ttl=self._ttl
+                        )
+                    except Exception as exc:  # prawduct:allow prawduct/broad-except -- tried again at the next interval; a claim not renewed in its lifetime lapses, said so
+                        log.warning("renewing write claim %s failed; trying again: %s", self._key(epoch), exc)
+                        continue
+                    if renewed is None:
+                        # gone with its bucket (NATS lost it): this replica still writes, so it takes it again
+                        renewed = await self._retake(epoch)
+                    if renewed is None:
+                        log.error(
+                            "the write claim %s was lost and could not be taken again: what this replica "
+                            "writes at epoch %d is no longer protected from a sweep",
+                            self._key(epoch),
+                            epoch,
+                        )
+                    else:
+                        self._held[epoch] = (holds, renewed)
+
+    async def _retake(self, epoch: int) -> int | None:
+        """take a held claim again after its entry was lost; never raises.
+
+        :param epoch: the epoch
+        :ptype epoch: int
+        :return: the new revision, or None when it could not be taken
+        :rtype: int | None
+        """
+        revision: int | None = None
+        try:
+            revision = await self._bucket.create(key=self._key(epoch), value=self._owner, ttl=self._ttl)
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- tried again at the next renewal; logged
+            log.warning("taking write claim %s again failed: %s", self._key(epoch), exc)
+        return revision
+
+    async def stop(self) -> None:
+        """stop renewing; the claims lapse. Never raises.
+
+        :return: nothing
+        :rtype: None
+        """
+        if self._renewal is not None:
+            self._renewal.cancel()
+            await asyncio.wait({self._renewal})
+            self._renewal = None
+
+
+class _Sweeper:
+    """retires the chunks the one deletion rule (:meth:`deletable`) allows, through the declarer's
+    retire, in batches it accepts. Every deletion path goes through the rule, judged against the
+    pointers and the write claims as KV holds them when the sweep runs.
+
+    Apart from the replica so the rule and the sweeps can be read, and changed, on their own: they
     need the layout, the store, the pointer bucket and the retire, and nothing the replica holds.
     """
 
@@ -646,7 +802,6 @@ class _Sweeper:
         pointers: NatsKvBucket,
         retire: Callable[[list[str]], Awaitable[Any]] | None,
         retire_batch: int,
-        stray_age: timedelta,
     ) -> None:
         self._name = name
         self._layout = layout
@@ -654,22 +809,32 @@ class _Sweeper:
         self._pointers_bucket = pointers
         self._retire = retire
         self._retire_batch = retire_batch
-        self._stray_age = stray_age
 
-    async def retire_names(self, names: list[str]) -> None:
+    @property
+    def retires(self) -> bool:
+        """whether this replica can retire anything (a retire is wired).
+
+        :return: True when it can
+        :rtype: bool
+        """
+        return self._retire is not None
+
+    async def retire_names(self, names: list[str]) -> int:
         """ask the declarer to delete objects, in batches it accepts; never raises.
 
         :param names: the objects
         :ptype names: list[str]
-        :return: nothing
-        :rtype: None
+        :return: how many it asked to delete
+        :rtype: int
         """
+        asked = 0
         if self._retire is None or not names:
-            return
+            return asked
         for start in range(0, len(names), self._retire_batch):
             batch = names[start : start + self._retire_batch]
             try:
                 await self._retire(batch)
+                asked += len(batch)
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- retirement is housekeeping; a failure leaves old chunks for the next retire and must not fail a publish that already succeeded
                 log.warning(
                     "scoped snapshot %s: retiring %d chunks failed; they stay until the next retire: %s",
@@ -678,48 +843,33 @@ class _Sweeper:
                     exc,
                     extra={"extra_data": {"objects": batch}},
                 )
+        return asked
 
-    def deletable(self, info: ObjectInfo, epoch: int | None, reference: _Pointer | None, now: datetime) -> bool:
+    @staticmethod
+    def deletable(name: str, epoch: int | None, reference: _Pointer | None, claimed: frozenset[int]) -> bool:
         """whether one chunk may be deleted: the one rule every retirement goes by.
 
-        Four things decide it, and only the pointer read from KV knows them all -- never this
-        replica's view of the pointers, which lags another replica's publish:
+        Judged by state, never by age:
 
         1. a chunk its scope's pointer names is being served: kept;
-        2. a chunk at an epoch ABOVE its scope's pointer is a writer's stage whose pointer has not
-           moved yet: kept (if that write never commits, the scope's next publish, at a later epoch
-           still, finds it below and retires it);
-        3. a chunk at an epoch BELOW the pointer, and not named by it, is superseded: deleted;
-        4. a chunk at the pointer's own epoch it does not name (a rebuild of that epoch under other
-           columns), or of a scope with no pointer at all (a stage for a new scope), is deleted only
-           once it is older than the stray age. (A removal empties its scope itself, in
-           :meth:`retire_older`: what the deleted pointer served is no keep-reference.)
+        2. a chunk at an epoch a live write claims is being written, or waits for its pointer to move
+           (a writer's stage, a publish or rebuild between its chunk and its pointer): kept;
+        3. any other chunk serves nothing and nothing will point at it: deleted. That is a superseded
+           chunk, a chunk of a removed scope, and the stage of a write that died or gave it back.
 
-        :param info: the chunk, as the store lists it
-        :ptype info: ObjectInfo
+        :param name: the chunk's name
+        :ptype name: str
         :param epoch: its epoch, from its name; ``None`` when the name is not a chunk's
         :ptype epoch: int | None
         :param reference: its scope's pointer, read from KV
         :ptype reference: _Pointer | None
-        :param now: the time the ages are judged at
-        :ptype now: datetime
+        :param claimed: the epochs live write claims hold, read from KV
+        :ptype claimed: frozenset[int]
         :return: whether it may be deleted
         :rtype: bool
         """
-        written = info.mtime if info.mtime is None or info.mtime.tzinfo else info.mtime.replace(tzinfo=UTC)
-        aged = written is not None and now - written > self._stray_age
-        deletable: bool
-        if epoch is None:
-            deletable = aged
-        elif reference is None:
-            deletable = aged
-        elif info.name in reference.objects.values() or epoch > reference.epoch:
-            deletable = False
-        elif epoch < reference.epoch:
-            deletable = True
-        else:
-            deletable = aged
-        return deletable
+        named = reference is not None and name in reference.objects.values()
+        return not named and (epoch is None or epoch not in claimed)
 
     async def pointer_now(self, key: str) -> _Pointer | None:
         """a scope's pointer as KV holds it now, by its key.
@@ -730,71 +880,132 @@ class _Sweeper:
         raw = await self._pointers_bucket.get(key=key)
         return None if raw is None else _Pointer.decode(raw)
 
-    async def retire_older(self, scope: str, epoch: int, *, removed: _Pointer | None = None) -> None:
-        """retire the scope's chunks of epochs before ``epoch`` that may go; never raises.
+    async def claimed_now(self) -> frozenset[int]:
+        """the epochs live write claims hold, as KV holds them now (a lapsed claim is gone).
 
-        Judged by :meth:`deletable` against the scope's pointer in KV. After a removal
-        (``removed``, the pointer it deleted) with no pointer standing again, the scope serves
-        nothing: every chunk at or below the deleted pointer's epoch goes, the ones it named
-        included, since a writer recreating the scope writes at a later epoch. If a recreating
-        writer's pointer already stands, it is the judge, as for any scope.
+        :return: the epochs
+        :rtype: frozenset[int]
+        """
+        keys = await self._pointers_bucket.list_keys(prefix=self._layout.write_claims_prefix)
+        epochs = (self._layout.epoch_of_write_claim(key) for key in keys)
+        return frozenset(epoch for epoch in epochs if epoch is not None)
+
+    async def _sweep(self, names: Sequence[str], *, what: str) -> int:
+        """retire every chunk of ``names`` the rule allows, judged against KV read after the listing.
+
+        The claims and pointers are read AFTER the chunks were listed: a chunk listed was written
+        under a claim taken before it, so the claim is there to be read. Never raises; nothing is
+        deleted when KV cannot be read.
+
+        :param names: the chunks listed
+        :ptype names: Sequence[str]
+        :param what: what is swept, for the log
+        :ptype what: str
+        :return: how many were retired
+        :rtype: int
+        """
+        retired = 0
+        if self._retire is None or not names:
+            return retired
+        try:
+            claimed = await self.claimed_now()
+            by_token: dict[str, list[str]] = {}
+            for name in names:
+                token = self._layout.token_of(name)
+                if token is not None:
+                    by_token.setdefault(token, []).append(name)
+            pointers = {token: await self.pointer_now(self._layout.pointer_key_of_token(token)) for token in by_token}
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- housekeeping, as in retire_names; nothing is deleted on a judgement that could not be made
+            log.warning(
+                "scoped snapshot %s: reading the pointers and write claims for %s failed: %s", self._name, what, exc
+            )
+            return retired
+        stale = [
+            name
+            for token, scope_names in by_token.items()
+            for name in scope_names
+            if self.deletable(name, self._layout.epoch_in_token(token, name), pointers[token], claimed)
+        ]
+        retired = await self.retire_names(stale)
+        if stale:
+            log.info(
+                "scoped snapshot %s: %s: %d chunks no pointer serves and no write claims retired",
+                self._name,
+                what,
+                retired,
+            )
+        return retired
+
+    async def _listed(self, prefix: str, what: str) -> list[str]:
+        """the names of the objects under ``prefix``; none (logged) when they cannot be listed.
+
+        :return: the names
+        :rtype: list[str]
+        """
+        names: list[str] = []
+        try:
+            names = [info.name for info in await self._store.list_objects(prefix=prefix)]
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- housekeeping, as in retire_names; nothing listed is nothing deleted
+            log.warning("scoped snapshot %s: listing chunks for %s failed: %s", self._name, what, exc)
+        return names
+
+    async def retire_older(self, scope: str, epoch: int) -> int:
+        """retire the scope's chunks of epochs before ``epoch`` the rule allows; never raises.
 
         :param scope: the scope
         :ptype scope: str
         :param epoch: retire only chunks below this epoch
         :ptype epoch: int
-        :param removed: the pointer a removal of the scope just deleted
-        :ptype removed: _Pointer | None
-        :return: nothing
-        :rtype: None
+        :return: how many were retired
+        :rtype: int
         """
         if self._retire is None:
-            return
-        try:
-            infos = await self._store.list_objects(prefix=self._layout.object_prefix(scope))
-            reference = await self.pointer_now(self._layout.pointer_key(scope))
-        except Exception as exc:  # prawduct:allow prawduct/broad-except -- housekeeping, as in retire_names
-            log.warning("scoped snapshot %s: listing scope %r's chunks failed: %s", self._name, scope, exc)
-            return
-        # a removed scope with no pointer standing again serves nothing up to the removed epoch
-        emptied = removed.epoch if removed is not None and reference is None else None
-        now = datetime.now(UTC)
-        stale = []
-        for info in infos:
-            chunk_epoch = self._layout.epoch_of(scope, info.name)
-            if chunk_epoch is None or chunk_epoch >= epoch:
-                continue
-            if (emptied is not None and chunk_epoch <= emptied) or self.deletable(info, chunk_epoch, reference, now):
-                stale.append(info.name)
-        await self.retire_names(stale)
+            return 0
+        names = await self._listed(self._layout.object_prefix(scope), f"scope {scope!r}")
+        older = [n for n in names if (e := self._layout.epoch_of(scope, n)) is not None and e < epoch]
+        return await self._sweep(older, what=f"scope {scope!r} below epoch {epoch}")
 
-    async def retire_unreferenced(self) -> None:
-        """retire every chunk :meth:`deletable` allows, each judged by its scope's pointer in KV; never raises.
+    async def retire_names_if_unserved(self, names: Sequence[str], *, what: str) -> int:
+        """retire the named chunks the rule allows (a write that gave them back); never raises.
 
-        :return: nothing
-        :rtype: None
+        :param names: the chunks
+        :ptype names: Sequence[str]
+        :param what: what they are, for the log
+        :ptype what: str
+        :return: how many were retired
+        :rtype: int
+        """
+        return await self._sweep(names, what=what)
+
+    async def retire_epoch(self, epoch: int) -> int:
+        """retire every chunk at ``epoch`` the rule allows; never raises.
+
+        :param epoch: the epoch
+        :ptype epoch: int
+        :return: how many were retired
+        :rtype: int
         """
         if self._retire is None:
-            return
-        try:
-            infos = await self._store.list_objects(prefix=self._layout.objects_prefix)
-            by_token: dict[str, list[ObjectInfo]] = {}
-            for info in infos:
-                token = self._layout.token_of(info.name)
-                if token is not None:
-                    by_token.setdefault(token, []).append(info)
-            pointers = {token: await self.pointer_now(self._layout.pointer_key_of_token(token)) for token in by_token}
-        except Exception as exc:  # prawduct:allow prawduct/broad-except -- housekeeping, as in retire_names
-            log.warning("scoped snapshot %s: listing chunks failed: %s", self._name, exc)
-            return
-        now = datetime.now(UTC)
-        stale = []
-        for token, scope_infos in by_token.items():
-            for info in scope_infos:
-                epoch = self._layout.epoch_in_token(token, info.name)
-                if self.deletable(info, epoch, pointers[token], now):
-                    stale.append(info.name)
-        await self.retire_names(stale)
+            return 0
+        names = await self._listed(self._layout.objects_prefix, f"epoch {epoch}")
+        at = [
+            n
+            for n in names
+            if (t := self._layout.token_of(n)) is not None and self._layout.epoch_in_token(t, n) == epoch
+        ]
+        return await self._sweep(at, what=f"epoch {epoch}")
+
+    async def retire_unreferenced(self) -> int:
+        """retire every chunk the rule allows, across the store; never raises.
+
+        :return: how many were retired
+        :rtype: int
+        """
+        if self._retire is None:
+            return 0
+        return await self._sweep(
+            await self._listed(self._layout.objects_prefix, "the whole store"), what="the whole store"
+        )
 
 
 class ScopedSnapshot:
@@ -827,15 +1038,13 @@ class ScopedSnapshot:
     :ptype l2_concurrency: int
     :param l3_concurrency: scope reads on L3 at once during a rebuild
     :ptype l3_concurrency: int
-    :param claim_ttl: how long a rebuild's claim lasts if its holder dies; renewed while held
+    :param claim_ttl: how long a rebuild's claim, or a write claim, lasts once its holder stops renewing
+        it (it died); renewed while held
     :ptype claim_ttl: timedelta
     :param recheck: how often a waiting replica looks again
     :ptype recheck: timedelta
     :param pointer_watch_heartbeat: the pointer watch's heartbeat; a lost consumer is replaced after three
     :ptype pointer_watch_heartbeat: timedelta
-    :param stray_age: how old a chunk no pointer vouches for must be before it is deleted (a stage for
-        a scope with no pointer yet, or a same-epoch chunk under other columns); above any write's length
-    :ptype stray_age: timedelta
     :raises ValueError: when the name is outside its grammar or names no table
     """
 
@@ -858,7 +1067,6 @@ class ScopedSnapshot:
         claim_ttl: timedelta = _DEFAULT_CLAIM_TTL,
         recheck: timedelta = _DEFAULT_RECHECK,
         pointer_watch_heartbeat: timedelta = timedelta(seconds=5),
-        stray_age: timedelta = _DEFAULT_STRAY_AGE,
     ) -> None:
         if not name or any(ch not in _NAME_GRAMMAR for ch in name):
             raise ValueError(f"snapshot name {name!r} must be letters, digits, '-' and '_'")
@@ -878,7 +1086,6 @@ class ScopedSnapshot:
         self._claim_ttl = claim_ttl
         self._recheck = recheck
         self._heartbeat = pointer_watch_heartbeat
-        self._stray_age = stray_age
         self._schema = {t.name: backend.schema_digest(t.name) for t in self._tables}
         self._layout = _Layout(name, self._schema)
         self._sweeper = _Sweeper(
@@ -888,9 +1095,9 @@ class ScopedSnapshot:
             pointers=pointers,
             retire=retire,
             retire_batch=max(1, min(retire_batch, MAX_RETIRED_OBJECTS)),
-            stray_age=stray_age,
         )
         self._replica = uuid.uuid7().hex.encode("utf-8")
+        self._write_claims = _WriteClaims(pointers, self._layout, owner=self._replica, ttl=claim_ttl)
         # what the pointer bucket says, as the watch last delivered it
         self._seen: dict[str, _Pointer] = {}
         self._index: frozenset[str] | None = None
@@ -932,10 +1139,6 @@ class ScopedSnapshot:
         self._rows: Mapping[str, Mapping[str, int]] = _updated({t.name: _updated({}) for t in self._tables})
         self._tasks: list[asyncio.Task[None]] = []
         self._listeners: list[Callable[[], None]] = []
-
-    # ------------------------------------------------------------------
-    # keys and names: the one pattern for each
-    # ------------------------------------------------------------------
 
     # ------------------------------------------------------------------
     # status
@@ -1292,6 +1495,7 @@ class ScopedSnapshot:
             # waited, not awaited: see _Claim.release
             await asyncio.wait(self._tasks)
         self._tasks = []
+        await self._write_claims.stop()
 
     async def _watch(self) -> None:
         """follow the pointer bucket and wake the worker on every change; say so loudly if it ends.
@@ -1837,29 +2041,51 @@ class ScopedSnapshot:
                 for t in self._tables
             ]
             await self._commit(local, [scope], epochs={scope: epoch})
+            # the epoch is claimed from before its first chunk is written until the pointer names
+            # them, so no sweep takes a chunk in between
+            await self._write_claims.hold(epoch)
             try:
-                objects: dict[str, str] = {}
-                counts: dict[str, int] = {}
-                for table in self._tables:
-                    arrow = await asyncio.to_thread(
-                        self._backend.export_partition, table.name, table.scope_column, scope, order_by=table.key
+                try:
+                    objects: dict[str, str] = {}
+                    counts: dict[str, int] = {}
+                    reused: list[str] = []
+                    for table in self._tables:
+                        arrow = await asyncio.to_thread(
+                            self._backend.export_partition, table.name, table.scope_column, scope, order_by=table.key
+                        )
+                        objects[table.name] = await self._put_chunk(scope, epoch, table, arrow, reused=reused)
+                        counts[table.name] = arrow.num_rows
+                    pointer = _Pointer(scope=scope, epoch=epoch, objects=objects, rows=counts, schema=self._schema)
+                    self._applied = _updated(self._applied, {scope: pointer})
+                finally:
+                    # after `_applied` moves, as every other commit path does, so a listener reading
+                    # applied_epoch sees the epoch of what it reads; on a failed chunk write, still told
+                    self._notify()
+                # a chunk found already written was judged by a sweep that may have read the claims
+                # before this one was taken: it must still be there before a pointer names it
+                if reused and not await self._exist(reused):
+                    raise RuntimeError(
+                        f"scope {scope!r}: a chunk of epoch {epoch} it found written was deleted before its pointer "
+                        f"moved ({reused}); no pointer is moved onto a missing chunk"
                     )
-                    objects[table.name] = await self._put_chunk(scope, epoch, table, arrow)
-                    counts[table.name] = arrow.num_rows
-                pointer = _Pointer(scope=scope, epoch=epoch, objects=objects, rows=counts, schema=self._schema)
-                self._applied = _updated(self._applied, {scope: pointer})
+                # the change recorded is this replica's own: a racing writer's later pointer, or a fresh
+                # one of other columns it yields to, is not what this L1 holds
+                await self._move_pointer(pointer)
             finally:
-                # after `_applied` moves, as every other commit path does, so a listener reading
-                # applied_epoch sees the epoch of what it reads; on a failed chunk write, still told
-                self._notify()
-            # the change recorded is this replica's own: a racing writer's later pointer, or a fresh
-            # one of other columns it yields to, is not what this L1 holds
-            await self._move_pointer(pointer)
+                await self._write_claims.release(epoch)
             result = pointer
         return result
 
-    async def _put_chunk(self, scope: str, epoch: int, table: SnapshotTable, arrow: Any) -> str:
+    async def _put_chunk(
+        self, scope: str, epoch: int, table: SnapshotTable, arrow: Any, *, reused: list[str] | None = None
+    ) -> str:
         """write one table's chunk of a scope at an epoch; the one place a chunk is written.
+
+        The caller holds a write claim on ``epoch`` (:class:`_WriteClaims`). A store refused as full
+        is swept by the one rule and the write tried once more; what that frees is what no pointer
+        serves and no live write claims. A torn write's pieces (an object's chunks land before its
+        metadata) are not listed and wait for the declarer's orphan purge, so a store full of them
+        recovers only once that purge has run.
 
         :param scope: the scope
         :ptype scope: str
@@ -1869,16 +2095,34 @@ class ScopedSnapshot:
         :ptype table: SnapshotTable
         :param arrow: the scope's rows of the table
         :ptype arrow: pyarrow.Table
+        :param reused: where a chunk found already written is recorded, for the caller to check it is
+            still there before a pointer names it
+        :ptype reused: list[str] | None
         :return: the chunk's name
         :rtype: str
         """
-        from threetears.nats import ObjectExistsError  # noqa: PLC0415
+        from threetears.nats import ObjectExistsError, ObjectStoreFullError  # noqa: PLC0415
 
         data = await asyncio.to_thread(encode_chunk, arrow)
         name = self._layout.object_name(scope, epoch, table.name)
-        # NOSILENT: a replica rebuilding the same scope at the same epoch under the same columns wrote the same rows
-        with suppress(ObjectExistsError):
-            await self._store.put(name, data)
+        try:
+            try:
+                await self._store.put(name, data)
+            except ObjectStoreFullError:
+                retired = await self._sweeper.retire_unreferenced()
+                log.warning(
+                    "scoped snapshot %s: the object store is full writing %r; %s, trying once more",
+                    self._name,
+                    name,
+                    "this replica retires nothing (no retire wired)"
+                    if self._sweeper.retires is False
+                    else f"retired {retired} chunks no pointer serves and no write claims",
+                )
+                await self._store.put(name, data)
+        except ObjectExistsError:
+            # a replica rebuilding the same scope at the same epoch under the same columns wrote the same rows
+            if reused is not None:
+                reused.append(name)
         return name
 
     async def stage(self, scope: str, epoch: int, rows: Mapping[str, Sequence[Mapping[str, Any]]]) -> StagedScope:
@@ -1888,9 +2132,11 @@ class ScopedSnapshot:
         epoch, :mod:`~threetears.core.collections.scope_epochs`): it stages each scope as soon as
         its rows are written to L3, keeping only the compressed chunks rather than every row, and
         after its commit moves every pointer at once (:meth:`publish_staged`). Nothing reads a
-        staged chunk until its pointer moves, so a write that never commits shows nothing. A staged
-        chunk is above its scope's pointer, which no retirement touches (:meth:`_Sweeper.deletable`); if its
-        write never commits, the scope's next publish retires it.
+        staged chunk until its pointer moves, so a write that never commits shows nothing. Each stage
+        holds a write claim on its epoch until :meth:`publish_staged` takes it, so no sweep touches it
+        meanwhile (:meth:`_Sweeper.deletable`). A write that will not commit gives it back
+        (:meth:`discard_staged`); a write whose writer died loses its claim with its writer, and its
+        stages go at the next sweep (:meth:`discard_epoch`, a publish of the scope, a full store).
 
         :param scope: the scope; never ``None``
         :ptype scope: str
@@ -1910,11 +2156,18 @@ class ScopedSnapshot:
             raise ValueError(f"a stage of scope {scope!r} names tables the snapshot does not hold: {unknown}")
         objects: dict[str, str] = {}
         counts: dict[str, int] = {}
-        for table in self._tables:
-            if table.name in rows:
-                arrow = await self._export(table, scope, rows[table.name])
-                objects[table.name] = await self._put_chunk(scope, epoch, table, arrow)
-                counts[table.name] = arrow.num_rows
+        # held until publish_staged moves (or skips) this stage, or discard_staged gives it back
+        await self._write_claims.hold(epoch)
+        try:
+            for table in self._tables:
+                if table.name in rows:
+                    arrow = await self._export(table, scope, rows[table.name])
+                    objects[table.name] = await self._put_chunk(scope, epoch, table, arrow)
+                    counts[table.name] = arrow.num_rows
+        except BaseException:
+            await self._write_claims.release(epoch)
+            await self._sweeper.retire_names_if_unserved(list(objects.values()), what=f"a failed stage of {scope!r}")
+            raise
         return StagedScope(scope=scope, epoch=epoch, objects=objects, rows=counts)
 
     async def _export(self, table: SnapshotTable, scope: str, rows: Sequence[Mapping[str, Any]]) -> Any:
@@ -1932,6 +2185,37 @@ class ScopedSnapshot:
             primary_key=table.key,
             order_by=table.key,
         )
+
+    async def discard_staged(self, staged: Sequence[StagedScope]) -> None:
+        """give back what a write that will never commit staged: its claims released, its chunks retired.
+
+        For the writer whose write failed or was abandoned before its commit. The chunks go by the
+        one rule, so one another write claims at the same epoch, or a pointer names, stays. Never
+        raises: a retire that fails leaves them unclaimed, for the next sweep.
+
+        :param staged: the scopes the write staged
+        :ptype staged: Sequence[StagedScope]
+        :return: nothing
+        :rtype: None
+        """
+        for scope in staged:
+            await self._write_claims.release(scope.epoch)
+        names = [name for scope in staged for name in scope.objects.values()]
+        await self._sweeper.retire_names_if_unserved(names, what="a discarded write's stages")
+
+    async def discard_epoch(self, epoch: int) -> None:
+        """retire every chunk of a write that died before it committed, by its epoch.
+
+        For a writer taking over from one that died mid-write: the dead write's version (its epoch)
+        never commits, so nothing will ever serve what it staged. By the one rule: chunks a pointer
+        names, or a live write still claims, are kept. Never raises.
+
+        :param epoch: the dead write's epoch
+        :ptype epoch: int
+        :return: nothing
+        :rtype: None
+        """
+        await self._sweeper.retire_epoch(epoch)
 
     async def publish_staged(
         self, staged: Sequence[StagedScope], *, carry_at: Mapping[str, int], whole: bool = False
@@ -1966,6 +2250,18 @@ class ScopedSnapshot:
                 skipped.append(scope.scope)
                 continue
             pointer, observed = completed
+            if not await self._exist(pointer.objects.values()):
+                # never a pointer onto a missing chunk: the scope is left to the catch-up, which
+                # republishes it from L3 (it stages it again)
+                log.error(
+                    "scoped snapshot %s: a chunk staged for scope %r at epoch %d is gone; its pointer is not "
+                    "moved, and the catch-up republishes it from L3",
+                    self._name,
+                    scope.scope,
+                    scope.epoch,
+                )
+                skipped.append(scope.scope)
+                continue
             if observed is _ANY_ENTRY:
                 held = await self._move_pointer(pointer)
                 (moved if held == pointer else superseded).append(scope.scope)
@@ -1983,6 +2279,12 @@ class ScopedSnapshot:
             )
         if moved:
             await self._update_index(add=moved, whole=whole and not skipped)
+        # the stages are named by their pointers now, or will never be: the claims are let go, and
+        # a skipped or superseded stage serves nothing and goes by the rule
+        for scope in staged:
+            await self._write_claims.release(scope.epoch)
+        unserved = [name for scope in staged if scope.scope not in moved for name in scope.objects.values()]
+        await self._sweeper.retire_names_if_unserved(unserved, what="stages left unpublished")
         for scope in staged:
             if scope.scope in moved:
                 await self._sweeper.retire_older(scope.scope, scope.epoch)
@@ -2104,17 +2406,14 @@ class ScopedSnapshot:
         While two code versions run together (a rolling deploy of a column change), a rebuild must
         not repoint a scope another version published at the same epoch, or each version would
         repoint the other's scopes on every rebuild. So a same-epoch pointer of other columns stays
-        until it is older than the stray age (by then the other version is gone); this replica
-        serves its own L1, rebuilt from L3, meanwhile. A later epoch (a write) always moves the
-        pointer, to the writer's columns.
+        until a write moves the scope to a later epoch, which always moves the pointer, to the
+        writer's columns; this replica serves its own L1, rebuilt from L3, meanwhile. Judged by the
+        epochs alone, never by how old the pointer is.
 
         :return: True when ``current`` stays
         :rtype: bool
         """
-        fresh = (
-            current.published_at is not None and time.time() - current.published_at < self._stray_age.total_seconds()
-        )
-        return current.epoch == pointer.epoch and dict(current.schema) != dict(pointer.schema) and fresh
+        return current.epoch == pointer.epoch and dict(current.schema) != dict(pointer.schema)
 
     def _note_seen(self, pointer: _Pointer) -> None:
         """record a pointer this replica wrote or read, ahead of the watch's delivery.
@@ -2224,7 +2523,10 @@ class ScopedSnapshot:
         :return: nothing
         :rtype: None
         """
-        if self._ensure_buckets is not None and self._index is None and self._ever_indexed:
+        # the pointers were lost with their bucket, and every write claim with them: until the
+        # writers take theirs again a sweep could not tell a live write's stage from a dead one's
+        lost = self._index is None and self._ever_indexed
+        if self._ensure_buckets is not None and lost:
             await self._ensure_buckets()
         claim = self._claim()
         if await claim.take():
@@ -2232,7 +2534,7 @@ class ScopedSnapshot:
                 caught = await self._rebuild_scopes(None, reason=reason, flow="sync")
             finally:
                 await claim.release()
-            if caught is not None:
+            if caught is not None and not lost:
                 await self._sweeper.retire_unreferenced()
         else:
             self._wait("sync", f"{reason}; another replica is rebuilding or publishing it")
@@ -2316,8 +2618,13 @@ class ScopedSnapshot:
             log.info("scoped snapshot %s: a write committed during the rebuild; reading again", self._name)
         else:
             for scope in scopes:
+                epoch = int(epochs.get(scope, 0))
                 async with self._local:
-                    await self._publish_locked(scope, int(epochs.get(scope, 0)), read[scope])
+                    moved = await self._publish_locked(scope, epoch, read[scope])
+                if moved is not None:
+                    # at once, scope by scope: a rebuild that fails at a later scope (a full store)
+                    # still leaves nothing superseded behind for the scopes it did move
+                    await self._sweeper.retire_older(scope, epoch)
             await self._update_index(add=scopes, whole=only is None)
             gone = set() if only is not None else set(self._index or ()) - l3_scopes
             if gone:
@@ -2390,11 +2697,6 @@ class ScopedSnapshot:
                     await self._remove_scopes(gone)
             finally:
                 await claim.release()
-            for scope in caught:
-                # the watch may have delivered a removal meanwhile, or a stale publish noted nothing
-                seen = self._seen.get(scope)
-                if seen is not None:
-                    await self._sweeper.retire_older(scope, seen.epoch)
         return caught
 
     async def _apply_published(self) -> None:
@@ -2465,12 +2767,11 @@ class ScopedSnapshot:
             self._seen.pop(scope, None)
         await self._drop_locally(sorted(gone))
         for scope, pointer in gone.items():
-            # every chunk up to the deleted pointer's epoch, the ones it served included: epochs only
-            # move forward, so chunks a writer recreating the scope wrote meanwhile are at a later
-            # epoch and stay. a scope that had no pointer judged nothing; its strays age out of the
-            # next rebuild's unreferenced sweep
+            # every chunk up to the deleted pointer's epoch, by the one rule: with the pointer gone
+            # nothing names them, and a writer recreating the scope writes at a later epoch under its
+            # own claim. a scope that had no pointer goes at the next sweep
             if pointer is not None:
-                await self._sweeper.retire_older(scope, pointer.epoch + 1, removed=pointer)
+                await self._sweeper.retire_older(scope, pointer.epoch + 1)
 
 
 async def open_tool_pod_snapshot(

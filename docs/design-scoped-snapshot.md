@@ -66,19 +66,40 @@ publishing after the commit with the rows in hand would hold them all in memory.
 
 ## Chunk lifecycle
 
-One rule (`_Sweeper.deletable`, beside the snapshot in its module) decides whether a chunk may be deleted. It is judged against the scope's
-pointer as KV holds it, never a replica's view of the pointers, which lags another replica's publish:
+One rule (`_Sweeper.deletable`, beside the snapshot in its module) decides whether a chunk may be
+deleted, and every deletion path goes through it. It is judged by state, never by age, against the
+pointers and the write claims as KV holds them when the sweep runs (read after the chunks are
+listed), never a replica's view, which lags another replica's publish:
 
 | The chunk | Kept or deleted |
 |---|---|
-| Named by the pointer | Kept: it is being served |
-| At an epoch above the pointer's | Kept: a writer's stage whose pointer has not moved yet |
-| At an epoch below the pointer's, not named | Deleted: superseded |
-| At the pointer's epoch, not named; or its scope has no pointer | Deleted only once older than `stray_age` |
+| Named by its scope's pointer | Kept: it is being served |
+| At an epoch a live write claims | Kept: it is being written, or waits for its pointer to move |
+| Anything else | Deleted: it serves nothing and nothing will point at it |
 
-A stage whose write never commits is below the scope's pointer after its next publish, which
-retires it. The hub's own sweep of chunk subjects no object names takes only those older than
-`ORPHAN_CHUNK_MIN_AGE`, since an object's chunks land before its metadata.
+- **A write claim** is a key `{name}.w.{epoch}.{replica}` in the pointer bucket, taken by the writer
+  before its first chunk at that epoch and held until a pointer names what it wrote (a staged
+  write: until `publish_staged`; a publish or rebuild: until its pointer moved). It is renewed while
+  the writer lives; a writer that dies stops renewing and its claim lapses, so it stops protecting
+  what the dead write staged. A claim lost with its bucket is taken again at the next renewal, and a
+  rebuild that follows a lost pointer bucket sweeps nothing, since the claims went with it.
+- **Older chunks go as each pointer moves**, on every path (publish, staged publish, rebuild,
+  catch-up), so a run that fails part way leaves nothing superseded behind for the scopes it moved.
+- **A write that will not commit gives its stages back** (`discard_staged`: its claims released,
+  its chunks retired by the rule), and a writer taking over a dead one may name its epoch
+  (`discard_epoch`). Without either, the dead write's stages go at the next sweep once its claim
+  has lapsed.
+- **A full store** (`ObjectStoreFullError` on a chunk write) is swept by the rule and the write tried
+  once more. It recovers when what fills it is chunks no pointer serves and no live write claims; a
+  store full of what is served needs a larger bound.
+- **No pointer moves onto a missing chunk.** A staged publish checks every chunk it names first,
+  and a publish that found its chunk already written checks it before moving; a missing one leaves
+  the scope to the catch-up, which republishes it from L3.
+
+The hub's own sweep of chunk subjects no object names (pieces of a put that failed part way, since
+an object's chunks land before its metadata) runs at each retire only while no write claim stands
+in the pod's pointer bucket: while one does, an unnamed chunk may be a put in flight. Judged by
+state, as the chunks are, never by age.
 
 ## Two code versions at once
 
@@ -88,9 +109,9 @@ pointers. Each pointer names the columns its chunks hold (`schema`, per-table di
 - **A replica loads only chunks of its own columns.** One check (`_loadable`) sits in the fetch
   every load passes through, so no path can put another version's chunks in its L1.
 - **It does not repoint the other version's scopes.** A rebuild moves a scope's pointer only
-  forward: a same-epoch pointer of other columns stays until it is older than `stray_age` (the
-  other version is gone by then). Meanwhile the replica serves the scope from its own L1, rebuilt
-  from L3, and its status says how many scopes that is. Without this rule each version would
+  forward: a same-epoch pointer of other columns stays until a write moves the scope to a later
+  epoch. Meanwhile the replica serves the scope from its own L1, rebuilt from L3, and its status
+  says how many scopes that is. Without this rule each version would
   repoint the other's scopes on every rebuild, each round the slow path.
 - **A write moves the pointer to the writer's columns.** A later epoch always moves it. A replica
   of the other columns cannot load it, so it rebuilds that scope from L3 and serves it.

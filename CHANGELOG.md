@@ -6,6 +6,34 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Scoped snapshot: chunks no pointer serves and no live write claims are retired, by state, never by age
+
+A tool pod's Object Store filled with chunks nothing served: a catch-up that failed part way (on a
+full store) retired the old chunks of none of the scopes it had moved, a write that never committed
+kept its stages, and once the store was full every publish was refused, so nothing was retired
+again.
+
+- **Changed, `_Sweeper.deletable`**: a chunk is kept while its scope's pointer names it or a live
+  write claims its epoch, and deleted otherwise. `stray_age` is gone, with every age-based rule: a
+  writer claims each epoch it writes chunks at (`{name}.w.{epoch}.{replica}` in the pointer bucket,
+  renewed while it lives, taken again if lost with its bucket) until a pointer names them.
+- **Changed, `ScopedSnapshot`**: a rebuild or catch-up retires each scope's older chunks as soon as
+  its pointer moves; a chunk write refused as full sweeps by the rule and is tried once more; a
+  staged publish, and a publish that found its chunk already written, never moves a pointer onto a
+  chunk that is not there (the scope is left to the catch-up); a same-epoch pointer of other columns
+  stays until a write moves the scope on.
+- **Added, `ScopedSnapshot.discard_staged(staged)`** and **`ScopedSnapshot.discard_epoch(epoch)`**.
+  A writer must call `discard_staged` when a write it staged will not commit; it may call
+  `discard_epoch` when it takes over a dead write. Without them, a dead write's stages go at the
+  next sweep once its claim has lapsed.
+- **Changed, `NatsObjectStore.purge_orphan_chunks(*, pointers)`**: the declarer's sweep of chunks no
+  object names takes them only while no write claim stands in the pod's pointer bucket
+  (`object_store_requests.is_write_claim_key`), and then every one; `older_than` and
+  `ORPHAN_CHUNK_MIN_AGE` are gone. A declarer must pass the pod's pointer bucket.
+- **Added, `threetears.nats.ObjectStoreFullError`** (`bucket`, `name`), an `ObjectStoreError` raised
+  for a store failure that reports its max bytes exceeded (JetStream 10077) and for insufficient
+  server resources (10047); any other store failure stays a plain `ObjectStoreError`.
+
 ### Agent acl, core, nats, registry, memory and conversations: the access tables' contract stage
 
 Stage 5 of `docs/epoch-task-06-collection-generations-by-default.md`, for the access tables. The

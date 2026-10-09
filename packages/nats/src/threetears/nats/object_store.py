@@ -55,17 +55,19 @@ from threetears.observe import get_logger
 
 from threetears.nats._named_read import NamedRead, read_through_named_consumer
 from threetears.nats._publish import run_bounded
-from threetears.nats.object_store_requests import OBJECT_NAME_PATTERN, ORPHAN_CHUNK_MIN_AGE
+from threetears.nats.object_store_requests import OBJECT_NAME_PATTERN, is_write_claim_key
 from threetears.nats.errors import (
     ObjectExistsError,
     ObjectNotFoundError,
     ObjectStoreError,
+    ObjectStoreFullError,
     ObjectStoreNotFoundError,
     PublishTimeoutError,
 )
 
 if TYPE_CHECKING:
     from threetears.nats.client import NatsClient
+    from threetears.nats.kv import KvBucketLike
 
 __all__ = [
     "DEFAULT_OBJECT_CHUNK_BYTES",
@@ -104,8 +106,15 @@ _JS_ERR_WRONG_LAST_SEQUENCE: Final[frozenset[int]] = frozenset({10071, 10164})
 #: JetStream's "stream name already in use with a different configuration".
 _JS_ERR_STREAM_NAME_IN_USE: Final[int] = 10058
 
-#: JetStream's refusal of a publish that would take the stream past its ``max_bytes``.
-_JS_ERR_STORE_FULL: Final[frozenset[int]] = frozenset({10047, 10077})
+#: JetStream's "insufficient resources": the server or account has no room for what the stream reserves.
+_JS_ERR_INSUFFICIENT_RESOURCES: Final = 10047
+
+#: JetStream's generic "stream store failed", which carries the store's own error: a write past the
+#: stream's ``max_bytes`` among others (message limits, a closed store), told apart by its description.
+_JS_ERR_STORE_FAILED: Final = 10077
+
+#: the store error a stream at its ``max_bytes`` reports, as the description of a store failure
+_MAX_BYTES_EXCEEDED: Final = "maximum bytes exceeded"
 
 #: how a JetStream request the server never answered arrives: our own deadline, nats-py's request
 #: timeout, or no responder. A request this principal is not granted is dropped unanswered, so each
@@ -484,10 +493,20 @@ class NatsObjectStore:
                     bucket=self._full_name,
                     name=name,
                 ) from exc
-            if code in _JS_ERR_STORE_FULL:
-                raise ObjectStoreError(
-                    f"object store {self._full_name} is full: writing {name!r} would pass its max_bytes. retire "
-                    f"objects no longer served, or raise the bucket's bound"
+            description = str(getattr(exc, "description", "") or "")
+            if code == _JS_ERR_STORE_FAILED and _MAX_BYTES_EXCEEDED in description.lower():
+                raise ObjectStoreFullError(
+                    f"object store {self._full_name} is full: writing {name!r} would pass its max_bytes "
+                    f"({description}). retire objects no longer served, or raise the bucket's bound",
+                    bucket=self._full_name,
+                    name=name,
+                ) from exc
+            if code == _JS_ERR_INSUFFICIENT_RESOURCES:
+                raise ObjectStoreFullError(
+                    f"writing {name!r} to {self._full_name} was refused: the server or account is out of the "
+                    f"storage it reserves ({description})",
+                    bucket=self._full_name,
+                    name=name,
                 ) from exc
             raise ObjectStoreError(f"writing object {name!r} to {self._full_name} failed: {exc}") from exc
         except _UNANSWERED as exc:
@@ -630,19 +649,29 @@ class NatsObjectStore:
             raise ObjectStoreError(f"deleting object {name!r} from {self._full_name} failed: {exc}") from exc
         return True
 
-    async def purge_orphan_chunks(self, *, older_than: timedelta = ORPHAN_CHUNK_MIN_AGE) -> int:
-        """remove chunks no object names, once they are old enough not to be a put in progress.
+    async def purge_orphan_chunks(self, *, pointers: KvBucketLike) -> int:
+        """remove chunks no object names, while no write is in flight; judged by state, never by age.
 
         A put writes its chunks before its metadata, so chunks with no metadata are either a put
-        still running or one that failed part way. Only those whose last chunk is older than
-        ``older_than`` are purged. The DECLARER's operation, like :meth:`delete`.
+        still running or one that failed part way. Its writer holds a claim in ``pointers`` while it
+        writes (:func:`~threetears.nats.object_store_requests.is_write_claim_key`), so while any
+        claim stands nothing is purged; with none standing, every unnamed chunk is a put that will
+        never finish. The DECLARER's operation, like :meth:`delete`.
 
-        :param older_than: how old an unnamed chunk subject's last message must be
-        :ptype older_than: timedelta
+        :param pointers: the pod's pointer bucket, where its writers claim what they write
+        :ptype pointers: KvBucketLike
         :return: how many chunk subjects were purged
         :rtype: int
         :raises ObjectStoreError: when the stream cannot be read or a purge fails
+        :raises KvError: when the pointer bucket cannot be listed (nothing is purged)
         """
+        claims = [key for key in await pointers.list_keys() if is_write_claim_key(key)]
+        if claims:
+            log.info(
+                "unnamed object chunks kept: a write is in flight",
+                extra={"extra_data": {"bucket": self._full_name, "claims": len(claims)}},
+            )
+            return 0
         js = self._client.jetstream_context()
         named = {raw.nuid for raw in await self._list_raw() if raw.nuid and not raw.deleted}
         try:
@@ -651,14 +680,9 @@ class NatsObjectStore:
                 what="object chunk listing",
             )
             subjects = dict(info.state.subjects or {})
-            cutoff = datetime.now(UTC) - older_than
             purged = 0
             for subject in sorted(subjects):
                 if subject.rsplit(".", 1)[-1] in named:
-                    continue
-                last = await self._bounded(lambda s=subject: js.get_last_msg(self.stream, s), what="chunk age read")
-                stamp = last.time if last.time is None or last.time.tzinfo else last.time.replace(tzinfo=UTC)
-                if stamp is not None and stamp > cutoff:
                     continue
                 await self._bounded(lambda s=subject: js.purge_stream(self.stream, subject=s), what="chunk purge")
                 purged += 1
