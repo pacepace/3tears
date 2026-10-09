@@ -43,6 +43,7 @@ from threetears.evals.analysis import (
 from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.bundle import bundle_decision_surface
 from threetears.evals.analysis.report.build import NO_STRATUM, TOO_FEW_CASES
+from threetears.evals.analysis.surface_table import SURFACE_ORDER_NO_CONTROL
 from threetears.evals.contracts import (
     STRATUM_MIN_CASES,
     CellFacts,
@@ -314,6 +315,14 @@ class TestTheReportCarriesStrata:
         assert accuracy[_column(table, "plain")] == "1 ± 0 (n=12)"
         # A rate carries its Wilson interval, which a stratum this small makes wide.
         assert _row(table, "sonnet", "match")[_column(table, "lookalike")] == "0.3333 [0.06149, 0.7923] (n=3)"
+
+    def test_the_arms_follow_the_decision_surfaces_row_order_and_the_table_states_it(self) -> None:
+        """No control here, so no reference row: the arms alphabetically by name (#645)."""
+        table = _strata_table(_code_only(_bundle(*_mixed())))
+
+        arms = [str(row["arm"]) for row in table.rows if row["reading"] == "cases"]
+        assert arms == sorted(arms, key=str.casefold) and len(arms) == 2
+        assert table.order.startswith(SURFACE_ORDER_NO_CONTROL)
 
     def test_each_arm_opens_with_the_cases_each_figure_rests_on_and_a_small_stratum_says_so(self) -> None:
         table = _strata_table(_code_only(_bundle(*_mixed())))

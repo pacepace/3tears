@@ -547,6 +547,34 @@ def arm_label(variant_key: str, names: Mapping[str, str], *, rig: str | None = N
     return f"{name} @ rig {rig}" if rig else name
 
 
+def surface_order(cells: Iterable[CellFacts], *, control: str | None, names: Mapping[str, str]) -> list[CellFacts]:
+    """The cells in the decision surface's one row order — the reference, then every other arm by name.
+
+    The control's cells come first because every other arm is read against them: they are the
+    reference, never the pick. The other arms follow in alphabetical order of the names a reader sees
+    (:func:`arm_label` over ``names``, case-folded), each arm's rigs by id, the variant key breaking a
+    tie. Alphabetical because it is checkable on the page and says nothing about the evidence: an order
+    by a raw score would read as a ranking the comparisons may not support, and an order by digest
+    would be one nobody can state. Every surface that lays out the decision surface — the report's
+    table and its strata, and the writer's ``cell_measures`` — orders its cells here, and the table
+    states the rule (:data:`~threetears.evals.analysis.surface_table.SURFACE_ORDER`).
+
+    Args:
+        cells: The cells to order.
+        control: The declared control's variant key, or None.
+        names: The analysis's :func:`arm_names`.
+
+    Returns:
+        The cells, in that order.
+    """
+
+    def key(cell: CellFacts) -> tuple[bool, str, str, str, str]:
+        label = arm_label(cell.variant_key, names)
+        return (cell.variant_key != control, label.casefold(), label, cell.variant_key, cell.apparatus_class_id)
+
+    return sorted(cells, key=key)
+
+
 def cell_label(
     variant_key: str,
     apparatus_class_id: str,
@@ -787,5 +815,6 @@ __all__ = [
     "multi_rig_variants",
     "naming_levels",
     "short_digest",
+    "surface_order",
     "writer_arms",
 ]

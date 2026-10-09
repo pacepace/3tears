@@ -68,6 +68,7 @@ from threetears.evals.contracts.evidence_tiers import (
     JudgedEvidenceTier,
     JudgeEvidenceTier,
 )
+from threetears.evals.analysis.arms import arm_names, surface_order
 from threetears.evals.analysis.cells import (
     CELL_MODEL_VERSION,
     ApparatusClass,
@@ -1845,7 +1846,7 @@ class AnalysisContextBundle(EvalDocumentModel):
     # A/B set spanning a bump must be read as spanning it. Why each earlier version moved is in
     # this file's history.
     schema_version: int = Field(
-        default=46, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=47, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -2278,7 +2279,8 @@ class AnalysisContextBundle(EvalDocumentModel):
     cell_measures: list[CellFacts] = Field(
         default_factory=list,
         description=(
-            "Everything measured in each cell, one entry per cell ordered by (variant_key, apparatus_class_id): "
+            "Everything measured in each cell, one entry per cell, the declared control's cells first as the "
+            "reference, then every other arm alphabetically by name (an order that is not a ranking): "
             "every measure over the cell's non-faulted observations — the population every bar verdict is "
             "read over, so a value here and a verdict on the same cell describe the same observations — "
             "every judged dimension scored there, its replication, and the notes on its member runs. Read "
@@ -6326,7 +6328,10 @@ def assemble_context_bundle(
     bundle.verdict_order = _verdict_order(bundle.bar_adjudications, campaign.declared_design)
     # The decision surface, over the same grouping and the same population the bars were read over,
     # and before the catalog: its collections are measure collections like any other here, so the
-    # catalog has to describe their names too.
+    # catalog has to describe their names too. Laid out in the surface's one row order (the control as
+    # the reference, then the arms by name), which the writer reads and the frozen surface keeps.
+    control = campaign.declared_design.control if campaign.declared_design else None
+    names = arm_names(bundle.variant_index)
     bundle.cell_measures = _cell_measures(
         cells,
         results_by_cell,
@@ -6347,6 +6352,8 @@ def assemble_context_bundle(
         short_runs=bundle.short_runs,
         incomplete_runs=bundle.incomplete_runs,
         profile=profile,
+        control=control,
+        names=names,
     )
     bundle.all_failed_cells, bundle.all_failed = _all_failed(bundle.cell_measures)
     # The time axis, over the same algebra the decision surface was just read with, and before the catalog
@@ -6362,6 +6369,7 @@ def assemble_context_bundle(
         short_runs=bundle.short_runs,
         incomplete_runs=bundle.incomplete_runs,
         profile=profile,
+        names=names,
     )
     bundle.measure_catalog = _measure_catalog(bundle, profile=profile)
     # After the catalog, which says each measure's better direction and axis: a family is the readings a
@@ -7767,6 +7775,8 @@ def _cell_measures(
     short_runs: dict[str, str],
     incomplete_runs: dict[str, str],
     profile: HostProfile,
+    control: str | None,
+    names: Mapping[str, str],
 ) -> list[CellFacts]:
     """Everything measured in each cell — the facts an analysis freezes as its decision surface.
 
@@ -7790,9 +7800,13 @@ def _cell_measures(
         short_runs: The bundle's short-run sentences, by run id.
         incomplete_runs: The bundle's incomplete-run statuses, by run id.
         profile: The host whose vocabulary this reads.
+        control: The declared control's variant key, or None.
+        names: The bundle's arm names (:func:`~threetears.evals.analysis.arms.arm_names`), which order the arms.
 
     Returns:
-        One entry per cell, ordered by ``(variant_key, apparatus_class_id)``.
+        One entry per cell, in the decision surface's row order
+        (:func:`~threetears.evals.analysis.arms.surface_order`): the control's cells first, as the reference,
+        then every other arm alphabetically by name, each arm's rigs by id. Not a ranking.
     """
     judged_by_cell = _judged_by_cell(judged_measures)
     facts = []
@@ -7822,7 +7836,7 @@ def _cell_measures(
                 strata=strata.get(key, []),
             )
         )
-    return facts
+    return surface_order(facts, control=control, names=names)
 
 
 def _time_axis(
@@ -7837,6 +7851,7 @@ def _time_axis(
     short_runs: dict[str, str],
     incomplete_runs: dict[str, str],
     profile: HostProfile,
+    names: Mapping[str, str],
 ) -> tuple[TimeAxis | None, str | None]:
     """Place the campaign's runs in time, or say why they cannot be.
 
@@ -7859,6 +7874,7 @@ def _time_axis(
         short_runs: The bundle's short-run sentences, by run id.
         incomplete_runs: The bundle's incomplete-run statuses, by run id.
         profile: The host, whose ``release_label`` names its builds.
+        names: The bundle's arm names, which order each position's cells as the whole surface's are.
 
     Returns:
         ``(axis, None)`` when the measuring runs span two or more positions, else ``(None, why)``.
@@ -7895,6 +7911,8 @@ def _time_axis(
                     short_runs=short_runs,
                     incomplete_runs=incomplete_runs,
                     profile=profile,
+                    control=design.control if design else None,
+                    names=names,
                 ),
             )
         )
