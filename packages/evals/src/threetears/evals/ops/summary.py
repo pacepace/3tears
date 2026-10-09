@@ -43,6 +43,7 @@ from __future__ import annotations
 import math
 
 from collections import Counter
+from collections.abc import Mapping
 
 from pydantic import BaseModel, ConfigDict
 
@@ -53,6 +54,7 @@ from threetears.evals.contracts import (
     CONFUSION_CELL_MEASURE,
     MATCH_MEASURE,
     EvalResult,
+    GoalCheckProof,
     ResultOutcome,
     RubricScale,
     UsageRole,
@@ -123,6 +125,14 @@ class GoalCheckSummary(BaseModel):
         check: The check, as the template states it.
         passed: How many results it counts as passed.
         n: How many results count for it: every result carrying it but those excluded as a fault of the rig.
+        proof: Whether the check was shown, when the run launched, to tell its outcomes apart
+            (``EvalRun.goal_check_proofs``); ``None`` for a run that recorded none, which reads as unproven.
+            Only ``proven`` reads as measuring the behaviour: an unproven or refuted check's pass rate may be
+            what a candidate that did nothing would score, and :meth:`render` says so beside it.
+        did_nothing_passed: Of ``did_nothing_cases``, how many cases a candidate that did nothing passes — the
+            check graded against each case's untouched starting state with no calls made. Set where each case's
+            seed is in hand (:func:`~threetears.evals.quick.run_eval`'s world path); ``None`` elsewhere.
+        did_nothing_cases: The cases that baseline was graded over; ``None`` with it.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -130,6 +140,35 @@ class GoalCheckSummary(BaseModel):
     check: str
     passed: int
     n: int
+    proof: GoalCheckProof | None = None
+    did_nothing_passed: int | None = None
+    did_nothing_cases: int | None = None
+
+    @property
+    def proven(self) -> bool:
+        """Whether the pass rate measures the behaviour: shown at launch to beat doing nothing."""
+        return self.proof == "proven"
+
+    def line(self) -> str:
+        """The check as :meth:`EvalSummary.render` prints it: its pass count, and, unless proven, why it is not one.
+
+        Returns:
+            One line, without indentation.
+        """
+        head = f"goal check {self.check}: passed {self.passed}/{self.n}"
+        baseline = None
+        if self.did_nothing_passed is not None and self.did_nothing_cases:
+            baseline = f"a candidate that did nothing passes it in {self.did_nothing_passed} of {self.did_nothing_cases} case(s)"
+        if self.proven:
+            return head if baseline is None else f"{head} ({baseline})"
+        if baseline is not None and self.did_nothing_passed == self.did_nothing_cases:
+            return f"{head} — NOT A MEASUREMENT: {baseline}, so this pass rate does not beat doing nothing"
+        reason = {
+            "refuted": "refuted: its control does not show it tells acting from doing nothing",
+            "unproven": "unproven: no control shows it tells acting from doing nothing",
+            None: "unproven: this run recorded no proof that it tells acting from doing nothing",
+        }[self.proof]
+        return f"{head} — {reason}" + ("" if baseline is None else f"; {baseline}")
 
 
 class DimensionSummary(BaseModel):
@@ -278,7 +317,7 @@ class EvalSummary(BaseModel):
                 else dollars_text(self.candidate_cost_usd)
             )
             lines.append(f"  candidate spend: {spend} over {self.candidate_calls} call(s)")
-        lines.extend(f"  goal check {goal.check}: passed {goal.passed}/{goal.n}" for goal in self.goal_checks)
+        lines.extend(f"  {goal.line()}" for goal in self.goal_checks)
         lines.extend(f"  error: {error}" for error in self.errors)
         return "\n".join(lines)
 
@@ -433,7 +472,7 @@ def summarize_run(host: EvalHost, run_id: str, scope_id: str) -> EvalSummary:
         judge_cost_usd=blended_cost(judge_rows, _JUDGE_ROLE) if judge_rows else None,
         candidate_calls=sum(row.call_count or 0 for row in candidate_rows),
         candidate_cost_usd=blended_cost(candidate_rows, _CANDIDATE_ROLE) if candidate_rows else None,
-        goal_checks=_goal_checks(results),
+        goal_checks=_goal_checks(results, run.goal_check_proofs),
         # Templates are edited in place: one edited since the launch no longer holds what the judge read.
         intent=template.intent if template is not None and template.updated_at <= run.created_at else None,
         errors=errors,
@@ -473,13 +512,24 @@ def _judged_dimensions(results: list[EvalResult]) -> list[DimensionSummary]:
     ]
 
 
-def _goal_checks(results: list[EvalResult]) -> list[GoalCheckSummary]:
-    """Each goal-state check the results carry, counted as every per-check rate counts it, in the order first met."""
+def _goal_checks(results: list[EvalResult], proofs: Mapping[str, GoalCheckProof] | None) -> list[GoalCheckSummary]:
+    """Each goal-state check the results carry, counted as every per-check rate counts it, in the order first met.
+
+    Each carries the proof its run froze at launch; a check the run recorded none for is unproven.
+    """
     counted: dict[str, list[bool]] = {}
     for result in results:
         for outcome, passed in counted_goal_verdicts(result) or []:
             counted.setdefault(outcome.expression, []).append(passed)
-    return [GoalCheckSummary(check=check, passed=sum(verdicts), n=len(verdicts)) for check, verdicts in counted.items()]
+    return [
+        GoalCheckSummary(
+            check=check,
+            passed=sum(verdicts),
+            n=len(verdicts),
+            proof=None if proofs is None else proofs.get(check, "unproven"),
+        )
+        for check, verdicts in counted.items()
+    ]
 
 
 __all__ = ["DimensionSummary", "EvalSummary", "GoalCheckSummary", "MeasureSummary", "dollars_text", "summarize_run"]

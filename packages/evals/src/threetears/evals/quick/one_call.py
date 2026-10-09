@@ -1121,11 +1121,32 @@ async def run_arms(
         await launch_host.job_manager.shutdown()
         raise
     summaries = [summarize_run(host, run.id, scope_id) for run in runs]
+    # What a candidate that did nothing would pass, from each case's own starting state: a quick world's template
+    # names no controls, so every check is unproven, and this is the baseline its pass rate is read against.
+    idle = (
+        world.did_nothing_passes(goal_checks, [(seeds[i], tc.variation_params) for i, tc in enumerate(test_cases)])
+        if world is not None and seeds is not None and goal_checks
+        else None
+    )
     # The store keeps the intent but not where it came from; a judged run's summary carries both.
-    return [
-        summary.model_copy(update={"intent_source": intent_source}) if summary.intent is not None else summary
-        for summary in summaries
-    ]
+    return [_with_baseline(summary, idle, len(test_cases), intent_source) for summary in summaries]
+
+
+def _with_baseline(
+    summary: EvalSummary, idle: Mapping[str, int] | None, cases: int, intent_source: str | None
+) -> EvalSummary:
+    """The summary with the intent's source, and each goal check's do-nothing baseline where there is one."""
+    update: dict[str, Any] = {}
+    if summary.intent is not None:
+        update["intent_source"] = intent_source
+    if idle is not None:
+        update["goal_checks"] = [
+            goal.model_copy(update={"did_nothing_passed": idle[goal.check], "did_nothing_cases": cases})
+            if goal.check in idle
+            else goal
+            for goal in summary.goal_checks
+        ]
+    return summary.model_copy(update=update) if update else summary
 
 
 __all__ = [

@@ -70,6 +70,30 @@ EVIDENCE_TIER_WORDS = worded(
 )
 
 
+#: The tiers a judge's measured agreement decides — the ones whose rule a stored analysis records.
+_JUDGED_TIERS = frozenset({"calibrated", "separation", "undetermined", "incidental"})
+
+
+def stands_on_words(analysis: EvalAnalysis, tier: EvidenceTier) -> str:
+    """What a finding stands on, as a reader says it, naming the old rule for a tier stored before intervals.
+
+    A judged tier in an analysis stored before tiers were decided on the agreement's interval
+    (``judged_tier_rule`` None) was the point estimate against the bar, so it is never presented as this
+    build's claim: the words say which rule decided it.
+
+    Args:
+        analysis: The analysis the tier was stored in.
+        tier: The finding's tier.
+
+    Returns:
+        The words.
+    """
+    words = EVIDENCE_TIER_WORDS[tier]
+    if analysis.judged_tier_rule is None and tier in _JUDGED_TIERS:
+        return f"{words} (tier decided on the point estimate of agreement, before tiers required its interval to clear the bar)"
+    return words
+
+
 #: Where an arm stands, as a reader says it.
 ARM_STATUS_WORDS = worded(
     {
@@ -136,6 +160,7 @@ __all__ = [
     "COMPARISON_VERDICT_WORDS",
     "CONFIDENCE_WORDS",
     "EVIDENCE_TIER_WORDS",
+    "stands_on_words",
     "arm_namer",
     "positions",
     "worded",

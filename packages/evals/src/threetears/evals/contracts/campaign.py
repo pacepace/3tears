@@ -29,7 +29,7 @@ from pydantic import BeforeValidator, Field, ValidationInfo, computed_field, fie
 
 from threetears.evals.contracts.authored import AuthoredAnalysis
 from threetears.evals.contracts.declaration import CampaignDesign
-from threetears.evals.contracts.evidence_tiers import JudgedEvidenceTier, weakest_judged_tier
+from threetears.evals.contracts.evidence_tiers import JudgedEvidenceTier, JudgedTierRule, weakest_judged_tier
 from threetears.evals.contracts.host.values import SweepableValue
 from threetears.evals.contracts.identity import compute_variant_key
 from threetears.evals.contracts.base import EvalDocumentModel
@@ -794,6 +794,17 @@ class EvalAnalysis(EvalDocumentModel):
     )
     document: AuthoredAnalysis = Field(
         description="What the generator authored, as written, with each figure reference in its prose rendered by code."
+    )
+    judged_tier_rule: JudgedTierRule | None = Field(
+        default=None,
+        description=(
+            "The rule the judged evidence tiers in `resolutions` and `decision_surface` were decided by. "
+            "`interval_lower_bound`: each criterion on confidence bounds for its agreement against the bar. None on an "
+            "analysis stored before that rule, whose tiers were the point estimate against the bar — which awarded "
+            "`calibrated` to a judge below the bar as much as a third of the time; every surface rendering such a "
+            "tier says it was decided on the point estimate. Optional within v8 for that reason: requiring it "
+            "would drop every stored analysis to learn a fact the old ones never had."
+        ),
     )
     resolutions: list[FindingResolution] = Field(
         default_factory=list,

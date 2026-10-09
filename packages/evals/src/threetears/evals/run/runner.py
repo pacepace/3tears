@@ -1114,8 +1114,12 @@ async def run_one_result(
     # Commissioned whatever the run's stamp: the runner IS the rig, and the seed it applies through this
     # session is what arms the cell's events. A host grading a cell it witnessed builds its own session
     # with ``provenance="witnessed"``.
+    # A template that declares preconditions has them asserted by the engine against the world at t=0 — read back
+    # the moment the seed settles, before any turn (see below, after ``prepare``).
     world_session = (
-        WorldSession(host.profile.world, provenance="commissioned") if host.profile.world is not None else None
+        WorldSession(host.profile.world, provenance="commissioned", read_at_seed=bool(template.preconditions))
+        if host.profile.world is not None
+        else None
     )
     sink.world = world_session
     try:
@@ -1154,6 +1158,15 @@ async def run_one_result(
             f"{cell_cassettes.mode} run and did not wire them; a kind wires its candidate's CassetteSeams "
             "through prepare's cassettes before returning, or the run launches with cassette_mode='off'"
         )
+    if template.preconditions:
+        # The engine asserts the template's presumptions itself, at t=0, for every kind — so a host whose kind forgets
+        # cannot score a world that never held what the probe presumes as the subject's failure. A kind that asserts
+        # them in ``prepare`` still may: a failure there excluded the cell above, and a pass is asked again here over
+        # the same t=0 reading, which gives the same answer.
+        failed = _failed_preconditions(template, test_case, world_session, world=host.profile.world)
+        if failed is not None:
+            error, outcomes = failed
+            return _excluded_cell(error=error, termination="precondition_failed", preconditions=outcomes)
     # The candidate is what the cell now waits on; a kind refines this through the sink as its
     # work alternates with other components' — the conversational kind's with the simulator and the rig.
     sink.waiting_on("candidate")
@@ -2314,11 +2327,13 @@ def assert_preconditions(
     does not hold either**, negated or not: the DSL keeps an unknown unknown through ``not``, so
     ``not state.x == "y"`` over a world holding no ``x`` is not a presumption the world satisfied.
 
-    **Engine API, for every kind that seeds a world.**
-    ``EvalTemplate.preconditions`` is a field of the engine's own template, evaluated by the
-    engine's DSL against the engine's world state, so any kind that seeds a world has the same
-    presumptions to check and should check them the same way. Moving this beside one kind would
-    leave every other world-bearing kind to re-derive what "a presumption did not hold" means.
+    **The engine calls it for every cell** (:func:`run_one_result`), after ``prepare`` returns and before
+    the first turn, against the world its session read back when the seed settled — so no kind has to
+    remember to, and a failed presumption is excluded rather than scored as the subject's failure. It
+    stays engine API for a kind that wants to refuse earlier, inside its own ``prepare``
+    (:exc:`~threetears.evals.contracts.candidate_kind.CandidatePreparationFailed` with
+    ``termination="precondition_failed"``): the assertion is pure over the t=0 world, so asking it twice
+    gives one answer.
 
     Args:
         template: The template whose presumptions these are.
@@ -2353,6 +2368,44 @@ def assert_preconditions(
             )
         )
     return outcomes if any(not outcome.held for outcome in outcomes) else []
+
+
+def _failed_preconditions(
+    template: EvalTemplate,
+    test_case: EvalTestCase,
+    session: WorldSession | None,
+    *,
+    world: WorldRegistry | None,
+) -> tuple[str, list[PreconditionOutcome]] | None:
+    """The engine's own t=0 assertion of a template's preconditions: the exclusion it makes, or None when they held.
+
+    Asserted against the world the cell's session read back the moment its seed settled
+    (:attr:`~threetears.evals.contracts.world_session.WorldSession.seeded_state`). A cell whose kind never seeded
+    through its session has no t=0 world the engine saw, so its presumptions are asserted against an empty one,
+    where none is established — excluded rather than scored, since a presumption nobody checked is not one that
+    held (:func:`assert_preconditions`).
+
+    Args:
+        template: The template whose presumptions to assert.
+        test_case: The case, for its variation parameters.
+        session: The cell's world session, or None for a host that declares no world.
+        world: The host's world registry.
+
+    Returns:
+        ``(runner_error, outcomes)`` for an excluded cell, or None when every presumption held.
+    """
+    opened = session is not None and session.opened
+    seeded = session.seeded_state if session is not None and opened else None
+    outcomes = assert_preconditions(template, test_case, seeded or {}, world=world)
+    if not outcomes:
+        return None
+    error = f"precondition: {precondition_failure_text(outcomes)}"
+    if not opened:
+        error += (
+            " — the cell's world was never seeded through the engine's world session, so the engine had no world at "
+            "t=0 to assert the template's preconditions against"
+        )
+    return error, outcomes
 
 
 def precondition_failure_text(outcomes: Sequence[PreconditionOutcome]) -> str:

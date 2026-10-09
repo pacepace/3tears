@@ -60,6 +60,7 @@ from threetears.evals.analysis.bar_proposals import BaselineBarProposals, propos
 from threetears.evals.analysis.bundle import (
     AnalysisContextBundle,
     BundleInspection,
+    GoalCheckProofReading,
     InsightStanding,
     assemble_context_bundle,
     insight_standing,
@@ -366,6 +367,7 @@ __all__ = [
     "FrozenReporterCase",
     "GenerationError",
     "GenerationTally",
+    "GoalCheckProofReading",
     "InsightStanding",
     "JudgeAgreement",
     "JudgeKey",

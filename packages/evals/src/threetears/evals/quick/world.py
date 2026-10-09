@@ -69,7 +69,8 @@ from threetears.evals.contracts.host import (
     check_seed,
     schema_violations,
 )
-from threetears.evals.run import CellContext, GoalCheckUnevaluable, evaluate_goal_state
+from threetears.evals.run import CellContext, GoalCheckUnevaluable, evaluate_goal_state, grade_goal_checks
+from threetears.evals.run.check_controls import idle_end_state
 
 
 @dataclass(frozen=True)
@@ -220,6 +221,42 @@ class World:
         except SeedRefused as refused:
             raise ValueError(f"seed= gave case {case} a starting state the world refuses: {refused}") from refused
         return dict(values)
+
+    def did_nothing_passes(
+        self, checks: Sequence[str], cases: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]]
+    ) -> dict[str, int] | None:
+        """For each goal check, in how many cases a candidate that did nothing would pass it.
+
+        The authoring gate's do-nothing control (:func:`~threetears.evals.run.check_controls.idle_end_state`),
+        laid over each case's own starting state, since here the starting state is the case's: the seed untouched,
+        no call made, nothing fired. A check this passes in every case does not beat doing nothing, whatever the
+        candidate scores on it.
+
+        Args:
+            checks: The goal checks.
+            cases: Per case, its starting state and its variation parameters (``variation.*``).
+
+        Returns:
+            Check -> cases passed; None when a check cannot be evaluated against a starting state, which the run
+            itself reports.
+        """
+        passes = dict.fromkeys(checks, 0)
+        for seed, variation in cases:
+            idle = idle_end_state(self.seed_of(seed), world=self.registry)
+            try:
+                outcomes = grade_goal_checks(
+                    list(checks),
+                    ledger=idle.ledger,
+                    end_state=idle.end_state,
+                    fired=idle.fired,
+                    variation=variation,
+                    world=self.registry,
+                )
+            except GoalCheckUnevaluable:
+                return None
+            for outcome in outcomes:
+                passes[outcome.expression] += outcome.passed
+        return passes
 
     def refuse_unreadable(self, checks: Sequence[str]) -> None:
         """Refuse a goal check reading state this world does not declare or calling a tool it does not have.

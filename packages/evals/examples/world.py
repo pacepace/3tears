@@ -131,7 +131,9 @@ async def main() -> EvalSummary:
         k=2,
         model=MODEL if online else "offline",
     )
-    # Each "goal check" line says in how many cells the room ended as the check requires.
+    # Each "goal check" line says in how many cells the room ended as the check requires, and how many cases a
+    # model that did nothing would pass: a quick run proves no check, so each is marked unproven. The second check
+    # passes for doing nothing in every case, so its 8/8 is marked as no measurement at all.
     print(summary.render())
 
     # Each cell: the room it started in, the calls the model made, the room it left, and the checks it failed.

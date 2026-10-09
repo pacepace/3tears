@@ -262,7 +262,9 @@ the rig, not the candidate).
 
 #### Goal-state check
 A code check over a cell's end state (`state.<dimension>`), the calls the candidate made (`calls(...)`) and
-what fired in the world (`fired(...)`), written in the goal-state language. Objective, so no judge.
+what fired in the world (`fired(...)`), written in the goal-state language. Objective, so no judge. Its pass
+rate measures the behaviour only when a control proves the check beats doing nothing; otherwise every surface
+marks it `unproven` or `refuted`.
 
 #### Judge
 A model the engine asks to score a result against a rubric, reading only the evidence the kind rendered
@@ -275,8 +277,9 @@ One subjective quality a judge scores (`RubricDim`): a name, a description and a
 
 #### Evidence tier
 How far a judged score can be leaned on, decided by code from how reliable the judge was measured to be:
-`calibrated` (agrees with people), `separation` (agrees with itself), `incidental` (measured, and missed
-both), `undetermined` (too little evidence). See [reading reports](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers).
+`calibrated` (agrees with people), `separation` (agrees with itself), `incidental` (measured, and shown
+below both bars), `undetermined` (not shown either way). Each is decided on confidence bounds for the
+agreement, never its point estimate, and an undecided one says how many more results it needs. See [reading reports](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers).
 
 ### Comparing and reading
 
