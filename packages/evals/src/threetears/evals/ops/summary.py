@@ -18,6 +18,10 @@ confusion matrix and each label's precision, recall and F1, counted by
 **A judged run's rubric is read too.** Each dimension a judge scored is summarised over the results that
 carry its score, beside how many the judge could not tell on, and the judge's spend is the sum of the
 results' ``judge`` usage rows — unknown, never zero, when any judge call went unpriced.
+
+**So are its goal-state checks.** Each check the results carry is counted as every per-check rate counts
+it (:func:`~threetears.evals.contracts.counted_goal_verdicts`): passed as it evaluated, failed on every
+check of a result the candidate failed, and in no count for a result excluded as a fault of the rig.
 """
 
 from __future__ import annotations
@@ -36,6 +40,7 @@ from threetears.evals.contracts import (
     RubricScale,
     UsageRole,
     classify_result,
+    counted_goal_verdicts,
 )
 from threetears.evals.contracts.host import EvalHost
 from threetears.evals.contracts.usage_capture import blended_cost
@@ -61,6 +66,22 @@ class MeasureSummary(BaseModel):
     mean: float | None
     minimum: float | None
     maximum: float | None
+
+
+class GoalCheckSummary(BaseModel):
+    """One goal-state check over a run's results.
+
+    Attributes:
+        check: The check, as the template states it.
+        passed: How many results it counts as passed.
+        n: How many results count for it: every result carrying it but those excluded as a fault of the rig.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    check: str
+    passed: int
+    n: int
 
 
 class DimensionSummary(BaseModel):
@@ -110,6 +131,8 @@ class EvalSummary(BaseModel):
         labels: Each label's precision, recall and F1 from that matrix, by label; empty with it.
         judged: Each rubric dimension a judge scored or could not tell on, in the order first met; empty
             for an unjudged run.
+        goal_checks: Each goal-state check the results carry, in the order first met; empty for a run
+            with none.
         judge_calls: How many judge calls the results' ``judge`` usage rows count.
         judge_cost_usd: What those calls cost, as their client priced them; ``None`` when any went
             unpriced, and for a run no judge was called in.
@@ -135,6 +158,7 @@ class EvalSummary(BaseModel):
     judged: list[DimensionSummary] = []
     judge_calls: int = 0
     judge_cost_usd: float | None = None
+    goal_checks: list[GoalCheckSummary] = []
     errors: list[str]
 
     def render(self) -> str:
@@ -173,6 +197,7 @@ class EvalSummary(BaseModel):
                 "unknown: a judge call went unpriced" if self.judge_cost_usd is None else f"${self.judge_cost_usd:.6f}"
             )
             lines.append(f"  judge spend: {spend} over {self.judge_calls} call(s)")
+        lines.extend(f"  goal check {goal.check}: passed {goal.passed}/{goal.n}" for goal in self.goal_checks)
         lines.extend(f"  error: {error}" for error in self.errors)
         return "\n".join(lines)
 
@@ -284,6 +309,7 @@ def summarize_run(host: EvalHost, run_id: str, scope_id: str) -> EvalSummary:
         judged=_judged_dimensions(results),
         judge_calls=sum(row.call_count or 0 for row in judge_rows),
         judge_cost_usd=blended_cost(judge_rows, _JUDGE_ROLE) if judge_rows else None,
+        goal_checks=_goal_checks(results),
         errors=errors,
     )
 
@@ -318,4 +344,13 @@ def _judged_dimensions(results: list[EvalResult]) -> list[DimensionSummary]:
     ]
 
 
-__all__ = ["DimensionSummary", "EvalSummary", "MeasureSummary", "summarize_run"]
+def _goal_checks(results: list[EvalResult]) -> list[GoalCheckSummary]:
+    """Each goal-state check the results carry, counted as every per-check rate counts it, in the order first met."""
+    counted: dict[str, list[bool]] = {}
+    for result in results:
+        for outcome, passed in counted_goal_verdicts(result) or []:
+            counted.setdefault(outcome.expression, []).append(passed)
+    return [GoalCheckSummary(check=check, passed=sum(verdicts), n=len(verdicts)) for check, verdicts in counted.items()]
+
+
+__all__ = ["DimensionSummary", "EvalSummary", "GoalCheckSummary", "MeasureSummary", "summarize_run"]

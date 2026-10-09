@@ -18,6 +18,12 @@ here, from the public roots, on the terms the engine already sets:
   judge's evidence, and the engine's own judge service scores every dimension and records the judge's
   spend on the result's ``judge`` usage row, as it does for any judged run. Scorers and an expected
   label grade beside it.
+- **A world** is state the candidate acts on through tools, declared by handing ``run_eval`` a
+  :class:`~threetears.evals.quick.world.World`, each case's starting state (``seed=``) and goal-state
+  checks over the end state and the calls made (``goal_checks=``). The candidate is then called with the
+  case and the tools on its cell's world; each cell seeds the case's state before the candidate's first
+  turn, the runner reads it back after the last, and the checks grade it, through the engine's own world
+  session and goal-state evaluation (:mod:`threetears.evals.quick.world`).
 - **The host**, when none is given, is :func:`callable_host`: the shared sweepable core, one measure
   per scorer, no world, and the in-memory reference store. Given one, its storage and vocabulary are
   used: every scorer must already be a measure it declares, and it must declare a contract for the
@@ -41,7 +47,7 @@ import json
 import math
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, cast
 
 from threetears.evals.contracts import (
     ACCURACY_MEASURE,
@@ -74,10 +80,13 @@ from threetears.evals.contracts.host import (
     MeasureRegistry,
     SubjectSnapshot,
     WorldPlacement,
+    WorldRegistry,
     default_cell_timeout,
 )
 from threetears.evals.ops.summary import EvalSummary, summarize_run
 from threetears.evals.run import (
+    CellContext,
+    KindFactory,
     KindWiring,
     LaunchableKind,
     LaunchHost,
@@ -91,6 +100,7 @@ from threetears.evals.run import (
     start_run,
 )
 from threetears.evals.quick.judged import Judge, judge_evidence
+from threetears.evals.quick.world import CaseSeed, World, WorldCandidate, WorldCellKind, world_case_payload
 from threetears.evals.storage import InMemoryDocumentStore
 
 #: The candidate under test: an async callable taking one case and returning its answer.
@@ -214,7 +224,7 @@ def scorer_measure(scorer: Scorer) -> MetricDescriptor:
     )
 
 
-def callable_host(scorers: Sequence[Scorer] = ()) -> EvalHost:
+def callable_host(scorers: Sequence[Scorer] = (), *, world: World | None = None) -> EvalHost:
     """The least host there is: the shared core, one measure per scorer, no world, an in-memory store.
 
     What :func:`run_eval` builds when it is handed no host. Its store lives as long as the returned
@@ -225,6 +235,8 @@ def callable_host(scorers: Sequence[Scorer] = ()) -> EvalHost:
 
     Args:
         scorers: The scorer functions whose measures the host declares.
+        world: The world a world run seeds (:class:`~threetears.evals.quick.world.World`), declared on the
+            profile; ``None`` declares none.
 
     Returns:
         The host.
@@ -239,6 +251,7 @@ def callable_host(scorers: Sequence[Scorer] = ()) -> EvalHost:
             host_sweepables=SHARED_CORE,
             measures=MeasureRegistry(scorer_measure(scorer) for scorer in scorers),
             kinds=(CALLABLE_KIND_CONTRACT, JUDGED_CALLABLE_KIND_CONTRACT),
+            world=None if world is None else world.registry,
         ),
         storage=EvalStorage(InMemoryDocumentStore()),
         failure_describer=withhold_failure_detail,
@@ -490,22 +503,32 @@ def _plain_cases(cases: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return plain
 
 
-def _template_id(cases: list[dict[str, Any]], labels: list[str] | None, judge: Judge | None) -> str:
+def _template_id(
+    cases: list[dict[str, Any]],
+    labels: list[str] | None,
+    judge: Judge | None,
+    seeds: list[dict[str, Any]] | None = None,
+    goal_checks: Sequence[str] = (),
+) -> str:
     """The id the case set is addressed by: its cases, a classifier's expected labels and a judge's rubric with them.
 
     A classifier's labels are part of what its runs measure, so two classifier calls over one case list
     share a template only when they expect the same labels, and neither shares one with a scorer call.
     A rubric is the template's, so the same holds of two judged calls: one template per rubric, and none
     shared with an unjudged call. The judge's model is not part of it: that is the run's apparatus, which
-    two runs of one template are compared on.
+    two runs of one template are compared on. A world run's starting states and goal checks are its cases'
+    and its template's, so they are addressed too.
     """
     addressed: Any = cases
-    if labels is not None or judge is not None:
+    if labels is not None or judge is not None or seeds is not None:
         addressed = {"cases": cases}
         if labels is not None:
             addressed["expected"] = labels
         if judge is not None:
             addressed["rubric"] = [dim.model_dump(mode="json") for dim in judge.dims]
+        if seeds is not None:
+            addressed["seeds"] = seeds
+            addressed["goal_checks"] = list(goal_checks)
     try:
         digest = canonical_digest(addressed)
     except TypeError as unencodable:
@@ -513,11 +536,11 @@ def _template_id(cases: list[dict[str, Any]], labels: list[str] | None, judge: J
     return f"{CALLABLE_HOST_ID}-{digest[:16]}"
 
 
-def _case_payload(case: dict[str, Any], label: str | None) -> dict[str, Any]:
-    """The ``host_payload`` a case's stored test case carries: the case, verbatim, and a classifier's expected label."""
-    if label is None:
-        return {_CASE_KEY: case}
-    return {_CASE_KEY: case, _EXPECTED_KEY: label}
+def _case_payload(case: dict[str, Any], label: str | None, seed: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The ``host_payload`` a case's stored test case carries: the case, verbatim, a classifier's expected label, and a world case's starting state."""
+    labelled = {} if label is None else {_EXPECTED_KEY: label}
+    seeded = {} if seed is None else world_case_payload(seed)
+    return {_CASE_KEY: case, **labelled, **seeded}
 
 
 def _flat(value: Any) -> str:
@@ -527,25 +550,29 @@ def _flat(value: Any) -> str:
 
 def _launch_host(
     host: EvalHost,
-    kind: CallableKind,
+    kind_factory: KindFactory,
     subject: SubjectSnapshot,
     cases: list[EvalTestCase],
     judge: Judge | None,
+    world: World | None = None,
 ) -> LaunchHost:
-    """``host`` as a launching host whose one kind runs ``kind`` over ``cases``, judged by ``judge`` when given.
+    """``host`` as a launching host whose one kind runs ``kind_factory``'s kind over ``cases``, judged by ``judge`` when given.
 
     A judged kind's launcher builds its judge as every judged launcher does, with
     :func:`~threetears.evals.run.build_judge_service` over the run's template, on a host whose client
     factory lends the judge's client — so the run's judge pin, its per-dimension attribution and the
     service that scores it come from one resolution.
     """
-    world = host.profile.world
+    declared: WorldRegistry | None = host.profile.world
     kind_name = CALLABLE_KIND if judge is None else JUDGED_CALLABLE_KIND
 
     def place(_run: EvalRun) -> dict[str, WorldPlacement]:
-        # This kind attaches no carrier, so every dimension a host's world declares is out of play.
-        assert world is not None
-        return world.place(seeded=(), carriers=())
+        assert declared is not None
+        if world is None:
+            # A world-less call attaches no carrier, so every dimension a host's world declares is out of play.
+            return declared.place(seeded=(), carriers=())
+        # Every case of a world run sets every dimension, through the one carrier the world is.
+        return declared.place(seeded=world.dimension_names, carriers=(world.name,))
 
     async def launch(request: LaunchRequest) -> EvalRun:
         run_judge: RunJudge | None = None
@@ -559,7 +586,7 @@ def _launch_host(
         return await launch_run(
             launch_host,
             request,
-            KindWiring(kind_factory=lambda _cell: kind, subject=subject, test_cases=cases, judge=run_judge),
+            KindWiring(kind_factory=kind_factory, subject=subject, test_cases=cases, judge=run_judge),
         )
 
     # The judge pin is the one launch argument a judged kind honours: run_eval names its judge's model.
@@ -571,19 +598,75 @@ def _launch_host(
         kinds={kind_name: LaunchableKind(launch=launch, unhonoured_launch_arguments=frozenset(unhonoured))},
         settings=_launch_settings,
         job_timeout_factory=default_job_timeout,
-        world_placements=place if world is not None else None,
+        world_placements=place if declared is not None else None,
     )
     return launch_host
 
 
+def _world_seeds(
+    cases: list[dict[str, Any]],
+    world: World | None,
+    seed: CaseSeed | None,
+    goal_checks: Sequence[str],
+    host: EvalHost | None,
+) -> list[dict[str, Any]] | None:
+    """Each case's starting state for a world run, or ``None`` for a world-less one, refusing an incoherent request."""
+    if world is None:
+        if seed is not None or goal_checks:
+            raise ValueError("seed= and goal_checks= describe a world's state; pass the world they read (world=)")
+        return None
+    if seed is None:
+        raise ValueError("a world run seeds each case's starting state; pass seed=, from a case to its state")
+    if host is not None and host.profile.world is not world.registry:
+        raise ValueError(
+            f"host {host.profile.host_id!r} does not declare world {world.name!r}; build it with "
+            "callable_host(..., world=<the world>) so the run's world and its host's are one"
+        )
+    world.refuse_unreadable(goal_checks)
+    seeds: list[dict[str, Any]] = []
+    for index, case in enumerate(cases):
+        try:
+            values = seed(case)
+        # prawduct:ok-broad-except — seed= is the caller's code: what it raises on a case is refused with that case named
+        except Exception as raised:
+            raise ValueError(f"seed= raised on case {index}: {type(raised).__name__}: {raised}") from raised
+        seeds.append(world.refuse_unseedable(values, case=index))
+    return seeds
+
+
+def _kind_factory(
+    candidate: Candidate | WorldCandidate,
+    scorers: Sequence[Scorer],
+    *,
+    classifies: bool,
+    judge: Judge | None,
+    world: World | None,
+) -> KindFactory:
+    """The factory building each cell's kind: one :class:`CallableKind` for every cell, or a world cell's own kind."""
+    if world is None:
+        kind = CallableKind(cast(Candidate, candidate), scorers, classifies=classifies, judge=judge)
+        return lambda _cell: kind
+
+    def over(acting: Candidate) -> CallableKind:
+        return CallableKind(acting, scorers, classifies=classifies, judge=judge)
+
+    def cell_kind(context: CellContext) -> WorldCellKind:
+        return WorldCellKind(world, cast(WorldCandidate, candidate), over, context)
+
+    return cell_kind
+
+
 async def run_eval(
     cases: Sequence[Mapping[str, Any]],
-    candidate: Candidate,
+    candidate: Candidate | WorldCandidate,
     scorers: Sequence[Scorer] = (),
     *,
     scope_id: str,
     expected: ExpectedLabel | None = None,
     judge: Judge | None = None,
+    world: World | None = None,
+    seed: CaseSeed | None = None,
+    goal_checks: Sequence[str] = (),
     host: EvalHost | None = None,
     k: int = DEFAULT_LAUNCH_K_RUNS,
     model: str | None = None,
@@ -592,7 +675,9 @@ async def run_eval(
 
     Args:
         cases: The cases, each a JSON object; the candidate and the scorers receive each one as given.
-        candidate: The async callable under test, called once per case and repeat.
+        candidate: The async callable under test, called once per case and repeat: ``candidate(case)``, or for a
+            world run ``candidate(case, tools)`` with the :class:`~threetears.evals.quick.world.WorldTools` on its
+            cell's world.
         scorers: The grades. Each is reported as a measure named by its ``__name__``; ``True`` and
             ``False`` count as 1 and 0, and higher is better. None is needed when ``expected`` or
             ``judge`` is given.
@@ -615,6 +700,13 @@ async def run_eval(
         k: Repeats per case.
         model: The arm's label, stored as the run's candidate model and keyed into its variant;
             ``None`` takes the candidate's ``__name__``.
+        world: The state the candidate acts on (:class:`~threetears.evals.quick.world.World`). Each cell seeds
+            the case's starting state before the candidate's first turn and reads the world back after its last.
+        seed: A world run's starting state for each case: takes the case, returns every dimension's value.
+            Required with ``world``.
+        goal_checks: Goal-state checks over the world the candidate left and the calls it made
+            (``state.<dimension>``, ``calls("<world>.<tool>")``), each reported as passed or failed per cell.
+            Requires ``world``.
 
     Returns:
         The finished run's summary, read back from the store.
@@ -626,20 +718,25 @@ async def run_eval(
             :data:`UNUSABLE_ANSWER` label, a given host that declares no callable-kind contract
             (or one with no seats, a seat in :data:`CALLABLE_UNSEATED`, overlays or a spec), a judged call on
             a given host whose judged-kind contract is missing or seats too much or no judge, a scorer
-            the given host declares no measure for, or no ``model`` for a candidate that has no ``__name__``.
+            the given host declares no measure for, or no ``model`` for a candidate that has no ``__name__``;
+            for a world run, no ``seed=``, a ``seed=`` that raises or gives a case a state the world refuses or
+            leaves a dimension unset, a goal check reading state or naming a tool the world lacks, or a given
+            host that does not declare the world; and ``seed=`` or ``goal_checks=`` with no ``world=``.
         ValidationFailedError: The launch refused: a ``k`` outside the run's bounds.
     """
     plain_cases = _plain_cases(cases)
-    if not scorers and expected is None and judge is None:
+    goal_checks = list(goal_checks)
+    if not scorers and expected is None and judge is None and not goal_checks:
         raise ValueError(
-            "run_eval needs at least one scorer, a classifier's expected labels (expected=) or a judge (judge=): "
-            "a run nothing grades measures nothing"
+            "run_eval needs at least one scorer, a classifier's expected labels (expected=) or a judge (judge=), "
+            "or a world's goal checks (goal_checks=): a run nothing grades measures nothing"
         )
     _refuse_unnamed_or_repeated(scorers)
     labels = None if expected is None else _expected_labels(plain_cases, expected)
-    template_id = _template_id(plain_cases, labels, judge)
+    seeds = _world_seeds(plain_cases, world, seed, goal_checks, host)
+    template_id = _template_id(plain_cases, labels, judge, seeds, goal_checks)
     if host is None:
-        host = callable_host(scorers)
+        host = callable_host(scorers, world=world)
     else:
         _refuse_an_undeclared_callable_contract(host, judged=judge is not None)
         _refuse_undeclared_measures(host, scorers)
@@ -656,6 +753,7 @@ async def run_eval(
         intent=doc.splitlines()[0] if doc else f"Answer each case so that {graded_by} the answer well.",
         candidate_kind=CALLABLE_KIND if judge is None else JUDGED_CALLABLE_KIND,
         rubric=list(judge.dims) if judge is not None else [],
+        goal_state_checks=goal_checks,
     )
     test_cases = [
         EvalTestCase(
@@ -663,7 +761,9 @@ async def run_eval(
             scope_id=scope_id,
             template_id=template_id,
             variation_params={key: _flat(value) for key, value in case.items()},
-            host_payload=_case_payload(case, None if labels is None else labels[index]),
+            host_payload=_case_payload(
+                case, None if labels is None else labels[index], None if seeds is None else seeds[index]
+            ),
         )
         for index, case in enumerate(plain_cases)
     ]
@@ -671,8 +771,8 @@ async def run_eval(
     for test_case in test_cases:
         host.storage.save_test_case(test_case)
     subject = SubjectSnapshot(subject_id=model, subject_label=model, state={})
-    kind = CallableKind(candidate, scorers, classifies=labels is not None, judge=judge)
-    launch_host = _launch_host(host, kind, subject, test_cases, judge)
+    kind_factory = _kind_factory(candidate, scorers, classifies=labels is not None, judge=judge, world=world)
+    launch_host = _launch_host(host, kind_factory, subject, test_cases, judge, world)
     runs = await start_run(
         launch_host,
         template_id=template_id,
