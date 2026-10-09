@@ -879,7 +879,10 @@ async def run_eval(
         judge: A model grading each answer on a rubric (:class:`~threetears.evals.quick.judged.Judge`): one
             call per dimension per answer, through the engine's judge service. Each dimension's scores
             are summarised beside the measures, and the judge's spend as its client priced it. A judge
-            that fails or cannot tell on a dimension excludes that cell, as any fault of the rig does.
+            call that fails excludes that cell, as any fault of the rig does. A "can't tell" is an answer,
+            not a fault: it is recorded on its dimension, counted there (``cannot_tell`` in the summary's
+            dimension line), and leaves the cell out of that dimension's mean alone — every other dimension
+            and measure still counts the cell.
         intent: What every case asks of the candidate, in one sentence: the template's intent, which the
             judge reads beside each answer (as ``**Intent:**`` in its prompt) and so can move its scores.
             ``None`` takes the first line of the candidate's docstring, or, with no docstring, a generic
