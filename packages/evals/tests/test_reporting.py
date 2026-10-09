@@ -26,7 +26,10 @@ from threetears.evals.analysis.reporting import (
     BADGE_MEASUREMENT_WINDOWS_DISJOINT,
     BADGE_ROLES_DIFFER,
     BADGE_TOOL_CONFIG_DIFFERS,
+    CASSETTE_SPAN_CLAUSE,
+    CELL_MEASURED,
     CELL_UNMEASURED,
+    CELL_WITHHELD,
     DEGRADED_RUN_CLAUSE,
     METRIC_COMPOSITE,
     METRIC_COST_USD,
@@ -58,6 +61,7 @@ from threetears.evals.analysis.reporting import (
     compute_history,
     compute_orphaned_runs,
     compute_pivot,
+    export_projection,
     compute_program_budget,
     decompose_total_ms,
     difference_was_declared_at_launch,
@@ -68,6 +72,7 @@ from threetears.evals.analysis.reporting import (
     serialize_export,
 )
 from threetears.evals.contracts.host import freeze
+from threetears.evals.ops import pivot_text
 from threetears.evals.contracts.host.values import SweepableValue
 from threetears.evals.contracts.identity import IDENTITY_VERSION, derive_context_identity, resolve_context_identity
 from threetears.evals.contracts.metrics import METRIC_DESCRIPTORS, describe_measure
@@ -2240,15 +2245,16 @@ class TestPivotAxisResolution:
         assert table.rows == ["tc-1", "tc-2"]
 
     def test_an_unknown_factor_is_refused_rather_than_bucketed(self):
-        # `cassette_mode` is a genuine cell coordinate that still lives
+        # Clean-snapshot provenance is a genuine cell condition that still lives
         # ONLY inside the `context_key` digest — the role widening lifted the
-        # judge/simulator roles out to first-class fields but deliberately left
-        # cassette provenance hashed. So it remains the honest "coordinate the
-        # rows do not carry" case: pivoting on it must refuse, not bucket.
+        # judge/simulator roles out to first-class fields and the cost pivot lifted
+        # `cassette_mode`, but snapshot provenance stays hashed. So it remains the
+        # honest "coordinate the rows do not carry" case: pivoting on it must refuse,
+        # not bucket.
         with pytest.raises(PivotError, match="unknown factor"):
             compute_pivot(
                 [_record()],
-                row_factor="cassette_mode",
+                row_factor="clean_snapshot",
                 column_factor="model",
                 metric=METRIC_COMPOSITE,
                 profile=_JUDGED_HOST,
@@ -2388,7 +2394,7 @@ class TestPivotAxisResolution:
         """
         with pytest.raises(PivotError, match="unknown factor"):
             compute_pivot(
-                [], row_factor="cassette_mode", column_factor="model", metric=METRIC_COMPOSITE, profile=_JUDGED_HOST
+                [], row_factor="clean_snapshot", column_factor="model", metric=METRIC_COMPOSITE, profile=_JUDGED_HOST
             )
 
     def test_an_unknown_filter_key_is_refused_rather_than_matching_nothing(self):
@@ -2412,6 +2418,178 @@ class TestPivotAxisResolution:
 
         assert _grid(table)[("m1", "tpl-1")].value == 1.0
         assert table.n_observations == 1
+
+
+class TestPivotPoolingDisclosures:
+    """What a pivot cell pools that is not one quantity is said, or its number withheld (#625, #658, #672)."""
+
+    PRICED = ["candidate", "judge"]
+    METERED = ["candidate", "external", "judge"]
+
+    @staticmethod
+    def _result(run, *, case="tc-1", cost=0.10, **overrides):
+        return make_eval_result(
+            eval_run_id=run.id, scope_id=run.scope_id, test_case_id=case, cost_usd=cost, **overrides
+        )
+
+    @staticmethod
+    def _cost_pivot(runs, results, *, column_factor="template_id", row_factor="model", metric=METRIC_COST_USD):
+        projection = project_score_records(runs, results, profile=_JUDGED_HOST)
+        return compute_pivot(
+            projection.records,
+            row_factor=row_factor,
+            column_factor=column_factor,
+            metric=metric,
+            profile=_JUDGED_HOST,
+        )
+
+    def test_a_cost_cell_names_both_compositions_and_the_table_flags_them(self):
+        """#625: two runs priced different roles; one cell pools both, and says so."""
+        run_a, _ = _run_with_results(id="run-a")
+        run_b, _ = _run_with_results(id="run-b")
+        results = [
+            self._result(run_a, case="tc-1", cost_roles=self.PRICED),
+            self._result(run_b, case="tc-2", cost_roles=self.METERED, cost=0.20),
+        ]
+
+        table = self._cost_pivot([run_a, run_b], results)
+
+        (cell,) = table.cells
+        assert cell.status == CELL_MEASURED
+        assert cell.cost_compositions == sorted([self.PRICED, self.METERED])
+        assert table.cost_compositions_differ is True
+        assert "cost compositions differ" in pivot_text(table)
+
+    def test_one_composition_is_named_and_not_flagged(self):
+        run, _ = _run_with_results()
+        table = self._cost_pivot([run], [self._result(run, cost_roles=self.PRICED)])
+
+        assert table.cells[0].cost_compositions == [self.PRICED]
+        assert table.cost_compositions_differ is False
+
+    def test_a_non_cost_pivot_carries_no_composition(self):
+        run, _ = _run_with_results()
+        table = self._cost_pivot([run], [self._result(run, cost_roles=self.PRICED)], metric=METRIC_COMPOSITE)
+
+        assert table.cells[0].cost_compositions == []
+        assert table.cost_compositions_differ is False
+
+    def test_a_cost_cell_pooling_replayed_with_live_is_withheld(self):
+        """#658: one live and one replayed run of the same arm — the cell's mean is neither one's spend."""
+        live, _ = _run_with_results(id="run-live", cassette_mode="off")
+        replayed, _ = _run_with_results(id="run-replay", cassette_mode="replay")
+        results = [self._result(live, case="tc-1", cost=0.30), self._result(replayed, case="tc-2", cost=0.05)]
+
+        table = self._cost_pivot([live, replayed], results)
+
+        (cell,) = table.cells
+        assert cell.status == CELL_WITHHELD
+        assert cell.value is None and cell.sem is None
+        assert cell.withheld is not None and "replay" in cell.withheld
+        # Withheld is not empty: what the cell held is still counted.
+        assert (cell.n, cell.cassette_modes) == (2, ["off", "replay"])
+        assert table.cassette_mode_disclosure is not None
+        assert CASSETTE_SPAN_CLAUSE in table.cassette_mode_disclosure
+        assert "withheld: it pools" in pivot_text(table)
+
+    def test_cassette_mode_on_an_axis_reads_each_alone(self):
+        live, _ = _run_with_results(id="run-live", cassette_mode="off")
+        replayed, _ = _run_with_results(id="run-replay", cassette_mode="replay")
+        results = [self._result(live, case="tc-1", cost=0.30), self._result(replayed, case="tc-2", cost=0.05)]
+
+        table = self._cost_pivot([live, replayed], results, column_factor="cassette_mode")
+
+        cells = _grid(table)
+        assert cells[("sonnet", "off")].value == pytest.approx(0.30)
+        assert cells[("sonnet", "replay")].value == pytest.approx(0.05)
+        # The cells differ in mode, so the table still carries the comparison surfaces' sentence.
+        assert table.cassette_mode_disclosure is not None
+
+    def test_a_quality_cell_over_mixed_modes_is_reported_and_the_table_discloses(self):
+        live, _ = _run_with_results(id="run-live", cassette_mode="off")
+        replayed, _ = _run_with_results(id="run-replay", cassette_mode="replay")
+        results = [self._result(live, case="tc-1"), self._result(replayed, case="tc-2")]
+
+        table = self._cost_pivot([live, replayed], results, metric=METRIC_COMPOSITE)
+
+        assert table.cells[0].status == CELL_MEASURED
+        assert table.cassette_mode_disclosure is not None
+
+    def test_off_and_capture_pool_without_withholding(self):
+        """Both run the third party live: a difference in what was recorded, not in what was spent."""
+        live, _ = _run_with_results(id="run-live", cassette_mode="off")
+        captured, _ = _run_with_results(id="run-capture", cassette_mode="capture")
+        results = [self._result(live, case="tc-1"), self._result(captured, case="tc-2")]
+
+        cell = self._cost_pivot([live, captured], results).cells[0]
+
+        assert cell.status == CELL_MEASURED
+        assert cell.cassette_modes == ["capture", "off"]
+
+    def test_a_seeded_delivery_within_one_mode_is_reported_and_exported(self):
+        """A seeded finding substitutes on the template's own cases, so arms over them carry it alike."""
+        run, _ = _run_with_results()
+        seeded = self._result(
+            run, case="tc-2", async_deliveries=[AsyncDelivery(tool="scout", status="delivered", substituted=True)]
+        )
+        projection = project_score_records([run], [self._result(run, case="tc-1"), seeded], profile=_JUDGED_HOST)
+
+        cell = self._cost_pivot([run], [self._result(run, case="tc-1"), seeded]).cells[0]
+
+        assert cell.status == CELL_MEASURED
+        rows = csv.DictReader(io.StringIO(export_projection(projection, fmt="csv").body))
+        assert {(row["test_case_id"], row["substituted_deliveries"]) for row in rows} == {("tc-1", "0"), ("tc-2", "1")}
+
+    def test_the_export_names_which_result_replayed(self):
+        """#658: each row carries its run's cassette mode and its substituted-delivery count as columns."""
+        live, _ = _run_with_results(id="run-live", cassette_mode="off")
+        replayed, _ = _run_with_results(id="run-replay", cassette_mode="replay")
+        results = [self._result(live, case="tc-1"), self._result(replayed, case="tc-2", cost_roles=self.PRICED)]
+
+        export = export_projection(project_score_records([live, replayed], results, profile=_JUDGED_HOST), fmt="csv")
+
+        rows = [row for row in csv.DictReader(io.StringIO(export.body)) if row["metric"] == METRIC_COST_USD]
+        assert {row["run_id"]: row["cassette_mode"] for row in rows} == {"run-live": "off", "run-replay": "replay"}
+        assert {row["substituted_deliveries"] for row in rows} == {"0"}
+        assert "judge" in next(row["cost_roles"] for row in rows if row["run_id"] == "run-replay")
+
+    def test_a_variant_key_cell_spanning_an_identity_bump_names_the_versions(self):
+        """#672: one digest stamped at two predicate versions pools into one cell, and the table says so."""
+        run, _ = _run_with_results()
+        results = [
+            self._result(run, case="tc-1", variant_key="vk-1", identity_version=IDENTITY_VERSION - 1),
+            self._result(run, case="tc-2", variant_key="vk-1", identity_version=IDENTITY_VERSION),
+        ]
+
+        table = self._cost_pivot([run], results, row_factor="variant_key", metric=METRIC_COMPOSITE)
+
+        (cell,) = table.cells
+        assert cell.identity_versions == {"variant_key": [IDENTITY_VERSION - 1, IDENTITY_VERSION]}
+        assert table.identity_pooling_disclosure is not None
+        assert f"v{IDENTITY_VERSION - 1}" in table.identity_pooling_disclosure
+
+    def test_a_variant_key_pivot_over_one_version_discloses_nothing(self):
+        run, _ = _run_with_results()
+        results = [self._result(run, case=case, variant_key="vk-1") for case in ("tc-1", "tc-2")]
+
+        table = self._cost_pivot([run], results, row_factor="variant_key", metric=METRIC_COMPOSITE)
+
+        assert table.cells[0].identity_versions == {}
+        assert table.identity_pooling_disclosure is None
+
+    def test_pivoting_the_key_against_its_version_separates_them(self):
+        run, _ = _run_with_results()
+        results = [
+            self._result(run, case="tc-1", variant_key="vk-1", identity_version=IDENTITY_VERSION - 1),
+            self._result(run, case="tc-2", variant_key="vk-1", identity_version=IDENTITY_VERSION),
+        ]
+
+        table = self._cost_pivot(
+            [run], results, row_factor="variant_key", column_factor="variant_identity_version", metric=METRIC_COMPOSITE
+        )
+
+        assert len(table.cells) == 2
+        assert table.identity_pooling_disclosure is None
 
 
 class TestPivotDescribesWhatACellHolds:

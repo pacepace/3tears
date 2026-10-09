@@ -687,12 +687,14 @@ class ScoreRecord(EvalBaseModel):
     through :func:`_contestant_key` and carry the version in the key — but neither of
     those reads a ``ScoreRecord`` at all. The surface that reads this row is ``pivot``,
     whose axis set is deliberately open: ``_axis_value`` reads any declared coordinate by
-    name, so ``row_factor="variant_key"`` groups the raw digest and pools every predicate
-    version into one cell. That is the same defect one lens over, and it is **not** fixed
-    here, because gating it means deciding that one particular axis implies a partition —
-    which the open-axis design does not currently let this module assert. Tracked
-    rather than papered over; ``variant_identity_version`` is itself a declared coordinate,
-    so a caller can pivot on the pair today.
+    name, so ``row_factor="variant_key"`` groups the raw digest. The pivot does not gate
+    there, because gating means deciding that one particular axis implies a partition,
+    which the open-axis design does not let this module assert; it **discloses** instead
+    (#672). A cell grouped on an identity key that pools more than one version of that
+    key's predicate names the versions (:attr:`PivotCell.identity_versions`), and the
+    table says which cells do (:attr:`PivotTable.identity_pooling_disclosure`).
+    ``variant_identity_version`` is itself a declared coordinate, so pivoting the key
+    against it separates the versions.
 
     The sentence stood here unqualified for some time while nothing did it, which is how
     the wrong merge it forbids reached production on the two lenses that now gate.
@@ -748,9 +750,9 @@ class ScoreRecord(EvalBaseModel):
     # — so a pivot on `judge_model` partitions on the same value the
     # comparability badge reads, and the two surfaces cannot disagree about
     # which runs used the same judge. `None` means the run was not judged (judge) or ran
-    # no simulated user, or recorded none (simulator). Deliberately only these two of
-    # the pinned coordinates: cassette and clean-snapshot provenance stay
-    # in the digest, un-pivotable, until a query needs them.
+    # no simulated user, or recorded none (simulator). Clean-snapshot provenance stays
+    # in the digest, un-pivotable, until a query needs it; cassette mode is carried below,
+    # because a cost pivot needed it.
     #
     # **`judge_model` is the run's PIN and is NOT the model that scored this
     # row's dimension.** Under the judge-model cascade (role default < run pin <
@@ -764,6 +766,21 @@ class ScoreRecord(EvalBaseModel):
     # than one of them being made to mean both things.
     judge_model: str | None = None
     simulator_model: str | None = None
+
+    # The cassette mode the run RECORDED (`off`, `capture` or `replay`), run-level like the
+    # judge pin above. Carried because a replayed result did not spend what a live one does:
+    # a replayed background delivery spent no inner-agent dollars, so its `cost_usd` is
+    # smaller for a reason in the apparatus, not the configuration (#658). A cost pivot reads
+    # it to withhold a cell that pools replayed with live results, the export carries it as a
+    # column, and a caller can pivot on it like any other coordinate. `None` only on a row
+    # built without a run.
+    cassette_mode: str | None = None
+    # How many of this result's async deliveries a harness supplied rather than the candidate's
+    # background work producing them — a replayed capture or a seeded finding
+    # (`count_substituted_deliveries`). The per-result half of the same fact: a seeded finding
+    # substitutes in a run that recorded `off`, so the run's mode alone cannot say which results
+    # spent less. Non-zero is what withholds the result's production-replicating cost.
+    substituted_deliveries: int = 0
 
     created_at: str = ""
 
@@ -881,6 +898,28 @@ class ScoreRecord(EvalBaseModel):
     # --- The measurement ---
     metric: str
     value: float | None = None
+
+    # The roles a `cost_usd` row's dollars were summed over (`EvalResult.cost_roles`), set on
+    # cost rows alone (#625). What the sum covers differs per run — metered third-party spend
+    # enters only for a run whose operator declared a rate — so two equal totals can cover
+    # different things, and a cost pivot reads this to say which compositions each cell pooled
+    # (`pooled_cost_compositions`, the reading every pooled cost surface shares). `None` on every
+    # other row, which measures no dollars.
+    cost_roles: list[str] | None = None
+
+    @model_validator(mode="after")
+    def _only_a_cost_row_names_its_cost_roles(self) -> ScoreRecord:
+        """A cost composition qualifies a cost and nothing else.
+
+        Returns:
+            The validated record.
+
+        Raises:
+            ValueError: A non-cost row carries a cost composition.
+        """
+        if self.metric != METRIC_COST_USD and self.cost_roles is not None:
+            raise ValueError(f"a {self.metric!r} row measures no dollars, so it has no cost composition")
+        return self
 
     # --- The kind's own grade, for a kind whose scoring is code rather than a judge ---
     #
@@ -1319,6 +1358,8 @@ def project_score_records(
         its own — and emits a single dimensionless null row when the judge scored
         none.
     """
+    from threetears.evals.contracts.usage_capture import count_substituted_deliveries
+
     placed, exclusions = place_results(
         runs, results, known_run_ids, source="project_score_records", archived_run_ids=archived_run_ids
     )
@@ -1343,6 +1384,8 @@ def project_score_records(
             "context_identity_version": run.identity_version,
             "judge_model": run.judge_model,
             "simulator_model": run.simulator_model,
+            "cassette_mode": run.cassette_mode,
+            "substituted_deliveries": count_substituted_deliveries(result),
             "created_at": run.created_at,
             "factors": factors_by_run[run.id],
             "outcome": classify_result(result).value,
@@ -1401,7 +1444,11 @@ def project_score_records(
                 **composite_coordinates,
             )
         )
-        records.append(ScoreRecord(metric=METRIC_COST_USD, value=result.cost_usd, **coordinates))
+        records.append(
+            ScoreRecord(
+                metric=METRIC_COST_USD, value=result.cost_usd, cost_roles=list(result.cost_roles), **coordinates
+            )
+        )
 
         # One row per judged dimension, carrying the RAW score on the dimension's own scale
         # (1-5, or 1/0 for pass/fail, named by `rubric_scale`) — not the 0-1 composite scale. Read straight off
@@ -2605,6 +2652,11 @@ DEFAULT_WEIGHTING = WEIGHTING_EQUAL_PER_SCENARIO
 CELL_MEASURED = "measured"
 CELL_NOT_RUN = "not_run"
 CELL_UNMEASURED = "unmeasured"
+# A fourth state, and not a kind of the other three: the cell HAS measured observations, and its
+# mean is withheld because it would pool two quantities that are not one distribution — today a
+# cost cell pooling replayed results with live ones (#658). `PivotCell.withheld` says why, and
+# `n` / `n_cases` / `outcomes` still say what the cell held, so withheld never reads as empty.
+CELL_WITHHELD = "withheld"
 
 # Observation-level metric name -> the registry name of the AGGREGATE that an
 # aggregating surface (`pivot` cell, `history` series point) actually reports.
@@ -2718,7 +2770,7 @@ def _metric_vocabulary(accepted: frozenset[str]) -> str:
 # accepted sets without a gloss fails loudly instead of reaching a help text that never mentions it.
 _METRIC_GLOSS: dict[str, str] = {
     METRIC_COMPOSITE: "0-1 quality",
-    METRIC_COST_USD: "spend in USD",
+    METRIC_COST_USD: "measuring spend in USD: the candidate's and the judge's and simulator's",
     METRIC_SCORE: "the raw judge score: 1-5, or 1/0 on a pass/fail dimension",
     METRIC_TOTAL_MS: "one result's wall-clock",
     METRIC_TRANSCRIPT: "dual-score axis, 1-5 and NOT a dimension",
@@ -2839,6 +2891,27 @@ class PivotCell(EvalBaseModel):
     # Observation counts per scoring outcome, so a cell whose mean rests largely
     # on candidate failures cannot look like one that rests on clean passes.
     outcomes: dict[str, int] = {}
+    #: Why the cell's value is withheld, set exactly when ``status`` is ``withheld``: on a cost pivot,
+    #: the cell pools results from runs that replayed their third party with results from runs that
+    #: ran it live, and a replayed result did not spend what a live one does, so their mean is neither
+    #: one's spend (#658). The counts above still say what the cell held.
+    withheld: str | None = None
+    #: The cassette modes the runs behind the cell's valued observations recorded, sorted. One entry is
+    #: a uniform cell; ``replay`` beside another mode is the mix a cost cell withholds.
+    cassette_modes: list[str] = []
+    #: On a cost pivot, the role sets the cell's dollars were summed over
+    #: (:func:`pooled_cost_compositions`), from the observations that carried a value (#625). More than
+    #: one entry means the cell's own mean pools totals that covered different things; two cells whose
+    #: entries differ are not comparable on cost, which :attr:`PivotTable.cost_compositions_differ`
+    #: flags at the table. Empty on any other metric.
+    cost_compositions: list[list[str]] = []
+    #: Identity key -> the predicate versions its observations here were stamped at, for each identity
+    #: key (``variant_key``, ``context_key``) the table groups or filters on, and only where the cell
+    #: pools more than one (#672). Two keys stamped at different versions cannot be shown FROM THE STAMP
+    #: ALONE to describe one contestant — the frontier ranks them apart for that reason — so a cell
+    #: pooling them may be averaging two conditions as repeats of one. Disclosed rather than split,
+    #: because the pivot's axes are open and no one axis may imply a partition.
+    identity_versions: dict[str, list[int]] = {}
 
 
 class SimpsonsFlag(EvalBaseModel):
@@ -2898,6 +2971,18 @@ class PivotTable(EvalBaseModel):
     #: How many of ``n_observations`` came from those runs. The weight the caveat
     #: carries: two of two hundred is a footnote and two of four is the answer.
     n_degraded_observations: int = 0
+    #: On a cost pivot, whether the table's valued observations were summed over more than one role set
+    #: (#625) — within one cell or between cells. True means some cost here covered roles another did not,
+    #: so a cheaper cell may only have priced fewer things; each cell's ``cost_compositions`` says which.
+    cost_compositions_differ: bool = False
+    #: The sentence a comparison carries when its runs recorded different cassette modes
+    #: (:func:`cassette_mode_disclosure`, the words ``compare_runs`` and ``comparison_sets`` use), over the
+    #: runs behind this table's observations, or ``None`` when they all recorded one (#658). It qualifies
+    #: every metric, not only cost: a replayed arm was also measured on the questions its capture asked.
+    cassette_mode_disclosure: str | None = None
+    #: One sentence naming every cell that pools more than one identity version of the key it is grouped
+    #: or filtered on (:attr:`PivotCell.identity_versions`), or ``None`` when none does (#672).
+    identity_pooling_disclosure: str | None = None
     #: Plans the cost estimate made that no cell describes — a model no level of the model axis carries, or a
     #: template no cell at that model holds alone — each as ``model`` or ``model (template)``. Named rather than
     #: dropped, since a prediction with nowhere to sit is still a fact about the plan: an arm that was priced and
@@ -3159,6 +3244,104 @@ def _simpsons_flags(
     return flags
 
 
+#: Each identity key a pivot can group on, and the coordinate carrying the predicate version that minted it.
+_IDENTITY_KEY_VERSION_FIELDS: dict[str, str] = {
+    "variant_key": "variant_identity_version",
+    "context_key": "context_identity_version",
+}
+
+
+def _pooled_identity_versions(records: Sequence[ScoreRecord], keys: Iterable[str]) -> dict[str, list[int]]:
+    """The identity versions a cell pools, for each identity key it is grouped or filtered on (#672).
+
+    Args:
+        records: The cell's observations.
+        keys: The identity keys among the table's axes and filters.
+
+    Returns:
+        Key -> its versions, ascending, only for a key whose observations here carry more than one.
+    """
+    pooled: dict[str, list[int]] = {}
+    for key in keys:
+        field = _IDENTITY_KEY_VERSION_FIELDS[key]
+        versions = sorted({version for record in records if (version := getattr(record, field)) is not None})
+        if len(versions) > 1:
+            pooled[key] = versions
+    return pooled
+
+
+def _identity_pooling_disclosure(cells: Sequence[PivotCell]) -> str | None:
+    """Name every cell that pools more than one identity version of the key it is grouped on.
+
+    The frontier's reason in the pivot's terms: two keys stamped at different versions cannot be shown from
+    the stamp alone to describe one contestant, so the frontier ranks them apart (:func:`_contestant_key`).
+    The pivot's axes are open, so it does not split; it says which cells pool and how to read them apart.
+
+    Args:
+        cells: The table's cells.
+
+    Returns:
+        The sentence, or ``None`` when no cell pools versions.
+    """
+    pooled = [cell for cell in cells if cell.identity_versions]
+    if not pooled:
+        return None
+    named = "; ".join(
+        f"({cell.row}, {cell.column}): "
+        + ", ".join(
+            f"{key} stamped at {', '.join(f'v{version}' for version in versions)}"
+            for key, versions in cell.identity_versions.items()
+        )
+        for cell in pooled
+    )
+    return (
+        f"{len(pooled)} cell(s) pool observations stamped at more than one identity version of the key they are "
+        f"grouped on — {named}. Two keys stamped at different versions cannot be shown FROM THE STAMP ALONE to "
+        "describe the same contestant (the frontier ranks them apart), so such a cell may average two conditions "
+        "as repeats of one. Pivot the key against its version coordinate (variant_identity_version or "
+        "context_identity_version) to read each version alone."
+    )
+
+
+def _cost_withheld(records: Sequence[ScoreRecord]) -> str | None:
+    """Why a cost mean over these valued observations is withheld, or ``None`` when it is reported (#658).
+
+    **A cost mean that pools replayed with live results is withheld rather than disclosed**, because a
+    caveat beside a number does not stop it being read, and this number is neither population's spend. The
+    observations come from runs that recorded ``replay`` and runs that ran the third party live: a replayed
+    background delivery spent none of its dollars, and a replay serves only the asks its capture made (any
+    other ask stops the cell), so even where nothing was substituted the replayed conversations are a
+    selected population whose spend is not the live one's. A mix of ``off`` and ``capture`` is not withheld:
+    both run the third party live.
+
+    A uniform cell — every observation replayed, or every one live — is reported: its mean is one
+    population's, and :attr:`PivotTable.cassette_mode_disclosure` says when the table's cells differ.
+
+    **A substituted delivery within one mode is not a reason to withhold.** A seeded finding substitutes in
+    a run that recorded ``off``, but it does so on the template's own cases, so two arms over those cases
+    carry the same substitutions and the comparison between their cells is honest; the dollars it did not
+    spend were never measuring spend either. Each row's ``substituted_deliveries`` is an export column for a
+    reader who needs it. Withholding on it would blank the cost of every arm over a seeded template.
+
+    Args:
+        records: The observations a cost mean would be taken over.
+
+    Returns:
+        The reason, or ``None``.
+    """
+    modes = sorted({record.cassette_mode for record in records if record.cassette_mode is not None})
+    if SUBSTITUTING_CASSETTE_MODE in modes and len(modes) > 1:
+        live = ", ".join(mode for mode in modes if mode != SUBSTITUTING_CASSETTE_MODE)
+        return (
+            f"pools results from runs that recorded cassette mode {SUBSTITUTING_CASSETTE_MODE} with results from "
+            f"runs that recorded {live}. A replayed result re-served a recording rather than running its third "
+            "party: where it replayed a background delivery it spent none of that delivery's dollars, and a "
+            "replay serves only the asks its capture made, so the mean of the two is neither one's spend. Put "
+            "'cassette_mode' on an axis to read each alone."
+        )
+    return None
+
+
 def compute_pivot(
     records: list[ScoreRecord],
     *,
@@ -3196,6 +3379,13 @@ def compute_pivot(
     caveat is carried at the table in ``completeness_disclosures`` rather than marked
     per cell. The predicate is the completeness record, never the run's status.
 
+    **What a cell pools that is not one quantity is said, or its number withheld.** On a cost pivot each
+    cell names the role sets its dollars covered (``cost_compositions``) and the table flags when they
+    differ (#625); a cost cell pooling replayed results with live ones is ``withheld`` with the reason,
+    since a caveat does not stop a mean being read (#658); the table carries the comparison surfaces' cassette-mode sentence when its runs recorded
+    different modes; and a cell grouped or filtered on an identity key that pools more than one version of
+    its predicate names them (#672).
+
     Args:
         records: Rows from :func:`project_score_records`.
         row_factor: Coordinate to use as the row axis.
@@ -3232,8 +3422,8 @@ def compute_pivot(
 
     Returns:
         A :class:`PivotTable` whose every cell carries ``n``, dispersion, and its
-        measured/unmeasured/not-run status, plus the completeness disclosures of
-        the short runs its numbers were pooled from.
+        measured/unmeasured/not-run/withheld status, plus the completeness disclosures of
+        the short runs its numbers were pooled from and the pooling disclosures above.
 
     Raises:
         PivotError: Unknown weighting or metric, an undotted axis or filter the
@@ -3325,6 +3515,10 @@ def compute_pivot(
 
     rows = sorted({row for row, _ in grouped})
     columns = sorted({column for _, column in grouped})
+    # The identity keys this table groups or filters on, each of which must not silently pool versions.
+    identity_keys = sorted(
+        {name for name in (row_factor, column_factor, *(filters or {})) if name in _IDENTITY_KEY_VERSION_FIELDS}
+    )
 
     cells: list[PivotCell] = []
     measured: dict[tuple[str, str], PivotCell] = {}
@@ -3357,6 +3551,7 @@ def compute_pivot(
                     values_by_case.setdefault(record.test_case_id, []).append(record.value)
 
             n_valued = sum(len(v) for v in values_by_case.values())
+            identity_versions = _pooled_identity_versions(at_cell, identity_keys)
             if not values_by_case:
                 cells.append(
                     PivotCell(
@@ -3367,6 +3562,33 @@ def compute_pivot(
                         status=CELL_UNMEASURED,
                         n_unmeasured=len(at_cell),
                         outcomes=outcomes,
+                        identity_versions=identity_versions,
+                    )
+                )
+                continue
+
+            # What the value is drawn over is the valued observations, so the qualifiers below read those.
+            valued = [record for record in at_cell if record.value is not None]
+            qualifiers: dict[str, Any] = {
+                "cassette_modes": sorted({r.cassette_mode for r in valued if r.cassette_mode is not None}),
+                "cost_compositions": pooled_cost_compositions(valued) if metric == METRIC_COST_USD else [],
+                "identity_versions": identity_versions,
+            }
+            withheld = _cost_withheld(valued) if metric == METRIC_COST_USD else None
+            if withheld is not None:
+                cells.append(
+                    PivotCell(
+                        predicted=planned,
+                        n_unplanned=unplanned,
+                        row=row,
+                        column=column,
+                        status=CELL_WITHHELD,
+                        withheld=withheld,
+                        n=n_valued,
+                        n_cases=len(values_by_case),
+                        n_unmeasured=len(at_cell) - n_valued,
+                        outcomes=outcomes,
+                        **qualifiers,
                     )
                 )
                 continue
@@ -3384,6 +3606,7 @@ def compute_pivot(
                 sem=sem,
                 n_unmeasured=len(at_cell) - n_valued,
                 outcomes=outcomes,
+                **qualifiers,
             )
             cells.append(cell)
             measured[(row, column)] = cell
@@ -3392,12 +3615,16 @@ def compute_pivot(
     # when they stop breaking the comparison down. Computed from the observations
     # rather than from the cells above, because the row weighting is the entire
     # mechanism the Simpson's guard exists to catch.
+    # A cost column whose observations the cells' own rule would withhold has no pooled figure either.
     pooled: dict[str, float] = {}
     for column in columns:
+        in_column = [r for r in selected if _axis_value(r, column_factor) == column and r.value is not None]
+        if metric == METRIC_COST_USD and _cost_withheld(in_column) is not None:
+            continue
         by_case: dict[str, list[float]] = {}
-        for record in selected:
-            if _axis_value(record, column_factor) == column and record.value is not None:
-                by_case.setdefault(record.test_case_id, []).append(record.value)
+        for record in in_column:
+            assert record.value is not None
+            by_case.setdefault(record.test_case_id, []).append(record.value)
         if by_case:
             pooled[column], _ = _aggregate(by_case, weighting)
 
@@ -3429,6 +3656,12 @@ def compute_pivot(
             if any(record.run_id == run_id for record in selected)
         },
         n_degraded_observations=sum(1 for record in selected if record.run_id in (completeness_disclosures or {})),
+        cost_compositions_differ=metric == METRIC_COST_USD
+        and len(pooled_cost_compositions([r for r in selected if r.value is not None])) > 1,
+        cassette_mode_disclosure=cassette_mode_disclosure(
+            {record.run_id: record.cassette_mode for record in selected if record.cassette_mode is not None}
+        ),
+        identity_pooling_disclosure=_identity_pooling_disclosure(cells),
         unplaced_predicted_models=sorted({plan.label for plan in predictions} - placed),
     )
 
@@ -5726,7 +5959,7 @@ def compute_history(
 _QUALITY_INCLUDED_STATUS = "completed"
 
 
-def pooled_cost_compositions(results: Sequence[EvalResult]) -> list[list[str]]:
+def pooled_cost_compositions(results: Sequence[EvalResult] | Sequence[ScoreRecord]) -> list[list[str]]:
     """Say what a pooled cost total is made of.
 
     Every surface that adds ``cost_usd`` across results is adding numbers whose composition
@@ -5737,12 +5970,14 @@ def pooled_cost_compositions(results: Sequence[EvalResult]) -> list[list[str]]:
     total covers.
 
     Args:
-        results: The results whose ``cost_usd`` the caller pooled.
+        results: The results whose ``cost_usd`` the caller pooled, or the cost rows a pivot cell
+            pooled (:attr:`ScoreRecord.cost_roles`, which carries the result's composition
+            verbatim). A row carrying no composition — any row but a cost row — contributes none.
 
     Returns:
         The distinct compositions, sorted.
     """
-    return sorted(list(c) for c in {tuple(result.cost_roles) for result in results})
+    return sorted(list(c) for c in {tuple(result.cost_roles) for result in results if result.cost_roles is not None})
 
 
 class BudgetRun(EvalBaseModel):
@@ -6791,6 +7026,7 @@ __all__ = [
     "CELL_MEASURED",
     "CELL_NOT_RUN",
     "CELL_UNMEASURED",
+    "CELL_WITHHELD",
     "COST_PREDICTION_METHOD",
     "DECLARED_INPUT_ORIGIN",
     "DEFAULT_WEIGHTING",

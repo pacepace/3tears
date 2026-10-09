@@ -124,6 +124,7 @@ from threetears.evals.analysis.reporter_kind import (
 from threetears.evals.analysis.reporting import (
     CELL_MEASURED,
     CELL_NOT_RUN,
+    CELL_WITHHELD,
     COST_ESTIMATE_MIN_BASIS,
     COST_PREDICTION_METHOD,
     DECLARED_INPUT_ORIGIN,
@@ -306,6 +307,7 @@ __all__ = [
     "AS_RECORDED_MODEL",
     "CELL_MEASURED",
     "CELL_NOT_RUN",
+    "CELL_WITHHELD",
     "COST_ESTIMATE_MIN_BASIS",
     "COST_PREDICTION_METHOD",
     "DECLARED_INPUT_ORIGIN",

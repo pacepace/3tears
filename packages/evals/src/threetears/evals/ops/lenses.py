@@ -38,6 +38,7 @@ from threetears.evals.analysis.reporting import (
 from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts.errors import ValidationFailedError
 from threetears.evals.contracts.host import EvalHost
+from threetears.evals.contracts.metrics import measure_title
 from threetears.evals.contracts.models import EvalRun
 from threetears.evals.contracts.out_of_run import OutOfRunPurpose, OutOfRunSpend
 from threetears.evals.ops.host import OpsHost
@@ -719,16 +720,28 @@ def _predicted(predicted: PredictedValue | None, n_unplanned: int | None = None)
 def pivot_text(table: PivotTable) -> str:
     """A pivot as text: what was computed, each cell with its denominators, and every caveat the table carries."""
     lines = [
-        f"pivot of {table.metric} by {table.row_factor} (rows) x {table.column_factor} (columns), "
+        f"pivot of {measure_title(table.metric)} by {table.row_factor} (rows) x {table.column_factor} (columns), "
         f"{table.weighting}: {table.n_observations} observation(s), {table.n_filtered_out} filtered out",
         f"formula: {table.formula}",
     ]
     for cell in table.cells:
         spread = f", sem {format_number(cell.sem)}" if cell.sem is not None else ""
         unmeasured = f", {cell.n_unmeasured} unmeasured" if cell.n_unmeasured else ""
+        # A cell's compositions are worth a reader's eye only where the table's differ; otherwise they repeat.
+        roles = (
+            "; cost over " + " | ".join("+".join(roles) for roles in cell.cost_compositions)
+            if table.cost_compositions_differ and cell.cost_compositions
+            else ""
+        )
+        versions = "".join(
+            f"; pools {key} versions {', '.join(f'v{version}' for version in found)}"
+            for key, found in cell.identity_versions.items()
+        )
+        withheld = f"; withheld: it {cell.withheld}" if cell.withheld else ""
         lines.append(
             f"- {cell.row} / {cell.column}: {format_number(cell.value)} ({cell.status}; n={cell.n}, "
-            f"{cell.n_cases} case(s){spread}{unmeasured}){_predicted(cell.predicted, cell.n_unplanned)}"
+            f"{cell.n_cases} case(s){spread}{unmeasured}){roles}{versions}{withheld}"
+            f"{_predicted(cell.predicted, cell.n_unplanned)}"
         )
     if not table.cells:
         lines.append("- no cells")
@@ -739,6 +752,15 @@ def pivot_text(table: PivotTable) -> str:
             f"against {flag.rows_agreeing} that agree — orders of point values, none tested; do not read the pooled "
             "order as a ranking"
         )
+    if table.cost_compositions_differ:
+        lines.append(
+            "cost compositions differ: these dollars were not all summed over the same roles, so a cheaper cell "
+            "may only have priced fewer things — each cell names what it covered"
+        )
+    if table.cassette_mode_disclosure:
+        lines.append(table.cassette_mode_disclosure)
+    if table.identity_pooling_disclosure:
+        lines.append(table.identity_pooling_disclosure)
     if table.unplaced_predicted_models:
         lines.append(f"planned and in no cell here: {', '.join(table.unplaced_predicted_models)}")
     lines += _exclusions(table.exclusions)
