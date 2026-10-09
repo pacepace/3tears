@@ -71,8 +71,9 @@ from threetears.evals.contracts.scoring import (
     compute_cost_summary,
     compute_dimension_summary,
     compute_latency_summary,
-    compute_pass_k,
+    compute_pass_hat_k,
     compute_per_case_composites,
+    pass_hat_k_at,
 )
 from threetears.evals.contracts.status_filter import StatusFilterError, normalize_status_filter
 from threetears.observe import get_logger
@@ -792,7 +793,7 @@ def run_summary(
 
     Loads the run (404 if missing) plus its results, then composes the
     three query-time aggregators
-    (:func:`~threetears.evals.contracts.scoring.compute_pass_k`,
+    (:func:`~threetears.evals.contracts.scoring.compute_pass_hat_k`,
     :func:`~threetears.evals.contracts.scoring.compute_latency_summary`,
     :func:`~threetears.evals.contracts.scoring.compute_cost_summary`) into one
     JSON-serializable structure. The aggregators key on the
@@ -814,9 +815,8 @@ def run_summary(
 
     Returns:
         ``{"run_id", "status", "candidate_kind", "candidate_model", "k_runs", "rubric_threshold",
-        "rows": [{"model", "run_id", "pass_at_k", "n_test_cases", "k",
-        "fully_passing_cases", "scored_iterations_min",
-        "scored_iterations_max", "n_cannot_tell_excluded", "mean_total_ms", "median_total_ms",
+        "rows": [{"model", "run_id", "pass_hat_k", "k", "n_cases_at_k", "pass_hat_k_curve",
+        "n_test_cases", "n_cannot_tell_excluded", "mean_total_ms", "median_total_ms",
         "p95_total_ms", "mean_llm_ms", "mean_tool_ms", "n_total_ms",
         "n_llm_ms", "n_tool_ms", "total_cost_usd",
         "mean_cost_usd", "n_cost_usd", "total_prod_cost_usd",
@@ -827,15 +827,14 @@ def run_summary(
         Each row's engine keys are the ones named above; the host's ``row_columns`` for the
         row's group are merged over them last, so a host passing none adds none; which keys a
         host adds, and when each is absent, is that host's to document.
-        ``scored_iterations_min`` / ``scored_iterations_max`` are the fewest
-        and the most scored iterations any counted case contributed — the
-        depths ``pass_at_k`` was computed over, and the pair to read before
-        comparing two rows' pass^k. They are equal exactly when every case was
-        measured to the same depth; a partial run leaves an arbitrary subset
-        of the matrix rather than a k-ordered prefix, so its pass^k is a
-        mixture that flatters the cases measured shallowly. Both are distinct
-        from ``k``, which is the deepest iteration *attempted* and counts
-        cells excluded as harness failures. Latency keys are absent on
+        ``pass_hat_k`` is pass^k — the chance that ``k`` attempts at a case all
+        pass, estimated without bias per case and averaged over the
+        ``n_cases_at_k`` cases scored at least ``k`` times
+        (:func:`~threetears.evals.contracts.scoring.compute_pass_hat_k`); ``k`` is
+        the deepest iteration *attempted*. ``pass_hat_k_curve`` is every depth
+        from 1 to the deepest scored case, each point with its own case count,
+        so two rows at different ``k`` are compared at a depth both reached
+        rather than headline against headline. Latency keys are absent on
         rows whose group had no measured latency, and absent individually
         when only that component went unmeasured — each mean travels with
         its own denominator (``n_total_ms`` / ``n_llm_ms`` / ``n_tool_ms``),
@@ -865,7 +864,7 @@ def run_summary(
     run = load_run_listed(run_id, scope_id)
     results = storage.query_eval_results_by_run(run_id, scope_id)
 
-    pass_k = compute_pass_k(results, rubric_threshold=rubric_threshold)
+    pass_hat = compute_pass_hat_k(results, rubric_threshold=rubric_threshold)
     latency = compute_latency_summary(results)
     cost = compute_cost_summary(results)
     dimensions = compute_dimension_summary(results)
@@ -878,7 +877,7 @@ def run_summary(
     for key in sorted(cost.keys()):
         model, group_run_id = key
         row: dict[str, Any] = {"model": model, "run_id": group_run_id}
-        row.update(pass_k.get(key, {}))
+        row.update(pass_hat.get(key, {}))
         if key in latency:
             row.update(latency[key])
         # Cost lands after latency deliberately: both emit `n_results`, and
@@ -987,20 +986,19 @@ def compare_runs(
     Returns:
         ``{"run_ids", "rubric_threshold", "comparison_basis",
         "shared_test_case_ids", "measurement_window_disclosure",
-        "rows": [{"run_id", "model", "pass_at_k",
-        "scored_iterations_min", "scored_iterations_max",
-        "mean_total_ms", "total_cost_usd", "mean_cost_usd", "n_cost_usd",
+        "rows": [{"run_id", "model", "pass_hat_k", "k", "n_cases_at_k",
+        "pass_hat_k_curve", "mean_total_ms", "total_cost_usd", "mean_cost_usd", "n_cost_usd",
         "total_prod_cost_usd", "mean_prod_cost_usd", "n_prod_cost_usd",
         "n_results"},
         ...]}``. The program-cost pair is ``None`` for a row whose group had no
         priced result, and ``n_cost_usd`` is its denominator. The prod-cost trio is ``None`` for a row whose group
         measured no production-replicating cost, and ``n_prod_cost_usd`` is
         ``mean_prod_cost_usd``'s denominator — compare two rows' prod cost
-        only after reading it. The scored-iteration pair is the depth
-        ``pass_at_k`` was computed over; read it before comparing two rows'
-        pass^k, since a partial run leaves its cases at uneven depths and a
-        case measured once clears "passed every attempt" more easily than one
-        measured three times. ``comparison_basis`` is
+        only after reading it. ``pass_hat_k`` is each row's pass^k at its own
+        ``k``; rows run at different depths are compared on
+        ``pass_hat_k_curve`` at a depth both reached, never headline against
+        headline, since pass^3 and pass^1 are different quantities.
+        ``comparison_basis`` is
         ``"shared-template-intersection"``
         when all runs share a template, else ``"independent"`` (and
         ``shared_test_case_ids`` is empty). ``measurement_window_disclosure``
@@ -1091,11 +1089,12 @@ def compare_runs(
                 {
                     "run_id": run_id,
                     "model": src["model"],
-                    "pass_at_k": src.get("pass_at_k"),
-                    # The depth behind pass^k, carried with it rather than left
-                    # to be assumed equal to the run's planned k.
-                    "scored_iterations_min": src.get("scored_iterations_min"),
-                    "scored_iterations_max": src.get("scored_iterations_max"),
+                    "pass_hat_k": src.get("pass_hat_k"),
+                    # The depth behind pass^k and the curve it sits on, carried with it so
+                    # two rows at different depths can be read at a depth both reached.
+                    "k": src.get("k"),
+                    "n_cases_at_k": src.get("n_cases_at_k"),
+                    "pass_hat_k_curve": src.get("pass_hat_k_curve", []),
                     "mean_total_ms": src.get("mean_total_ms"),
                     "total_cost_usd": src.get("total_cost_usd"),
                     "mean_cost_usd": src.get("mean_cost_usd"),
@@ -1302,7 +1301,7 @@ def compare_two_runs(
         two runs share a template — it is NOT the significance basis.
         ``composite_comparability`` is the withholding disclosure, or
         ``None`` when the composites are comparable.
-        The ``arm`` row carries ``model_{a,b}``, ``pass_at_k_{a,b,delta}``,
+        The ``arm`` row carries ``model_{a,b}``, ``k``, ``pass_hat_k_{a,b,delta}``,
         ``composite_{a,b,delta}``, ``count_{a,b}``, ``paired``, ``n_pairs``,
         ``cohens_d``, ``p``, ``significant`` (nulls where a run scored nothing,
         a test is undefined, or the composites are not comparable).
@@ -1316,8 +1315,8 @@ def compare_two_runs(
     results_a = storage.query_eval_results_by_run(run_a_id, scope_id)
     results_b = storage.query_eval_results_by_run(run_b_id, scope_id)
 
-    pass_a = compute_pass_k(results_a, rubric_threshold=rubric_threshold)
-    pass_b = compute_pass_k(results_b, rubric_threshold=rubric_threshold)
+    pass_a = compute_pass_hat_k(results_a, rubric_threshold=rubric_threshold)
+    pass_b = compute_pass_hat_k(results_b, rubric_threshold=rubric_threshold)
     comp_a = compute_composite_summary(results_a)
     comp_b = compute_composite_summary(results_b)
     per_case_a = compute_per_case_composites(results_a)
@@ -1344,8 +1343,23 @@ def compare_two_runs(
     model_a, model_b = run_a.candidate_model, run_b.candidate_model
     count_a = comp_a.get((model_a, run_a_id), {}).get("n_cases", 0)
     count_b = comp_b.get((model_b, run_b_id), {}).get("n_cases", 0)
-    pass_at_k_a = pass_a.get((model_a, run_a_id), {}).get("pass_at_k")
-    pass_at_k_b = pass_b.get((model_b, run_b_id), {}).get("pass_at_k")
+    # pass^k on both arms at ONE depth: the shallower of the two arms' own. A delta between one
+    # run's pass^3 and another's pass^1 subtracts two different quantities, and the deeper arm's
+    # curve holds its value at the shallower depth, so nothing is lost by reading it there.
+    entry_a = pass_a.get((model_a, run_a_id))
+    entry_b = pass_b.get((model_b, run_b_id))
+    depths = [entry["k"] for entry in (entry_a, entry_b) if entry is not None]
+    common_k = min(depths) if depths else None
+    pass_hat_k_a = (
+        pass_hat_k_at(entry_a["pass_hat_k_curve"], common_k)["pass_hat_k"]
+        if entry_a is not None and common_k is not None
+        else None
+    )
+    pass_hat_k_b = (
+        pass_hat_k_at(entry_b["pass_hat_k_curve"], common_k)["pass_hat_k"]
+        if entry_b is not None and common_k is not None
+        else None
+    )
     composite_a = comp_a.get((model_a, run_a_id), {}).get("mean_composite")
     composite_b = comp_b.get((model_b, run_b_id), {}).get("mean_composite")
     n_pairs: int | None = None
@@ -1371,9 +1385,11 @@ def compare_two_runs(
     arm: dict[str, Any] = {
         "model_a": model_a,
         "model_b": model_b,
-        "pass_at_k_a": pass_at_k_a,
-        "pass_at_k_b": pass_at_k_b,
-        "pass_at_k_delta": _score_delta(pass_at_k_a, pass_at_k_b),
+        # The depth both pass^k values below are read at.
+        "k": common_k,
+        "pass_hat_k_a": pass_hat_k_a,
+        "pass_hat_k_b": pass_hat_k_b,
+        "pass_hat_k_delta": _score_delta(pass_hat_k_a, pass_hat_k_b),
         "composite_a": composite_a,
         "composite_b": composite_b,
         "composite_delta": _score_delta(composite_a, composite_b) if composites_comparable else None,
@@ -1436,17 +1452,17 @@ def _compare_per_template(
     for template_id in dict.fromkeys(t for t in (run_a.template_id, run_b.template_id) if t is not None):
         in_a = template_id == run_a.template_id
         in_b = template_id == run_b.template_id
-        pass_a = arm["pass_at_k_a"] if in_a else None
-        pass_b = arm["pass_at_k_b"] if in_b else None
+        pass_a = arm["pass_hat_k_a"] if in_a else None
+        pass_b = arm["pass_hat_k_b"] if in_b else None
         comp_a = arm["composite_a"] if in_a else None
         comp_b = arm["composite_b"] if in_b else None
         rows.append(
             {
                 "template_id": template_id,
                 "template_name": _template_name(load_template, template_id),
-                "pass_at_k_a": pass_a,
-                "pass_at_k_b": pass_b,
-                "pass_at_k_delta": _score_delta(pass_a, pass_b),
+                "pass_hat_k_a": pass_a,
+                "pass_hat_k_b": pass_b,
+                "pass_hat_k_delta": _score_delta(pass_a, pass_b),
                 "composite_a": comp_a,
                 "composite_b": comp_b,
                 "composite_delta": _score_delta(comp_a, comp_b) if composites_comparable else None,

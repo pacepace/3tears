@@ -147,6 +147,9 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
     # candidate failures, and the bundle names the cells where no result delivered a turn; the apparatus
     # partition is unchanged.
     ((44, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
+    # 45/10: the frontier's pass^k is renamed `pass_hat_k`, estimated without bias and carried with its curve
+    # and subject depth (#591); the apparatus partition is unchanged.
+    ((45, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
 )
 
 
