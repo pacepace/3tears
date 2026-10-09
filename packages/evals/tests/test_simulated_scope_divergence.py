@@ -14,6 +14,9 @@ Two blocks:
 - ``TestNoMovementIsReadAsFlat`` runs that rule on levels with no true difference. "Two standard errors" is
   the conventional bar the bundle's own comment invokes for a difference of means, so a reader takes a
   non-flat direction as a 5%-level call.
+- ``TestTheLensSaysTheWholeAndThePartDisagree`` runs the lens itself: a divergence is published where the
+  whole's direction and the part's differ, which is a claim that the whole moved by something the part does
+  not account for.
 """
 
 from __future__ import annotations
@@ -91,6 +94,9 @@ def _sweep_movements(
         created_by="test:fixture",
     )
     bundle = assemble_context_bundle(campaign, storage=ToyhostStorage(list(batches), results), profile=profile)
+    assert all(
+        divergence.end_to_end.direction != divergence.subsystem.direction for divergence in bundle.scope_divergences
+    ), "the lens publishes a divergence exactly where the whole's direction and the part's differ"
     movements = [
         (divergence.level_a, divergence.level_b, movement)
         for divergence in bundle.scope_divergences
@@ -171,4 +177,58 @@ class TestNoMovementIsReadAsFlat:
         rate = _false_direction_rate(n_per_level, replicates, f"divergence-null-{n_per_level}")
         assert rate <= at_most(SIGNIFICANCE_ALPHA, replicates), (
             f"{n_per_level} a level: false direction rate {rate:.4f} against α={SIGNIFICANCE_ALPHA}"
+        )
+
+
+def _lens_fires_rate(n_per_level: int, part_shift: float, replicates: int, seed: str) -> float:
+    """How often the lens publishes a divergence when the part carries ALL of the whole's movement.
+
+    Each observation's whole is its part plus a remainder; the lever shifts the part by ``part_shift`` SDs and
+    leaves the remainder alone, so the whole moves by exactly what the part moves and there is no divergence
+    to find. The lens grades each movement on its own 2-SE bar and publishes when the two directions differ.
+    """
+    rng = random.Random(seed)
+    fires = 0
+    for _ in range(replicates):
+        directions = []
+        parts = [[rng.gauss(part_shift * level, 1.0) for _ in range(n_per_level)] for level in (0, 1)]
+        remainders = [[rng.gauss(0.0, 1.0) for _ in range(n_per_level)] for _ in (0, 1)]
+        wholes = [
+            [p + r for p, r in zip(part, rest, strict=True)] for part, rest in zip(parts, remainders, strict=True)
+        ]
+        for before, after in (wholes, parts):
+            sem_before, sem_after = standard_error_of_mean(before), standard_error_of_mean(after)
+            assert sem_before is not None and sem_after is not None
+            delta = sum(after) / n_per_level - sum(before) / n_per_level
+            directions.append(_rule_direction(delta, math.sqrt(sem_before**2 + sem_after**2), False))
+        fires += directions[0] != directions[1]
+    return fires / replicates
+
+
+class TestTheLensSaysTheWholeAndThePartDisagree:
+    """With the part carrying all of the whole's movement, the lens publishes a divergence at most α of the time.
+
+    The lens compares two verdicts, each made alone — "the whole moved" beside "the part did not" — which is
+    the difference between a significant and a non-significant result, not a test of the difference (Gelman &
+    Stern 2006). The test that answers the lens's question is one on the remainder's own movement.
+    """
+
+    #: 3,000 replicates: SE at α is 0.0040, so the bound is 0.066.
+    REPLICATES = 3000
+
+    @pytest.mark.parametrize(("n_per_level", "part_shift"), [(5, 0.0), (5, 1.5), (10, 1.0)])
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "#601 finding: the scope-divergence lens publishes a divergence whenever the whole's and the part's "
+            "separately graded directions differ. With the part carrying all of the whole's movement (no divergence "
+            "exists), measured rate 0.11 (5 a level, no movement), 0.33 (5 a level, part moving 1.5 SD) and 0.33 "
+            "(10 a level, 1 SD) against nominal 0.05: the whole's noise is larger, so it often reads flat where "
+            "the part reads moved."
+        ),
+    )
+    def test_no_divergence_is_published_beyond_alpha(self, n_per_level: int, part_shift: float) -> None:
+        rate = _lens_fires_rate(n_per_level, part_shift, self.REPLICATES, f"lens-{n_per_level}-{part_shift}")
+        assert rate <= at_most(SIGNIFICANCE_ALPHA, self.REPLICATES), (
+            f"{n_per_level} a level, part shift {part_shift}: divergence published {rate:.4f} against α"
         )
