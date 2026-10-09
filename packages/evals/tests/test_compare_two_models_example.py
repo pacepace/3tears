@@ -60,9 +60,12 @@ async def test_with_no_api_key_the_example_runs_offline_and_weighs_accuracy_agai
     assert cheaper.candidate_cost_usd < control.candidate_cost_usd  # type: ignore[operator]
 
     contrasts = _contrasts(comparison)
-    assert {"accuracy", "cost_usd"} <= set(contrasts)
+    assert {"accuracy", "production_replicating_cost"} <= set(contrasts)
     assert all(row["verdict"] for row in contrasts.values())
-    assert contrasts["cost_usd"]["delta"] < 0 and contrasts["cost_usd"]["verdict"] == "improved on the control"
+    spend = contrasts["production_replicating_cost"]
+    assert spend["delta"] < 0 and spend["verdict"] == "improved on the control"
+    # The measuring apparatus's own readings are no contrast between candidates.
+    assert "cost_usd" not in contrasts
 
     out = capsys.readouterr().out
     assert out.startswith("ANTHROPIC_API_KEY is not set: running OFFLINE")
@@ -70,7 +73,9 @@ async def test_with_no_api_key_the_example_runs_offline_and_weighs_accuracy_agai
     # The verdict, one line per reading, and a pointer to the full report rather than the report itself.
     arms = f"{module.CHEAPER} vs {module.CONTROL}"
     assert re.search(rf"\n{arms} on accuracy: -0\.17 \(p=[\d.e-]+\): not separated from the control\n", out)
-    assert re.search(rf"\n{arms} on cost_usd: -[\d.e-]+ \(p=[\d.e-]+\): improved on the control\n", out)
+    assert re.search(
+        rf"\n{arms} on production_replicating_cost: -[\d.e-]+ \(p=[\d.e-]+\): improved on the control\n", out
+    )
     assert comparison.render() not in out
 
 

@@ -129,6 +129,7 @@ __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why th
     "GradedBy",
     "MeasureFamily",
     "MeasurePopulation",
+    "MeasureScale",
     "DELIVERED_AXES",
     "reads_turns",
     "summary_population",
@@ -222,6 +223,13 @@ MeritAxis = Literal["quality", "cost", "latency", "reliability"]
 #: the arm's real cost of failing. Every cost or latency measure that declares no other
 #: population is read over this one (:func:`summary_population`).
 MeasurePopulation = Literal["scored", "all_observed", "delivered"]
+
+#: What a difference in a measure's values means. ``ratio``: zero is "none of it" — milliseconds, dollars,
+#: tokens, a share — so a ratio of two values is a fact, and "25% slower" says something. ``interval``: zero
+#: is an arbitrary point below the scale — a 1–5 judged score — so only a difference is a fact: one point up
+#: reads +50% from 2 to 3 and +25% from 4 to 5, and relabelling 1–5 as 0–4 turns the first into +100%. A
+#: relative change is stated only for a ``ratio`` measure.
+MeasureScale = Literal["ratio", "interval"]
 
 #: The merit axes whose readings describe a turn the candidate took — what taking it cost, and how long it
 #: took — and are therefore read over ``delivered`` unless the measure declares otherwise.
@@ -369,6 +377,15 @@ class MetricDescriptor(EvalBaseModel):
             "`all_observed`: the turns the candidate took, leaving out the failures that took none (a refusal, a "
             "model error), whose round trip and spend are no turn's. `delivered` may be declared only on such a "
             "measure."
+        ),
+    )
+    scale: MeasureScale | None = Field(
+        default=None,
+        description=(
+            "What a difference in this measure means: `ratio` when zero is none of it (ms, usd, a share), so a "
+            "relative change is meaningful; `interval` when zero is an arbitrary point (a 1-5 judged score), so "
+            "only the difference is, and no surface states a percent change. None when undeclared; a surface then "
+            "treats the measure as it always has, so a host whose measure is a rating scale declares `interval`."
         ),
     )
     contained_by: str | None = Field(
@@ -1308,13 +1325,20 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     # ---- Significance (stats.py) --------------------------------------------
     _d(
-        name="cohens_d",
+        name="hedges_g",
         data_type="numeric",
         family="composite",
         transferability_class="judge_mediated",
         attribution_scope="end_to_end",
-        formula="paired mean(diff)/sd(diff), else pooled-SD Cohen's d; signed B minus A",
-        description="Effect size of a composite difference between two runs. Unbounded and signed; None when undefined.",
+        formula=(
+            "J(df) x paired mean(diff)/sd(diff) (g_z, df = pairs - 1), else J(df) x pooled-SD standardized difference "
+            "(g, df = n_a + n_b - 2); J is Hedges' small-sample factor; signed B minus A"
+        ),
+        description=(
+            "Effect size of a composite difference between two runs: Hedges' g, Cohen's d with its small-sample "
+            "upward bias removed. Unbounded and signed; None when undefined, including at two pairs, where no "
+            "unbiased estimate exists."
+        ),
     ),
     _d(
         name="significant",
@@ -1399,6 +1423,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
         attribution_scope="end_to_end",
         higher_is_better=True,
         value_range=(1.0, 5.0),
+        scale="interval",
         description=(
             "Decision quality given the context the candidate actually had. Stable when the outside world "
             "drifts, so a fall here is the candidate's own."
@@ -1413,6 +1438,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
         attribution_scope="end_to_end",
         higher_is_better=True,
         value_range=(1.0, 5.0),
+        scale="interval",
         description=(
             "Whether the final state satisfied the scenario's intent. Drifts when externals drift — its "
             "divergence from the transcript axis is what separates a worse agent from a changed world."
@@ -1426,6 +1452,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
         attribution_scope="end_to_end",
         higher_is_better=True,
         value_range=(1.0, 5.0),
+        scale="interval",
         formula="mean of the counted 1-5 transcript-axis scores (the floor where the candidate failed; a harness fault excluded)",
         description=(
             "Average decision quality given the context the candidate actually had — the aggregate an "
@@ -1443,6 +1470,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
         attribution_scope="end_to_end",
         higher_is_better=True,
         value_range=(1.0, 5.0),
+        scale="interval",
         formula="mean of the counted 1-5 outcome-axis scores (the floor where the candidate failed; a harness fault excluded)",
         description=(
             "Average intent satisfaction — the aggregate an aggregating surface reports over __outcome__ "
@@ -1882,6 +1910,8 @@ def describe_rubric_dim(name: str, *, scale: RubricScale) -> MetricDescriptor:
         attribution_scope="end_to_end",
         higher_is_better=True,
         value_range=SCALES[scale].value_range,
+        # A pass rate's zero is none passing; a 1-5 score's zero is below the scale.
+        scale="ratio" if scale == "pass_fail" else "interval",
         description=f"Judged rubric dimension {name!r}, {SCALES[scale].reads_as}.",
     )
 

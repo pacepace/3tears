@@ -1265,7 +1265,7 @@ def compare_two_runs(
     emitted with it.** Pairing needs the two runs to have actually scored the
     same frozen ``test_case_id`` s; a shared ``template_id`` only makes that
     possible, and two runs of one template whose case sets do not intersect
-    are compared with Welch's. Deriving pairing from the template — as
+    are compared unpaired (:data:`~threetears.evals.analysis.stats.UNPAIRED_TEST_NAME`). Deriving pairing from the template — as
     ``comparison_basis`` invites — names a test that did not run, so every
     row carries ``paired`` and no surface re-derives it.
 
@@ -1303,7 +1303,7 @@ def compare_two_runs(
         ``None`` when the composites are comparable.
         The ``arm`` row carries ``model_{a,b}``, ``k``, ``pass_hat_k_{a,b,delta}``,
         ``composite_{a,b,delta}``, ``count_{a,b}``, ``paired``, ``n_pairs``,
-        ``cohens_d``, ``p``, ``significant`` (nulls where a run scored nothing,
+        ``hedges_g``, ``p``, ``significant`` (nulls where a run scored nothing,
         a test is undefined, or the composites are not comparable).
         JSON-safe.
 
@@ -1377,11 +1377,11 @@ def compare_two_runs(
         sample_b = [v for (_m, r, _tc), v in per_case_b.items() if r == run_b_id]
         paired = False
     if composites_comparable:
-        cohens_d, significant, p_value = composite_significance(sample_a, sample_b, paired=paired)
+        hedges_g, significant, p_value = composite_significance(sample_a, sample_b, paired=paired)
     else:
         # Not computed and then dropped: a t-test on two subjects'
         # composites has no referent, so there is no number to withhold.
-        cohens_d, significant, p_value = None, None, None
+        hedges_g, significant, p_value = None, None, None
     arm: dict[str, Any] = {
         "model_a": model_a,
         "model_b": model_b,
@@ -1399,7 +1399,9 @@ def compare_two_runs(
         # pairing needs cases scored in both runs, not merely one template id in both.
         "paired": paired,
         "n_pairs": n_pairs,
-        "cohens_d": cohens_d,
+        # Hedges' g (g_z when paired): Cohen's d with its small-sample bias removed. Renamed from
+        # `cohens_d` when the estimator changed, so a reader of the old key cannot take the new number for it.
+        "hedges_g": hedges_g,
         "p": p_value,
         "significant": significant,
     }

@@ -29,7 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from threetears.evals.contracts.host.style import SERIES_SLOTS, VALIDATED_SLOTS
 from threetears.evals.contracts.prose import ModelProse
-from threetears.evals.contracts.metrics import Materiality
+from threetears.evals.contracts.metrics import Materiality, MeasureScale
 
 
 #: How far a breakdown's parts may miss the `total` they claim to make up, as a
@@ -461,6 +461,14 @@ class DeltaRow(BaseModel):
             "`immaterial` when the delta is below the measure's declared materiality threshold — too small to act "
             "on. Unstated reads as `material` on every surface, the weaker claim: a row that says nothing about "
             "its threshold must not be read as one too small to matter."
+        ),
+    )
+    scale: MeasureScale | None = Field(
+        default=None,
+        description=(
+            "`interval` when the measure's zero is arbitrary (a 1-5 judged score): the row states its change in "
+            "points and is not drawn on the relative axis. `ratio`, or None — unstated, as on a payload compiled "
+            "before the field existed — draws it as relative change."
         ),
     )
     d_z: float | None = Field(

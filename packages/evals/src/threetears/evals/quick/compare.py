@@ -111,8 +111,11 @@ class Comparison:
 
         Returns:
             One row per arm and reading, keyed ``question``, ``reading``, ``contrast`` (the arm, as the report
-            names it), ``control``, ``delta`` (arm minus control), ``p_adjusted`` (Holm, over the campaign's
-            family) and ``verdict``; empty when the report tested nothing.
+            names it), ``control``, ``control_mean`` and ``arm_mean`` (over the cases the test read),
+            ``cases`` (how many, paired or not, and any one side ran that the test left out), ``delta`` (arm
+            minus control), ``interval`` (on the delta, simultaneous over the family), ``hedges_g`` (the
+            standardized effect), ``p_adjusted`` (Holm, over the campaign's family) and ``verdict``; empty when
+            the report tested nothing.
         """
         rows = [
             row

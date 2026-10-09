@@ -29,8 +29,14 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from statistics import NormalDist
 
-from threetears.evals.analysis.confusion import ConfusionCount
-from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA, composite_significance, holm_adjust
+from threetears.evals.analysis.stats import (
+    SIGNIFICANCE_ALPHA,
+    composite_significance,
+    difference_interval,
+    holm_adjust,
+    paired_equivalence,
+)
+from threetears.evals.contracts.metrics import confusion_cell
 
 __all__ = [
     "TOLERANCE_Z",
@@ -203,8 +209,8 @@ def draw_confusion(
     repeats: int,
     accuracy: float,
     intra_case_correlation: float,
-) -> list[ConfusionCount]:
-    """A classifier's confusion matrix over a balanced bank, every repeat of every case counted.
+) -> list[tuple[str, str]]:
+    """A classifier's observations over a balanced bank, every repeat of every case, each tagged with its case.
 
     Each case expects one label (``cases_per_label`` cases per label). A case has its own probability of
     being classified correctly, drawn from a Beta with mean ``accuracy`` and intra-case correlation
@@ -215,23 +221,23 @@ def draw_confusion(
     missed share).
 
     Returns:
-        The matrix, one count per ``(expected, predicted)`` pair that occurred.
+        One ``(confusion_cell value, test case id)`` per observation, the shape
+        :func:`~threetears.evals.analysis.confusion.label_statistics` reads: the case is what lets its
+        intervals count cases rather than repeats.
     """
     if intra_case_correlation > 0.0:
         concentration = 1.0 / intra_case_correlation - 1.0
         alpha, beta = accuracy * concentration, (1.0 - accuracy) * concentration
-    counts: dict[tuple[str, str], int] = {}
+    observations: list[tuple[str, str]] = []
     for expected in labels:
         others = [label for label in labels if label != expected]
-        for _ in range(cases_per_label):
+        for index in range(cases_per_label):
+            case = f"{expected}-{index}"
             right = rng.betavariate(alpha, beta) if intra_case_correlation > 0.0 else accuracy
             for _ in range(repeats):
                 predicted = expected if rng.random() < right else rng.choice(others)
-                counts[(expected, predicted)] = counts.get((expected, predicted), 0) + 1
-    return [
-        ConfusionCount(expected=expected, predicted=predicted, count=count)
-        for (expected, predicted), count in sorted(counts.items())
-    ]
+                observations.append((confusion_cell(expected, predicted), case))
+    return observations
 
 
 def draw_rater_pairs(
@@ -355,50 +361,71 @@ class FamilyVerdict:
     Attributes:
         p_raw: The separation test's two-sided p, or None when it ran no test.
         p_adjusted: The Holm-adjusted p over the family, or None when there was no raw p.
-        verdict: ``untested``, ``not_separated``, ``improved`` or ``regressed``.
+        verdict: ``untested``, ``not_separated``, ``equivalent``, ``improved`` or ``regressed``.
+        interval: The interval on the difference at the family's level, or None when no test ran.
+        equivalence_p_adjusted: The adjusted TOST p, or None when no equivalence test ran.
     """
 
     p_raw: float | None
     p_adjusted: float | None
     verdict: str
+    interval: tuple[float, float] | None = None
+    equivalence_p_adjusted: float | None = None
 
 
 def family_verdicts(
     comparisons: Sequence[tuple[dict[str, float], dict[str, float], bool]],
+    *,
+    margins: Sequence[float | None] | None = None,
 ) -> list[FamilyVerdict]:
     """Decide one family of comparisons by the rule the analysis bundle's ``multiple_comparisons`` states.
 
     Each comparison is ``(control per-case values, contrast per-case values, higher_is_better)``. It is
-    tested paired over the cases both sides ran when they share at least two, else unpaired (Welch) over
-    each side's values (:func:`~threetears.evals.analysis.stats.composite_significance`); the family's raw
-    p's are Holm-adjusted together (:func:`~threetears.evals.analysis.stats.holm_adjust`); a comparison
-    separates when its adjusted p is below α and its delta is nonzero, in the direction its sign and
-    ``higher_is_better`` give.
+    tested paired over the cases both sides ran when they share at least two, else unpaired over each
+    side's values (:func:`~threetears.evals.analysis.stats.composite_significance`). A paired comparison with
+    a declared margin (``margins``, aligned with ``comparisons``) also runs the paired TOST against it
+    (:func:`~threetears.evals.analysis.stats.paired_equivalence`). Every separation p and TOST p is
+    Holm-adjusted together, the multiplier capped at the separation count
+    (:func:`~threetears.evals.analysis.stats.holm_adjust`); a comparison separates when its adjusted p is
+    below α and its delta is nonzero, in the direction its sign and ``higher_is_better`` give, and is
+    otherwise equivalent when its adjusted TOST p is below α. Its interval is at ``1 − α/m`` over the ``m``
+    separations (:func:`~threetears.evals.analysis.stats.difference_interval`).
 
     This is composed here so a simulation can run it thousands of times without assembling a bundle each
     time. ``test_simulated_multiple_comparisons`` pins the bundle to it: on seeded campaigns, every
-    comparison the bundle publishes carries exactly this p, adjusted p and verdict.
+    comparison the bundle publishes carries exactly this p, adjusted p, interval and verdict.
 
     Returns:
         One verdict per comparison, in order.
     """
-    tested: list[tuple[float | None, float | None]] = []
-    for control, contrast, _ in comparisons:
+    tested: list[tuple[float | None, float | None, float | None, list[float], list[float], bool]] = []
+    for index, (control, contrast, _) in enumerate(comparisons):
         shared = sorted(set(control) & set(contrast))
         paired = len(shared) >= 2
         a = [control[case] for case in shared] if paired else list(control.values())
         b = [contrast[case] for case in shared] if paired else list(contrast.values())
         delta = sum(b) / len(b) - sum(a) / len(a) if a and b else None
-        tested.append((composite_significance(a, b, paired=paired).p_value, delta))
-    adjusted = iter(holm_adjust([p for p, _ in tested if p is not None]))
+        p_raw = composite_significance(a, b, paired=paired).p_value
+        margin = margins[index] if margins is not None else None
+        equivalence_p = None
+        if paired and margin and p_raw is not None:
+            equivalence_p = paired_equivalence([y - x for x, y in zip(a, b)], margin)[1]
+        tested.append((p_raw, equivalence_p, delta, a, b, paired))
+    m = sum(1 for p_raw, *_ in tested if p_raw is not None)
+    raw = [p for p_raw, equivalence_p, *_ in tested for p in (p_raw, equivalence_p) if p is not None]
+    adjusted = iter(holm_adjust(raw, max_true=m) if raw else [])
     verdicts = []
-    for (p_raw, delta), (_, _, higher_is_better) in zip(tested, comparisons, strict=True):
+    for (p_raw, equivalence_p, delta, a, b, paired), (_, _, higher_is_better) in zip(tested, comparisons, strict=True):
         if p_raw is None:
             verdicts.append(FamilyVerdict(None, None, "untested"))
             continue
         p_adjusted = next(adjusted)
+        equivalence_adjusted = next(adjusted) if equivalence_p is not None else None
         verdict = "not_separated"
         if p_adjusted < SIGNIFICANCE_ALPHA and delta:
             verdict = "improved" if (delta > 0) == higher_is_better else "regressed"
-        verdicts.append(FamilyVerdict(p_raw, p_adjusted, verdict))
+        elif equivalence_adjusted is not None and equivalence_adjusted < SIGNIFICANCE_ALPHA:
+            verdict = "equivalent"
+        interval = difference_interval(a, b, paired=paired, confidence=1.0 - SIGNIFICANCE_ALPHA / m)
+        verdicts.append(FamilyVerdict(p_raw, p_adjusted, verdict, interval, equivalence_adjusted))
     return verdicts

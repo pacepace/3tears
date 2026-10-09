@@ -2,7 +2,8 @@
 
 The rows are different metrics in different units, so the one thing they can share is a unitless axis:
 what is plotted is relative change, what is tabulated is each row's own unit, and a row that cannot
-produce a relative change is named rather than dropped.
+produce a relative change is named rather than dropped. A row on an interval scale (a 1–5 judged score,
+``DeltaRow.scale``) is one of those: its zero is arbitrary, so it states the points it moved and no percent.
 """
 
 from __future__ import annotations
@@ -41,7 +42,7 @@ def delta_table_intent(payload: DeltaTablePayload) -> ChartIntent:
     plotted: list[dict[str, Any]] = []
     undrawn: list[str] = []
     for row in payload.rows:
-        change = relative_change(row.a, row.b) if row.data_type == "numeric" else None
+        change = _row_change(row)
         if change is None:
             undrawn.append(row.metric)
             continue
@@ -61,7 +62,13 @@ def delta_table_intent(payload: DeltaTablePayload) -> ChartIntent:
             f"{len(immaterial)} of {len(payload.rows)} changes are below their measure's materiality threshold "
             f"({', '.join(immaterial)}) — immaterial: too small to act on, however clearly they clear their noise."
         )
-    if undrawn:
+    if interval := [row.metric for row in payload.rows if row.data_type == "numeric" and row.scale == "interval"]:
+        disclosures.append(
+            f"{len(interval)} of {len(payload.rows)} metrics are on a scale whose zero is arbitrary "
+            f"({', '.join(interval)}) — a judged score's — so their change is stated in points, never as a percent: "
+            "one point up is +50% from 2 and +25% from 4."
+        )
+    if undrawn := [metric for metric in undrawn if metric not in interval]:
         # Named, never silently dropped: the table below the chart still counts these rows, so an
         # unexplained gap reads as a rendering fault.
         disclosures.append(
@@ -112,7 +119,7 @@ def _delta_row(row: DeltaRow) -> dict[str, Any]:
     Returns:
         The values-table row.
     """
-    change = relative_change(row.a, row.b) if row.data_type == "numeric" else None
+    change = _row_change(row)
     if row.data_type != "numeric":
         return {
             "metric": row.metric,
@@ -134,6 +141,17 @@ def _delta_row(row: DeltaRow) -> dict[str, Any]:
         "change": relative_change_text(change) if change is not None else None,
         "effect": _effect_read(row),
     }
+
+
+def _row_change(row: DeltaRow) -> float | None:
+    """A row's relative change from A, or None where it has none to state.
+
+    None for a non-numeric row, a zero baseline (:func:`relative_change`), and a row on an interval scale,
+    whose zero is an arbitrary point: a percent change there measures where the scale starts, not the move.
+    """
+    if row.data_type != "numeric" or row.scale == "interval":
+        return None
+    return relative_change(row.a, row.b)
 
 
 def _numeric_side(row: DeltaRow, name: str, value: float | str | bool | None) -> float:

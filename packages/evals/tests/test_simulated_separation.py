@@ -2,14 +2,16 @@
 
 Every between-arm verdict the engine publishes — a campaign family's comparisons, a mechanism check,
 ``compare_two_runs`` — rests on :func:`~threetears.evals.analysis.stats.composite_significance` over
-per-case means: paired over the cases both arms ran, Welch's test otherwise. ``test_stats.py`` pins its
+per-case means: paired over the cases both arms ran, Welch's statistic on Hsu's conservative degrees of
+freedom otherwise. ``test_stats.py`` pins its
 outputs on fixed inputs. This file checks what those outputs are FOR, by simulation at the sample sizes
 the engine sees (2–15 cases, 1–5 repeats):
 
 - under no difference, it calls one at most α of the time (exactly α for normal data, where the paired
   t-test is exact);
 - under a stated difference, it calls one as often as the noncentral-t power says it should;
-- its effect size estimates the population effect.
+- its effect size estimates the population effect;
+- the interval on the difference covers the true difference at its stated level.
 
 Replicate counts and tolerance bands are derived in each test from the Monte-Carlo standard error
 (:mod:`packages.evals.tests.simulation_support`). Every test owns its seed.
@@ -22,7 +24,13 @@ import random
 
 import pytest
 
-from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA, composite_significance, t_critical_two_sided
+from threetears.evals.analysis.stats import (
+    INTERVAL_LEVEL,
+    SIGNIFICANCE_ALPHA,
+    composite_significance,
+    difference_interval,
+    t_critical_two_sided,
+)
 from packages.evals.tests.simulation_support import (
     TOLERANCE_Z,
     ClusteredDesign,
@@ -120,37 +128,40 @@ class TestNoDifferenceIsCalledAtAlpha:
         ("n_a", "n_b", "sd_a", "sd_b"),
         [(2, 2, 1.0, 1.0), (3, 3, 1.0, 1.0), (5, 15, 1.0, 3.0), (10, 10, 1.0, 2.0)],
     )
-    def test_welch_on_unshared_cases_holds_alpha(self, n_a: int, n_b: int, sd_a: float, sd_b: float) -> None:
-        """Arms that share fewer than two cases are tested unpaired, by Welch's test, at most at α.
+    def test_the_unpaired_test_holds_alpha(self, n_a: int, n_b: int, sd_a: float, sd_b: float) -> None:
+        """Arms that share fewer than two cases are tested unpaired, at most at α.
 
-        Welch's degrees of freedom are an approximation, so this asserts an upper bound rather than
-        exactness, over unequal sizes and unequal spreads.
+        Welch's statistic on Hsu's ``min(n) − 1`` degrees of freedom is conservative, not exact, so this
+        asserts an upper bound, over unequal sizes and unequal spreads.
         """
         rate = _welch_null_rate(n_a, n_b, sd_a, sd_b, replicates=self.REPLICATES)
         assert rate <= at_most(SIGNIFICANCE_ALPHA, self.REPLICATES), (
             f"{n_a} vs {n_b} cases: false-positive rate {rate:.4f} against α={SIGNIFICANCE_ALPHA}"
         )
 
-    #: 8,000 replicates: SE at α is 0.0024, so the bound is 0.0597 and a measured 0.070 clears it by 3.6
-    #: of its own SEs.
+    #: 8,000 replicates: SE at α is 0.0024, so the bound is 0.0597. On Welch–Satterthwaite's df the first
+    #: four designs here measured 0.0995, 0.109, 0.064 and 0.070, each outside it, and the next two 0.056 and
+    #: 0.054, above α but inside the band. On Hsu's df the largest is 0.042.
     LOPSIDED_REPLICATES = 8000
 
     @pytest.mark.parametrize(
         ("n_a", "n_b", "sd_a", "sd_b"),
-        [(2, 10, 1.0, 1.0), (2, 10, 3.0, 1.0), (3, 10, 3.0, 1.0)],
+        [
+            (2, 10, 1.0, 1.0),
+            (2, 10, 3.0, 1.0),
+            (3, 10, 1.0, 1.0),
+            (3, 10, 3.0, 1.0),
+            (5, 10, 3.0, 1.0),
+            (2, 10, 1.0, 3.0),
+        ],
     )
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "#601 finding: Welch's test (the unpaired fallback when arms share < 2 cases) runs above alpha when one "
-            "side has 2-3 cases and the other many: false-positive rate 0.097 (2 vs 10 cases, equal SD), 0.117 (2 vs 10, small "
-            "side 3x the SD) and 0.074 (3 vs 10, 3x) against nominal 0.05. "
-            "Satterthwaite's df overstates the information in a 2-3 case side."
-        ),
-    )
-    def test_welch_with_a_two_or_three_case_side_holds_alpha(
-        self, n_a: int, n_b: int, sd_a: float, sd_b: float
-    ) -> None:
+    def test_with_a_two_or_three_case_side_it_holds_alpha(self, n_a: int, n_b: int, sd_a: float, sd_b: float) -> None:
+        """The #601 finding: on Satterthwaite's df the test ran at up to 11% when one side had 2–3 cases.
+
+        Satterthwaite's df overstates what a two-case side's variance is known to; Hsu's ``min(n) − 1`` does
+        not, and holds α at every variance ratio (Mickey & Brown 1966) — the small side with the larger
+        spread included, which is where a permutation test would not.
+        """
         rate = _welch_null_rate(n_a, n_b, sd_a, sd_b, replicates=self.LOPSIDED_REPLICATES)
         assert rate <= at_most(SIGNIFICANCE_ALPHA, self.LOPSIDED_REPLICATES), (
             f"{n_a} vs {n_b} cases (SD {sd_a} vs {sd_b}): false-positive rate {rate:.4f} against α={SIGNIFICANCE_ALPHA}"
@@ -210,7 +221,7 @@ class TestAStatedDifferenceIsFoundAtItsPower:
 
 
 def _mean_effect_size(rng: random.Random, n_a: int, n_b: int, *, paired: bool, replicates: int) -> tuple[float, float]:
-    """The mean and Monte-Carlo SE of the reported Cohen's d over draws whose population effect is 0.5.
+    """The mean and Monte-Carlo SE of the reported Hedges' g over draws whose population effect is 0.5.
 
     Paired: ``n_a`` per-case differences, normal with mean 0.5 and SD 1, so d_z = 0.5. Unpaired: two
     normal samples of SD 1 whose means differ by 0.5, so d = 0.5.
@@ -223,7 +234,7 @@ def _mean_effect_size(rng: random.Random, n_a: int, n_b: int, *, paired: bool, r
         else:
             a = [rng.gauss(0.0, 1.0) for _ in range(n_a)]
             b = [rng.gauss(0.5, 1.0) for _ in range(n_b)]
-        estimate = composite_significance(a, b, paired=paired).cohens_d
+        estimate = composite_significance(a, b, paired=paired).hedges_g
         assert estimate is not None
         estimates.append(estimate)
     mean = sum(estimates) / replicates
@@ -241,48 +252,94 @@ _EFFECT_DESIGNS = [
     ("unpaired, 5 vs 5 cases", 5, 5, False),
 ]
 
-#: The designs whose bias clears the Monte-Carlo band by a wide margin. Unpaired 5 vs 5 is biased too
-#: (+10%, 0.05 on a true 0.5) but its mean's 4-SE band at this replicate count is ±0.04, too close to call.
-_BIASED_DESIGNS = [design for design in _EFFECT_DESIGNS if design[0] != "unpaired, 5 vs 5 cases"]
-
 
 class TestTheEffectSize:
-    """The Cohen's d a comparison reports (``compare_two_runs``' ``cohens_d``), against the population effect."""
+    """The Hedges' g a comparison reports (``compare_two_runs``' ``hedges_g``), against the population effect."""
 
-    #: 5,000 replicates: the reported d's SD at n=3 is about 1.0, so its mean's SE is ~0.014 and the
-    #: 4-SE band ±0.057 on a true 0.5; at n=10, SD ~0.36, SE 0.005, band ±0.02.
+    #: 5,000 replicates: the reported g's SD at n=3 is about 0.6, so its mean's SE is ~0.008 and the
+    #: 4-SE band ±0.03 on a true 0.5; at n=10, SD ~0.33, SE 0.005, band ±0.02.
     REPLICATES = 5000
 
     @pytest.mark.parametrize(("label", "n_a", "n_b", "paired"), _EFFECT_DESIGNS, ids=[d[0] for d in _EFFECT_DESIGNS])
-    def test_its_bias_is_exactly_hedges_factor(self, label: str, n_a: int, n_b: int, paired: bool) -> None:
-        """The reported d is the textbook sample estimator, whose mean is the true effect times J(df)⁻¹."""
-        rng = random.Random(f"effect-size-shape-{label}")
-        mean, se = _mean_effect_size(rng, n_a, n_b, paired=paired, replicates=self.REPLICATES)
-        df = n_a - 1 if paired else n_a + n_b - 2
-        expected = 0.5 * hedges_correction(df)
-        assert abs(mean - expected) <= TOLERANCE_Z * se, f"{label}: mean d {mean:.4f} against 0.5·J⁻¹ = {expected:.4f}"
-
-    def test_it_is_consistent(self) -> None:
-        """With many cases the reported d converges on the population effect."""
-        rng = random.Random("effect-size-consistent")
-        mean, se = _mean_effect_size(rng, 400, 400, paired=True, replicates=200)
-        assert abs(mean - 0.5) <= TOLERANCE_Z * se + 0.5 * (hedges_correction(399) - 1)
-
-    @pytest.mark.parametrize(("label", "n_a", "n_b", "paired"), _BIASED_DESIGNS, ids=[d[0] for d in _BIASED_DESIGNS])
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "#601 finding: the reported Cohen's d is the uncorrected sample estimator, biased upward at the engine's "
-            "sample sizes. Measured mean d for a true 0.5: paired 3 cases 0.88 (+77%), 5 cases 0.65 (+30%), "
-            "10 cases 0.55 (+10%); unpaired 3 vs 3 0.61 (+22%); theory (Hedges' J) +77%, +25%, +9%, +25%. Hedges' g (d x J(df)) is unbiased."
-        ),
-    )
     def test_it_estimates_the_population_effect_without_bias(
         self, label: str, n_a: int, n_b: int, paired: bool
     ) -> None:
+        """The #601 finding: Cohen's d, reported before, read 0.88 for a true 0.5 at three paired cases (+77%),
+        0.65 at five, 0.55 at ten and 0.61 unpaired at 3 vs 3 — exactly Hedges' factor ``1/J``. Hedges' g is d
+        times J, and its mean is the population effect."""
         rng = random.Random(f"effect-size-bias-{label}")
         mean, se = _mean_effect_size(rng, n_a, n_b, paired=paired, replicates=self.REPLICATES)
-        assert abs(mean - 0.5) <= TOLERANCE_Z * se, f"{label}: mean d {mean:.4f} against a true 0.5"
+        assert abs(mean - 0.5) <= TOLERANCE_Z * se, f"{label}: mean g {mean:.4f} against a true 0.5"
+
+    def test_it_is_cohens_d_times_hedges_factor(self) -> None:
+        """g is the textbook d corrected by J, the factor the simulation support computes independently."""
+        a, b = [0.2, 0.4, 0.6, 0.5, 0.3], [0.5, 0.75, 0.95, 0.82, 0.58]
+        diffs = [y - x for x, y in zip(a, b)]
+        mean = sum(diffs) / len(diffs)
+        sd = math.sqrt(sum((d - mean) ** 2 for d in diffs) / (len(diffs) - 1))
+        assert composite_significance(a, b, paired=True).hedges_g == pytest.approx(mean / sd / hedges_correction(4))
+
+    def test_two_pairs_report_no_effect_size(self) -> None:
+        """At one degree of freedom E[1/s] diverges: no factor unbiases d, so none is reported — the p still is."""
+        result = composite_significance([0.0, 0.0], [0.4, 0.7], paired=True)
+        assert result.hedges_g is None and result.p_value is not None
+
+    def test_it_is_consistent(self) -> None:
+        """With many cases the reported g converges on the population effect."""
+        rng = random.Random("effect-size-consistent")
+        mean, se = _mean_effect_size(rng, 400, 400, paired=True, replicates=200)
+        assert abs(mean - 0.5) <= TOLERANCE_Z * se
+
+
+class TestTheIntervalOnTheDifference:
+    """The interval a contrast states on its difference covers the true difference at its level."""
+
+    #: 4,000 replicates: SE at 95% coverage is 0.0034, a 4-SE band of ±0.014.
+    REPLICATES = 4000
+
+    @pytest.mark.parametrize(("n_cases", "repeats"), [(2, 1), (3, 3), (5, 3), (10, 1), (15, 5)])
+    def test_the_paired_interval_covers_exactly(self, n_cases: int, repeats: int) -> None:
+        """The paired t interval over case means is exact for normal data: it covers 95% of the time."""
+        rng = random.Random(f"paired-interval-{n_cases}-{repeats}")
+        design = ClusteredDesign(n_cases=n_cases, repeats=repeats, between_case_sd=1.0, repeat_sd=0.5)
+        hits = 0
+        for _ in range(self.REPLICATES):
+            control, contrast = draw_paired_arms(rng, design, effect=0.7, correlation=0.6)
+            interval = difference_interval(case_means(control), case_means(contrast), paired=True)
+            assert interval is not None
+            hits += interval[0] <= 0.7 <= interval[1]
+        rate = hits / self.REPLICATES
+        assert within(rate, INTERVAL_LEVEL, self.REPLICATES), f"{n_cases} x {repeats}: coverage {rate:.4f}"
+
+    @pytest.mark.parametrize(
+        ("n_a", "n_b", "sd_a", "sd_b"), [(2, 10, 3.0, 1.0), (3, 3, 1.0, 1.0), (5, 15, 1.0, 3.0), (10, 10, 1.0, 2.0)]
+    )
+    def test_the_unpaired_interval_covers_at_least_nominally(
+        self, n_a: int, n_b: int, sd_a: float, sd_b: float
+    ) -> None:
+        """The unpaired interval inverts the conservative test, so it covers at least 95%, at any variance ratio."""
+        rng = random.Random(f"unpaired-interval-{n_a}-{n_b}-{sd_a}-{sd_b}")
+        hits = 0
+        for _ in range(self.REPLICATES):
+            a = case_means(draw_clustered(rng, ClusteredDesign(n_cases=n_a, repeats=3, between_case_sd=sd_a)))
+            b = case_means(draw_clustered(rng, ClusteredDesign(n_cases=n_b, repeats=3, between_case_sd=sd_b), mean=0.4))
+            interval = difference_interval(a, b, paired=False)
+            assert interval is not None
+            hits += interval[0] <= 0.4 <= interval[1]
+        rate = hits / self.REPLICATES
+        assert rate >= at_least(INTERVAL_LEVEL, self.REPLICATES), f"{n_a} vs {n_b}: coverage {rate:.4f}"
+
+    def test_it_excludes_zero_exactly_when_the_test_rejects(self) -> None:
+        """One statistic, two readings: the 95% interval and the test at α=0.05 never disagree."""
+        rng = random.Random("interval-test-duality")
+        for paired in (True, False):
+            for _ in range(500):
+                a = [rng.gauss(0.0, 1.0) for _ in range(4)]
+                b = [rng.gauss(1.0, 1.0) for _ in range(4)]
+                interval = difference_interval(a, b, paired=paired)
+                result = composite_significance(a, b, paired=paired)
+                assert interval is not None and result.significant is not None
+                assert result.significant is not (interval[0] <= 0.0 <= interval[1])
 
 
 def test_at_least_and_at_most_bracket_the_nominal() -> None:

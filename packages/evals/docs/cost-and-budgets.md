@@ -122,7 +122,9 @@ candidate is a plain async function, so the engine sees what it returns and noth
 Return `Answer(value, model=..., input_tokens=..., output_tokens=..., cost_usd=...)` instead of the bare
 value and the call becomes the cell's `candidate` usage row: `value` is graded and stored as a plain return
 would be, the result's `cost_usd` is derived from the row, the summary prints `candidate spend: $... over N
-call(s)`, and `compare`'s report tests the arms' `cost_usd` against the control like any other reading. A
+call(s)`, and `compare`'s report tests the arms' spend against the control like any other reading. The
+contrast is on `production_replicating_cost`, the spend of the roles production runs: `cost_usd` and
+`program_cost` also sum what a judge spent, which is measuring cost and is never tested between arms. A
 field left `None` is unreported, not zero, so an `Answer` with no `cost_usd` leaves its result's cost
 unknown. A candidate that returns anything else reports no spend, as before.
 `examples/compare_two_models.py` prices each Claude call this way.

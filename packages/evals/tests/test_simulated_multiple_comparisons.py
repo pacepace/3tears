@@ -192,6 +192,46 @@ class TestTheCampaignFamilyHoldsTheFamilyWiseError:
         assert wrong_way / self.REPLICATES <= at_most(SIGNIFICANCE_ALPHA / 2, self.REPLICATES)
 
 
+class TestEveryVerdictTheFamilyReaches:
+    """Equivalence verdicts and intervals join the family, and its error stays at α over all of them.
+
+    Four readings at 10 cases: two that do not move, with a wide margin, so the arms are often (rightly)
+    shown equivalent while any separation called on them is false; and two that move by exactly their
+    margin, the boundary where an equivalence claim is false as often as it can be while the separation is
+    real. Every verdict that could be wrong is counted.
+    """
+
+    #: 3,000 replicates: SE at α is 0.0040, a 4-SE band of ±0.016.
+    REPLICATES = 3000
+
+    def test_no_verdict_of_either_kind_is_wrong_beyond_alpha_and_the_intervals_cover_together(self) -> None:
+        rng = random.Random("family-equivalence")
+        design = ClusteredDesign(n_cases=10, repeats=3, between_case_sd=1.0, repeat_sd=0.5)
+        difference_sd = math.sqrt(2 * 0.5**2 + 2 * design.repeat_sd**2 / design.repeats)
+        effects = [[0.0, 0.0, 0.6, -0.6]]
+        margins = [3.0 * difference_sd, 3.0 * difference_sd, 0.6 * difference_sd, 0.6 * difference_sd]
+        truths = [effect * difference_sd for effect in effects[0]]
+        wrong = equivalences = uncovered = 0
+        for _ in range(self.REPLICATES):
+            family = _campaign_family(rng, design, contrasts=1, readings=4, reading_correlation=0.5, effects=effects)
+            verdicts = family_verdicts(family, margins=margins)
+            wrong += any(v.verdict in ("improved", "regressed") for v in verdicts[:2]) or any(
+                v.verdict == "equivalent" for v in verdicts[2:]
+            )
+            equivalences += sum(v.verdict == "equivalent" for v in verdicts[:2])
+            uncovered += any(
+                v.interval is None or not v.interval[0] <= truth <= v.interval[1]
+                for v, truth in zip(verdicts, truths, strict=True)
+            )
+        assert wrong / self.REPLICATES <= at_most(SIGNIFICANCE_ALPHA, self.REPLICATES), (
+            f"family-wise error over every verdict {wrong / self.REPLICATES:.4f} against α={SIGNIFICANCE_ALPHA}"
+        )
+        assert uncovered / self.REPLICATES <= at_most(SIGNIFICANCE_ALPHA, self.REPLICATES), (
+            f"the intervals failed to cover together {uncovered / self.REPLICATES:.4f} of the time"
+        )
+        assert equivalences / (2 * self.REPLICATES) > 0.5, "the fixture must reach the equivalent verdict"
+
+
 # --- the bundle applies the rule ----------------------------------------------------------------------
 
 _CONTROL = "control-model"
@@ -286,10 +326,10 @@ class TestTheBundleAppliesTheRule:
             ),
             (
                 "one shared case, so unpaired",
-                5,
+                8,
                 3,
                 0.35,
-                {"contrast-one": range(4, 9)},
+                {"contrast-one": range(7, 13)},
                 ("contrast-one", "unpaired", "improved"),
             ),
         ],
@@ -329,6 +369,9 @@ class TestTheBundleAppliesTheRule:
             assert comparison.p_raw == pytest.approx(rule.p_raw, rel=1e-9, abs=1e-12), where
             assert comparison.p_adjusted == pytest.approx(rule.p_adjusted, rel=1e-9, abs=1e-12), where
             assert comparison.verdict == rule.verdict, where
+            assert (comparison.interval is None) == (rule.interval is None), where
+            if comparison.interval is not None and rule.interval is not None:
+                assert comparison.interval == pytest.approx(rule.interval, rel=1e-9, abs=1e-12), where
         contrast, test, verdict = branch
         (reached,) = [
             comparison

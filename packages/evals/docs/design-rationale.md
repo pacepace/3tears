@@ -118,7 +118,7 @@ forbidden in capitals and done anyway), so each rule below is computed into the 
   *Evidence:* agent with tools, reasoning-effort sweep, setting confirmed sent, 0 reasoning tokens in every arm, 2026-09, single campaign.
 - **Significance has three states:** separated, `not_separated`, and `untested` (fewer than two cases a
   side, a gap with zero spread, or an arm that took no turn). Collapsing the last two retires a lever nobody
-  tested.
+  tested. A fourth, `equivalent`, is a claim of its own: an equivalence test against a declared margin.
 - **Subtract a part from a whole only under declared containment** (`MetricDescriptor.contained_by`) and
   when the declared parts exhaust it. One remainder of about 95 seconds described no wall-clock at all,
   because the part ran as detached background work.

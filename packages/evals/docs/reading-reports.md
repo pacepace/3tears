@@ -61,6 +61,45 @@ headline, finding, decision or answer to a declared question appears in a code-o
 
 `Report.basis` says which a report is; `REPORT_VERSION` is 4.
 
+## Reading a comparison
+
+The "Contrasts against the control" table (`multiple_comparisons` in the bundle) tests each arm against
+the control on each reading, under one rig.
+
+- **The test.** Per-case means (each case's repeats averaged first, because a case is the independent
+  draw). When the arms share at least two cases, it is a paired t-test over the shared cases. Otherwise it is
+  Welch's t statistic read on Hsu's `min(n_a, n_b) − 1` degrees of freedom. That is conservative at every
+  size: on Welch–Satterthwaite's degrees of freedom, a 2-case side against 10 called false differences 10%
+  of the time.
+- **Delta, the means, and "Cases tested"** are all over the cases the test read. A case only one arm ran is
+  left out of a paired test, and the row counts it, so a mean here can differ from the cell's own mean.
+- **The interval on delta** comes from the same test, at `1 − 0.05/m` for a family of `m` tested rows
+  (Bonferroni). All of a family's intervals cover together at least 95% of the time. One that excludes zero
+  always comes with a separation. A separation Holm's later steps find can still touch zero.
+- **Hedges' g** is the standardized difference, corrected for small samples. Cohen's d reads 0.88 for a
+  true 0.5 at three paired cases; g reads 0.5. There is none at two pairs, where no unbiased estimate exists.
+- **p (Holm-adjusted)** is corrected within the family: one per declared question (the readings on its
+  merit axes), or, with no question, one campaign-wide family over every reading on a merit axis. A measure
+  on no axis is never tested. That keeps the rig's own readings out: the judge's time (`judge_ms`), the
+  drain wait, and `cost_usd` and `program_cost`, which include what the judge spent. The candidate's spend
+  is tested as `production_replicating_cost`.
+
+| Verdict | Means | Do |
+|---|---|---|
+| improved / regressed | adjusted p < 0.05, in that direction | act on it, unless the row says *immaterial* (below the measure's margin) |
+| equivalent | the paired difference is shown inside ± the measure's margin by TOST, corrected in the same family | treat the arms as interchangeable on this reading |
+| not separated | the cases could not tell the arms apart | add cases, or declare a margin; never read it as a tie |
+| untested | no test could run; the row says why | fix what it names (usually too few cases) |
+
+`equivalent` needs a declared margin (`MetricDescriptor.materiality_threshold`) and a paired test. Its p
+is corrected in the same Holm family as the separations, with the multiplier capped at the number of
+compared rows (Shaffer's refinement: a difference cannot be both zero and at least the margin), so the
+chance that any verdict in the family is wrong stays at 5%.
+
+A delta-table chart states each row's change relative to the baseline only on a ratio scale. A judged 1–5
+score (`MetricDescriptor.scale="interval"`) moves in points: one point up is +50% from 2 and +25% from 4,
+so no percent is stated for it.
+
 ## Having a model write the analysis, over frozen evidence
 
 An analysis is written from the campaign's **bundle** alone (`AnalysisContextBundle`), and every figure

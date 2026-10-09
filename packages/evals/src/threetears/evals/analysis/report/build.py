@@ -20,7 +20,7 @@ from itertools import chain
 
 from threetears.evals.analysis.agreement import tier_sentence
 from threetears.evals.analysis.arms import ArmTable, arm_table, arm_table_of, short_digest
-from threetears.evals.analysis.bundle import AnalysisContextBundle, bundle_decision_surface
+from threetears.evals.analysis.bundle import AnalysisContextBundle, FamilyComparison, bundle_decision_surface
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.references import cell_index, resolve_reading
@@ -785,6 +785,34 @@ def _question_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:
     ]
 
 
+def _comparison_cases(comparison: FamilyComparison) -> str:
+    """The cases a contrast's test read, and how many each side ran that it left out.
+
+    The means and the delta beside it are over exactly these cases, so a reader comparing them with a cell's
+    own mean (over all its cases) is told why the two differ.
+    """
+    control, contrast = comparison.control, comparison.contrast
+    if comparison.test == "paired":
+        text = f"{control.n_cases} paired"
+    else:
+        text = f"{contrast.n_cases} vs {control.n_cases}" + (" unpaired" if comparison.test == "unpaired" else "")
+    left_out = [
+        f"{count} of the {side}'s"
+        for side, count in (("arm", contrast.n_left_out), ("control", control.n_left_out))
+        if count
+    ]
+    if left_out:
+        text += f"; {' and '.join(left_out)} left out, not run by the other side"
+    return text
+
+
+def _comparison_interval(interval: tuple[float, float] | None, level: float | None) -> str | None:
+    """A contrast's interval on its delta, with the level it holds at — simultaneous over its family."""
+    if interval is None or level is None:
+        return None
+    return f"[{format_number(interval[0])}, {format_number(interval[1])}] at {format_number(100 * level)}%"
+
+
 def _comparison_blocks(bundle: AnalysisContextBundle, surface: DecisionSurface) -> list[ReportBlock]:
     """Each contrast the bundle tested against the control, per live question, and how the family was corrected."""
     comparisons = bundle.multiple_comparisons
@@ -808,10 +836,20 @@ def _comparison_blocks(bundle: AnalysisContextBundle, surface: DecisionSurface) 
                     "reading": reading,
                     "contrast": arm(comparison.contrast.variant_key, comparison.contrast.apparatus_class_id),
                     "control": arm(comparison.control.variant_key, comparison.control.apparatus_class_id),
+                    "control_mean": comparison.control.mean,
+                    "arm_mean": comparison.contrast.mean,
+                    "cases": _comparison_cases(comparison),
                     "delta": comparison.delta,
+                    "interval": _comparison_interval(comparison.interval, family.interval_level),
+                    "hedges_g": comparison.hedges_g,
                     "p_adjusted": comparison.p_adjusted,
                     "verdict": COMPARISON_VERDICT_WORDS[comparison.verdict]
                     + (f" ({comparison.untested_reason})" if comparison.untested_reason else "")
+                    + (
+                        f" (margin ±{format_number(comparison.equivalence_margin)})"
+                        if comparison.verdict == "equivalent" and comparison.equivalence_margin is not None
+                        else ""
+                    )
                     + (
                         " — immaterial: below the host's materiality threshold, too small to act on"
                         if comparison.materiality == "immaterial"
@@ -829,7 +867,12 @@ def _comparison_blocks(bundle: AnalysisContextBundle, surface: DecisionSurface) 
                 TableColumn(key="reading", header="Reading"),
                 TableColumn(key="contrast", header="Arm"),
                 TableColumn(key="control", header="Control"),
+                TableColumn(key="control_mean", header="Control mean"),
+                TableColumn(key="arm_mean", header="Arm mean"),
+                TableColumn(key="cases", header="Cases tested"),
                 TableColumn(key="delta", header="Delta (arm − control)"),
+                TableColumn(key="interval", header="Interval on delta"),
+                TableColumn(key="hedges_g", header="Hedges' g"),
                 TableColumn(key="p_adjusted", header="p (Holm-adjusted)"),
                 TableColumn(key="verdict", header="Verdict"),
             ],

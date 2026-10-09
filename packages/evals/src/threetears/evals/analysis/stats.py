@@ -12,7 +12,7 @@ aggregate is ever displayed as a bare point estimate: we already pay for k
 repeats, and reporting only the mean discards what they bought.
 
 Consumed by :func:`threetears.evals.analysis.reads.compare_two_runs` to attach
-an effect size (Cohen's d), the p-value, and a significance flag to each
+an effect size (Hedges' g), the p-value, and a significance flag to each
 per-model composite delta. The p travels with the flag rather than being
 consumed and dropped: a verdict a reader cannot check against the number it was
 thresholded on is indistinguishable from one no test produced.
@@ -21,10 +21,12 @@ Composite scores are continuous per-case quality values in ``[0, 1]``
 *paired* by case when the two runs actually scored the same frozen
 ``test_case_id`` s (a paired t-test, far more powerful); when they scored
 different cases — including two runs of one template whose case sets do not
-intersect — they are two independent samples (Welch's unequal-variance t-test).
+intersect — they are two independent samples (Welch's statistic, read on Hsu's
+conservative degrees of freedom; see :func:`composite_significance`).
 The caller decides which, and the two effect sizes are not interchangeable:
-paired yields Cohen's d_z over the difference SD, unpaired Cohen's d over the
-pooled SD.
+paired yields Hedges' g_z over the difference SD, unpaired Hedges' g over the
+pooled SD — each the textbook Cohen's d times Hedges' small-sample factor J,
+because d itself overstates the effect by 77% at three cases.
 """
 
 from __future__ import annotations
@@ -70,7 +72,10 @@ PAIRED_TEST_NAME = f"paired two-sided t-test on shared per-case values, α={SIGN
 # paired one because a surface that discloses only "t-test" leaves a reader
 # unable to tell a powerful within-case comparison from a weak between-case one,
 # and that difference is most of what a small eval arm's verdict rests on.
-UNPAIRED_TEST_NAME = f"Welch's unequal-variance two-sided t-test on unpaired per-case values, α={SIGNIFICANCE_ALPHA}"
+UNPAIRED_TEST_NAME = (
+    "Welch's unequal-variance two-sided t statistic on unpaired per-case values, read on Hsu's conservative "
+    f"min(n_a, n_b) − 1 degrees of freedom, α={SIGNIFICANCE_ALPHA}"
+)
 
 # The equivalence test the change classifier runs beside the paired test, named for
 # the same reason: an `equivalent` label names the statistics it rests on.
@@ -727,7 +732,7 @@ def cohen_kappa(
 MULTIPLE_COMPARISON_CORRECTION: Final = "holm"
 
 
-def holm_adjust(p_values: Sequence[float]) -> list[float]:
+def holm_adjust(p_values: Sequence[float], *, max_true: int | None = None) -> list[float]:
     """Holm-Bonferroni adjusted p-values for one family of comparisons, in the order given.
 
     Testing ten comparisons at α=0.05 each finds a "significant" one by chance in most families,
@@ -740,32 +745,68 @@ def holm_adjust(p_values: Sequence[float]) -> list[float]:
     monotone by a running maximum, so an adjusted p is never smaller than one ranked below it.
     Comparing each adjusted p with α gives exactly Holm's rejection set.
 
+    ``max_true`` caps the multiplier where the hypotheses are logically restricted so that no more than
+    that many can be true at once — Shaffer's (1986) refinement. A family holding a difference test and an
+    equivalence test of the same comparison is the case: the difference is either zero or at least the
+    margin, never both, so ``m`` comparisons tested both ways hold at most ``m`` true nulls among their
+    ``m + e`` hypotheses. The proof is Holm's: the first true null rejected comes after only false ones,
+    so at most ``min(m + e − i + 1, max_true)`` nulls are true at that step, and that is the multiplier.
+
     Args:
-        p_values: The raw two-sided p of every comparison in the family. The family is exactly
+        p_values: The raw p of every hypothesis in the family. The family is exactly
             these: a comparison that ran no test has no p and is not passed, since it is not a
             hypothesis this family tested.
+        max_true: The most hypotheses that can be true together, or None for no restriction.
 
     Returns:
         One adjusted p per input, in input order. Empty for an empty family.
 
     Raises:
-        ValueError: A p is not a probability.
+        ValueError: A p is not a probability, or ``max_true`` is below one.
     """
     stray = [p for p in p_values if not 0.0 <= p <= 1.0]
     if stray:
         raise ValueError(f"p-values must lie in [0, 1]; got {stray}")
+    if max_true is not None and max_true < 1:
+        raise ValueError(f"max_true must be at least 1; got {max_true}")
     m = len(p_values)
     order = sorted(range(m), key=lambda index: p_values[index])
     adjusted = [0.0] * m
     running = 0.0
     for rank, index in enumerate(order):
-        running = max(running, min(1.0, (m - rank) * p_values[index]))
+        multiplier = m - rank if max_true is None else min(m - rank, max_true)
+        running = max(running, min(1.0, multiplier * p_values[index]))
         adjusted[index] = running
     return adjusted
 
 
+def hedges_j(df: int) -> float | None:
+    """Hedges' small-sample factor ``J(df) = Γ(df/2) / (√(df/2) · Γ((df − 1)/2))`` (Hedges 1981).
+
+    A standardized mean difference divides by a sample SD, and ``1/s`` overshoots ``1/σ`` on average, so
+    the textbook estimator (Cohen's d) overstates the effect by the factor ``1/J``: 77% at two degrees
+    of freedom, 25% at four, 9% at nine. Multiplying by ``J`` removes the bias exactly for normal data
+    (``tests/test_simulated_separation.py``).
+
+    Args:
+        df: The degrees of freedom of the SD the effect is standardized by.
+
+    Returns:
+        ``J``, or ``None`` below two degrees of freedom: at one, ``E[1/s]`` diverges, so no factor makes
+        the estimate unbiased and none is reported.
+    """
+    if df < 2:
+        return None
+    return math.exp(math.lgamma(df / 2.0) - math.lgamma((df - 1) / 2.0)) / math.sqrt(df / 2.0)
+
+
 class SignificanceResult(NamedTuple):
     """A composite comparison's effect size, its verdict, and the p behind it.
+
+    ``hedges_g`` is the bias-corrected standardized difference (:func:`hedges_j`): paired, the mean
+    per-case difference over the SD of the differences (``g_z``); unpaired, the difference of means over
+    the pooled SD (``g``). Named for what it is: Cohen's d, the uncorrected estimator, reads 0.88 for a
+    true 0.5 at three paired cases.
 
     ``p_value`` is the number ``significant`` was thresholded against, carried
     rather than discarded so a surface can show the verdict *and* the statistic
@@ -780,7 +821,7 @@ class SignificanceResult(NamedTuple):
     read as one tested and found identical.
     """
 
-    cohens_d: float | None
+    hedges_g: float | None
     significant: bool | None
     p_value: float | None
 
@@ -791,34 +832,22 @@ class SignificanceResult(NamedTuple):
 _UNTESTED = SignificanceResult(None, None, None)
 
 
-def composite_significance(
-    sample_a: list[float],
-    sample_b: list[float],
-    *,
-    paired: bool,
-) -> SignificanceResult:
-    """Effect size + significance for two composite-score samples.
+class _TStatistic(NamedTuple):
+    """The pieces of one two-sample t test: the difference it tests, its standard error, df, and effect size."""
 
-    Args:
-        sample_a: Run A's per-case composite scores. When ``paired``, aligned
-            one-to-one with ``sample_b`` (same case order).
-        sample_b: Run B's per-case composite scores.
-        paired: True to run a paired t-test on ``b - a`` differences (Cohen's
-            ``d_z`` = mean(diff) / sd(diff)); False for Welch's unequal-variance
-            t-test (Cohen's d over the pooled SD).
+    delta: float
+    se: float
+    df: float
+    hedges_g: float | None
+
+
+def _t_statistic(a: list[float], b: list[float], *, paired: bool) -> _TStatistic | SignificanceResult:
+    """The statistic :func:`composite_significance` tests and :func:`difference_interval` bounds — one computation.
 
     Returns:
-        A :class:`SignificanceResult`. Every field is ``None`` when the test is
-        undefined — fewer than two usable observations, or zero variance with a
-        non-zero mean difference (a deterministic constant gap has no finite
-        effect size). A zero mean difference with zero variance returns
-        ``(0.0, False, None)``: the samples are identical, which is definitively
-        not a significant difference, but no t-statistic exists to quote — its
-        denominator is zero — so the p stays absent rather than being invented.
+        The statistic, or the :class:`SignificanceResult` that stands for no test (too few observations,
+        a length mismatch, or zero spread).
     """
-    a = [float(x) for x in sample_a]
-    b = [float(x) for x in sample_b]
-
     if paired:
         if len(a) != len(b) or len(a) < 2:
             return _UNTESTED
@@ -828,31 +857,102 @@ def composite_significance(
         sd = _sample_std(diffs)
         if sd == 0.0:
             return SignificanceResult(0.0, False, None) if mean_diff == 0.0 else _UNTESTED
-        cohens_d = mean_diff / sd
-        t_stat = mean_diff / (sd / math.sqrt(n))
-        df = float(n - 1)
-    else:
-        if len(a) < 2 or len(b) < 2:
-            return _UNTESTED
-        na, nb = len(a), len(b)
-        mean_a = sum(a) / na
-        mean_b = sum(b) / nb
-        sd_a = _sample_std(a)
-        sd_b = _sample_std(b)
-        pooled = math.sqrt(((na - 1) * sd_a**2 + (nb - 1) * sd_b**2) / (na + nb - 2))
-        if pooled == 0.0:
-            return SignificanceResult(0.0, False, None) if mean_a == mean_b else _UNTESTED
-        cohens_d = (mean_b - mean_a) / pooled
-        var_a, var_b = sd_a**2 / na, sd_b**2 / nb
-        se = math.sqrt(var_a + var_b)
-        t_stat = (mean_b - mean_a) / se
-        # Welch–Satterthwaite degrees of freedom.
-        df = (var_a + var_b) ** 2 / (var_a**2 / (na - 1) + var_b**2 / (nb - 1))
-
-    p_value = _student_t_two_sided_p(t_stat, df)
-    if math.isnan(p_value) or not math.isfinite(cohens_d):
+        j = hedges_j(n - 1)
+        return _TStatistic(mean_diff, sd / math.sqrt(n), float(n - 1), None if j is None else j * mean_diff / sd)
+    if len(a) < 2 or len(b) < 2:
         return _UNTESTED
-    return SignificanceResult(cohens_d, p_value < SIGNIFICANCE_ALPHA, p_value)
+    na, nb = len(a), len(b)
+    mean_a = sum(a) / na
+    mean_b = sum(b) / nb
+    sd_a = _sample_std(a)
+    sd_b = _sample_std(b)
+    pooled = math.sqrt(((na - 1) * sd_a**2 + (nb - 1) * sd_b**2) / (na + nb - 2))
+    if pooled == 0.0:
+        return SignificanceResult(0.0, False, None) if mean_a == mean_b else _UNTESTED
+    j = hedges_j(na + nb - 2)
+    se = math.sqrt(sd_a**2 / na + sd_b**2 / nb)
+    if se == 0.0:
+        return _UNTESTED
+    # Hsu's degrees of freedom, not Welch–Satterthwaite's: see composite_significance.
+    return _TStatistic(
+        mean_b - mean_a, se, float(min(na, nb) - 1), None if j is None else j * (mean_b - mean_a) / pooled
+    )
+
+
+def composite_significance(
+    sample_a: list[float],
+    sample_b: list[float],
+    *,
+    paired: bool,
+) -> SignificanceResult:
+    """Effect size + significance for two composite-score samples.
+
+    **Paired**: the one-sample t test on the per-case differences ``b − a`` on ``n − 1`` degrees of
+    freedom — exact for normal differences.
+
+    **Unpaired**: Welch's statistic (the difference of means over ``√(s_a²/n_a + s_b²/n_b)``) read on
+    Hsu's conservative ``min(n_a, n_b) − 1`` degrees of freedom rather than the Welch–Satterthwaite
+    estimate. Satterthwaite's df overstates what a two- or three-case side knows: by simulation, Welch's
+    test called a difference that was not there 10% of the time at 2 vs 10 cases (11% when the small
+    side's SD was 3×), 7% at 3 vs 10 (3×) and 5.6% at 5 vs 10 (3×), against a nominal 5%. On
+    ``min(n) − 1`` df the test is conservative for normal data at every sample size and variance ratio
+    (Mickey & Brown 1966); simulated, it held at most 4.3% across those designs. An exact permutation
+    test was weighed and rejected: it is exact only when the two sides share one distribution, and the
+    3×-SD design above is exactly where it is not. The price is power on the unpaired path — 0.53 → 0.48 at
+    10 vs 10 cases and d = 1 — which falls on the fallback, not the paired design a fixed case set exists
+    for.
+
+    Args:
+        sample_a: Run A's per-case composite scores. When ``paired``, aligned
+            one-to-one with ``sample_b`` (same case order).
+        sample_b: Run B's per-case composite scores.
+        paired: True for the paired test on ``b - a`` differences; False for the unpaired test.
+
+    Returns:
+        A :class:`SignificanceResult`. Every field is ``None`` when the test is
+        undefined — fewer than two usable observations, or zero variance with a
+        non-zero mean difference (a deterministic constant gap has no finite
+        effect size). A zero mean difference with zero variance returns
+        ``(0.0, False, None)``: the samples are identical, which is definitively
+        not a significant difference, but no t-statistic exists to quote — its
+        denominator is zero — so the p stays absent rather than being invented.
+        ``hedges_g`` is ``None`` beside a p where its SD has one degree of freedom (two pairs), where no
+        unbiased effect size exists (:func:`hedges_j`).
+    """
+    statistic = _t_statistic([float(x) for x in sample_a], [float(x) for x in sample_b], paired=paired)
+    if isinstance(statistic, SignificanceResult):
+        return statistic
+    p_value = _student_t_two_sided_p(statistic.delta / statistic.se, statistic.df)
+    if math.isnan(p_value):
+        return _UNTESTED
+    return SignificanceResult(statistic.hedges_g, p_value < SIGNIFICANCE_ALPHA, p_value)
+
+
+def difference_interval(
+    sample_a: list[float], sample_b: list[float], *, paired: bool, confidence: float = INTERVAL_LEVEL
+) -> tuple[float, float] | None:
+    """The interval on ``mean(b) − mean(a)`` that :func:`composite_significance`'s test inverts.
+
+    ``delta ± t · se`` on the test's own standard error and degrees of freedom — paired over the per-case
+    differences, unpaired on Welch's SE and Hsu's df — so at ``confidence = 1 − α`` the interval excludes
+    zero exactly when the test's p is below α. Never clipped: a difference of two bounded means can run
+    either way.
+
+    Args:
+        sample_a: The baseline's per-case values.
+        sample_b: The compared side's, aligned with ``sample_a`` when ``paired``.
+        paired: Which test the interval belongs to.
+        confidence: The coverage, ``INTERVAL_LEVEL`` unless a family's correction asks for more.
+
+    Returns:
+        ``(low, high)``, or ``None`` wherever the test runs no t — too few observations, or no spread,
+        where a zero-width interval would state certainty no data measured.
+    """
+    statistic = _t_statistic([float(x) for x in sample_a], [float(x) for x in sample_b], paired=paired)
+    if isinstance(statistic, SignificanceResult):
+        return None
+    half = t_critical_two_sided(confidence, statistic.df) * statistic.se
+    return statistic.delta - half, statistic.delta + half
 
 
 def separation_p(sample_a: Sequence[float], sample_b: Sequence[float], *, paired: bool) -> float | None:
@@ -923,7 +1023,7 @@ class ChangeVerdict(NamedTuple):
     relative_delta: float | None
     significant: bool | None
     exceeds_threshold: bool | None
-    cohens_d: float | None
+    hedges_g: float | None
     n_pairs: int
     #: The p the verdict was thresholded against, carried for the same reason the
     #: effect size is: a label a reader cannot check is an assertion. ``None``
@@ -940,7 +1040,7 @@ class ChangeVerdict(NamedTuple):
     equivalence_p: float | None = None
 
 
-def _equivalence(diffs: list[float], margin: float | None) -> tuple[bool | None, float | None]:
+def paired_equivalence(diffs: list[float], margin: float | None) -> tuple[bool | None, float | None]:
     """The paired TOST against ``± margin``: whether the mean difference is shown inside it, and its p.
 
     Two one-sided t-tests on the paired differences, each at :data:`SIGNIFICANCE_ALPHA`: H0 ``δ ≤ −margin``
@@ -1067,7 +1167,7 @@ def paired_change(
 
     diffs = [y - x for x, y in zip(a, b)]
     tested = composite_significance(a, b, paired=True)
-    cohens_d, significant, p_value = tested
+    hedges_g, significant, p_value = tested
     if (
         significant is None
         and n_pairs >= _MIN_PAIRS_FOR_DETERMINISTIC_GAP
@@ -1091,7 +1191,7 @@ def paired_change(
         # rubric), which makes "every case moved by exactly the same amount" an
         # ordinary coincidence at small n rather than a finding.
         significant = True
-    equivalent, equivalence_p = _equivalence(diffs, equivalence_margin)
+    equivalent, equivalence_p = paired_equivalence(diffs, equivalence_margin)
 
     def verdict(label: ChangeLabel) -> ChangeVerdict:
         return ChangeVerdict(
@@ -1100,7 +1200,7 @@ def paired_change(
             relative,
             significant,
             exceeds,
-            cohens_d,
+            hedges_g,
             n_pairs,
             p_value,
             equivalence_margin,
@@ -1112,7 +1212,7 @@ def paired_change(
         # pair floor. Report the measured delta if there is one, but never a
         # directional label from a test that did not run, and never equivalence.
         return ChangeVerdict(
-            "inconclusive", delta, relative, None, exceeds, cohens_d, n_pairs, p_value, equivalence_margin
+            "inconclusive", delta, relative, None, exceeds, hedges_g, n_pairs, p_value, equivalence_margin
         )
     if significant and exceeds:
         return verdict("improved" if (delta > 0) == higher_is_better else "regressed")
@@ -1423,6 +1523,8 @@ __all__ = [
     "clustered_standard_error",
     "cohen_kappa",
     "composite_significance",
+    "difference_interval",
+    "hedges_j",
     "holm_adjust",
     "interval_clears",
     "level_difference",
@@ -1430,6 +1532,7 @@ __all__ = [
     "mean_interval",
     "observed_mean_interval",
     "paired_change",
+    "paired_equivalence",
     "proportion_interval",
     "separation_p",
     "standard_error_of_mean",

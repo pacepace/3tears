@@ -231,13 +231,35 @@ result = await compare(
     scope_id="dev",
     k=2,
 )
-print(result.render())  # "Contrasts against the control": the difference, a Holm-adjusted p, and a verdict
+print(result.render())  # "Contrasts against the control": each difference, its interval, a Holm-adjusted p, a verdict
 ```
 
-Each contrast's verdict reads "improved on the control", "regressed from the control" or "not separated
-from the control". The last one means the cases could not tell the arms apart, not that they are equal:
-add cases (above all hard ones) before you read it as a tie. `result.arms["candidate"]` is that arm's
-`EvalSummary`, and `result.campaign_id` names the campaign holding every run.
+Each row of that table is one arm against the control on one reading, and says:
+
+- **Delta**: the arm's mean minus the control's, over the cases the test read. The test is a **paired
+  t-test on per-case means** (each case's repeats averaged first) over the cases both arms ran; when they
+  share fewer than two, Welch's t statistic on the conservative `min(n) − 1` degrees of freedom. A case only
+  one arm ran is left out of a paired test, and "Cases tested" says how many.
+- **Interval on delta**: where the true difference plausibly lies, widened for the number of rows tested
+  together so that all of them hold at once, 95% of the time.
+- **Hedges' g**: the difference in standard deviations, corrected for small samples.
+- **p (Holm-adjusted)**: corrected over every row in its family: one per declared question, or, when none
+  is declared, every reading on a merit axis across the campaign. Use only this p, never a raw one.
+
+The verdict is one of five:
+
+- **improved on the control** / **regressed from the control**: the adjusted p is below 0.05. If it says
+  *immaterial*, the move is real but smaller than the measure's declared margin. Don't act on it.
+- **equivalent to the control**: an equivalence test (TOST) shows the difference inside the measure's
+  declared margin. This is the only verdict that says two arms are alike, so it is how "the cheaper model is
+  good enough" gets shown. It needs a margin (`materiality_threshold`) on the measure.
+- **not separated from the control**: the cases could not tell the arms apart. It does not mean they are
+  equal. Add cases (above all hard ones), or declare a margin so equivalence can be tested.
+- **untested**: no test could run (fewer than two cases on a side, or no spread at all). The row says why.
+
+[Reading a comparison](docs/reading-reports.md#reading-a-comparison) has the details.
+`result.arms["candidate"]` is that arm's `EvalSummary`, and `result.campaign_id` names the campaign holding
+every run.
 
 Example: [`examples/compare_two_prompts.py`](examples/compare_two_prompts.py).
 
@@ -246,7 +268,8 @@ Example: [`examples/compare_two_prompts.py`](examples/compare_two_prompts.py).
 Asking whether a cheaper model is good enough means weighing what each gets right against what it
 costs. The engine cannot see what a plain candidate spends, so have the candidate return an `Answer`:
 the label plus the call's tokens and dollars. Each arm's summary then prints its `candidate spend`, and
-the report tests the arms' `cost_usd` against the control the same way it tests their accuracy.
+the report tests the arms' spend (`production_replicating_cost`, the candidate's own) against the control
+the same way it tests their accuracy.
 
 ```python
 from threetears.evals.quick import Answer, compare
@@ -258,7 +281,7 @@ async def classify_cheaper(case: dict) -> Answer:
 
 result = await compare(CASES, {"current": classify_current, "cheaper": classify_cheaper},
                        expected=lambda case: case["label"], control="current", scope_id="dev", k=2)
-print(result.render())  # verdicts on accuracy and on cost_usd
+print(result.render())  # verdicts on accuracy and on spend
 ```
 
 A field left `None` is unreported, not zero. A candidate that returns a plain value still works, and
