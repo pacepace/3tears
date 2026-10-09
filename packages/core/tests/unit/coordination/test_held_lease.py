@@ -383,3 +383,130 @@ async def test_a_lease_won_after_waiting_is_not_reported_lost_on_arrival() -> No
         assert second.held, "a lease won after a long wait was reported lost the moment it arrived"
     finally:
         await second.release()
+
+
+# --- a lease on a bucket another owner declared, whose readers test whether a key exists ---------
+#
+# A writer's claim on what it writes lives in a bucket the writer did not declare (its pod's pointer
+# bucket), under a key a reader recognises by its grammar alone, and the reader -- an orphan purge --
+# asks only whether the key EXISTS. So the lease must key exactly as told, in the bucket it was
+# handed, and a holder that stops renewing must lose the key itself: an expiry inside the value would
+# leave the key standing forever, and the purge with it.
+
+
+def _claims_lease(bucket: FakeKvBucket, *, expire_entries: bool = True) -> KVLease:
+    return KVLease(None, bucket=bucket, pod_id="pod-a", expire_entries=expire_entries)
+
+
+async def _advance_with_the_bucket(bucket: FakeKvBucket, seconds: float, *, step: float = 0.1) -> None:
+    """let ``seconds`` pass on the loop's clock and the bucket's together, so renewals and per-key
+    TTLs run against the same time."""
+    for _ in range(round(seconds / step)):
+        await asyncio.sleep(step)
+        bucket.advance_clock(timedelta(seconds=step))
+
+
+@_in_virtual_time
+async def test_a_lease_handed_a_bucket_keys_exactly_as_told_and_opens_none() -> None:
+    client = FakeNatsClient()
+    pointers = await client.kv_bucket(name="pointers")
+    held = await _claims_lease(pointers).hold("enr.w.3.writer", ttl=_TTL, renew_every=_RENEW)
+    try:
+        assert await pointers.list_keys() == ["enr.w.3.writer"]
+        assert _claims_lease(pointers).bucket_name == pointers.name
+    finally:
+        await held.release()
+    assert await pointers.list_keys() == []
+
+
+def test_a_lease_takes_a_client_or_a_bucket_never_both_nor_neither() -> None:
+    with pytest.raises(ValueError, match="one of the two"):
+        KVLease(None)
+    bucket = asyncio.run(FakeNatsClient().kv_bucket(name="pointers"))
+    with pytest.raises(ValueError, match="one of the two"):
+        KVLease(FakeNatsClient(), bucket=bucket)  # type: ignore[arg-type]
+
+
+@_in_virtual_time
+async def test_an_expiring_entry_lives_while_renewed() -> None:
+    pointers = await FakeNatsClient().kv_bucket(name="pointers")
+    held = await _claims_lease(pointers).hold("enr.w.3.writer", ttl=_TTL, renew_every=_RENEW)
+    try:
+        await _advance_with_the_bucket(pointers, _TTL.total_seconds() * 3)
+        assert await pointers.list_keys() == ["enr.w.3.writer"], "a renewal did not carry the per-key TTL forward"
+        assert held.held
+    finally:
+        await held.release()
+
+
+@pytest.mark.parametrize("expire_entries", [True, False])
+@_in_virtual_time
+async def test_a_holder_that_stops_renewing_loses_its_key_only_when_entries_expire(expire_entries: bool) -> None:
+    pointers = await FakeNatsClient().kv_bucket(name="pointers")
+    held = await _claims_lease(pointers, expire_entries=expire_entries).hold(
+        "enr.w.3.writer", ttl=_TTL, renew_every=_RENEW
+    )
+    pointers.become_unreachable(_outage())  # its renewals stop landing, as a dead holder's do
+    await asyncio.wait_for(held.until_lost(), timeout=5)
+    pointers.advance_clock(_TTL * 2)
+    pointers.become_reachable()
+    keys = await pointers.list_keys()
+    if expire_entries:
+        assert keys == [], "a holder that stopped renewing still holds its key"
+    else:
+        assert keys == ["enr.w.3.writer"], "an envelope-expiry lease's key outlives its holder, as it always has"
+    await held.release()
+
+
+@_in_virtual_time
+async def test_a_retaking_lease_takes_back_an_entry_its_bucket_lost() -> None:
+    pointers = await FakeNatsClient().kv_bucket(name="pointers")
+    held = await _claims_lease(pointers).hold("enr.w.3.writer", ttl=_TTL, renew_every=_RENEW, retake=True)
+    try:
+        pointers.vanish()  # NATS lost the bucket, and the entry with it
+        await asyncio.sleep(_RENEW.total_seconds() * 3)
+        assert await pointers.list_keys() == ["enr.w.3.writer"], "the lost entry was not taken again"
+        assert held.held and not held.lost.is_set()
+        await _advance_with_the_bucket(pointers, _TTL.total_seconds() * 2)
+        assert await pointers.list_keys() == ["enr.w.3.writer"], "the retaken entry is not renewed"
+    finally:
+        await held.release()
+    assert await pointers.list_keys() == []
+
+
+@_in_virtual_time
+async def test_a_retaking_lease_rides_out_an_outage_that_lapsed_its_key() -> None:
+    pointers = await FakeNatsClient().kv_bucket(name="pointers")
+    held = await _claims_lease(pointers).hold("enr.w.3.writer", ttl=_TTL, renew_every=_RENEW, retake=True)
+    try:
+        pointers.become_unreachable(_outage())
+        await asyncio.sleep(_TTL.total_seconds() * 2)
+        pointers.advance_clock(_TTL * 2)  # the key lapsed while nothing could renew it
+        assert held.held, "a lapse alone lost a lease that retakes"
+        pointers.become_reachable()
+        await asyncio.sleep(_RENEW.total_seconds() * 3)
+        assert await pointers.list_keys() == ["enr.w.3.writer"], "the lapsed entry was not taken again"
+        assert held.held
+    finally:
+        await held.release()
+
+
+@_in_virtual_time
+async def test_without_retake_an_entry_its_bucket_lost_is_a_lost_lease() -> None:
+    pointers = await FakeNatsClient().kv_bucket(name="pointers")
+    held = await _claims_lease(pointers).hold("enr.w.3.writer", ttl=_TTL, renew_every=_RENEW)
+    pointers.vanish()
+    await asyncio.wait_for(held.until_lost(), timeout=5)
+    assert await pointers.list_keys() == []
+    await held.release()
+
+
+@_in_virtual_time
+async def test_a_retaking_lease_still_yields_to_another_holder() -> None:
+    client = FakeNatsClient()
+    held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW, retake=True)
+    await _take_over(client, "job")
+    await asyncio.wait_for(held.until_lost(), timeout=5)
+    await held.release()
+    surviving = await (await _bucket(client)).get_entry(key="job")
+    assert surviving is not None and b"pod-b" in surviving[0], "a lease that retakes took another holder's entry"
