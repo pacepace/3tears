@@ -3179,7 +3179,7 @@ class TestFrontierCarriesDominanceOnShapeAndWeightRatherThanHue:
     def test_the_contention_classes_are_separated_by_shape(self):
         primary, *_ = _point_layers(compile_chart("frontier", FRONTIER).spec)
         shape = primary["encoding"]["shape"]
-        assert shape["scale"]["domain"] == ["On frontier", "Dominated"]
+        assert shape["scale"]["domain"] == ["Not shown dominated", "Dominated"]
         assert shape["scale"]["range"] == ["circle", "diamond"]
 
     def test_every_weight_shares_one_shape_scale_so_the_key_stays_whole(self):
@@ -3198,7 +3198,7 @@ class TestFrontierCarriesDominanceOnShapeAndWeightRatherThanHue:
         """Which is what lets this channel exist at all: identity may not ride on hue."""
         for layer in _point_layers(compile_chart("frontier", FRONTIER).spec):
             assert "color" not in layer["encoding"]
-            assert set(layer["encoding"]["shape"]["scale"]["range"]) <= {"circle", "diamond", "cross"}
+            assert set(layer["encoding"]["shape"]["scale"]["range"]) <= {"circle", "square", "diamond", "cross"}
 
     def test_the_recession_is_the_second_channel_and_not_the_only_one(self):
         spec = compile_chart("frontier", FRONTIER).spec
@@ -3207,7 +3207,7 @@ class TestFrontierCarriesDominanceOnShapeAndWeightRatherThanHue:
         assert recessive["mark"]["style"] == CONTEXT_STYLE
         # The dominated contestant is in the receding layer and the frontier one is not...
         assert recessive["transform"][0]["filter"]["oneOf"] == ["Dominated"]
-        assert primary["transform"][0]["filter"]["oneOf"] == ["On frontier"]
+        assert primary["transform"][0]["filter"]["oneOf"] == ["Not shown dominated"]
         # ...and the same pair is already separated without consulting the weight at all.
         by_label = {row["label"]: row for row in compile_chart("frontier", FRONTIER).rows}
         assert by_label["model-b"]["status"] != by_label["model-a-3.5-fast-lite"]["status"]
@@ -3281,9 +3281,9 @@ class TestAFrontierKeepsItsAuthorsOneSentence:
         "cost_label": "Cost (USD)",
         "quality_label": "Accuracy",
         "points": [
-            {"label": "model=model-a", "cost": 0.003, "quality": 0.85},
-            {"label": "model=model-b", "cost": 0.045, "quality": 0.85, "dominated": True},
-            {"label": "model=model-c", "cost": 0.08, "quality": 0.88},
+            {"label": "model=model-a", "cost": 0.003, "quality": 0.85, "dominance": "not_separated"},
+            {"label": "model=model-b", "cost": 0.045, "quality": 0.85, "dominated": True, "dominance": "dominated"},
+            {"label": "model=model-c", "cost": 0.08, "quality": 0.88, "dominance": "not_separated"},
             {
                 "label": "model=model-d",
                 "quality": 0.0,
@@ -3305,7 +3305,11 @@ class TestAFrontierKeepsItsAuthorsOneSentence:
     def test_the_compilers_disclosures_arrive_as_their_own_lines(self):
         """The key, then who is out and why, then who is missing, then the bar — nothing dropped."""
         assert compile_chart("frontier", self.PAYLOAD).disclosures == [
-            "circle = on frontier, diamond = dominated.",
+            "circle = not shown dominated, diamond = dominated.",
+            (
+                "Domination is the frontier lens's test on pass^k, production-replicating cost and mean latency, "
+                "not a reading of the two quantities drawn; not shown dominated is not on the frontier."
+            ),
             "model=model-d and model=model-e are disqualified: no usable answer was returned.",
             (
                 "Not drawn — no production-replicating cost was recorded for model=model-d and "

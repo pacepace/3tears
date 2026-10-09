@@ -1020,6 +1020,17 @@ def difference_interval(
     return statistic.delta - half, statistic.delta + half
 
 
+def _constant_split_p(n_a: int, n_b: int) -> float:
+    """The exact two-sided permutation p of two unpaired samples, each constant and the two different.
+
+    Of the ``C(n_a + n_b, n_a)`` equally likely ways to split the pooled values between the sides, only the
+    two that put one side's values all above the other's are as extreme as the observed: ``2 / C(n_a + n_b,
+    n_a)``. The unpaired counterpart of :func:`_sign_flip_p`, and the one p both :func:`separation_p` and
+    :func:`level_difference` state for that pattern.
+    """
+    return min(1.0, 2.0 / math.comb(n_a + n_b, n_a))
+
+
 class GuardrailVerdict(NamedTuple):
     """What :func:`guardrail_decision` came to: the decision, the interval it read, and how that interval was formed."""
 
@@ -1087,10 +1098,12 @@ def separation_p(sample_a: Sequence[float], sample_b: Sequence[float], *, paired
     """The two-sided p of the separation test between two samples, where one exists.
 
     :func:`composite_significance`'s p — paired t on shared per-case values, Welch otherwise — and, where
-    that has none because every paired difference is the same nonzero amount, the exact sign-flip p
-    ``2^(1 − n)``: with the differences all alike, only the two all-one-sign assignments of the ``2^n``
-    are as extreme. That is the reasoning :func:`paired_change` gives a deterministic gap, with its p
-    stated rather than a floor, so a caller combining p's has one to combine.
+    that has none because the values have no spread, the exact permutation p :func:`level_difference`
+    states for the same pattern, so one concept has one answer: every paired difference the same nonzero
+    amount reads ``2^(1 − n)`` (:func:`_sign_flip_p`), two unpaired sides each constant and different read
+    ``2 / C(n_a + n_b, n_a)`` (:func:`_constant_split_p`), and identical values (no gap, no spread) read 1.
+    The p is stated whether or not it can reach α — at three pairs the sign-flip p is 0.25 — so a caller
+    combining p's has one to combine, and reads one that cannot reach α as no separation.
 
     Args:
         sample_a: One side's per-case values.
@@ -1098,17 +1111,24 @@ def separation_p(sample_a: Sequence[float], sample_b: Sequence[float], *, paired
         paired: Whether the two are one-to-one on the same cases.
 
     Returns:
-        The p, or ``None`` where no test separates the two: fewer than two values a side, identical paired
-        samples, or two unpaired samples each without spread.
+        The p, or ``None`` where no test separates the two: fewer than two values a side, or paired samples
+        of different lengths.
     """
     tested = composite_significance(list(sample_a), list(sample_b), paired=paired)
     if tested.p_value is not None:
         return tested.p_value
-    if paired and len(sample_a) == len(sample_b) >= 2:
-        diffs = [float(b) - float(a) for a, b in zip(sample_a, sample_b)]
-        if _sample_std(diffs) == 0.0 and diffs[0] != 0.0:
-            return _sign_flip_p(len(diffs))
-    return None
+    a = [float(x) for x in sample_a]
+    b = [float(y) for y in sample_b]
+    if paired:
+        if len(a) != len(b) or len(a) < 2:
+            return None
+        diffs = [y - x for x, y in zip(a, b)]
+        if _sample_std(diffs) != 0.0:
+            return None
+        return 1.0 if diffs[0] == 0.0 else _sign_flip_p(len(diffs))
+    if len(a) < 2 or len(b) < 2 or not (_all_equal(a) and _all_equal(b)):
+        return None
+    return 1.0 if a[0] == b[0] else _constant_split_p(len(a), len(b))
 
 
 #: What a change between two paired samples reads as — see :class:`ChangeVerdict`.
@@ -1461,7 +1481,7 @@ def level_difference[Case: Hashable](
     elif _all_equal(a) and _all_equal(b):
         if a[0] == b[0]:
             return LevelDifference(test, n_a, n_b, mean_a, mean_b, delta, 0.0, 1.0, False, None, None, None)
-        exact = min(1.0, 2.0 / math.comb(n_a + n_b, n_a))
+        exact = _constant_split_p(n_a, n_b)
         if exact > SIGNIFICANCE_ALPHA:
             return untested(
                 f"each side's values are constant, and over {n_a} and {n_b} cases no exact test can call two "

@@ -502,6 +502,14 @@ class TestAModelFailureAfterDeliveredTurnsStaysInCostAndLatency:
         assert late.n_latency == 12 and late.n_no_turn == 0
         assert [dominator.model for dominator in late.dominated_by] == ["control"]
 
+    def test_the_frozen_surface_carries_the_lens_standing_a_frontier_chart_draws(self) -> None:
+        """Copied off the lens, so the chart's dominated mark and the frontier table cannot disagree."""
+        bundle = _late_failure_campaign()
+        standings = bundle_decision_surface(bundle).frontier_dominance
+        points = [point for subject in bundle.frontier.subjects for point in subject.points]
+        assert standings == {point.variant_key: point.dominance for point in points}
+        assert standings[_frontier_point(bundle, "late").variant_key] == "dominated"
+
 
 # =============================================================================
 # An arm where no result took a turn

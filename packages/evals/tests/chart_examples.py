@@ -88,8 +88,21 @@ DELTA_TABLE = {
 #: geometry assertions state their subject as "row-based" rather than "every".
 FRONTIER: dict = {
     "points": [
-        {"label": "model-a-3.5-fast-lite", "cost": 0.0071, "quality": 0.2, "latency_ms": 31000.0},
-        {"label": "model-b", "cost": 0.0174, "quality": 0.0, "latency_ms": 48700.0, "dominated": True},
+        {
+            "label": "model-a-3.5-fast-lite",
+            "cost": 0.0071,
+            "quality": 0.2,
+            "latency_ms": 31000.0,
+            "dominance": "not_separated",
+        },
+        {
+            "label": "model-b",
+            "cost": 0.0174,
+            "quality": 0.0,
+            "latency_ms": 48700.0,
+            "dominated": True,
+            "dominance": "dominated",
+        },
     ],
     "bar": 0.5,
     "cost_label": "Cost per run (USD)",

@@ -199,7 +199,7 @@ class ChartIntent(EvalBaseModel):
     )
     shapes: dict[str, str] = Field(
         default_factory=dict,
-        description="A `class` field's values → the geometric symbol each is drawn as (`circle`, `diamond`, `cross`).",
+        description="A `class` field's values → the geometric symbol each is drawn as (`circle`, `square`, `diamond`, `cross`).",
     )
     direct_labels: bool = Field(
         description="Whether every mark carries its own identity as text beside it, so no key is needed to read it."

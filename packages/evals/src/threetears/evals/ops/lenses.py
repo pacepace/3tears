@@ -734,9 +734,10 @@ def pivot_text(table: PivotTable) -> str:
         lines.append("- no cells")
     for flag in table.simpsons_flags:
         lines.append(
-            f"Simpson's reversal: pooled, {flag.pooled_leader} leads {flag.column_a} vs {flag.column_b}, but "
-            f"{flag.rows_disagreeing} row(s) rank them the other way ({', '.join(flag.disagreeing_rows)}) against "
-            f"{flag.rows_agreeing} that agree — do not read the pooled order as a ranking"
+            f"Simpson's reversal: pooled, {flag.pooled_leader} reads higher of {flag.column_a} vs {flag.column_b}, "
+            f"but {flag.rows_disagreeing} row(s) order them the other way ({', '.join(flag.disagreeing_rows)}) "
+            f"against {flag.rows_agreeing} that agree — orders of point values, none tested; do not read the pooled "
+            "order as a ranking"
         )
     if table.unplaced_predicted_models:
         lines.append(f"planned and in no cell here: {', '.join(table.unplaced_predicted_models)}")

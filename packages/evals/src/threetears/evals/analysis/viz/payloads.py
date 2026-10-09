@@ -473,7 +473,12 @@ class DeltaRow(BaseModel):
     )
     d_z: float | None = Field(
         default=None,
-        description="The effect size the comparison reported. `paired` says WHICH one it is — Cohen's d_z or Cohen's d — never this field's name, which is historical.",
+        description=(
+            "A Cohen's d the comparison reported, printed as `d_z` when `paired` and `d` when not — `paired` says "
+            "which, never this field's name, which is historical. The engine's own tests now report Hedges' g "
+            "(`hedges_g`), a different number at eval sizes (0.5 against d's 0.88 at three pairs), and compile no "
+            "effect into this row; a g placed here would print under d's name. A stored row's value is a Cohen's d."
+        ),
     )
     p: float | None = Field(default=None, description="p-value of the significance test, when one was run.")
     n: int | None = Field(
@@ -790,7 +795,18 @@ class FrontierVizPoint(BaseModel):
     latency_ms: float | None = Field(default=None, description="The secondary read, in ms. Never a second y-axis.")
     dominated: bool = Field(
         default=False,
-        description="Beaten on both axes by some other point, per the frontier lens. Kept and flagged, never dropped.",
+        description=(
+            "Shown dominated by the frontier lens's test — another point shown better on every axis it measured. "
+            "Kept and flagged, never dropped. False is not a claim that nothing beats it."
+        ),
+    )
+    dominance: Literal["dominated", "not_separated", "untested"] | None = Field(
+        default=None,
+        description=(
+            "The frontier lens's verdict on this point, copied rather than decided from the drawn means: "
+            "`dominated`; `not_separated` — tested and not shown dominated, which says nothing about whether it is; "
+            "`untested`. None where the producer recorded none, which the chart states as not tested."
+        ),
     )
     disqualified: bool = Field(
         default=False, description="Failed a two-pillar / safety bar, so it is out of contention on any axis."
@@ -819,6 +835,17 @@ class FrontierVizPoint(BaseModel):
         return value
 
     @model_validator(mode="after")
+    def _the_flag_is_the_verdict(self) -> FrontierVizPoint:
+        """Reject a flag that disagrees with the verdict it is read from.
+
+        The shape is drawn from the verdict and the flag is what older readers key on; a point carrying
+        both must say one thing, or the chart and the table it stands beside say two.
+        """
+        if self.dominance is not None and self.dominated != (self.dominance == "dominated"):
+            raise ValueError(f"dominated is {self.dominated} but dominance is {self.dominance!r}")
+        return self
+
+    @model_validator(mode="after")
     def _a_reason_needs_the_flag(self) -> FrontierVizPoint:
         """Reject a stated disqualification the flag does not carry.
 
@@ -839,8 +866,8 @@ class FrontierPayload(_VizPayload):
 
     Drawn as a point plot, which is the one type here whose identity axis is
     quantitative on both sides. Dominance reaches the reader through **shape and
-    weight, never hue** — an on-frontier point is a circle, a dominated one a
-    diamond, a disqualified one a cross — because a compiled spec carries no
+    weight, never hue** — a point not shown dominated is a circle, one never tested a
+    square, a dominated one a diamond, a disqualified one a cross — because a compiled spec carries no
     colour, and because a distinction drawn only in opacity is one a reader with
     low contrast vision does not receive at all.
     """

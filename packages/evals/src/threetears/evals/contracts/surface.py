@@ -520,6 +520,14 @@ class TimeAxis(EvalDocumentModel):
         return self
 
 
+#: Whether the frontier lens shows a contestant dominated: ``dominated`` — another is shown better on every
+#: axis it measured; ``not_separated`` — tested against at least one other and no domination shown, which says
+#: nothing about whether one exists; ``untested`` — nothing could be tested against it. The lens's own words
+#: (:attr:`threetears.evals.analysis.reporting.FrontierPoint.dominance`), defined here so a frozen surface can
+#: carry them without importing the analysis.
+FrontierDominance = Literal["dominated", "not_separated", "untested"]
+
+
 #: What a guardrail came to for one arm against the control, read off the interval on the difference against
 #: the guardrail's margin (:func:`~threetears.evals.analysis.stats.interval_clears`, three-valued). ``held``: the
 #: arm is shown no worse than the control by more than the margin. ``breached``: shown worse by more than it.
@@ -692,6 +700,16 @@ class DecisionSurface(EvalDocumentModel):
             "build and one day. What a `timeseries` chart draws, and the only thing it can draw."
         ),
     )
+    frontier_dominance: dict[str, FrontierDominance] | None = Field(
+        default=None,
+        description=(
+            "Each arm's standing on the campaign's frontier lens, keyed by variant — the lens's own test of "
+            "domination on pass^k, production-replicating cost and mean latency, copied rather than recomputed so "
+            "a frontier chart and the frontier table cannot disagree. An arm the lens placed as more than one "
+            "contestant (two identity versions, or two subjects) is absent: it has no one standing. None on a "
+            "surface frozen before standings were carried; a chart drawn from one states no domination."
+        ),
+    )
     guardrails: GuardrailReadings | None = Field(
         default=None,
         description=(
@@ -702,6 +720,7 @@ class DecisionSurface(EvalDocumentModel):
 
 
 __all__ = [
+    "FrontierDominance",
     "STRATUM_MIN_CASES",
     "ArmGuardrails",
     "CellFacts",

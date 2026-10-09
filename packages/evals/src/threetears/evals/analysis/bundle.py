@@ -187,6 +187,7 @@ from threetears.evals.contracts.result_condition import (
 from threetears.evals.contracts.surface import (
     CellFacts,
     DecisionSurface,
+    FrontierDominance,
     GuardrailCell,
     GuardrailCheck,
     GuardrailReadings,
@@ -1034,9 +1035,11 @@ class ScopeDivergence(EvalDocumentModel):
     carried_by: str | None = Field(
         default=None,
         description=(
-            "The component carrying the whole-run movement: the one whose delta, in the whole's direction, is "
-            "largest. None when the whole's movement does not separate from its noise, or no component moved its "
-            "way. When it "
+            "The component shown to carry the whole-run movement: the one with the largest delta in the whole's "
+            "direction, named only when its own movement separates that way and it is shown to move further than "
+            "every other component (each case's difference between the two, tested between the levels, "
+            "Holm-adjusted). None when the whole's movement does not separate from its noise, no component moved "
+            "its way, or no single component is shown to carry it — read `whole_components` then. When it "
             "is time inside model calls (llm_ms), a provider's load moves it as readily as the lever does, so "
             "read candidate_output_tokens_per_s across the two cohorts before attributing the movement to the lever."
         ),
@@ -3191,6 +3194,14 @@ def _lineage_leaves(result: EvalResult, *, profile: HostProfile) -> Iterator[tup
         if name == _COST_MEASURE and not observed:
             continue
         yield name, value, describe_measure(name, profile.measures)
+    # The candidate's own spend, where the result measured one: what the arm costs, beside ``cost_usd``, what
+    # it cost to measure (the judge's and simulator's spend included). Derived here rather than stored, so every
+    # slicing the walk serves — a cell, a run, a case, a stratum — reads the one figure a contrast on cost tests.
+    candidate_spend = production_replicating_cost(
+        result.usage, substituted_deliveries=count_substituted_deliveries(result)
+    )
+    if candidate_spend is not None:
+        yield _CANDIDATE_SPEND, candidate_spend, describe_measure(_CANDIDATE_SPEND, profile.measures)
 
 
 def _open_map_leaves(
@@ -5099,23 +5110,72 @@ def _carried_by(
         profile: The host whose vocabulary this reads.
 
     Returns:
-        ``(components, carried_by, carried_share)``. The carrier is the component whose delta,
-        taken in the whole's direction, is largest, and is None when the whole's movement does not
-        separate from its noise, its delta is zero, or no component moved its way.
+        ``(components, carried_by, carried_share)``, the carrier decided by :func:`_carrier`.
     """
     components = [
         _movement(catalog[name], level_a[name], level_b[name])
         for name in partition_components(whole.name, catalog, measures=profile.measures)
         if level_a.get(name) and level_b.get(name)
     ]
-    if whole.direction not in ("improved", "regressed") or whole.delta == 0.0:
+    carrier = _carrier(whole, components, level_a, level_b)
+    if carrier is None:
         return components, None, None
+    return components, carrier.name, carrier.delta / whole.delta
+
+
+def _carrier(
+    whole: MeasureMovement,
+    components: Sequence[MeasureMovement],
+    level_a: _PerCaseMeasures,
+    level_b: _PerCaseMeasures,
+) -> MeasureMovement | None:
+    """The component SHOWN to carry the whole's movement, or None where the data cannot name one.
+
+    The candidate is the component whose delta, in the whole's direction, is largest. It is named only
+    when two things are shown, each by the engine's between-level test
+    (:func:`~threetears.evals.analysis.stats.level_difference`): its own movement separates in the whole's
+    direction, and it moved further that way than every other component — each case's difference between the
+    candidate and that component, tested between the levels, Holm-adjusted over the other components. Named on
+    the largest delta alone, two components moved alike would hand the carrier to whichever noise favoured.
+
+    Args:
+        whole: The whole-run measure's movement.
+        components: Each component's movement.
+        level_a: Per-case measures at the first level.
+        level_b: Per-case measures at the second level.
+
+    Returns:
+        The carrier, or None when the whole's movement does not separate, no component moved its way, or the
+        largest mover is not shown to move further than every other.
+    """
+    if whole.direction not in ("improved", "regressed") or whole.delta == 0.0:
+        return None
     sign = 1.0 if whole.delta > 0 else -1.0
     moving = [component for component in components if component.delta * sign > 0]
     if not moving:
-        return components, None, None
-    carrier = max(moving, key=lambda component: (component.delta * sign, component.name))
-    return components, carrier.name, carrier.delta / whole.delta
+        return None
+    top = max(moving, key=lambda component: (component.delta * sign, component.name))
+    if top.direction != whole.direction:
+        return None
+    p_values: list[float] = []
+    for other in components:
+        if other.name == top.name:
+            continue
+        gap_a = {
+            case: value - level_a[other.name][case]
+            for case, value in level_a[top.name].items()
+            if case in level_a[other.name]
+        }
+        gap_b = {
+            case: value - level_b[other.name][case]
+            for case, value in level_b[top.name].items()
+            if case in level_b[other.name]
+        }
+        tested = level_difference(gap_a, gap_b)
+        if tested.p_value is None or tested.delta is None or tested.delta * sign <= 0:
+            return None
+        p_values.append(tested.p_value)
+    return top if all(p < SIGNIFICANCE_ALPHA for p in holm_adjust(p_values)) else None
 
 
 class _DivergenceCount(NamedTuple):
@@ -7122,25 +7182,12 @@ def _per_case_values(
         by_case[result.test_case_id].append(result)
     values: dict[tuple[ReadingKind, str], dict[str, float]] = defaultdict(dict)
     for case_id in sorted(by_case):
+        # The candidate's own spend among them (``production_replicating_cost``, which the walk yields over the
+        # turns the candidate took and only where a result measured it): a contrast on cost tests it, never
+        # ``cost_usd``, which sums the judge's spend too.
         for summary in _measure_collection(by_case[case_id], profile=profile, undeclared="scored").measures:
             if summary.mean is not None:
                 values[("measure", summary.name)][case_id] = summary.mean
-        # The candidate's own spend, which no cell walk yields: the run summary reads it
-        # (:func:`_measured_prod_costs`), and a contrast on cost reads it here, over the turns the candidate
-        # took and only where a result measured it — cost_usd sums the judge's spend too.
-        spend = [
-            cost
-            for result in by_case[case_id]
-            if _in_population("delivered", result)
-            and (
-                cost := production_replicating_cost(
-                    result.usage, substituted_deliveries=count_substituted_deliveries(result)
-                )
-            )
-            is not None
-        ]
-        if spend and case_id not in values[("measure", _CANDIDATE_SPEND)]:
-            values[("measure", _CANDIDATE_SPEND)][case_id] = sum(spend) / len(spend)
     scores: dict[tuple[str, str], list[float]] = defaultdict(list)
     for result in _non_faulted(members):
         for dimension, record in _judged_values(judged_rows.get(result.id, [])):
@@ -7453,8 +7500,6 @@ def _multiple_comparisons(
     for record in records:
         judged_rows.setdefault(record.result_id, []).append(record)
     values = {key: _per_case_values(members, judged_rows, profile=profile) for key, members in results_by_cell.items()}
-    if any(("measure", _CANDIDATE_SPEND) in cell_values for cell_values in values.values()):
-        catalog = {**catalog, _CANDIDATE_SPEND: describe_reported_measure(_CANDIDATE_SPEND, profile.measures)}
     pairs = [
         (control_key, contrast_key)
         for control_key in sorted(values)
@@ -8055,8 +8100,32 @@ def bundle_decision_surface(bundle: AnalysisContextBundle) -> DecisionSurface:
         measures=cell_measure_facts(bundle),
         dimensions=cell_dimension_facts(bundle),
         time_axis=bundle.time_axis,
+        frontier_dominance=_frontier_dominance(bundle.frontier),
         guardrails=bundle.guardrails,
     )
+
+
+def _frontier_dominance(frontier: FrontierResult) -> dict[str, FrontierDominance]:
+    """Each variant's standing on the frontier lens — the verdict a frontier chart draws, never recomputed.
+
+    The lens decides domination by test over per-case values (:func:`~threetears.evals.analysis.reporting.compute_frontier`),
+    which a frozen surface does not carry, so a chart deciding it again from the surface's means would be a
+    second rule for one question, and on means it called one of two identical arms dominated a third of the
+    time. Keyed by variant because a cell is one; a variant the lens placed as more than one point (under two
+    identity versions, or two subjects) has no one standing and is left out, so a chart reads it as untested.
+    A point stored before domination was tested carries no standing either, and is left out the same way.
+
+    Args:
+        frontier: The bundle's frontier lens.
+
+    Returns:
+        ``{variant_key: dominance}``.
+    """
+    placed: dict[str, list[FrontierDominance | None]] = {}
+    for subject in frontier.subjects:
+        for point in subject.points:
+            placed.setdefault(point.variant_key, []).append(point.dominance)
+    return {key: standings[0] for key, standings in placed.items() if len(standings) == 1 and standings[0] is not None}
 
 
 class InsightStanding(NamedTuple):

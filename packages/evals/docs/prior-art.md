@@ -93,7 +93,9 @@ Each departure states the principle behind it. The full set is in [principles](p
   not memos. A deterministic gate over free prose never converged, so the writer's prose is measured like any other
   candidate ([reading reports](reading-reports.md#having-a-model-write-the-analysis-over-frozen-evidence)).
 - **"Best" is never unqualified.** Reports give a quality–cost–latency frontier plus bars (satisficing thresholds),
-  not one headline score.
+  not one headline score. The frontier's verdict names the cheapest contestant above the bar only when a test
+  shows it cheaper than each other one that cleared the bar; otherwise it names the set the data cannot order
+  (`cost_decision`, `tied_with`).
 
 ## Vocabulary map
 

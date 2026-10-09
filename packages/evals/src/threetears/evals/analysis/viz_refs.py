@@ -52,12 +52,21 @@ from threetears.evals.contracts.authored import Chart
 from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts.campaign import ReadingKind, VariantIndexEntry
 from threetears.evals.contracts.host.measures import MeasureRegistry
-from threetears.evals.contracts.metrics import describe_reported_measure, materiality, remainder_withheld_reason
+from threetears.evals.contracts.metrics import (
+    MEASURING_SPEND_MEASURES,
+    describe_reported_measure,
+    materiality,
+    measure_title,
+    remainder_withheld_reason,
+)
 from threetears.evals.contracts.surface import CellFacts, DecisionSurface, TimePosition
 
 #: The dimension a sweep row gains when one arm was measured under more than one rig. Without it
 #: the two cells carry identical levels and draw as one configuration holding two ranks.
 _RIG_DIMENSION = "rig"
+
+#: The candidate's own spend — what an arm costs, the measure a frontier's cost axis names by default.
+_CANDIDATE_SPEND = "production_replicating_cost"
 
 #: The only unit a frontier's latency field is stated in — the payload names it ``latency_ms``.
 _LATENCY_UNIT = "ms"
@@ -344,7 +353,7 @@ def _distribution(ref: DistributionRef, surface: DecisionSurface, labels: dict[s
         "unit": readings[0].unit,
         # The value axis is the reading drawn, named — without it every distribution titles itself
         # "Distribution", and two on one page cannot be told apart.
-        "x_label": f"{ref.measure_id} (judged)" if ref.reading == "judged" else ref.measure_id,
+        "x_label": f"{ref.measure_id} (judged)" if ref.reading == "judged" else measure_title(ref.measure_id),
     }
 
 
@@ -476,39 +485,16 @@ def _optional_reading(surface: DecisionSurface, ref: str, measure_id: str | None
     return resolve_reading(surface, ref, measure_id)
 
 
-def dominated_flags(points: Sequence[tuple[float, float | None]]) -> list[bool]:
-    """Which contestants another beats on both axes — quality higher, cost lower.
-
-    A point is dominated when some other point is at least as good on quality AND on cost and
-    strictly better on one of them. A point with no cost cannot be placed on the trade-off, so it
-    neither dominates nor is dominated — "never priced" is not "priced high".
-
-    Args:
-        points: ``(quality, cost)`` per contestant, higher quality and lower cost better.
-
-    Returns:
-        One flag per point, in order.
-    """
-    flags = []
-    for i, (quality, cost) in enumerate(points):
-        flags.append(
-            cost is not None
-            and any(
-                j != i
-                and other_cost is not None
-                and other_quality >= quality
-                and other_cost <= cost
-                and (other_quality > quality or other_cost < cost)
-                for j, (other_quality, other_cost) in enumerate(points)
-            )
-        )
-    return flags
-
-
 def _frontier(ref: FrontierRef, surface: DecisionSurface, labels: dict[str, str]) -> dict[str, Any]:
     cells = _cells_or_all(surface, ref.cells, "frontier")
     cost_id = ref.cost_measure_id or _axis_default(surface, "cost", required=True)
     latency_id = ref.latency_measure_id or _axis_default(surface, "latency", required=False)
+    if cost_id in MEASURING_SPEND_MEASURES:
+        # A frontier's x is what shipping the arm costs; a measuring-spend measure adds the judge's bill to it.
+        raise UnresolvableReference(
+            f"frontier places cost on x as what each arm costs, and {cost_id!r} is measuring spend — every role, the "
+            f"judge's included; name the candidate's own spend, {_CANDIDATE_SPEND!r}, or another cost-axis measure"
+        )
 
     qualities = [_read(surface, cell, ref.quality) for cell in cells]
     _require_higher_is_better(qualities[0], "quality", "frontier")
@@ -527,17 +513,24 @@ def _frontier(ref: FrontierRef, surface: DecisionSurface, labels: dict[str, str]
                 "name a latency measure in ms"
             )
 
-    flags = dominated_flags([(q.mean, c.mean if c else None) for q, c in zip(qualities, costs, strict=True)])
+    # Domination is the frontier lens's verdict, read off the surface rather than decided again from the
+    # means drawn here: the lens tests it over per-case values, and two arms drawn from one distribution
+    # always differ in their means. A surface frozen before standings were carried has none to draw.
+    standings = surface.frontier_dominance
     points = [
         {
             "label": labels[cell],
             "quality": quality.mean,
             "cost": cost.mean if cost else None,
             "latency_ms": latency.mean if latency else None,
-            "dominated": dominated,
+            "dominated": dominance == "dominated",
+            "dominance": dominance,
             "disqualified": False,
         }
-        for cell, quality, cost, latency, dominated in zip(cells, qualities, costs, latencies, flags, strict=True)
+        for cell, quality, cost, latency in zip(cells, qualities, costs, latencies, strict=True)
+        for dominance in [
+            None if standings is None else standings.get(require_cell(surface, cell).variant_key, "untested")
+        ]
     ]
     cost_unit = surface.measures[cost_id].unit if cost_id in surface.measures else None
     return {
@@ -646,7 +639,8 @@ def _quality_bar(surface: DecisionSurface, quality: ReadingRef) -> float | None:
 
 
 def _titled(name: str, unit: str | None) -> str:
-    return f"{name} ({unit})" if unit else name
+    """An axis title: the measure, labelled measuring spend where it is one, and its unit."""
+    return f"{measure_title(name)} ({unit})" if unit else measure_title(name)
 
 
 def _sweep_ranking(
@@ -950,6 +944,5 @@ __all__ = [
     "TIME_VIZ_TYPES",
     "build_viz_payload",
     "cell_arm_labels",
-    "dominated_flags",
     "reference_from_chart",
 ]

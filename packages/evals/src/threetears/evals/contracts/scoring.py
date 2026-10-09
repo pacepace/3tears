@@ -610,8 +610,9 @@ def pool_pass_hat_k(
 def percentile(sorted_values: list[float], pct: float) -> float:
     """Nearest-rank percentile of an already-sorted, non-empty list.
 
-    **Nearest-rank, not interpolated**: rank = ceil(pct/100 * n), 1-indexed — an observed value. The run
-    summary reads its median with it. **It is not the engine's tail estimator**: at ``pct=95`` it is the
+    **Nearest-rank, not interpolated**: rank = ceil(pct/100 * n), 1-indexed — an observed value. No engine
+    surface reads it: at ``pct=50`` it is the lower middle value at an even count, not the median, which the
+    run summary reads with :func:`median_unbiased_quantile` at 0.5. **It is not the engine's tail estimator**: at ``pct=95`` it is the
     sample maximum for every ``n <= 19``, which falls below the true 95th percentile most of the time at
     the sizes a run has, so a tail is read with :func:`median_unbiased_quantile` instead.
 
@@ -772,6 +773,11 @@ def compute_latency_summary(
     is still a different answer from the omission above, where no result
     reached the harvest at all.
 
+    **The median is the standard one**, read by the same rule as the tail —
+    :func:`median_unbiased_quantile` at 0.5, whose position ``(n + 1) / 2`` is the middle value, or the mean of
+    the two middle values at an even count — so it agrees with the bundle's ``p50``. A figure computed before
+    this rule read nearest-rank, which took the lower of the two middle values at an even count.
+
     **The tail is the 95th percentile only where one can be estimated.** ``p95_total_ms`` is
     :func:`median_unbiased_quantile` (Hyndman–Fan type 8), present from 13 measured totals, and absent below:
     there the only figure a sample offers for its tail is its slowest observation, which is not a 95th
@@ -815,7 +821,9 @@ def compute_latency_summary(
         # measured one — moved up a level from the value to its evidence.
         if totals:
             row["mean_total_ms"] = sum(totals) / len(totals)
-            row["median_total_ms"] = percentile(totals, 50)
+            # The standard median — the middle value, or the mean of the two middle values at an even count —
+            # which is what type 8 gives at 0.5 at every n. Nearest-rank took the lower middle value.
+            row["median_total_ms"] = median_unbiased_quantile(totals, 0.5)
             # The tail, median-unbiased, and ABSENT below the 13 observations at which any estimate of a
             # 95th percentile can be: under that the only candidate is the slowest observation, which falls
             # below the true p95 most of the time and is reported under its own name, never this one.

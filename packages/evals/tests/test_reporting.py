@@ -5609,6 +5609,40 @@ class TestFrontierBar:
         assert pf.verdict.model == "b"
         assert pf.verdict.production_replicating_cost == pytest.approx(0.30)
         assert pf.verdict.pass_hat_k_ci_low is not None and pf.verdict.pass_hat_k_ci_low >= 0.8
+        # b is $0.20 cheaper on every one of the twenty cases: shown cheaper (sign-flip p 2^-19), so named.
+        assert (pf.verdict.cost_decision, pf.verdict.tied_with) == ("shown_cheapest", [])
+
+    def test_a_pick_not_shown_cheaper_names_the_set_it_is_among(self):
+        """A lower point cost is not a cheaper contestant: b costs $0.001 more on average, untestably."""
+        run = _fr_run()
+        results = [
+            *(
+                _fr_result(run, model="a", variant_key="vk-a", test_case_id=f"tc{i}", roles={"candidate": cost})
+                for i, cost in enumerate([0.39, *[0.40] * 19])
+            ),
+            *(
+                _fr_result(run, model="b", variant_key="vk-b", test_case_id=f"tc{i}", roles={"candidate": cost})
+                for i, cost in enumerate([0.40, 0.41, *[0.40] * 18])
+            ),
+        ]
+
+        verdict = compute_frontier([run], results, bar=0.8).subjects[0].verdict
+
+        assert verdict is not None and verdict.model == "a"
+        assert verdict.cost_decision == "not_separated"
+        (tie,) = verdict.tied_with
+        assert (tie.model, tie.variant_key) == ("b", "vk-b")
+        assert tie.p_value is not None and tie.p_value >= 0.05
+        assert tie.production_replicating_cost == pytest.approx(0.4005)
+
+    def test_the_only_cleared_contestant_is_named_alone(self):
+        run, results = self._corpus()
+        results = [r for r in results if r.model != "a"]
+
+        verdict = compute_frontier([run], results, bar=0.8).subjects[0].verdict
+
+        assert verdict is not None and verdict.model == "b"
+        assert (verdict.cost_decision, verdict.tied_with) == ("only_cleared", [])
 
     def test_an_interval_across_the_bar_is_undecided_and_never_the_pick(self):
         """The rule every campaign bar is read by: a straddle is neither a pass nor a failure.

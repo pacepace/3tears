@@ -570,7 +570,9 @@ def _sweep_configs(index: list[VariantIndexEntry]) -> list[dict[str, str]]:
             sem=mean * 0.05,
         )
 
-    readings = MeasureCollection(measures=[reading("cost_usd", 0.01, False), reading("pass_rate", 0.8, True)])
+    readings = MeasureCollection(
+        measures=[reading("production_replicating_cost", 0.01, False), reading("pass_rate", 0.8, True)]
+    )
     cells = [cell(variant=entry.variant_key, measures=readings) for entry in index]
     return [row["config"] for row in build(VALID["sweep_ranking"], surface(cells, timed=False), index)["rows"]]
 

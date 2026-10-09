@@ -131,6 +131,8 @@ __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why th
     "MeasurePopulation",
     "MeasureScale",
     "DELIVERED_AXES",
+    "MEASURING_SPEND_MEASURES",
+    "measure_title",
     "reads_turns",
     "summary_population",
     "Materiality",
@@ -239,6 +241,27 @@ DELIVERED_AXES: frozenset[MeritAxis] = frozenset({"cost", "latency"})
 #: serves none only because it sums the judge's spend beside the candidate's — what it cost to MEASURE a
 #: result, not what the candidate costs — and that does not make a refused call's spend a turn's.
 _DELIVERED_SPEND = "cost_usd"
+
+#: The engine's spend measures that sum every role — the judge's and simulator's beside the candidate's: what it
+#: cost to MEASURE an arm, never what the arm costs. The candidate's own spend is ``production_replicating_cost``,
+#: the cost axis's measure (see ``docs/cost-and-budgets.md``).
+MEASURING_SPEND_MEASURES: frozenset[str] = frozenset({_DELIVERED_SPEND, "program_cost"})
+
+
+def measure_title(name: str) -> str:
+    """A measure's name as a chart or column heads it: a measuring-spend measure says it is one.
+
+    ``cost_usd`` titled bare beside an arm reads as what the arm costs, and in a judged run it is that plus
+    what the judge cost. So wherever it is shown at all it is labelled measuring spend, apart from the
+    candidate's own.
+
+    Args:
+        name: The measure's name.
+
+    Returns:
+        The name, with ``, measuring spend`` after it for a :data:`MEASURING_SPEND_MEASURES` member.
+    """
+    return f"{name}, measuring spend" if name in MEASURING_SPEND_MEASURES else name
 
 
 def reads_turns(descriptor: MetricDescriptor) -> bool:
@@ -1066,10 +1089,14 @@ _SEED: tuple[MetricDescriptor, ...] = (
         attribution_scope="end_to_end",
         higher_is_better=False,
         unit="ms",
-        formula="nearest-rank median of total_ms, excluding cells a harness failure produced",
+        formula=(
+            "median of total_ms (the middle value, or the mean of the two middle values at an even count; Hyndman-Fan "
+            "type 8 at 0.5), excluding cells a harness failure produced"
+        ),
         description=(
             "Typical end-to-end wall-clock, less sensitive to one slow outlier than the mean. Over the same "
-            "candidate-measuring population as mean_total_ms: a cell an apparatus fault produced is excluded."
+            "candidate-measuring population as mean_total_ms: a cell an apparatus fault produced is excluded. A "
+            "figure computed before this rule was nearest-rank, the lower middle value at an even count."
         ),
     ),
     _d(
