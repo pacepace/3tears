@@ -41,10 +41,11 @@ still hold:
   during prompt assembly. The invariant since: **one resolution path**, so candidate, judge and report read the same
   resolved world, frozen on the run as provenance.
 - **Cassettes cannot hold an open-ended case.** A cassette replays identical requests. An open-ended case is
-  valuable because the model chooses its own query, so the hit rate is close to zero. The chosen design delivers a
-  seeded payload in answer to *whatever* call the subject makes. There is no lookup key and so nothing to miss, and
-  the query is still recorded for separate grading. Unconditional delivery was rejected as incoherent when the
-  subject never asked. From this came the split between a rig failure (a replay miss, a malformed seed:
+  valuable because the model chooses its own query, so the hit rate is close to zero. The first host's answer was
+  to deliver a seeded payload in answer to *whatever* call the subject makes. There is no lookup key and so nothing
+  to miss, and the query is still recorded for separate grading. Unconditional delivery was rejected as incoherent
+  when the subject never asked. This is a technique a host builds into its own tools; the engine has no
+  payload-delivery feature. From this came the split between a rig failure (a replay miss, a malformed seed:
   [`ApparatusError`](adopting-a-host.md#rig-failures-a-broken-rig-costs-one-cell-never-the-run), excluded) and an
   in-world failure (a rate limit, an item not found: shown to the subject, which may be scored on how it copes).
 
@@ -76,8 +77,11 @@ optional paperwork, and "this host registers no world" becomes a claim a run rec
 
 **Seeded and perceived are derived from the run, never declared.** At registration, seedable × perceivable gives
 `representable`, `judge_only` or `witnessed`; the fourth combination is refused as a field, not a dimension. At run
-time the same two bits come from what this run seeded and which carriers this subject attached, recorded on the run
-as `world_placements`. *Rejected:* a per-run mode flag, which can disagree with the run and cannot express a run
+time the engine computes the same two bits (`WorldRegistry.place`) from what this run seeded and which carriers
+this subject attached, and records them on the run as `world_placements`. Those two inputs are not read off the
+cells: the host's `world_placements` callable on its `LaunchHost` supplies them for the assembled run, and the
+engine does not check them against what the cells seeded. "Derived from the run" holds as far as that callable is
+right. *Rejected:* a per-run mode flag, which can disagree with the run and cannot express a run
 that seeds some dimensions and witnesses others. Walking another application's code showed the need: its agent's
 memory is seedable in a commissioned run and only witnessed in production traffic, on one host. Witnessed state is
 a confound to disclose, and [commissioned and witnessed observations never pool](concepts.md#apparatus-class). A
@@ -121,14 +125,21 @@ names a coupling, so `coherence` cannot become a waiver.
 
 **Preconditions are checked, and a failed one is excluded rather than scored.** The goal language has a closed
 grammar and an open host vocabulary, PDDL's split between domain and problem. A precondition carries `presumes`
-prose so an exclusion says what was presumed, and the engine asserts it at t=0. The same static check catches a
-goal-check typo that would otherwise read a missing value and silently score the subject down.
+prose so an exclusion says what was presumed. The engine asserts it at t=0 for every cell, after the kind's
+`prepare` and before the first turn, against the world its session read back once the seed settled. A host's
+kind need not assert it, and one that does gets the same answer. A failed presumption, or a cell whose kind never
+seeded through its session, is excluded as `precondition_failed` and counted, never scored. The same static check
+catches a goal-check typo that would otherwise read a missing value and silently score the subject down.
 
 **A goal check must beat a do-nothing control.** On τ-bench's airline split an agent that does nothing scores 38%
 ([Zhu et al., 2025](https://arxiv.org/abs/2507.02825)): wherever success means leaving the state unchanged, doing
 nothing passes. A correct refusal is a legitimate probe; the defect is a check that cannot tell it from paralysis.
 Each goal check declares `act` or `hold` and names an authored end state where the behaviour happened, and the engine refuses at authoring
-any check that gives the same verdict there and on the untouched seed (`GoalCheckControls`).
+any check that gives the same verdict there and on the untouched seed (`GoalCheckControls`). A control proves only
+that the check can tell those two outcomes apart. It is not a reference solution and does not show the task can be
+solved: the authored end state is stated, never reached by a run. A check launched without a proving control (a
+template saved past authoring, or a quick run) is recorded as unproven on its run and marked wherever its pass
+rate is shown.
 
 **A refused call is not an action.** The [call ledger](concepts.md#goal-state-check) records only calls that
 succeeded; the trace keeps refusals for the judge. Stored runs re-grade from their ledgers (`recheck`) rather than

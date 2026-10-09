@@ -20,7 +20,12 @@ from itertools import chain
 
 from threetears.evals.analysis.agreement import tier_sentence
 from threetears.evals.analysis.arms import ArmTable, arm_table, arm_table_of, short_digest
-from threetears.evals.analysis.bundle import AnalysisContextBundle, FamilyComparison, bundle_decision_surface
+from threetears.evals.analysis.bundle import (
+    AnalysisContextBundle,
+    FamilyComparison,
+    GoalCheckProofReading,
+    bundle_decision_surface,
+)
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.references import cell_index, resolve_reading
@@ -40,9 +45,9 @@ from threetears.evals.analysis.report.words import (
     ARM_STATUS_WORDS,
     COMPARISON_VERDICT_WORDS,
     CONFIDENCE_WORDS,
-    EVIDENCE_TIER_WORDS,
     arm_namer,
     positions,
+    stands_on_words,
 )
 from threetears.evals.analysis.surface_table import (
     NO_SUCCESSFUL_RESULTS,
@@ -173,6 +178,21 @@ def build_report(analysis: EvalAnalysis) -> Report:
     )
 
 
+def _unproven_check_sentence(proof: GoalCheckProofReading) -> str:
+    """The disclosure for a goal check not shown to beat doing nothing: what it is, and what its pass rate is not."""
+    why = (
+        "its control does not show it tells acting from doing nothing"
+        if proof.proof == "refuted"
+        else "no control shows it tells acting from doing nothing"
+    )
+    if proof.unrecorded:
+        why += f" ({proof.unrecorded} of {proof.runs} run(s) launched before proofs were recorded)"
+    return (
+        f"Goal check {proof.check} is {proof.proof}: {why}. Its pass rate ({proof.measure_id}) may be what a "
+        "candidate that did nothing would score, so it is not shown to measure the behaviour."
+    )
+
+
 def _finding_blocks(
     analysis: EvalAnalysis,
     position: int,
@@ -194,7 +214,7 @@ def _finding_blocks(
     """
     facts = [Fact(name="Confidence", value=CONFIDENCE_WORDS[finding.confidence])]
     if resolution is not None:
-        facts.append(Fact(name="Stands on", value=EVIDENCE_TIER_WORDS[resolution.evidence_tier]))
+        facts.append(Fact(name="Stands on", value=stands_on_words(analysis, resolution.evidence_tier)))
     if finding.axes:
         facts.append(Fact(name="About", value=", ".join(finding.axes)))
     if finding.invalidates:
@@ -1171,6 +1191,11 @@ def _evidence_disclosures(bundle: AnalysisContextBundle) -> list[ReportBlock]:
     # a judged number is never read without what it can bear (PD-13).
     for tier in bundle.judge_evidence_tiers:
         say("measurement", "Judged evidence tier: " + tier_sentence(tier))
+    # Every goal check not shown to beat doing nothing: its pass rate is printed beside the others, and this says
+    # what it is not.
+    for proof in bundle.goal_check_proofs:
+        if proof.proof != "proven":
+            say("measurement", _unproven_check_sentence(proof))
     say("apparatus", bundle.controls_reading.disclosure)
     if bundle.apparatus_confounds:
         say(

@@ -120,6 +120,7 @@ from threetears.evals.contracts.campaign import (
     Viz,
     VizType,
 )
+from threetears.evals.contracts.evidence_tiers import JUDGED_TIER_RULE
 from threetears.evals.contracts.hashing import bytes_digest
 from threetears.evals.contracts.host.measures import MeasureRegistry
 from threetears.evals.contracts.host.profile import HostProfile
@@ -826,6 +827,7 @@ def _resolved_analysis(
             design_snapshot=bundle.declared_design,
             document=document,
             resolutions=resolutions,
+            judged_tier_rule=JUDGED_TIER_RULE,
             coverage=CoverageLens(levers=[_lever_from_bundle(lever) for lever in bundle.coverage]),
             run_index=[
                 _run_index_entry(summary, reported=reported, omitted=sorted(all_names - reported))
