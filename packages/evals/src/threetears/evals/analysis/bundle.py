@@ -3234,10 +3234,12 @@ def _open_map_leaves(
     # The core wins a tie on the DESCRIPTOR, and only on the descriptor. A host reporting
     # `cost_usd` here would not redefine what the word means — but its numbers WOULD pool into
     # the engine's own spend distribution under that core descriptor, with `n` inflated,
-    # because `record()` appends into one bucket per name at this level. Nothing refuses a
-    # host measure whose name collides with `METRIC_DESCRIPTORS`: `MeasureRegistry._defects`
-    # refuses duplicates, bad ranges and containment defects, and `HostProfile.__post_init__`
-    # refuses reserved LEVERS, neither of which is this. No host in the tree collides today.
+    # because `record()` appends into one bucket per name at this level. So a host may not
+    # DECLARE a measure named like a core one: `MeasureRegistry._defects` refuses it, and
+    # `run_eval` refuses a scorer so named. A core name still arrives here legitimately — the
+    # classifier track lands `match` and `confusion_cell` as host measures — so this walk does
+    # not drop core names; a host kind reporting a core name it could not have declared is
+    # trusted to mean the core's measure.
     for name, value in result.host_measures.items():
         if name.strip():
             yield name, value, describe_measure(name, profile.measures)

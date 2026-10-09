@@ -39,7 +39,10 @@ and so are inverted ones, which say the check grades the opposite of what its in
 
 **Graded by the run's own rule.** Both controls go through
 :func:`~threetears.evals.run.runner.grade_goal_checks`, the function a finished cell's checks go
-through, so a check is proven under the evaluation it will be scored by.
+through, so a check is proven under the evaluation it will be scored by — and under the parameters' stored
+types: a case stores every variation parameter as one string, so a control's are read as strings too
+(:func:`~threetears.evals.contracts.models.stored_variation`), and a control stating any other type is refused,
+since a check proven on a number or a list would pass its control and fail every case.
 
 **Controls are authoring data.** Nothing that runs a cell reads them: the candidate is seeded from
 ``world_seed``, the simulated user from the ``conversation`` block, and the judge from the intent
@@ -84,6 +87,7 @@ from threetears.evals.contracts.models import (
     GoalCheckProof,
     GoalStateOutcome,
     WorldSeed,
+    stored_variation,
 )
 from threetears.evals.contracts.world_events import Firings
 from threetears.evals.run.runner import GoalCheckUnevaluable, grade_goal_checks
@@ -350,13 +354,15 @@ def check_discriminations(template: EvalTemplate, *, profile: HostProfile) -> li
     results: list[CheckDiscrimination] = []
     for entry in controls.checks:
         end_state = controls.end_states[entry.control]
+        # Read as a case stores its parameters — strings — so a check is never proven on a type no case holds.
+        variation = stored_variation(end_state.variation)
         nothing = do_nothing_end_state(template, world=profile.world)
         (idle,) = grade_goal_checks(
             [entry.check],
             ledger=nothing.ledger,
             end_state=nothing.end_state,
             fired=nothing.fired,
-            variation=end_state.variation,
+            variation=variation,
             world=profile.world,
         )
         stated = control_end_state(template, end_state, world=profile.world)
@@ -365,7 +371,7 @@ def check_discriminations(template: EvalTemplate, *, profile: HostProfile) -> li
             ledger=stated.ledger,
             end_state=stated.end_state,
             fired=stated.fired,
-            variation=end_state.variation,
+            variation=variation,
             world=profile.world,
         )
         results.append(
@@ -402,7 +408,8 @@ def refuse_non_discriminating_checks(
     Raises:
         ValidationFailedError: A declared check has no control; a control names a check the template
             does not declare; a control end state names world state or a call this host does not
-            define, or a value its dimension's schema refuses; a check cannot be evaluated against a
+            define, a value its dimension's schema refuses, or a variation parameter that is not a string;
+            a check cannot be evaluated against a
             control; or a check gives the same verdict on both controls, or the verdicts its intent
             forbids. Every defect is named at once.
     """
@@ -583,6 +590,14 @@ def _end_state_defects(end_state: ControlEndState, profile: HostProfile, *, arme
             for name in end_state.fired_armed
             if undefined_fired_dimension(name, world) is None
         )
+    # A case stores every variation parameter as a string, so a control stating any other type states
+    # parameters no case could carry: a check proven under them would grade differently on every case.
+    defects.extend(
+        f"it states variation.{name} as a {type(value).__name__} ({value!r}), and a case stores every variation "
+        "parameter as one string — state it as the string a case carries"
+        for name, value in end_state.variation.items()
+        if not isinstance(value, str)
+    )
     for call in end_state.calls:
         if (undefined := undefined_action(call.tool, call.action, profile.tool_actions)) is not None:
             defects.append(undefined)

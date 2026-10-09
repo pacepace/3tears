@@ -253,18 +253,23 @@ Long work started by an operation (a launch, an analysis generation), answered b
 A number code computes about a result, declared in your host's measure registry with its unit, direction
 (is higher better?) and family. `run_eval` makes one per scorer, named by the scorer's `__name__`. A
 classifier lands two core measures, `match` and `confusion_cell`, and the analysis derives `accuracy` from
-`match`. *Example:* `match` is 1 when ticket 17 went to `billing`, else 0.
+`match`. A host may not declare a measure named like a core one (`score`, `f1`, `cost_usd` and the rest):
+its readings would carry the core's meaning and pool with the engine's own, so the registry refuses it.
+*Example:* `match` is 1 when ticket 17 went to `billing`, else 0.
 
 #### Scorer
 In `run_eval`, a plain function `(case, answer) -> bool | number` that becomes one measure, named by its
-`__name__` and described by its docstring's first line. A scorer that raises excludes the cell (it is part of
-the rig, not the candidate).
+`__name__` and described by its docstring's first line. A scorer named like a core measure (`score`, `f1`,
+`accuracy`, `cost_usd` ...) is refused before anything runs; rename it. A scorer that raises excludes the cell
+(it is part of the rig, not the candidate).
 
 #### Goal-state check
 A code check over a cell's end state (`state.<dimension>`), the calls the candidate made (`calls(...)`) and
 what fired in the world (`fired(...)`), written in the goal-state language. Objective, so no judge. Its pass
 rate measures the behaviour only when a control proves the check beats doing nothing; otherwise every surface
-marks it `unproven` or `refuted`.
+marks it `unproven` or `refuted`. A case parameter (`variation.<name>`) is one string, as the case stores it:
+compare it or look for it (`contains(state.tags, variation.category)`), and write a set of values as a list
+literal (`intersects(state.tags, ["toys", "games"])`). Reading a parameter as a collection is refused.
 
 #### Judge
 A model the engine asks to score a result against a rubric, reading only the evidence the kind rendered

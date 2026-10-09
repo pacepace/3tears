@@ -137,7 +137,8 @@ nothing passes. A correct refusal is a legitimate probe; the defect is a check t
 Each goal check declares `act` or `hold` and names an authored end state where the behaviour happened, and the engine refuses at authoring
 any check that gives the same verdict there and on the untouched seed (`GoalCheckControls`). A control proves only
 that the check can tell those two outcomes apart. It is not a reference solution and does not show the task can be
-solved: the authored end state is stated, never reached by a run. A check launched without a proving control (a
+solved: the authored end state is stated, never reached by a run. A control states its case parameters as a case
+stores them, each one string, so no check is proven on a type no case can carry. A check launched without a proving control (a
 template saved past authoring, or a quick run) is recorded as unproven on its run and marked wherever its pass
 rate is shown.
 

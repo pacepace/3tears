@@ -65,6 +65,7 @@ from threetears.evals.contracts import (
     CONFUSION_CELL_MEASURE,
     DEFAULT_LAUNCH_K_RUNS,
     MATCH_MEASURE,
+    METRIC_DESCRIPTORS,
     CandidateOutput,
     CandidateTelemetry,
     CassetteMode,
@@ -85,6 +86,7 @@ from threetears.evals.contracts import (
     confusion_cell,
     withhold_failure_detail,
 )
+from threetears.evals.contracts.models import stored_variation
 from threetears.evals.contracts.host import (
     SHARED_CORE,
     ApparatusError,
@@ -126,7 +128,8 @@ from threetears.evals.storage import InMemoryDocumentStore
 Candidate = Callable[[Mapping[str, Any]], Awaitable[Any]]
 
 #: One grade: takes the case and the candidate's answer, returns a number (``True``/``False`` count
-#: as 1 and 0). Its ``__name__`` is the measure's name, and higher is better.
+#: as 1 and 0). Its ``__name__`` is the measure's name, and higher is better. No scorer may take the name
+#: of an engine core measure (``score``, ``f1``, ``cost_usd`` and the rest of ``METRIC_DESCRIPTORS``).
 Scorer = Callable[[Mapping[str, Any], Any], float | bool]
 
 #: A classifier's expected label for one case: takes the case, returns the label a correct answer gives.
@@ -295,8 +298,8 @@ def callable_host(
         The host.
 
     Raises:
-        ValueError: A scorer has no usable name, two share one, or one takes a classifier measure's name;
-            or a lever name is unusable or repeated.
+        ValueError: A scorer has no usable name, two share one, or one takes a classifier measure's name or
+            any other engine core measure's; or a lever name is unusable or repeated.
     """
     _refuse_unnamed_or_repeated(scorers)
     return EvalHost(
@@ -534,6 +537,12 @@ def _refuse_unnamed_or_repeated(scorers: Sequence[Scorer]) -> None:
             f"a scorer named {', '.join(taken)} takes a measure the classifier track owns; to grade a classifier, "
             "pass run_eval its expected label (expected=), and name any other scorer something else"
         )
+    if core := sorted(set(names) & set(METRIC_DESCRIPTORS)):
+        raise ValueError(
+            f"a scorer named {', '.join(core)} takes the name of an engine core measure, so its grades would be read "
+            "under the core's meaning, direction and range and pooled into the engine's own observations of it; "
+            "rename the scorer's def (for example, " + ", ".join(f"{name}_grade" for name in core) + ")"
+        )
 
 
 def _expected_labels(cases: list[dict[str, Any]], expected: ExpectedLabel) -> list[str]:
@@ -667,11 +676,6 @@ def _case_payload(case: dict[str, Any], label: str | None, seed: dict[str, Any] 
     labelled = {} if label is None else {_EXPECTED_KEY: label}
     seeded = {} if seed is None else world_case_payload(seed)
     return {_CASE_KEY: case, **labelled, **seeded}
-
-
-def _flat(value: Any) -> str:
-    """One case field as the engine's flat-string view of what varies."""
-    return value if isinstance(value, str) else json.dumps(value, sort_keys=True)
 
 
 @dataclass(frozen=True)
@@ -912,7 +916,8 @@ async def run_eval(
     Raises:
         ValueError: No cases, a case that is not a JSON object with string keys, no scorer, ``expected``
             or ``judge``, an ``intent`` that is not a non-blank string, a scorer with no name, a repeated one or
-            one named ``match``, ``confusion_cell`` or ``accuracy``, an ``expected`` that raises or gives a case a blank, non-string or
+            one named after an engine core measure (``match``, ``confusion_cell``, ``accuracy``, ``score``,
+            ``cost_usd`` or any other name in ``METRIC_DESCRIPTORS``), an ``expected`` that raises or gives a case a blank, non-string or
             :data:`UNUSABLE_ANSWER` label, a given host that declares no callable-kind contract
             (or one with no seats, a seat in :data:`CALLABLE_UNSEATED`, overlays or a spec), a judged call on
             a given host whose judged-kind contract is missing or seats too much or no judge, a scorer
@@ -1061,7 +1066,7 @@ async def run_arms(
             id=f"{template_id}-{index}",
             scope_id=scope_id,
             template_id=template_id,
-            variation_params={key: _flat(value) for key, value in case.items()},
+            variation_params=stored_variation(case),
             host_payload=_case_payload(
                 case, None if labels is None else labels[index], None if seeds is None else seeds[index]
             ),
