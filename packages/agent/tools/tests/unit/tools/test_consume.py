@@ -106,9 +106,13 @@ class _FakeResolver:
         self._handle = handle
         self._error = error
         self.calls: list[tuple[UUID, UUID, str]] = []
+        self.holder_keys: list[object | None] = []
 
-    async def resolve(self, object_id: UUID, *, customer_id: UUID, identity_token: str) -> ObjectHandle:
+    async def resolve(
+        self, object_id: UUID, *, customer_id: UUID, identity_token: str, holder_key: object | None = None
+    ) -> ObjectHandle:
         self.calls.append((object_id, customer_id, identity_token))
+        self.holder_keys.append(holder_key)
         if self._error is not None:
             raise self._error
         assert self._handle is not None

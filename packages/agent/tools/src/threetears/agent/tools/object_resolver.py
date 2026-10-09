@@ -38,13 +38,17 @@ cross-tenant key.
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 from uuid import UUID, uuid7
 
 from pydantic import BaseModel
 from threetears.media.contracts import ObjectHandle
+from threetears.core.security.door_request import DoorCredential
 from threetears.nats import NatsClient, RequestError, Subjects
 from threetears.observe import get_logger
+
+if TYPE_CHECKING:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 __all__ = [
     "HubObjectResolver",
@@ -81,6 +85,9 @@ class ObjectResolveRequestModel(BaseModel):
     :param identity_token: the hub-minted identity assertion the invoking agent
         carries on the call context; the hub verifies it + derives the customer
     :ptype identity_token: str
+    :param identity_proof: the presenter's proof of possession of the token's key over this request
+        (:mod:`threetears.core.security.door_request`); ``None`` from a caller that holds no key
+    :ptype identity_proof: str | None
     :param correlation_id: transport correlation id echoed in the reply (NOT a
         replay control -- resolve replay is bounded by token expiry + session
         liveness hub-side)
@@ -90,6 +97,7 @@ class ObjectResolveRequestModel(BaseModel):
     """
 
     identity_token: str
+    identity_proof: str | None = None
     correlation_id: UUID
     object_id: UUID
 
@@ -169,7 +177,14 @@ class ObjectResolver(Protocol):
     fake; production wires :class:`HubObjectResolver`.
     """
 
-    async def resolve(self, object_id: UUID, *, customer_id: UUID, identity_token: str) -> ObjectHandle:
+    async def resolve(
+        self,
+        object_id: UUID,
+        *,
+        customer_id: UUID,
+        identity_token: str,
+        holder_key: Ed25519PrivateKey | None = None,
+    ) -> ObjectHandle:
         """resolve ``object_id`` to a handle carrying its stored key, or raise.
 
         :param object_id: the object id to resolve
@@ -177,8 +192,12 @@ class ObjectResolver(Protocol):
         :param customer_id: the VERIFIED owning customer (cache scoping only;
             NOT sent to the hub -- the hub derives the customer from the token)
         :ptype customer_id: UUID
-        :param identity_token: the caller proof forwarded to the hub
+        :param identity_token: the credential presented to the hub: the call's delegated token, or
+            the caller's own identity token
         :ptype identity_token: str
+        :param holder_key: the key that credential binds, to prove possession of it over the
+            request; ``None`` from a caller that holds no key, which sends the token alone
+        :ptype holder_key: Ed25519PrivateKey | None
         :return: a handle with the resolved ``s3_key`` / ``mime_type`` /
             ``size_bytes`` (``summary`` / ``category`` are ``None`` -- resolve
             returns only the storage-locating fields)
@@ -232,7 +251,14 @@ class HubObjectResolver:
         # supplied -- its L1 tier is this, per process, plus a shared L2.
         self._cache: dict[tuple[UUID, UUID], ObjectHandle] = {}
 
-    async def resolve(self, object_id: UUID, *, customer_id: UUID, identity_token: str) -> ObjectHandle:
+    async def resolve(
+        self,
+        object_id: UUID,
+        *,
+        customer_id: UUID,
+        identity_token: str,
+        holder_key: Ed25519PrivateKey | None = None,
+    ) -> ObjectHandle:
         """resolve ``object_id`` to a handle carrying its stored key, or raise.
 
         Serves from cache when the ``(customer_id, object_id)`` mapping is known
@@ -244,8 +270,12 @@ class HubObjectResolver:
         :ptype object_id: UUID
         :param customer_id: the VERIFIED owning customer, for cache scoping only
         :ptype customer_id: UUID
-        :param identity_token: the caller proof forwarded to the hub
+        :param identity_token: the credential presented to the hub: the call's delegated token, or
+            the caller's own identity token
         :ptype identity_token: str
+        :param holder_key: the key that credential binds, to prove possession of it over the
+            request; ``None`` from a caller that holds no key, which sends the token alone
+        :ptype holder_key: Ed25519PrivateKey | None
         :return: a handle with the resolved ``s3_key`` / ``mime_type`` /
             ``size_bytes``
         :rtype: ObjectHandle
@@ -255,10 +285,12 @@ class HubObjectResolver:
         cached = await self._remembered(customer_id, object_id)
         if cached is not None:
             return cached
-        request = ObjectResolveRequestModel(
-            identity_token=identity_token,
-            correlation_id=uuid7(),
-            object_id=object_id,
+        request = DoorCredential(token=identity_token, holder_key=holder_key).presented(
+            ObjectResolveRequestModel(
+                identity_token=identity_token,
+                correlation_id=uuid7(),
+                object_id=object_id,
+            )
         )
         try:
             response = await self._nc.request(

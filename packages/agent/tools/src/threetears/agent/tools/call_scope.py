@@ -51,6 +51,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, AsyncIterator, Awaitable, Callable
 from uuid import UUID
 
+from threetears.core.security.door_request import DoorCredential
 from threetears.media.contracts import ObjectStore
 
 from threetears.agent.tools.context_envelope import CallContext
@@ -68,6 +69,8 @@ __all__ = [
 ]
 
 if TYPE_CHECKING:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
     from threetears.agent.tools.context import ToolContextManager
     from threetears.agent.tools.engagement_resolver import EngagementScopeResolver
     from threetears.agent.tools.object_resolver import ObjectResolver
@@ -124,6 +127,12 @@ class ToolCallScope:
         reads this rather than inferring a pod from a missing customer, which a
         hand-built scope can carry by accident
     :ptype principal_is_tool_pod: bool
+    :param credential: what a tool presents at a platform door for this call
+        (:mod:`threetears.core.security.door_request`): the call's delegated token proven with the
+        pod's own key, an agent's own token proven with its key, or the caller's forwarded token
+        alone for a server that holds no key. ``None`` when the call carries no token. A tool reads
+        this rather than ``context.identity_token``, so it never chooses a token itself
+    :ptype credential: DoorCredential | None
     :param cleanup_hooks: synchronous callbacks the tool server runs -- best
         effort, in registration order -- if it force-ends this call on its hard
         execution-time limit (``ToolServer(max_call_seconds=...)``). A tool
@@ -141,7 +150,22 @@ class ToolCallScope:
     object_resolver: "ObjectResolver | None" = None
     engagement_resolver: "EngagementScopeResolver | None" = None
     principal_is_tool_pod: bool = False
+    credential: DoorCredential | None = None
     cleanup_hooks: list[Callable[[], None]] = field(default_factory=list)
+
+    def door_credential(self) -> DoorCredential | None:
+        """what a tool presents at a platform door for this call.
+
+        The scope's :attr:`credential`; for a scope built without one, the context's forwarded
+        identity token alone.
+
+        :return: the credential, or ``None`` when the call carries no token
+        :rtype: DoorCredential | None
+        """
+        credential = self.credential
+        if credential is None and self.context.identity_token:
+            credential = DoorCredential(token=self.context.identity_token)
+        return credential
 
 
 #: resolves the per-conversation :class:`ToolContextManager` for ``(conversation_id, user_id)``.
@@ -158,6 +182,8 @@ async def build_call_scope(
     object_store: ObjectStore | None = None,
     object_resolver: "ObjectResolver | None" = None,
     engagement_resolver: "EngagementScopeResolver | None" = None,
+    pod_key: "Ed25519PrivateKey | None" = None,
+    own_key: "Ed25519PrivateKey | None" = None,
 ) -> ToolCallScope:
     """the scope one tool call runs in: its identity, and the pod-level resources tools reach through it.
 
@@ -184,6 +210,10 @@ async def build_call_scope(
     :ptype object_resolver: ObjectResolver | None
     :param engagement_resolver: the pod's engagement-scope resolver
     :ptype engagement_resolver: EngagementScopeResolver | None
+    :param pod_key: a tool pod's own identity key, which proves a delegated token
+    :ptype pod_key: Ed25519PrivateKey | None
+    :param own_key: the key the context's identity token binds, for an agent's in-process server
+    :ptype own_key: Ed25519PrivateKey | None
     :return: the scope
     :rtype: ToolCallScope
     """
@@ -198,6 +228,12 @@ async def build_call_scope(
         object_resolver=object_resolver,
         engagement_resolver=engagement_resolver,
         principal_is_tool_pod=principal_is_tool_pod,
+        credential=DoorCredential.for_tool_call(
+            delegated_token=identity.delegated_token,
+            identity_token=identity.identity_token,
+            pod_key=pod_key,
+            own_key=own_key,
+        ),
     )
 
 

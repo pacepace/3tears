@@ -65,11 +65,13 @@ class _FakeDiscoveryClient:
         identity_token: str | None = None,
         user_identity_token: str | None = None,
         namespace_type: str | None = None,
+        holder_key: object | None = None,
     ) -> list[NamespaceDiscoverySummary]:
         if self.raise_exc is not None:
             raise self.raise_exc
         self.last_filter = namespace_type
         self.last_identity_token = identity_token
+        self.last_holder_key = holder_key
         self.last_user_identity_token = user_identity_token
         return list(self.items)
 

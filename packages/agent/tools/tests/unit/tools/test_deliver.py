@@ -34,7 +34,9 @@ class _FakeResolver:
         self._handle = handle
         self._error = error
 
-    async def resolve(self, object_id: UUID, *, customer_id: UUID, identity_token: str) -> ObjectHandle:
+    async def resolve(
+        self, object_id: UUID, *, customer_id: UUID, identity_token: str, holder_key: object | None = None
+    ) -> ObjectHandle:
         if self._error is not None:
             raise self._error
         assert self._handle is not None

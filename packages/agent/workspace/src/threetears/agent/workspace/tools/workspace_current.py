@@ -156,7 +156,8 @@ class WorkspaceCurrentTool(TearsTool):
         :raises DiscoveryClientError: on broker failure
         """
         scope = current_scope()
-        identity_token: str | None = None if scope is None else scope.context.identity_token
+        credential = None if scope is None else scope.door_credential()
+        identity_token: str | None = None if credential is None else credential.token
         user_identity_token: str | None = None if scope is None else scope.context.user_identity_token
         correlation_id: UUID = (
             scope.context.correlation_id if scope is not None and scope.context.correlation_id is not None else uuid7()
@@ -170,6 +171,7 @@ class WorkspaceCurrentTool(TearsTool):
             identity_token=identity_token,
             user_identity_token=user_identity_token,
             namespace_type="workspace",
+            holder_key=None if credential is None else credential.holder_key,
         )
         visible = any(item.id == workspace_id for item in items)
         if not visible:

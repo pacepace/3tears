@@ -198,10 +198,12 @@ async def resolve_object(object_id: UUID) -> "ObjectHandle":
         raise ConsumeObjectError(
             "the call context carries no verified customer_id; refusing to resolve an untenanted object"
         )
-    identity_token = scope.context.identity_token
-    if identity_token is None:
+    credential = scope.door_credential()
+    if credential is None:
         raise ConsumeObjectError("the call context carries no identity_token; cannot authenticate the object resolve")
-    handle = await resolver.resolve(object_id, customer_id=customer_id, identity_token=identity_token)
+    handle = await resolver.resolve(
+        object_id, customer_id=customer_id, identity_token=credential.token, holder_key=credential.holder_key
+    )
     if not handle.s3_key.startswith(f"{customer_id}/"):
         # defense in depth, symmetric with the stream/deliver helpers: the hub's
         # lookup is customer-scoped + authoritative, but re-assert the resolved

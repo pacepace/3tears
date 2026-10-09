@@ -27,9 +27,10 @@ import secrets
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Final
+from typing import Any, Final, TypeVar
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from pydantic import BaseModel
 
 from threetears.core.security.delegated_token import DelegatedTokenError, DoorCaller, verify_door_caller
 from threetears.core.security.pop import access_token_hash, make_pop_proof
@@ -41,6 +42,8 @@ __all__ = [
     "door_request_hash",
     "verify_door_request",
 ]
+
+_M = TypeVar("_M", bound=BaseModel)
 
 #: the body field a door reads its caller's credential from.
 DOOR_TOKEN_FIELD: Final[str] = "identity_token"
@@ -84,12 +87,14 @@ class DoorCredential:
         delegated_token: str | None,
         identity_token: str | None,
         pod_key: Ed25519PrivateKey | None,
+        own_key: Ed25519PrivateKey | None = None,
     ) -> DoorCredential | None:
-        """the credential a tool pod presents for one call.
+        """the credential a tool server presents for one call.
 
-        The call's delegated token proven with the pod's key when the registry minted one and the
-        pod holds its key; otherwise the caller's forwarded token, bearer, as before, which the
-        doors accept until their windows close.
+        A tool pod: the call's delegated token proven with the pod's key when the registry minted
+        one and the pod holds its key; otherwise the caller's forwarded token, bearer, as before,
+        which the doors accept until their windows close. An agent's in-process tool server is the
+        caller itself: it passes ``own_key``, the key its own token binds, and proves that token.
 
         :param delegated_token: the call context's delegated token, if the registry minted one
         :ptype delegated_token: str | None
@@ -97,6 +102,9 @@ class DoorCredential:
         :ptype identity_token: str | None
         :param pod_key: the pod's own identity key, if the pod holds it
         :ptype pod_key: Ed25519PrivateKey | None
+        :param own_key: the key ``identity_token`` itself binds, held only by the agent it names;
+            never a tool pod's key, which no forwarded token binds
+        :ptype own_key: Ed25519PrivateKey | None
         :return: the credential, or ``None`` when the call carries no token at all
         :rtype: DoorCredential | None
         """
@@ -104,7 +112,7 @@ class DoorCredential:
         if delegated_token and pod_key is not None:
             credential = cls(token=delegated_token, holder_key=pod_key)
         elif identity_token:
-            credential = cls(token=identity_token)
+            credential = cls(token=identity_token, holder_key=own_key)
         return credential
 
     def present(self, body: Mapping[str, Any], *, now: int | None = None) -> dict[str, Any]:
@@ -129,6 +137,28 @@ class DoorCredential:
                 iat=int(time.time()) if now is None else now,
             )
         return sent
+
+    def presented(self, message: _M) -> _M:
+        """``message`` with the proof in its ``identity_proof`` field, when this credential holds a key.
+
+        For a wire model that already carries this credential's token in ``identity_token``: the
+        proof signs ``model_dump(mode="json")``, which is what ``model_dump_json`` puts on the wire.
+
+        :param message: the wire model, its ``identity_proof`` unset
+        :ptype message: BaseModel
+        :return: a copy carrying the proof, or ``message`` itself for a credential with no key
+        :rtype: BaseModel
+        :raises ValueError: when the model has no ``identity_proof`` field, or carries another token
+        """
+        if DOOR_PROOF_FIELD not in type(message).model_fields:
+            raise ValueError(f"{type(message).__name__} has no {DOOR_PROOF_FIELD} field to carry a proof")
+        proven = message
+        if self.holder_key is not None:
+            body = message.model_dump(mode="json")
+            if body.get(DOOR_TOKEN_FIELD) != self.token:
+                raise ValueError(f"{type(message).__name__} does not carry this credential's token")
+            proven = message.model_copy(update={DOOR_PROOF_FIELD: self.present(body)[DOOR_PROOF_FIELD]})
+        return proven
 
 
 def verify_door_request(

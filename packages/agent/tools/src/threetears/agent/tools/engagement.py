@@ -106,12 +106,14 @@ async def resolve_engagement_scope() -> EngagementScope:
         raise EngagementScopeUnavailableError(
             "the call context carries no verified customer_id; refusing to resolve an untenanted engagement scope"
         )
-    identity_token = scope.context.identity_token
-    if identity_token is None:
+    credential = scope.door_credential()
+    if credential is None:
         raise EngagementScopeUnavailableError(
             "the call context carries no identity_token; cannot authenticate the engagement scope resolve"
         )
-    resolved = await resolver.resolve(engagement_id, customer_id=customer_id, identity_token=identity_token)
+    resolved = await resolver.resolve(
+        engagement_id, customer_id=customer_id, identity_token=credential.token, holder_key=credential.holder_key
+    )
     if resolved.customer_id != customer_id:
         # echoed-customer mismatch: the hub resolved against a DIFFERENT customer
         # than this call's verified one. never happens on a correct path (both

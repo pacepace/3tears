@@ -42,13 +42,17 @@ the LLM.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+from threetears.core.security.door_request import DoorCredential
 from threetears.observe import get_logger, traced
 
 from threetears.agent.tools.config import get_namespace_discovery_request_timeout
+
+if TYPE_CHECKING:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 __all__ = [
     "DiscoveryClientError",
@@ -114,6 +118,9 @@ class NamespaceDiscoveryRequest(BaseModel):
         ``customer_id`` pair. ``None`` only when a user assertion is
         forwarded instead
     :ptype identity_token: str | None
+    :param identity_proof: the presenter's proof of possession of the token's key over this request
+        (:mod:`threetears.core.security.door_request`); ``None`` from a caller that holds no key
+    :ptype identity_proof: str | None
     :param user_identity_token: the per-turn hub-minted user
         assertion, when a human is in the loop. the broker verifies it,
         binds it to the identity token's principal, and takes the
@@ -129,6 +136,7 @@ class NamespaceDiscoveryRequest(BaseModel):
 
     correlation_id: UUID
     identity_token: str | None = None
+    identity_proof: str | None = None
     user_identity_token: str | None = None
     namespace_type: NamespaceTypeFilter | None = None
 
@@ -295,6 +303,7 @@ class NamespaceDiscoveryClient:
         identity_token: str | None = None,
         user_identity_token: str | None = None,
         namespace_type: NamespaceTypeFilter | None = None,
+        holder_key: Ed25519PrivateKey | None = None,
     ) -> list[NamespaceDiscoverySummary]:
         """issue one discovery request and return the caller's visible set.
 
@@ -321,6 +330,9 @@ class NamespaceDiscoveryClient:
         :param namespace_type: closed-set filter; ``None`` returns every
             visible namespace regardless of type
         :ptype namespace_type: NamespaceTypeFilter | None
+        :param holder_key: the key ``identity_token`` binds, to prove possession of it over the
+            request; ``None`` from a caller that holds no key, which sends the token alone
+        :ptype holder_key: Ed25519PrivateKey | None
         :return: list of namespace summaries, newest-update first
         :rtype: list[NamespaceDiscoverySummary]
         :raises DiscoveryClientError: on NATS missing, transport failure,
@@ -336,6 +348,8 @@ class NamespaceDiscoveryClient:
             user_identity_token=user_identity_token,
             namespace_type=namespace_type,
         )
+        if identity_token and holder_key is not None:
+            request = DoorCredential(token=identity_token, holder_key=holder_key).presented(request)
         subject = f"{self._namespace}.namespace.discover"
         try:
             reply = await self._nats_client.request(
