@@ -50,8 +50,9 @@ it read only when no write committed meanwhile (``settled``, the writer's seqloc
 (``retire``), in batches the declarer accepts, and only as one rule allows (``_Sweeper.deletable``),
 judged by state as KV holds it when the sweep runs, never by age: a chunk its scope's pointer names
 is served, and one at an epoch a live write claims is being written or waits for its pointer
-(``{name}.w.{epoch}.{replica}``, held by the writer from before its first chunk until a pointer
-names them, and renewed while it lives: a writer that dies stops renewing, and its claim lapses);
+(``{name}.w.{epoch}.{writer}``, one per write, held by the writer from before its first chunk until
+a pointer names them, and renewed while it lives: a writer that dies stops renewing, and its claim
+lapses);
 every other chunk serves nothing and goes. A scope's older chunks go as soon as its pointer moves,
 whichever path moved it, so a run that fails part way leaves nothing superseded behind for the
 scopes it did move. A write that will not commit gives its stages back
@@ -73,6 +74,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import math
 import threading
 import time
 import uuid
@@ -90,6 +93,7 @@ from threetears.observe import get_logger
 from threetears.core.sql_fragments import quote_identifier
 from threetears.core.cache.duckdb import DuckDBBackend, PartitionReplacement
 from threetears.core.collections.complete_copy import Unsettled, read_l3_rows
+from threetears.core.coordination.lease import HeldLease, KVLease, LeaseUnavailable
 
 if TYPE_CHECKING:
     from threetears.core.backends.protocol import L3Reader
@@ -219,12 +223,16 @@ class StagedScope:
     :ivar epoch: the epoch the chunks are written under
     :ivar objects: table -> the chunk written for it; a table left out keeps its rows
     :ivar rows: table -> the rows its chunk holds
+    :ivar claim: the write claim keeping the chunks from a sweep, held from before the first of them
+        was written until :meth:`ScopedSnapshot.publish_staged` or :meth:`ScopedSnapshot.discard_staged`
+        lets it go; ``None`` for a stage that holds none
     """
 
     scope: str
     epoch: int
     objects: Mapping[str, str]
     rows: Mapping[str, int]
+    claim: HeldLease | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -489,16 +497,41 @@ class _Progress:
     ready_at: datetime | None = None
 
 
-class _Claim:
-    """the rebuild claim this replica holds: renewed while held, released only while still its own."""
+def _lease_ttl(ttl: timedelta) -> timedelta:
+    """a claim's lifetime as a lease and a NATS per-key TTL take it: whole seconds, at least one.
 
-    def __init__(self, bucket: NatsKvBucket, *, key: str, owner: bytes, ttl: timedelta) -> None:
-        self._bucket = bucket
+    :param ttl: the lifetime asked for
+    :ptype ttl: timedelta
+    :return: it, rounded up
+    :rtype: timedelta
+    """
+    return timedelta(seconds=max(1, math.ceil(ttl.total_seconds())))
+
+
+class _RebuildClaim:
+    """one take of the rebuild claim: so one replica at a time rebuilds from L3.
+
+    A :class:`~threetears.core.coordination.lease.KVLease` hold on ``{name}.rebuild``, its entry
+    carrying a NATS per-key TTL and renewed at a third of it, so a replica that dies frees it. It is
+    contended, so it is never taken back once lost, and it is released only while still this
+    replica's. A loss is surfaced: :meth:`release` says whether it was held to the end.
+
+    :param lease: the snapshot's lease on its pointer bucket
+    :ptype lease: KVLease
+    :param key: the claim's key
+    :ptype key: str
+    :param ttl: how long it outlives its holder's last renewal
+    :ptype ttl: timedelta
+    :param name: the snapshot, for the log
+    :ptype name: str
+    """
+
+    def __init__(self, lease: KVLease, *, key: str, ttl: timedelta, name: str) -> None:
+        self._lease = lease
         self._key = key
-        self._owner = owner
-        self._ttl = ttl
-        self._revision: int | None = None
-        self._renewal: asyncio.Task[None] | None = None
+        self._ttl = _lease_ttl(ttl)
+        self._name = name
+        self._held: HeldLease | None = None
 
     async def take(self) -> bool:
         """take the claim when nobody holds it, and keep renewing it.
@@ -506,60 +539,38 @@ class _Claim:
         :return: whether this replica holds it
         :rtype: bool
         """
-        self._revision = await self._bucket.create(key=self._key, value=self._owner, ttl=self._ttl)
-        if self._revision is not None:
-            self._renewal = asyncio.create_task(self._renew(), name=f"snapshot-claim:{self._key}")
-        return self._revision is not None
-
-    async def _renew(self) -> None:
-        """renew the claim at a third of its lifetime, by compare-and-set, until it is released or lost.
-
-        :return: nothing
-        :rtype: None
-        """
-        interval = max(self._ttl.total_seconds() / 3, 0.2)
-        renewed = time.monotonic()
-        while self._revision is not None:
-            await asyncio.sleep(interval)
-            try:
-                revision = await self._bucket.update(
-                    key=self._key, value=self._owner, revision=self._revision, ttl=self._ttl
-                )
-            except Exception as exc:  # prawduct:allow prawduct/broad-except -- a renewal that cannot reach NATS is tried again until the claim's lifetime is spent; then it is lost, said so
-                if time.monotonic() - renewed < self._ttl.total_seconds():
-                    log.warning("renewing the snapshot rebuild claim %s failed; trying again: %s", self._key, exc)
-                    continue
-                log.warning("the snapshot rebuild claim %s lapsed while it could not be renewed: %s", self._key, exc)
-                revision = None
-            if revision is None:
-                log.warning("the snapshot rebuild claim %s was lost; another replica may take it", self._key)
-            else:
-                renewed = time.monotonic()
-            self._revision = revision
-
-    async def release(self) -> None:
-        """stop renewing and delete the claim, only if it is still this replica's.
-
-        :return: nothing
-        :rtype: None
-        """
         try:
-            if self._renewal is not None:
-                self._renewal.cancel()
-                # waited, not awaited: awaiting a cancelled task raises its CancelledError, and
-                # suppressing that would also swallow a cancellation of THIS task arriving meanwhile
-                await asyncio.wait({self._renewal})
-        finally:
-            # even when this task is being cancelled: a claim left behind makes every other replica
-            # wait out its lifetime. read after the renewal stopped, so it is the revision last written
-            revision, self._revision = self._revision, None
-            if revision is not None:
-                try:
-                    await self._bucket.delete(key=self._key, revision=revision)
-                except (
-                    Exception
-                ) as exc:  # prawduct:allow prawduct/broad-except -- a claim left behind expires on its own TTL; logged
-                    log.warning("releasing snapshot rebuild claim %s failed; it expires on its own: %s", self._key, exc)
+            self._held = await self._lease.hold(
+                self._key,
+                ttl=self._ttl,
+                renew_every=self._ttl / 3,
+                name="the snapshot rebuild claim",
+                renew_failure_level=logging.WARNING,
+                log_extra={"snapshot": self._name},
+            )
+        except LeaseUnavailable:
+            return False
+        return True
+
+    async def release(self) -> bool:
+        """stop renewing and delete the claim, only if it is still this replica's. Never raises.
+
+        :return: whether it was held to the end; ``False`` when it was lost meanwhile (another
+            replica may have rebuilt alongside) or never taken
+        :rtype: bool
+        """
+        held, self._held = self._held, None
+        if held is None:
+            return False
+        kept = not held.lost.is_set()
+        await held.release()
+        if not kept:
+            log.warning(
+                "scoped snapshot %s: the rebuild claim was lost while this replica held it; another replica "
+                "may have rebuilt alongside it",
+                self._name,
+            )
+        return kept
 
 
 @dataclass(frozen=True)
@@ -568,8 +579,8 @@ class _Layout:
     grammar lives, so a writer and the sweep that judges what it wrote can never disagree.
 
     Keys: ``{name}.index``, ``{name}.rebuild`` (the claim), ``{name}.s.{token}`` (a scope's
-    pointer) and ``{name}.w.{epoch}.{replica}`` (a replica's write claim on an epoch). Objects: ``{name}/{token}/{epoch}/{table}.{column digest}``. ``token`` is
-    :func:`scope_token` of the scope.
+    pointer) and ``{name}.w.{epoch}.{writer}`` (one write's claim on an epoch). Objects:
+    ``{name}/{token}/{epoch}/{table}.{column digest}``. ``token`` is :func:`scope_token` of the scope.
     """
 
     name: str
@@ -597,7 +608,7 @@ class _Layout:
         return f"{self.name}.{WRITE_CLAIM_SEGMENT}."
 
     def write_claim_key(self, epoch: int, owner: str) -> str:
-        """the key of one replica's claim on an epoch it writes chunks at."""
+        """the key of one write's claim on an epoch it writes chunks at; ``owner`` is one subject token."""
         return f"{self.write_claims_prefix}{epoch}.{owner}"
 
     def epoch_of_write_claim(self, key: str) -> int | None:
@@ -652,136 +663,81 @@ class _Layout:
 
 
 class _WriteClaims:
-    """the epochs this replica is writing chunks at, each claimed in KV while it writes and until a
-    pointer names what it wrote (or it gives them back): the state the sweep spares them by.
+    """claims on the epochs this replica writes chunks at, each held in KV while its write runs and
+    until a pointer names what it wrote (or the write gives it back): the state the sweep spares
+    them by.
 
-    One KV entry per epoch held, ``{name}.w.{epoch}.{replica}``, created with a lifetime and renewed
-    at a third of it while held. A replica that dies stops renewing, so its entries lapse and stop
-    protecting what it wrote: that is a lost lease, a fact about the writer, never an age of the
-    data. Held by count, so a write's stages and a publish at the same epoch share one entry.
+    Every hold is its own lease (:class:`~threetears.core.coordination.lease.HeldLease`), which its
+    caller owns and releases: one KV entry ``{name}.w.{epoch}.{writer}``, ``writer`` naming this
+    replica and the one write, so two writes at one epoch hold two entries and neither lets go of the
+    other's. The entry carries a NATS per-key TTL and is renewed at a third of it, so a replica that
+    dies stops renewing and its entries LAPSE -- the key goes, which is all the hub's orphan purge
+    and the sweep read: a lost lease, a fact about the writer, never an age of the data. An entry
+    found gone while its writer still writes (NATS lost the bucket, or an outage outlasted it) is
+    taken again, said so.
+
+    :param bucket: the pointer bucket, allowing per-entry TTLs
+    :ptype bucket: NatsKvBucket
+    :param layout: the snapshot's keys
+    :ptype layout: _Layout
+    :param owner: this replica, one subject token
+    :ptype owner: str
+    :param ttl: how long a claim outlives its writer's last renewal; whole seconds, rounded up
+    :ptype ttl: timedelta
     """
 
-    def __init__(self, bucket: NatsKvBucket, layout: _Layout, *, owner: bytes, ttl: timedelta) -> None:
-        self._bucket = bucket
+    def __init__(self, bucket: NatsKvBucket, layout: _Layout, *, owner: str, ttl: timedelta) -> None:
         self._layout = layout
         self._owner = owner
-        self._ttl = ttl
-        # epoch -> (holds, the entry's revision)
-        self._held: dict[int, tuple[int, int]] = {}
-        self._renewal: asyncio.Task[None] | None = None
-        self._lock = asyncio.Lock()
+        self._lease = KVLease(None, bucket=bucket, pod_id=owner, expire_entries=True)
+        self._ttl = _lease_ttl(ttl)
 
-    def _key(self, epoch: int) -> str:
-        return self._layout.write_claim_key(epoch, self._owner.decode("utf-8"))
-
-    async def hold(self, epoch: int) -> None:
-        """claim ``epoch`` (or count one more hold on it), before a chunk is written at it.
+    async def hold(self, epoch: int) -> HeldLease:
+        """claim ``epoch`` for one write, before its first chunk is written; the caller releases it.
 
         :param epoch: the epoch
         :ptype epoch: int
-        :return: nothing
-        :rtype: None
-        :raises RuntimeError: when the claim cannot be written: writing chunks no claim protects
-            would let a sweep take them
+        :return: the claim, renewing until released
+        :rtype: HeldLease
+        :raises RuntimeError: when the claim cannot be taken: writing chunks no claim protects would
+            let a sweep take them
         """
-        async with self._lock:
-            held = self._held.get(epoch)
-            if held is not None:
-                self._held[epoch] = (held[0] + 1, held[1])
-                return
-            key = self._key(epoch)
-            revision = await self._bucket.create(key=key, value=self._owner, ttl=self._ttl)
-            if revision is None:
-                # this replica's own key from an earlier hold that was lost: take it over
-                entry = await self._bucket.get_entry(key=key)
-                revision = (
-                    None
-                    if entry is None
-                    else await self._bucket.update(key=key, value=self._owner, revision=entry[1], ttl=self._ttl)
-                )
-            if revision is None:
-                raise RuntimeError(f"the write claim {key} could not be taken; no chunk is written without it")
-            self._held[epoch] = (1, revision)
-            if self._renewal is None or self._renewal.done():
-                self._renewal = asyncio.create_task(self._renew(), name=f"snapshot-write-claims:{self._layout.name}")
-
-    async def release(self, epoch: int) -> None:
-        """drop one hold on ``epoch``; the last one deletes its claim. Never raises.
-
-        :param epoch: the epoch
-        :ptype epoch: int
-        :return: nothing
-        :rtype: None
-        """
-        async with self._lock:
-            held = self._held.get(epoch)
-            if held is None:
-                return
-            if held[0] > 1:
-                self._held[epoch] = (held[0] - 1, held[1])
-                return
-            del self._held[epoch]
-            try:
-                await self._bucket.delete(key=self._key(epoch), revision=held[1])
-            except Exception as exc:  # prawduct:allow prawduct/broad-except -- a claim left behind lapses once nothing renews it; logged
-                log.warning("releasing write claim %s failed; it lapses unrenewed: %s", self._key(epoch), exc)
-
-    async def _renew(self) -> None:
-        """renew every held claim at a third of its lifetime until none is held.
-
-        :return: nothing
-        :rtype: None
-        """
-        interval = max(self._ttl.total_seconds() / 3, 0.2)
-        while self._held:
-            await asyncio.sleep(interval)
-            async with self._lock:
-                for epoch, (holds, revision) in list(self._held.items()):
-                    try:
-                        renewed = await self._bucket.update(
-                            key=self._key(epoch), value=self._owner, revision=revision, ttl=self._ttl
-                        )
-                    except Exception as exc:  # prawduct:allow prawduct/broad-except -- tried again at the next interval; a claim not renewed in its lifetime lapses, said so
-                        log.warning("renewing write claim %s failed; trying again: %s", self._key(epoch), exc)
-                        continue
-                    if renewed is None:
-                        # gone with its bucket (NATS lost it): this replica still writes, so it takes it again
-                        renewed = await self._retake(epoch)
-                    if renewed is None:
-                        log.error(
-                            "the write claim %s was lost and could not be taken again: what this replica "
-                            "writes at epoch %d is no longer protected from a sweep",
-                            self._key(epoch),
-                            epoch,
-                        )
-                    else:
-                        self._held[epoch] = (holds, renewed)
-
-    async def _retake(self, epoch: int) -> int | None:
-        """take a held claim again after its entry was lost; never raises.
-
-        :param epoch: the epoch
-        :ptype epoch: int
-        :return: the new revision, or None when it could not be taken
-        :rtype: int | None
-        """
-        revision: int | None = None
+        key = self._layout.write_claim_key(epoch, f"{self._owner}-{uuid.uuid7().hex}")
         try:
-            revision = await self._bucket.create(key=self._key(epoch), value=self._owner, ttl=self._ttl)
-        except Exception as exc:  # prawduct:allow prawduct/broad-except -- tried again at the next renewal; logged
-            log.warning("taking write claim %s again failed: %s", self._key(epoch), exc)
-        return revision
+            return await self._lease.hold(
+                key,
+                ttl=self._ttl,
+                renew_every=self._ttl / 3,
+                retake=True,
+                log_extra={"snapshot": self._layout.name, "epoch": epoch},
+            )
+        except LeaseUnavailable as exc:
+            raise RuntimeError(f"the write claim {key} could not be taken; no chunk is written without it") from exc
 
-    async def stop(self) -> None:
-        """stop renewing; the claims lapse. Never raises.
+    async def close(self) -> None:
+        """end every claim handed out that its holder has not released (a stage dropped, a write
+        that never reached its release): each is deleted while still this replica's. Never raises.
 
         :return: nothing
         :rtype: None
         """
-        if self._renewal is not None:
-            self._renewal.cancel()
-            await asyncio.wait({self._renewal})
-            self._renewal = None
+        await self._lease.close()
+
+
+def _still_held(claim: HeldLease | None, what: str) -> None:
+    """refuse to go on writing past a lost write claim: a sweep, or the hub's purge, may take what
+    it protected.
+
+    :param claim: the claim, or ``None`` for a write that holds none
+    :ptype claim: HeldLease | None
+    :param what: what was about to happen, for the error
+    :ptype what: str
+    :return: nothing
+    :rtype: None
+    :raises RuntimeError: when the claim was lost
+    """
+    if claim is not None and not claim.held:
+        raise RuntimeError(f"the write claim {claim.key} was lost; {what} is refused")
 
 
 class _Sweeper:
@@ -1097,7 +1053,8 @@ class ScopedSnapshot:
             retire_batch=max(1, min(retire_batch, MAX_RETIRED_OBJECTS)),
         )
         self._replica = uuid.uuid7().hex.encode("utf-8")
-        self._write_claims = _WriteClaims(pointers, self._layout, owner=self._replica, ttl=claim_ttl)
+        self._write_claims = _WriteClaims(pointers, self._layout, owner=self._replica.decode("utf-8"), ttl=claim_ttl)
+        self._rebuild_lease = KVLease(None, bucket=pointers, pod_id=self._replica.decode("utf-8"), expire_entries=True)
         # what the pointer bucket says, as the watch last delivered it
         self._seen: dict[str, _Pointer] = {}
         self._index: frozenset[str] | None = None
@@ -1492,10 +1449,14 @@ class ScopedSnapshot:
         for task in self._tasks:
             task.cancel()
         if self._tasks:
-            # waited, not awaited: see _Claim.release
+            # waited, not awaited: awaiting a cancelled task raises its CancelledError, and suppressing
+            # that would also swallow a cancellation of THIS task arriving meanwhile
             await asyncio.wait(self._tasks)
         self._tasks = []
-        await self._write_claims.stop()
+        # every claim this replica handed out and nobody released (a stage its writer dropped) ends
+        # here, rather than renewing for the life of the process
+        await self._write_claims.close()
+        await self._rebuild_lease.close()
 
     async def _watch(self) -> None:
         """follow the pointer bucket and wake the worker on every change; say so loudly if it ends.
@@ -2043,7 +2004,7 @@ class ScopedSnapshot:
             await self._commit(local, [scope], epochs={scope: epoch})
             # the epoch is claimed from before its first chunk is written until the pointer names
             # them, so no sweep takes a chunk in between
-            await self._write_claims.hold(epoch)
+            claim = await self._write_claims.hold(epoch)
             try:
                 try:
                     objects: dict[str, str] = {}
@@ -2053,6 +2014,7 @@ class ScopedSnapshot:
                         arrow = await asyncio.to_thread(
                             self._backend.export_partition, table.name, table.scope_column, scope, order_by=table.key
                         )
+                        _still_held(claim, f"writing scope {scope!r}'s chunk of {table.name}")
                         objects[table.name] = await self._put_chunk(scope, epoch, table, arrow, reused=reused)
                         counts[table.name] = arrow.num_rows
                     pointer = _Pointer(scope=scope, epoch=epoch, objects=objects, rows=counts, schema=self._schema)
@@ -2061,18 +2023,21 @@ class ScopedSnapshot:
                     # after `_applied` moves, as every other commit path does, so a listener reading
                     # applied_epoch sees the epoch of what it reads; on a failed chunk write, still told
                     self._notify()
-                # a chunk found already written was judged by a sweep that may have read the claims
-                # before this one was taken: it must still be there before a pointer names it
-                if reused and not await self._exist(reused):
+                # every chunk the pointer will name must still be there: one found already written was
+                # judged by a sweep that may have read the claims before this one was taken, and one
+                # written here may have been swept while this replica was cut off from NATS past its
+                # claim's lifetime (a lapse it cannot see until it reconnects)
+                if not await self._exist(objects.values()):
                     raise RuntimeError(
-                        f"scope {scope!r}: a chunk of epoch {epoch} it found written was deleted before its pointer "
-                        f"moved ({reused}); no pointer is moved onto a missing chunk"
+                        f"scope {scope!r}: a chunk of epoch {epoch} was deleted before its pointer moved "
+                        f"({sorted(objects.values())}, reused: {reused}); no pointer is moved onto a missing chunk"
                     )
                 # the change recorded is this replica's own: a racing writer's later pointer, or a fresh
                 # one of other columns it yields to, is not what this L1 holds
+                _still_held(claim, f"moving scope {scope!r}'s pointer to epoch {epoch}")
                 await self._move_pointer(pointer)
             finally:
-                await self._write_claims.release(epoch)
+                await claim.release()
             result = pointer
         return result
 
@@ -2081,7 +2046,7 @@ class ScopedSnapshot:
     ) -> str:
         """write one table's chunk of a scope at an epoch; the one place a chunk is written.
 
-        The caller holds a write claim on ``epoch`` (:class:`_WriteClaims`). A store refused as full
+        The caller holds a write claim on ``epoch`` (:meth:`_WriteClaims.hold`). A store refused as full
         is swept by the one rule and the write tried once more; what that frees is what no pointer
         serves and no live write claims. A torn write's pieces (an object's chunks land before its
         metadata) are not listed and wait for the declarer's orphan purge, so a store full of them
@@ -2157,18 +2122,19 @@ class ScopedSnapshot:
         objects: dict[str, str] = {}
         counts: dict[str, int] = {}
         # held until publish_staged moves (or skips) this stage, or discard_staged gives it back
-        await self._write_claims.hold(epoch)
+        claim = await self._write_claims.hold(epoch)
         try:
             for table in self._tables:
                 if table.name in rows:
                     arrow = await self._export(table, scope, rows[table.name])
+                    _still_held(claim, f"staging scope {scope!r}'s chunk of {table.name}")
                     objects[table.name] = await self._put_chunk(scope, epoch, table, arrow)
                     counts[table.name] = arrow.num_rows
         except BaseException:
-            await self._write_claims.release(epoch)
+            await claim.release()
             await self._sweeper.retire_names_if_unserved(list(objects.values()), what=f"a failed stage of {scope!r}")
             raise
-        return StagedScope(scope=scope, epoch=epoch, objects=objects, rows=counts)
+        return StagedScope(scope=scope, epoch=epoch, objects=objects, rows=counts, claim=claim)
 
     async def _export(self, table: SnapshotTable, scope: str, rows: Sequence[Mapping[str, Any]]) -> Any:
         """the Arrow table a scope of ``table`` holds with ``rows``, typed by this L1, changing nothing.
@@ -2199,7 +2165,8 @@ class ScopedSnapshot:
         :rtype: None
         """
         for scope in staged:
-            await self._write_claims.release(scope.epoch)
+            if scope.claim is not None:
+                await scope.claim.release()
         names = [name for scope in staged for name in scope.objects.values()]
         await self._sweeper.retire_names_if_unserved(names, what="a discarded write's stages")
 
@@ -2244,45 +2211,60 @@ class ScopedSnapshot:
         moved: list[str] = []
         skipped: list[str] = []
         superseded: list[str] = []
-        for scope in staged:
-            completed = await self._completed(scope, int(carry_at.get(scope.scope, 0)), whole=whole)
-            if completed is None:
-                skipped.append(scope.scope)
-                continue
-            pointer, observed = completed
-            if not await self._exist(pointer.objects.values()):
-                # never a pointer onto a missing chunk: the scope is left to the catch-up, which
-                # republishes it from L3 (it stages it again)
-                log.error(
-                    "scoped snapshot %s: a chunk staged for scope %r at epoch %d is gone; its pointer is not "
-                    "moved, and the catch-up republishes it from L3",
+        try:
+            for scope in staged:
+                if scope.claim is not None and not scope.claim.held:
+                    # what it staged may already be gone to a sweep: never written to, never pointed at
+                    log.error(
+                        "scoped snapshot %s: the write claim of scope %r at epoch %d was lost; its pointer is not "
+                        "moved, and the catch-up republishes it from L3",
+                        self._name,
+                        scope.scope,
+                        scope.epoch,
+                    )
+                    skipped.append(scope.scope)
+                    continue
+                completed = await self._completed(scope, int(carry_at.get(scope.scope, 0)), whole=whole)
+                if completed is None:
+                    skipped.append(scope.scope)
+                    continue
+                pointer, observed = completed
+                if not await self._exist(pointer.objects.values()):
+                    # never a pointer onto a missing chunk: the scope is left to the catch-up, which
+                    # republishes it from L3 (it stages it again)
+                    log.error(
+                        "scoped snapshot %s: a chunk staged for scope %r at epoch %d is gone; its pointer is not "
+                        "moved, and the catch-up republishes it from L3",
+                        self._name,
+                        scope.scope,
+                        scope.epoch,
+                    )
+                    skipped.append(scope.scope)
+                    continue
+                _still_held(scope.claim, f"moving scope {scope.scope!r}'s pointer to epoch {scope.epoch}")
+                if observed is _ANY_ENTRY:
+                    held = await self._move_pointer(pointer)
+                    (moved if held == pointer else superseded).append(scope.scope)
+                elif await self._move_exactly(pointer, observed):
+                    moved.append(scope.scope)
+                else:
+                    # what it carried, or filled empty, was judged against an entry that has moved since
+                    skipped.append(scope.scope)
+            if superseded:
+                log.info(
+                    "scoped snapshot %s: %d staged scopes were already at a later epoch; nothing moved for them",
                     self._name,
-                    scope.scope,
-                    scope.epoch,
+                    len(superseded),
+                    extra={"extra_data": {"scopes": superseded}},
                 )
-                skipped.append(scope.scope)
-                continue
-            if observed is _ANY_ENTRY:
-                held = await self._move_pointer(pointer)
-                (moved if held == pointer else superseded).append(scope.scope)
-            elif await self._move_exactly(pointer, observed):
-                moved.append(scope.scope)
-            else:
-                # what it carried, or filled empty, was judged against an entry that has moved since
-                skipped.append(scope.scope)
-        if superseded:
-            log.info(
-                "scoped snapshot %s: %d staged scopes were already at a later epoch; nothing moved for them",
-                self._name,
-                len(superseded),
-                extra={"extra_data": {"scopes": superseded}},
-            )
-        if moved:
-            await self._update_index(add=moved, whole=whole and not skipped)
-        # the stages are named by their pointers now, or will never be: the claims are let go, and
-        # a skipped or superseded stage serves nothing and goes by the rule
-        for scope in staged:
-            await self._write_claims.release(scope.epoch)
+            if moved:
+                await self._update_index(add=moved, whole=whole and not skipped)
+        finally:
+            # the stages are named by their pointers now, or will never be by this call: the claims are
+            # let go on every way out, and a skipped or superseded stage serves nothing and goes by the rule
+            for scope in staged:
+                if scope.claim is not None:
+                    await scope.claim.release()
         unserved = [name for scope in staged if scope.scope not in moved for name in scope.objects.values()]
         await self._sweeper.retire_names_if_unserved(unserved, what="stages left unpublished")
         for scope in staged:
@@ -2507,13 +2489,13 @@ class ScopedSnapshot:
             )
         return result
 
-    def _claim(self) -> _Claim:
+    def _claim(self) -> _RebuildClaim:
         """a fresh claim on the rebuild.
 
         :return: the claim
-        :rtype: _Claim
+        :rtype: _RebuildClaim
         """
-        return _Claim(self._pointers_bucket, key=self._layout.claim_key, owner=self._replica, ttl=self._claim_ttl)
+        return _RebuildClaim(self._rebuild_lease, key=self._layout.claim_key, ttl=self._claim_ttl, name=self._name)
 
     async def _rebuild(self, *, reason: str) -> None:
         """rebuild every scope's chunks from L3 under the claim, or wait for whoever holds it.
@@ -2530,11 +2512,14 @@ class ScopedSnapshot:
             await self._ensure_buckets()
         claim = self._claim()
         if await claim.take():
+            kept = False
             try:
                 caught = await self._rebuild_scopes(None, reason=reason, flow="sync")
             finally:
-                await claim.release()
-            if caught is not None and not lost:
+                kept = await claim.release()
+            # a rebuild that lost its claim meanwhile may have run beside another: it leaves the sweep
+            # to a rebuild that held the claim throughout
+            if caught is not None and not lost and kept:
                 await self._sweeper.retire_unreferenced()
         else:
             self._wait("sync", f"{reason}; another replica is rebuilding or publishing it")

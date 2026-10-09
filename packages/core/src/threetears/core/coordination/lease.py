@@ -22,6 +22,16 @@ to HOLD a lease across real work, renewed in the background and told when it is 
     ...                        # watch held.lost / await held.until_lost()
     await held.release()       # or: async with held: ...
 
+to hold keys in a bucket ANOTHER owner declared and handed over already bound, as readers that
+test a key's existence see them (a writer's claim, a registration)::
+
+    lease = KVLease(None, bucket=pointers, pod_id=replica, expire_entries=True)
+    held = await lease.hold(key, ttl=ttl, renew_every=ttl / 3, retake=True)
+
+``expire_entries`` gives each entry a NATS per-key TTL, so a holder that stops renewing loses the
+KEY itself, not only its envelope's expiry; ``retake`` takes back an entry that went away (it lapsed
+through an outage, or NATS lost the bucket) instead of reporting the lease lost.
+
 ``nats_client`` is the canonical
 :class:`threetears.nats.kv.KvCapable` wrapper. the lease opens its
 bucket via :meth:`KvCapable.kv_bucket` so all CAS / miss semantics
@@ -37,6 +47,7 @@ correctly with the rest of the codebase.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -153,6 +164,46 @@ def _decode_envelope(value: bytes) -> _Envelope:
     return _Envelope(holder=holder, date_expires=date_expires, date_acquired=date_acquired)
 
 
+def _decoded_envelope(value: bytes) -> _Envelope | None:
+    """the envelope a stored value holds, or ``None`` when it is not one this lease wrote.
+
+    a value it cannot read (another writer's format, or one written before a lease kept the key) is
+    nobody this lease may reclaim, refresh or delete: it is treated as another holder's.
+
+    :param value: the stored value
+    :ptype value: bytes
+    :return: the envelope, or ``None``
+    :rtype: _Envelope | None
+    """
+    try:
+        return _decode_envelope(value)
+    except (ValueError, KeyError, TypeError) as exc:
+        log.info("KVLease: an entry it cannot read is another holder's: %s: %s", type(exc).__name__, exc)
+        return None
+
+
+class _Holds:
+    """the holds one :class:`KVLease` has handed out since it was last closed: told to end together,
+    and counted until each has (:meth:`KVLease.close`). Each hold reports its own start and end."""
+
+    def __init__(self) -> None:
+        self.closing = asyncio.Event()
+        self.ended = asyncio.Event()
+        self.ended.set()
+        self._live = 0
+
+    def started(self) -> None:
+        """one more hold renewing."""
+        self._live += 1
+        self.ended.clear()
+
+    def finished(self) -> None:
+        """one hold stopped renewing; the last one wakes :meth:`KVLease.close`."""
+        self._live -= 1
+        if self._live <= 0:
+            self.ended.set()
+
+
 class LeaseHandle:
     """opaque handle representing one successful lease acquisition.
 
@@ -204,7 +255,7 @@ class LeaseHandle:
         self.date_expires = date_expires
         self.released = False
 
-    async def refresh(self, ttl_seconds: int | None = None) -> None:
+    async def refresh(self, ttl_seconds: int | None = None, *, adopt_own_revision: bool = False) -> None:
         """extend lease expiry; raise :class:`LeaseLost` on ownership change.
 
         fetches current entry, verifies holder still matches, then performs
@@ -214,11 +265,24 @@ class LeaseHandle:
         :param ttl_seconds: override TTL for this refresh; falls back to
             TTL supplied at acquire time when None
         :ptype ttl_seconds: int | None
+        :param adopt_own_revision: when the entry is still this holder's at a revision the handle has
+            not seen (one of its own writes landed and its reply did not), renew from that revision
+            rather than call the lease lost
+        :ptype adopt_own_revision: bool
         :return: None
         :rtype: None
         :raises LeaseLost: if ownership has changed or CAS failed
         """
-        await self._lease.refresh_handle(self, ttl_seconds=ttl_seconds)
+        await self._lease.refresh_handle(self, ttl_seconds=ttl_seconds, adopt_own_revision=adopt_own_revision)
+
+    async def retake(self) -> bool:
+        """take the entry again when it is gone, as this holder, by create; never over another's entry.
+
+        :return: whether the entry is this holder's again; ``False`` when the key is there (another
+            holder's, or a write of this one the handle has not seen)
+        :rtype: bool
+        """
+        return await self._lease.retake_handle(self)
 
     async def release(self) -> None:
         """delete KV entry if still owned; no-op on repeat calls.
@@ -293,6 +357,10 @@ class HeldLease:
         renew_every_seconds: float,
         expires_at: float,
         log_extra: Mapping[str, Any] | None = None,
+        retake: bool = False,
+        name: str = "the lease",
+        renew_failure_level: int = logging.INFO,
+        holds: _Holds | None = None,
     ) -> None:
         """start renewing ``handle`` in the background. internal: use :meth:`KVLease.hold`.
 
@@ -306,11 +374,24 @@ class HeldLease:
         :ptype expires_at: float
         :param log_extra: context added to every log line about this lease
         :ptype log_extra: Mapping[str, Any] | None
+        :param retake: take the entry again when it is gone, rather than report the lease lost (see
+            :meth:`KVLease.hold`)
+        :ptype retake: bool
+        :param name: what the lease is, in its log lines
+        :ptype name: str
+        :param renew_failure_level: the level a renewal that failed inside the TTL is logged at
+        :ptype renew_failure_level: int
+        :param holds: the factory's current holds, which this one joins until it stops renewing
+        :ptype holds: _Holds | None
         :return: None
         :rtype: None
         """
         loop = asyncio.get_running_loop()
         self._handle = handle
+        self._retake = retake
+        self._name = name
+        self._renew_failure_level = renew_failure_level
+        self._closing = holds.closing if holds is not None else None
         self.key = handle.key
         self.lost = asyncio.Event()
         self._ended = asyncio.Event()
@@ -322,6 +403,9 @@ class HeldLease:
         self._released = False
         self._expiry = loop.call_at(expires_at, self._on_expired)
         self._renewal: asyncio.Task[None] | None = asyncio.create_task(self._renew(), name=f"kv-lease-renew:{self.key}")
+        if holds is not None:
+            holds.started()
+            self._renewal.add_done_callback(lambda _task: holds.finished())
 
     @property
     def held(self) -> bool:
@@ -370,50 +454,106 @@ class HeldLease:
     def _on_expired(self) -> None:
         """the entry could have expired by now: another pod may hold the key.
 
+        a lease that retakes its entry is not lost by a lapse alone: it says so, and the next renewal
+        that reaches the bucket takes the entry back, or finds another holder on it and reports that.
+
         :return: None
         :rtype: None
         """
+        if self._retake:
+            log.warning(
+                "KVLease: the lease went un-renewed past its TTL and may have lapsed; it is taken again "
+                "once the bucket answers",
+                extra={"extra_data": self._log_extra},
+            )
+            return
         self._mark_lost("KVLease: the lease went un-renewed past its TTL and is assumed lost")
 
     async def _renew(self) -> None:
         """renew until lost, released or cancelled.
 
-        :class:`LeaseLost` is authoritative -- another holder is on the entry -- and marks the lease
-        lost at once. anything else (an unreachable bucket, a transport fault, a renewal that hangs)
-        is not evidence of anything, so it is retried; the expiry timer decides when the lease could
-        have lapsed, and each renewal is bounded by the time left before it.
+        :class:`LeaseLost` is authoritative -- another holder is on the entry, or it is gone -- and
+        marks the lease lost at once; a lease that retakes tries to take a GONE entry back first, and
+        is lost only when another holder is on it. anything else (an unreachable bucket, a transport
+        fault, a renewal that hangs) is not evidence of anything, so it is retried; the expiry timer
+        decides when the lease could have lapsed, and each renewal is bounded by the time left before
+        it (a renewal of a lease that retakes, once that time is spent, by its TTL).
 
         :return: None
         :rtype: None
         """
         loop = asyncio.get_running_loop()
         while not self._stop.is_set():
-            try:
-                await asyncio.wait_for(self._stop.wait(), timeout=self._renew_every)
-            except TimeoutError:
-                # NOSILENT: the timeout IS the renewal interval elapsing without a stop -- time to renew
-                pass
+            await self._pause()
+            if self._closing is not None and self._closing.is_set() and not self._stop.is_set():
+                await self._end_for_close()
+                return
             if self._stop.is_set():
                 break
             started = loop.time()
             remaining = self._expires_at - started
-            if remaining <= 0:
+            if remaining <= 0 and not self._retake:
                 break  # the expiry timer has fired, or is about to
             try:
-                async with asyncio.timeout(remaining):
-                    await self._handle.refresh()
+                async with asyncio.timeout(remaining if remaining > 0 else self._ttl):
+                    await self._renew_once()
             except LeaseLost:
                 self._mark_lost("KVLease: another holder now owns the lease")
                 return
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- a renewal can fail for any transport reason; the expiry timer decides whether that has cost us the lease
-                log.info(
-                    "KVLease: could not renew the lease, still inside its TTL",
+                log.log(
+                    self._renew_failure_level,
+                    "KVLease: renewing %s failed; trying again while it is inside its TTL",
+                    self._name,
                     extra={"extra_data": {**self._log_extra, "error": type(exc).__name__}},
                 )
             else:
                 self._expires_at = started + self._ttl
                 self._expiry.cancel()
                 self._expiry = loop.call_at(self._expires_at, self._on_expired)
+
+    async def _pause(self) -> None:
+        """wait one renewal interval, or less when this lease is released or its factory closes.
+
+        :return: None
+        :rtype: None
+        """
+        waits = {asyncio.ensure_future(self._stop.wait())}
+        if self._closing is not None:
+            waits.add(asyncio.ensure_future(self._closing.wait()))
+        try:
+            await asyncio.wait(waits, timeout=self._renew_every, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for waiting in waits:
+                waiting.cancel()
+
+    async def _end_for_close(self) -> None:
+        """let the lease go because its factory closed: as :meth:`release`, from the renewal itself.
+
+        :return: None
+        :rtype: None
+        """
+        self._released = True
+        self._ended.set()
+        self._stop.set()
+        self._expiry.cancel()
+        self._renewal = None
+        await self._delete_entry()
+
+    async def _renew_once(self) -> None:
+        """one renewal: the handle's compare-and-swap refresh, and for a lease that retakes, a take of
+        the entry again when the refresh found it gone.
+
+        :return: None
+        :rtype: None
+        :raises LeaseLost: another holder is on the entry, or (not retaking) the entry is gone
+        """
+        try:
+            await self._handle.refresh(adopt_own_revision=self._retake)
+        except LeaseLost:
+            if not self._retake or not await self._handle.retake():
+                raise
+            log.warning("KVLease: the lease's entry was gone; it is taken again", extra={"extra_data": self._log_extra})
 
     async def release(self) -> None:
         """stop renewing and delete the entry if this pod still holds it; idempotent.
@@ -435,11 +575,23 @@ class HeldLease:
         self._stop.set()
         self._expiry.cancel()
         renewal, self._renewal = self._renewal, None
-        if renewal is not None:
-            done, _pending = await asyncio.wait([renewal], timeout=self._ttl)
-            if not done:
-                renewal.cancel()
-                await asyncio.wait([renewal])
+        try:
+            if renewal is not None:
+                done, _pending = await asyncio.wait([renewal], timeout=self._ttl)
+                if not done:
+                    renewal.cancel()
+                    await asyncio.wait([renewal])
+        finally:
+            # even when the releasing task is cancelled meanwhile (an owner stopping): an entry left
+            # behind holds everyone else off for its whole TTL
+            await self._delete_entry()
+
+    async def _delete_entry(self) -> None:
+        """delete the entry if this pod still holds it; never raises (see :meth:`release`).
+
+        :return: None
+        :rtype: None
+        """
         try:
             await self._handle.release()
         except Exception:  # prawduct:allow prawduct/broad-except -- see above: the TTL frees the entry, and a cleanup failure must not replace the caller's outcome
@@ -514,12 +666,14 @@ class KVLease:
 
     def __init__(
         self,
-        nats_client: "KvCapable",
+        nats_client: "KvCapable | None",
         bucket_name: str | None = None,
         pod_id: str | None = None,
         *,
         create_if_missing: bool = True,
         key_scope: str | None = None,
+        bucket: "KvBucketLike | None" = None,
+        expire_entries: bool = False,
     ) -> None:
         """configure factory; defer bucket creation until first acquire.
 
@@ -554,25 +708,43 @@ class KVLease:
             share the scope and so contend for one key. ``None`` keys by the caller's key alone,
             for a bucket this factory's owner has to itself
         :ptype key_scope: str | None
+        :param bucket: a bucket already bound, in place of ``nats_client``: one another owner declared
+            and handed over (a pod's pointer bucket, bound by its own name). The lease opens nothing,
+            and its keys are exactly the names it is given (led by ``key_scope``, when set)
+        :ptype bucket: KvBucketLike | None
+        :param expire_entries: write every entry with a NATS per-key TTL equal to the lease's, so a
+            holder that stops renewing loses the KEY, not only its envelope's expiry -- for a bucket
+            whose readers test whether a key exists rather than decode it. The bucket must allow
+            per-key TTLs
+        :ptype expire_entries: bool
         :return: None
         :rtype: None
-        :raises ValueError: when ``key_scope`` is not one literal subject token
+        :raises ValueError: when ``key_scope`` is not one literal subject token, or not exactly one of
+            ``nats_client`` and ``bucket`` is given
         """
+        if (nats_client is None) == (bucket is None):
+            raise ValueError(
+                "KVLease takes a nats_client to open its bucket, or a bucket already bound: one of the two"
+            )
         self._key_scope = validated_key_scope(key_scope, primitive="KVLease")
         self._client = nats_client
         self._bucket_name = bucket_name if bucket_name is not None else self._default_bucket_name()
         self._pod_id = pod_id if pod_id is not None else f"pod-{uuid7().hex}"
         self._create_if_missing = create_if_missing
-        self._bucket: "KvBucketLike | None" = None
+        self._bucket: "KvBucketLike | None" = bucket
         self._bucket_lock = asyncio.Lock()
+        self._expire_entries = expire_entries
+        self._holds = _Holds()
 
     @property
     def bucket_name(self) -> str:
         """return configured bucket name.
 
-        :return: bucket name set at construction
+        :return: bucket name set at construction; for a lease handed its bucket, that bucket's name
         :rtype: str
         """
+        if self._client is None and self._bucket is not None:
+            return self._bucket.name
         return self._bucket_name
 
     @property
@@ -644,6 +816,7 @@ class KVLease:
             return self._bucket
         async with self._bucket_lock:
             if self._bucket is None:
+                assert self._client is not None  # a lease without a client was handed its bucket
                 self._bucket = await self._client.kv_bucket(
                     name=self._bucket_name,
                     history=1,
@@ -655,6 +828,31 @@ class KVLease:
                     self._create_if_missing,
                 )
         return self._bucket
+
+    async def close(self) -> None:
+        """end every hold this factory has handed out: each stops renewing and deletes its entry if
+        it is still its own, and this returns once all have. Never raises.
+
+        For an owner that stops while holds it handed to callers may still be out (a caller that
+        dropped one, or never reached its release): without it they renew for the life of the
+        process. Holds taken after it are not affected.
+
+        :return: None
+        :rtype: None
+        """
+        holds, self._holds = self._holds, _Holds()
+        holds.closing.set()
+        await holds.ended.wait()
+
+    def _entry_ttl(self, ttl_seconds: int) -> timedelta | None:
+        """the per-key TTL an entry is written with: the lease's own when entries expire, else none.
+
+        :param ttl_seconds: the lease's TTL
+        :ptype ttl_seconds: int
+        :return: the per-key TTL, or ``None``
+        :rtype: timedelta | None
+        """
+        return timedelta(seconds=ttl_seconds) if self._expire_entries else None
 
     async def acquire(
         self,
@@ -739,7 +937,7 @@ class KVLease:
         # ``None`` on CAS conflict (key already exists). no exception
         # to catch for the conflict path -- the wrapper hides
         # KeyWrongLastSequenceError behind the typed ``None`` return.
-        revision = await bucket.create(key=key, value=payload)
+        revision = await bucket.create(key=key, value=payload, ttl=self._entry_ttl(ttl_seconds))
         if revision is not None:
             result = LeaseHandle(
                 lease=self,
@@ -786,15 +984,15 @@ class KVLease:
         if entry is None:
             return None
         value, revision = entry
-        envelope = _decode_envelope(value)
-        if envelope.date_expires > now:
+        envelope = _decoded_envelope(value)
+        if envelope is None or envelope.date_expires > now:
             # still held by a live holder
             return None
         payload = _encode_envelope(holder=self._pod_id, date_expires=date_expires, date_acquired=now)
         # KvBucketLike.update returns the new revision on success or
         # ``None`` on CAS conflict; another pod may have reclaimed the
         # stale entry between our get_entry and update.
-        new_revision = await bucket.update(key=key, value=payload, revision=revision)
+        new_revision = await bucket.update(key=key, value=payload, revision=revision, ttl=self._entry_ttl(ttl_seconds))
         if new_revision is None:
             return None
         result = LeaseHandle(
@@ -815,6 +1013,9 @@ class KVLease:
         renew_every: timedelta | float,
         max_wait_seconds: int = 0,
         log_extra: Mapping[str, Any] | None = None,
+        retake: bool = False,
+        name: str = "the lease",
+        renew_failure_level: int = logging.INFO,
     ) -> HeldLease:
         """acquire ``key`` and keep it renewed in the background until released or lost.
 
@@ -834,6 +1035,19 @@ class KVLease:
         :param log_extra: context for every log line about this lease (the key alone is often a
             digest an operator cannot map back to anything)
         :ptype log_extra: Mapping[str, Any] | None
+        :param retake: when a renewal finds the entry GONE -- it lapsed through an outage, or NATS lost
+            the bucket -- take it again rather than report the lease lost, and treat a lapse as a
+            warning, not a loss. Only an entry another holder is on loses the lease. For a key that
+            names its holder alone (a writer's claim on what it writes), where an absent entry
+            means nobody else has it; never for a mutex others contend for, whose lapse may already
+            have let another pod act
+        :ptype retake: bool
+        :param name: what the lease is, for its log lines ("the snapshot rebuild claim")
+        :ptype name: str
+        :param renew_failure_level: the level a renewal that failed while the entry is still inside its
+            TTL is logged at; INFO by default (it is not yet evidence of anything), WARNING for an
+            owner whose operators watch for it
+        :ptype renew_failure_level: int
         :return: the held lease, already renewing
         :rtype: HeldLease
         :raises ValueError: timing that cannot hold (see :func:`_hold_seconds`)
@@ -854,9 +1068,15 @@ class KVLease:
             renew_every_seconds=renew_seconds,
             expires_at=expires_at,
             log_extra=log_extra,
+            retake=retake,
+            name=name,
+            renew_failure_level=renew_failure_level,
+            holds=self._holds,
         )
 
-    async def refresh_handle(self, handle: LeaseHandle, ttl_seconds: int | None) -> None:
+    async def refresh_handle(
+        self, handle: LeaseHandle, ttl_seconds: int | None, *, adopt_own_revision: bool = False
+    ) -> None:
         """implementation of :meth:`LeaseHandle.refresh`.
 
         public because :class:`LeaseHandle` lives in a sibling class and
@@ -868,6 +1088,8 @@ class KVLease:
         :ptype handle: LeaseHandle
         :param ttl_seconds: override TTL; None reuses handle's recorded TTL
         :ptype ttl_seconds: int | None
+        :param adopt_own_revision: see :meth:`LeaseHandle.refresh`
+        :ptype adopt_own_revision: bool
         :return: None
         :rtype: None
         :raises LeaseLost: if ownership changed or CAS update failed
@@ -876,12 +1098,16 @@ class KVLease:
         entry = await bucket.get_entry(key=handle.key)
         if entry is None:
             raise LeaseLost(f"lease {handle.key!r} entry missing during refresh")
-        value, _revision = entry
-        envelope = _decode_envelope(value)
-        if envelope.holder != handle.holder:
+        value, observed = entry
+        envelope = _decoded_envelope(value)
+        if envelope is None or envelope.holder != handle.holder:
             raise LeaseLost(
-                f"lease {handle.key!r} holder changed: expected {handle.holder!r}, found {envelope.holder!r}"
+                f"lease {handle.key!r} holder changed: expected {handle.holder!r}, "
+                f"found {'an entry it cannot read' if envelope is None else repr(envelope.holder)}"
             )
+        if adopt_own_revision and observed != handle.revision:
+            # still this holder's entry: one of its own writes landed while its reply was lost
+            handle.revision = observed
         effective_ttl = ttl_seconds if ttl_seconds is not None else handle.ttl_seconds
         now = datetime.now(UTC)
         date_expires = now + timedelta(seconds=effective_ttl)
@@ -889,11 +1115,32 @@ class KVLease:
         # KvBucketLike.update returns ``None`` on revision mismatch,
         # mapping the previous KeyWrongLastSequenceError raise into a
         # typed conflict signal we surface as LeaseLost.
-        new_revision = await bucket.update(key=handle.key, value=payload, revision=handle.revision)
+        new_revision = await bucket.update(
+            key=handle.key, value=payload, revision=handle.revision, ttl=self._entry_ttl(effective_ttl)
+        )
         if new_revision is None:
             raise LeaseLost(f"lease {handle.key!r} revision advanced during refresh")
         handle.revision = new_revision
         handle.ttl_seconds = effective_ttl
+
+    async def retake_handle(self, handle: LeaseHandle) -> bool:
+        """implementation of :meth:`LeaseHandle.retake`, public for the reason :meth:`refresh_handle` is.
+
+        :param handle: the handle whose entry is gone
+        :ptype handle: LeaseHandle
+        :return: whether the entry is this holder's again
+        :rtype: bool
+        """
+        bucket = await self._ensure_bucket()
+        now = datetime.now(UTC)
+        date_expires = now + timedelta(seconds=handle.ttl_seconds)
+        payload = _encode_envelope(holder=handle.holder, date_expires=date_expires, date_acquired=now)
+        revision = await bucket.create(key=handle.key, value=payload, ttl=self._entry_ttl(handle.ttl_seconds))
+        if revision is None:
+            return False
+        handle.revision = revision
+        handle.date_expires = date_expires
+        return True
 
     async def release_handle(self, handle: LeaseHandle) -> None:
         """implementation of :meth:`LeaseHandle.release`; idempotent.
@@ -915,8 +1162,8 @@ class KVLease:
             handle.released = True
             return
         value, _revision = entry
-        envelope = _decode_envelope(value)
-        if envelope.holder != handle.holder:
+        envelope = _decoded_envelope(value)
+        if envelope is None or envelope.holder != handle.holder:
             # someone else owns it now; not our entry to delete
             handle.released = True
             return

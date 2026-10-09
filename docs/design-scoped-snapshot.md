@@ -33,8 +33,10 @@ S3 or parquet stays a fallback only. L3 is the truth, and NATS is a cache rebuil
 - **One pointer per scope.** It is a small KV entry naming the scope's epoch and its chunk for
   every table, so a scope's change across tables is one swap.
 - **An index.** It names every scope, so a missing pointer is noticed, not skipped.
-- **A rebuild claim.** It is a KV entry with a TTL, renewed while the holder works and released
-  only by compare-and-set.
+- **A rebuild claim.** It is a `KVLease` hold on `{name}.rebuild` in the pointer bucket, with a
+  NATS per-key TTL, renewed while the holder works and released only while still its own. It is
+  contended, so a lost one is never taken back: the rebuild that lost it says so and leaves the
+  store's sweep to a rebuild that held its claim throughout.
 - **Compare-and-set on pointers and the index.** A pointer never moves to a lower epoch. The
   index merges what racing writers added. A replica's L1 never goes back to a lower epoch of a
   scope.
@@ -77,18 +79,27 @@ listed), never a replica's view, which lags another replica's publish:
 | At an epoch a live write claims | Kept: it is being written, or waits for its pointer to move |
 | Anything else | Deleted: it serves nothing and nothing will point at it |
 
-- **A write claim** is a key `{name}.w.{epoch}.{replica}` in the pointer bucket, taken by the writer
-  before its first chunk at that epoch and held until a pointer names what it wrote (a staged
-  write: until `publish_staged`; a publish or rebuild: until its pointer moved). It is renewed while
-  the writer lives; a writer that dies stops renewing and its claim lapses, so it stops protecting
-  what the dead write staged. A claim lost with its bucket is taken again at the next renewal, and a
-  rebuild that follows a lost pointer bucket sweeps nothing, since the claims went with it.
+- **A write claim** is a key `{name}.w.{epoch}.{writer}` in the pointer bucket, one per write
+  (`writer` names the replica and the write), taken before the write's first chunk at that epoch
+  and held until a pointer names what it wrote (a staged write: until `publish_staged`, the claim
+  riding on its `StagedScope`; a publish or rebuild: until its pointer moved). Each is a `KVLease`
+  hold on the pointer bucket it was handed, written with a NATS per-key TTL and renewed at a third of
+  it while the writer lives; a writer that dies stops renewing and its KEY lapses, so it stops
+  protecting what the dead write staged and stops holding off the hub's orphan purge, which reads
+  only whether a claim key exists. A claim found gone while its writer lives (lost with its bucket,
+  or lapsed through an outage) is taken again at the next renewal, and one of its own renewals that
+  landed unseen is adopted, not taken for another holder's; a rebuild that follows a lost pointer
+  bucket sweeps nothing, since the claims went with it. A claim truly lost (another holder on its
+  key) stops its write: no further chunk is written under it and no pointer moved onto what it
+  wrote, the publish fails, and a staged scope is left to the catch-up.
 - **Older chunks go as each pointer moves**, on every path (publish, staged publish, rebuild,
   catch-up), so a run that fails part way leaves nothing superseded behind for the scopes it moved.
 - **A write that will not commit gives its stages back** (`discard_staged`: its claims released,
   its chunks retired by the rule), and a writer taking over a dead one may name its epoch
-  (`discard_epoch`). Without either, the dead write's stages go at the next sweep once its claim
-  has lapsed.
+  (`discard_epoch`). `publish_staged` lets its stages' claims go on every way out, raised or
+  returned. A stage a LIVE writer drops without either keeps its claim renewed until the snapshot
+  stops (`stop` ends every claim the replica handed out and nobody released); a DEAD writer's
+  claims lapse with their per-key TTL, and its stages go at the next sweep after that.
 - **A full store** (`ObjectStoreFullError` on a chunk write) is swept by the rule and the write tried
   once more. It recovers when what fills it is chunks no pointer serves and no live write claims; a
   store full of what is served needs a larger bound.
