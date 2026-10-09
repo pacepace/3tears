@@ -381,7 +381,7 @@ sent at, so a tier measured under one prompt or one temperature never sets anoth
 
 **What temperature a judge samples at.** Every judge call is requested at `DEFAULT_JUDGE_TEMPERATURE` (0)
 unless the dimension's `JudgeConfig` states another, so no dimension is judged at a provider's default beside
-others at 0. A model that refuses a temperature is sent none, and its score records `model_default`. Each score
+others at 0. A model that refuses a temperature is sent none, and its score records `model_default`. A quick `Judge`'s client is handed the temperature when its `generate` takes a `temperature` keyword. Each score
 records what was sent (`RubricScore.judge_temperature`), and that is part of the judge's identity: agreement
 groups, tiers and apparatus comparisons are keyed by it, and a repeat at another temperature is unpaired. A score
 or run stored before this recorded none and reads as not recorded, never as 0; such a run is not re-judged or

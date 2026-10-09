@@ -40,6 +40,11 @@ an infrastructure failure. A conversing kind's loop checks the cap before every 
 run's ceiling as the level `uncapped`, so two uncapped runs agree and an uncapped run differs from a capped
 one. Only a run that recorded no ceiling and no origin is undecided.
 
+**The quick path's cap.** `run_eval` and `compare` run uncapped unless given `max_cost_usd=`, and the summary
+says which. The cap is the per-run cap above, counting each result's reported spend (the candidate's `Answer`
+and the judge's); `compare` splits it equally across arms. It is checked between cases, so a run can overshoot
+by one case's spend. A candidate that returns no `Answer` is invisible to it, and the summary says so.
+
 **The wall-clock budget.** Each run's job also runs under a time budget sized to its matrix (cases × k ×
 the cell timeout, plus a margin, clamped between a floor and an 8-hour cap). When it binds, the run ends
 `budget_stopped` too, not `failed`: like the cost cap, it is a bound someone set doing its job, and the

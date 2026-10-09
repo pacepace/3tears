@@ -29,6 +29,7 @@ serves every call that names it and is closed by whoever opened it.
 
 from __future__ import annotations
 
+import inspect
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -56,7 +57,12 @@ class Judge:
 
     Attributes:
         client: The completion client the judge calls, already bound to ``model``. Lent to the engine
-            for the run and never closed by it.
+            for the run and never closed by it. The judge asks for a sampling temperature on every call
+            (0, unless a judge config states another): when the client's ``generate`` takes a
+            ``temperature`` keyword it is passed on every call, and the client reports what it actually sent
+            on each completion's ``temperature`` (``None`` when its model refuses one), which every score
+            records as part of who judged. A client whose ``generate`` takes none is called without it, and
+            its scores record what its completions report: the model's default when they say none was sent.
         model: The model ``client`` calls, as the run records it: the run's judge pin, and the arm's
             judge in every comparison of two runs.
         rubric: The dimensions, each a name and what it measures, or :class:`RubricDim` values for a
@@ -134,7 +140,7 @@ class Judge:
                     f"a judge config asked for {model!r}, and this judge's client calls {self.model!r}; "
                     "a run_eval judge scores every dimension on its one client"
                 )
-            return BorrowedJudgeClient(self.client, model_name=self.model)
+            return BorrowedJudgeClient(self.client, model_name=self.model, temperature=temperature)
 
         return lend
 
@@ -143,18 +149,25 @@ class BorrowedJudgeClient:
     """A caller's completion client, lent to one run: every call forwarded, the release left to its owner.
 
     Satisfies :class:`~threetears.evals.contracts.BoundCompletionClient`. Its price ceiling is unknown —
-    a run's judge is bounded by its spend as it arrives, never priced before a call is made.
+    a run's judge is bounded by its spend as it arrives, never priced before a call is made. Bound to the
+    temperature the engine asked for, as every client the host factory builds is, and passes it on to the
+    owner's client when that client's ``generate`` takes a ``temperature`` keyword (:attr:`passes_temperature`);
+    what was sent is what the owner's completion reports, which the judge records.
     """
 
-    def __init__(self, client: CompletionClient, *, model_name: str) -> None:
-        """Lend ``client`` under the model it calls.
+    def __init__(self, client: CompletionClient, *, model_name: str, temperature: float | None = None) -> None:
+        """Lend ``client`` under the model it calls, at the temperature the engine asked for.
 
         Args:
             client: The owner's client.
             model_name: The model it calls.
+            temperature: The sampling temperature the engine asked this client for; ``None`` for the
+                provider's default.
         """
         self._client = client
         self.model_name = model_name
+        self.temperature = temperature
+        self.passes_temperature = _takes_temperature(client)
 
     async def generate(
         self, *, system: str, user: str, response_format: dict[str, Any] | None = None
@@ -169,6 +182,12 @@ class BorrowedJudgeClient:
         Returns:
             The owner's client's completion.
         """
+        if self.passes_temperature:
+            generate: Any = self._client.generate
+            completion: CompletionResult = await generate(
+                system=system, user=user, response_format=response_format, temperature=self.temperature
+            )
+            return completion
         return await self._client.generate(system=system, user=user, response_format=response_format)
 
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
@@ -193,6 +212,19 @@ class BorrowedJudgeClient:
 
     async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
         """Leave the client open for its owner."""
+
+
+def _takes_temperature(client: CompletionClient) -> bool:
+    """Whether ``client.generate`` accepts a ``temperature`` keyword, by name or through ``**kwargs``."""
+    try:
+        parameters = inspect.signature(client.generate).parameters.values()
+    except TypeError, ValueError:
+        return False
+    return any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        or (parameter.name == "temperature" and parameter.kind is not inspect.Parameter.POSITIONAL_ONLY)
+        for parameter in parameters
+    )
 
 
 def judge_evidence(judge: Judge, case: Mapping[str, Any], answer: Any) -> JudgeEvidence:
