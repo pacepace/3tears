@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Core: answers computed once per version of their data, shared by every replica, retired when the version moves
+
+- **Added, `threetears.core.collections.versioned_answers.VersionedAnswers`**: a `DerivedCollection`
+  keyed by `(version, sha256 of the request)` whose value is the answer gzip-compressed, in L2 alone
+  (no L3: a miss computes; no L1). `answer(version, request, compute)` returns the gzip bytes,
+  computing at most once across replicas under the build lock (a tool pod passes a
+  `LeaseBuildLock`); whatever `compute` raises reaches the caller and nothing is cached. Entries never
+  expire: `retire_all_but(version)` deletes every other version's answers, and
+  `current_version(version)` schedules that once per change it sees.
+
 ### Core: a derived collection takes its cross-pod build lock, so a tool pod can run one
 
 - **Added, `DerivedCollection(..., build_lock=)`** and `BuildLock` (`holding(key)`, raising
