@@ -1078,7 +1078,9 @@ hub. Its rbac stack's `AclCache` follows the access tables like every other.
 **A failed advance raises last.** Every site that writes and then announces does the announcing
 first -- `acl.*` publishes, audits, the cascade's rows -- and raises the advance's
 `GenerationUnavailableError` after: `GroupCollection.delete` (its own advance and its cascade's),
-`move_subtree_scopes`, `announce_cascaded_grants`, the emitter's reap and rescope, the namespace
+`move_subtree_scopes`, `announce_cascaded_grants`, the emitter's reap and rescope (a rescope whose
+own advance fails raises `NamespaceRescopeNotAdvanced`, carrying the outcome, so the emitter runs its
+whole tail and raises it last), the namespace
 teardown, the `shared_agent` teardown, and the user merge (whose platform transaction committed
 before `CallerTransaction` raised: its rows are recorded and evicted, then the failure raised).
 

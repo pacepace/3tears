@@ -90,6 +90,7 @@ __all__ = [
     "ImpersonationGateStatus",
     "NamespaceCollection",
     "NamespaceRescope",
+    "NamespaceRescopeNotAdvanced",
     "NamespaceRescopeRefused",
     "RoleAssignmentCollection",
     "RoleCollection",
@@ -1664,6 +1665,31 @@ class NamespaceRescope:
     customer_id: UUID | None
 
 
+class NamespaceRescopeNotAdvanced(GenerationUnavailableError):
+    """a rescope that MOVED its row and could not advance the namespaces table's write generation.
+
+    Raised by :meth:`NamespaceCollection.rescope` after the move committed and the row was
+    evicted and announced. It carries what the move decided, so the caller runs everything it
+    owes a moved row -- its own invalidations, its audit -- and then raises it: announce first,
+    raise last.
+
+    :ivar outcome: what the rescope decided; ``outcome.moved`` is ``True``
+    """
+
+    def __init__(self, message: str, *, outcome: NamespaceRescope) -> None:
+        """carry the failure and the move it followed.
+
+        :param message: the advance's failure
+        :ptype message: str
+        :param outcome: what the rescope decided
+        :ptype outcome: NamespaceRescope
+        :return: nothing
+        :rtype: None
+        """
+        super().__init__(message)
+        self.outcome = outcome
+
+
 class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
     """three-tier collection for ``namespaces`` rows.
 
@@ -1919,6 +1945,8 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         :rtype: NamespaceRescope
         :raises NamespaceRescopeRefused: when the row already belongs to a
             different customer
+        :raises NamespaceRescopeNotAdvanced: when the row moved and the table's write generation
+            could not be advanced; it carries the outcome, for the caller to finish with
         """
         target_scope = row_scope_for_customer(customer_id)
         result = NamespaceRescope(
@@ -1997,11 +2025,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                 previous_scope,
             )
             moved = written is not None
-            if moved:
-                # the row's key changed with its partition: both keys go, in the one advance the
-                # UPDATE owes, so a cache derived from the row (its customer decides access) hears it
-                await self.invalidate_cache_many([(previous_scope, namespace_id), (target_scope, namespace_id)])
-        return NamespaceRescope(
+        outcome = NamespaceRescope(
             namespace_id=namespace_id,
             moved=moved,
             previous_row_scope=previous_scope,
@@ -2009,6 +2033,16 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             row_scope=target_scope,
             customer_id=customer_id,
         )
+        if moved:
+            try:
+                # the row's key changed with its partition: both keys go, in the one advance the
+                # UPDATE owes, so a cache derived from the row (its customer decides access) hears it
+                await self.invalidate_cache_many([(previous_scope, namespace_id), (target_scope, namespace_id)])
+            except GenerationUnavailableError as exc:
+                # the move committed and both keys were evicted and announced; only the advance
+                # failed. The caller still owes the moved row its own tail, so it gets the outcome
+                raise NamespaceRescopeNotAdvanced(str(exc), outcome=outcome) from exc
+        return outcome
 
     async def find_by_id(
         self,
