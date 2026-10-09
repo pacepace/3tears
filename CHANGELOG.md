@@ -37,6 +37,38 @@ see "What Must Already Be Deployed Everywhere" in the note.
 - **Unchanged, on purpose:** `CollectionRegistry.set_l1_max_age` and `ScanCache`'s TTL. Their
   callers are not access-table caches; they go with stage 4.
 
+### Core coordination: a fence on a producer's ready signal
+
+- **Added, `threetears.core.coordination.source_token`**: `SourceToken` (the producer's run and the
+  newest data it saw), `SourceTokenFence` (one row per signal in the owner's L3, advanced by one
+  `INSERT ... ON CONFLICT DO UPDATE ... WHERE` only to a newer token: a later run whose data is not
+  older; the work it starts runs in the same transaction, so a failed start does not spend the
+  token), `Advance`, and `source_tokens_schema(name)` for the owner to declare the table. Moved from
+  the reports product's ENR pod, where it was written while 3tears was closed; any pod woken by
+  another system's pipeline needs it.
+
+### Datasources: a geo layer's name is refused when written unless it fits a NATS subject token
+
+A geo layer's name becomes a token of its tile epoch's NATS subject and a tile URL path segment.
+The hub refused anything but letters, digits, `-` and `_` (`GEO_LAYER_NAME_INVALID`), but
+`GeoLayerConfig` accepted any name, so a datasource declaring `census.tracts` was written and only
+refused later, by the hub.
+
+- **Changed, `GeoLayerConfig.name`, strict on write and lenient on read**: a writer validating a
+  declaration (`GeoConfig.for_write(data)`, or the `WRITE_CONTEXT` validation context) is refused a
+  name that is not 1 to 128 ASCII letters, digits, `-` and `_`, naming the name and the rule. The
+  subject builder maps `.` to `-`, so `census.tracts` would collide with `census-tracts`'s tile
+  version; `*`, `>` and whitespace make no usable subject; a non-ASCII letter or digit is refused
+  too (the class is explicit ASCII, not `\w`). A stored declaration read back with a plain
+  `model_validate` is not refused: one bad name would otherwise make the whole config, and the
+  datasource around it, unreadable. `GeoConfig.unfit_layer_names()` names the layers a reader
+  leaves out (the hub serves the rest).
+- **Added, `threetears.datasources.layer_name_fits(name: str) -> bool`** (also in
+  `threetears.datasources.geo_config`), `MAX_LAYER_NAME_LENGTH` (128) and `WRITE_CONTEXT`: the same
+  rule for a caller holding only the name, so the hub can call it rather than keep its own copy.
+- **Changed, `GeoLayersReloadedRequest.generations`**: a key `layer_name_fits` refuses fails the
+  model, so a pod reporting `census.tracts` is refused `INVALID_REQUEST` locally and sends nothing.
+
 ### Agent acl and agent tools: a tool pod's per-caller answer, followed through the access tables
 
 - **Added, `threetears.agent.acl.CallerAccessCache`**: one answer per caller (`CallerKey`: the
