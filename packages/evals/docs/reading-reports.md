@@ -146,6 +146,12 @@ knob, with the resolved lever listed in its variant-index entry's `folded`. Wher
 held at one level, it is reported as a lever of its own and named as a confound on the knob's row. Where a run did
 not record it, it is named as an `undecided` confound.
 
+Only two arms at one level of the knob can show the resolved lever moving on its own; repeats of one arm cannot,
+because every run of an arm resolves the same value. A fold nothing could have refuted is still applied, but it
+carries an `unverified_fold` confound (`unverified_fold:<lever>`, explained in `confound_catalog`), and a code-only
+report states it among its disclosures. Read it as an assumption these runs did not test: the knob's effect is not
+separated from anything else written into that lever. A fold without the mark was tested and held.
+
 A comparison across candidate models can also differ in what the models did while no setting differed. A
 reasoning effort is a word each vendor maps to its own budget, so two models at one effort setting can reason very
 differently. The bundle reads each arm's mean reasoning share (`reasoning_ratio`) into `arm_mechanisms`. Where two

@@ -11,6 +11,11 @@ differs between runs that held the knob at one level, something else wrote into 
 confound of its own; a run that did not record the surface folds nothing. A map field's marker rides on the map's
 own lever, whose level is exactly the members a launch set.
 
+The surface is in the variant key, so every run of one arm resolves one surface: only a level of the knob held by
+two or more ARMS can refute the fold. Where no level is, the fold still applies (the knob names the arm) but is
+marked on every comparison that folds it as an ``unverified_fold`` confound, which reaches the generator's context
+and the code-only report — an untested fold is never presented as a checked non-confound.
+
 Every campaign here is the toy host's, with its extractor kind re-contracted to carry the knob, and is read through
 :func:`~threetears.evals.analysis.assemble_context_bundle` — the entry point every lens is reached through.
 """
@@ -25,7 +30,16 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 import pytest
 from pydantic import BaseModel, Field
 
-from threetears.evals.analysis import AnalysisContextBundle, Confound, LeverCoverageInput, assemble_context_bundle
+from threetears.evals.analysis import (
+    AnalysisContextBundle,
+    Confound,
+    DisclosureBlock,
+    LeverCoverageInput,
+    assemble_context_bundle,
+    build_code_only_report,
+)
+from threetears.evals.analysis.bundle import UNVERIFIED_FOLD_PREFIX
+from threetears.evals.analysis.generator import build_user_message
 from threetears.evals.contracts import (
     CampaignDesign,
     ControlDeclaration,
@@ -71,6 +85,12 @@ _EFFORT = "extractor.reasoning_effort"
 _TOOLS = "resolved_tool_configs"
 _TOOL_MAP = "extractor.tool_configs"
 _TOOL_MEMBER = "extractor.tool_configs.search"
+
+#: The mark a fold no level of its knob could test carries, on every comparison that folds it.
+_UNVERIFIED_PARAMS = f"{UNVERIFIED_FOLD_PREFIX}{_PARAMS}"
+
+#: A second kind on the profile, whose runs the extractor's knob does not apply to.
+_OTHER_KIND = "toy-summarizer"
 
 #: Where the toy host keeps its own keys on a run.
 _NAMESPACE = "toyhost"
@@ -131,43 +151,70 @@ def _contract(overlays: type[BaseModel] = _Overlays) -> KindContract:
     return KindContract(TOY_EXTRACTOR_KIND, overlays=overlays, prefix="extractor", seats=TOY_EXTRACTOR_CONTRACT.seats)
 
 
-def _profile(overlays: type[BaseModel] = _Overlays, *, surfaces: Sequence[Sweepable] = _SURFACES) -> HostProfile:
-    """The toy host, registering the resolved surfaces and its extractor kind carrying ``overlays``."""
+def _profile(
+    overlays: type[BaseModel] = _Overlays, *, surfaces: Sequence[Sweepable] = _SURFACES, other_kind: bool = False
+) -> HostProfile:
+    """The toy host, registering the resolved surfaces and its extractor kind carrying ``overlays``.
+
+    ``other_kind`` contracts a second kind beside it, which declares no overlays of its own.
+    """
+    kinds = (
+        (_contract(overlays), KindContract(_OTHER_KIND, prefix="summarizer")) if other_kind else (_contract(overlays),)
+    )
     return replace(
         toyhost_profile(),
         host_sweepables=TOYHOST_SWEEPABLE_REGISTRY.extend(surfaces),
         variant_levers=_variant_levers,
-        kinds=(_contract(overlays),),
+        kinds=kinds,
     )
 
 
 def _batch(
-    effort: str, params: dict[str, Any] | None, *, tools: dict[str, str] | None = None, resolved_tools: Any = "default"
+    effort: str | None,
+    params: dict[str, Any] | None,
+    *,
+    tools: dict[str, str] | None = None,
+    resolved_tools: Any = "default",
+    chunk_tokens: int = 512,
 ) -> EvalRun:
-    """One toy batch at a reasoning effort, recording the parameters it resolved (``None`` records none)."""
+    """One toy batch at a reasoning effort, recording the parameters it resolved (``None`` records none).
+
+    ``effort=None`` makes the batch a run of :data:`_OTHER_KIND`, which the effort knob does not apply to.
+    """
     recorded: dict[str, Any] = {_TOOLS: resolved_tools}
     if params is not None:
         recorded[_PARAMS] = params
     batch = toyhost_batch(
-        chunk_tokens=512,
+        chunk_tokens=chunk_tokens,
         retriever_top_k=3,
         extraction_schema="v1",
         ocr_engine_version="tess-5.3.1",
         reviewer_pool="pool-a",
         **recorded,
     )
-    overlays = freeze(_contract().validate_overlays({"reasoning_effort": effort, "tool_configs": tools or {}}))
-    salt = f"{effort}|{params}|{tools}|{resolved_tools}"
-    return batch.model_copy(update={"id": str(uuid.uuid5(_IDS, salt)), "overlays": overlays})
-
-
-def _bundle(batches: Sequence[EvalRun], *, control: EvalRun | None = None) -> AnalysisContextBundle:
-    """Assemble a campaign over ``batches``, with ``control`` declared as its control arm when given."""
-    profile = _profile()
-    results = {
-        batch.id: toyhost_measurements(
-            batch, profile=profile, cost_usd=0.02, total_ms=900.0, field_accuracy=0.7 + 0.05 * index
+    salt = f"{effort}|{params}|{tools}|{resolved_tools}|{chunk_tokens}"
+    update: dict[str, Any] = {"id": str(uuid.uuid5(_IDS, salt))}
+    if effort is None:
+        update.update(candidate_kind=_OTHER_KIND, overlays={})
+    else:
+        update["overlays"] = freeze(
+            _contract().validate_overlays({"reasoning_effort": effort, "tool_configs": tools or {}})
         )
+    return batch.model_copy(update=update)
+
+
+def _bundle(
+    batches: Sequence[EvalRun], *, control: EvalRun | None = None, profile: HostProfile | None = None
+) -> AnalysisContextBundle:
+    """Assemble a campaign over ``batches``, with ``control`` declared as its control arm when given."""
+    profile = profile if profile is not None else _profile()
+    results = {
+        batch.id: [
+            result.model_copy(update={"candidate_kind": batch.candidate_kind})
+            for result in toyhost_measurements(
+                batch, profile=profile, cost_usd=0.02, total_ms=900.0, field_accuracy=0.7 + 0.05 * index
+            )
+        ]
         for index, batch in enumerate(batches)
     }
     design = None
@@ -214,8 +261,13 @@ _HIGH = {"max_output_tokens": 4096, "reasoning_effort": "high"}
 _HIGH_RECAPPED = {"max_output_tokens": 8192, "reasoning_effort": "high"}
 
 
-class TestASurfaceThatMovedOnlyWithItsKnobIsOneLever:
-    """The effort sweep the defect was found on: the parameters move 1:1 with the knob."""
+class TestATwoArmSweepFoldsButIsMarkedUnverified:
+    """The effort sweep the defect was found on: one arm per level, so nothing could refute the fold.
+
+    The parameters move 1:1 with the knob and are reported as one lever — and because every run of an arm
+    resolves the arm's one surface, three repeats per arm add nothing a check could use, so every comparison
+    that folds the surface says the fold was not tested.
+    """
 
     def _sweep(self) -> AnalysisContextBundle:
         control = _batch("low", _LOW)
@@ -226,15 +278,20 @@ class TestASurfaceThatMovedOnlyWithItsKnobIsOneLever:
         assert _EFFORT in {row.name for row in bundle.coverage}
         assert _PARAMS not in {row.name for row in bundle.coverage}
 
-    def test_the_knob_is_not_confounded_by_its_own_surface(self) -> None:
-        bundle = self._sweep()
-        assert _confound(_row(bundle, _EFFORT), _PARAMS) is None
-        assert _PARAMS not in bundle.confound_catalog
-
     def test_the_contrast_moved_one_lever(self) -> None:
         design = self._sweep().design
         assert [set(arm.moved) for arm in design.contrasts] == [{_EFFORT}]
         assert design.shape == "one_factor_at_a_time"
+
+    def test_the_knob_s_row_is_marked_unverified_rather_than_confounded(self) -> None:
+        bundle = self._sweep()
+        row = _row(bundle, _EFFORT)
+        assert _confound(row, _PARAMS) is None
+        assert _confound(row, _UNVERIFIED_PARAMS) == Confound(dimension=_UNVERIFIED_PARAMS, kind="unverified_fold")
+        reason = bundle.confound_catalog[_UNVERIFIED_PARAMS]
+        assert reason.startswith("folded, unverified:")
+        assert f"every level of {_EFFORT} in these runs was run by one arm only" in reason
+        assert _PARAMS not in bundle.confound_catalog
 
     def test_each_arm_is_named_by_the_knob_and_keeps_the_surface_in_its_key(self) -> None:
         entries = self._sweep().variant_index
@@ -246,13 +303,56 @@ class TestASurfaceThatMovedOnlyWithItsKnobIsOneLever:
             assert _EFFORT in entry.named_levers
             assert entry.swept == {}, "the knob names the arm from `levers`; nothing is added beside it"
 
-    def test_a_repeat_of_one_level_with_the_same_surface_still_folds(self) -> None:
-        """Two runs at one level that resolved alike are the functional dependency holding, not breaking."""
+    def test_a_repeat_of_an_arm_cannot_verify_it(self) -> None:
+        """A second run of one arm resolves the arm's surface, so it is no second arm at that level."""
         control = _batch("low", _LOW)
         repeat = control.model_copy(update={"id": str(uuid.uuid5(_IDS, "repeat"))})
         bundle = _bundle([control, repeat, _batch("high", _HIGH)])
         assert _PARAMS not in {row.name for row in bundle.coverage}
-        assert _confound(_row(bundle, _EFFORT), _PARAMS) is None
+        assert _confound(_row(bundle, _EFFORT), _UNVERIFIED_PARAMS) is not None
+
+    def test_the_mark_reaches_the_generator_s_context(self) -> None:
+        message = build_user_message(self._sweep())
+        assert '"kind": "unverified_fold"' in message
+        assert f'"dimension": "{_UNVERIFIED_PARAMS}"' in message
+        assert "folded, unverified:" in message
+
+    def test_the_mark_reaches_the_code_only_report(self) -> None:
+        bundle = self._sweep()
+        report = build_code_only_report(bundle, measures=_profile().measures, assembled_at="2026-03-15T00:00:00+00:00")
+        disclosures = [
+            block.text
+            for block in report.blocks
+            if isinstance(block, DisclosureBlock) and block.source == "comparisons"
+        ]
+        assert [text for text in disclosures if text.startswith("Folded, unverified:")] == [
+            bundle.confound_catalog[_UNVERIFIED_PARAMS][:1].upper()
+            + bundle.confound_catalog[_UNVERIFIED_PARAMS][1:]
+            + "."
+        ]
+
+
+class TestTwoArmsAtOneLevelVerifyTheFold:
+    """Two arms at one effort level, resolving one parameter set, are a check the fold could have failed."""
+
+    def _sweep(self) -> AnalysisContextBundle:
+        return _bundle([_batch("low", _LOW), _batch("low", _LOW, chunk_tokens=1024), _batch("high", _HIGH)])
+
+    def test_the_surface_folds_with_no_mark(self) -> None:
+        bundle = self._sweep()
+        row = _row(bundle, _EFFORT)
+        assert _PARAMS not in {entry.name for entry in bundle.coverage}
+        assert _confound(row, _PARAMS) is None
+        assert _confound(row, _UNVERIFIED_PARAMS) is None
+        assert _UNVERIFIED_PARAMS not in bundle.confound_catalog
+
+    def test_the_code_only_report_carries_no_caveat(self) -> None:
+        report = build_code_only_report(
+            self._sweep(), measures=_profile().measures, assembled_at="2026-03-15T00:00:00+00:00"
+        )
+        assert not [
+            block for block in report.blocks if isinstance(block, DisclosureBlock) and "unverified" in block.text
+        ]
 
 
 class TestASurfaceThatMovedWithoutItsKnobStaysAConfound:
@@ -267,6 +367,7 @@ class TestASurfaceThatMovedWithoutItsKnobStaysAConfound:
         confound = _confound(_row(bundle, _EFFORT), _PARAMS)
         assert confound is not None
         assert (confound.kind, confound.status) == ("swept_lever", "varied")
+        assert _confound(_row(bundle, _EFFORT), _UNVERIFIED_PARAMS) is None
 
     def test_the_catalog_says_the_surface_moved_where_the_knob_held(self) -> None:
         reason = self._sweep().confound_catalog[_PARAMS]
@@ -276,6 +377,14 @@ class TestASurfaceThatMovedWithoutItsKnobStaysAConfound:
 
     def test_the_surface_keeps_its_own_row(self) -> None:
         assert _PARAMS in {row.name for row in self._sweep().coverage}
+
+    def test_the_design_agrees_with_the_coverage_map(self) -> None:
+        """A pair of runs cannot show a fixed knob's surface moving on its own; the design's whole cohort can."""
+        bundle = self._sweep()
+        recapped = resolve_variant_identity(run=_batch("high", _HIGH_RECAPPED), profile=_profile()).variant_key
+        (arm,) = [contrast for contrast in bundle.design.contrasts if contrast.variant_key == recapped]
+        assert _PARAMS in arm.moved
+        assert bundle.design.shape == "multi_factor"
 
     def test_no_arm_is_named_as_if_the_surface_had_folded(self) -> None:
         assert all(_PARAMS not in entry.folded for entry in self._sweep().variant_index)
@@ -302,6 +411,29 @@ class TestASurfaceARunDidNotRecordFoldsNothing:
         assert all(_PARAMS not in entry.folded for entry in self._sweep().variant_index)
 
 
+class TestARunOfAnotherKindFoldsNothingIntoTheKnob:
+    """The knob does not apply to a run of another kind, so it cannot have written that run's surface.
+
+    The fold reads the knob at the level its variant coordinate carries: the other kind's run sits at the
+    extractor's "not this kind" level, and the surface moving across the kinds is the kind's change.
+    """
+
+    def _sweep(self) -> AnalysisContextBundle:
+        control = _batch("low", _LOW)
+        return _bundle([control, _batch(None, _HIGH)], control=control, profile=_profile(other_kind=True))
+
+    def test_the_other_kind_s_surface_stays_a_confound_on_the_knob(self) -> None:
+        row = _row(self._sweep(), _EFFORT)
+        confound = _confound(row, _PARAMS)
+        assert confound is not None
+        assert confound.kind == "swept_lever"
+        assert _confound(row, _UNVERIFIED_PARAMS) is None
+
+    def test_the_contrast_moved_the_surface(self) -> None:
+        (arm,) = self._sweep().design.contrasts
+        assert _PARAMS in arm.moved
+
+
 class TestAMapKnobFoldsItsSurfaceThroughItsMembers:
     """A map overlay: the member a launch set, the map's own lever, and the host surface it is written into."""
 
@@ -319,9 +451,10 @@ class TestAMapKnobFoldsItsSurfaceThroughItsMembers:
         rows = {row.name for row in bundle.coverage}
         assert _TOOL_MEMBER in rows
         assert {_TOOL_MAP, _TOOLS}.isdisjoint(rows)
-        assert {confound.dimension for confound in _row(bundle, _TOOL_MEMBER).confounded_by}.isdisjoint(
-            {_TOOL_MAP, _TOOLS}
-        )
+        dimensions = {confound.dimension for confound in _row(bundle, _TOOL_MEMBER).confounded_by}
+        assert {_TOOL_MAP, _TOOLS}.isdisjoint(dimensions)
+        # One arm per map, so the map's fold into the host surface is folded but marked untested.
+        assert f"{UNVERIFIED_FOLD_PREFIX}{_TOOLS}" in dimensions
 
     def test_each_arm_is_named_by_the_member(self) -> None:
         for entry in self._sweep().variant_index:

@@ -142,7 +142,10 @@ class ResolvesInto:
     surface moved ONLY where the knob did: across the runs being compared, every level of the knob
     carries one level of the surface. Where the surface differs between runs that held the knob at one
     level, something else wrote into it, and it stays a lever and a confound of its own. A surface a run
-    did not record (its reader returned ``None``) folds nothing — that run cannot show agreement.
+    did not record (its reader returned ``None``) folds nothing — that run cannot show agreement. The
+    surface is in the variant key, so only two ARMS at one level of the knob can show it moving on its
+    own; where no level has two, the fold still applies and every comparison it applies to is marked
+    ``unverified_fold``, because a check that could not run is not a pass.
 
     Written beside the other markers, and combinable with them:
     ``Annotated[Literal["low", "high"], Ordinal(), ResolvesInto("llm_parameters")]``. The name

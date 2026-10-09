@@ -127,14 +127,24 @@ at one level carried different surfaces, something else wrote into it, and it st
 whose surface reader returned `None` folds nothing. On a map field the marker rides on the map's own lever, whose
 level is the members a launch set.
 
-The fold has one blind spot. A comparison with one run per level satisfies it trivially, so a second change made
-in exactly the runs where the knob changed folds along with the knob. Run a level of the knob more than once,
-under the other conditions you suspect, to see whether something else moved the surface.
+The fold can only be tested across arms. The surface is in the variant key, so every run of one arm resolves the
+same surface, and repeating an arm (more runs, or a higher `k`) can never show it moving on its own. Only a level
+of the knob held by two or more arms can: two `low` arms that differ in something else, such as the model or
+another setting you suspect writes into the surface. Where no level of the knob is held by two arms, as in a plain
+two-arm `low` / `high` sweep, the surface is still folded and the knob still names the arm, but every comparison
+that folds it carries an `unverified_fold` confound (`unverified_fold:llm_parameters`). The confound reaches the
+analysis generator and the code-only report, so a memo cannot present the fold as a checked non-confound. A fold
+that a second arm at some level could have broken, and did not, carries no mark.
 
 The lever named must be a fixed `lever` your host declares, not an open family, and not one another knob or
 family already names. The profile refuses anything else (`RegistrationError`), and a field marked twice is
 refused where the kind is declared (`KindContractError`). The marker moves no variant key. A host's own fixed
 lever declares the same thing as `Sweepable(resolves_into=...)`.
+
+One surface takes one knob. If your host hashes several knobs into one surface (`reasoning_effort` and
+`max_output_tokens` both into `llm_parameters`), mark only one of them; the surface stays unfolded against every
+other knob, and a sweep of a second knob reads as moving two levers. The remedy is one resolved lever per knob:
+record each resolved parameter as its own lever, and mark each knob with its own.
 
 You register neither anywhere else: the profile adds the contract's levers to its `sweepables`, and the
 engine resolves every run's level of them — with its `candidate_model` and its `candidate_kind` — into the

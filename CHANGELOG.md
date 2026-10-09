@@ -16,9 +16,24 @@ packages (bumped in lock-step).
   confound, no scope divergence and no `moved` entry of its own, and is listed in the arm's `folded` (the knob names
   the arm, `swept` stays empty). Where runs holding the knob at one level carried different surfaces, it stays a
   lever and a confound, with a catalog reason saying so; a run whose surface reads `None` makes it an `undecided`
-  confound. A cohort with one run per level satisfies the rule trivially, so a second change made exactly where the
-  knob changed folds with it. On a map field the marker rides on the map's own lever, whose level is the members a
-  launch set; the map still folds into its members by the family's residual, as before.
+  confound. The knob's level is the one its variant coordinate carries, so a run of another kind sits at that
+  kind's "not this kind" level, and a cohort crossing kinds folds nothing while the surface moved. The design's
+  contrasts decide a fixed knob's fold over the design's whole cohort (control plus every contrast arm), not over
+  each two-run pair, which can never refute it. On a map field the marker rides on the map's own lever, whose level
+  is the members a launch set; the map still folds into its members by the family's residual, as before.
+- **An untested fold is marked, never passed.** The surface is in the variant key, so every run of an arm resolves
+  one surface and only two or more ARMS at one knob level can refute the fold; repeats cannot. Where no level in the
+  deciding cohort is held by two arms, the fold still applies (the knob names the arm) and every comparison that
+  folds it names a `Confound(kind="unverified_fold", dimension="unverified_fold:<surface>")`, always `varied`, with
+  its reason in `confound_catalog` (`UNVERIFIED_FOLD_PREFIX` in `threetears.evals.analysis.bundle`). The generator
+  prompt (rule 7) says to present it as untested, and the code-only report states it as a `comparisons`
+  disclosure. A fold some second arm could have broken and did not carries no mark. A future residual reader for a
+  fixed knob (the surface with the knob's own contribution taken out) would make a two-arm fold testable; it is not
+  part of this change.
+- **One surface takes one knob**: a second knob naming the same surface is refused, so a second knob the host hashes
+  into it stays unfolded; give each knob its own resolved lever.
+- Bundle `schema_version` 42 -> 43 (a new `Confound.kind`; pins in `test_calibration_ratings`, `test_viz_timeseries`
+  and the `CORE_PINNED` row moved with it).
 - **`Sweepable.resolves_into` is now valid on a fixed `lever`** (folded by the rule above) as well as on an open
   family (folded by its `read_residual`, still required there). Refused (`RegistrationError`): a surface that is not
   declared, not a fixed lever, or already named by another knob or family; `resolves_into` on an apparatus or label,

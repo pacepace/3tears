@@ -241,7 +241,8 @@ class Sweepable:
       engine could ask for, so the runs answer instead: the surface folds into the knob where it is
       constant within each of the knob's levels across the cohort — it moved only where the knob
       did. Where it differs between runs that held the knob at one level, something else wrote into
-      it. A kind contract's overlay field declares this with the
+      it. Only two or more arms at one of the knob's levels can show that (every run of an arm resolves
+      the arm's surface), so a fold no such level tested is applied and marked ``unverified_fold``. A kind contract's overlay field declares this with the
       :class:`~threetears.evals.contracts.host.kinds.ResolvesInto` marker, and a map field's marker
       rides on the map's own lever, whose level is the members a launch set.
 
