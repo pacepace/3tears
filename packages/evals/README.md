@@ -1,28 +1,79 @@
 # 3tears-evals
 
-Evaluate an LLM-backed product the way you would run an experiment: declare the levers you can
-change, run trials of each variant against a corpus of cases, grade each trial with code checks and
-model judges, and read an analysis report that says which variant is better, by how much, at what
-cost — and when the evidence cannot tell.
+3tears-evals tells you whether a change to an LLM-backed feature made it better. You declare what you can
+change (a prompt, a model, a setting), run each version over the same cases, grade every answer with code
+or an LLM judge, and read a report that says which version is better, by how much, at what cost, and when
+the cases can't tell the versions apart.
 
-**Use it when** you have a feature built on a model (a classifier, an extractor, an assistant) and a
-change you want to make to it — a new prompt, a different model, a new setting — and you want evidence,
-not a hunch, that the change is better. Start with one function call; grow into a full integration with
-your own store, launch path and reports when you need to compare runs over time.
+Use it when you have a feature built on a model (a classifier, an extractor, an assistant) and want
+evidence for a change rather than a hunch. It starts as one function call and grows into a full
+integration with your own store, launch path and reports.
 
-**Status: being extracted.** This package was cut from a production app's in-tree eval engine and is
-being reshaped into a library any app can adopt. Its public API will change without notice until the
-first release that says otherwise.
+> **The public API is still changing.** This package was extracted from a production app's eval engine,
+> and its API will change without notice until a release says otherwise.
 
-## Install
+## Contents
 
-```bash
-pip install 3tears-evals                 # the engine, the in-memory store, run_eval and the CLI
-pip install "3tears-evals[vega]"         # + the Vega-Lite chart renderer's PNG/SVG rasteriser
-pip install "3tears-evals[fastmcp]"      # + the FastMCP transport for the agent tool catalogue
-```
+- [Getting started](#getting-started)
+- [The examples](#the-examples)
+- [The mental model](#the-mental-model)
+- [Using it in your code](#using-it-in-your-code)
+- [What's in the package](#whats-in-the-package)
+- [Where to go next](#where-to-go-next)
 
-Python 3.14+.
+## Getting started
+
+1. **Install.** In a checkout of this repo, `uv sync` at the repo root installs the package and everything
+   the examples use, including the `anthropic` SDK. Outside the repo (Python 3.14+):
+
+   ```bash
+   pip install 3tears-evals anthropic       # the engine, plus the SDK the examples call Claude through
+   pip install "3tears-evals[vega]"         # adds SVG and PNG chart rendering
+   pip install "3tears-evals[fastmcp]"      # adds the FastMCP transport, for driving evals from an agent
+   ```
+
+2. **Run the first example offline.** Every example runs with no API key: small scripted stand-ins play the
+   model, so you see the real shape of the output. Their numbers say nothing about any model.
+
+   ```bash
+   uv run python packages/evals/examples/rung_zero.py
+   ```
+
+3. **Add your API key to run them live.** Put an Anthropic API key in `packages/evals/examples/.env`:
+
+   ```
+   ANTHROPIC_API_KEY=sk-ant-...
+   ```
+
+   Git ignores `.env` files, so the key stays out of commits. Pass the file to `uv run`:
+
+   ```bash
+   uv run --env-file packages/evals/examples/.env python packages/evals/examples/compare_two_prompts.py
+   ```
+
+   Outside the repo, `export ANTHROPIC_API_KEY=...` works the same way. Each example prints
+   `Running against Claude (<model>).` when it calls the API and `running OFFLINE` when it doesn't. They use
+   the cheapest Haiku models over a dozen or so cases, so a live run costs cents.
+
+4. **Work through [the examples](#the-examples) in order,** then use [Using it in your code](#using-it-in-your-code)
+   as the reference.
+
+## The examples
+
+Each example is one short file that shows one capability, and each builds on the one before.
+[`examples/README.md`](examples/README.md) gives the question each one answers and what it adds.
+
+| Example | What it shows |
+|---|---|
+| [`rung_zero.py`](examples/rung_zero.py) | One function evaluated against cases, graded by expected labels and a scorer. |
+| [`compare_two_prompts.py`](examples/compare_two_prompts.py) | Two prompts tested against a control, with a verdict on whether the difference is real. |
+| [`compare_two_models.py`](examples/compare_two_models.py) | A cheaper model weighed on accuracy against cost. |
+| [`prompt_x_model.py`](examples/prompt_x_model.py) | Two prompts on two models, read as two factors. |
+| [`llm_judge.py`](examples/llm_judge.py) | Open-ended answers graded by an LLM judge against a rubric. |
+| [`cassettes.py`](examples/cassettes.py) | Tool answers recorded once and replayed, so every arm sees the same ones. |
+| [`world.py`](examples/world.py) | A model acting on a small world, graded by the state it leaves. |
+| [`reports.py`](examples/reports.py) | A finished campaign written out as verdicts, Markdown, HTML and charts. |
+| [`llm_analysis.py`](examples/llm_analysis.py) | A model writing the analysis from frozen, fingerprinted evidence. |
 
 ## The mental model
 
@@ -51,7 +102,11 @@ Python 3.14+.
 Every other term (kind, lever, apparatus, cell, scope, stratum, ...) is defined in
 **[Concepts](docs/concepts.md)**, with the full diagram.
 
-## Rung zero: one call
+## Using it in your code
+
+Each subsection below is one capability, in the same order as the examples.
+
+### One function, one call
 
 A function to test, cases to test it on, and code that grades an answer are enough:
 
@@ -108,11 +163,9 @@ judge, the simulator or the spend ceiling (`CALLABLE_UNSEATED`) — or `run_eval
 one every such run's blank judge and simulator read as unrecoverable and no two of them compare. A
 classifier's `match` and `confusion_cell` are core measures, so a host declares neither.
 
-[`examples/rung_zero.py`](examples/rung_zero.py) is the whole thing in one file: a sentiment classifier
-graded by its expected labels, beside one scorer. It is the first of a ladder of short examples, one
-capability each: [`examples/README.md`](examples/README.md) lists them in order.
+Example: [`examples/rung_zero.py`](examples/rung_zero.py).
 
-## Comparing two variants
+### Comparing two variants
 
 `compare` runs each candidate over the same cases as one arm, files the runs as one campaign, and tests
 every arm against the one you name as the control. It returns each arm's summary and the campaign's report.
@@ -135,9 +188,10 @@ Each contrast's verdict reads "improved on the control", "regressed from the con
 from the control". The last one means the cases could not tell the arms apart, not that they are equal:
 add cases (above all hard ones) before you read it as a tie. `result.arms["candidate"]` is that arm's
 `EvalSummary`, and `result.campaign_id` names the campaign holding every run.
-`examples/compare_two_prompts.py` compares two prompts through Claude, or runs offline with no API key.
 
-## Comparing two models: accuracy against cost
+Example: [`examples/compare_two_prompts.py`](examples/compare_two_prompts.py).
+
+### Comparing two models: accuracy against cost
 
 Asking whether a cheaper model is good enough means weighing what each gets right against what it
 costs. The engine cannot see what a plain candidate spends, so have the candidate return an `Answer`:
@@ -157,11 +211,12 @@ result = await compare(CASES, {"current": classify_current, "cheaper": classify_
 print(result.render())  # verdicts on accuracy and on cost_usd
 ```
 
-A field left `None` is unreported, not zero. A candidate that returns a plain value still works and
-reports no spend. `examples/compare_two_models.py` runs one prompt on Claude Haiku 4.5 and Haiku 5.5, or
-runs offline with no API key.
+A field left `None` is unreported, not zero. A candidate that returns a plain value still works, and
+reports no spend: the report then says cost was not measured rather than charting zeros.
 
-## Two factors at once
+Example: [`examples/compare_two_models.py`](examples/compare_two_models.py).
+
+### Two factors at once
 
 When two things vary, say two prompts on two models, key each arm by its level of each factor
 (`factors=`). Each factor becomes a lever of its own, so the report names every arm by both
@@ -183,10 +238,11 @@ on_new = result.against((NEW, "v1")).contrasts("accuracy")  # v2 against v1 on N
 ```
 
 Each campaign corrects its own contrasts, so the two readings are two families. The report does not test
-main effects or an interaction. `examples/prompt_x_model.py` runs the 2×2 through Claude, or offline with
-no API key.
+main effects or an interaction.
 
-## Grading with an LLM judge
+Example: [`examples/prompt_x_model.py`](examples/prompt_x_model.py).
+
+### Grading with an LLM judge
 
 When no code can grade an answer (is it helpful? does it stick to its source?), give `run_eval` a
 `Judge`: a completion client, the model it calls, and a rubric. The engine's own judge scores each answer
@@ -214,11 +270,12 @@ Left out, it is the first line of the candidate's docstring, and `render()` says
 
 A bare rubric name is placed under the judge's `context` (`answer` by default), so `helpful` is reported
 as `answer.helpful`. The judge's spend reaches the summary as its client prices it; a candidate that calls
-a model reports its own by returning an `Answer`, as above. `examples/llm_judge.py` is the whole thing in
-one file, including a small adapter from the `anthropic` SDK; it calls Claude when `ANTHROPIC_API_KEY` is
-set and runs labelled offline stand-ins otherwise.
+a model reports its own by returning an `Answer`, as above.
 
-## Tools, recorded once and replayed
+Example: [`examples/llm_judge.py`](examples/llm_judge.py), which includes a small adapter from the
+`anthropic` SDK to the engine's completion client.
+
+### Tools, recorded once and replayed
 
 A candidate that calls tools (a search, a price lookup) is compared fairly only when every arm got the
 same tool answers. Declare the tools as plain functions (`tools=`) and the candidate is called as
@@ -236,10 +293,13 @@ comparison = await compare(cases, {"a": reader_a, "b": reader_b}, [correct], con
                            cassette_mode="replay", cassette_corpus_id=capture.run_id)
 ```
 
-The replay reads the capture from the same host and scope. `examples/cassettes.py` does it end to end,
-offline; [Adopting the engine](docs/adopting-a-host.md) (Cassettes) says how a replay matches each ask.
+The replay reads the capture from the same host and scope.
+[Adopting the engine](docs/adopting-a-host.md#cassettes-recording-and-replaying-tools) says how a replay
+matches each ask.
 
-## Grading what a model does to a world
+Example: [`examples/cassettes.py`](examples/cassettes.py).
+
+### Grading what a model does to a world
 
 When the candidate acts rather than answers, declare the state it acts on (a `World` of `Dimension`s and
 the `WorldTool`s that change it), seed it per case, and grade the state it leaves with goal-state checks:
@@ -262,13 +322,13 @@ summary = await run_eval(cases, assistant,   # assistant(case, room) calls await
                          goal_checks=['(state.light == "on") == (state.daylight == "dark")'], scope_id="world")
 ```
 
-`examples/world.py` runs it through a Claude tool-use loop, or offline with no API key.
+Example: [`examples/world.py`](examples/world.py), which drives Claude through a tool-use loop.
 
-## From a campaign to files people read
+### From a campaign to files people read
 
-A campaign's report is a typed document, not just text: read its verdicts as data, and write it out for
-each reader: Markdown for a pull request, script-free HTML for a person, the evidence bundle its numbers
-came from, and each chart as a Vega-Lite spec (SVG too, with the `[vega]` extra).
+A campaign's report is a typed document, so a script can read its verdicts as data. It also writes out
+for each reader: Markdown for a pull request, script-free HTML for a person, the evidence bundle its
+numbers came from, and each chart as a Vega-Lite spec (SVG too, with the `[vega]` extra).
 
 ```python
 from threetears.evals.analysis import report_html, report_markdown
@@ -278,10 +338,11 @@ Path("report.md").write_text(report_markdown(comparison.report))
 Path("report.html").write_text(report_html(comparison.report))
 ```
 
-`examples/reports.py` does all of it in one file, offline, into `./eval-report/`;
 [Reading reports](docs/reading-reports.md) says what each part of a report means.
 
-## A model writes the analysis, over frozen evidence
+Example: [`examples/reports.py`](examples/reports.py), which writes into `./eval-report/`.
+
+### A model writes the analysis, over frozen evidence
 
 An analysis is written from one input only, the campaign's **analysis bundle**: every number code
 computed, with a sha256 fingerprint. The model never types a figure. It names a reading, code fills in the
@@ -300,8 +361,8 @@ analysis, _ = await generate_analysis(frozen, prompt=my_prompt, model=MODEL, cli
 analysis.generation.bundle_fingerprint  # == frozen.fingerprint()
 ```
 
-`examples/llm_analysis.py` writes two analyses over one saved bundle, through Claude or a scripted
-stand-in.
+Example: [`examples/llm_analysis.py`](examples/llm_analysis.py), which writes two analyses over one saved
+bundle.
 
 ## What's in the package
 
@@ -333,5 +394,5 @@ receive, an exception you catch, a literal you annotate with — is exported fro
 | know what a launch will cost, and what stops it | [Cost and budgets](docs/cost-and-budgets.md) |
 | read a campaign's report, strata and evidence tiers, or draw its charts | [Reading reports](docs/reading-reports.md) |
 | let an agent launch and read evals over MCP | [Driving it from an agent](docs/agents-and-mcp.md) |
-| see each capability in one short file, in order | [Examples](examples/README.md) |
+| see each capability in one short file, in order | [The examples](examples/README.md) |
 | see a complete host in code | [`tests/fixtures/courierhost/`](tests/fixtures/courierhost/__init__.py) (minimal), then [`tests/fixtures/toyhost/`](tests/fixtures/toyhost/README.md) (every shape) |
