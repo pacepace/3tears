@@ -84,10 +84,11 @@ class _FakeGenerations:
             raise GenerationUnavailableError("generation store unreachable")
         return f"incarnation-1:{self.counts.get(table_name, 0)}"
 
-    async def advance(self, table_name: str) -> None:
+    async def advance(self, table_name: str) -> str:
         if self.fail_advance:
             raise GenerationUnavailableError("generation store unreachable")
         self.counts[table_name] = self.counts.get(table_name, 0) + 1
+        return f"incarnation-1:{self.counts[table_name]}"
 
 
 class _DenylistCollection(BaseCollection[_Entry]):

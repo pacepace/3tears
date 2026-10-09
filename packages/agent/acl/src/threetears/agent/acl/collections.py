@@ -387,16 +387,29 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
         registry = self.registry
         members = None if registry is None else registry.get_collection(GroupMemberCollection.schema.name)
         assignments = None if registry is None else registry.get_collection(RoleAssignmentCollection.schema.name)
+        first_failure: GenerationUnavailableError | None = None
         if cascade.members and members is not None:
-            await members.invalidate_cache_many(
-                [(cascade.group_id, row["id"]) for row in cascade.members],
-                rows=[{"member_type": row["member_type"], "member_id": row["member_id"]} for row in cascade.members],
-            )
+            try:
+                await members.invalidate_cache_many(
+                    [(cascade.group_id, row["id"]) for row in cascade.members],
+                    rows=[
+                        {"member_type": row["member_type"], "member_id": row["member_id"]} for row in cascade.members
+                    ],
+                )
+            except GenerationUnavailableError as exc:
+                # every row was still evicted and broadcast; the assignments are announced all the
+                # same, and the first failure raised after
+                first_failure = exc
         if cascade.assignments and assignments is not None:
-            await assignments.invalidate_cache_many(
-                [(row["row_scope"], row["assignment_id"]) for row in cascade.assignments],
-                rows=[{"group_id": cascade.group_id} for _ in cascade.assignments],
-            )
+            try:
+                await assignments.invalidate_cache_many(
+                    [(row["row_scope"], row["assignment_id"]) for row in cascade.assignments],
+                    rows=[{"group_id": cascade.group_id} for _ in cascade.assignments],
+                )
+            except GenerationUnavailableError as exc:
+                first_failure = first_failure or exc
+        if first_failure is not None:
+            raise first_failure
 
     async def find_by_id(
         self,

@@ -126,3 +126,43 @@ async def test_a_failed_groups_advance_still_announces_the_cascade() -> None:
         await groups.delete(("customer", group_id))
 
     assert [m.ids for m in _rows(bus, "group_members")] == [[f"{group_id}", f"{members[0]['id']}"]]
+
+
+class _FailsFor:
+    """a source whose advance fails for one table only."""
+
+    def __init__(self, table: str) -> None:
+        self.table = table
+
+    async def current(self, table_name: str) -> str:
+        return "inc:0"
+
+    async def advance(self, table_name: str) -> str:
+        from threetears.core.exceptions import GenerationUnavailableError
+
+        if table_name == self.table:
+            raise GenerationUnavailableError(f"epoch bucket unreachable for {table_name}")
+        return "inc:1"
+
+
+async def test_a_failed_membership_advance_still_announces_the_assignments() -> None:
+    import pytest
+    from threetears.core.exceptions import GenerationUnavailableError
+
+    group_id = uuid4()
+    members = [{"member_type": "user", "member_id": uuid4(), "id": uuid4()}]
+    assignments = [{"row_scope": "customer", "assignment_id": uuid4()}]
+    bus = FakeNatsClient()
+    registry = CollectionRegistry()
+    registry.configure(l3_pool=_Pool(members, assignments), l2_client=bus, kv_key_scope="hub")  # type: ignore[arg-type]
+    registry.set_generation_source(_FailsFor("group_members"))
+    groups = GroupCollection(registry, _CONFIG, nats_client=bus)
+    GroupMemberCollection(registry, _CONFIG, nats_client=bus)
+    RoleAssignmentCollection(registry, _CONFIG, nats_client=bus)
+    groups.delete_from_store = AsyncMock()  # type: ignore[method-assign]
+
+    with pytest.raises(GenerationUnavailableError, match="group_members"):
+        await groups.delete(("customer", group_id))
+
+    (assignment,) = _rows(bus, "role_assignments")
+    assert (assignment.generation, assignment.columns) == ("inc:1", {"group_id": f"{group_id}"})

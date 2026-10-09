@@ -187,9 +187,15 @@ class AccessTableFollower:
 
         :return: nothing
         :rtype: None
+        :raises RuntimeError: when the registry's invalidation listener is not running
         """
         if self._tasks:
             return
+        if not self._registry.invalidation_listener_running:
+            raise RuntimeError(
+                "an access-table follower needs the registry's invalidation listener running first: it "
+                "hears the rows each watch judges against, and an advance judged without them reads as missed"
+            )
         for table in self._tables:
             self._registry.follow_generation(table)
             self._tasks.append(asyncio.create_task(self._watch(table), name=f"follow-generation:{table}"))

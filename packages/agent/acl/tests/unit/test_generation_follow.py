@@ -18,6 +18,24 @@ from threetears.agent.acl.generation_follow import AccessTableFollower
 from threetears.core.collections import CollectionRegistry
 
 
+async def _listening_registry() -> CollectionRegistry:
+    """a registry whose invalidation listener runs, as a follower requires."""
+    from threetears.core.testing.kv import FakeNatsClient
+
+    bus = FakeNatsClient()
+    registry = CollectionRegistry()
+    registry.configure(l2_client=bus, kv_key_scope="pod")
+    await registry.start_invalidation_listener(bus)  # type: ignore[arg-type]
+    return registry
+
+
+def test_a_follower_refuses_to_start_before_the_listener_runs() -> None:
+    follower = AccessTableFollower(CollectionRegistry(), object())  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="invalidation listener"):
+        follower.start()
+    assert not follower.running
+
+
 class _Watches:
     """stands in for ``follow_generation_key``: each table's first watch fails, the next one ends, the third runs."""
 
@@ -38,7 +56,7 @@ async def test_every_table_is_followed_and_a_failed_or_ended_watch_is_started_ag
 ) -> None:
     watches = _Watches()
     monkeypatch.setattr(generation_follow, "follow_generation_key", watches)
-    registry = CollectionRegistry()
+    registry = await _listening_registry()
     follower = AccessTableFollower(registry, object(), restart_delay=timedelta(milliseconds=1))  # type: ignore[arg-type]
     follower.start()
     try:
@@ -74,7 +92,7 @@ async def test_a_watch_that_keeps_failing_backs_off_to_a_cap_and_reports_unhealt
     watches = _FailingWatches()
     monkeypatch.setattr(generation_follow, "follow_generation_key", watches)
     follower = AccessTableFollower(
-        CollectionRegistry(),
+        await _listening_registry(),
         object(),  # type: ignore[arg-type]
         tables=("groups",),
         restart_delay=timedelta(milliseconds=10),
