@@ -9,6 +9,7 @@ shown, retried at the recheck and not in a spin.
 from __future__ import annotations
 
 import ast
+import contextlib
 import asyncio
 import json
 import linecache
@@ -114,6 +115,10 @@ class _Pointers:
         self._queue.put_nowait(KvKeyUpdate(key=key, value=None, revision=self._revision))
         return True
 
+    async def list_keys(self, *, prefix: str = "") -> list[str]:
+        await asyncio.sleep(0)
+        return [key for key in self.entries if key.startswith(prefix)]
+
     async def watch_prefix(self, *, prefix: str, heartbeat: timedelta) -> AsyncIterator[KvKeyUpdate | None]:
         for key, (value, revision) in list(self.entries.items()):
             yield KvKeyUpdate(key=key, value=value, revision=revision)
@@ -182,7 +187,7 @@ class _L3:
 
 
 def _snapshot(**options: Any) -> tuple[ScopedSnapshot, _Pointers, _Store, _L3]:
-    pointers, store = _Pointers(), _Store()
+    pointers, store = _Pointers(), options.pop("store", None) or _Store()
     l3 = _L3([{"county": "c1", "state": "TX", "votes": 1}, {"county": "c2", "state": "DE", "votes": 2}])
 
     l3.epochs = {"TX": 1, "DE": 1}
@@ -1383,4 +1388,197 @@ async def test_a_scope_being_dropped_is_no_longer_listed_as_held_while_the_drop_
             return int(cursor.execute("SELECT count(*) FROM results WHERE state = 'NV'").fetchone()[0])
 
     await _until(lambda: nv_rows() == 0, what="the drop to commit")
+    await snapshot.stop()
+
+
+class _BoundedStore(_Store):
+    """an Object Store with a byte bound, refusing a write past it as JetStream does."""
+
+    def __init__(self, max_bytes: int) -> None:
+        super().__init__()
+        self.max_bytes = max_bytes
+        self.fail_put: Callable[[str], bool] = lambda name: False
+        self.retired: list[str] = []
+
+    async def put(self, name: str, data: bytes) -> None:
+        from threetears.nats import ObjectStoreError, ObjectStoreFullError
+
+        if self.fail_put(name):
+            raise ObjectStoreError(f"writing object {name!r} failed")
+        if sum(len(d) for d in self.objects.values()) + len(data) > self.max_bytes:
+            raise ObjectStoreFullError(f"objects is full: writing {name!r}", bucket="objects", name=name)
+        self.objects[name] = data
+
+    async def list_objects(self, *, prefix: str = "") -> list[ObjectInfo]:
+        # every chunk as written long ago: the rule must not care how old a chunk is
+        long_ago = datetime(2000, 1, 1, tzinfo=UTC)
+        return [
+            ObjectInfo(name=n, size=len(d), chunks=1, digest="", nuid="", mtime=long_ago)
+            for n, d in self.objects.items()
+            if n.startswith(prefix)
+        ]
+
+
+def _retiring_snapshot(max_bytes: int = 10**9) -> tuple[ScopedSnapshot, _Pointers, _BoundedStore, _L3]:
+    """a snapshot whose retire deletes from a bounded store, as the declarer does, and records what it took."""
+    store = _BoundedStore(max_bytes)
+
+    async def retire(names: list[str]) -> None:
+        for name in names:
+            store.retired.append(name)
+            store.objects.pop(name, None)
+
+    snapshot, pointers, _, l3 = _snapshot(store=store, retire=retire)
+    return snapshot, pointers, store, l3
+
+
+async def _started(snapshot: ScopedSnapshot, pointers: _Pointers) -> None:
+    """started, ready, and its first rebuild's claim let go, so a catch-up here takes it."""
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    await _until(lambda: "enr.rebuild" not in pointers.entries, what="the first rebuild's claim released")
+
+
+def _epochs_held(store: _Store, scope: str) -> set[int]:
+    return {int(name.split("/")[2]) for name in store.objects if name.startswith(f"enr/{scope}/")}
+
+
+def _served(pointers: _Pointers) -> set[str]:
+    """every chunk a pointer names."""
+    served: set[str] = set()
+    for key, (value, _) in pointers.entries.items():
+        if key.startswith("enr.s."):
+            served |= {table["object"] for table in json.loads(value)["tables"].values()}
+    return served
+
+
+async def _fill_and_sweep(snapshot: ScopedSnapshot, store: _BoundedStore, l3: _L3) -> None:
+    """fill the store to its bound, then publish: the chunk write is refused full and sweeps the store."""
+    from threetears.nats import ObjectStoreFullError
+
+    store.max_bytes = sum(len(d) for d in store.objects.values())
+    l3.epochs["DE"] = l3.epochs.get("DE", 1) + 1
+    # NOSILENT: a store the sweep could not free refuses the write again; the sweep is what is tested
+    with contextlib.suppress(ObjectStoreFullError):
+        await snapshot.catch_up_from_l3()
+
+
+def _writer_died(pointers: _Pointers) -> None:
+    """a writer's write claims lapse, as its lease does once it stops renewing."""
+    for key in [k for k in pointers.entries if k.startswith("enr.w.")]:
+        del pointers.entries[key]
+
+
+_TX_ROWS = {"results": [{"county": "c1", "state": "TX", "votes": 5}]}
+
+
+async def test_a_catch_up_that_fails_part_way_still_retires_the_old_chunks_of_the_scopes_it_moved() -> None:
+    snapshot, pointers, store, l3 = _retiring_snapshot()
+    await _started(snapshot, pointers)
+    l3.epochs = {"DE": 2, "TX": 2}
+    store.fail_put = lambda name: name.startswith("enr/TX/2/")  # DE publishes first, TX's write fails
+
+    with pytest.raises(Exception, match="failed"):
+        await snapshot.catch_up_from_l3()
+
+    assert _epochs_held(store, "DE") == {2}, "DE's pointer moved to 2 but its epoch-1 chunks were kept"
+    assert _epochs_held(store, "TX") == {1}
+    await snapshot.stop()
+
+
+async def test_a_full_store_retires_only_what_no_pointer_serves_and_no_write_claims() -> None:
+    snapshot, pointers, store, l3 = _retiring_snapshot()
+    await _started(snapshot, pointers)
+    served = _served(pointers)
+    staged = await snapshot.stage("TX", 3, _TX_ROWS)  # a live write's stage, its claim held
+    held = sum(len(d) for d in store.objects.values())
+    store.objects["enr/TX/0/results.superseded"] = b"x" * 4096
+    store.objects["enr/DE/0/results.superseded"] = b"x" * 4096
+    store.max_bytes = held + 8192 + 64
+    l3.epochs = {"DE": 2, "TX": 1}
+
+    caught = await snapshot.catch_up_from_l3()
+
+    assert caught == ["DE"]
+    assert set(store.retired) & (served - {n for n in served if n.startswith("enr/DE/")}) == set(), (
+        "the full-store sweep took a chunk a pointer served"
+    )
+    assert not set(store.retired) & set(staged.objects.values()), "the sweep took a live write's stage"
+    assert {"enr/TX/0/results.superseded", "enr/DE/0/results.superseded"} <= set(store.retired)
+    await snapshot.stop()
+
+
+async def test_a_live_writes_stages_survive_a_full_store_sweep_however_old_they_are() -> None:
+    snapshot, pointers, store, l3 = _retiring_snapshot()
+    await _started(snapshot, pointers)
+    staged = [
+        await snapshot.stage("TX", 3, _TX_ROWS),
+        # a scope with no pointer yet: nothing but the write's claim speaks for its stage
+        await snapshot.stage("CA", 3, {"results": [{"county": "c9", "state": "CA", "votes": 1}]}),
+    ]
+
+    await _fill_and_sweep(snapshot, store, l3)
+
+    for scope in staged:
+        assert set(scope.objects.values()) <= set(store.objects), f"a live write's stage of {scope.scope} was swept"
+    await snapshot.stop()
+
+
+async def test_an_abandoned_writes_stages_are_swept_once_its_claim_is_gone() -> None:
+    snapshot, pointers, store, l3 = _retiring_snapshot()
+    await _started(snapshot, pointers)
+    staged = await snapshot.stage("TX", 3, _TX_ROWS)
+
+    _writer_died(pointers)
+    await _fill_and_sweep(snapshot, store, l3)
+
+    assert not set(staged.objects.values()) & set(store.objects), "a dead write's stage outlived its claim"
+    assert _served(pointers) <= set(store.objects)
+    await snapshot.stop()
+
+
+async def test_a_write_that_never_commits_gives_its_stages_back() -> None:
+    snapshot, pointers, store, _ = _retiring_snapshot()
+    await _started(snapshot, pointers)
+    staged = await snapshot.stage("TX", 2, _TX_ROWS)
+    assert _epochs_held(store, "TX") == {1, 2}
+
+    await snapshot.discard_staged([staged])
+
+    assert _epochs_held(store, "TX") == {1}, "an abandoned write's stage was kept"
+    assert not any(k.startswith("enr.w.") for k in pointers.entries), "the write claim was not let go"
+    await snapshot.stop()
+
+
+async def test_discarding_a_dead_writes_epoch_takes_its_stages_and_keeps_what_pointers_name_or_claims_hold() -> None:
+    snapshot, pointers, store, _ = _retiring_snapshot()
+    await _started(snapshot, pointers)
+    await snapshot.stage("TX", 3, _TX_ROWS)
+    await snapshot.stage("DE", 3, {"results": [{"county": "c2", "state": "DE", "votes": 6}]})
+    served = _served(pointers)
+
+    await snapshot.discard_epoch(3)
+    assert {n for n in store.objects if "/3/" in n}, "a live write's claimed epoch was discarded"
+
+    _writer_died(pointers)
+    await snapshot.discard_epoch(3)
+    await snapshot.discard_epoch(1)  # an epoch the pointers serve: nothing of it goes
+
+    assert set(store.objects) == served
+    await snapshot.stop()
+
+
+async def test_a_pointer_never_moves_onto_a_staged_chunk_that_is_gone() -> None:
+    snapshot, pointers, store, l3 = _retiring_snapshot()
+    await _started(snapshot, pointers)
+    before = pointers.entries["enr.s.TX"][0]
+    staged = await snapshot.stage("TX", 2, _TX_ROWS)
+    for name in staged.objects.values():
+        del store.objects[name]
+    l3.epochs["TX"] = 2
+
+    moved, skipped = await snapshot.publish_staged([staged], carry_at={"TX": 1})
+
+    assert (moved, skipped) == ([], ["TX"])
+    assert pointers.entries["enr.s.TX"][0] == before, "a pointer was moved onto a missing chunk"
     await snapshot.stop()

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import timedelta
 
 import pytest
 
@@ -134,9 +133,13 @@ async def test_the_declarers_sweep_removes_chunks_no_object_names(nats_container
         # a writer that died between its chunks and its metadata leaves chunks no object names
         await nc.jetstream_context().publish(f"$O.{store.name}.C.orphanednuid", b"x" * 1000)
         before = await store.bytes_held()
-        # the default grace keeps a put in progress; a fresh orphan is kept until it is old enough
-        assert await store.purge_orphan_chunks() == 0
-        assert await store.purge_orphan_chunks(older_than=timedelta(0)) == 1
+        pointers = await nc.ensure_kv_bucket(name="pointers")
+        # a writer's claim stands: its put may be in flight, however old, so nothing is purged
+        revision = await pointers.create(key="enr.w.7.writer1", value=b"writer1")
+        assert await store.purge_orphan_chunks(pointers=pointers) == 0
+        # the claim gone (released, or lapsed with its writer): the orphan is purged at once
+        assert revision is not None and await pointers.delete(key="enr.w.7.writer1")
+        assert await store.purge_orphan_chunks(pointers=pointers) == 1
         assert await store.bytes_held() < before
         assert len(await store.get("kept")) == 300_000
 
