@@ -19,6 +19,7 @@ from threetears.evals.analysis.stats import (
     composite_significance,
     level_difference,
     paired_change,
+    separation_p,
     standard_error_of_mean,
     t_critical_two_sided,
 )
@@ -641,3 +642,45 @@ class TestLevelDifference:
         assert level_difference(a, b, equivalence_margin=1.0).equivalent is True
         disjoint = {f"d{i}": value for i, value in enumerate(b.values())}
         assert level_difference(a, disjoint, equivalence_margin=1.0).equivalent is None
+
+
+class TestSeparationPAgreesWithLevelDifference:
+    """One concept, one answer: the frontier's separation p and the between-level test's p for one pattern."""
+
+    @pytest.mark.parametrize(("n_a", "n_b"), [(2, 2), (3, 3), (4, 4), (3, 5), (2, 9)])
+    def test_two_unpaired_constants_read_the_exact_split_p(self, n_a: int, n_b: int) -> None:
+        """Each side constant, the two different: ``2 / C(n_a + n_b, n_a)``, where it was None."""
+        a = [1.0] * n_a
+        b = [2.0] * n_b
+        exact = 2 / math.comb(n_a + n_b, n_a)
+        assert separation_p(a, b, paired=False) == pytest.approx(exact)
+        tested = level_difference({f"a{i}": 1.0 for i in range(n_a)}, {f"b{i}": 2.0 for i in range(n_b)})
+        # level_difference states the p where it can reach alpha and calls the rest untested; both read it alike.
+        if tested.p_value is not None:
+            assert tested.p_value == pytest.approx(exact)
+        else:
+            assert exact > SIGNIFICANCE_ALPHA
+
+    @pytest.mark.parametrize("n", [2, 5, 6, 8])
+    def test_an_alike_paired_shift_reads_the_sign_flip_p(self, n: int) -> None:
+        # Exactly representable, so the differences carry no float residue for a t statistic to read.
+        a = [float(i) for i in range(n)]
+        b = [value + 0.5 for value in a]
+        assert separation_p(a, b, paired=True) == pytest.approx(2.0 ** (1 - n))
+
+    @pytest.mark.parametrize("paired", [True, False])
+    def test_identical_values_read_one(self, paired: bool) -> None:
+        """No gap and no spread: the exact p is 1, as level_difference states it."""
+        assert separation_p([3.0, 3.0, 3.0], [3.0, 3.0, 3.0], paired=paired) == 1.0
+        assert level_difference({"c1": 3.0, "c2": 3.0}, {"c1": 3.0, "c2": 3.0}).p_value == 1.0
+
+    def test_a_t_test_p_is_the_level_difference_p(self) -> None:
+        a = {"c1": 1.0, "c2": 2.0, "c3": 4.0}
+        b = {"d1": 3.0, "d2": 5.5, "d3": 4.0, "d4": 6.0}
+        assert separation_p(list(a.values()), list(b.values()), paired=False) == pytest.approx(
+            level_difference(a, b).p_value
+        )
+
+    def test_one_value_a_side_has_no_p(self) -> None:
+        assert separation_p([1.0], [2.0, 2.0], paired=False) is None
+        assert separation_p([1.0], [2.0], paired=True) is None
