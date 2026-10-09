@@ -6,6 +6,23 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: the code-only report says each thing once
+
+- **A classifier's per-label precision, recall and F1 are one `labels` table** on the code-only report: a row
+  per label and arm, precision and recall with their 95% Wilson intervals, F1 with none, each with its n. It
+  replaces a distribution chart per label and statistic (eight blocks for four labels), which the report no
+  longer carries; accuracy and every other single reading keep their chart. One disclosure under the table
+  says what the figures are counted over, and now says when repeats of one case make the interval narrower
+  than the clustering supports, which the per-label charts never did.
+- **A chart's values table leaves out its `Shape` column** in Markdown and HTML when every row reads
+  `unknown — interval only` (`SHAPE_UNKNOWN`, `chart_table_columns`). The chart intent keeps it.
+- **The decision-surface table has a `notes` column only when some row has a run note.** On a code-only report
+  the surface also drops its "no number here was written by the model" sentence, which the opening line says.
+- **`NO_ANALYSIS` is one sentence**: "No analysis was generated: everything below was computed by code from the
+  campaign's evidence." What an analysis would add is in `docs/reading-reports.md`.
+- `REPORT_VERSION` 3 -> 4 (a table added, the per-label charts removed); `schema.json` regenerated. No field or
+  block kind changed shape.
+
 ### 3tears-evals: the host states how long one request can take; the wall-clock ceilings count requests (breaking)
 
 - **`generation_ceiling_s`, `judge_phase_ceiling_s` and `reporter_cell_timeout_s` take `request_s:

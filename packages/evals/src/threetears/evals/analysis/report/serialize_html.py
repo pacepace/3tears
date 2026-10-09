@@ -29,6 +29,7 @@ from threetears.evals.analysis.report.model import (
     ReportBlock,
     TableBlock,
     TextBlock,
+    chart_table_columns,
     finding_number,
     report_byline,
     report_title,
@@ -148,13 +149,14 @@ def _chart(block: ChartBlock) -> str:
             f"stored for this finding and cannot be drawn: {_escape(block.error)}</div>"
         )
     intent = block.intent
+    columns = chart_table_columns(intent)
     payload = json.dumps(intent.model_dump(mode="json"), sort_keys=True, ensure_ascii=False)
     caption = f" {_inline(_one_line(intent.caption))}" if intent.caption.strip() else ""
     notes = [line for line in (intent.footnote, *intent.disclosures) if line]
     listed = "<ul>" + "".join(f"<li>{_escape(note)}</li>" for note in notes) + "</ul>" if notes else ""
     table = _grid(
-        [column.header for column in intent.columns],
-        [[row.get(column.key) for column in intent.columns] for row in intent.rows],
+        [column.header for column in columns],
+        [[row.get(column.key) for column in columns] for row in intent.rows],
     )
     return (
         f'<figure class="chart" data-chart-type="{_escape(intent.type)}" data-chart-intent="{_escape(payload)}">'

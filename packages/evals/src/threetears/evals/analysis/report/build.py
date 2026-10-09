@@ -52,10 +52,16 @@ from threetears.evals.contracts.authored import NO_CHART, Finding
 from threetears.evals.contracts.campaign import EvalAnalysis, FindingResolution, ReadingKind, Viz
 from threetears.evals.contracts.host.measures import MeasureRegistry
 from threetears.evals.analysis.numbers import format_number
-from threetears.evals.analysis.viz.quantities import display_scale
+from threetears.evals.analysis.stats import INTERVAL_LEVEL
+from threetears.evals.analysis.viz.quantities import display_scale, with_unit
 from threetears.evals.contracts.analysis_measures import MeasureSummary
 from threetears.evals.contracts.campaign import VariantIndexEntry
-from threetears.evals.contracts.metrics import ACCURACY_MEASURE, MATCH_MEASURE, classifier_label_of
+from threetears.evals.contracts.metrics import (
+    ACCURACY_MEASURE,
+    MATCH_MEASURE,
+    ClassifierStatistic,
+    classifier_label_of,
+)
 from threetears.evals.contracts.surface import (
     STRATUM_MIN_CASES,
     CellFacts,
@@ -333,18 +339,26 @@ def _arm_blocks(table: ArmTable) -> list[ReportBlock]:
     return blocks
 
 
-def _surface_blocks(table: SurfaceTable) -> list[ReportBlock]:
-    """The decision surface laid out, its provenance, and every bar no cell could be read against."""
+def _surface_blocks(table: SurfaceTable, *, provenance: bool = True) -> list[ReportBlock]:
+    """The decision surface laid out, its provenance, and every bar no cell could be read against.
+
+    The ``Run notes`` column is there only when some row has a note: a column of em dashes says nothing the
+    table's having no such column does not. ``provenance=False`` leaves out the sentence saying no number here
+    was written by the model — on a code-only report, whose opening line already says code computed everything
+    and that no model wrote any of it.
+    """
     blocks: list[ReportBlock] = []
     if table.disclosure is not None:
         blocks.append(DisclosureBlock(section="surface", source="surface", text=table.disclosure))
     else:
-        blocks.append(DisclosureBlock(section="surface", source="surface", text=table.provenance))
+        if provenance:
+            blocks.append(DisclosureBlock(section="surface", source="surface", text=table.provenance))
+        noted = any(row.run_notes for row in table.rows)
         columns = [
             TableColumn(key="arm", header="Arm"),
             TableColumn(key="replication", header="Replication"),
             *(TableColumn(key=f"column_{index}", header=column.header) for index, column in enumerate(table.columns)),
-            TableColumn(key="notes", header="Run notes"),
+            *([TableColumn(key="notes", header="Run notes")] if noted else []),
         ]
         rows: list[dict[str, Cell]] = []
         for row in table.rows:
@@ -359,7 +373,10 @@ def _surface_blocks(table: SurfaceTable) -> list[ReportBlock]:
                     cells[f"column_{index}"] = (
                         f"{value.text} — {value.verdict_word}" if value.verdict_word else value.text
                     )
-            cells["notes"] = "; ".join(f"{note.kind} ({note.run_id}): {note.text}" for note in row.run_notes) or None
+            if noted:
+                cells["notes"] = (
+                    "; ".join(f"{note.kind} ({note.run_id}): {note.text}" for note in row.run_notes) or None
+                )
             rows.append(cells)
         blocks.append(
             TableBlock(
@@ -616,15 +633,9 @@ def _time_axis_blocks(axis: TimeAxis | None) -> list[ReportBlock]:
 # The code-only report — a campaign's evidence, with no analysis
 # =============================================================================
 
-#: What the code-only report says in place of an analysis — that none was generated, and what one adds.
-NO_ANALYSIS = (
-    "No analysis was generated for this campaign, so nothing in this report was written by a model or an "
-    "analyst: there is no headline, no finding, no decision and no answer to a declared question. What follows "
-    "is what code computed from the campaign's evidence — the arms, the decision surface, the contrasts tested "
-    "against the control, a chart per measure, and every disclosure the evidence carries. An analysis would add "
-    "a reading of it: findings with the evidence each rests on and the caveats that qualify it, a decision per "
-    "declared question with its confidence, which arm won and why, and what to run next."
-)
+#: What the code-only report says in place of an analysis: that none was generated, and whose the numbers are.
+#: What an analysis would add is the reader's guide's to say (``docs/reading-reports.md``), not every report's.
+NO_ANALYSIS = "No analysis was generated: everything below was computed by code from the campaign's evidence."
 
 
 def build_code_only_report(
@@ -634,10 +645,10 @@ def build_code_only_report(
 
     Everything here is code's: the arm table (every arm ``unresolved``, since a verdict is a decision's
     and none was made), the decision surface, the contrasts the bundle tested against the control, one
-    distribution chart per measure and judged dimension the surface can draw, and every disclosure the
-    bundle carries. No :class:`~threetears.evals.analysis.report.model.TextBlock` is built — the report
-    model refuses one on a code-only report — and the first block says plainly that no analysis was
-    generated and what one would add.
+    distribution chart per measure and judged dimension the surface can draw, a classifier's per-label
+    precision, recall and F1 as one table, and every disclosure the bundle carries. No
+    :class:`~threetears.evals.analysis.report.model.TextBlock` is built — the report model refuses one on a
+    code-only report — and the first block says plainly that no analysis was generated.
 
     Args:
         bundle: The campaign's evidence, as :func:`~threetears.evals.analysis.bundle.assemble_context_bundle`
@@ -664,10 +675,11 @@ def build_code_only_report(
             )
         )
     )
-    blocks.extend(_surface_blocks(surface_table_of(surface, variant_index)))
+    blocks.extend(_surface_blocks(surface_table_of(surface, variant_index), provenance=False))
     blocks.extend(_strata_blocks(surface, variant_index))
     blocks.extend(_comparison_blocks(bundle, surface))
     blocks.extend(_measure_chart_blocks(surface, bundle, measures))
+    blocks.extend(_label_blocks(surface, variant_index))
     blocks.extend(_time_axis_blocks(surface.time_axis))
     if bundle.time_axis_withheld:
         blocks.append(DisclosureBlock(section="methods", source="time_axis", text=bundle.time_axis_withheld))
@@ -807,8 +819,11 @@ def _measure_chart_blocks(
 
     Three readings are not charted, because a chart of them carries nothing:
 
-    - **A label's F1.** It is a single figure per cell with no interval by construction, so its chart could
-      only ever be a disclosure that every cell was left out — one per label. It stays in the tables.
+    - **A classifier's per-label statistics.** A label's precision and recall are each a single reading per
+      cell, so charted they were two charts per label — eight for four labels — most reading 1 in every arm;
+      and its F1 has no interval by construction, so its chart could only ever be a disclosure that every
+      cell was left out. All three are one table instead (:func:`_label_blocks`), every figure with its
+      interval and n, which compares the arms label by label as closely as the charts did.
     - **``match`` beside ``accuracy``.** ``accuracy`` is derived from ``match``, observation for observation, so
       the two charts are one chart drawn twice.
     - **Cost no result observed.** A cell where no result reported its spend has no ``cost_usd`` reading at all
@@ -882,12 +897,12 @@ def _measure_chart_blocks(
 def _chartable(name: str, facts: MeasureFacts, surface: DecisionSurface) -> bool:
     """Whether a measure earns a distribution chart: it has a better end, and its chart would say something.
 
-    A label's F1 has no interval in any cell by construction, and ``match`` is the observation ``accuracy`` is
-    derived from, so where ``accuracy`` is charted a ``match`` chart repeats it.
+    A label's precision, recall and F1 are the per-label table's, and ``match`` is the observation ``accuracy``
+    is derived from, so where ``accuracy`` is charted a ``match`` chart repeats it.
     """
     if facts.higher_is_better is None:
         return False
-    if (classifier := classifier_label_of(name)) is not None and classifier[0] == "f1":
+    if classifier_label_of(name) is not None:
         return False
     return not (name == MATCH_MEASURE and ACCURACY_MEASURE in surface.measures)
 
@@ -897,6 +912,102 @@ def _measured(cell: CellFacts, name: str, reading: ReadingKind) -> bool:
     if reading == "judged":
         return any(judged.dimension == name for judged in cell.judged)
     return any(summary.name == name for summary in cell.measures.measures)
+
+
+#: The columns of the per-label table after the label and the arm, by the statistic each holds.
+_LABEL_STATISTICS: tuple[tuple[ClassifierStatistic, str], ...] = (
+    ("precision", "Precision"),
+    ("recall", "Recall"),
+    ("f1", "F1"),
+)
+
+
+def _label_blocks(surface: DecisionSurface, variant_index: Sequence[VariantIndexEntry]) -> list[ReportBlock]:
+    """A classifier's per-label precision, recall and F1, every arm's, as one table — or nothing for no classifier.
+
+    A row per label and arm, the label's rows together so its arms read against each other: each figure with
+    its interval and the n it is counted over, as the strata table spells them. A row per label and arm
+    rather than a column per arm, so the table's width does not grow with the arms. One table rather than a
+    chart per label and statistic: those drew each figure in a block of its own and showed nothing this does
+    not.
+
+    Args:
+        surface: The decision surface whose cells carry the per-label summaries.
+        variant_index: The variant index that names their arms.
+
+    Returns:
+        The table and the disclosure saying what its figures are counted over, or no block when no cell
+        holds a per-label statistic.
+    """
+    control = surface.control_variant_key
+    labels = cell_arm_labels(surface, list(variant_index))
+    figures: dict[str, dict[str, dict[str, MeasureSummary]]] = {}
+    clustered = False
+    for cell in surface.cells:
+        ref = cell_ref(cell.variant_key, cell.apparatus_class_id)
+        for summary in cell.measures.measures:
+            if (classifier := classifier_label_of(summary.name)) is None:
+                continue
+            statistic, label = classifier
+            figures.setdefault(label, {}).setdefault(ref, {})[statistic] = summary
+            clustered = clustered or (cell.n_cases is not None and cell.n_cases < cell.n_observations)
+    if not figures:
+        return []
+    order = sorted(
+        cell_index(surface).items(),
+        key=lambda item: (item[1].variant_key != control, labels[item[0]], item[1].apparatus_class_id),
+    )
+    # A cell that classified nothing is no arm of this table; one that classified, but never met a label nor
+    # predicted it, is a row of dashes under that label, so every label is read across the same arms.
+    classifying = {ref for by_cell in figures.values() for ref in by_cell}
+    rows: list[dict[str, Cell]] = []
+    missing = False
+    for label in sorted(figures):
+        for ref, cell in order:
+            if ref not in classifying:
+                continue
+            by_statistic = figures[label].get(ref, {})
+            row: dict[str, Cell] = {
+                "label": label,
+                "arm": f"{labels[ref]} (control)" if cell.variant_key == control else labels[ref],
+            }
+            for statistic, _ in _LABEL_STATISTICS:
+                figure = by_statistic.get(statistic)
+                row[statistic] = None if figure is None else _summary_text(figure, 1.0)
+                missing = missing or figure is None
+            rows.append(row)
+    spans = (
+        "the cell's observations, repeats of one case counted as independent (narrower than the clustering supports)"
+        if clustered
+        else "the cell's observations"
+    )
+    said = [
+        f"Precision is counted over the observations an arm predicted as the label and recall over those expected as "
+        f"it, each with its {with_unit(INTERVAL_LEVEL * 100, '%')} Wilson interval, which spans {spans}. F1 has no "
+        "interval by construction — one value computed from the cell's confusion counts, over the observations "
+        "predicted or expected as the label."
+    ]
+    if missing:
+        said.append(
+            "A label an arm never predicted has no precision, one it never met has no recall, and either has no F1: "
+            "each is shown as —."
+        )
+    return [
+        TableBlock(
+            section="surface",
+            name="labels",
+            title="Per-label precision, recall and F1",
+            columns=[
+                TableColumn(key="label", header="Label"),
+                TableColumn(key="arm", header="Arm"),
+                *(TableColumn(key=statistic, header=header) for statistic, header in _LABEL_STATISTICS),
+            ],
+            rows=rows,
+            order="by label, then the control's cells first and every other cell by arm and rig",
+            total_rows=len(rows),
+        ),
+        DisclosureBlock(section="surface", source="surface", text=" ".join(said)),
+    ]
 
 
 def _listed(ids: Sequence[str]) -> str:

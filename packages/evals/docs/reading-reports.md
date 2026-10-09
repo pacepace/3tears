@@ -11,7 +11,7 @@ Every campaign is read through one document, the **report**. It is a list of blo
 text, tables, charts and disclosures. If someone has generated an **analysis** (a model reading the
 campaign's numbers and writing findings), the report carries those findings beside the evidence. If not,
 you still get a **code-only report**: every table and chart code can build, with no words from a model,
-and a note saying what an analysis would add. Either way, every number comes from code; a model never
+and a line saying no analysis was generated. Either way, every number comes from code; a model never
 gets to state a figure or decide how much a judged score can be trusted.
 
 [`examples/reports.py`](../examples/reports.py) takes a finished campaign to the files people read: the
@@ -47,11 +47,18 @@ which the published schema and the model both refuse. It holds:
 - the decision surface;
 - the contrasts the evidence tested against the control;
 - a distribution chart per measure and judged dimension;
+- for a classifier, one `labels` table of each label's precision, recall and F1, a row per label and arm:
+  precision and recall with their 95% Wilson intervals, F1 with none (it has none by construction), and
+  every figure with the n it is counted over;
 - the results by stratum when the cases declare strata ([below](#results-by-kind-of-case-strata));
-- every disclosure the evidence carries, opening with a statement that no analysis was generated and what
-  one would add.
+- every disclosure the evidence carries, opening with one line saying no analysis was generated.
 
-`Report.basis` says which a report is; `REPORT_VERSION` is 3.
+**What an analysis would add.** A code-only report is what code computed; nothing in it reads the numbers.
+An analysis adds that reading: findings, each with the evidence it rests on and the caveats that qualify it;
+a decision per declared question, with its confidence; which arm won and why; and what to run next. No
+headline, finding, decision or answer to a declared question appears in a code-only report.
+
+`Report.basis` says which a report is; `REPORT_VERSION` is 4.
 
 ## Having a model write the analysis, over frozen evidence
 
