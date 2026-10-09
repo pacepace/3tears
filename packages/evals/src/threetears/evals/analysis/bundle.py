@@ -482,8 +482,9 @@ class MeasureMovement(EvalDocumentModel):
     test: Literal["paired", "unpaired"] | None = Field(
         default=None,
         description=(
-            "`paired` = over the cases both levels ran; `unpaired` = Welch's test over each level's cases, when they "
-            "share fewer than two. None when no test could run."
+            "`paired` = over the cases both levels ran; `unpaired` = Welch's t statistic on Hsu's conservative "
+            "min(n) − 1 degrees of freedom over each level's cases, when they share fewer than two. None when no "
+            "test could run."
         ),
     )
     n_a: int = Field(ge=0, description="Cases read at the first level (each case's repeats averaged first).")
@@ -937,7 +938,8 @@ class ScopeDivergence(EvalDocumentModel):
     test: Literal["paired", "unpaired"] = Field(
         description=(
             "The test of the divergence — of each case's whole-minus-part between the two levels: `paired` over "
-            "the cases both levels ran, `unpaired` (Welch's) when they share fewer than two."
+            "the cases both levels ran, `unpaired` (Welch's t statistic on Hsu's min(n) − 1 degrees of freedom) when "
+            "they share fewer than two."
         )
     )
     n_cases_a: int = Field(ge=2, description="Cases carrying both measures that the divergence test read at level_a.")
