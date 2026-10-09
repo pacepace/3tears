@@ -62,8 +62,11 @@ freedom, and for a rate a Wilson interval on the effective sample size the clust
 one case repeated has no interval.
 
 **A verdict comes from a corrected test, and "not separated" never means "no difference".**
-Each contrast against the control is `improved`, `regressed`, `not_separated` or `untested`, read off a
-Holm-adjusted p within one family: one per declared question, or one campaign-wide. Twenty uncorrected
+Each contrast against the control is `improved`, `regressed`, `equivalent`, `not_separated` or
+`untested`, read off a Holm-adjusted p within one family: one per declared question, or one campaign-wide
+over every reading on a merit axis (the rig's own readings, such as the judge's time and spend, are on none).
+`equivalent` takes an equivalence test (TOST) against the measure's declared margin, corrected in the same
+family. Twenty uncorrected
 tests find a chance "winner" more often than not. False-discovery control across a history of campaigns and
 sequential testing stay out. The run-history read follows the same rule: a step that misses significance is
 `not_separated`, and "no meaningful change" (`equivalent`) is claimed only by an equivalence test (TOST)
