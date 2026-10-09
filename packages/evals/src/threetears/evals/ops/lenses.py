@@ -1,4 +1,5 @@
-"""The read lenses as operations: a scope's pivot, its history, its export, and a launch's estimated cost.
+"""The read lenses as operations: a scope's pivot, its history, its export, two runs compared, and a launch's
+estimated cost.
 
 Each binds one lens of :mod:`threetears.evals.analysis` to the host — its store, its run listing and its
 vocabulary — and returns the lens's own typed result, so a CLI, an MCP action and a REST route read one
@@ -9,7 +10,7 @@ arguments, by the launch's own rule: each arm planned by its kind and priced thr
 ``launch_pricer`` (:func:`~threetears.evals.run.quote_launch`).
 
 Each result's text is here too (:func:`pivot_text`, :func:`history_text`, :func:`estimate_text`,
-:func:`export_text`), for the reason :meth:`~threetears.evals.ops.EvalSummary.render` sits with the
+:func:`export_text`, :func:`runs_compared_text`), for the reason :meth:`~threetears.evals.ops.EvalSummary.render` sits with the
 summary: every surface — an action, a command line — shows one rendering, and each carries the
 caveats its model carries (what was left out, which runs came up short) rather than the numbers alone.
 """
@@ -21,11 +22,19 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import Field, TypeAdapter, ValidationError
 
-from threetears.evals.analysis.reads import RunLister, export_results, history, pivot
+from threetears.evals.analysis.reads import RunLister, compare_two_runs, export_results, history, pivot
 from threetears.evals.analysis.numbers import format_number, format_signed
-from threetears.evals.analysis.reporting import COST_ESTIMATE_MIN_BASIS, compute_estimate_cost
+from threetears.evals.analysis.reporting import (
+    COST_ESTIMATE_MIN_BASIS,
+    cassette_mode_disclosure,
+    completeness_disclosure,
+    compute_estimate_cost,
+    format_significance,
+    measurement_window,
+    measurement_window_disclosure,
+)
 from threetears.evals.analysis.reporting import (
     CostEstimate,
     HistoryResult,
@@ -36,9 +45,9 @@ from threetears.evals.analysis.reporting import (
     ScoreExport,
 )
 from threetears.evals.contracts.base import EvalBaseModel
-from threetears.evals.contracts.errors import ValidationFailedError
+from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
 from threetears.evals.contracts.host import EvalHost
-from threetears.evals.contracts.models import EvalRun
+from threetears.evals.contracts.models import EvalRun, EvalTemplate
 from threetears.evals.contracts.out_of_run import OutOfRunPurpose, OutOfRunSpend
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.runs import LaunchArguments
@@ -195,6 +204,100 @@ def scope_export(
         status=status,
         run_ids=run_ids,
         profile=host.profile,
+    )
+
+
+class RunsCompared(EvalBaseModel):
+    """One run's arm against another's, with what either run could not deliver said beside the numbers.
+
+    ``comparison`` is the lens's own answer (:func:`~threetears.evals.analysis.reads.compare_two_runs`), carried
+    whole: this operation adds what a head-to-head needs beside it and re-derives none of it. A delta between a
+    run that delivered one of its five cells and a complete one is a comparison of two different populations,
+    so each short run's sentence is carried with it, as it is on every other comparison surface.
+    """
+
+    baseline_run_id: str = Field(description="The run read as the baseline (A).")
+    candidate_run_id: str = Field(description="The run read against it (B).")
+    comparison: dict[str, Any] = Field(
+        description=(
+            "The two-run lens's answer: `comparison_basis` (whether the runs share a template, not the test's basis), "
+            "`composite_comparability` (why composites are withheld, across subjects), `comparison.arm` (each "
+            "arm's model, pass^k at one shared depth and mean composite, their deltas, whether the samples were "
+            "paired and over how many cases, Hedges' g, p and the verdict), `comparison.per_template` and each "
+            "run's `subject_detail_{a,b}`."
+        )
+    )
+    completeness_disclosures: dict[str, str] = Field(
+        description=(
+            "Run id -> the sentence for each of the two runs that delivered less than its matrix; empty when both "
+            "are whole. A run absent from it is not asserted complete: one carrying no completeness record has "
+            "nothing to disclose either way."
+        )
+    )
+    measurement_window_disclosure: str | None = Field(
+        description="When the two runs were measured over spans that do not overlap, the sentence saying so; None "
+        "when they overlap or either produced no result to date a span from."
+    )
+    cassette_mode_disclosure: str | None = Field(
+        description="When the two runs recorded different cassette modes (one replayed what the other measured "
+        "live), the sentence saying so; None when they recorded the same."
+    )
+
+
+def runs_compare(host: EvalHost, baseline_run_id: str, candidate_run_id: str, scope_id: str) -> RunsCompared:
+    """Compare two runs' arms, with each run's completeness, clock and cassette disclosures beside the numbers.
+
+    The comparison is :func:`~threetears.evals.analysis.reads.compare_two_runs`'s, read under the engine's
+    default pass threshold; the disclosures are the ones every other comparison surface carries, computed by the
+    same helpers.
+
+    Args:
+        host: The host whose store is read.
+        baseline_run_id: The run read as the baseline.
+        candidate_run_id: The run read against it.
+        scope_id: The scope both runs live in.
+
+    Returns:
+        The comparison and its disclosures.
+
+    Raises:
+        NotFoundError: Either run is not in the scope.
+    """
+    storage = host.storage
+
+    def template(template_id: str) -> EvalTemplate:
+        found = storage.load_template(template_id, scope_id)
+        if found is None:
+            raise NotFoundError("template", template_id)
+        return found
+
+    def subject_detail(run: EvalRun) -> dict[str, dict[str, Any]]:
+        snapshot = run.subject_snapshot
+        return {snapshot.subject_id: snapshot.model_dump(mode="json", include={"subject_label", "components"})}
+
+    comparison = compare_two_runs(
+        storage, baseline_run_id, candidate_run_id, scope_id, load_template=template, subject_detail=subject_detail
+    )
+    runs: list[EvalRun] = []
+    for run_id in (baseline_run_id, candidate_run_id):
+        run = storage.load_eval_run(run_id, scope_id)
+        if run is None:  # compare_two_runs has already refused a missing run; this keeps the type honest
+            raise NotFoundError("run", run_id)
+        runs.append(run)
+    windows = [
+        window
+        for run in runs
+        if (window := measurement_window(run.id, storage.query_eval_results_by_run(run.id, scope_id))) is not None
+    ]
+    return RunsCompared(
+        baseline_run_id=baseline_run_id,
+        candidate_run_id=candidate_run_id,
+        comparison=comparison,
+        completeness_disclosures={
+            run.id: sentence for run in runs if (sentence := completeness_disclosure(run.completeness)) is not None
+        },
+        measurement_window_disclosure=measurement_window_disclosure(windows),
+        cassette_mode_disclosure=cassette_mode_disclosure({run.id: run.cassette_mode for run in runs}),
     )
 
 
@@ -830,18 +933,53 @@ def export_text(export: ScoreExport) -> str:
     return "\n".join(lines) + "\n\n" + export.body
 
 
+def runs_compared_text(compared: RunsCompared) -> str:
+    """Two runs compared as text: the arms, each reading with its delta and test, then every disclosure."""
+    view = compared.comparison
+    arm: Mapping[str, Any] = view.get("comparison", {}).get("arm", {})
+    paired = bool(arm.get("paired"))
+    lines = [
+        f"run {compared.baseline_run_id} ({arm.get('model_a')}) against run {compared.candidate_run_id} "
+        f"({arm.get('model_b')}); "
+        + (f"paired over {arm.get('n_pairs')} shared case(s)" if paired else "unpaired: no case scored in both"),
+        f"pass^k at k={format_number(arm.get('k'))}: {format_number(arm.get('pass_hat_k_a'))} vs "
+        f"{format_number(arm.get('pass_hat_k_b'))} (delta {format_signed(arm.get('pass_hat_k_delta'))}; "
+        f"{arm.get('count_a')} vs {arm.get('count_b')} case(s))",
+        f"mean composite: {format_number(arm.get('composite_a'))} vs {format_number(arm.get('composite_b'))} "
+        f"(delta {format_signed(arm.get('composite_delta'))}), "
+        + format_significance(
+            significant=arm.get("significant"),
+            paired=paired,
+            p=arm.get("p"),
+            effect=arm.get("hedges_g"),
+            n=arm.get("n_pairs"),
+            hedges=True,
+        ),
+    ]
+    if view.get("composite_comparability"):
+        lines.append(str(view["composite_comparability"]))
+    lines += _completeness(compared.completeness_disclosures)
+    lines += [
+        sentence for sentence in (compared.measurement_window_disclosure, compared.cassette_mode_disclosure) if sentence
+    ]
+    return "\n".join(lines)
+
+
 __all__ = [
     "LAUNCH_PRICER_METHOD",
     "ArmEstimate",
     "LaunchEstimate",
     "OutOfRunSpendReport",
     "OutOfRunSpendTotals",
+    "RunsCompared",
     "estimate_text",
     "export_text",
     "history_text",
     "launch_estimate",
     "out_of_run_spend_text",
     "pivot_text",
+    "runs_compare",
+    "runs_compared_text",
     "scope_export",
     "scope_history",
     "scope_out_of_run_spend",

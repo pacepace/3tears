@@ -49,6 +49,7 @@ from threetears.evals.ops import (
     RunDeleted,
     RunLine,
     RunListing,
+    RunsCompared,
     ScoreExport,
     TemplateListing,
     analyses_list,
@@ -73,6 +74,7 @@ from threetears.evals.ops import (
     run_delete,
     run_get,
     run_launch,
+    runs_compare,
     runs_list,
     scope_export,
     scope_history,
@@ -354,6 +356,17 @@ class ScopePivotParams(EvalBaseModel):
     ] = None
 
 
+class RunsCompareParams(EvalBaseModel):
+    """``runs_compare``."""
+
+    baseline_run_id: Annotated[
+        str, Field(min_length=1, description="The run read as the baseline (A), as runs_list names it.")
+    ]
+    candidate_run_id: Annotated[
+        str, Field(min_length=1, description="The run read against the baseline (B), as runs_list names it.")
+    ]
+
+
 class ScopeHistoryParams(EvalBaseModel):
     """``scope_history``."""
 
@@ -609,6 +622,18 @@ async def _scope_pivot(host: OpsHost, caller: Caller, params: ScopePivotParams) 
         status=params.run_status,
         predicted_cost=params.predicted_cost,
         launched_run_ids=params.launched_run_ids or (),
+    )
+
+
+async def _runs_compare(host: OpsHost, caller: Caller, params: RunsCompareParams) -> RunsCompared:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor,
+        runs_compare,
+        eval_host,
+        params.baseline_run_id,
+        params.candidate_run_id,
+        caller.scope_id,
     )
 
 
@@ -992,6 +1017,25 @@ def engine_actions() -> tuple[Action, ...]:
                 "what it left out and which runs measured less than they promised. A ranking pooled over the rows "
                 "that most rows contradict is flagged. A judged measure over several subjects is refused unless "
                 "subject_filter names one."
+            ),
+        ),
+        Action(
+            name="runs_compare",
+            summary="Compare one run's arm against another's: pass^k, mean composite, their deltas and the test.",
+            workflow=ANALYSE,
+            permission="read",
+            params=RunsCompareParams,
+            result=RunsCompared,
+            handler=_runs_compare,
+            render=render.render_runs_compared,
+            example={"baseline_run_id": run_id, "candidate_run_id": "0193a1b2-run-b"},
+            detail=(
+                "pass^k is read on both arms at the shallower arm's depth. The composite is tested paired over the "
+                "cases both runs scored, else unpaired, and the answer says which; a miss reads not significant, "
+                "never no difference. Composites of two different subjects are not compared. Each run that "
+                "delivered less than its matrix carries its sentence, and the answer says when the two were "
+                "measured over spans that do not overlap or recorded different cassette modes. A run not in the "
+                "caller's scope is not found."
             ),
         ),
         Action(

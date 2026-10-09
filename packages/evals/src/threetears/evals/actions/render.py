@@ -48,6 +48,7 @@ from threetears.evals.ops import (
     RunDeleted,
     RunLine,
     RunListing,
+    RunsCompared,
     ScoreExport,
     TemplateListing,
     dollars_text,
@@ -56,6 +57,7 @@ from threetears.evals.ops import (
     history_text,
     out_of_run_spend_text,
     pivot_text,
+    runs_compared_text,
 )
 
 if TYPE_CHECKING:
@@ -514,6 +516,11 @@ def render_reporter_cases(listing: ReporterCaseListing) -> str:
 def render_pivot(table: PivotTable) -> str:
     """A pivot: each cell with its denominators, and every caveat the table carries."""
     return pivot_text(table)
+
+
+def render_runs_compared(compared: RunsCompared) -> str:
+    """Two runs compared: the arms, each reading with its delta and test, and every disclosure."""
+    return runs_compared_text(compared)
 
 
 def render_history(result: HistoryResult) -> str:
