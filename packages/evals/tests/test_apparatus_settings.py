@@ -138,7 +138,7 @@ async def test_two_values_of_one_template_are_two_conditions_of_one_candidate():
         if value != pool_b.context_components.model_dump()[name]
     }
     assert differing == {"apparatus_settings"}, "the component names what moved"
-    assert pool_a.identity_version == IDENTITY_VERSION == 23
+    assert pool_a.identity_version == IDENTITY_VERSION == 24
     variant = {derive_variant_identity(run=run, profile=profile).variant_key for run in (pool_a, pool_b, unset)}
     assert len(variant) == 1, "an apparatus value is the rig, not the candidate"
 

@@ -272,6 +272,20 @@ design's contrast arms and on each family comparison). On any other lever the sh
 so it is never named there. The confound qualifies the comparison; it never hides it. A share nothing measured is
 said to be unmeasured and names no confound.
 
+An arm is keyed by the model id its launch asked for, and a floating alias (a "latest" pointer) is resolved on the
+provider's side, so two runs of one arm can have been answered by different models. Only the response names the
+model that answered, and each candidate usage row records it (`RoleUsage.served_model`). The bundle reads that into
+`arm_served_models`: each arm's served models, and its state, `one`, `pooled` (two or more models answered it, so
+its numbers are a mixture) or `unrecorded` (some response named no model, or the row was stored before this was
+recorded; never read as the alias). Wherever one requested id was answered by more than one model across a
+comparison's runs, whether inside one arm or between two arms that asked for the same id, the comparison names a
+`served_model:candidate` confound: on the coverage rows and divergences (`confounded_by`) and on each contrast
+against the control (`mechanism_confounds`). It is `undecided` where no mixture is shown but some response named
+no model. Two arms that asked for different ids and were answered by different models are the model lever, not
+its confound. A code-only report says which arms pooled more than one model. The arm still pools under its key:
+the variant key is fixed at launch, before any response names a model, so the mixture is disclosed rather than
+split.
+
 ## Results by kind of case: strata
 
 A pooled accuracy can hide that a variant does well on easy tickets and badly on the hard ones you care
@@ -381,8 +395,24 @@ Every distinct result weighs 1, split across the raters that measured it, so the
 floor counts, distinct results, never pairs: neither a small rater nor many raters re-measuring a few
 shared results (five annotators on the same three anchors; one result repeated thirty times) can carry it,
 or the floor, over the bar. A repeat that answers "can't tell" where the judge had scored is a
-disagreement, never set aside. A judge is a served model and a judge config, so a tier measured under one
-prompt never sets another's.
+disagreement, never set aside. A judge is a served model, a judge config and the temperature its calls were
+sent at, so a tier measured under one prompt or one temperature never sets another's.
+
+**What temperature a judge samples at (#633, owner ruling).** Every judge call is requested at
+`DEFAULT_JUDGE_TEMPERATURE` (0) unless the dimension's `JudgeConfig` states another; a dimension with no config
+is no longer judged at the provider's default (around 1.0 on some) beside configured ones at 0, a split nobody
+chose. A model that refuses a temperature (some reasoning models do) is sent none, and the client reports that on
+its completion (`CompletionResult.temperature`, `None`), so the score records `model_default` rather than the 0
+nobody sent. Each score records what its call was actually sent at (`RubricScore.judge_temperature`), and that is
+part of the judge's identity everywhere: agreement groups and tiers are keyed by it, the `judge_temperature`
+apparatus input compares runs on it, a repeat sent at another temperature is unpaired (`temperature_changed`), and
+a judged run records what its unconfigured dimensions were requested at (`EvalRun.judge_temperature`) in its
+measurement context. A score or run stored before this recorded none and reads as not recorded: its judge is
+unknown, never a match for one at 0, and such a run is not re-judged or repeated under today's request
+(`recorded_judge_pins` refuses it). Its cell keeps the id it had before the dimension existed: an unrecorded
+temperature (or an unseated one on a run with no judge) stays out of the cell id (`CELL_ID_NEUTRAL`), so a stored
+analysis's cell references still resolve, while a run that recorded a temperature gets a cell of its own that
+never pools with the unrecorded one.
 
 **Where tiers appear.** The bundle lists each judge's tier per dimension with both criteria
 (`judge_evidence_tiers`); a finding stands on the weakest tier among its rows

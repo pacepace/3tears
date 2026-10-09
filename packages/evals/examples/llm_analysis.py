@@ -76,7 +76,8 @@ def keyword_classifier(rules: dict[str, tuple[str, ...]]) -> Any:
 
 Completion = namedtuple(
     "Completion",
-    "content input_tokens output_tokens reasoning_tokens cost_usd price_source model served_model stop_reason",
+    "content input_tokens output_tokens reasoning_tokens cost_usd price_source model served_model stop_reason "
+    "temperature",
 )
 
 
@@ -107,6 +108,7 @@ def claude_writer() -> Any:
             price_source="anthropic list price, from llm_analysis.py",
             model=MODEL,
             served_model=response.model,
+            temperature=None,  # none is sent: this request sets an effort, so the model's own sampling applies
             stop_reason=stopped.get(response.stop_reason or "", "error"),
         )
 
@@ -140,7 +142,7 @@ def offline_writer() -> Any:
         } | {"confidence": "low", "axes": [], "caveats": [], "invalidates": [], "durable": ""}
         memo = {"headline": "Offline stand-in: a script wrote this, not a model", "summary": "- Shape only."}
         memo |= {"findings": [finding], "decisions": [], "questions": [], "next": []}
-        return Completion(json.dumps(memo), None, None, None, 0.0, "offline stand-in", "offline", None, "end_turn")
+        return Completion(json.dumps(memo), None, None, None, 0.0, "offline stand-in", "offline", None, "end_turn", 0.0)
 
     return SimpleNamespace(generate=generate)
 

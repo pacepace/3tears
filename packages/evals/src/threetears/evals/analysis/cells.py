@@ -60,7 +60,7 @@ from threetears.evals.contracts.models import ApparatusProvenance
 #: cell pools or says changes — a dimension joining the apparatus or world coordinate (one moved
 #: through a host declaration counts, though no line here changes), or a renamed count. Why each
 #: earlier version moved is in this file's history.
-CELL_MODEL_VERSION: int = 10
+CELL_MODEL_VERSION: int = 11
 
 
 class ApparatusClass(EvalDocumentModel):
@@ -390,6 +390,7 @@ def apparatus_class_of(
     *,
     provenance: ApparatusProvenance,
     dimensions: Collection[str] = (),
+    id_neutral: Collection[str] = (),
 ) -> ApparatusClass:
     """Classify one observation's rig from the dimensions it recorded.
 
@@ -403,17 +404,31 @@ def apparatus_class_of(
         provenance: Whether the rig was set (``commissioned``) or found (``witnessed``). Required:
             only the writer of the observations knows, and a default would let a log read as an
             experiment.
+        id_neutral: Dimensions this observation's class lists but its id does not digest, because the
+            caller has established that leaving them out cannot make two different classes share an id
+            (the bundle's :data:`~threetears.evals.analysis.bundle.CELL_ID_NEUTRAL` says when). They stay on
+            the class — in ``recorded`` or ``unknown_dimensions`` — so the merge rule still refuses to pool
+            an unrecorded dimension with a recorded one; only the id is spared a dimension that says
+            nothing new, which is what keeps a cell minted before the dimension existed addressable.
 
     Returns:
         The class. Its id digests the recorded map, the names of the unrecorded dimensions and the
-        provenance — see :class:`ApparatusClass` for why none of the three can be dropped.
+        provenance — see :class:`ApparatusClass` for why none of the three can be dropped — less the
+        ``id_neutral`` dimensions.
     """
     known = {name: level for name, level in recorded.items() if level is not None}
     unknown = sorted((set(dimensions) | set(recorded)) - set(known))
+    neutral = set(id_neutral)
     return ApparatusClass(
         # Every part under its own key so a dimension NAMED as unknown can never collide with one
         # RECORDED at a value that happens to equal its name.
-        apparatus_class_id=canonical_digest({"provenance": provenance, "recorded": known, "unknown": unknown}),
+        apparatus_class_id=canonical_digest(
+            {
+                "provenance": provenance,
+                "recorded": {name: level for name, level in known.items() if name not in neutral},
+                "unknown": [name for name in unknown if name not in neutral],
+            }
+        ),
         recorded=known,
         unknown_dimensions=unknown,
         provenance=provenance,

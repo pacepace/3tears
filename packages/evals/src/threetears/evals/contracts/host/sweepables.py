@@ -1295,6 +1295,53 @@ def _judge_served_models(_run: EvalRun, results: Sequence[EvalResult]) -> list[s
     return sorted(served)
 
 
+def _temperatures_by_score(result: EvalResult) -> list[str | None]:
+    """The temperature each of one result's stored scores was sent at, as a level — ``None`` where it recorded none.
+
+    Over the same scores :func:`served_models_by_score` reads (the rubric dims, then both dual-score axes),
+    each as a string level so a number and :data:`~threetears.evals.contracts.models.MODEL_DEFAULT_TEMPERATURE`
+    sort and compare as one kind of value.
+
+    Args:
+        result: The result to read.
+
+    Returns:
+        One entry per stored score, in rubric-then-axes order; empty when nothing was scored.
+    """
+    axes = (score for score in (result.transcript_score, result.outcome_score) if score is not None)
+    return [
+        None if score.judge_temperature is None else str(score.judge_temperature)
+        for score in (*result.rubric_scores, *axes)
+    ]
+
+
+def _judge_temperatures(_run: EvalRun, results: Sequence[EvalResult]) -> list[str] | None:
+    """The temperatures a run's scores were actually sent at, sorted (#633).
+
+    Read off each stored score's ``judge_temperature`` — what the judge client reported sending — and never
+    off the run's ``judge_temperature``, which is what unconfigured dimensions were REQUESTED at: a model
+    that refuses a temperature is sent none, and a config states its own. ``model_default`` is a level (sent
+    none, the model's own default applied), distinct from every number.
+
+    Args:
+        _run: Unused — the run records the request, not what was sent.
+        results: The run's results.
+
+    Returns:
+        The sorted distinct levels when every stored score recorded one; ``None`` when ANY recorded none — a
+        score judged before temperatures were recorded, or by a client that reports none — for the reason
+        :func:`_judge_served_models` returns ``None`` on a partial record; ``[]`` when nothing was scored. Both
+        blanks read as undecidable, never as agreement.
+    """
+    sent: set[str] = set()
+    for result in results:
+        for level in _temperatures_by_score(result):
+            if level is None:
+                return None
+            sent.add(level)
+    return sorted(sent)
+
+
 def _judge_dim_divergence(run: EvalRun, _results: Sequence[EvalResult]) -> list[str] | str | None:
     """Which dims were scored by something other than the run's judge pin.
 
@@ -1387,6 +1434,23 @@ CORE_SWEEPABLES: tuple[Sweepable, ...] = (
         read=_judge_served_models,
         reader_prose="the model that scored the work, as the provider named it",
         confounds="a different model scored the work, and two judges do not grade the same answer the same way",
+        indeterminate_when_blank=True,
+        result_level=True,
+    ),
+    # The temperature each judge call was actually SENT at, observed across the results like the model
+    # that scored them (#633). A dimension with no JudgeConfig once sampled at the provider's default while
+    # one with a config sampled at its 0.0, in one run; both now ask for the same default, and a model that
+    # refuses a temperature is sent none ('model_default'). A judge at another temperature is another judge.
+    # Indeterminate when blank: a score that recorded no temperature cannot be said to match one that did.
+    Sweepable(
+        name="judge_temperature",
+        role="apparatus",
+        read=_judge_temperatures,
+        reader_prose="the sampling temperature each judge call was actually sent at",
+        confounds=(
+            "the judge sampled at a different temperature, and the same judge model at another temperature does "
+            "not grade the same answer the same way"
+        ),
         indeterminate_when_blank=True,
         result_level=True,
     ),
@@ -1488,7 +1552,13 @@ CORE_SWEEPABLES: tuple[Sweepable, ...] = (
 #: candidate a different conversation to do. A single caveat covering both would be false about
 #: whichever one did not move, and the disclosure surfaces render them under separate headings for
 #: exactly that reason.
-JUDGE_INPUTS: tuple[str, ...] = ("judge_model", "judge_request_settings", "judge_dim_divergence", "judge_config_ids")
+JUDGE_INPUTS: tuple[str, ...] = (
+    "judge_model",
+    "judge_temperature",
+    "judge_request_settings",
+    "judge_dim_divergence",
+    "judge_config_ids",
+)
 
 #: Who PLAYED THE USER. See :data:`JUDGE_INPUTS` for why this is its own tuple.
 SIMULATOR_INPUTS: tuple[str, ...] = ("simulator_model", "simulator_request_settings")

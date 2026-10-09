@@ -191,6 +191,7 @@ from threetears.evals.analysis.surface_table import SurfaceTable
 from threetears.evals.analysis.arms import ArmLevel, ArmMeasurement, ArmRow, ArmStatus
 from threetears.evals.analysis.bundle import (
     ArmMechanismReading,
+    ArmServedModel,
     CampaignReadStore,
     CellCoordinate,
     ComparedCell,
@@ -330,6 +331,7 @@ __all__ = [
     "ArmMeasurement",
     "ArmMechanismReading",
     "ArmRow",
+    "ArmServedModel",
     "ArmStatus",
     "ArmTable",
     "AsRecordedReporterKind",

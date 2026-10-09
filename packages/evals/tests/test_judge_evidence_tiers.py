@@ -751,7 +751,9 @@ class TestATierBelongsToTheWholeJudge:
 
     def test_the_tier_sentence_names_the_config(self) -> None:
         (tier,) = judge_evidence_tiers(judge_agreement([], []), judge_self_agreement([]), {_key(config="cfg-v1")})
-        assert tier_sentence(tier).startswith(f"{TONE} (judge-a, config cfg-v1): undetermined")
+        assert tier_sentence(tier).startswith(
+            f"{TONE} (judge-a, config cfg-v1, temperature not recorded): undetermined"
+        )
 
 
 # --- where the tier is shown ---------------------------------------------------------------------
@@ -865,7 +867,8 @@ class TestTheReportStatesEachTier:
         texts = [block.text for block in report.blocks if isinstance(block, DisclosureBlock)]
         sentences = [text for text in texts if text.startswith("Judged evidence tier:")]
         assert sentences == [
-            f"Judged evidence tier: {TOYHOST_JUDGED_DIMENSION} (an unnamed judge): calibrated — agreement with people 1 "
+            f"Judged evidence tier: {TOYHOST_JUDGED_DIMENSION} (an unnamed judge, temperature not recorded): calibrated "
+            "— agreement with people 1 "
             "(bounds 0.6904 to 1) over 20 pairs from 20 results, meets (bar 0.6 over at least 20 results); with its "
             "own repeats not measured (bar 0.8 over at least 120 results) — needs 120 results."
         ]

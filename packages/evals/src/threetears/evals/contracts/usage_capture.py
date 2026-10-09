@@ -12,7 +12,7 @@ observed. A role that reported no reasoning split carries ``None`` reasoning; a 
 reported ``0`` carries ``0``. Coercing either way fabricates an observation, and per-role
 cost attribution depends on being able to say "not measured".
 
-**Rows are keyed by (role, model, provider, unit, price source), not role alone.** A judge run can score
+**Rows are keyed by (role, model, served model, provider, unit, price source), not role alone.** A judge run can score
 different dimensions with different models (each :class:`~threetears.evals.contracts.models.JudgeConfig`
 may pin its own), so blending them into one row would have to drop ``model`` — destroying
 exactly the attribution that ``model`` + ``price_source`` exist to preserve, since dollars
@@ -42,7 +42,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts.host.spend import ExternalSpend
 from threetears.evals.contracts.models import CellTermination, RoleUsage, SimulatorPurpose, UsageRole
-from threetears.evals.contracts.provider import sum_optional_tokens
+from threetears.evals.contracts.provider import USAGE_LEDGER_ATTRIBUTES, sum_optional_tokens
 from threetears.evals.contracts.spend import ExternalRateTable, reported_price_source
 from threetears.observe import get_logger
 
@@ -121,6 +121,10 @@ class CallUsage:
     """
 
     model: str | None = None
+    #: The model the provider's response named as having answered
+    #: (``CompletionResult.served_model``); ``None`` when it named none, or when the folded
+    #: attempts named different ones — one record cannot name two.
+    served_model: str | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
     reasoning_tokens: int | None = None
@@ -129,8 +133,37 @@ class CallUsage:
     #: (``CompletionResult.price_source``); ``None`` when it named none.
     price_source: str | None = None
     #: Provider calls folded into this usage — more than one when a caller retried and
-    #: aggregated the attempts, all of which spent real tokens.
+    #: aggregated the attempts, all of which spent real tokens. The one attribute the ledger
+    #: reads that is not a :class:`~threetears.evals.contracts.provider.CompletionResult` member
+    #: (:data:`CALL_USAGE_ONLY_ATTRIBUTES`): a completion is one call by definition, so the
+    #: protocol has nothing to say here, and the ledger reads an absent one as 1.
     calls: int = 1
+
+    @classmethod
+    def of(cls, completion: Any) -> CallUsage:
+        """What one completion reports, read by the ledger's declared attribute names.
+
+        For a caller that must hold a completion's spend past the completion itself (the simulator
+        keeps one per call). Read through :data:`~threetears.evals.contracts.provider.USAGE_LEDGER_ATTRIBUTES`,
+        so this and :meth:`RoleUsageLedger.add_llm_result` cannot read different names; an attribute the
+        completion lacks reads as unreported, never zero.
+
+        Args:
+            completion: A :class:`~threetears.evals.contracts.provider.CompletionResult`-shaped object.
+
+        Returns:
+            One call's usage.
+        """
+        read: dict[str, Any] = {name: getattr(completion, name, None) for name in USAGE_LEDGER_ATTRIBUTES}
+        read["model"] = read["model"] or None
+        read["served_model"] = read["served_model"] or None
+        return cls(**read)
+
+
+#: The attributes :meth:`RoleUsageLedger.add_llm_result` reads beyond
+#: :data:`~threetears.evals.contracts.provider.USAGE_LEDGER_ATTRIBUTES` — declared on :class:`CallUsage`
+#: alone. See :attr:`CallUsage.calls`.
+CALL_USAGE_ONLY_ATTRIBUTES: tuple[str, ...] = ("calls",)
 
 
 @dataclass
@@ -168,8 +201,8 @@ class _ModelTotals:
     provider_units: int | None = None
 
 
-#: One ledger row's key: ``(model, provider, provider_unit, price_source, actor_id, purpose)``.
-_RowKey = tuple[str | None, str | None, str | None, str | None, str | None, SimulatorPurpose | None]
+#: One ledger row's key: ``(model, served_model, provider, provider_unit, price_source, actor_id, purpose)``.
+_RowKey = tuple[str | None, str | None, str | None, str | None, str | None, str | None, SimulatorPurpose | None]
 
 
 @dataclass
@@ -186,7 +219,7 @@ class RoleUsageLedger:
     #: ``None`` on every token-metered role and on an external role whose run declared no
     #: usable rates — then the calls are counted and nothing else is claimed about them.
     rate_table: ExternalRateTable | None = None
-    #: Keyed by ``(model, provider, provider_unit, price_source, actor_id, purpose)``. There is no
+    #: Keyed by ``(model, served_model, provider, provider_unit, price_source, actor_id, purpose)``. There is no
     #: ledger-wide price source: each contribution names its own, so a row's provenance is what its
     #: contributions reported rather than what the ledger was built expecting. The last two are the
     #: simulator's attribution and ``None`` on every other role.
@@ -216,6 +249,7 @@ class RoleUsageLedger:
         completion_tokens: int | None,
         reasoning_tokens: int | None,
         cost_usd: float | None,
+        served_model: str | None = None,
         calls: int | None = 1,
         provider_units: int | None = None,
         provider: str | None = None,
@@ -243,6 +277,10 @@ class RoleUsageLedger:
         ``price_source`` is where ``cost_usd`` came from, as the caller names it; ``None`` when
         it names none. The ledger never supplies one.
 
+        ``served_model`` is the model the provider's response named as having answered, ``None`` when it
+        named none. It keys the row beside ``model``: calls one alias had answered by two models are two
+        rows, because which model produced the numbers is exactly what a blended row would lose.
+
         **Totals key on ``(model, provider, provider_unit, price_source)``, not model alone.**
         That is what makes "units from different providers are never summed" structural rather
         than a rule every downstream reader has to remember: two providers land in two rows and
@@ -261,7 +299,7 @@ class RoleUsageLedger:
         """
         if (actor_id is not None or purpose is not None) and self.role != "simulator":
             raise ValueError(f"actor_id and purpose attribute simulator calls, not the {self.role!r} role's")
-        key = (model or None, provider, provider_unit, price_source, actor_id, purpose)
+        key = (model or None, served_model or None, provider, provider_unit, price_source, actor_id, purpose)
         totals = self._totals.setdefault(key, _ModelTotals())
         totals.call_count = sum_optional_tokens(totals.call_count, calls)
         totals.provider_units = sum_optional_tokens(totals.provider_units, provider_units)
@@ -284,7 +322,15 @@ class RoleUsageLedger:
         Read defensively via ``getattr``: the judge and simulator accept any object
         satisfying their narrow client protocols, and test doubles legitimately supply only
         the fields they exercise. An absent ``reasoning_tokens`` attribute is the same
-        statement as an unreported one — unknown, not zero.
+        statement as an unreported one — unknown, not zero. The names read are declared once
+        (:data:`~threetears.evals.contracts.provider.USAGE_LEDGER_ATTRIBUTES`, plus
+        :data:`CALL_USAGE_ONLY_ATTRIBUTES`), and a host checks its completion type against them with
+        :func:`~threetears.evals.testing.check_completion_conformance`, because the defensive read is
+        also what would make a renamed attribute degrade every row to "unreported" in silence.
+
+        ``served_model`` is read off the completion and never off ``model``: a client may fill
+        ``model`` from the request, which for a floating alias names the pointer rather than the model
+        that answered.
 
         Args:
             result: The response, or a :class:`CallUsage` standing for one.
@@ -292,16 +338,18 @@ class RoleUsageLedger:
             purpose: Whether the simulator call was an ``utterance`` or a ``schedule`` pick; simulator
                 role only.
         """
+        read = CallUsage.of(result)
         self.add(
-            model=getattr(result, "model", None) or None,
-            prompt_tokens=getattr(result, "input_tokens", None),
-            completion_tokens=getattr(result, "output_tokens", None),
-            reasoning_tokens=getattr(result, "reasoning_tokens", None),
-            cost_usd=getattr(result, "cost_usd", None),
+            model=read.model,
+            served_model=read.served_model,
+            prompt_tokens=read.input_tokens,
+            completion_tokens=read.output_tokens,
+            reasoning_tokens=read.reasoning_tokens,
+            cost_usd=read.cost_usd,
             # A CallUsage may aggregate retries into one contribution; a bare LLMResult is
             # always exactly one call.
             calls=getattr(result, "calls", 1),
-            price_source=getattr(result, "price_source", None),
+            price_source=read.price_source,
             actor_id=actor_id,
             purpose=purpose,
         )
@@ -404,11 +452,20 @@ class RoleUsageLedger:
             when the role never ran.
         """
         rows: list[RoleUsage] = []
-        for (model, provider, provider_unit, price_source, actor_id, purpose), totals in self._totals.items():
+        for (
+            model,
+            served_model,
+            provider,
+            provider_unit,
+            price_source,
+            actor_id,
+            purpose,
+        ), totals in self._totals.items():
             rows.append(
                 RoleUsage(
                     role=self.role,
                     model=model,
+                    served_model=served_model,
                     prompt_tokens=totals.prompt_tokens,
                     completion_tokens=totals.completion_tokens,
                     reasoning_tokens=totals.reasoning_tokens,
@@ -820,6 +877,7 @@ def resolve_result_usage(result: EvalResult) -> ResolvedUsage:
 
 __all__ = [
     "BLENDED_COST_ROLES",
+    "CALL_USAGE_ONLY_ATTRIBUTES",
     "CUT_SHORT_TERMINATIONS",
     "PRODUCTION_REPLICATING_ROLES",
     "CallUsage",

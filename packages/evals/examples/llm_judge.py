@@ -78,7 +78,8 @@ def judged_against(case: dict) -> str:  # what the judge reads beside each answe
 
 Completion = namedtuple(
     "Completion",
-    "content input_tokens output_tokens reasoning_tokens cost_usd price_source model served_model stop_reason",
+    "content input_tokens output_tokens reasoning_tokens cost_usd price_source model served_model stop_reason "
+    "temperature",
 )
 
 
@@ -108,6 +109,7 @@ def claude_client() -> Any:
             price_source="anthropic list price, from llm_judge.py",
             model=MODEL,
             served_model=response.model,
+            temperature=None,  # none is sent: this request sets an effort, so the model's own sampling applies
             stop_reason=stopped.get(response.stop_reason or "", "error"),
         )
 
@@ -153,7 +155,9 @@ def offline_judge() -> Any:
         else:  # helpful: an answer that commits to something beats one that does not
             score = 2 if "don't know" in output else 4
         reply = {"reasoning": "offline stand-in: word overlap, not a model", "criteria_scores": {dimension: score}}
-        return Completion(json.dumps(reply), None, None, None, 0.0, "offline stand-in", "offline", None, "end_turn")
+        return Completion(
+            json.dumps(reply), None, None, None, 0.0, "offline stand-in", "offline", None, "end_turn", 0.0
+        )
 
     return SimpleNamespace(generate=generate)
 

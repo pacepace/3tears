@@ -126,6 +126,18 @@ read the old key under the new name, value unchanged.
 **Within v8, not a bump**: ``RubricDimTombstone`` joined as a new stored type — the record a rubric dim delete
 leaves so the definition seed does not write the key back. A store written before it holds none, which reads as
 "no key was deleted since": a dim deleted before then is still written back at the next seed, as it was then.
+
+**Within v8, not a bump**: ``RoleUsage.served_model`` joined as an OPTIONAL field — the model the provider's
+response named as having answered the row's calls, which for a candidate launched on a floating alias is the
+only record of which model produced its numbers. A row stored before it carries None and reads as "not
+recorded", never as the alias in ``model``: the analysis names such an arm's served model unknown rather than
+the one requested.
+
+**Within v8, not a bump**: the judge's temperature joined as OPTIONAL fields (#633) — ``RubricScore.judge_temperature``
+(what the call was sent at), ``EvalRun.judge_temperature`` (what a dimension with no config was requested at) and
+``RepeatedScore.first_judge_temperature``. A document stored before them carries None and reads as not recorded:
+its unconfigured dimensions were requested at the provider's default, which is not today's 0, so such a run's
+roles component is not composable, its scores' judge reads unknown, and nothing pools it with a run judged at 0.
 """
 
 
@@ -859,6 +871,20 @@ class PreconditionOutcome(EvalDocumentModel):
     detail: str = Field(default="", description="What the world actually held; e.g. 'queue.length=0 fails >= 3'.")
 
 
+#: The temperature every judge call is requested at unless a :class:`JudgeConfig` for its dimension says
+#: otherwise, and that config's own default (#633). A judge sampled at a provider's default (around 1.0 on
+#: some) and one at 0 are two judges: before this, a dimension with a config was judged at its 0.0 and one
+#: without at the provider default, in one run, because nobody chose otherwise.
+DEFAULT_JUDGE_TEMPERATURE: float = 0.0
+
+#: A judge call SENT with no temperature, because its model refuses one (some reasoning models do): the
+#: model's own default applied. Recorded as this word rather than as a number nobody sent.
+MODEL_DEFAULT_TEMPERATURE: Literal["model_default"] = "model_default"
+
+#: The temperature a judge call was actually sent at: a number, or :data:`MODEL_DEFAULT_TEMPERATURE`.
+JudgeTemperature = float | Literal["model_default"]
+
+
 class RubricScore(EvalDocumentModel):
     """Outcome of one rubric judge dimension.
 
@@ -892,6 +918,17 @@ class RubricScore(EvalDocumentModel):
             "``~vendor/model-latest`` names a different model from one month to the next. None = the "
             "response named no model, so nobody observed which model scored, and comparisons read it "
             "as unknown, never as a match."
+        ),
+    )
+    judge_temperature: JudgeTemperature | None = Field(
+        default=None,
+        description=(
+            "The sampling temperature the call that produced this score was actually SENT at, as the completion "
+            "reported it: a number, or 'model_default' when the model refuses a temperature and was sent none. "
+            "Part of the judge's identity beside served_model: a different temperature is a different judge, and "
+            "never pools with this one. None = not recorded (a client that reports no temperature, or a score "
+            "judged before temperatures were recorded, when a dimension without a JudgeConfig was requested at the "
+            "provider's default); compared as unknown, never as a match."
         ),
     )
 
@@ -1430,7 +1467,16 @@ class JudgeConfig(EvalDocumentModel):
             "default, so configuring a dim's prompt cannot silently change which model scores it."
         ),
     )
-    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    temperature: float = Field(
+        default=DEFAULT_JUDGE_TEMPERATURE,
+        ge=0.0,
+        le=2.0,
+        description=(
+            "The temperature this dim's judge calls are requested at — the same default a dim with no config is "
+            "judged at, so configuring a dim's prompt never changes how it is sampled. A model that refuses a "
+            "temperature is sent none; each score records what was actually sent (RubricScore.judge_temperature)."
+        ),
+    )
 
     archived: bool = Field(default=False)
     created_at: str = Field(default_factory=utc_now_iso)
@@ -2550,6 +2596,20 @@ class EvalRun(EvalDocumentModel):
             "settings — then a comparison reads them as unrecorded, never as equal to today's values."
         ),
     )
+    judge_temperature: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=2.0,
+        description=(
+            "The temperature this run's judge calls were requested at for every dimension with no JudgeConfig "
+            "(a config states its own, and its id is already part of the judge's identity). Stamped at launch, and "
+            "part of the measurement context's roles: a run judged at another temperature is judged by another "
+            "judge and never pools with this one. What each call was actually sent at — none, for a model that "
+            "refuses a temperature — is on each score. None = no judge was pinned, or the run was launched before "
+            "this was recorded, when such dimensions were requested at the provider's default; its roles component "
+            "is then not composable, never equal to today's."
+        ),
+    )
     simulator_request_settings: ClientRequestSettings | None = Field(
         default=None,
         description=(
@@ -3192,11 +3252,13 @@ class RoleUsage(EvalDocumentModel):
     carries ``None`` reasoning — coercing it to 0 would fabricate an observation.
     A genuine zero (a non-reasoning model reporting 0 reasoning tokens) stays 0.
 
-    Rows are keyed by **(role, model, price source)**, not role alone: a role that spent
+    Rows are keyed by **(role, model, served model, price source)**, not role alone: a role that spent
     tokens on more than one model — a run whose per-dim judge configs pin different
     models, say — contributes one row per model, because blending them would have
     to drop ``model`` and with it the ability to re-derive the dollars. Dollars priced
-    two ways stay in two rows for the same reason.
+    two ways stay in two rows for the same reason, and so do calls one requested alias had
+    answered by two different models: ``served_model`` is the evidence of which model produced
+    the numbers, and a blended row could name neither.
 
     The ``external`` role (paid non-LLM APIs, e.g. web search) has no token
     concept at all: it reports ``call_count`` and — where the caller could count
@@ -3220,7 +3282,19 @@ class RoleUsage(EvalDocumentModel):
     role: UsageRole
     model: str | None = Field(
         default=None,
-        description="Model slug that produced this role's tokens; None when not model-attributable (e.g. an external API).",
+        description=(
+            "Model slug this role's tokens were attributed to, for spend; None when not model-attributable (e.g. an "
+            "external API). A client may fill it from the REQUEST, so for a floating alias it names the alias, not "
+            "the model that answered — that is served_model."
+        ),
+    )
+    served_model: str | None = Field(
+        default=None,
+        description=(
+            "The model the provider's RESPONSE named as having answered this row's calls, never the id requested. "
+            "None = not recorded: the responses named no model, or the row was stored before this was recorded. "
+            "Never read the alias in `model` in its place."
+        ),
     )
     prompt_tokens: int | None = Field(default=None, ge=0)
     completion_tokens: int | None = Field(default=None, ge=0)
@@ -3643,6 +3717,14 @@ class RepeatedScore(EvalDocumentModel):
             "The versioned JudgeConfig that asked for the first score, as the result recorded it; None = the "
             "built-in prompt. The rest of the judge's identity: a repeat answered under another config measures "
             "a different judge, and is not paired."
+        ),
+    )
+    first_judge_temperature: JudgeTemperature | None = Field(
+        default=None,
+        description=(
+            "The temperature the first score was sent at, as it recorded it; None when it recorded none. A repeat "
+            "sent at another temperature — or beside a first score that recorded none — measures a different (or "
+            "an unknown) judge, and is not paired."
         ),
     )
     repeat: RubricScore | None = Field(
@@ -4318,7 +4400,10 @@ __all__ = [
     "ApparatusSettingValue",
     "MeteredCallOrigin",
     "CANDIDATE_SPEAKER",
+    "DEFAULT_JUDGE_TEMPERATURE",
     "EVAL_SCHEMA_VERSION",
+    "MODEL_DEFAULT_TEMPERATURE",
+    "JudgeTemperature",
     "NON_TERMINAL_RUN_STATUSES",
     "OUTCOME_DIM_ID",
     "ROUND_DONE",

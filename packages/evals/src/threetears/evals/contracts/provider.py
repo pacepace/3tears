@@ -120,8 +120,10 @@ class CompletionResult(Protocol):
         Never the id that was requested. ``model`` may be filled from the request when the response
         is silent, which is harmless for attributing spend and wrong as evidence of who answered: a
         floating alias is resolved on the provider's side, so the request names a pointer and only
-        the response names the model. The judge records this as the model that scored, so an
-        implementation that copies the request here makes two different scorers compare equal.
+        the response names the model. The judge records this as the model that scored, and the usage
+        ledger as the model that answered each row's calls (``RoleUsage.served_model``), which is how
+        two candidate runs launched on one alias and served by different models are told apart. An
+        implementation that copies the request here makes two different models compare equal.
         """
         ...
 
@@ -131,9 +133,49 @@ class CompletionResult(Protocol):
         ...
 
     @property
+    def temperature(self) -> float | None:
+        """The sampling temperature the request was actually SENT with, or ``None`` when it was sent with none.
+
+        ``None`` is the model's own default applying: a model that refuses a temperature (some reasoning
+        models do) is sent none whatever the caller asked for, and only the client that built the request
+        knows it did that. The judge records this on every score as part of the judge's identity, so an
+        implementation that reports the requested value when it dropped it makes two different judges
+        compare equal.
+        """
+        ...
+
+    @property
     def stop_reason(self) -> StopReason:
         """Why the completion stopped, mapped onto the engine's vocabulary."""
         ...
+
+
+#: Every member of :class:`CompletionResult`, read off the protocol itself so the list cannot fall
+#: behind it. What :func:`~threetears.evals.testing.check_completion_conformance` holds a host's
+#: completion type to.
+COMPLETION_RESULT_ATTRIBUTES: tuple[str, ...] = tuple(
+    name for name, member in vars(CompletionResult).items() if isinstance(member, property)
+)
+
+#: The :class:`CompletionResult` attributes the usage ledger reads off a completion
+#: (:meth:`~threetears.evals.contracts.usage_capture.RoleUsageLedger.add_llm_result`), declared once.
+#:
+#: The ledger reads each through ``getattr`` with a default, which is right for test doubles that
+#: supply part of the set and is also what makes a host's rename silent: every row from a
+#: completion type that renamed one of these degrades to "unreported", with no error. So the ledger
+#: and the conformance check both read this one tuple, and a host's suite catches a rename with
+#: :func:`~threetears.evals.testing.check_completion_conformance`. ``calls`` is not here: it is an
+#: eval-side count of retries folded into one record, declared on
+#: :class:`~threetears.evals.contracts.usage_capture.CallUsage` alone.
+USAGE_LEDGER_ATTRIBUTES: tuple[str, ...] = (
+    "model",
+    "served_model",
+    "input_tokens",
+    "output_tokens",
+    "reasoning_tokens",
+    "cost_usd",
+    "price_source",
+)
 
 
 class CompletionGenerator(Protocol):
@@ -778,6 +820,7 @@ def extract_json_array(text: str) -> list[dict[str, Any]]:
 
 
 __all__ = [
+    "COMPLETION_RESULT_ATTRIBUTES",
     "INCOMPLETE_STOP_REASONS",
     "JSON_OBJECT_RESPONSE_FORMAT",
     "BoundCompletionClient",
@@ -790,6 +833,7 @@ __all__ = [
     "RequestCeiling",
     "SimulatorLLM",
     "StopReason",
+    "USAGE_LEDGER_ATTRIBUTES",
     "VariationLLM",
     "describe_failure",
     "describe_incomplete_completion",
