@@ -98,6 +98,7 @@ async def test_cheap_spend_survives_the_result_the_run_summary_and_the_bundle() 
 
     # The run summary: three calls, summed without loss.
     assert summary.candidate_cost_usd == THREE
+    assert "candidate spend: $0.0000370 over 3 call(s)" in summary.render()  # shown, not rounded to $0
 
     # The bundle: the run's total, the cell's mean, and both after a JSON round trip.
     bundle = inspect_campaign_bundle(comparison.host, comparison.campaign_id, SCOPE).bundle

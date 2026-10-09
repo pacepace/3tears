@@ -143,7 +143,7 @@ async def main() -> Comparison:
         print(f"--- {arm} ---\n{summary.render()}\n")
 
     # "Contrasts against the control" is the verdict: the difference, its Holm-adjusted p, and whether it separated.
-    # Its cost_usd reads 0 because a plain candidate reports no spend; compare_two_models.py shows how to report it.
+    # Cost is not measured here: a plain candidate reports no spend. compare_two_models.py shows how to report it.
     print(comparison.render())
     return comparison
 

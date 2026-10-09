@@ -48,7 +48,8 @@ async def test_an_answer_s_spend_lands_on_each_result_and_on_the_summary() -> No
     tokens = [len(case["text"]) * 10 for case in CASES]
     assert summary.candidate_calls == 3
     assert summary.candidate_cost_usd == pytest.approx(sum(tokens) * RATE)
-    assert f"candidate spend: ${sum(tokens) * RATE:.6f} over 3 call(s)" in summary.render()
+    # $0.00016, shown to three significant figures rather than rounded away.
+    assert "candidate spend: $0.000160 over 3 call(s)" in summary.render()
     for result in list_results(host.storage, summary.run_id, SCOPE):
         (row,) = result.usage
         assert (row.role, row.model, row.call_count) == ("candidate", "m-1", 1)

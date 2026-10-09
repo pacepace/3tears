@@ -33,6 +33,8 @@ check of a result the candidate failed, and in no count for a result excluded as
 
 from __future__ import annotations
 
+import math
+
 from collections import Counter
 
 from pydantic import BaseModel, ConfigDict
@@ -52,6 +54,18 @@ from threetears.evals.contracts import (
 from threetears.evals.contracts.host import EvalHost
 from threetears.evals.contracts.usage_capture import blended_cost
 from threetears.evals.run import get_run, list_results
+
+
+def _dollars(amount: float) -> str:
+    """Spend as a person reads it: cents for whole calls' worth, three significant figures below a cent.
+
+    A cheap model's call costs a few hundred-thousandths of a dollar, so a fixed number of decimals either
+    shows it as $0.000000 or pads every larger amount with noise; the stored value is never rounded.
+    """
+    if amount == 0:
+        return "$0"
+    decimals = max(2, 2 - math.floor(math.log10(abs(amount))))
+    return f"${amount:.{decimals}f}"
 
 
 class MeasureSummary(BaseModel):
@@ -219,14 +233,14 @@ class EvalSummary(BaseModel):
         lines.extend(f"  {_dimension_line(dimension)}" for dimension in self.judged)
         if self.judged:
             spend = (
-                "unknown: a judge call went unpriced" if self.judge_cost_usd is None else f"${self.judge_cost_usd:.6f}"
+                "unknown: a judge call went unpriced" if self.judge_cost_usd is None else _dollars(self.judge_cost_usd)
             )
             lines.append(f"  judge spend: {spend} over {self.judge_calls} call(s)")
         if self.candidate_calls:
             spend = (
                 "unknown: a candidate call went unpriced"
                 if self.candidate_cost_usd is None
-                else f"${self.candidate_cost_usd:.6f}"
+                else _dollars(self.candidate_cost_usd)
             )
             lines.append(f"  candidate spend: {spend} over {self.candidate_calls} call(s)")
         lines.extend(f"  goal check {goal.check}: passed {goal.passed}/{goal.n}" for goal in self.goal_checks)
