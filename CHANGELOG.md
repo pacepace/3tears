@@ -6,6 +6,53 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Agent acl, core, epoch, nats, registry and agent tools: the access tables are switched on (switch-on stage)
+
+Stage 3 of `docs/epoch-task-06-collection-generations-by-default.md`. Additive: the `acl.*`
+subjects and `AclCache`'s TTL stay until the contract stage.
+
+- **Changed, `groups`, `group_members`, `roles` and `role_assignments` carry write generations**
+  (`write_generation = WRITE_GENERATION` on `GroupCollection`, `GroupMemberCollection`,
+  `RoleCollection`, `RoleAssignmentCollection`). A membership row's broadcast carries
+  `member_type` and `member_id`, an assignment row's `group_id` (`invalidation_columns`).
+- **Changed, `RoleAssignmentCollection.ensure_group_role_assignment` and
+  `delete_by_group_and_scope`**: the rows their SQL wrote are evicted in one advance, naming their
+  group; a lost insert race announces the winning row, and a revocation that matches nothing sends
+  no `DELETE`.
+- **Added, `AclCache` row-by-row eviction**: `evict_group_member_row`, `evict_role_assignment_row`,
+  `evict_role_row`, `evict_group_row`, `drop_membership_layer`, `drop_assignment_layers`; a read
+  fence (`read_fence`, `put_*(fence=)`) so an entry computed before an eviction is not stored after
+  it; `GroupNamespaceEntry.role_ids`, recorded by the evaluator, so a role edit evicts exactly the
+  entries that read the role.
+- **Added, `threetears.agent.acl.bind_acl_cache_to_access_tables` and `ACCESS_TABLES`**, and
+  `threetears.agent.acl.generation_follow.AccessTableFollower` (one supervised generation-key watch
+  per table; `3tears-epoch` joins the `[bus]` extra).
+- **Changed, a broker reply carrying no generations field says the broker advanced nothing**
+  (owner, 2026-10-08): `BrokerGenerationSource.advance` returns `None`, the rows name no
+  generation, and a warning is logged once per table, so a pod switched on ahead of its hub still
+  writes. `GenerationSource.advance` may return `None`.
+- **Changed, grants**: the standalone registry (`_registry`) reads the whole `{ns}-epochs` bucket,
+  read only, as the tool pod does; its rbac stack follows the access tables and takes
+  `BrokerGenerationSource` with a reader.
+- **Changed, the tool pod's collection stack**: its `BrokerGenerationSource` reads through
+  `EpochGenerationReader`; `3tears-agent-tools` and `3tears-registry` depend on `3tears-epoch`.
+- **Changed, `namespaces` carries a write generation too** (`NamespaceCollection`): a per-namespace
+  access entry reads the row, so `rescope` (both keys of the moved row) and `ensure_namespace`'s
+  insert announce their row in one advance, and an `AclCache` evicts that namespace's entries.
+- **Added, `follow_access_tables(registry, cache, reader)`** in
+  `threetears.agent.acl.generation_follow`: binds and follows in one call, returning one handle
+  (`AccessTableFollowing`) whose `stop()` undoes both; refuses unless the registry's invalidation
+  listener runs (`CollectionRegistry.invalidation_listener_running`, added). `AccessTableFollower`
+  backs a failing watch off from one second to a sixty-second cap and exposes `WatchHealth` and
+  `healthy`; `DegradedEvictions` counts rows whose reach was unknown. `follow_generation_key` takes
+  any `threetears.epoch.GenerationWatcher`.
+- **Added, `GroupCollection.read_cascade` and `announce_cascade` (`GroupCascade`)**: a group delete
+  announces the memberships and assignments its database cascade removed, and announces them even
+  when its own advance fails.
+- **Changed, absence caching never takes "nothing advanced" as an advance**: for a collection that
+  caches absences, an advance that returns `None` fails, raised after the write path ran.
+- **Changed, `ensure_platform_builtin_tool_user_role`** announces its `INSERT`.
+
 ### Core: answers computed once per version of their data, shared by every replica, retired when the version moves
 
 - **Added, `threetears.core.collections.versioned_answers.VersionedAnswers`**: a `DerivedCollection`

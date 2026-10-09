@@ -32,8 +32,9 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import aclosing
+from collections.abc import AsyncGenerator
 from datetime import timedelta
-from typing import Final
+from typing import Final, Protocol
 
 from threetears.core.collections.generation import GenerationVerdict
 from threetears.core.collections.registry import CollectionRegistry
@@ -44,6 +45,7 @@ from threetears.epoch.generation import EpochGenerationReader
 
 __all__ = [
     "DEFAULT_BROADCAST_GRACE",
+    "GenerationWatcher",
     "follow_generation_key",
     "generation_catchup_tick",
 ]
@@ -55,6 +57,25 @@ log = get_logger(__name__)
 #: rows, so the pushed generation routinely arrives first; judged at once, every heard write would
 #: read as a missed one and drop the table.
 DEFAULT_BROADCAST_GRACE: Final = timedelta(seconds=2)
+
+
+class GenerationWatcher(Protocol):
+    """what :func:`follow_generation_key` watches a table's generation through.
+
+    :class:`~threetears.epoch.generation.EpochGenerationReader` is the platform's; a follower that
+    wants to see each push (to keep a health state) wraps one.
+    """
+
+    def watch(self, table_name: str) -> AsyncGenerator[str | None]:
+        """the table's write generation as it stands, then each value it takes.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :return: the generations, ``None`` while the table has none
+        :rtype: AsyncGenerator[str | None]
+        """
+        ...
+
 
 #: how often that wait looks at the mark again.
 _GRACE_POLL_SECONDS: Final = 0.02
@@ -119,7 +140,7 @@ async def generation_catchup_tick(registry: CollectionRegistry, reader: EpochGen
 
 async def follow_generation_key(
     registry: CollectionRegistry,
-    reader: EpochGenerationReader,
+    reader: GenerationWatcher,
     table_name: str,
     *,
     grace: timedelta = DEFAULT_BROADCAST_GRACE,
@@ -148,7 +169,7 @@ async def follow_generation_key(
     :param registry: the registry that follows the table
     :ptype registry: CollectionRegistry
     :param reader: watches the table's generation key in the epoch bucket
-    :ptype reader: EpochGenerationReader
+    :ptype reader: GenerationWatcher
     :param table_name: the table to follow
     :ptype table_name: str
     :param grace: how long to wait for an advance's row broadcasts before judging them missed

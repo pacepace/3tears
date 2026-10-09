@@ -76,11 +76,14 @@ from threetears.agent.acl import (
     subscribe_acl_invalidation,
     unsubscribe_acl_invalidation,
 )
+from threetears.agent.acl.generation_follow import AccessTableFollowing, follow_access_tables
+from threetears.core.backends import BrokerGenerationSource
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.namespaces import PLATFORM_RBAC_READ_NAMESPACE
+from threetears.epoch import EpochGenerationReader
 from threetears.nats import NatsClient, Principal, Subscription, kv_key_scope_for
 from threetears.observe import get_logger
 
@@ -165,6 +168,19 @@ class RegistryRbacStack:
     nats_client: NatsClient
     subject_namespace: str
     _subscriptions: list[Subscription] = field(default_factory=list)
+    _following: AccessTableFollowing | None = None
+
+    @property
+    def access_tables_followed(self) -> bool:
+        """whether the acl cache is following every access table it is derived from.
+
+        ``False`` before :meth:`subscribe_invalidations`, and while any table's generation watch
+        keeps failing (the cache then relies on the acl subjects and its TTL alone).
+
+        :return: the follower's health
+        :rtype: bool
+        """
+        return self._following is not None and self._following.healthy
 
     async def subscribe_invalidations(self) -> None:
         """bind the rbac invalidation subjects, and start the collection listener.
@@ -209,6 +225,14 @@ class RegistryRbacStack:
         # replica has already replaced, for the life of the process. the heartbeat
         # registry in ``server.py`` is the same shape and gained the same call.
         await self.registry.start_invalidation_listener(self.nats_client)
+        # the access tables carry write generations (epoch-task-06): the cache is evicted row by
+        # row from their broadcasts, which the listener above hears, and the tables are followed
+        # by watching their generation keys, so a missed broadcast drops what was derived from
+        # the table rather than serving it. Additive while the acl subjects above remain.
+        if self._following is None:
+            self._following = follow_access_tables(
+                self.registry, self.acl_cache, EpochGenerationReader(self.nats_client)
+            )
         log.info(
             "registry rbac stack subscribed to invalidations",
             extra={"extra_data": {"subjects": [sub.subject.path for sub in self._subscriptions]}},
@@ -227,6 +251,9 @@ class RegistryRbacStack:
         """
         await unsubscribe_acl_invalidation(self.nats_client, self._subscriptions)
         self._subscriptions = []
+        if self._following is not None:
+            await self._following.stop()
+            self._following = None
         # paired with the start in :meth:`subscribe_invalidations`. released BEFORE the
         # L1 reset below, so no handler can be mid-evict against a backend being torn
         # out from under it.
@@ -380,6 +407,10 @@ def build_registry_rbac_stack(
         kv_key_scope=rbac_key_scope,
         l2_create_if_missing=False,
     )
+    # epoch-task-06: this process reads the access tables through the broker and writes none, but
+    # every registry over the broker takes the broker's source, so a switched-on table it ever
+    # writes advances; the reader is the epoch bucket's read the registry is granted.
+    registry.set_generation_source(BrokerGenerationSource(EpochGenerationReader(nats_client)))
     # a wrong scope does not fail here -- it reads a neighbour's keys, or its own grant
     # refuses it, both of which surface far from this line. log the resolved value at the
     # wiring point so the first question ("which scope did this process actually take?")

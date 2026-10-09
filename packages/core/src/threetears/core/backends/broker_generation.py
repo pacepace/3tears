@@ -44,9 +44,16 @@ to the token the broker's advance wrote. :data:`GENERATIONS_FAILED_REPLY_FIELD` 
 broker could not advance, beside :data:`GENERATION_UNAVAILABLE_ERROR_CODE`, on a reply that is
 still a success: the rows were committed, so the write must not be retried. A collection advancing
 such a table raises :class:`~threetears.core.exceptions.GenerationUnavailableError`. Both fields are
-optional: a pod built before them reads the reply as before, and a reply from a broker built before
-them names no table, so a switched-on collection's advance raises rather than claim an advance
-nobody made.
+optional: a pod built before them reads the reply as before.
+
+**A reply that carries neither field says the broker advanced nothing** (owner, 2026-10-08). A broker
+built before generations, or one whose hub does not yet hold the table's class switched on, sends
+neither, so a pod switched on ahead of the hub must still write: its advance returns ``None``, its
+rows go out naming no generation, exactly as an undeclared table's do, and a warning is logged once
+per table. No follower is misled by it: none trusts an unmoved generation while any writer of the
+table is on an older release. The alternative, raising and so requiring every hub to be released
+before any pod, is lockstep and was rejected. A reply that does carry the fields is a broker that
+advances: one listing the table failed, or naming generations and not this table, still raises.
 
 **How each side knows a table's writes advance.** The pod: the collection's own class, which calls
 ``advance`` when it declares ``write_generation = WRITE_GENERATION`` or caches absences. The broker:
@@ -101,12 +108,19 @@ class _Committed:
     :ivar not_committed: why the task's last commit landed nothing (rolled back, refused, or its
         outcome unknown); ``None`` otherwise
     :ivar taken: the tables whose token an advance was already handed
+    :ivar names_generations: whether the reply carried either generations field, which only a broker
+        that advances sends; without them the broker advanced nothing for the commit
     """
 
     tokens: dict[str, str] = field(default_factory=dict)
     failed: dict[str, str] = field(default_factory=dict)
     not_committed: str | None = None
     taken: set[str] = field(default_factory=set)
+    names_generations: bool = False
+
+
+#: tables a broker that advances nothing has been reported for, so the warning is logged once each
+_WARNED_UNADVANCED: set[str] = set()
 
 
 _COMMITTED: ContextVar[_Committed | None] = ContextVar("threetears_broker_committed_generations", default=None)
@@ -139,7 +153,9 @@ def record_reply_generations(response: Mapping[str, Any], *, ends_write: bool) -
     unadvanced = [table for table in (failed if isinstance(failed, list) else ()) if isinstance(table, str)]
     if not named and not unadvanced and not ends_write:
         return
-    held = _Committed()
+    held = _Committed(
+        names_generations=GENERATIONS_REPLY_FIELD in response or GENERATIONS_FAILED_REPLY_FIELD in response
+    )
     _COMMITTED.set(held)
     for table, token in named.items():
         held.tokens[table] = token
@@ -173,7 +189,7 @@ def forget_reply_generations(reason: str) -> None:
     _COMMITTED.set(_Committed(not_committed=reason))
 
 
-def _take_committed_generation(table_name: str) -> str:
+def _take_committed_generation(table_name: str) -> str | None:
     """the token the broker wrote for ``table_name`` after the commit just made, handed out once.
 
     A second advance of the table for the same commit would publish its rows under a count the
@@ -182,13 +198,14 @@ def _take_committed_generation(table_name: str) -> str:
 
     :param table_name: the table a collection is advancing
     :ptype table_name: str
-    :return: the generation token
-    :rtype: str
+    :return: the generation token, or ``None`` when the commit's reply carried no generations field
+        at all: the broker advanced nothing (it is older than generations, or its hub does not hold
+        the table's class switched on yet)
+    :rtype: str | None
     :raises GenerationNotCommittedError: when the task's last commit landed nothing
     :raises GenerationUnavailableError: when the broker reported it could not advance the table, or
-        named no generation for it: the broker is older than generations, or does not hold the
-        table's class switched on, or nothing this task committed wrote the table; or when the
-        commit's token was already handed to an advance
+        named generations and none for it, or nothing this task committed wrote anything; or when
+        the commit's token was already handed to an advance
     """
     held = _COMMITTED.get()
     if held is not None:
@@ -209,10 +226,19 @@ def _take_committed_generation(table_name: str) -> str:
             raise GenerationNotCommittedError(
                 f"no write generation for {table_name!r}: {held.not_committed}, so nothing it wrote landed"
             )
+        if not held.names_generations:
+            if table_name not in _WARNED_UNADVANCED:
+                _WARNED_UNADVANCED.add(table_name)
+                _logger.warning(
+                    "the L3 broker advanced no write generation for a switched-on table: its hub is older "
+                    "than write generations or does not hold the table's class switched on yet; this pod's "
+                    "rows of it name no generation until the hub does",
+                    extra={"extra_data": {"table": table_name}},
+                )
+            return None
     raise GenerationUnavailableError(
-        f"the L3 broker named no write generation for {table_name!r} for the commit just made: the hub "
-        f"is older than write generations, or does not hold the table's collection class switched on, "
-        f"or nothing committed here wrote the table"
+        f"the L3 broker named no write generation for {table_name!r} for the commit just made: it named "
+        f"generations for other tables, or nothing committed here wrote anything"
     )
 
 
@@ -293,15 +319,16 @@ class BrokerGenerationSource:
             )
         return token
 
-    async def advance(self, table_name: str) -> str:
+    async def advance(self, table_name: str) -> str | None:
         """the token the broker wrote for ``table_name`` after the commit this task just made.
 
         :param table_name: the table
         :ptype table_name: str
-        :return: the generation token the broker's advance wrote
-        :rtype: str
+        :return: the generation token the broker's advance wrote, or ``None`` when the commit's reply
+            carried no generations field at all, because the broker advanced nothing
+        :rtype: str | None
         :raises GenerationNotCommittedError: when the task's last commit landed nothing
         :raises GenerationUnavailableError: when the broker reported it could not advance the
-            table, or named no generation for it
+            table, or named generations and none for it
         """
         return _take_committed_generation(table_name)

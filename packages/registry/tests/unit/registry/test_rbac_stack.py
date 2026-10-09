@@ -370,6 +370,83 @@ class TestSubscribeInvalidations:
         assert stack.acl_cache.get_membership(key) is None
 
 
+class TestTheAccessTablesAreFollowed:
+    """epoch-task-06 stage 3: the registry's AclCache is evicted row by row from the access tables,
+    whose generations it follows by watching their keys."""
+
+    def _stack(self) -> Any:
+        return build_registry_rbac_stack(
+            nats_client=_make_nats_client(),
+            subject_namespace="3tears",
+            l1_backend=create_registry_l1_backend(),
+            identity_token=_identity_token_provider(),
+        )
+
+    @pytest.mark.asyncio
+    async def test_subscribing_follows_the_four_tables_and_binds_the_cache(self) -> None:
+        from threetears.agent.acl import ACCESS_TABLES
+
+        stack = self._stack()
+        await stack.subscribe_invalidations()
+        try:
+            for table in ACCESS_TABLES:
+                assert stack.registry.generation_marks.follows(table)
+                assert stack.registry.has_derived_caches(table)
+        finally:
+            await stack.close()
+
+    @pytest.mark.asyncio
+    async def test_a_membership_row_evicts_that_actor_with_no_acl_subject(self) -> None:
+        from threetears.core.collections import CacheInvalidationMessage
+
+        stack = self._stack()
+        await stack.subscribe_invalidations()
+        try:
+            actor, other = uuid7(), uuid7()
+            stack.acl_cache.put_membership(ActorMembershipKey(actor_kind="user", actor_id=actor), ())
+            stack.acl_cache.put_membership(ActorMembershipKey(actor_kind="user", actor_id=other), ())
+            stack.registry.tell_derived_caches(
+                CacheInvalidationMessage(
+                    table="group_members",
+                    ids=[f"{uuid7()}", f"{uuid7()}"],
+                    columns={"member_type": "user", "member_id": f"{actor}"},
+                )
+            )
+            assert stack.acl_cache.get_membership(ActorMembershipKey(actor_kind="user", actor_id=actor)) is None
+            assert stack.acl_cache.get_membership(ActorMembershipKey(actor_kind="user", actor_id=other)) is not None
+        finally:
+            await stack.close()
+
+    @pytest.mark.asyncio
+    async def test_close_stops_following_and_unbinds_the_cache(self) -> None:
+        stack = self._stack()
+        await stack.subscribe_invalidations()
+        watches = [task for task in asyncio.all_tasks() if task.get_name().startswith("follow-generation:")]
+        from threetears.agent.acl import ACCESS_TABLES
+
+        assert len(watches) == len(ACCESS_TABLES)
+        await stack.close()
+        assert not stack.registry.has_derived_caches("group_members")
+        assert all(task.done() for task in watches)
+
+    @pytest.mark.asyncio
+    async def test_it_reports_whether_the_tables_are_followed(self) -> None:
+        stack = self._stack()
+        assert not stack.access_tables_followed
+        await stack.subscribe_invalidations()
+        try:
+            # the mocked client cannot watch, so every watch keeps failing: not followed
+            await asyncio.sleep(0.05)
+            assert not stack.access_tables_followed
+        finally:
+            await stack.close()
+
+    def test_the_registry_reads_generations(self) -> None:
+        from threetears.core.collections.generation import source_reads
+
+        assert source_reads(self._stack().registry.generation_source)
+
+
 class TestRegistryServerRbacFactoryConstructor:
     """``RegistryServer`` accepts the rbac-authorizer factory and
     stores both the placeholder authorizer and the factory for the

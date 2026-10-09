@@ -69,7 +69,7 @@ class GenerationSource(Protocol):
         """
         ...
 
-    async def advance(self, table_name: str) -> str:
+    async def advance(self, table_name: str) -> str | None:
         """move the table's generation on, after a write to it has committed, and say what it became.
 
         The token returned is the one this advance wrote, never a later one: the caller stamps it
@@ -80,8 +80,10 @@ class GenerationSource(Protocol):
 
         :param table_name: the collection's table
         :ptype table_name: str
-        :return: the generation token this advance wrote
-        :rtype: str
+        :return: the generation token this advance wrote, or ``None`` when the source knows that
+            nothing was advanced (a pod whose broker advances no generation yet); the write's rows
+            then name no generation
+        :rtype: str | None
         :raises GenerationUnavailableError: when the generation cannot be advanced
         """
         ...

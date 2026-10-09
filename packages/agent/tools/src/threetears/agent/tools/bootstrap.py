@@ -61,6 +61,7 @@ from threetears.core.collections import bind_collections_bucket
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.coordination.replay_anchor import CollectionReplayAnchor
+from threetears.epoch import EpochGenerationReader
 from threetears.nats import Principal, kv_key_scope_for
 from threetears.observe import (
     HealthCheck,
@@ -344,9 +345,11 @@ async def build_tool_pod_collection_stack(
     )
     # epoch-task-06: the pod may not write the epoch bucket, so the hub's L3 broker advances each
     # switched-on table's write generation after committing the pod's write and names the token in
-    # its reply; this source hands it to the collection. It reads none (no reader): a collection
-    # caching absences on a tool pod trusts none, rather than one no advance can invalidate.
-    registry.set_generation_source(BrokerGenerationSource())
+    # its reply; this source hands it to the collection. Its reader binds the epoch bucket the pod
+    # is granted read of, so a collection caching absences can stamp them with a generation, and a
+    # cache the pod derives from a table can follow it (``threetears.epoch.follow_generation_key``,
+    # or ``threetears.agent.acl.generation_follow.AccessTableFollower`` for the access tables).
+    registry.set_generation_source(BrokerGenerationSource(EpochGenerationReader(nats_client)))
     await registry.start_invalidation_listener(nats_client)
     log.info(
         "tool pod collection stack wired",
