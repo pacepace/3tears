@@ -8,7 +8,8 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 
 - ``propose_bars``: removing the not-found raise; removing the one-cell refusal (a two-cell campaign
   then proposes from whichever cell came first); proposing on a directionless measure; reading the
-  threshold off the cell's median rather than its mean.
+  threshold off the cell's mean or median rather than the permissive end of its interval; proposing
+  on a measure observed once, which has no interval.
 - ``BarRegistry._vacuity``: removing the permissive-end branch (a flat baseline then reads as a
   discriminating bar).
 """
@@ -20,7 +21,7 @@ from dataclasses import replace
 
 import pytest
 
-from threetears.evals.analysis import BaselineBarProposals, propose_bars
+from threetears.evals.analysis import BaselineBarProposals, assemble_context_bundle, propose_bars
 from threetears.evals.contracts import EvalCampaign, EvalResult, EvalRun, NotFoundError, ValidationFailedError
 from threetears.evals.contracts import MetricDescriptor
 from threetears.evals.contracts.host import EvalHost, MeasureRegistry
@@ -146,22 +147,45 @@ class TestAFlatBaselineIsFlaggedVacuous:
 
 
 class TestWhatAProposalReads:
-    def test_the_threshold_is_the_cells_own_mean_and_the_rationale_says_where_it_came_from(self) -> None:
+    def test_the_threshold_is_the_low_end_of_the_cells_own_interval_and_the_rationale_says_where_it_came_from(
+        self,
+    ) -> None:
+        """A seed at the mean fails an unchanged incumbent about half the time; the interval's far end does not (#593)."""
         run, results = _measured(256, field_accuracy=0.8)
-        # Skewed on purpose — one observation far below the rest — so the mean and the median differ
-        # and a threshold read off the wrong statistic cannot pass by coincidence.
+        # Skewed on purpose — one observation far below the rest — so the mean, the median and the
+        # interval's low end all differ and a threshold read off the wrong statistic cannot pass by
+        # coincidence.
         values = [0.0, *[0.9] * (len(results) - 1)]
         results = [
             result.model_copy(update={"host_measures": {**result.host_measures, "field_accuracy": value}})
             for result, value in zip(results, values, strict=True)
         ]
         host = _host([(run, results)])
+        # The interval the cell's own summary states — read, not recomputed, so the seed is checked
+        # against whatever rule the summary's interval follows.
+        campaign = host.storage.load_campaign("baseline", TOYHOST_SCOPE)
+        assert campaign is not None
+        (cell,) = assemble_context_bundle(campaign, storage=host.storage, profile=host.profile).cell_measures
+        (summary,) = [summary for summary in cell.measures.measures if summary.name == "field_accuracy"]
+        assert summary.ci_low is not None
 
         accuracy = next(p for p in _proposals(host).proposals if p.bar.measure == "field_accuracy")
 
-        assert accuracy.bar.threshold == pytest.approx(sum(values) / len(values))
+        assert accuracy.bar.threshold == pytest.approx(summary.ci_low)
+        assert accuracy.bar.threshold < sum(values) / len(values), "the mean would sit above the low end"
         assert accuracy.bar.threshold != pytest.approx(0.9), "the median would be 0.9"
         assert "baseline" in accuracy.bar.rationale and f"{len(values)} observations" in accuracy.bar.rationale
+        assert "low end of its 95% interval" in accuracy.bar.rationale
+
+    def test_a_measure_observed_once_has_no_interval_and_is_not_proposed(self) -> None:
+        """One value vouches for no interval, so no bar is seeded on it rather than one at the value."""
+        run, results = _measured(256, field_accuracy=0.95)
+        host = _host([(run, results[:1])])
+
+        result = _proposals(host)
+
+        assert "field_accuracy" not in {proposal.bar.measure for proposal in result.proposals}
+        assert "no interval" in result.not_proposed["field_accuracy"]
 
     def test_a_baseline_below_the_registered_bar_is_flagged_as_loosening_it(self) -> None:
         result = _proposals(_host([_measured(256, field_accuracy=0.8)]))

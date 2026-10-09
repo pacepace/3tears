@@ -62,15 +62,30 @@ _SURFACE_AXES: tuple[MeritAxis, ...] = ("cost", "latency")
 #: cell" is a fact with its own sentence, and is not an empty table.
 SurfaceState = Literal["no_cells", "measured"]
 
-#: A bar's verdict on one cell, as a word — never a colour alone. ``no_data`` is the verdict the
-#: server wrote for a cell that carried no observation of the bar's measure, which is not a miss.
-SurfaceVerdict = Literal["clears", "misses", "no_data"]
-
-_VERDICT_OF: dict[bool | None, SurfaceVerdict] = {True: "clears", False: "misses", None: "no_data"}
+#: A bar's verdict on one cell, as a word — never a colour alone. ``misses`` is a cell whose whole
+#: interval falls short of the bar by more than the measure's margin, and ``clears`` one not shown to
+#: (:attr:`~threetears.evals.contracts.analysis_measures.BarVerdict.cleared`). ``no_interval`` is a
+#: cell with a value but fewer than two observations, which decides nothing; ``no_data`` is the
+#: verdict the server wrote for a cell that carried no observation of the bar's measure. Neither is a
+#: miss.
+SurfaceVerdict = Literal["clears", "misses", "no_interval", "no_data"]
 
 #: Each verdict as the word a reader acts on — the one spelling every surface prints. Served on the
 #: value as ``verdict_word`` so no render keeps its own copy of the vocabulary.
-VERDICT_WORDS: dict[SurfaceVerdict, str] = {"clears": "clears", "misses": "misses", "no_data": "no data"}
+VERDICT_WORDS: dict[SurfaceVerdict, str] = {
+    "clears": "clears",
+    "misses": "misses",
+    "no_interval": "no interval",
+    "no_data": "no data",
+}
+
+
+def _surface_verdict(verdict: BarVerdict) -> SurfaceVerdict:
+    """The word for one stored verdict: its decision, or which of the two undecided states it is."""
+    if verdict.cleared is not None:
+        return "clears" if verdict.cleared else "misses"
+    return "no_data" if verdict.value is None else "no_interval"
+
 
 #: Said under a cost or latency column — and under a bar that read nothing — for a cell where no result took a
 #: turn (:attr:`~threetears.evals.contracts.surface.CellFacts.all_failed`), and by the strata table for such a
@@ -163,7 +178,8 @@ class SurfaceValue(EvalDocumentModel):
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
         description=(
-            "The verdict as the word a reader acts on — `clears`, `misses` or `no data` — never a colour alone. "
+            "The verdict as the word a reader acts on — `clears`, `misses`, `no interval` or `no data` — never a "
+            "colour alone. "
             "Set exactly when `verdict` is, so every surface prints one word for one verdict."
         )
     )
@@ -475,7 +491,10 @@ def _bar_value(bar: BarAdjudication, cell: CellFacts, factor: float) -> SurfaceV
     # A bar that read nothing on a cell where no result took a turn read nothing because there was no turn —
     # a latency bar's measure leaves those failures out — and says that rather than a blank number.
     text = NO_SUCCESSFUL_RESULTS if value is None and cell.all_failed else _value_text(value, sem, verdict.n)
-    return SurfaceValue(value=value, sem=sem, n=verdict.n, verdict=_VERDICT_OF[verdict.cleared], text=text)
+    if verdict.decided_on_the_mean:
+        # Stored before bars read intervals: the word is the old point comparison, and says so.
+        text += ", decided on the mean"
+    return SurfaceValue(value=value, sem=sem, n=verdict.n, verdict=_surface_verdict(verdict), text=text)
 
 
 def _merit_columns(surface: DecisionSurface, cells: list[CellFacts]) -> list[tuple[SurfaceColumn, float]]:

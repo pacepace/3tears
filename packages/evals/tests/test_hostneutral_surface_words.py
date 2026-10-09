@@ -22,8 +22,13 @@ class TestTheProvenanceSentenceIsServed:
 
 
 class TestEveryVerdictIsServedAsItsWord:
-    def test_the_words_are_the_three_a_reader_acts_on(self) -> None:
-        assert VERDICT_WORDS == {"clears": "clears", "misses": "misses", "no_data": "no data"}
+    def test_the_words_are_the_four_a_reader_acts_on(self) -> None:
+        assert VERDICT_WORDS == {
+            "clears": "clears",
+            "misses": "misses",
+            "no_interval": "no interval",
+            "no_data": "no data",
+        }
 
     def test_each_value_carries_the_word_for_its_verdict_and_a_merit_value_carries_none(self) -> None:
         values = [value for row in two_arm_table().rows for value in row.values if value is not None]

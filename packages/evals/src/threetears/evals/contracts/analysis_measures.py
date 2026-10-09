@@ -222,6 +222,13 @@ class BarVerdict(EvalDocumentModel):
     in neither its value nor its ``n``. Its ``n_infra_excluded`` still counts only the faults; the
     failures left out are the cell's ``n_no_turn``. A cell where no result took a turn carries no value,
     and its verdict is ``no data``, never a clearance on a refusal's round trip.
+
+    **The verdict is decided by the interval against the measure's declared margin, never the mean**
+    (:func:`~threetears.evals.analysis.stats.interval_clears`). A cell misses only when its whole
+    interval lies worse than the threshold by more than the margin — shown to fall short by more than a
+    shortfall too small to act on — and clears otherwise, which says only that it is not shown to fall
+    short. Deciding on the mean failed an unchanged incumbent against its own bar about half the time.
+    A cell with a value but no interval (fewer than two observations) is not decided.
     """
 
     variant_key: str = Field(
@@ -266,10 +273,48 @@ class BarVerdict(EvalDocumentModel):
             "it — left out of the value, and not a fault. Zero for every other bar."
         ),
     )
+    ci_low: float | None = Field(
+        default=None,
+        description=(
+            "Low bound of the interval on `value` the verdict was decided on — the cell's own interval on the "
+            "measure, as its summary states it. None below two observations, and on a verdict stored before bars "
+            "read intervals."
+        ),
+    )
+    ci_high: float | None = Field(
+        default=None, description="High bound of that interval. None exactly when `ci_low` is."
+    )
+    margin: float | None = Field(
+        default=None,
+        description=(
+            "The measure's declared margin the bar was read with, in its units — its materiality threshold, the "
+            "difference too small to act on. None when it declares none: the bar is then held at the threshold "
+            "itself."
+        ),
+    )
     cleared: bool | None = Field(
         default=None,
-        description="Whether the value reaches the threshold in the bar's direction. None when the cell carries no observation — unknown, never failed.",
+        description=(
+            "False — the cell misses: its whole interval lies past the threshold less the margin on the worse "
+            "side, so it is shown to fall short of the bar by more than the margin. True — it clears: its "
+            "interval reaches the threshold less the margin, so it is NOT shown to fall short; a wide interval "
+            "reaches far, so weigh `ci_low`/`ci_high` beside it. None — not decided: no observation (`value` is "
+            "None), or a value with no interval (fewer than two observations). Unknown, never failed. A stored "
+            "verdict with `cleared` set and no interval predates interval verdicts: it was the cell's mean against "
+            "the threshold, with no margin, which misses an unchanged incumbent about half the time — read it as "
+            "that point comparison (`decided_on_the_mean`)."
+        ),
     )
+
+    @property
+    def decided_on_the_mean(self) -> bool:
+        """Whether this is a stored verdict from before bars read intervals: decided, with no interval.
+
+        Every verdict decided now is decided on an interval, so a decision with none can only have been
+        the old point comparison — the cell's mean against the threshold. Read structurally rather than
+        from a stored flag, so an analysis frozen before the change needs no migration to say so.
+        """
+        return self.cleared is not None and (self.ci_low is None or self.ci_high is None)
 
 
 class BarAdjudication(EvalDocumentModel):

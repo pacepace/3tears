@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
+from functools import lru_cache
 from statistics import NormalDist
 from typing import Final, Literal, NamedTuple
 
@@ -181,12 +182,16 @@ def _student_t_upper_tail(t: float, df: float) -> float:
     return half if t >= 0.0 else 1.0 - half
 
 
+@lru_cache(maxsize=1024)
 def t_critical_two_sided(confidence: float, df: float) -> float:
     """The two-sided t multiplier for a confidence level on ``df`` degrees of freedom.
 
     The inverse of :func:`_student_t_two_sided_p`, found by bisection rather than by a
     closed form — the forward function is already exact here, and a table of critical
     values would be a second source of truth that could drift from it.
+
+    Cached: the bisection costs a few hundred incomplete-beta evaluations, and every interval an
+    analysis states asks it again for one of a handful of ``(confidence, df)`` pairs.
 
     Why this exists rather than a fixed 1.96: the normal multiplier is the large-sample
     limit, and the samples an eval arm produces are routinely small. At df=2 (three
@@ -350,6 +355,64 @@ def observed_mean_interval(
         return wilson_interval(sum(1 for value in values if value == 1.0), n)
     sem = standard_error_of_mean(list(values))
     return None if sem is None else mean_interval(mean, sem, n, value_range=value_range)
+
+
+def bar_seed(interval: tuple[float, float], *, higher_is_better: bool) -> float:
+    """The threshold a measured incumbent proposes as its bar: the permissive end of its interval.
+
+    The low bound on a higher-is-better measure, the high bound on a lower-is-better one — the worst
+    value the incumbent's own measurement still vouches for. A seed at the incumbent's MEAN is a coin
+    the incumbent tosses against itself: re-measured unchanged, its mean lands below its own earlier
+    mean about half the time. Seeded here and read by :func:`interval_clears`, an unchanged incumbent
+    is failed by its own bar only when its new interval falls wholly short of the old one's far end.
+
+    Args:
+        interval: The incumbent's interval on the measure's mean, as the summary states it
+            (:func:`observed_mean_interval` — the one rule every numeric summary takes).
+        higher_is_better: The measure's declared direction.
+
+    Returns:
+        The seed threshold.
+    """
+    low, high = interval
+    return low if higher_is_better else high
+
+
+def interval_clears(
+    interval: tuple[float, float] | None, threshold: float, *, margin: float | None, higher_is_better: bool
+) -> bool | None:
+    """Whether a cell's interval clears a bar, read against the measure's declared margin.
+
+    A bar is a regression gate: "never ship worse than what runs today". The decision is by the interval,
+    never the mean, and a cell **misses** only when its whole interval lies past the threshold less the
+    margin on the worse side — below ``threshold − margin`` on a higher-is-better measure, above
+    ``threshold + margin`` on a lower-is-better one. That is the claim the data can make: this cell is
+    shown to fall short of the bar by more than a shortfall too small to act on. Otherwise it **clears**,
+    which says exactly the converse — it is *not shown* to fall short by more than the margin. A wide
+    interval reaches far, so a cell measured on a handful of cases clears easily, and a reader weighs
+    that from the interval carried beside the verdict; the bar does not hold an unestimated spread
+    against the cell, because burdening the cell instead (clear only when the whole interval sits at
+    the threshold) fails an unchanged incumbent about half the time at the sample sizes an eval runs.
+
+    Args:
+        interval: The cell's interval on the mean, or None where none is estimable.
+        threshold: The bar's threshold, in the measure's units.
+        margin: The measure's declared margin (:attr:`MetricDescriptor.materiality_threshold`), in its
+            units, or None when it declares none — the bar is then held at the threshold itself.
+        higher_is_better: Which way clearing runs.
+
+    Returns:
+        True when the cell clears, False when it misses, None with no interval — fewer than two
+        observations decide nothing, and a single value against a threshold would be the mean
+        comparison this replaces.
+    """
+    if interval is None:
+        return None
+    slack = margin or 0.0
+    low, high = interval
+    if higher_is_better:
+        return high >= threshold - slack
+    return low <= threshold + slack
 
 
 def cohen_kappa(
@@ -806,10 +869,12 @@ __all__ = [
     "ChangeLabel",
     "ChangeVerdict",
     "SignificanceResult",
+    "bar_seed",
     "ci_half_width",
     "cohen_kappa",
     "composite_significance",
     "holm_adjust",
+    "interval_clears",
     "mean_interval",
     "observed_mean_interval",
     "paired_change",

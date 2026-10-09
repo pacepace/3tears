@@ -4,6 +4,13 @@ A bar is the incumbent standard for one behavior on one measure: *field accuracy
 0.92*. Registering it makes "did this clear the bar" a question with an answer, rather than a
 judgement each reader makes from the number.
 
+**A bar is read by the interval, never the mean.** A cell misses its bar only when its whole interval
+falls short of the threshold by more than the measure's declared margin (its materiality threshold),
+and a proposal seeds the threshold from the incumbent's measured interval rather than its mean — see
+:func:`~threetears.evals.analysis.stats.interval_clears` and
+:func:`~threetears.evals.analysis.stats.bar_seed`. A threshold at the incumbent's mean, read against a
+cell's mean, failed an unchanged incumbent about half the time.
+
 **The ratchet is the whole point, and it only tightens.** A campaign may declare a bar stricter
 than the registry's; one looser is refused, quoting the registered value. A standard that can be
 lowered by the run being measured against it is not a standard.
@@ -51,7 +58,7 @@ class Bar:
     """The measure the bar is read on. Must be a measure the host's registry declares."""
 
     threshold: float
-    """The value the measure must reach."""
+    """The value the measure must reach — read against a cell's interval and the measure's margin, never its mean."""
 
     higher_is_better: bool
     """Whether clearing means at-or-above the threshold.
@@ -79,7 +86,11 @@ class Bar:
     """True when the incumbent was failing at the moment this was seeded — flagged, never silently adopted."""
 
     def clears(self, value: float) -> bool:
-        """Whether ``value`` meets this bar.
+        """Whether one value is at or beyond this bar — a point, for a value that is exactly known.
+
+        Asked of a measure's declared range end, which is certain. A cell's verdict is never this: a
+        measured mean is uncertain, and :func:`~threetears.evals.analysis.stats.interval_clears` decides
+        it by the interval.
 
         Args:
             value: The observed measure value.
@@ -228,7 +239,9 @@ class BarRegistry(HostAttributed):
             behavior: The behavior the bar would govern.
             measure: The measure it is read on. Must be one this host declares — a proposal on a
                 measure nobody can see is a standard nobody can check.
-            observed: The incumbent configuration's measured baseline.
+            observed: The incumbent configuration's measured baseline — the permissive end of its
+                interval (:func:`~threetears.evals.analysis.stats.bar_seed`), as
+                :func:`~threetears.evals.analysis.propose_bars` passes it.
             measures: The host's measure registry, which owns the better-direction and the range.
             rationale: Why this is the standard. Required for the same reason
                 :meth:`__init__` refuses a bar without one.
@@ -283,7 +296,7 @@ class BarRegistry(HostAttributed):
             permissive = floor if proposed.higher_is_better else ceiling
             if proposed.clears(permissive):
                 return (
-                    f"the incumbent measured {proposed.threshold} on {proposed.measure}, whose declared range is "
+                    f"the incumbent's measured baseline is {proposed.threshold} on {proposed.measure}, whose declared range is "
                     f"[{floor}, {ceiling}] — a bar there is cleared by every value the measure can take, so it "
                     "records the current state as the standard rather than setting one"
                 )

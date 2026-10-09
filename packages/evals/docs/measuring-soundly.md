@@ -39,6 +39,13 @@ freedom needs about 2.8.
 [stratum](reading-reports.md#results-by-kind-of-case-strata) or over a homogeneous population.
 *Evidence:* retrieval sub-agent, 5 cases, every arm, 2026-09, two cases scored 4–5 and three scored 3 under every configuration, so no arm cleared 4.0, single campaign.
 
+**A bar decides on the interval, against a margin.** Seeded at the incumbent's mean and read on a cell's
+mean, a bar fails the unchanged incumbent half the time. The engine seeds at the permissive end of the
+incumbent's interval and misses a cell only when its whole interval falls short by more than the measure's
+materiality threshold. A bar on a handful of cases then catches only a gross regression; read the interval
+beside the verdict.
+*Evidence:* seeded simulation (`tests/test_sim_bars_and_change.py`), σ = 1, margin 0.1σ, one observation per case, 2026-10: the mean rule missed an unchanged incumbent 49–50% of the time at n = 3, 6 and 15; the interval rule cleared it 99.7% of the time or more, and missed a candidate 1.6σ worse 86% of the time at n = 15, 26% at n = 6 and 4% at n = 3.
+
 ## Order and time
 
 **Launch compared arms together, and never let running order follow the lever.** Throughput and load

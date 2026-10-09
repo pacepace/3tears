@@ -107,6 +107,7 @@ from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
     composite_significance,
     holm_adjust,
+    interval_clears,
     observed_mean_interval,
     standard_error_of_mean,
     wilson_interval,
@@ -1996,7 +1997,10 @@ class AnalysisContextBundle(EvalDocumentModel):
         description=(
             "Every bar this campaign is held to — its own declared bars, plus each registered incumbent for "
             "its behavior that no declared bar overrides — with a verdict per cell computed here, or the "
-            "reason none exists. Read verdicts from this; never recompute them."
+            "reason none exists. A verdict is decided by the cell's interval against the threshold less the "
+            "measure's declared margin, never by its mean: `cleared` false is shown to fall short by more than "
+            "the margin, true is only not shown to, and null is undecided. Read verdicts from this; never "
+            "recompute them."
         ),
     )
     cell_measures: list[CellFacts] = Field(
@@ -6191,8 +6195,8 @@ def _judged_measures(
     return measures
 
 
-#: A bar's per-cell reading: ``(mean, sem, n, n_independent)``.
-_BarReading = tuple[float | None, float | None, int, int]
+#: A bar's per-cell reading: ``(mean, sem, n, n_independent, interval)``.
+_BarReading = tuple[float | None, float | None, int, int, tuple[float, float] | None]
 
 #: What adjudicating a bar came to — see :attr:`BarAdjudication.state`.
 _BarState = Literal["adjudicated", "names_no_stored_measure", "not_numeric"]
@@ -6295,7 +6299,10 @@ def _bar_reading(
         profile: The host whose vocabulary this reads.
 
     Returns:
-        ``(mean, sem, n, n_independent)``, or None when no counted result carries the name.
+        ``(mean, sem, n, n_independent, interval)``, or None when no counted result carries the name.
+        The interval is the one the cell's own reading states — a measure's summary, or a judged
+        dimension's through the same rule (:func:`~threetears.evals.analysis.stats.observed_mean_interval`)
+        — never one computed for the bar, so a bar and the cell it reads cannot state two widths.
     """
     if bar.kind in ("measure", "goal_state"):
         # A check's rate is the measure the walk publishes for it, read here rather than recomputed,
@@ -6305,7 +6312,8 @@ def _bar_reading(
         summary = next((m for m in collection.measures if m.name == name), None)
         if summary is None or summary.mean is None:
             return None
-        return summary.mean, summary.sem, summary.n, summary.n_independent
+        interval = None if summary.ci_low is None or summary.ci_high is None else (summary.ci_low, summary.ci_high)
+        return summary.mean, summary.sem, summary.n, summary.n_independent, interval
     rows = [
         (float(record.value), record.test_case_id)
         for result in _non_faulted(members)
@@ -6315,7 +6323,13 @@ def _bar_reading(
     if not rows:
         return None
     values = [value for value, _ in rows]
-    return sum(values) / len(values), standard_error_of_mean(values), len(values), len({case for _, case in rows})
+    return (
+        sum(values) / len(values),
+        standard_error_of_mean(values),
+        len(values),
+        len({case for _, case in rows}),
+        observed_mean_interval(values, value_range=bar.descriptor.value_range),
+    )
 
 
 def _bar_adjudications(
@@ -6380,11 +6394,13 @@ def _bar_adjudications(
             # A measure computed over every observation excluded none; reporting the cell's faults as
             # excluded from it would describe a population the value was not computed over.
             keeps_faults = resolved.kind == "measure" and resolved.descriptor.population == "all_observed"
+            # The measure's declared margin — the difference too small to act on, the one margin the
+            # history read's equivalence test is run against too. None holds the bar at its threshold.
+            margin = resolved.descriptor.materiality_threshold
             if any(reading is not None for reading in readings.values()):
                 state = "adjudicated"
                 for key, members in results_by_cell.items():
-                    mean, sem, n, n_independent = readings[key] or (None, None, 0, 0)
-                    cleared = None if mean is None else (mean >= threshold if higher_is_better else mean <= threshold)
+                    mean, sem, n, n_independent, interval = readings[key] or (None, None, 0, 0, None)
                     verdicts.append(
                         BarVerdict(
                             variant_key=key[0],
@@ -6396,7 +6412,12 @@ def _bar_adjudications(
                             n_independent=n_independent,
                             n_infra_excluded=0 if keeps_faults else len(members) - len(counted_by_cell[key]),
                             n_cannot_tell=_cannot_tell_on(resolved, counted_by_cell[key], judged_rows),
-                            cleared=cleared,
+                            ci_low=None if interval is None else interval[0],
+                            ci_high=None if interval is None else interval[1],
+                            margin=margin,
+                            cleared=interval_clears(
+                                interval, threshold, margin=margin, higher_is_better=higher_is_better
+                            ),
                         )
                     )
             else:

@@ -34,17 +34,6 @@ and the field renamed.
 
 *Evidence:* simulation, 5 cases, depths [1,3,2,3,1], 2026-09, 0.651 against a true 0.531.
 
-### Bars compare means, not intervals
-
-Tracked in [#593](https://github.com/pacepace/3tears/issues/593).
-
-`propose_bars` (`analysis/bar_proposals.py`) seeds a bar at the incumbent's mean, and `BarVerdict.cleared`
-compares the cell's mean with the threshold, so an unchanged incumbent misses its own bar about half the
-time. The ruled design: a bar decides by the interval against a declared margin, and seeds from the
-incumbent's measured interval.
-
-*Evidence:* simulation of an unchanged incumbent, n = 3, 6 and 15, 2026-09, missed its own bar 49–50% of the time.
-
 ### No power pre-flight
 
 Tracked in [#594](https://github.com/pacepace/3tears/issues/594).

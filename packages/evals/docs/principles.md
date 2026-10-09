@@ -77,10 +77,11 @@ self-consistency measures precision, not accuracy.
 
 **Bars start where the incumbent performs ("never ship worse than what runs today") and only tighten.**
 A proposed bar is never adopted
-automatically, and one looser than the registered bar is refused. The engine still seeds a proposal from
-the incumbent's mean and clears a bar on a cell's mean; the intended rule is the interval against a
-declared margin, since a bar at the mean fails an unchanged incumbent about half the time
-([open problems](open-problems.md)).
+automatically, and one looser than the registered bar is refused. A bar decides by the interval against the
+measure's declared margin, never the mean: a cell misses only when its whole interval falls short of the
+threshold by more than the margin, and a proposal seeds the threshold at the permissive end of the
+incumbent's measured interval. A bar at the mean, read on a cell's mean, failed an unchanged incumbent about
+half the time.
 
 **What an arm would cost in production and what it cost to measure are kept apart.**
 Spend is recorded per role: the candidate's calls and the work they start are what production would pay;
@@ -121,8 +122,8 @@ would govern users that do not exist.
 **The eval system is meant to evaluate itself.**
 Its model-driven parts are subjects, and every chain of evaluation should end in a code check or a human
 label. The analysis writer has a kind, and a judge's self-agreement is measured by repeating its scores. Testing the statistics
-against simulated data with known answers covers the run-history change read so far, and no other statistic
-([open problems](open-problems.md)).
+against simulated data with known answers covers bar verdicts and the run-history change read so far, and no
+other statistic ([open problems](open-problems.md)).
 
 **A run's memory should scale with its matrix, never with how much a cell produced.**
 How talkative a candidate is should not decide whether a run survives. Nothing measures this yet.
