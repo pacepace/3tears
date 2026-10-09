@@ -204,22 +204,26 @@ def delivered_a_turn(result: EvalResult) -> bool:
     A result is OUT of it when either:
 
     - **the harness faulted it** (:func:`harness_faulted`) — its clock and its spend measured the rig; or
-    - **the candidate's model failed before taking a turn** — ``candidate_failure_cause`` is ``model_failed``
-      (a refusal, a provider or model error, recorded in ``candidate_error``) and the cell was not cut off by
-      its deadline or a cancel. The call came straight back: its round trip is not a turn's latency, and an
-      arm whose every call was refused read as the fastest and cheapest on the surface when it was averaged in.
+    - **the candidate's model failed before delivering a turn** — ``candidate_failure_cause`` is
+      ``model_failed`` (a refusal, a provider or model error, recorded in ``candidate_error``), the result
+      counts no delivered turn (``EvalResult.turns_delivered``), and the cell was not cut off by its deadline
+      or a cancel. The call came straight back: its round trip is not a turn's latency, and an arm whose
+      every call was refused read as the fastest and cheapest on the surface when it was averaged in.
 
     Every other candidate failure STAYS in, because it took a turn and the turn's time and spend are the
-    arm's real cost of failing: a turn the host's budget ended (``turn_budget``) ran until the budget did, an
-    answer the output cap cut (``output_cap``) was generated up to the cap, and a model call the cell's
-    deadline struck while pending ran until the deadline. Leaving those out would rank an arm whose slowest,
-    costliest turns all failed as fast and cheap — the same defect from the other side. All of them still
-    count against the arm wherever it is graded; this predicate decides only what a turn's time and spend
-    are averaged over.
+    arm's real cost of failing: a turn the host's budget ended (``turn_budget``), an answer the output cap
+    cut (``output_cap``), a model call the cell's deadline struck while pending, and a model failure after
+    the candidate had delivered turns — a conversation whose provider failed on its sixth turn, or whose
+    background inner agent's model failed, after five delivered turns' time and spend. Leaving those out
+    read an arm whose slowest, costliest conversations all failed late as faster and cheaper than the
+    control. All of them still count against the arm wherever it is graded; this predicate decides only what
+    a turn's time and spend are averaged over.
 
-    The stored record cannot say how many turns preceded a model failure in a multi-turn conversation, so a
-    conversation whose model failed on a later turn is read as having delivered none; its earlier turns'
-    time and spend are then left out with it.
+    **Where nothing counted the turns** (``turns_delivered`` None — a result stored before the count was kept,
+    or a kind that neither reports a count nor stamps turn records) a model failure outside a cut-off reads as
+    no turn: the cause alone is all that is left, and for the single-call kinds that count nothing it is
+    exact. For a multi-turn conversation stored that way it is an approximation that drops the turns before
+    the failure.
 
     Args:
         result: The result.
@@ -229,7 +233,9 @@ def delivered_a_turn(result: EvalResult) -> bool:
     """
     if harness_faulted(result):
         return False
-    return not (candidate_failure_cause(result) == "model_failed" and result.termination not in _CUT_OFF)
+    if candidate_failure_cause(result) != "model_failed" or result.termination in _CUT_OFF:
+        return True
+    return bool(result.turns_delivered)
 
 
 def harness_faulted(result: EvalResult) -> bool:

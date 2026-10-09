@@ -207,6 +207,16 @@ class CandidateTelemetry(EvalBaseModel):
     "nothing else was running".
     """
 
+    turns_delivered: int | None = None
+    """How many turns the candidate delivered in this cell — its whole answer, for a kind that makes one call.
+
+    The runner stores it on the result (``EvalResult.turns_delivered``), where it decides whether a model
+    failure took a turn: a conversation whose model failed on its sixth turn delivered five, and their time
+    and spend are the arm's; a call refused straight away delivered none. A kind that stamps a turn record on
+    each candidate turn of its trace need not report it — the runner counts those. ``None``: the kind did
+    not count, and a reader falls back to the failure's cause alone.
+    """
+
     turns_ended_by_budget: int | None = None
     """How many of the candidate's turns the host's turn budget ended before they finished.
 

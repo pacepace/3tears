@@ -165,10 +165,10 @@ def _check_failures_fit(
 #: How :attr:`CellFacts.n_no_turn` and :attr:`StratumFacts.n_no_turn` read.
 _N_NO_TURN = (
     "Of `n_candidate_failed`, the failures that took no turn — the candidate's model refused or errored before "
-    "the cell's deadline (`delivered_a_turn` is False) — left out of every cost and latency measure, which "
+    "delivering one (`delivered_a_turn` is False) — left out of every cost and latency measure, which "
     "describe the turns the candidate took. A failure that took a turn (its budget ended it, its output cap "
-    "cut it, its deadline struck mid-call) is not here: its time and spend stay in. None exactly when "
-    "`n_candidate_failed` is."
+    "cut it, its deadline struck mid-call, its model failed after delivered turns) is not here: its time and "
+    "spend stay in. None exactly when `n_candidate_failed` is."
 )
 
 #: How :attr:`CellFacts.n_candidate_failed` and :attr:`StratumFacts.n_candidate_failed` read.
@@ -246,7 +246,8 @@ class CellFacts(EvalDocumentModel):
     empty usage not a spend anyone observed. Averaged in, a classifier arm whose every call was refused
     read 53 ms and $0 on the surface — the fastest, cheapest arm — and nothing said its every result had
     failed. A failure that took a turn — ended by the turn budget, cut by the output cap, struck by the
-    deadline mid-call — stays in: its time and spend are what failing cost the arm. So both are counted
+    deadline mid-call, or a model failure after delivered turns — stays in: its time and spend are what
+    failing cost the arm. So both are counted
     here (``n_candidate_failed``, and the ``n_no_turn`` of them left out of cost and latency), and a cell
     where no result took a turn says so (:attr:`all_failed`) where it would otherwise have no cost or
     latency reading and look merely unmeasured.

@@ -217,8 +217,9 @@ MeritAxis = Literal["quality", "cost", "latency", "reliability"]
 #: failure still counts against the arm wherever the arm is graded (a rate, a bar, a judged score), but a
 #: refused call's round trip is not a turn's latency, and an arm whose every call was refused read as the
 #: fastest and cheapest on the surface when it was averaged in. A failure that DID take a turn — one the
-#: host's turn budget ended, the output cap cut, or the cell's deadline struck mid-call — stays: its time
-#: and spend are the arm's real cost of failing. Every cost or latency measure that declares no other
+#: host's turn budget ended, the output cap cut, the cell's deadline struck mid-call, or a model failure
+#: after turns the candidate had delivered (``EvalResult.turns_delivered``) — stays: its time and spend are
+#: the arm's real cost of failing. Every cost or latency measure that declares no other
 #: population is read over this one (:func:`summary_population`).
 MeasurePopulation = Literal["scored", "all_observed", "delivered"]
 

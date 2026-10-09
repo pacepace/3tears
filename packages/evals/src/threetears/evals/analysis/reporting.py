@@ -4877,10 +4877,9 @@ def _history_value_of(metric: str) -> Callable[[EvalResult], float | None]:
         # series issues regression verdicts. Composite already drops them (via `result_composite`
         # returning None), so leaving latency in made the two metrics on one surface answer
         # different questions — and a cassette miss could post a "faster" step that describes the
-        # harness. Cost is the deliberate exception in this family and stays whole: those dollars
-        # were spent.
-        # A call the model refused or errored on took no turn, and is withheld for the frontier's reason:
-        # `delivered_a_turn`, the one predicate every latency reading uses.
+        # harness. A call the model refused or errored on took no turn, and is withheld for the frontier's
+        # reason: `delivered_a_turn`, the one predicate every latency reading uses. Cost keeps a faulted
+        # cell's dollars, which were spent (see METRIC_COST_USD above).
         return lambda result: (
             result.latency.total_ms
             if result.latency is not None and result.latency.total_ms is not None and delivered_a_turn(result)

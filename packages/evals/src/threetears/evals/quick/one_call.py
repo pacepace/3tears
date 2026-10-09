@@ -66,6 +66,7 @@ from threetears.evals.contracts import (
     DEFAULT_LAUNCH_K_RUNS,
     MATCH_MEASURE,
     CandidateOutput,
+    CandidateTelemetry,
     CassetteMode,
     CellCassettes,
     CellSink,
@@ -422,8 +423,13 @@ class CallableKind:
         except Exception as raised:
             missed = _missed(test_case.host_payload[_EXPECTED_KEY]) if self._classifies else {}
             return CandidateOutput(
-                candidate_errors=[f"the candidate raised {type(raised).__name__}: {raised}"], host_measures=missed
+                candidate_errors=[f"the candidate raised {type(raised).__name__}: {raised}"],
+                host_measures=missed,
+                # One call, and it answered nothing: a refusal's round trip is no turn's time or spend.
+                telemetry=CandidateTelemetry(turns_delivered=0),
             )
+        # One call, answered: the kind's whole turn.
+        telemetry = telemetry.model_copy(update={"turns_delivered": 1})
         evidence: JudgeEvidence | None = None
         if self._judge is not None:
             try:

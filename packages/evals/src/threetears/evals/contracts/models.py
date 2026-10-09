@@ -92,6 +92,14 @@ carry a tier, required; the finding tier ``directional`` is gone from ``Evidence
 records the config that asked for the score it repeats (``RepeatedScore.first_judge_config_id``, required),
 so a repeat under one judge prompt never measures another. A v7 analysis holding a judged reading cannot say
 what tier it stood on, so nothing written under v7 loads.
+
+**Within v8, not a bump**: ``EvalResult.turns_delivered`` joined as an OPTIONAL field — how many turns the
+candidate delivered, which decides whether a model failure's time and spend are a turn's. A result written
+before it carries none and still means what it says; it reads as None, "nothing counted", and every reader
+falls back to the failure's cause alone (``delivered_a_turn``). This is the one deliberate exception to v6's
+"no field is read as absent because older": requiring it would drop every stored result to learn a count
+the old ones never had, and their honest reading is "unknown", which None states. Likewise the decision
+surface's ``CellFacts.n_candidate_failed`` and ``n_no_turn``, None on an analysis frozen before them.
 """
 
 
@@ -3883,6 +3891,20 @@ class EvalResult(EvalDocumentModel):
             "candidate kind that does not converse (a classifier, a document generator), a cell "
             "excluded before its first turn, or a cell cancelled on its deadline, whose termination "
             "says so. Distinct from termination, which is how the cell ended as work."
+        ),
+    )
+
+    turns_delivered: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "How many turns the candidate delivered in this cell before it ended — counted, not inferred: what the "
+            "kind reported (CandidateTelemetry.turns_delivered), else the candidate turn records its trace stamps. "
+            "What tells a model failure on the sixth turn of a conversation, after five delivered turns' time and "
+            "spend, from a call refused straight away: the first took turns, and its cost and latency are the "
+            "arm's (`delivered_a_turn`). None when nothing counted them: a kind that reports no count and stamps "
+            "no turn records, a cell cut off before its kind reported anything, or a result stored before the "
+            "field existed. A reader treats None as unknown — never as 0 — and falls back to the cause alone."
         ),
     )
 

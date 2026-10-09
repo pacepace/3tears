@@ -2660,10 +2660,19 @@ def _failures_as_misses(results_by_run: dict[str, list[EvalResult]]) -> dict[str
     failure was in no rate: not the match rate, not ``accuracy``, not a comparison's per-case values, so an
     arm that refused the cases it would have got wrong read MORE accurate than one that answered them, and
     one that refused everything had no accuracy to compare at all. So a candidate failure carrying no
-    ``match``, of a kind that landed ``match`` on some result in the campaign, is read with ``match``
-    False — the rule :func:`~threetears.evals.contracts.result_condition.counted_goal_verdicts` keeps for
-    every goal check. Copied, never written back: what the kind stored is untouched. A kind that never
-    landed ``match`` here classifies nothing, and nothing is added for it.
+    ``match`` is read with ``match`` False — the rule
+    :func:`~threetears.evals.contracts.result_condition.counted_goal_verdicts` keeps for every goal check —
+    when both of these hold:
+
+    - **its case is a classification**: some result in the campaign landed ``match`` on that test case. A
+      case nothing classified is not one a failure could have missed, whatever kind ran it.
+    - **its run classifies**: no result the run delivered without failing lacks ``match`` on a case that is
+      a classification. A run that answers a classified case without landing a verdict grades by something
+      else (a scorer-only run of the same callable kind, beside a classifier run over the same cases), and
+      giving its failures an accuracy would invent one. A run that delivered nothing has shown no such
+      evidence, and its refusals are misses.
+
+    Copied, never written back: what the kind stored is untouched.
 
     Args:
         results_by_run: Each run's stored results.
@@ -2671,23 +2680,34 @@ def _failures_as_misses(results_by_run: dict[str, list[EvalResult]]) -> dict[str
     Returns:
         The same results, each such failure replaced by a copy carrying ``match`` False.
     """
-    classifying = {
-        result.candidate_kind
+    classified_cases = {
+        result.test_case_id
         for members in results_by_run.values()
         for result in members
         if isinstance(result.host_measures.get(MATCH_MEASURE), bool)
     }
+    grading_otherwise = {
+        run_id
+        for run_id, members in results_by_run.items()
+        if any(
+            result.test_case_id in classified_cases
+            and MATCH_MEASURE not in result.host_measures
+            and classify_result(result) is ResultOutcome.OK
+            for result in members
+        )
+    }
 
-    def read(result: EvalResult) -> EvalResult:
+    def read(run_id: str, result: EvalResult) -> EvalResult:
         if (
-            result.candidate_kind in classifying
+            run_id not in grading_otherwise
+            and result.test_case_id in classified_cases
             and MATCH_MEASURE not in result.host_measures
             and classify_result(result) is ResultOutcome.CANDIDATE_FAIL
         ):
             return result.model_copy(update={"host_measures": {**result.host_measures, MATCH_MEASURE: False}})
         return result
 
-    return {run_id: [read(result) for result in members] for run_id, members in results_by_run.items()}
+    return {run_id: [read(run_id, result) for result in members] for run_id, members in results_by_run.items()}
 
 
 def _accuracy_leaves(result: EvalResult) -> Iterator[tuple[str, float | str, bool, str, str]]:
@@ -3845,14 +3865,15 @@ def _mechanism_value(result: EvalResult, name: str, *, profile: HostProfile) -> 
         profile: The host whose measure registry resolves the name's population.
 
     Returns:
-        The value, or None — a result outside the measure's declared population (a faulted one outside a
-        ``scored`` measure's; one that took no turn outside a ``delivered`` one's, which a declared ``scored``
-        cost or latency measure is read as), no observation, an ambiguous one, or one that is not a finite
-        number. A measure that declares no population is read over every result here, as it always was.
+        The value, or None — a result outside the measure's population (a faulted one outside a ``scored``
+        measure's; one that took no turn outside a ``delivered`` one's, which every cost or latency measure
+        is read as unless it declares ``all_observed``), no observation, an ambiguous one, or one that is
+        not a finite number. Any other measure that declares no population is read over every result here,
+        as it always was.
     """
-    descriptor = describe_measure(name, profile.measures)
-    declared = descriptor.population
-    if declared is not None and not _in_population(summary_population(descriptor, declared), result):
+    # Over every result where the measure declares nothing, as a mechanism always read — except a turn's
+    # time or spend, which every reader takes over the turns taken (`summary_population`).
+    if not _in_population(summary_population(describe_measure(name, profile.measures), "all_observed"), result):
         return None
     outer = [
         value

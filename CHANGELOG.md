@@ -10,11 +10,19 @@ packages (bumped in lock-step).
 
 - **One predicate decides what a turn's time and spend are averaged over: `delivered_a_turn(result)`**
   (`threetears.evals.contracts`). It is False for a result the harness faulted, and for a candidate failure that
-  took no turn — `candidate_failure_cause` is `model_failed` (a refusal, a model or provider error) and the cell
-  was not cut off by its deadline or a cancel. Every other failure took a turn and STAYS in cost and latency: a
-  turn the host's budget ended, an answer the output cap cut, a model call the deadline struck while pending.
-  Their time and spend are what failing cost the arm. A model failure after earlier turns of a multi-turn
-  conversation is read as no turn, because the record cannot say how many came before it.
+  delivered no turn: `candidate_failure_cause` is `model_failed` (a refusal, a model or provider error), the
+  result counts no delivered turn, and the cell was not cut off by its deadline or a cancel. Every other failure
+  took a turn and STAYS in cost and latency, because its time and spend are what failing cost the arm. That
+  covers a turn the host's budget ended, an answer the output cap cut, a model call the deadline struck while
+  pending, and a model failure after delivered turns (a conversation whose provider failed on its last turn, or
+  whose background inner agent's model failed).
+- **`EvalResult.turns_delivered`** (`int | None`, optional) records how many turns the candidate delivered. The
+  runner sets it on every exit (`count_delivered_turns`): the kind's own count
+  (`CandidateTelemetry.turns_delivered`, new), else the candidate turn records its trace stamps, else None. The
+  quick callable kind counts 1 for an answer and 0 for a raise. None means nothing counted, never 0. That is a
+  result stored before the field existed, or a kind that neither counts nor stamps. For those the predicate
+  falls back to the cause alone, which is exact for a single call and drops a stored multi-turn conversation's
+  earlier turns. `EVAL_SCHEMA_VERSION` stays 8: older results still load, and read as not counted.
 - **`MeasurePopulation` gains `delivered`**, the results `delivered_a_turn` keeps. A cost or latency measure
   (`DELIVERED_AXES`), and the engine's blended `cost_usd`, is read over it on EVERY surface unless it declares
   `all_observed` (`summary_population`, `reads_turns`). That covers the decision surface's cells, strata and bars,
@@ -26,9 +34,12 @@ packages (bumped in lock-step).
   frontier marked the control dominated by it.
 - **A classifier's refusal is a miss.** `accuracy` counts a candidate failure as 0 whatever its `match` says.
   The quick callable kind lands `match` False and the expected label's confusion cell under `UNUSABLE_ANSWER`
-  when its candidate raises, so precision and recall count it. The bundle reads a failure of a host's
-  classifying kind that landed no `match` as `match` False, without writing it back. Before, a half-refusing arm
-  read more accurate than the control, and an all-refusing one had no accuracy to compare.
+  when its candidate raises, so precision and recall count it. The bundle reads a failure that landed no `match`
+  as `match` False, without writing it back, when its test case is a classification (some result in the
+  campaign landed `match` on it) and its run classifies (none of its answered results on a classified case
+  lacks `match`). So a scorer-only run beside a classifier, or a failure on a case nothing classified, gains no
+  accuracy. Before, a half-refusing arm read more accurate than the control, and an all-refusing one had no
+  accuracy to compare.
 - **`CellFacts` and `StratumFacts` gain `n_candidate_failed` and `n_no_turn`** (`int | None`, kept together):
   every failure, and the ones among them that took no turn, which cost and latency leave out. The strata add up
   to the cell. Both are `None` on an analysis frozen before they were kept, whose cost and latency were read over

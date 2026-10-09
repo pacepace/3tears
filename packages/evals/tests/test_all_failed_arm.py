@@ -76,12 +76,17 @@ from threetears.evals.contracts import (
     delivered_a_turn,
 )
 from threetears.evals.contracts.analysis_measures import MeasureSummary
-from threetears.evals.contracts.covariates import TRUNCATED_ROUNDS_KEY, TURN_BUDGET_ENDED_KEY
+from threetears.evals.contracts.covariates import (
+    TRUNCATED_ROUNDS_KEY,
+    TURN_BUDGET_ENDED_KEY,
+    count_delivered_turns,
+)
 from threetears.evals.contracts.declaration import BarOverride
 from threetears.evals.contracts.host import SHARED_CORE, HostProfile, MeasureRegistry
 from threetears.evals.contracts.metrics import MetricDescriptor, goal_check_measure
 from threetears.evals.quick import Comparison, callable_host, compare, summarize_run
 from threetears.evals.quick.one_call import UNUSABLE_ANSWER
+from threetears.evals.run import list_results
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import (
     fixture_variant_key,
@@ -314,6 +319,52 @@ class TestDeliveredATurn:
     def test_a_faulted_result_is_none(self) -> None:
         assert not delivered_a_turn(_result("m", "c", ms=10.0, cost=None, infra_error="cassette miss"))
 
+    def test_a_model_failure_after_delivered_turns_took_them(self) -> None:
+        late = _refused("m", "c", ms=40_000.0).model_copy(update={"turns_delivered": 5})
+        assert delivered_a_turn(late)
+
+    def test_a_single_call_refused_counts_no_turn(self) -> None:
+        assert not delivered_a_turn(_refused("m", "c").model_copy(update={"turns_delivered": 0}))
+
+    def test_a_result_that_counted_no_turns_falls_back_to_its_cause(self) -> None:
+        # Stored before the count was kept, or of a kind that counts nothing: the cause alone decides, as before.
+        assert _refused("m", "c").turns_delivered is None
+        assert not delivered_a_turn(_refused("m", "c"))
+        assert delivered_a_turn(_delivered("m", "c"))
+
+
+class TestTheRunnerCountsTheTurnsDelivered:
+    def test_a_kind_s_own_count_wins(self) -> None:
+        assert count_delivered_turns([{"turn_record": {}}], reported=3) == 3
+        assert count_delivered_turns([], reported=0) == 0
+
+    def test_otherwise_the_turn_records_its_trace_stamps(self) -> None:
+        trace = [{"role": "user"}, {"turn_record": {}}, {"role": "user"}, {"turn_record": {}}]
+        assert count_delivered_turns(trace, reported=None) == 2
+
+    def test_with_neither_nothing_counted(self) -> None:
+        assert count_delivered_turns([{"role": "user"}], reported=None) is None
+
+    async def test_a_quick_call_stores_one_turn_answered_and_none_refused(self) -> None:
+        comparison = await compare(
+            _QUICK_CASES,
+            {"control": _guess, "candidate": _refuse},
+            expected=lambda case: str(case["label"]),
+            control="control",
+            scope_id="all-failed-turns",
+            k=1,
+        )
+        bundle = inspect_campaign_bundle(comparison.host, comparison.campaign_id, "all-failed-turns").bundle
+        stored = [
+            result
+            for run_id in bundle.run_ids
+            for result in list_results(comparison.host.storage, run_id, "all-failed-turns")
+        ]
+        assert sorted({(result.candidate_error is None, result.turns_delivered) for result in stored}) == [
+            (False, 0),
+            (True, 1),
+        ]
+
 
 # =============================================================================
 # Cost and latency are read over the turns taken; failures still count against the arm
@@ -402,6 +453,52 @@ class TestATurnTheBudgetEndedStaysInCostAndLatency:
         assert flaky.mean_total_ms > control.mean_total_ms
         assert flaky.n_latency == 8 and flaky.n_no_turn == 0
         assert not control.dominated_by
+
+
+def _late_failure_campaign() -> AnalysisContextBundle:
+    """A control at ~15 s and $0.15, against an arm whose odd conversations failed on their LAST turn.
+
+    The provider failed the sixth turn after five delivered ones, 40 s and $0.40 in; the arm's other
+    conversations took 10 s and $0.10. Read over its clean conversations alone it beats the control on time
+    and spend; with the late failures' delivered turns, which the runner counted, it does not.
+    """
+    cases = [f"case-{index:02d}" for index in range(12)]
+    control = [_delivered("control", case, ms=15_000.0 + 10 * index, cost=0.15) for index, case in enumerate(cases)]
+    late = [
+        _result(
+            "late",
+            case,
+            ms=40_000.0 + 10 * index,
+            cost=0.40,
+            candidate_error="provider 503 on turn 6",
+            turns_delivered=5,
+            goal_state_outcomes=[GoalStateOutcome(expression=_CHECK, passed=False)],
+        )
+        if index % 2
+        else _delivered("late", case, ms=10_000.0 + 10 * index, cost=0.10)
+        for index, case in enumerate(cases)
+    ]
+    return _bundle({"control": control, "late": late}, design=_controlled("control"))
+
+
+class TestAModelFailureAfterDeliveredTurnsStaysInCostAndLatency:
+    def test_the_cell_reads_every_conversation(self) -> None:
+        cell = _cell(_late_failure_campaign(), "late")
+        assert (cell.n_candidate_failed, cell.n_no_turn, cell.all_failed) == (6, 0, False)
+        latency = _summaries(cell)["total_ms"]
+        assert latency.n == 12 and latency.mean is not None and latency.mean > 15_000
+
+    @pytest.mark.parametrize("reading", ["total_ms", "cost_usd"])
+    def test_it_never_reads_faster_or_cheaper_than_the_control(self, reading: str) -> None:
+        comparison = _comparison(_late_failure_campaign(), reading, "late")
+        assert comparison.verdict != "improved"
+        assert comparison.delta is not None and comparison.delta > 0
+
+    def test_the_control_dominates_it_on_the_frontier(self) -> None:
+        bundle = _late_failure_campaign()
+        late = _frontier_point(bundle, "late")
+        assert late.n_latency == 12 and late.n_no_turn == 0
+        assert [dominator.model for dominator in late.dominated_by] == ["control"]
 
 
 # =============================================================================
@@ -506,6 +603,11 @@ class TestAnArmWhereNoResultTookATurn:
             "every result of the arm failed with no turn taken, so there is no turn's time or spend to compare"
         )
 
+    def test_the_frontier_cost_leaves_out_a_billed_refusal(self) -> None:
+        flaky = _frontier_point(_bundle(), _FLAKY)
+        # The two refusals were billed $0.0001 each; they took no turn, so the mean is the answered turns'.
+        assert (flaky.production_replicating_cost, flaky.n_cost) == (pytest.approx(0.002), 2)
+
     def test_it_dominates_nothing_on_the_frontier(self) -> None:
         bundle = _bundle()
         refusing = _frontier_point(bundle, _REFUSING)
@@ -581,6 +683,37 @@ class TestAClassifiersRefusalIsAMiss:
 
     def test_a_kind_that_classifies_nothing_gains_no_accuracy(self) -> None:
         assert "accuracy" not in _summaries(_cell(_bundle(), _REFUSING))
+
+    def test_a_run_grading_by_something_else_beside_a_classifier_gains_no_accuracy(self) -> None:
+        # One callable kind, two runs over the same cases: one classifies, the other only scores — and two of its
+        # calls raised. Its answers carry no verdict on cases the classifier classified, so its failures are no
+        # misses of a classification it never made.
+        cases = [f"case-{index}" for index in range(8)]
+        arms = {
+            "classifier": [
+                _classified("classifier", case, index, matched=index % 4 != 0) for index, case in enumerate(cases)
+            ],
+            "scorer": [
+                _refused("scorer", case) if index < 2 else _result("scorer", case, ms=800.0, cost=None)
+                for index, case in enumerate(cases)
+            ],
+        }
+        bundle = _bundle(arms, design=_controlled("classifier"))
+        assert "accuracy" not in _summaries(_cell(bundle, "scorer"))
+        assert _summaries(_cell(bundle, "classifier"))["accuracy"].n == 8
+
+    def test_a_failure_on_a_case_nothing_classified_is_no_miss(self) -> None:
+        # One arm: four cases classified, a refusal on one of them, two cases graded otherwise, and a refusal on
+        # a case nothing classified. Only the refusal on a classified case is a miss.
+        classified = [f"case-{index}" for index in range(4)]
+        results = [
+            *(_classified("one", case, index, matched=True) for index, case in enumerate(classified)),
+            _refused("one", classified[1]).model_copy(update={"k_iteration": 2}),
+            *(_result("one", case, ms=800.0, cost=None) for case in ("scored-0", "scored-1")),
+            _refused("one", "unclassified"),
+        ]
+        accuracy = _summaries(_cell(_bundle({"one": results}), "one"))["accuracy"]
+        assert (accuracy.mean, accuracy.n) == (0.8, 5)
 
 
 _QUICK_SCOPE = "all-failed-quick"
