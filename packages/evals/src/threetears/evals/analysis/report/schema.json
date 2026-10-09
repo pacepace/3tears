@@ -718,7 +718,7 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "A `class` field's values → the geometric symbol each is drawn as (`circle`, `diamond`, `cross`).",
+          "description": "A `class` field's values → the geometric symbol each is drawn as (`circle`, `square`, `diamond`, `cross`).",
           "title": "Shapes",
           "type": "object"
         },

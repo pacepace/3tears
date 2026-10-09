@@ -626,6 +626,16 @@ class TestFrontierAccepts:
         )
         assert payload.points[0].cost is None
 
+    @pytest.mark.parametrize(("dominated", "dominance"), [(True, "not_separated"), (False, "dominated")])
+    def test_a_flag_that_disagrees_with_the_lens_verdict_is_refused(self, dominated, dominance):
+        """The shape is drawn from the verdict and older readers key on the flag; they must say one thing."""
+        points = [
+            {"label": "a", "cost": 0.01, "quality": 0.4, "dominated": dominated, "dominance": dominance},
+            {"label": "b", "cost": 0.02, "quality": 0.2},
+        ]
+        with pytest.raises(PayloadError, match="dominance"):
+            parse_payload("frontier", _frontier(points=points))
+
     def test_the_optional_captions_and_bar_may_all_be_absent(self):
         """The axes have defaults; a campaign that set no quality bar has no bar to echo."""
         payload = parse_payload(

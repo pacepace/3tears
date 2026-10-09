@@ -28,7 +28,6 @@ from threetears.evals.analysis.viz_refs import (
     REFERENCEABLE_VIZ_TYPES,
     TIME_VIZ_TYPES,
     build_viz_payload,
-    dominated_flags,
     reference_from_chart,
 )
 from threetears.evals.contracts.analysis_measures import BarAdjudication, BarVerdict, MeasureCollection, MeasureSummary
@@ -613,19 +612,37 @@ def test_an_attribution_states_the_remainder_of_a_sole_component_a_host_declares
     compile_chart("attribution", stated)
 
 
-def test_a_frontier_places_every_cell_and_computes_domination_in_code():
-    payload = build(VALID["frontier"])
+def test_a_frontier_places_every_cell_and_reads_domination_off_the_frontier_lens():
+    """B beats A on both drawn means, and the chart still flags nothing the lens did not decide."""
+    standings = {KEYS["A"]: "not_separated", KEYS["B"]: "not_separated", KEYS["C"]: "dominated"}
+    payload = build(VALID["frontier"], surface().model_copy(update={"frontier_dominance": standings}))
 
     points = {point["label"]: point for point in payload["points"]}
     assert set(points) == set(LABEL.values())
-    # B is at least as good as A on both axes and strictly better on both: A is dominated.
-    assert points[LABEL["A"]]["dominated"] is True
-    assert points[LABEL["B"]]["dominated"] is False
-    assert points[LABEL["C"]]["dominated"] is False
+    assert {label: (p["dominance"], p["dominated"]) for label, p in points.items()} == {
+        LABEL["A"]: ("not_separated", False),
+        LABEL["B"]: ("not_separated", False),
+        LABEL["C"]: ("dominated", True),
+    }
     assert points[LABEL["A"]]["latency_ms"] == 1200.0
     assert points[LABEL["C"]]["cost"] == 0.05
     assert all(point["disqualified"] is False for point in payload["points"])
     assert payload["bar"] == 0.8
+    assert parse_payload("frontier", payload) is not None
+
+
+def test_an_arm_the_lens_gave_no_standing_reads_untested():
+    payload = build(VALID["frontier"], surface().model_copy(update={"frontier_dominance": {KEYS["C"]: "dominated"}}))
+
+    dominance = {point["label"]: point["dominance"] for point in payload["points"]}
+    assert dominance == {LABEL["A"]: "untested", LABEL["B"]: "untested", LABEL["C"]: "dominated"}
+
+
+def test_a_surface_frozen_before_standings_states_no_domination():
+    """No standings recorded: nothing is flagged, and nothing is called tested."""
+    payload = build(VALID["frontier"])
+
+    assert all(point["dominance"] is None and point["dominated"] is False for point in payload["points"])
 
 
 def test_a_frontiers_axis_titles_are_computed_from_its_measures():
@@ -736,24 +753,6 @@ def test_an_arm_the_index_cannot_describe_is_labelled_as_such():
     labels = [group["label"] for group in payload["groups"]]
     assert labels[1] == f"unplaced ({'f' * 12}) — not in this analysis's variant index"
     assert labels[2] == f"levels unavailable ({'e' * 12}) — minted under predicate v3"
-
-
-# --- Domination ------------------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("points", "expected"),
-    [
-        ([(0.9, 1.0), (0.9, 1.0)], [False, False]),  # identical: neither strictly better on either axis
-        ([(0.9, 1.0), (0.9, 2.0)], [False, True]),  # equal quality, cheaper wins
-        ([(0.9, 1.0), (0.8, 1.0)], [False, True]),  # equal cost, better quality wins
-        ([(0.9, 2.0), (0.8, 1.0)], [False, False]),  # a real trade-off: each better on one axis
-        ([(0.9, None), (0.5, 9.0)], [False, False]),  # an unpriced point neither dominates nor is dominated
-        ([(0.5, None), (0.9, 1.0)], [False, False]),
-    ],
-)
-def test_domination_needs_at_least_as_good_on_both_and_strictly_better_on_one(points, expected):
-    assert dominated_flags(points) == expected
 
 
 # --- Refusals of the authored chart ------------------------------------------------------------------

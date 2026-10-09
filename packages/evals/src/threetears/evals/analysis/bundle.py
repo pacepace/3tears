@@ -172,6 +172,7 @@ from threetears.evals.contracts.result_condition import (
 from threetears.evals.contracts.surface import (
     CellFacts,
     DecisionSurface,
+    FrontierDominance,
     JudgedDimensionFacts,
     JudgedReading,
     MeasureFacts,
@@ -7688,7 +7689,31 @@ def bundle_decision_surface(bundle: AnalysisContextBundle) -> DecisionSurface:
         measures=cell_measure_facts(bundle),
         dimensions=cell_dimension_facts(bundle),
         time_axis=bundle.time_axis,
+        frontier_dominance=_frontier_dominance(bundle.frontier),
     )
+
+
+def _frontier_dominance(frontier: FrontierResult) -> dict[str, FrontierDominance]:
+    """Each variant's standing on the frontier lens — the verdict a frontier chart draws, never recomputed.
+
+    The lens decides domination by test over per-case values (:func:`~threetears.evals.analysis.reporting.compute_frontier`),
+    which a frozen surface does not carry, so a chart deciding it again from the surface's means would be a
+    second rule for one question, and on means it called one of two identical arms dominated a third of the
+    time. Keyed by variant because a cell is one; a variant the lens placed as more than one point (under two
+    identity versions, or two subjects) has no one standing and is left out, so a chart reads it as untested.
+    A point stored before domination was tested carries no standing either, and is left out the same way.
+
+    Args:
+        frontier: The bundle's frontier lens.
+
+    Returns:
+        ``{variant_key: dominance}``.
+    """
+    placed: dict[str, list[FrontierDominance | None]] = {}
+    for subject in frontier.subjects:
+        for point in subject.points:
+            placed.setdefault(point.variant_key, []).append(point.dominance)
+    return {key: standings[0] for key, standings in placed.items() if len(standings) == 1 and standings[0] is not None}
 
 
 class InsightStanding(NamedTuple):

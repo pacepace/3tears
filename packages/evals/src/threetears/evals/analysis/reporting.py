@@ -64,6 +64,7 @@ from threetears.evals.contracts.models import (
     RubricScale,
     utc_now_iso,
 )
+from threetears.evals.contracts.surface import FrontierDominance
 from threetears.evals.contracts.result_condition import (
     JUDGE_CANNOT_TELL_OUTCOME,
     ResultOutcome,
@@ -3772,9 +3773,6 @@ class FrontierDominator(EvalBaseModel):
     #: point estimates.
     p_value: float | None = None
 
-
-#: Whether a frontier point is shown dominated — see :attr:`FrontierPoint.dominance`.
-FrontierDominance = Literal["dominated", "not_separated", "untested"]
 
 #: How a frontier verdict's pick stands on cost against the other contestants that cleared the bar with a
 #: cost — see :attr:`FrontierVerdict.cost_decision`.
