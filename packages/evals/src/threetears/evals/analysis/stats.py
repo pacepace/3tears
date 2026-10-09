@@ -590,6 +590,89 @@ def interval_clears(
     return None
 
 
+class KappaMoments(NamedTuple):
+    """What Cohen's kappa is computed from, over one rater pair's items, under one disagreement cost.
+
+    ``kappa = 1 - observed / expected``. The squared costs are what an interval on kappa reads: how
+    spread out a disagreement is, as well as how often one happens (:mod:`threetears.evals.analysis.agreement`).
+    """
+
+    #: The items.
+    n: int
+    #: The mean disagreement cost over the items.
+    observed: float
+    #: The mean squared disagreement cost over the items.
+    observed_square: float
+    #: The mean cost two raters with these marginals would show by chance alone.
+    expected: float
+    #: The mean squared cost two raters with these marginals would show by chance alone.
+    expected_square: float
+
+
+def kappa_moments(
+    pairs: Sequence[tuple[int, int]],
+    categories: Sequence[int],
+    *,
+    weights: Literal["none", "quadratic"] = "none",
+    unordered: Sequence[int] = (),
+) -> KappaMoments | None:
+    """The disagreement moments Cohen's kappa is computed from — see :func:`cohen_kappa` for the costs.
+
+    Args:
+        pairs: ``(first, second)`` per item.
+        categories: Every category either rater could give, in order.
+        weights: ``"none"`` or ``"quadratic"``.
+        unordered: Categories outside the scale, each maximally far from every other.
+
+    Returns:
+        The moments; ``None`` with no pairs.
+
+    Raises:
+        ValueError: As :func:`cohen_kappa`.
+    """
+    if len(categories) < 2:
+        raise ValueError(f"kappa needs at least two categories; got {list(categories)}")
+    if overlap := sorted(set(categories) & set(unordered)):
+        raise ValueError(f"categories {overlap} cannot be both on the scale and off it")
+    ordered = len(categories)
+    index = {category: position for position, category in enumerate([*categories, *unordered])}
+    stray = sorted({value for pair in pairs for value in pair if value not in index})
+    if stray:
+        raise ValueError(f"values {stray} are not among the categories {list(categories)} or {list(unordered)}")
+    n = len(pairs)
+    if n == 0:
+        return None
+    k = len(index)
+
+    def cost(i: int, j: int) -> float:
+        if i == j:
+            return 0.0
+        if i >= ordered or j >= ordered:
+            return 1.0
+        if weights == "quadratic":
+            return (i - j) ** 2 / (ordered - 1) ** 2
+        return 1.0
+
+    first = [0] * k
+    second = [0] * k
+    observed = 0.0
+    observed_square = 0.0
+    for a, b in pairs:
+        i, j = index[a], index[b]
+        first[i] += 1
+        second[j] += 1
+        observed += cost(i, j)
+        observed_square += cost(i, j) ** 2
+    crossed = [(first[i] * second[j], cost(i, j)) for i in range(k) for j in range(k)]
+    return KappaMoments(
+        n=n,
+        observed=observed / n,
+        observed_square=observed_square / n,
+        expected=sum(count * c for count, c in crossed) / (n * n),
+        expected_square=sum(count * c * c for count, c in crossed) / (n * n),
+    )
+
+
 def cohen_kappa(
     pairs: Sequence[tuple[int, int]],
     categories: Sequence[int],
@@ -625,42 +708,10 @@ def cohen_kappa(
         ValueError: A pair holds a value outside ``categories`` and ``unordered``, an ``unordered``
             category is also on the scale, or fewer than two categories.
     """
-    if len(categories) < 2:
-        raise ValueError(f"kappa needs at least two categories; got {list(categories)}")
-    if overlap := sorted(set(categories) & set(unordered)):
-        raise ValueError(f"categories {overlap} cannot be both on the scale and off it")
-    ordered = len(categories)
-    index = {category: position for position, category in enumerate([*categories, *unordered])}
-    stray = sorted({value for pair in pairs for value in pair if value not in index})
-    if stray:
-        raise ValueError(f"values {stray} are not among the categories {list(categories)} or {list(unordered)}")
-    n = len(pairs)
-    if n == 0:
+    moments = kappa_moments(pairs, categories, weights=weights, unordered=unordered)
+    if moments is None or moments.expected == 0:
         return None
-    k = len(index)
-
-    def cost(i: int, j: int) -> float:
-        if i == j:
-            return 0.0
-        if i >= ordered or j >= ordered:
-            return 1.0
-        if weights == "quadratic":
-            return (i - j) ** 2 / (ordered - 1) ** 2
-        return 1.0
-
-    first = [0] * k
-    second = [0] * k
-    observed = 0.0
-    for a, b in pairs:
-        i, j = index[a], index[b]
-        first[i] += 1
-        second[j] += 1
-        observed += cost(i, j)
-    observed /= n
-    expected = sum(first[i] * second[j] * cost(i, j) for i in range(k) for j in range(k)) / (n * n)
-    if expected == 0:
-        return None
-    return 1 - observed / expected
+    return 1 - moments.observed / moments.expected
 
 
 #: The family-wise correction every family of comparisons is adjusted by. Named so a surface can
@@ -1044,6 +1095,7 @@ __all__ = [
     "UNPAIRED_TEST_NAME",
     "ChangeLabel",
     "ChangeVerdict",
+    "KappaMoments",
     "SignificanceResult",
     "bar_seed",
     "ci_half_width",
@@ -1052,6 +1104,7 @@ __all__ = [
     "composite_significance",
     "holm_adjust",
     "interval_clears",
+    "kappa_moments",
     "mean_interval",
     "observed_mean_interval",
     "paired_change",

@@ -275,8 +275,9 @@ One subjective quality a judge scores (`RubricDim`): a name, a description and a
 
 #### Evidence tier
 How far a judged score can be leaned on, decided by code from how reliable the judge was measured to be:
-`calibrated` (agrees with people), `separation` (agrees with itself), `incidental` (measured, and missed
-both), `undetermined` (too little evidence). See [reading reports](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers).
+`calibrated` (agrees with people), `separation` (agrees with itself), `incidental` (measured, and shown
+below both bars), `undetermined` (not shown either way). Each is decided on an interval for the agreement,
+never its point estimate. See [reading reports](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers).
 
 ### Comparing and reading
 

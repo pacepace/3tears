@@ -100,7 +100,9 @@ falls back to the failure's cause alone (``delivered_a_turn``). It, and the deci
 ``CellFacts.n_candidate_failed`` and ``n_no_turn`` (and their ``StratumFacts`` twins), None on an analysis
 frozen before them, are deliberate exceptions to v6's "no field is read as absent because older": requiring
 them would drop every stored document to learn counts the old ones never had, and their honest reading is
-"unknown", which None states.
+"unknown", which None states. ``EvalAnalysis.judged_tier_rule`` joined the same way: the rule its judged tiers
+were decided by, None on an analysis stored before tiers were decided on the agreement's interval — whose tiers
+were the point estimate against the bar, and are rendered as that, never as the interval rule's claim.
 """
 
 

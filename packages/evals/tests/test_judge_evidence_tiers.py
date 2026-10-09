@@ -59,6 +59,7 @@ from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
 from threetears.evals.analysis.stats import cohen_kappa
 from threetears.evals.analysis.report import DisclosureBlock, build_code_only_report
 from threetears.evals.contracts.evidence_tiers import (
+    JUDGED_TIER_RULE,
     CALIBRATION_MIN_AGREEMENT,
     CALIBRATION_MIN_RESULTS,
     SEPARATION_MIN_AGREEMENT,
@@ -80,13 +81,18 @@ from threetears.evals.contracts.models import (
     utc_now_iso,
 )
 from threetears.evals.run import rate_result
-from packages.evals.tests.factories import make_calibration_rating, make_eval_result
+from packages.evals.tests.factories import make_analysis, make_calibration_rating, make_eval_result
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION, TOYHOST_SCOPE, ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, alias_at, memo_payload
 
 TONE = "conversation.tone"
+
+#: Perfectly agreeing results it takes for the 95% interval to clear each bar on these fixtures' 1-5 scores. At
+#: the 20-result floor it does not: twenty results bound a weighted kappa of 1.0 only to about 0.58.
+CALIBRATING_RESULTS = 24
+SEPARATING_RESULTS = 60
 
 
 class TestTheRuledConstants:
@@ -98,42 +104,56 @@ class TestTheRuledConstants:
 
 
 class TestEachCriterionFiresOnBothSidesOfItsBoundary:
-    @pytest.mark.parametrize(
-        ("n", "agreement", "state"),
-        [
-            (CALIBRATION_MIN_RESULTS, CALIBRATION_MIN_AGREEMENT, "met"),
-            (CALIBRATION_MIN_RESULTS, 0.5999, "not_met"),
-            (CALIBRATION_MIN_RESULTS - 1, 1.0, "insufficient"),
-            (CALIBRATION_MIN_RESULTS, None, "insufficient"),
-            (0, None, "insufficient"),
-        ],
-    )
-    def test_calibration(self, n: int, agreement: float | None, state: CriterionState) -> None:
-        assert calibration_criterion(n, n, agreement).state == state
+    """A criterion is decided on its interval: met when the lower end reaches the bar, not met when the upper end
+    is below it, undecided across it — never on the point estimate."""
 
     @pytest.mark.parametrize(
-        ("n", "agreement", "state"),
+        ("n", "agreement", "interval", "state"),
         [
-            (SEPARATION_MIN_RESULTS, SEPARATION_MIN_AGREEMENT, "met"),
-            (SEPARATION_MIN_RESULTS, 0.7999, "not_met"),
-            # Calibration's bar is not separation's: 0.6 meets one and misses the other.
-            (SEPARATION_MIN_RESULTS, CALIBRATION_MIN_AGREEMENT, "not_met"),
-            (SEPARATION_MIN_RESULTS - 1, 1.0, "insufficient"),
-            (SEPARATION_MIN_RESULTS, None, "insufficient"),
+            (CALIBRATION_MIN_RESULTS, 0.8, (CALIBRATION_MIN_AGREEMENT, 0.95), "met"),
+            (CALIBRATION_MIN_RESULTS, 0.8, (0.5999, 0.95), "undecided"),
+            # The point estimate clears the bar; the interval does not, so nothing is claimed.
+            (CALIBRATION_MIN_RESULTS, 0.9, (0.45, 1.0), "undecided"),
+            (CALIBRATION_MIN_RESULTS, 0.4, (0.2, 0.5999), "not_met"),
+            # An upper end AT the bar is not shown below it.
+            (CALIBRATION_MIN_RESULTS, 0.4, (0.2, CALIBRATION_MIN_AGREEMENT), "undecided"),
+            (CALIBRATION_MIN_RESULTS - 1, 1.0, (0.9, 1.0), "insufficient"),
+            (CALIBRATION_MIN_RESULTS, None, None, "insufficient"),
+            (CALIBRATION_MIN_RESULTS, 0.9, None, "insufficient"),
+            (0, None, None, "insufficient"),
         ],
     )
-    def test_separation(self, n: int, agreement: float | None, state: CriterionState) -> None:
-        assert separation_criterion(n, n, agreement).state == state
+    def test_calibration(
+        self, n: int, agreement: float | None, interval: tuple[float, float] | None, state: CriterionState
+    ) -> None:
+        assert calibration_criterion(n, n, agreement, interval).state == state
+
+    @pytest.mark.parametrize(
+        ("n", "agreement", "interval", "state"),
+        [
+            (SEPARATION_MIN_RESULTS, 0.9, (SEPARATION_MIN_AGREEMENT, 1.0), "met"),
+            (SEPARATION_MIN_RESULTS, 0.9, (0.7999, 1.0), "undecided"),
+            (SEPARATION_MIN_RESULTS, 0.6, (0.4, 0.7999), "not_met"),
+            # Calibration's bar is not separation's: an interval clearing one misses the other.
+            (SEPARATION_MIN_RESULTS, 0.7, (CALIBRATION_MIN_AGREEMENT, 0.75), "not_met"),
+            (SEPARATION_MIN_RESULTS - 1, 1.0, (0.9, 1.0), "insufficient"),
+            (SEPARATION_MIN_RESULTS, None, None, "insufficient"),
+        ],
+    )
+    def test_separation(
+        self, n: int, agreement: float | None, interval: tuple[float, float] | None, state: CriterionState
+    ) -> None:
+        assert separation_criterion(n, n, agreement, interval).state == state
 
     def test_the_floor_counts_results_not_pairs(self) -> None:
         # Forty pairs about nineteen results is nineteen pieces of evidence.
-        assert separation_criterion(40, SEPARATION_MIN_RESULTS - 1, 1.0).state == "insufficient"
-        assert calibration_criterion(40, CALIBRATION_MIN_RESULTS - 1, 1.0).state == "insufficient"
-        assert separation_criterion(40, SEPARATION_MIN_RESULTS, 1.0).state == "met"
+        assert separation_criterion(40, SEPARATION_MIN_RESULTS - 1, 1.0, (0.9, 1.0)).state == "insufficient"
+        assert calibration_criterion(40, CALIBRATION_MIN_RESULTS - 1, 1.0, (0.9, 1.0)).state == "insufficient"
+        assert separation_criterion(40, SEPARATION_MIN_RESULTS, 1.0, (0.9, 1.0)).state == "met"
 
     def test_more_results_than_pairs_is_refused(self) -> None:
         with pytest.raises(ValidationError, match="cannot cover"):
-            separation_criterion(19, 20, 1.0)
+            separation_criterion(19, 20, 1.0, (0.9, 1.0))
 
     def test_a_state_its_numbers_contradict_is_refused(self) -> None:
         with pytest.raises(ValidationError, match="is 'insufficient', not 'met'"):
@@ -142,6 +162,41 @@ class TestEachCriterionFiresOnBothSidesOfItsBoundary:
                 n=CALIBRATION_MIN_RESULTS,
                 results=CALIBRATION_MIN_RESULTS - 1,
                 agreement=0.9,
+                lower=0.8,
+                upper=1.0,
+                threshold=CALIBRATION_MIN_AGREEMENT,
+                min_results=CALIBRATION_MIN_RESULTS,
+            )
+
+    def test_a_met_state_on_the_point_estimate_alone_is_refused(self) -> None:
+        # The tier the point estimate used to award: agreement over the bar, interval across it.
+        with pytest.raises(ValidationError, match="is 'undecided', not 'met'"):
+            TierCriterion(
+                state="met",
+                n=20,
+                results=20,
+                agreement=0.75,
+                lower=0.4,
+                upper=0.95,
+                threshold=CALIBRATION_MIN_AGREEMENT,
+                min_results=CALIBRATION_MIN_RESULTS,
+            )
+
+    @pytest.mark.parametrize(
+        ("lower", "upper", "match"),
+        [(0.5, None, "both ends or neither"), (0.8, 0.95, "must contain"), (0.3, 0.6, "must contain")],
+    )
+    def test_an_interval_that_does_not_hold_its_agreement_is_refused(
+        self, lower: float, upper: float | None, match: str
+    ) -> None:
+        with pytest.raises(ValidationError, match=match):
+            TierCriterion(
+                state="undecided",
+                n=20,
+                results=20,
+                agreement=0.7,
+                lower=lower,
+                upper=upper,
                 threshold=CALIBRATION_MIN_AGREEMENT,
                 min_results=CALIBRATION_MIN_RESULTS,
             )
@@ -150,9 +205,10 @@ class TestEachCriterionFiresOnBothSidesOfItsBoundary:
 def _criterion(state: CriterionState, *, separation: bool) -> TierCriterion:
     build = separation_criterion if separation else calibration_criterion
     return {
-        "met": build(20, 20, 1.0),
-        "not_met": build(20, 20, 0.0),
-        "insufficient": build(3, 3, 1.0),
+        "met": build(20, 20, 1.0, (0.9, 1.0)),
+        "not_met": build(20, 20, 0.0, (-0.2, 0.2)),
+        "undecided": build(20, 20, 0.7, (0.3, 0.95)),
+        "insufficient": build(3, 3, 1.0, (0.5, 1.0)),
     }[state]
 
 
@@ -166,6 +222,12 @@ class TestTheTierRule:
             ("not_met", "met", "separation"),
             ("insufficient", "met", "separation"),
             ("not_met", "not_met", "incidental"),
+            # An interval across a bar shows neither side of it: the reading stays on the next tier that IS shown.
+            ("undecided", "met", "separation"),
+            ("undecided", "not_met", "undetermined"),
+            ("not_met", "undecided", "undetermined"),
+            ("undecided", "undecided", "undetermined"),
+            ("met", "undecided", "calibrated"),
             # Too little evidence on either side decides nothing: never filed as incidental.
             ("not_met", "insufficient", "undetermined"),
             ("insufficient", "not_met", "undetermined"),
@@ -178,7 +240,7 @@ class TestTheTierRule:
         assert tier_of(_criterion(calibration, separation=False), _criterion(separation, separation=True)) == tier
 
     def test_every_tier_is_reachable(self) -> None:
-        states: tuple[CriterionState, ...] = ("met", "not_met", "insufficient")
+        states: tuple[CriterionState, ...] = ("met", "not_met", "undecided", "insufficient")
         reached = {
             tier_of(_criterion(c, separation=False), _criterion(s, separation=True)) for c in states for s in states
         }
@@ -197,7 +259,9 @@ class TestTheTierRule:
             )
 
     def test_a_criterion_held_to_another_bar_is_refused(self) -> None:
-        lowered = TierCriterion(state="met", n=20, results=20, agreement=0.5, threshold=0.5, min_results=20)
+        lowered = TierCriterion(
+            state="met", n=20, results=20, agreement=0.5, lower=0.5, upper=0.6, threshold=0.5, min_results=20
+        )
         with pytest.raises(ValidationError, match="CALIBRATION_MIN_AGREEMENT"):
             JudgeEvidenceTier(
                 rubric_dim=TONE,
@@ -321,8 +385,17 @@ class TestTheTiersFromResults:
         (tier,) = judge_evidence_tiers(judge_agreement(ratings, results), judge_self_agreement(results), {_key()})
         return tier
 
-    def test_twenty_agreeing_person_ratings_calibrate(self) -> None:
-        assert self._tiers(rated=CALIBRATION_MIN_RESULTS).tier == "calibrated"
+    def test_agreeing_person_ratings_calibrate_once_the_interval_clears_the_bar(self) -> None:
+        tier = self._tiers(rated=CALIBRATING_RESULTS)
+        assert tier.tier == "calibrated"
+        assert tier.calibration.lower is not None and tier.calibration.lower >= CALIBRATION_MIN_AGREEMENT
+
+    def test_twenty_perfectly_agreeing_ratings_are_undecided_not_calibrated(self) -> None:
+        # The floor is where a criterion may be decided, not where it is met: twenty results bound the agreement
+        # below the bar however well they agree.
+        tier = self._tiers(rated=CALIBRATION_MIN_RESULTS)
+        assert tier.calibration.agreement == 1.0
+        assert (tier.calibration.state, tier.tier) == ("undecided", "undetermined")
 
     def test_nineteen_ratings_do_not(self) -> None:
         tier = self._tiers(rated=CALIBRATION_MIN_RESULTS - 1)
@@ -335,8 +408,16 @@ class TestTheTiersFromResults:
         assert tier.tier == "undetermined"
         assert tier.calibration.n == 0
 
-    def test_twenty_agreeing_repeats_separate(self) -> None:
-        assert self._tiers(repeated=SEPARATION_MIN_RESULTS).tier == "separation"
+    def test_agreeing_repeats_separate_once_the_interval_clears_the_bar(self) -> None:
+        assert self._tiers(repeated=SEPARATING_RESULTS).tier == "separation"
+
+    def test_twenty_perfectly_agreeing_repeats_cannot_separate(self) -> None:
+        tier = self._tiers(repeated=SEPARATION_MIN_RESULTS)
+        assert (tier.separation.agreement, tier.separation.state, tier.tier) == (1.0, "undecided", "undetermined")
+
+    def test_an_undecided_calibration_leaves_a_separated_judge_on_separation(self) -> None:
+        tier = self._tiers(rated=CALIBRATION_MIN_RESULTS, repeated=SEPARATING_RESULTS)
+        assert (tier.calibration.state, tier.separation.state, tier.tier) == ("undecided", "met", "separation")
 
     def test_nineteen_repeats_do_not(self) -> None:
         assert self._tiers(repeated=SEPARATION_MIN_RESULTS - 1).tier == "undetermined"
@@ -350,7 +431,7 @@ class TestTheTiersFromResults:
         assert (tier.tier, tier.calibration.n, tier.separation.n) == ("undetermined", 0, 0)
 
     def test_a_reading_served_by_two_judges_bears_the_weaker(self) -> None:
-        strong = self._tiers(rated=CALIBRATION_MIN_RESULTS)
+        strong = self._tiers(rated=CALIBRATING_RESULTS)
         assert tier_for_judges([strong], [_key()]) == "calibrated"
         assert tier_for_judges([strong], [_key(), _key(judge="judge-unmeasured")]) == "undetermined"
         assert tier_for_judges([strong], []) == "undetermined"
@@ -393,7 +474,7 @@ class TestAFewResultsCannotEarnATier:
         # By result: the two re-repeated results weigh 1 each, split between the rounds — round 1 carries 19.
         assert itself.weighted_kappa == pytest.approx((19 * first_round + 1 * 1.0) / 20)
         (tier,) = judge_evidence_tiers(judge_agreement([], results), judge_self_agreement(results), {_key()})
-        assert (tier.separation.state, tier.tier) == ("not_met", "undetermined")
+        assert (tier.separation.state, tier.tier) == ("undecided", "undetermined")
 
     def test_a_small_person_cannot_carry_a_large_one_over_the_calibration_bar(self) -> None:
         # Twenty ratings at about 0.3 and two at 1.0: an unweighted mean reads 0.64 and "met" the bar.
@@ -417,7 +498,7 @@ class TestAFewResultsCannotEarnATier:
         assert (people.n, people.results) == (22, 22)
         assert people.weighted_kappa == pytest.approx((20 * big_kappa + 2 * 1.0) / 22)
         (tier,) = judge_evidence_tiers(judge_agreement(ratings, results), judge_self_agreement([]), {_key()})
-        assert (tier.calibration.state, tier.tier) == ("not_met", "undetermined")
+        assert (tier.calibration.state, tier.tier) == ("undecided", "undetermined")
 
     def test_results_behind_an_undefined_kappa_do_not_count_toward_the_floor(self) -> None:
         # Twenty results one person rated 3 where the judge said 3 (kappa undefined), and two another person
@@ -494,7 +575,7 @@ class TestEachResultWeighsOnceInTheFigure:
         # Each result weighs 1: alice carries 17 + 3/6, the five annotators 3/6 each.
         assert people.weighted_kappa == pytest.approx((17.5 * alice + 5 * 0.5 * 1.0) / 20)
         (tier,) = judge_evidence_tiers(judge_agreement(ratings, results), judge_self_agreement([]), {_key()})
-        assert (tier.calibration.state, tier.tier) == ("not_met", "undetermined")
+        assert (tier.calibration.state, tier.tier) == ("undecided", "undetermined")
 
     def test_a_rater_left_out_of_the_mean_takes_no_share_of_a_results_weight(self) -> None:
         # Someone who rated alice's five 3s as 3 has an undefined kappa and is left out; those five results stay
@@ -586,7 +667,7 @@ class TestATierBelongsToTheWholeJudge:
                 rubric_scores=[RubricScore(dim=TONE, scale="pass_fail", score=i % 2, served_model="judge-a")],
                 judge_repeats=[_repeat(i % 2, i % 2, scale="pass_fail")],
             )
-            for i in range(SEPARATION_MIN_RESULTS)
+            for i in range(SEPARATING_RESULTS)
         ]
         ordinal = [_scored(f"o-{i}", score) for i, score in enumerate(_cycle(5))]
         results = pass_fail + ordinal
@@ -605,7 +686,7 @@ class TestATierBelongsToTheWholeJudge:
                 judge_config_ids={TONE: "cfg-v1"},
                 judge_repeats=[_repeat(s, s, first_config="cfg-v1", repeat_config="cfg-v1")],
             )
-            for i, s in enumerate(_cycle(SEPARATION_MIN_RESULTS))
+            for i, s in enumerate(_cycle(SEPARATING_RESULTS))
         ]
         under_v2 = [_scored(f"v2-{i}", s, judge_config_ids={TONE: "cfg-v2"}) for i, s in enumerate(_cycle(5))]
         results = under_v1 + under_v2
@@ -709,22 +790,29 @@ class TestTheBundleDerivesTheTierWhereItShowsIt:
         assert (tier.rubric_dim, tier.tier) == (TOYHOST_JUDGED_DIMENSION, "undetermined")
         assert _shown_tiers(bundle) == {"undetermined"}
 
-    def test_twenty_agreeing_repeats_put_every_reading_on_separation(self) -> None:
-        bundle = _bundle(repeats=SEPARATION_MIN_RESULTS)
+    def test_agreeing_repeats_put_every_reading_on_separation(self) -> None:
+        bundle = _bundle(repeats=SEPARATING_RESULTS)
         (tier,) = bundle.judge_evidence_tiers
-        assert (tier.separation.n, tier.tier) == (SEPARATION_MIN_RESULTS, "separation")
-        assert bundle.judge_self_agreement.dimensions[0].n == SEPARATION_MIN_RESULTS
+        assert (tier.separation.n, tier.tier) == (SEPARATING_RESULTS, "separation")
+        assert bundle.judge_self_agreement.dimensions[0].n == SEPARATING_RESULTS
         assert _shown_tiers(bundle) == {"separation"}
 
     def test_nineteen_repeats_leave_them_undetermined(self) -> None:
         bundle = _bundle(repeats=SEPARATION_MIN_RESULTS - 1)
         assert _shown_tiers(bundle) == {"undetermined"}
 
-    def test_twenty_agreeing_ratings_calibrate_them(self) -> None:
-        assert _shown_tiers(_bundle(rated=CALIBRATION_MIN_RESULTS)) == {"calibrated"}
+    def test_agreeing_ratings_calibrate_them(self) -> None:
+        assert _shown_tiers(_bundle(rated=CALIBRATING_RESULTS)) == {"calibrated"}
+
+    def test_twenty_agreeing_repeats_leave_them_undetermined_with_the_interval_named(self) -> None:
+        bundle = _bundle(repeats=SEPARATION_MIN_RESULTS)
+        (tier,) = bundle.judge_evidence_tiers
+        assert (tier.separation.state, tier.tier) == ("undecided", "undetermined")
+        assert tier.separation.lower is not None and tier.separation.lower < SEPARATION_MIN_AGREEMENT
+        assert _shown_tiers(bundle) == {"undetermined"}
 
     def test_the_time_axis_cells_carry_the_campaigns_tier(self) -> None:
-        bundle = _bundle(repeats=SEPARATION_MIN_RESULTS, two_days=True)
+        bundle = _bundle(repeats=SEPARATING_RESULTS, two_days=True)
         assert bundle.time_axis is not None, "two days of runs give the bundle a time axis"
         tiers = {r.evidence_tier for p in bundle.time_axis.positions for c in p.cells for r in c.judged}
         assert tiers == {"separation"}
@@ -736,7 +824,7 @@ class TestTheBundleDerivesTheTierWhereItShowsIt:
 class TestTheReportStatesEachTier:
     def test_the_code_only_report_states_the_tier_and_its_measurements(self) -> None:
         report = build_code_only_report(
-            _bundle(repeats=SEPARATION_MIN_RESULTS),
+            _bundle(repeats=SEPARATING_RESULTS),
             measures=toyhost_profile().measures,
             assembled_at="2026-10-06T00:00:00+00:00",
         )
@@ -744,9 +832,20 @@ class TestTheReportStatesEachTier:
         sentences = [text for text in texts if text.startswith("Judged evidence tier:")]
         assert sentences == [
             f"Judged evidence tier: {TOYHOST_JUDGED_DIMENSION} (an unnamed judge): separation — agreement with people "
-            "not measured (bar 0.6 over at least 20 results); with its own repeats 1 over 20 pairs from 20 results, "
-            "meets (bar 0.8 over at least 20 results)."
+            "not measured (bar 0.6 over at least 20 results); with its own repeats 1 (95% interval 0.8386 to 1) over "
+            "60 pairs from 60 results, meets (bar 0.8 over at least 20 results)."
         ]
+
+    def test_an_undecided_criterion_names_its_interval_and_why_it_decides_nothing(self) -> None:
+        report = build_code_only_report(
+            _bundle(repeats=SEPARATION_MIN_RESULTS),
+            measures=toyhost_profile().measures,
+            assembled_at="2026-10-06T00:00:00+00:00",
+        )
+        texts = [block.text for block in report.blocks if isinstance(block, DisclosureBlock)]
+        (sentence,) = [text for text in texts if text.startswith("Judged evidence tier:")]
+        assert "undetermined — " in sentence
+        assert "with its own repeats 1 (95% interval 0.5722 to 1) over 20 pairs from 20 results, undecided" in sentence
 
 
 class TestTheWordsClaimOnlyWhatWasMeasured:
@@ -764,8 +863,8 @@ class TestTheWordsClaimOnlyWhatWasMeasured:
             judge_model="j",
             judge_config_id=None,
             tier="separation",
-            calibration=calibration_criterion(20, 20, 0.1),
-            separation=separation_criterion(20, 20, 0.9),
+            calibration=calibration_criterion(20, 20, 0.1, (-0.1, 0.3)),
+            separation=separation_criterion(20, 20, 0.9, (0.85, 1.0)),
         )
         assert tier.calibration.state == "not_met", "the case the words must stay true for"
 
@@ -820,10 +919,44 @@ class TestAFindingStandsOnTheTierItsCellsCarry:
         return analysis.resolutions[0]
 
     async def test_a_finding_citing_a_separated_judge_stands_on_separation(self) -> None:
-        resolution = await self._generated(_bundle(repeats=SEPARATION_MIN_RESULTS))
+        resolution = await self._generated(_bundle(repeats=SEPARATING_RESULTS))
         assert [row.judged_tier for row in resolution.evidence] == [None, None, "separation"]
         assert resolution.evidence_tier == "separation"
 
     async def test_the_same_finding_over_an_unmeasured_judge_is_undetermined(self) -> None:
         resolution = await self._generated(_bundle())
         assert resolution.evidence_tier == "undetermined"
+
+
+class TestAStoredTierSaysWhichRuleDecidedIt:
+    """A tier stored before the interval rule was the point estimate against the bar, and never reads as the new claim."""
+
+    async def test_a_generated_analysis_records_the_interval_rule(self) -> None:
+        bundle = _bundle()
+        analysis, _ = await generate_analysis(
+            bundle,
+            prompt=PROMPT,
+            model=MODEL,
+            client=FixturedClient(json.dumps(memo_payload(bundle))),
+            prompt_id=PROMPT_ID,
+            bundle_assembled_at=utc_now_iso(),
+            profile=toyhost_profile(),
+        )
+        assert analysis.judged_tier_rule == JUDGED_TIER_RULE == "interval_lower_bound"
+
+    def test_an_analysis_stored_before_the_rule_reads_as_decided_on_the_point_estimate(self) -> None:
+        from threetears.evals.analysis.report.words import EVIDENCE_TIER_WORDS, stands_on_words
+
+        stored = make_analysis()  # written before the field: it carries no rule
+        assert stored.judged_tier_rule is None
+        assert "point estimate" in stands_on_words(stored, "calibrated")
+        assert stands_on_words(stored, "mechanical") == EVIDENCE_TIER_WORDS["mechanical"], "no judge, no tier rule"
+        current = make_analysis(judged_tier_rule=JUDGED_TIER_RULE)
+        assert stands_on_words(current, "calibrated") == EVIDENCE_TIER_WORDS["calibrated"]
+
+    def test_a_stored_analysis_without_the_field_still_loads(self) -> None:
+        from threetears.evals.contracts.campaign import EvalAnalysis
+
+        payload = make_analysis().model_dump(mode="json")
+        payload.pop("judged_tier_rule")
+        assert EvalAnalysis.model_validate(payload).judged_tier_rule is None

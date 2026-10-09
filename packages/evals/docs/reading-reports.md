@@ -211,10 +211,20 @@ reliability was measured to be (`threetears.evals.contracts.evidence_tiers`, own
 
 | Tier | When |
 |---|---|
-| `calibrated` | the judge agrees with people: `judge_agreement` (person ratings only) at least `CALIBRATION_MIN_AGREEMENT` (0.6) over at least `CALIBRATION_MIN_RESULTS` (20) distinct results |
-| `separation` | the judge agrees with itself: `judge_self_agreement` at least `SEPARATION_MIN_AGREEMENT` (0.8) over at least `SEPARATION_MIN_RESULTS` (20) distinct results |
-| `incidental` | both measured over enough results, and both missed |
-| `undetermined` | too little evidence to decide — never filed as incidental |
+| `calibrated` | the judge agrees with people: the 95% interval on `judge_agreement` (person ratings only) lies at or above `CALIBRATION_MIN_AGREEMENT` (0.6), over at least `CALIBRATION_MIN_RESULTS` (20) distinct results |
+| `separation` | the judge agrees with itself: the 95% interval on `judge_self_agreement` lies at or above `SEPARATION_MIN_AGREEMENT` (0.8), over at least `SEPARATION_MIN_RESULTS` (20) distinct results |
+| `incidental` | both measured over enough results, and both intervals lie below their bars |
+| `undetermined` | not shown either way: too few results, or an interval across a bar — never filed as incidental |
+
+**A tier is decided on an interval, never the point estimate.** Each criterion is `met` when its interval's
+lower end reaches the bar, `not_met` when its upper end is below it, and `undecided` when it straddles. An
+undecided criterion leaves the reading on the next tier down that is shown. At 20 results kappa's sampling spread
+is about 0.2, and the point estimate awarded `calibrated` to a judge whose true agreement was 0.5 a third of the
+time. The interval holds that to under 1% at the bar, and the price is results. Twenty perfectly agreeing
+results bound a 1-5 kappa only to about 0.58, so they do not calibrate. About 24 do, and separation needs about
+45 to 60. At 60 results a judge at true kappa 0.9 calibrates most of the time. The tier sentence names the
+interval and says which way it fell. An analysis stored before this rule has no `judged_tier_rule`, and its
+tiers are rendered as decided on the point estimate.
 
 **How agreement is computed.** Agreement is one statistic computed by one rule for both — quadratic-weighted
 kappa on 1-5, kappa on pass/fail, per rater (each person; each round of repeats) and pooled by result.

@@ -59,6 +59,19 @@ Calibration ratings (`CalibrationRating`) decide a judge's tier, but the estimat
 scores alone. Prediction-powered inference (Angelopoulos et al. 2023) combines a small human-labelled set
 with many judge scores into an estimate whose interval stays valid when the judge is biased. Not built.
 
+### A tier's interval is conservative, so its floor rarely earns it
+
+A tier is decided on a score interval for kappa
+([evidence tiers](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers)). The interval's
+spread at each candidate kappa uses a normal approximation, and on 1-5 the larger of the observed and
+chance-sized disagreements. That keeps a judge at the bar under 1% at 20 results, where the nominal one-sided
+rate is 2.5%. It also spends power: twenty perfect results reach only about 0.58, and `separation` cannot be
+earned at its 20-result floor. An exact test under a stated disagreement model would earn tiers on fewer
+results, but it is valid only for that model. A judge that occasionally reverses the scale breaks it. Not
+built.
+
+*Evidence:* seeded simulation, 20 and 60 results, six marginals, 2026-10, `tests/test_simulated_agreement.py`.
+
 ### Pairwise judging (declined for now)
 
 Tracked in [#599](https://github.com/pacepace/3tears/issues/599).

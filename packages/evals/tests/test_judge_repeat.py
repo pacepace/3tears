@@ -525,8 +525,19 @@ class TestWhatCannotBeReproducedIsRefusedBeforeAnySpend:
             await repeat_judge_scores(host, run_id, _SCOPE, out_of_run_cap_usd=1.0, result_ids=["elsewhere"])
 
 
-class TestTwentyAgreeingRepeatsSeparateTheJudge:
+class TestAgreeingRepeatsSeparateTheJudge:
     async def test_the_stored_repeats_decide_separation(self):
+        # Sixty: the interval on twenty perfect repeats does not reach the 0.8 bar.
+        judge = _PricedJudge()
+        host, run_id = await _judged_run(judge, cases=60)
+
+        await repeat_judge_scores(host, run_id, _SCOPE, out_of_run_cap_usd=3.0)
+
+        results = _results(host, run_id)
+        (tier,) = judge_evidence_tiers(judge_agreement([], results), judge_self_agreement(results), {_KEY})
+        assert (tier.separation.n, tier.separation.agreement, tier.tier) == (60, 1.0, "separation")
+
+    async def test_twenty_agreeing_repeats_are_undecided(self):
         judge = _PricedJudge()
         host, run_id = await _judged_run(judge, cases=20)
 
@@ -534,7 +545,7 @@ class TestTwentyAgreeingRepeatsSeparateTheJudge:
 
         results = _results(host, run_id)
         (tier,) = judge_evidence_tiers(judge_agreement([], results), judge_self_agreement(results), {_KEY})
-        assert (tier.separation.n, tier.separation.agreement, tier.tier) == (20, 1.0, "separation")
+        assert (tier.separation.agreement, tier.separation.state, tier.tier) == (1.0, "undecided", "undetermined")
 
     async def test_nineteen_repeats_do_not(self):
         judge = _PricedJudge()

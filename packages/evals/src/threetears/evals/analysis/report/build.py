@@ -40,9 +40,9 @@ from threetears.evals.analysis.report.words import (
     ARM_STATUS_WORDS,
     COMPARISON_VERDICT_WORDS,
     CONFIDENCE_WORDS,
-    EVIDENCE_TIER_WORDS,
     arm_namer,
     positions,
+    stands_on_words,
 )
 from threetears.evals.analysis.surface_table import (
     NO_SUCCESSFUL_RESULTS,
@@ -194,7 +194,7 @@ def _finding_blocks(
     """
     facts = [Fact(name="Confidence", value=CONFIDENCE_WORDS[finding.confidence])]
     if resolution is not None:
-        facts.append(Fact(name="Stands on", value=EVIDENCE_TIER_WORDS[resolution.evidence_tier]))
+        facts.append(Fact(name="Stands on", value=stands_on_words(analysis, resolution.evidence_tier)))
     if finding.axes:
         facts.append(Fact(name="About", value=", ".join(finding.axes)))
     if finding.invalidates:
