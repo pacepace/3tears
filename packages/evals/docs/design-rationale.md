@@ -124,10 +124,12 @@ forbidden in capitals and done anyway), so each rule below is computed into the 
   because the part ran as detached background work.
 - **Rank on the scope under test; report both.** A subsystem change was credited with halving an
   end-to-end latency its own time did not touch, and the losing arm was recommended. Measures carry a
-  scope; the bundle pairs end-to-end and subsystem measures by unit and reports where their directions
-  differ. A movement counts only past 2 × the standard error of the difference (each side's SEM in
-  quadrature), a bar that adapts per measure instead of being tuned. Inside it the movement is `flat`, and
-  `flat` is a direction: "the whole moved and the part did not" is what this exists to catch.
+  scope; the bundle pairs end-to-end and subsystem measures by unit and tests whether the whole moved by
+  a different amount than the part: each case's whole minus its part, compared between the levels
+  (paired over shared cases, Holm-corrected within the lever). Grading each movement alone and reporting
+  where the verdicts differed published a divergence that did not exist 11–33% of the time, because "the
+  whole moved, the part did not" is not a test of the difference. Each movement still reads `improved`,
+  `regressed`, `not_separated` or, against a declared margin, `equivalent`; none reads "did not move".
 
   *Evidence:* agent with tools, turn p95 98.3 s → 48.5 s against subsystem p95 36.6 s → 37.6 s, 2026-07, single campaign.
 

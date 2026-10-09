@@ -618,9 +618,9 @@ class AttributionMovement(BaseModel):
 class AttributionPayload(_VizPayload):
     """A whole-run movement the part under test does not account for.
 
-    The "movement we cannot place" shape: end-to-end latency moves while the
-    subsystem being tuned does not, or the subsystem swings by ~100s while the
-    whole run stays flat. Both statements are individually true — each is a real
+    The "movement we cannot place" shape: end-to-end latency moves by far more
+    than the subsystem being tuned, or the subsystem swings by ~100s that never
+    reaches the whole run. Both statements are individually true — each is a real
     measurement over its own population — and the question the chart has to
     answer honestly is what, if anything, may be said about the difference.
 

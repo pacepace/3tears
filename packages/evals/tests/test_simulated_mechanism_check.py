@@ -1,10 +1,12 @@
 """The mechanism check's false "moved" rate under an inert lever, computed exactly through the bundle (#601).
 
 A swept lever that declares what it acts on is checked with the engine's separation test across its levels:
-``moved`` when some pair of levels separates (Holm-corrected), and a gap with no spread at all — every case
-moved by the same nonzero amount, or two different constants — counts as separated outright. A reader takes
-``moved`` as evidence the lever took effect, so under a lever that did nothing it should read ``moved`` at
-most α of the time.
+``moved`` when some pair of levels separates (Holm-corrected). A gap with no spread at all — every case moved
+by the same nonzero amount, or two different constants — is read by the exact permutation test, so it
+separates only over enough cases for that pattern to be rarer than α by chance, and below that the check is
+``unchecked`` (``too_few_observations``), never ``moved`` or ``inert``. A reader takes ``moved`` as evidence
+the lever took effect, so under a lever that did nothing it should read ``moved`` at most α of the time; and
+it should still read ``inert`` wherever the data can say so.
 
 For a mechanism that takes few values per observation (a count, a flag) the false-positive rate can be
 computed EXACTLY rather than simulated: every assignment of values to the observations is enumerated, each
@@ -19,6 +21,7 @@ BOTH levels, independently, one repeat per case.
 from __future__ import annotations
 
 import itertools
+from collections import Counter
 
 import pytest
 
@@ -69,7 +72,7 @@ def _sweep(n_cases: int) -> tuple[HostProfile, tuple[EvalRun, EvalRun], dict[str
 
 def _mechanism_state(
     sweep: tuple[HostProfile, tuple[EvalRun, EvalRun], dict[str, list[EvalResult]]], values: tuple[int, ...]
-) -> str:
+) -> tuple[str, str | None]:
     """Assemble the sweep with ``values`` as the observations' covariate, and read the check.
 
     ``values`` holds the narrow level's observations, then the wide level's, one per document in order.
@@ -103,32 +106,33 @@ def _mechanism_state(
     bundle = assemble_context_bundle(campaign, storage=ToyhostStorage(list(batches), results), profile=profile)
     (row,) = [entry for entry in bundle.coverage if entry.name == "chunk_tokens"]
     assert row.mechanism.measure == _MECHANISM, "the check must be reading the covariate this file writes"
-    return row.mechanism.state
+    return row.mechanism.state, row.mechanism.reason
 
 
-def _exact_moved_rate(n_cases: int) -> float:
-    """The probability the check reads ``moved`` when every observation is a fair 0/1 at both levels."""
+def _exact_readings(n_cases: int) -> Counter[tuple[str, str | None]]:
+    """The probability of each reading when every observation is a fair 0/1 at both levels."""
     sweep = _sweep(n_cases)
     assignments = list(itertools.product((0, 1), repeat=2 * n_cases))
-    moved = sum(1 for values in assignments if _mechanism_state(sweep, values) == "moved")
-    return moved / len(assignments)
+    readings = Counter(_mechanism_state(sweep, values) for values in assignments)
+    return Counter({reading: count / len(assignments) for reading, count in readings.items()})
 
 
-def test_three_cases_a_level_read_moved_at_most_alpha() -> None:
-    """At 3 cases the only false ``moved`` is every case shifting by the same ±1: 2 of 64 assignments, 0.031."""
-    rate = _exact_moved_rate(3)
+@pytest.mark.parametrize("n_cases", [2, 3])
+def test_an_inert_lever_reads_moved_at_most_alpha(n_cases: int) -> None:
+    """Before the exact test, every case shifting by the same ±1 read ``moved``: 2 of 16 at 2 cases (0.125)."""
+    rate = _exact_readings(n_cases)[("moved", None)]
     assert rate <= SIGNIFICANCE_ALPHA, f"exact false 'moved' rate {rate:.4f} against α={SIGNIFICANCE_ALPHA}"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "#601 finding: the mechanism check counts a zero-spread gap as separated at any case count. With 2 cases a "
-        "level and a 0/1 mechanism under an inert lever, both cases shifting by the same ±1 is 2 of 16 equally "
-        "likely assignments: exact false 'moved' rate 0.125 against alpha 0.05. paired_change floors the same "
-        "reasoning at the 5 pairs an exact sign-flip test needs; the mechanism check has no floor."
-    ),
-)
-def test_two_cases_a_level_read_moved_at_most_alpha() -> None:
-    rate = _exact_moved_rate(2)
-    assert rate <= SIGNIFICANCE_ALPHA, f"exact false 'moved' rate {rate:.4f} against α={SIGNIFICANCE_ALPHA}"
+@pytest.mark.parametrize("n_cases", [2, 3])
+def test_an_inert_lever_is_still_caught_where_the_data_can_say_so(n_cases: int) -> None:
+    """Only the alike-shifted assignments are too few to tell; every other one still reads ``inert``.
+
+    Both cases (or all three) shifting by the same ±1 is ``2 / 4 ** n`` of the mass: an exact test cannot call
+    that at α over so few cases, and reading it ``inert`` would hide a pattern the data cannot rule out.
+    """
+    readings = _exact_readings(n_cases)
+    alike = 2 / 4**n_cases
+    assert readings == pytest.approx({("inert", None): 1 - alike, ("unchecked", "too_few_observations"): alike}), dict(
+        readings
+    )

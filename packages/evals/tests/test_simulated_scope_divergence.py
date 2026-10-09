@@ -1,33 +1,32 @@
-"""The scope-divergence movement rule, checked against data with a known truth (#601).
+"""The scope-divergence lens and the test it grades movements with, checked against data with a known truth (#601).
 
 A scope divergence sets a lever's movement on an end-to-end measure beside its movement on the part under
-test (``total_ms`` beside ``tool_ms``), and grades each movement against its own noise: ``improved`` or
-``regressed`` only when the difference of the two levels' means clears TWO standard errors of that
-difference, the SE propagated from each level's SEM; ``flat`` otherwise. The bundle publishes
-``se_of_delta`` and ``direction`` on every :class:`~threetears.evals.analysis.MeasureMovement`.
+test (``total_ms`` beside ``tool_ms``). It is published only where the DIFFERENCE between the two movements
+separates: each case's remainder — its whole minus its part, per-case means — is tested between the two
+levels by :func:`~threetears.evals.analysis.stats.level_difference` (paired over shared cases, Welch's
+otherwise, read against Student's t), and the lever's tests are Holm-corrected together. Each movement it
+shows is graded by the same test, in the #592 vocabulary: ``improved``, ``regressed``, ``not_separated``,
+``equivalent`` (only against a declared margin) or ``untested``.
 
-Two blocks:
+Three blocks:
 
-- ``TestTheBundleAppliesTheRule`` pins the published movements to the rule on seeded sweeps: ``se_of_delta``
-  is ``sqrt(SEM_a² + SEM_b²)`` over each level's observations, and ``direction`` is flat exactly when
-  ``|delta| < 2·se_of_delta``.
-- ``TestNoMovementIsReadAsFlat`` runs that rule on levels with no true difference. "Two standard errors" is
-  the conventional bar the bundle's own comment invokes for a difference of means, so a reader takes a
-  non-flat direction as a 5%-level call.
-- ``TestTheLensSaysTheWholeAndThePartDisagree`` runs the lens itself: a divergence is published where the
-  whole's direction and the part's differ, which is a claim that the whole moved by something the part does
-  not account for.
+- ``TestTheBundleAppliesTheRule`` pins the published movements and the divergence's own p to
+  ``level_difference`` over the per-case values a seeded sweep wrote.
+- ``TestNoMovementIsReadAsMoved`` runs that test on levels with no true difference: it separates at most α
+  of the time at 3, 5 and 10 cases a level, and where the levels share cases with a large between-case
+  spread it holds α instead of collapsing toward zero.
+- ``TestNoDivergenceIsPublishedBeyondAlpha`` runs the lens's own test with the part carrying all of the
+  whole's movement, so there is no divergence to find.
 """
 
 from __future__ import annotations
 
-import math
 import random
 
 import pytest
 
-from threetears.evals.analysis import MeasureMovement, assemble_context_bundle
-from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA, standard_error_of_mean
+from threetears.evals.analysis import MeasureMovement, ScopeDivergence, assemble_context_bundle
+from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA, holm_adjust, level_difference
 from threetears.evals.contracts import EvalCampaign, EvalResult, EvalRun, LatencyMetrics
 from packages.evals.tests.fixtures.toyhost.corpus import (
     TOYHOST_DOCUMENTS,
@@ -38,10 +37,10 @@ from packages.evals.tests.fixtures.toyhost.corpus import (
     toyhost_measurements,
 )
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.simulation_support import at_most
+from packages.evals.tests.simulation_support import at_most, within
 
-#: The multiple of the difference's SE a movement must clear, as the bundle states it.
-_SE_MULTIPLE = 2.0
+#: Written values: ``(measure, level label) -> {case: value}``, one observation per case.
+_Written = dict[tuple[str, str], dict[str, float]]
 
 
 def _batch(chunk_tokens: int) -> EvalRun:
@@ -54,32 +53,29 @@ def _batch(chunk_tokens: int) -> EvalRun:
     )
 
 
-def _sweep_movements(
-    rng: random.Random, *, n_cases: int, whole_shift: float
-) -> tuple[list[tuple[str, str, MeasureMovement]], dict[tuple[str, str], list[float]]]:
+def _sweep(rng: random.Random, *, n_cases: int, whole_shift: float) -> tuple[list[ScopeDivergence], _Written]:
     """A chunk-width sweep at one repeat per case, with seeded wall-clock and tool time per observation.
 
     ``total_ms`` (the whole) shifts by ``whole_shift`` at the wide level; ``tool_ms`` (the part) does not
-    move. Every observation is independent normal noise around its level.
+    move. Every observation is independent normal noise around its level, and both levels run the same cases.
 
     Returns:
-        Every movement of ``total_ms`` or ``tool_ms`` the bundle's divergences publish, with the two levels it
-        runs from and to, and each ``(measure, level)``'s observations as written.
+        The chunk-width divergences the bundle publishes, and each ``(measure, level)``'s values as written.
     """
     profile = toyhost_profile()
     batches = (_batch(256), _batch(1024))
-    written: dict[tuple[str, str], list[float]] = {}
+    written: _Written = {}
     results: dict[str, list[EvalResult]] = {}
     for level, batch in enumerate(batches):
         members = []
+        label = ("256", "1024")[level]
         for result in toyhost_measurements(batch, profile=profile, cost_usd=0.02, total_ms=900.0, field_accuracy=0.8):
             if result.test_case_id not in TOYHOST_DOCUMENTS[:n_cases] or result.k_iteration != 1:
                 continue
             total = round(2000.0 + whole_shift * level + rng.gauss(0.0, 40.0), 3)
             tool = round(300.0 + rng.gauss(0.0, 20.0), 3)
-            label = ("256", "1024")[level]
-            written.setdefault(("total_ms", label), []).append(total)
-            written.setdefault(("tool_ms", label), []).append(tool)
+            written.setdefault(("total_ms", label), {})[result.test_case_id] = total
+            written.setdefault(("tool_ms", label), {})[result.test_case_id] = tool
             members.append(result.model_copy(update={"latency": LatencyMetrics(total_ms=total, tool_ms=tool)}))
         results[batch.id] = members
     campaign = EvalCampaign(
@@ -94,141 +90,166 @@ def _sweep_movements(
         created_by="test:fixture",
     )
     bundle = assemble_context_bundle(campaign, storage=ToyhostStorage(list(batches), results), profile=profile)
-    assert all(
-        divergence.end_to_end.direction != divergence.subsystem.direction for divergence in bundle.scope_divergences
-    ), "the lens publishes a divergence exactly where the whole's direction and the part's differ"
-    movements = [
-        (divergence.level_a, divergence.level_b, movement)
-        for divergence in bundle.scope_divergences
-        if divergence.lever == "chunk_tokens"
-        for movement in (divergence.end_to_end, divergence.subsystem, *divergence.whole_components)
-        if movement.name in ("total_ms", "tool_ms")
-    ]
-    return movements, written
+    return [divergence for divergence in bundle.scope_divergences if divergence.lever == "chunk_tokens"], written
 
 
-def _rule_direction(delta: float, se: float | None, higher_is_better: bool) -> str:
-    if se is None or delta == 0.0 or abs(delta) < _SE_MULTIPLE * se:
-        return "flat"
-    return "improved" if (delta > 0) == higher_is_better else "regressed"
+def _rule_direction(values_a: dict[str, float], values_b: dict[str, float], *, higher_is_better: bool) -> str:
+    """The direction ``level_difference`` gives a measure that declares no margin."""
+    tested = level_difference(values_a, values_b)
+    if tested.separated is None:
+        return "untested"
+    if not tested.separated:
+        return "not_separated"
+    assert tested.delta is not None
+    return "improved" if (tested.delta > 0) == higher_is_better else "regressed"
 
 
 class TestTheBundleAppliesTheRule:
     @pytest.mark.parametrize("seed", ["a", "b", "c"])
     def test_each_published_movement_is_the_rule(self, seed: str) -> None:
-        movements, written = _sweep_movements(random.Random(f"divergence-rule-{seed}"), n_cases=6, whole_shift=400.0)
-        assert {movement.name for _, _, movement in movements} == {"total_ms", "tool_ms"}, (
-            "the sweep must publish a divergence carrying both seeded measures"
-        )
-        for level_a, level_b, movement in movements:
-            before, after = written[(movement.name, level_a)], written[(movement.name, level_b)]
-            sem_before, sem_after = standard_error_of_mean(before), standard_error_of_mean(after)
-            assert sem_before is not None and sem_after is not None
-            assert movement.se_of_delta == pytest.approx(math.sqrt(sem_before**2 + sem_after**2), rel=1e-9)
-            assert movement.delta == pytest.approx(sum(after) / len(after) - sum(before) / len(before), rel=1e-9)
+        divergences, written = _sweep(random.Random(f"divergence-rule-{seed}"), n_cases=6, whole_shift=400.0)
+        (divergence,) = [d for d in divergences if (d.end_to_end.name, d.subsystem.name) == ("total_ms", "tool_ms")]
+        movement: MeasureMovement
+        for movement in (divergence.end_to_end, divergence.subsystem):
+            # Deltas run from level_a to level_b, which are in name order: "1024" before "256".
+            before, after = written[(movement.name, divergence.level_a)], written[(movement.name, divergence.level_b)]
+            tested = level_difference(before, after)
+            assert movement.test == "paired", "both levels ran the same cases"
+            assert (movement.n_a, movement.n_b) == (6, 6)
+            assert movement.delta == pytest.approx(sum(after.values()) / 6 - sum(before.values()) / 6, rel=1e-9)
+            assert movement.se_of_delta == pytest.approx(tested.se, rel=1e-9)
             # Wall-clock: lower is better.
-            assert movement.direction == _rule_direction(movement.delta, movement.se_of_delta, False), movement.name
-        whole = next(movement for _, _, movement in movements if movement.name == "total_ms")
-        assert whole.direction != "flat", "the seeded whole moves far past its noise"
+            assert movement.direction == _rule_direction(before, after, higher_is_better=False), movement.name
+        assert divergence.end_to_end.direction == "improved", "the seeded whole falls far past its noise, 1024 → 256"
+
+    @pytest.mark.parametrize("seed", ["a", "b", "c"])
+    def test_the_divergence_is_the_test_of_the_remainder(self, seed: str) -> None:
+        divergences, written = _sweep(random.Random(f"divergence-rule-{seed}"), n_cases=6, whole_shift=400.0)
+        remainders = {
+            label: {
+                case: written[("total_ms", label)][case] - written[("tool_ms", label)][case]
+                for case in written[("total_ms", label)]
+            }
+            for label in ("256", "1024")
+        }
+        (divergence,) = [d for d in divergences if (d.end_to_end.name, d.subsystem.name) == ("total_ms", "tool_ms")]
+        tested = level_difference(remainders[divergence.level_a], remainders[divergence.level_b])
+        assert (divergence.test, divergence.n_cases_a, divergence.n_cases_b) == ("paired", 6, 6)
+        assert divergence.p_raw == pytest.approx(tested.p_value, rel=1e-6)
+        assert divergence.p_raw <= divergence.p_adjusted < SIGNIFICANCE_ALPHA
+        family = [d.p_raw for d in divergences]
+        if len(family) == divergence.family_size:
+            assert divergence.p_adjusted == pytest.approx(holm_adjust(family)[family.index(divergence.p_raw)])
 
 
-def _false_direction_rate(n_per_level: int, replicates: int, seed: str) -> float:
-    """The rule's non-flat share over two levels of ``n_per_level`` independent observations with equal means."""
+def _false_separation_rate(
+    n_per_level: int, replicates: int, seed: str, *, shared_cases: bool, between_case_sd: float
+) -> float:
+    """``level_difference``'s separated share over two levels with equal means.
+
+    Each case has a level drawn with ``between_case_sd``, and each observation adds unit noise. With
+    ``shared_cases`` both levels observe the same cases (one draw of each case's level); without, each level
+    draws its own cases.
+    """
     rng = random.Random(seed)
     calls = 0
     for _ in range(replicates):
-        narrow = [rng.gauss(0.0, 1.0) for _ in range(n_per_level)]
-        wide = [rng.gauss(0.0, 1.0) for _ in range(n_per_level)]
-        sem_narrow, sem_wide = standard_error_of_mean(narrow), standard_error_of_mean(wide)
-        assert sem_narrow is not None and sem_wide is not None
-        delta = sum(wide) / n_per_level - sum(narrow) / n_per_level
-        calls += _rule_direction(delta, math.sqrt(sem_narrow**2 + sem_wide**2), True) != "flat"
+        cases = [rng.gauss(0.0, between_case_sd) for _ in range(n_per_level)]
+        narrow = {f"c{i}": case + rng.gauss(0.0, 1.0) for i, case in enumerate(cases)}
+        if not shared_cases:
+            cases = [rng.gauss(0.0, between_case_sd) for _ in range(n_per_level)]
+        prefix = "c" if shared_cases else "d"
+        wide = {f"{prefix}{i}": case + rng.gauss(0.0, 1.0) for i, case in enumerate(cases)}
+        calls += level_difference(narrow, wide).separated is True
     return calls / replicates
 
 
-class TestNoMovementIsReadAsFlat:
-    """With no true difference between the levels, a movement reads non-flat at most α of the time."""
-
-    def test_with_many_observations_the_bar_is_the_conventional_one(self) -> None:
-        """At 30 observations a level two SEs is close to the large-sample 95% bar (t on ~58 df: 0.050).
-
-        6,000 replicates: SE at α is 0.0028, so the bound is 0.061.
-        """
-        rate = _false_direction_rate(30, 6000, "divergence-null-30")
-        assert rate <= at_most(SIGNIFICANCE_ALPHA, 6000), f"false direction rate {rate:.4f}"
+class TestNoMovementIsReadAsMoved:
+    """With no true difference between the levels, a movement separates at most α of the time."""
 
     @pytest.mark.parametrize(
         ("n_per_level", "replicates"),
-        # The replicates put each measured rate at least 3.5 of its own SEs above the 4-SE bound: 6,000 give
-        # a bound of 0.061 (measured 0.106 and 0.082); 24,000 give 0.0556 (measured 0.062).
-        [(3, 6000), (5, 6000), (10, 24000)],
+        # The old fixed 2-SE rule measured 0.106, 0.082 and 0.062 here (#601); Welch's t holds α. 6,000
+        # replicates give a bound of 0.061, 24,000 a bound of 0.0556.
+        [(3, 6000), (5, 6000), (10, 24000), (30, 6000)],
     )
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "#601 finding: the movement rule reads a fixed 2 SE where the difference of two small samples needs "
-            "Student's t (about 2.78 at 3 observations a level, 2.31 at 5, 2.10 at 10). With independent "
-            "observations and no true difference, measured non-flat rate 0.106 (3 a level), 0.082 (5), 0.062 "
-            "(10) against nominal 0.05. (Where the levels share cases with a large between-case spread the same "
-            "rule is instead very conservative: the SEMs carry the case spread a paired difference would cancel.)"
-        ),
-    )
-    def test_with_few_observations_the_bar_holds_alpha(self, n_per_level: int, replicates: int) -> None:
-        rate = _false_direction_rate(n_per_level, replicates, f"divergence-null-{n_per_level}")
+    def test_independent_levels_hold_alpha(self, n_per_level: int, replicates: int) -> None:
+        rate = _false_separation_rate(
+            n_per_level, replicates, f"divergence-null-{n_per_level}", shared_cases=False, between_case_sd=0.0
+        )
         assert rate <= at_most(SIGNIFICANCE_ALPHA, replicates), (
-            f"{n_per_level} a level: false direction rate {rate:.4f} against α={SIGNIFICANCE_ALPHA}"
+            f"{n_per_level} a level: false separation rate {rate:.4f} against α={SIGNIFICANCE_ALPHA}"
         )
 
+    @pytest.mark.parametrize("n_per_level", [3, 5, 10])
+    def test_levels_sharing_spread_out_cases_hold_alpha_exactly(self, n_per_level: int) -> None:
+        """Paired over shared cases, the case spread cancels: the rate is α, not the ~0.4% the 2-SE rule gave.
 
-def _lens_fires_rate(n_per_level: int, part_shift: float, replicates: int, seed: str) -> float:
-    """How often the lens publishes a divergence when the part carries ALL of the whole's movement.
+        The paired t-test is exact for normal differences, so the rate is within Monte-Carlo error of α on
+        both sides. 6,000 replicates: SE at α is 0.0028, so the band is 0.039 to 0.061.
+        """
+        rate = _false_separation_rate(
+            n_per_level, 6000, f"divergence-paired-null-{n_per_level}", shared_cases=True, between_case_sd=5.0
+        )
+        assert within(rate, SIGNIFICANCE_ALPHA, 6000), f"{n_per_level} shared cases: separation rate {rate:.4f}"
+
+
+def _lens_fires_rate(n_per_level: int, part_shift: float, replicates: int, seed: str, *, shared_cases: bool) -> float:
+    """How often the lens's test separates when the part carries ALL of the whole's movement.
 
     Each observation's whole is its part plus a remainder; the lever shifts the part by ``part_shift`` SDs and
     leaves the remainder alone, so the whole moves by exactly what the part moves and there is no divergence
-    to find. The lens grades each movement on its own 2-SE bar and publishes when the two directions differ.
+    to find. The lens tests each case's whole minus its part between the levels (``level_difference``, pinned
+    to the bundle above) and publishes only where that separates — after a Holm correction that can only
+    make it rarer.
     """
     rng = random.Random(seed)
     fires = 0
     for _ in range(replicates):
-        directions = []
-        parts = [[rng.gauss(part_shift * level, 1.0) for _ in range(n_per_level)] for level in (0, 1)]
-        remainders = [[rng.gauss(0.0, 1.0) for _ in range(n_per_level)] for _ in (0, 1)]
-        wholes = [
-            [p + r for p, r in zip(part, rest, strict=True)] for part, rest in zip(parts, remainders, strict=True)
-        ]
-        for before, after in (wholes, parts):
-            sem_before, sem_after = standard_error_of_mean(before), standard_error_of_mean(after)
-            assert sem_before is not None and sem_after is not None
-            delta = sum(after) / n_per_level - sum(before) / n_per_level
-            directions.append(_rule_direction(delta, math.sqrt(sem_before**2 + sem_after**2), False))
-        fires += directions[0] != directions[1]
+        remainders = []
+        for level in (0, 1):
+            prefix = "c" if shared_cases else f"l{level}-"
+            parts = {f"{prefix}{i}": rng.gauss(part_shift * level, 1.0) for i in range(n_per_level)}
+            wholes = {case: part + rng.gauss(0.0, 1.0) for case, part in parts.items()}
+            remainders.append({case: wholes[case] - parts[case] for case in parts})
+        fires += level_difference(remainders[0], remainders[1]).separated is True
     return fires / replicates
 
 
-class TestTheLensSaysTheWholeAndThePartDisagree:
+class TestNoDivergenceIsPublishedBeyondAlpha:
     """With the part carrying all of the whole's movement, the lens publishes a divergence at most α of the time.
 
-    The lens compares two verdicts, each made alone — "the whole moved" beside "the part did not" — which is
-    the difference between a significant and a non-significant result, not a test of the difference (Gelman &
-    Stern 2006). The test that answers the lens's question is one on the remainder's own movement.
+    The old lens compared two verdicts, each made alone — "the whole moved" beside "the part did not" — which
+    is the difference between a significant and a non-significant result, not a test of the difference
+    (Gelman & Stern 2006). It measured 0.11 (5 a level, no movement), 0.33 (5 a level, part moving 1.5 SD)
+    and 0.33 (10 a level, 1 SD) here. The lens now tests the remainder's own movement.
     """
 
     #: 3,000 replicates: SE at α is 0.0040, so the bound is 0.066.
     REPLICATES = 3000
 
+    @pytest.mark.parametrize("shared_cases", [False, True])
     @pytest.mark.parametrize(("n_per_level", "part_shift"), [(5, 0.0), (5, 1.5), (10, 1.0)])
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "#601 finding: the scope-divergence lens publishes a divergence whenever the whole's and the part's "
-            "separately graded directions differ. With the part carrying all of the whole's movement (no divergence "
-            "exists), measured rate 0.11 (5 a level, no movement), 0.33 (5 a level, part moving 1.5 SD) and 0.33 "
-            "(10 a level, 1 SD) against nominal 0.05: the whole's noise is larger, so it often reads flat where "
-            "the part reads moved."
-        ),
-    )
-    def test_no_divergence_is_published_beyond_alpha(self, n_per_level: int, part_shift: float) -> None:
-        rate = _lens_fires_rate(n_per_level, part_shift, self.REPLICATES, f"lens-{n_per_level}-{part_shift}")
+    def test_no_divergence_is_published_beyond_alpha(
+        self, n_per_level: int, part_shift: float, shared_cases: bool
+    ) -> None:
+        rate = _lens_fires_rate(
+            n_per_level,
+            part_shift,
+            self.REPLICATES,
+            f"lens-{n_per_level}-{part_shift}-{shared_cases}",
+            shared_cases=shared_cases,
+        )
         assert rate <= at_most(SIGNIFICANCE_ALPHA, self.REPLICATES), (
             f"{n_per_level} a level, part shift {part_shift}: divergence published {rate:.4f} against α"
         )
+
+    def test_a_whole_moving_without_its_part_is_still_found(self) -> None:
+        """The lens's purpose survives: a sweep whose whole moves 400 ms past an unmoved part is published."""
+        for seed in ("a", "b", "c"):
+            divergences, _ = _sweep(random.Random(f"divergence-power-{seed}"), n_cases=6, whole_shift=400.0)
+            assert any((d.end_to_end.name, d.subsystem.name) == ("total_ms", "tool_ms") for d in divergences), seed
+
+    def test_a_sweep_with_nothing_moving_publishes_nothing_here(self) -> None:
+        divergences, _ = _sweep(random.Random("divergence-quiet"), n_cases=12, whole_shift=0.0)
+        assert not [d for d in divergences if (d.end_to_end.name, d.subsystem.name) == ("total_ms", "tool_ms")]

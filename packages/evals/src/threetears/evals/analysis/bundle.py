@@ -105,10 +105,12 @@ from threetears.evals.analysis.reporting import (
 from threetears.evals.analysis.stats import (
     MULTIPLE_COMPARISON_CORRECTION,
     SIGNIFICANCE_ALPHA,
+    LevelDifference,
     clustered_standard_error,
     composite_significance,
     holm_adjust,
     interval_clears,
+    level_difference,
     observed_mean_interval,
     proportion_interval,
 )
@@ -282,16 +284,14 @@ WITHHELD_OPPOSITE_DIRECTIONS = "have opposite better-directions"
 WITHHELD_DIFFERENT_POPULATIONS = "are averaged over different populations"
 WITHHELD_UNKNOWN_POPULATION = "has no observation unit"
 
-# How many standard errors a movement must clear before it counts as having a direction
-# at all. Two is the conventional "outside the noise" bar on a difference of means, and it
-# is deliberately NOT a tuned knob: the standard error of the difference is computed by
-# propagating each side's own SEM, so the bar adapts to each measure's spread instead of
-# imposing one threshold on measures whose scales have nothing to do with each other.
-# Anything inside it reads as ``flat`` — which is a direction, and the one that carries the
-# most weight here: "the whole run moved and the part under test did not" is exactly the
-# divergence this surface exists to surface, and it would be missed by a rule that only
-# noticed improved-vs-regressed sign flips.
-_DIVERGENCE_SE_MULTIPLE = 2.0
+# How a divergence is decided. It is a test of the DIFFERENCE between the two movements, never two
+# movements graded apart and set side by side: "the whole moved" beside "the part did not" is the
+# difference between a significant and a non-significant result, which is not itself significant
+# (Gelman & Stern 2006), and with no divergence at all it published one 11% to 33% of the time. So
+# each case's remainder (its whole minus its part, per-case means) is tested between the two levels
+# by the engine's between-level test (`stats.level_difference`), and the lever's tests are corrected
+# together by Holm's method. A movement graded on its own still reads `improved`, `regressed`,
+# `not_separated` or `equivalent`, but it is context: no verdict on one movement decides a divergence.
 
 # How many divergences may be reported. Every (lever × level-pair × cross-scope measure
 # pair) is a candidate, so the space is quadratic in a campaign's measure count and a
@@ -443,28 +443,50 @@ UNDECIDED_CONFOUND_PREFIX = "not recorded on every run in this campaign, so whet
 # =============================================================================
 
 
-class MeasureMovement(EvalDocumentModel):
-    """How one measure moved between two levels of a lever, and whether that movement is real.
+#: How one movement between two levels reads — :func:`~threetears.evals.analysis.stats.level_difference`'s
+#: verdict, in the vocabulary of the history read (#592). ``not_separated`` claims nothing about whether the
+#: measure moved; only ``equivalent`` says the move is small, and only against a declared margin.
+MovementDirection = Literal["improved", "regressed", "equivalent", "not_separated", "untested"]
 
-    ``direction`` is the movement graded against its own noise, never the bare sign of
-    ``delta``: a difference smaller than :data:`_DIVERGENCE_SE_MULTIPLE` standard errors
-    reads ``flat``, as does one whose spread is unestimable (a level with a single
-    observation has no dispersion, which is not the same fact as having none).
+
+class MeasureMovement(EvalDocumentModel):
+    """How one measure moved between two levels of a lever, and whether that movement separates from noise.
+
+    ``direction`` is the movement tested against its own noise, never the bare sign of ``delta``: the
+    engine's between-level test over per-case means (paired over the cases both levels ran, Welch's
+    otherwise), read against Student's t at α. A movement that does not separate is ``not_separated``,
+    which says the data cannot tell it from noise — never that the measure held still. ``equivalent``
+    is the one reading that claims a small move, and it needs the measure's declared margin.
     """
 
     name: str = Field(min_length=1, description="The measure's registry name — its key into the measure_catalog.")
     scope: AttributionScope = Field(description="The measure's attribution scope.")
-    mean_a: float = Field(description="Mean at the first level.")
-    mean_b: float = Field(description="Mean at the second level.")
+    mean_a: float = Field(description="Mean of the per-case means the test read at the first level.")
+    mean_b: float = Field(description="Mean of the per-case means the test read at the second level.")
     delta: float = Field(description="mean_b - mean_a, in the measure's own unit.")
     se_of_delta: float | None = Field(
         default=None,
-        description="Standard error of the difference (each level's SEM propagated). None when unestimable.",
+        description=(
+            "Standard error of the difference the test read: of the per-case differences when paired, each level's "
+            "SEM of its case means in quadrature when not. None when no test ran."
+        ),
     )
-    n_a: int = Field(ge=0, description="Observations at the first level.")
-    n_b: int = Field(ge=0, description="Observations at the second level.")
-    direction: Literal["improved", "regressed", "flat"] = Field(
-        description="The movement read against its own noise — flat when it does not clear it."
+    test: Literal["paired", "unpaired"] | None = Field(
+        default=None,
+        description=(
+            "`paired` = over the cases both levels ran; `unpaired` = Welch's test over each level's cases, when they "
+            "share fewer than two. None when no test could run."
+        ),
+    )
+    n_a: int = Field(ge=0, description="Cases read at the first level (each case's repeats averaged first).")
+    n_b: int = Field(ge=0, description="Cases read at the second level.")
+    direction: MovementDirection = Field(
+        description=(
+            "improved / regressed = the movement separates from noise at alpha (this movement's own test, not "
+            "corrected across the lens). equivalent = shown inside ± the measure's declared materiality threshold by "
+            "a paired equivalence test; never read without one. not_separated = the data cannot tell this movement "
+            "from noise, which says nothing about whether the measure moved. untested = too few cases to test."
+        )
     )
     materiality: Materiality = Field(
         description=(
@@ -636,7 +658,8 @@ def observed_mechanism_key(covariate: str) -> str:
 #: acts on; ``not_swept`` = it was observed at one level, so there is nothing to compare;
 #: ``levels_unobserved`` = some level observed none of the measure, so no pair of levels separated and
 #: whether it held still at every level cannot be shown; ``too_few_observations`` = every level observed
-#: it, but some pair of levels has too few cases on a side for the separation test to run.
+#: it, but some pair of levels has too few cases on a side for the separation test to run, or a gap with no
+#: spread over too few cases for an exact test to call it at alpha.
 MechanismUncheckedReason = Literal["not_declared", "not_swept", "levels_unobserved", "too_few_observations"]
 
 
@@ -651,7 +674,9 @@ class MechanismCheck(EvalDocumentModel):
     **Read with the engine's own separation test, never by inequality.** Each pair of levels is
     compared on the measure's per-case means exactly as a family comparison compares a contrast with
     the control (paired over shared cases, else Welch's; Holm-corrected across the lever's pairs), so
-    noise does not read as a lever taking effect.
+    noise does not read as a lever taking effect. A gap with no spread — every case shifted alike — is
+    read by the exact permutation test, so over a handful of cases it is too few to tell, not ``moved``:
+    a 0/1 mechanism under a lever that did nothing shifts two cases alike one time in eight.
 
     **Three states, none of them a default.** ``moved``: some pair of levels separates on the measure.
     ``inert``: every level observed it, every pair could be tested, and none separates — no measurable
@@ -690,7 +715,8 @@ class MechanismCheck(EvalDocumentModel):
         description=(
             "Why the check is unchecked; None otherwise. not_declared = the lever names no mechanism. not_swept = "
             "one level only. levels_unobserved = some level observed none of it. too_few_observations = some pair "
-            "of levels had fewer than two cases on a side."
+            "of levels had fewer than two cases on a side, or every case shifted by the same amount over too few "
+            "cases for an exact test to tell that from chance (fewer than six shared cases)."
         ),
     )
 
@@ -854,11 +880,18 @@ class RealizedDesign(EvalDocumentModel):
 class ScopeDivergence(EvalDocumentModel):
     """Two scopes disagreeing about what one lever change did — a finding, not a caveat.
 
-    The whole run and the part under test can move in different directions, or one can move
-    while the other does not, and a report that ranks on either lane alone presents that as
-    a clean result. The concrete failure: turn latency roughly halved between two arms while
-    the tuned subsystem's own elapsed time did not move at all, so the arm was credited for
-    a ~50s improvement that happened somewhere else entirely.
+    The whole run can move by more or less than the part under test accounts for, and a report
+    that ranks on either lane alone presents that as a clean result. The concrete failure: turn
+    latency roughly halved between two arms while the tuned subsystem's own elapsed time barely
+    changed, so the arm was credited for a ~50s improvement that happened somewhere else entirely.
+
+    **What is tested is the divergence itself**: whether the whole's movement and the part's differ.
+    Each case's remainder — its whole minus its part — is compared between the two levels by the
+    engine's between-level test (paired over shared cases, Welch's otherwise, per-case means so
+    repeats are not counted as cases), and a lever's divergence tests are Holm-corrected together. A
+    divergence is published only where that corrected test separates. Two movements graded apart and
+    set side by side are never the test: a whole that separates beside a part that does not is no
+    evidence the two differ.
 
     The two measures are paired by **unit**, which is what makes this subject-agnostic: an
     end-to-end and a subsystem measure in the same unit are two views of one quantity at
@@ -880,8 +913,8 @@ class ScopeDivergence(EvalDocumentModel):
     the arithmetic between them is refused.
 
     **Where the catalog partitions the whole, the parts are graded too, and the one carrying the
-    movement is named.** A whole that moved beside a flat subsystem measure says only that the
-    movement was not THERE; left at that, a reader sets the whole beside whatever else is in view
+    movement is named.** A whole that moved by more than a subsystem measure says only that the
+    difference was not THERE; left at that, a reader sets the whole beside whatever else is in view
     — a disjoint phase timing, say — and attributes the swing to the lever. The whole's own
     components answer where it went: a ``total_ms`` swing that is almost all ``llm_ms`` is time
     inside model calls, which a provider's load moves as readily as any lever.
@@ -893,6 +926,33 @@ class ScopeDivergence(EvalDocumentModel):
     unit: str = Field(min_length=1, description="The unit both measures share — why they are comparable.")
     end_to_end: MeasureMovement = Field(description="How the whole-run measure moved.")
     subsystem: MeasureMovement = Field(description="How the isolating measure moved.")
+    test: Literal["paired", "unpaired"] = Field(
+        description=(
+            "The test of the divergence — of each case's whole-minus-part between the two levels: `paired` over "
+            "the cases both levels ran, `unpaired` (Welch's) when they share fewer than two."
+        )
+    )
+    n_cases_a: int = Field(ge=2, description="Cases carrying both measures that the divergence test read at level_a.")
+    n_cases_b: int = Field(ge=2, description="Cases carrying both measures that the divergence test read at level_b.")
+    p_raw: float = Field(
+        ge=0.0,
+        le=1.0,
+        description=(
+            "The divergence test's own two-sided p, before correction. Kept for audit, never the figure the "
+            "divergence rests on, and withheld from the analysis writer."
+        ),
+    )
+    p_adjusted: float = Field(
+        ge=0.0,
+        le=1.0,
+        description=(
+            "The Holm-adjusted p across every divergence test of this lever (`family_size`) — the figure the "
+            "divergence rests on. Always below alpha: nothing else is published."
+        ),
+    )
+    family_size: int = Field(
+        ge=1, description="How many divergence tests this lever's comparisons carried a p, corrected together."
+    )
     unattributed_delta: float | None = Field(
         default=None,
         description=(
@@ -947,7 +1007,8 @@ class ScopeDivergence(EvalDocumentModel):
         default=None,
         description=(
             "The component carrying the whole-run movement: the one whose delta, in the whole's direction, is "
-            "largest. None when the whole did not move beyond its noise, or no component moved its way. When it "
+            "largest. None when the whole's movement does not separate from its noise, or no component moved its "
+            "way. When it "
             "is time inside model calls (llm_ms), a provider's load moves it as readily as the lever does, so "
             "read candidate_output_tokens_per_s across the two cohorts before attributing the movement to the lever."
         ),
@@ -1691,12 +1752,30 @@ class AnalysisContextBundle(EvalDocumentModel):
     )
     scope_divergences: list[ScopeDivergence] = Field(
         default_factory=list,
-        description="Lever changes where the whole-run and isolating measures disagree — each one is a finding.",
+        description=(
+            "Lever changes where the whole-run measure moved by a different amount than the isolating measure, the "
+            "difference itself tested and Holm-corrected within the lever — each one is a finding. An empty list "
+            "claims no agreement: a pair whose test did not separate is not_separated, and one that could not be "
+            "tested is counted in divergences_untested."
+        ),
     )
     divergences_omitted: int = Field(
         default=0,
         ge=0,
         description="Gated divergences beyond the reporting cap, dropped weakest-first. Stated so a short list is not read as a complete one.",
+    )
+    divergences_tested: int = Field(
+        default=0,
+        ge=0,
+        description="Whole-and-part pairs across every lever whose divergence test carried a p, published or not.",
+    )
+    divergences_untested: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Whole-and-part pairs whose divergence could not be tested: fewer than two cases carrying both measures "
+            "on a side, or a remainder with no spread over too few cases for an exact test. Nothing is known of them."
+        ),
     )
     declared_design: CampaignDesign | None = Field(
         default=None,
@@ -2661,7 +2740,7 @@ def _derived_leaves(result: EvalResult) -> Iterator[tuple[str, float | str, bool
     analysis cannot rank on, and this surface is the only way a subsystem reaches a report at all.
 
     Without it, a whole-run latency movement that lived in orchestration could only be
-    reported as ``total_ms`` moving while ``llm_ms`` and ``tool_ms`` stayed flat, which
+    reported as ``total_ms`` moving by more than ``llm_ms`` and ``tool_ms`` account for, which
     is indistinguishable in a report from a measurement fault. With it the movement has
     a component to be attributed to, and — because the registry declares it
     ``contained_by: total_ms`` — the divergence lens will difference it against the
@@ -2959,7 +3038,7 @@ def _measure_collection(
 
 def _collect_measures(
     results: list[EvalResult], *, profile: HostProfile, undeclared: MeasurePopulation
-) -> tuple[MeasureCollection, dict[str, str]]:
+) -> tuple[MeasureCollection, dict[str, str], dict[str, _PooledMeasure]]:
     """Build the measure surface, and say what one observation of each measure describes.
 
     **Each measure is computed over its own population** (``MetricDescriptor.population``): a
@@ -3001,6 +3080,9 @@ def _collect_measures(
     ``absent_scopes`` instead of being silently missing, and an observation the walk reached
     but could not summarise is named in ``unreported_observations`` — see that field for why
     silence there was the dangerous case.
+
+    The third return value is the pooled observations each summary was computed from, beside their
+    cases, for a lens that tests between levels over per-case values rather than reading summaries.
     """
     # Each observation is pooled beside its test case. `n` alone cannot distinguish 15 independent
     # observations from 5 cases repeated 3 times, and the two license very different intervals —
@@ -3114,7 +3196,7 @@ def _collect_measures(
     # under it. Names dropped along the way (unreportable, ambiguous) are excluded, so the
     # map is exactly the collection's own vocabulary.
     units = {**inner_units, **dict.fromkeys(outer, _PER_RESULT)}
-    return collection, {name: units[name] for name in pooled}
+    return collection, {name: units[name] for name in pooled}, pooled
 
 
 def _classifier_label_summaries(
@@ -4254,43 +4336,35 @@ def _level_means(
     }
 
 
-def _levels_separate(per_case: Mapping[str, Mapping[str, float]]) -> tuple[bool, bool]:
+def _levels_separate(per_case: Mapping[str, Mapping[str, Fraction]]) -> tuple[bool, bool]:
     """Whether any pair of levels separates on per-case values, and whether any pair could not be tested.
 
-    The family comparison's test, applied to every pair of levels: paired over the cases both levels ran
-    when they share at least two, else Welch's over each level's per-case values
-    (:func:`~threetears.evals.analysis.stats.composite_significance`), the pairs Holm-corrected as one
-    family and read against the same alpha. Two of the test's own undefined results are decided here,
-    since each has only one honest reading: fewer than two cases on a side is untestable; a gap with no
-    spread at all (every case moved by the same nonzero amount, or two different constants) is a
-    separation the noise cannot account for, because there is none.
+    The engine's between-level test applied to every pair of levels
+    (:func:`~threetears.evals.analysis.stats.level_difference`): paired over the cases both levels ran when
+    they share at least two, else Welch's over each level's per-case values, the pairs Holm-corrected as one
+    family and read against the same alpha. A gap with no spread at all (every case moved by the same nonzero
+    amount, or two different constants) is read by the exact permutation test, so it separates only over
+    enough cases for that pattern to be rarer than alpha by chance: at two cases a 0/1 mechanism under a lever
+    that did nothing shifts both cases alike one time in eight. Below that it is untestable, as is a pair with
+    fewer than two cases on a side.
 
     Args:
-        per_case: Level -> its per-case means, for every level that observed the measure.
+        per_case: Level -> its exact per-case means, for every level that observed the measure.
 
     Returns:
         ``(separated, untestable)``.
     """
     raw: list[float] = []
-    separated = untestable = False
+    untestable = False
     levels = sorted(per_case)
     for index, level_a in enumerate(levels):
         for level_b in levels[index + 1 :]:
-            values_a, values_b = per_case[level_a], per_case[level_b]
-            shared = sorted(set(values_a) & set(values_b))
-            paired = len(shared) >= 2
-            a = [values_a[case] for case in shared] if paired else list(values_a.values())
-            b = [values_b[case] for case in shared] if paired else list(values_b.values())
-            result = composite_significance(a, b, paired=paired)
-            if result.significant is None:
-                if len(a) < 2 or len(b) < 2:
-                    untestable = True
-                else:
-                    separated = True
-            elif result.p_value is not None:
-                raw.append(result.p_value)
-    if raw and min(holm_adjust(raw)) < SIGNIFICANCE_ALPHA:
-        separated = True
+            tested = level_difference(per_case[level_a], per_case[level_b])
+            if tested.p_value is None:
+                untestable = True
+            else:
+                raw.append(tested.p_value)
+    separated = bool(raw) and min(holm_adjust(raw)) < SIGNIFICANCE_ALPHA
     return separated, untestable
 
 
@@ -4319,9 +4393,7 @@ def _mechanism_check(
     unobserved = [level for level in sorted(result_ids_by_level) if level not in per_case]
     state: Literal["moved", "inert", "unchecked"]
     reason: MechanismUncheckedReason | None = None
-    separated, untestable = _levels_separate(
-        {level: {case: float(mean) for case, mean in cases.items()} for level, cases in per_case.items()}
-    )
+    separated, untestable = _levels_separate(per_case)
     if len(result_ids_by_level) < 2:
         state, reason = "unchecked", "not_swept"
     elif separated:
@@ -4589,43 +4661,79 @@ def _confound_catalog(bundle: AnalysisContextBundle, *, profile: HostProfile) ->
     return catalog
 
 
-def _movement(descriptor: MetricDescriptor, a: MeasureSummary, b: MeasureSummary) -> MeasureMovement:
-    """Grade one measure's movement between two levels against its own noise, and against what matters.
+#: Measure name -> case id -> the exact mean of that case's observations of it, at one level.
+_PerCaseMeasures = dict[str, dict[str, Fraction]]
+
+
+def _per_case_measures(pooled: Mapping[str, _PooledMeasure]) -> _PerCaseMeasures:
+    """Each numeric measure's per-case means at one level, exact — the unit a between-level test reads.
+
+    Repeats of a case are averaged first, so a case repeated three times is one case, and averaged
+    exactly (:func:`_exact`) so a constant read at unequal repeats stays one constant rather than
+    acquiring a float residue a test would read as spread.
 
     Args:
-        descriptor: The measure's descriptor — its name, and the materiality threshold the delta is
-            labelled against (:func:`~threetears.evals.contracts.metrics.materiality`).
-        a: Its summary at the first level.
-        b: Its summary at the second level.
+        pooled: The level's pooled observations, from :func:`_collect_measures`.
 
     Returns:
-        The movement, with ``direction`` ``flat`` unless the difference clears
-        :data:`_DIVERGENCE_SE_MULTIPLE` standard errors of that difference, and ``materiality``
-        ``immaterial`` when the difference is below the measure's declared threshold.
+        ``{name: {case id: mean}}`` for every numeric measure; text, boolean and categorical measures are absent.
     """
-    name = descriptor.name
-    mean_a, mean_b = float(a.mean or 0.0), float(b.mean or 0.0)
-    delta = mean_b - mean_a
-    # Unestimable on either side means unestimable overall — a level with one observation
-    # carries no spread, and treating that as zero spread would let any difference at all
-    # read as a real movement.
-    se = math.sqrt(a.sem**2 + b.sem**2) if a.sem is not None and b.sem is not None else None
-    if se is None or delta == 0.0 or abs(delta) < _DIVERGENCE_SE_MULTIPLE * se:
-        direction: Literal["improved", "regressed", "flat"] = "flat"
+    per_case: _PerCaseMeasures = {}
+    for name, (descriptor, values, cases) in pooled.items():
+        if descriptor.data_type in ("text", "boolean", "categorical"):
+            continue
+        by_case: dict[str, list[Fraction]] = defaultdict(list)
+        for value, case in zip(values, cases):
+            by_case[case].append(_exact(float(value)))
+        per_case[name] = {
+            case: sum(case_values, Fraction(0)) / len(case_values) for case, case_values in sorted(by_case.items())
+        }
+    return per_case
+
+
+def _movement(
+    descriptor: MetricDescriptor, at_a: Mapping[str, Fraction], at_b: Mapping[str, Fraction]
+) -> MeasureMovement:
+    """Test one measure's movement between two levels against its own noise, and read it against what matters.
+
+    Args:
+        descriptor: The measure's descriptor — its name, scope, better direction, and the materiality
+            threshold that is both the delta's label and the margin an equivalence test runs against.
+        at_a: Its per-case means at the first level.
+        at_b: Its per-case means at the second level.
+
+    Returns:
+        The movement, read by :func:`~threetears.evals.analysis.stats.level_difference`.
+    """
+    tested = level_difference(at_a, at_b, equivalence_margin=descriptor.materiality_threshold)
+    assert tested.mean_a is not None and tested.mean_b is not None and tested.delta is not None
+    direction: MovementDirection
+    if tested.separated is None:
+        direction = "untested"
+    elif tested.separated:
+        direction = "improved" if (tested.delta > 0) == bool(descriptor.higher_is_better) else "regressed"
+    elif tested.equivalent:
+        direction = "equivalent"
     else:
-        direction = "improved" if (delta > 0) == bool(a.higher_is_better) else "regressed"
+        direction = "not_separated"
     return MeasureMovement(
-        name=name,
-        scope=a.attribution_scope,
-        mean_a=mean_a,
-        mean_b=mean_b,
-        delta=delta,
-        se_of_delta=se,
-        n_a=a.n,
-        n_b=b.n,
+        name=descriptor.name,
+        scope=descriptor.attribution_scope,
+        mean_a=tested.mean_a,
+        mean_b=tested.mean_b,
+        delta=tested.delta,
+        se_of_delta=tested.se,
+        test=tested.test,
+        n_a=tested.n_a,
+        n_b=tested.n_b,
         direction=direction,
-        materiality=materiality(descriptor.materiality_threshold, delta),
+        materiality=materiality(descriptor.materiality_threshold, tested.delta),
     )
+
+
+def _remainders(whole: Mapping[str, Fraction], part: Mapping[str, Fraction]) -> dict[str, Fraction]:
+    """Each case's whole minus its part, at one level, over the cases carrying both — what a divergence tests."""
+    return {case: value - part[case] for case, value in whole.items() if case in part}
 
 
 def _comparable_pairs(
@@ -4733,8 +4841,8 @@ def _unsound_subtraction(
 
 def _carried_by(
     whole: MeasureMovement,
-    level_a: MeasureCollection,
-    level_b: MeasureCollection,
+    level_a: _PerCaseMeasures,
+    level_b: _PerCaseMeasures,
     catalog: dict[str, MetricDescriptor],
     *,
     profile: HostProfile,
@@ -4750,24 +4858,22 @@ def _carried_by(
 
     Args:
         whole: The whole-run measure's movement.
-        level_a: Measures at the first level.
-        level_b: Measures at the second level.
+        level_a: Per-case measures at the first level.
+        level_b: Per-case measures at the second level.
         catalog: Descriptors by measure name.
         profile: The host whose vocabulary this reads.
 
     Returns:
         ``(components, carried_by, carried_share)``. The carrier is the component whose delta,
-        taken in the whole's direction, is largest, and is None when the whole is flat, its delta is
-        zero, or no component moved its way.
+        taken in the whole's direction, is largest, and is None when the whole's movement does not
+        separate from its noise, its delta is zero, or no component moved its way.
     """
-    at_a = {m.name: m for m in level_a.measures}
-    at_b = {m.name: m for m in level_b.measures}
     components = [
-        _movement(catalog[name], at_a[name], at_b[name])
+        _movement(catalog[name], level_a[name], level_b[name])
         for name in partition_components(whole.name, catalog, measures=profile.measures)
-        if name in at_a and name in at_b and at_a[name].mean is not None and at_b[name].mean is not None
+        if level_a.get(name) and level_b.get(name)
     ]
-    if whole.direction == "flat" or whole.delta == 0.0:
+    if whole.direction not in ("improved", "regressed") or whole.delta == 0.0:
         return components, None, None
     sign = 1.0 if whole.delta > 0 else -1.0
     moving = [component for component in components if component.delta * sign > 0]
@@ -4775,6 +4881,13 @@ def _carried_by(
         return components, None, None
     carrier = max(moving, key=lambda component: (component.delta * sign, component.name))
     return components, carrier.name, carrier.delta / whole.delta
+
+
+class _DivergenceCount(NamedTuple):
+    """How many whole-and-part pairs the divergence lens tested, and how many it could not."""
+
+    tested: int
+    untested: int
 
 
 def _scope_divergences(
@@ -4787,16 +4900,20 @@ def _scope_divergences(
     folds: _SurfaceFolds,
     observations: _MechanismObservations,
     profile: HostProfile,
-) -> tuple[list[ScopeDivergence], int]:
-    """Find the lever changes where the whole run and the part under test disagree.
+) -> tuple[list[ScopeDivergence], int, _DivergenceCount]:
+    """Find the lever changes where the whole run moved by a different amount than the part under test.
 
     Each level of each swept lever gets its own measure collection, built from that level's
-    results by the same walk the rest of the bundle uses — so the means and spreads compared
-    here are the real ones, not summaries of summaries. Levels are then compared pairwise, and
-    a pair is reported only when the two scopes end up with different directions, where
-    "flat" (inside the noise) counts as a direction of its own. That gate is what keeps this
-    from firing constantly: two noisy tails over a handful of runs disagree by sign almost
-    always, and a finding that appears every time trains a reader to skip it.
+    results by the same walk the rest of the bundle uses — so the observations compared here
+    are the real ones, not summaries of summaries. Levels are then compared pairwise, and for
+    each whole-and-part pair sharing a unit **the divergence itself is tested**: each case's
+    whole minus its part (per-case means) between the two levels, by the engine's between-level
+    test (:func:`~threetears.evals.analysis.stats.level_difference`). Every such test of one lever
+    is one family, Holm-corrected at the engine's alpha, and a divergence is published only where
+    its adjusted p is below it. Grading the whole and the part apart and publishing where their
+    verdicts differ is NOT a test of the difference (Gelman & Stern 2006): a whole that
+    separates beside a part that does not is ordinary noise, and that rule published a divergence
+    that did not exist 11–33% of the time.
 
     Two honesty constraints ride along, because a comparison this cheap to produce is easy
     to over-read. The cohorts are grouped by ONE lever, so they also differ in whatever else
@@ -4823,9 +4940,11 @@ def _scope_divergences(
         profile: The host whose vocabulary this reads.
 
     Returns:
-        The divergences to report (strongest first, capped) and the count dropped by the cap.
+        The divergences to report (strongest first, capped), the count dropped by the cap, and how
+        many pairs were tested and could not be.
     """
     found: list[tuple[float, ScopeDivergence]] = []
+    n_tested = n_untested = 0
     all_run_ids = [run.id for run in runs]
     lever_levels = _lever_levels(runs, results_by_run, profile=profile)
     for lever, campaign_wide in lever_levels.items():
@@ -4844,12 +4963,15 @@ def _scope_divergences(
             )
             for level in levels
         }
-        collections = {level: collection for level, (collection, _) in collected.items()}
+        collections = {level: collection for level, (collection, _, _) in collected.items()}
+        per_case = {level: _per_case_measures(pooled) for level, (_, _, pooled) in collected.items()}
         result_ids = {
             level: {result.id for run_id in by_level[level] for result in results_by_run.get(run_id, [])}
             for level in levels
         }
-        units = {level: observation_units for level, (_, observation_units) in collected.items()}
+        units = {level: observation_units for level, (_, observation_units, _) in collected.items()}
+        # Every test this lever's comparisons carried, with what a published divergence needs beside it.
+        family: list[tuple[LevelDifference, dict[str, Any]]] = []
         for index, level_a in enumerate(levels):
             for level_b in levels[index + 1 :]:
                 confounded = _uncontrolled_dimensions(
@@ -4862,11 +4984,18 @@ def _scope_divergences(
                 ) + _observed_mechanism_confounds(
                     lever, {level: result_ids[level] for level in (level_a, level_b)}, observations, profile=profile
                 )
-                for unit, e_a, e_b, s_a, s_b in _comparable_pairs(collections[level_a], collections[level_b], catalog):
-                    whole = _movement(catalog[e_a.name], e_a, e_b)
-                    part = _movement(catalog[s_a.name], s_a, s_b)
-                    if whole.direction == part.direction:
+                at_a, at_b = per_case[level_a], per_case[level_b]
+                for unit, e_a, _e_b, s_a, _s_b in _comparable_pairs(
+                    collections[level_a], collections[level_b], catalog
+                ):
+                    tested = level_difference(
+                        _remainders(at_a[e_a.name], at_a[s_a.name]), _remainders(at_b[e_a.name], at_b[s_a.name])
+                    )
+                    if tested.p_value is None:
+                        n_untested += 1
                         continue
+                    whole = _movement(catalog[e_a.name], at_a[e_a.name], at_b[e_a.name])
+                    part = _movement(catalog[s_a.name], at_a[s_a.name], at_b[s_a.name])
                     withheld = _unsound_subtraction(
                         whole=e_a,
                         part=s_a,
@@ -4874,38 +5003,51 @@ def _scope_divergences(
                         observation_units=[units[level_a], units[level_b]],
                         profile=profile,
                     )
-                    unattributed = None if withheld else whole.delta - part.delta
-                    components, carried_by, carried_share = _carried_by(
-                        whole, collections[level_a], collections[level_b], catalog, profile=profile
+                    components, carried_by, carried_share = _carried_by(whole, at_a, at_b, catalog, profile=profile)
+                    assert tested.test is not None
+                    family.append(
+                        (
+                            tested,
+                            {
+                                "lever": lever,
+                                "level_a": level_a,
+                                "level_b": level_b,
+                                "unit": unit,
+                                "end_to_end": whole,
+                                "subsystem": part,
+                                "test": tested.test,
+                                "n_cases_a": tested.n_a,
+                                "n_cases_b": tested.n_b,
+                                "p_raw": tested.p_value,
+                                "unattributed_delta": None if withheld else whole.delta - part.delta,
+                                "unattributed_withheld": withheld,
+                                # Read from the same catalog `_unsound_subtraction` consulted, so the
+                                # published fact and the decision made from it have one source.
+                                "contained_by": (
+                                    described.contained_by if (described := catalog.get(part.name)) else None
+                                ),
+                                "confounded_by": confounded,
+                                "whole_components": components,
+                                "carried_by": carried_by,
+                                "carried_share": carried_share,
+                            },
+                        )
                     )
-                    divergence = ScopeDivergence(
-                        lever=lever,
-                        level_a=level_a,
-                        level_b=level_b,
-                        unit=unit,
-                        end_to_end=whole,
-                        subsystem=part,
-                        unattributed_delta=unattributed,
-                        unattributed_withheld=withheld,
-                        # Read from the same catalog `_unsound_subtraction` consulted, so the
-                        # published fact and the decision made from it have one source.
-                        contained_by=(described.contained_by if (described := catalog.get(part.name)) else None),
-                        confounded_by=confounded,
-                        whole_components=components,
-                        carried_by=carried_by,
-                        carried_share=carried_share,
-                    )
-                    # Rank by how much of the whole-run movement the part fails to explain, as
-                    # a fraction of the whole's own scale — the question a reader opens a
-                    # divergence to answer, and scale-free so milliseconds and dollars can be
-                    # ordered against each other. Where the swing cannot be stated, the
-                    # whole-run movement stands in: a divergence whose arithmetic is unsound is
-                    # not thereby uninteresting, and ranking it at zero would drop the real
-                    # ones under the cap first. The scale takes both levels so a measure
-                    # starting near zero cannot manufacture an unbounded score.
-                    scale = max(abs(whole.mean_a), abs(whole.mean_b), 1e-9)
-                    strength = abs(whole.delta if unattributed is None else unattributed) / scale
-                    found.append((strength, divergence))
+        n_tested += len(family)
+        adjusted = holm_adjust([tested.p_value or 0.0 for tested, _ in family])
+        for (tested, fields), p_adjusted in zip(family, adjusted):
+            if p_adjusted >= SIGNIFICANCE_ALPHA:
+                continue
+            divergence = ScopeDivergence(**fields, p_adjusted=p_adjusted, family_size=len(family))
+            # Rank by how far the whole's movement and the part's differ — the difference the test
+            # read — as a fraction of the whole's own scale: the question a reader opens a divergence
+            # to answer, and scale-free so milliseconds and dollars can be ordered against each other.
+            # The scale takes both levels so a measure starting near zero cannot manufacture an
+            # unbounded score.
+            whole = divergence.end_to_end
+            scale = max(abs(whole.mean_a), abs(whole.mean_b), 1e-9)
+            strength = abs(tested.delta or 0.0) / scale
+            found.append((strength, divergence))
 
     found.sort(
         key=lambda item: (
@@ -4917,7 +5059,11 @@ def _scope_divergences(
             item[1].subsystem.name,
         )
     )
-    return [divergence for _, divergence in found[:_MAX_DIVERGENCES]], max(0, len(found) - _MAX_DIVERGENCES)
+    return (
+        [divergence for _, divergence in found[:_MAX_DIVERGENCES]],
+        max(0, len(found) - _MAX_DIVERGENCES),
+        _DivergenceCount(n_tested, n_untested),
+    )
 
 
 def _token_rollup(results: list[EvalResult]) -> TokenRollup | None:
@@ -6002,7 +6148,7 @@ def assemble_context_bundle(
     # Divergences pair measures by unit, which only the catalog knows, so they are derived
     # after it — and from the same descriptors the generator will read, never a second lookup
     # that could disagree with what the bundle says a measure is.
-    bundle.scope_divergences, bundle.divergences_omitted = _scope_divergences(
+    bundle.scope_divergences, bundle.divergences_omitted, divergence_count = _scope_divergences(
         runs,
         results_by_run,
         bundle.measure_catalog,
@@ -6012,6 +6158,7 @@ def assemble_context_bundle(
         observations=mechanisms,
         profile=profile,
     )
+    bundle.divergences_tested, bundle.divergences_untested = divergence_count
     # Last, because it reads what both confound-bearing lenses actually emitted rather than
     # what they might have — a catalog built from the declaration would name dimensions no
     # lens reported, and a reader would take that as a claim the campaign made.

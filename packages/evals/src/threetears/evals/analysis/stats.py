@@ -31,7 +31,8 @@ from __future__ import annotations
 
 import functools
 import math
-from collections.abc import Hashable, Sequence
+from collections.abc import Hashable, Mapping, Sequence
+from fractions import Fraction
 from functools import lru_cache
 from statistics import NormalDist
 from typing import Final, Literal, NamedTuple
@@ -1034,6 +1035,136 @@ def paired_change(
     return verdict("below_threshold" if significant else "not_separated")
 
 
+class LevelDifference(NamedTuple):
+    """How one quantity differs between two levels, read over per-case values, and whether that separates.
+
+    ``separated`` is three-valued, like every verdict here: True when the test rejects at α, False when it
+    ran and did not (the data cannot tell the difference from noise, which says nothing about whether there
+    is one), None when no test could run (``untested_reason`` says why). ``equivalent`` is the only field
+    that claims the difference is small, and only against a declared margin (:func:`_equivalence`).
+    """
+
+    #: ``paired`` over the cases both levels carry when they share two or more; ``unpaired`` (Welch's
+    #: test) over each level's own cases otherwise. None when no test ran.
+    test: Literal["paired", "unpaired"] | None
+    #: The cases read on each side: the shared cases when paired, each level's own otherwise.
+    n_a: int
+    n_b: int
+    #: Mean of the per-case values read on each side; None when a side read none.
+    mean_a: float | None
+    mean_b: float | None
+    #: ``mean_b - mean_a``; None when either side is empty.
+    delta: float | None
+    #: The standard error the test read ``delta`` against; None when no test ran.
+    se: float | None
+    #: The two-sided p, uncorrected. A t-test's, or an exact permutation p where the values have no
+    #: spread (see :func:`level_difference`). None when no test ran.
+    p_value: float | None
+    separated: bool | None
+    untested_reason: str | None
+    #: The paired TOST against ``± equivalence_margin``; None when no margin, or the test is unpaired.
+    equivalent: bool | None
+    equivalence_p: float | None
+
+
+def _all_equal(values: Sequence[float | Fraction]) -> bool:
+    return all(value == values[0] for value in values)
+
+
+def level_difference[Case: Hashable](
+    values_a: Mapping[Case, float | Fraction],
+    values_b: Mapping[Case, float | Fraction],
+    *,
+    equivalence_margin: float | None = None,
+) -> LevelDifference:
+    """Test the difference between two levels of a quantity, over one value per case at each level.
+
+    Pass per-case values — each case's mean over its repeats — so the test's unit is the case and repeats
+    of one case are not counted as independent draws (with balanced repeats the SEM of case means is the
+    cluster-robust SEM, :func:`clustered_standard_error`). The test is the one every between-level verdict
+    here uses: a paired t-test over the cases both levels carry when they share at least two, which cancels
+    the between-case spread both levels share; Welch's unequal-variance t-test over each level's cases
+    otherwise. Each is read against Student's t on its own degrees of freedom (``n - 1`` paired,
+    Welch–Satterthwaite unpaired), never a fixed multiple of the standard error: at three cases a level a
+    fixed two standard errors calls a difference nearly 11% of the time when there is none.
+
+    **A difference with no spread is read by an exact test, not by reasoning.** Every shared case moving by
+    one nonzero amount (or two different constants, unpaired) leaves a t-test undefined. The exact
+    permutation test is not: the observed arrangement is the most extreme of ``2 ** n`` equally likely sign
+    flips (paired) or of ``C(n_a + n_b, n_a)`` splits (unpaired), so its two-sided p is ``2 ** (1 - n)``,
+    or ``2 / C(n_a + n_b, n_a)``. Where that p cannot reach α the pattern is a coincidence the data cannot
+    rule out — a 0/1 value moving the same way on two cases happens one time in eight by chance — so it is
+    untested, never separated. Identical values on both sides (no gap, no spread) have the exact p of 1.
+
+    Values may be :class:`~fractions.Fraction` so a zero spread is decided exactly: two cases whose
+    difference is the same decimal must not acquire a float residue a t-test would read as a tiny spread.
+
+    Args:
+        values_a: Case -> its value at the first level.
+        values_b: Case -> its value at the second level.
+        equivalence_margin: The measure's declared margin, or None. With one, a paired difference is also
+            tested for equivalence (:func:`_equivalence`); an unpaired one never is.
+
+    Returns:
+        A :class:`LevelDifference`.
+    """
+    shared = [case for case in values_a if case in values_b]
+    paired = len(shared) >= 2
+    a = [values_a[case] for case in shared] if paired else list(values_a.values())
+    b = [values_b[case] for case in shared] if paired else list(values_b.values())
+    n_a, n_b = len(a), len(b)
+    mean_a = float(sum(a, Fraction(0)) / n_a) if n_a else None
+    mean_b = float(sum(b, Fraction(0)) / n_b) if n_b else None
+    delta = None if mean_a is None or mean_b is None else mean_b - mean_a
+    test: Literal["paired", "unpaired"] = "paired" if paired else "unpaired"
+
+    def untested(reason: str) -> LevelDifference:
+        return LevelDifference(None, n_a, n_b, mean_a, mean_b, delta, None, None, None, reason, None, None)
+
+    if n_a < 2 or n_b < 2:
+        return untested("fewer than two cases on a side")
+    if paired:
+        diffs = [y - x for x, y in zip(a, b)]
+        floats = [float(d) for d in diffs]
+        equivalent, equivalence_p = _equivalence(floats, equivalence_margin)
+        n = len(diffs)
+        if _all_equal(diffs):
+            if diffs[0] == 0:
+                return LevelDifference(
+                    test, n_a, n_b, mean_a, mean_b, delta, 0.0, 1.0, False, None, equivalent, equivalence_p
+                )
+            exact = 2.0 ** (1 - n)
+            if exact > SIGNIFICANCE_ALPHA:
+                return untested(
+                    f"every shared case moved by the same amount, and over {n} cases no exact test can call that "
+                    f"at α={SIGNIFICANCE_ALPHA}"
+                )
+            return LevelDifference(test, n_a, n_b, mean_a, mean_b, delta, 0.0, exact, True, None, None, None)
+        mean_diff = sum(floats) / n
+        se = _sample_std(floats) / math.sqrt(n)
+        p = _student_t_two_sided_p(mean_diff / se, float(n - 1))
+        return LevelDifference(
+            test, n_a, n_b, mean_a, mean_b, delta, se, p, p < SIGNIFICANCE_ALPHA, None, equivalent, equivalence_p
+        )
+    if _all_equal(a) and _all_equal(b):
+        if a[0] == b[0]:
+            return LevelDifference(test, n_a, n_b, mean_a, mean_b, delta, 0.0, 1.0, False, None, None, None)
+        exact = min(1.0, 2.0 / math.comb(n_a + n_b, n_a))
+        if exact > SIGNIFICANCE_ALPHA:
+            return untested(
+                f"each side's values are constant, and over {n_a} and {n_b} cases no exact test can call two "
+                f"constants apart at α={SIGNIFICANCE_ALPHA}"
+            )
+        return LevelDifference(test, n_a, n_b, mean_a, mean_b, delta, 0.0, exact, True, None, None, None)
+    floats_a, floats_b = [float(x) for x in a], [float(y) for y in b]
+    var_a, var_b = _sample_std(floats_a) ** 2 / n_a, _sample_std(floats_b) ** 2 / n_b
+    se = math.sqrt(var_a + var_b)
+    df = (var_a + var_b) ** 2 / (var_a**2 / (n_a - 1) + var_b**2 / (n_b - 1))
+    assert delta is not None
+    p = _student_t_two_sided_p(delta / se, df)
+    return LevelDifference(test, n_a, n_b, mean_a, mean_b, delta, se, p, p < SIGNIFICANCE_ALPHA, None, None, None)
+
+
 __all__ = [
     "BAR_SEED_HALF_WIDTH_FRACTION",
     "EQUIVALENCE_TEST_NAME",
@@ -1044,6 +1175,7 @@ __all__ = [
     "UNPAIRED_TEST_NAME",
     "ChangeLabel",
     "ChangeVerdict",
+    "LevelDifference",
     "SignificanceResult",
     "bar_seed",
     "ci_half_width",
@@ -1052,6 +1184,7 @@ __all__ = [
     "composite_significance",
     "holm_adjust",
     "interval_clears",
+    "level_difference",
     "mean_interval",
     "observed_mean_interval",
     "paired_change",
