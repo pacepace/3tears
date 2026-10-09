@@ -776,10 +776,15 @@ SDK (`14-eng-ai-bot-agents-reports`), 2026-10-09. No table is switched on outsid
   generation yet, because a pod cannot mint one. Without a reader the source says it cannot read
   (`reads_generations`), and absence caching stays off (see "Reading and Advancing Are Two
   Capabilities").
-- **Wired everywhere.** The SDK's `build_three_tier_stack` and `build_owner_data_stack`, and the
-  framework's `build_tool_pod_collection_stack` (which `ToolServerBootstrap.install_collection_stack`
-  and `ProviderToolPod` reach), set `BrokerGenerationSource()` after `configure`. identity-core
-  already wires `EpochGenerationSource`.
+- **Wired everywhere.** Every SDK registry is built by
+  `aibots_agents.runtime.broker_registry.broker_collection_registry`, which sets
+  `BrokerGenerationSource()`: `build_three_tier_stack`, `build_owner_data_stack` and the devx
+  workspace runtime (`DevxWorkspaceRuntime.connect`), and an SDK enforcement test refuses a
+  registry built anywhere else. The framework's `build_tool_pod_collection_stack` (which
+  `ToolServerBootstrap.install_collection_stack` and `ProviderToolPod` reach) sets it too. Every
+  hub-family registry takes its source from `aibots.hub.common.generation_sources` (see "Every
+  hub-family registry has a source"). identity-core already wires `EpochGenerationSource`. Stage 3
+  gives the pod source its reader in those two places.
 - **How each side knows a table's writes advance: from the one class.** The pod: its collection
   class, which calls `advance` when it declares `WRITE_GENERATION` or caches absences
   (`negative_cache_max_age`). The broker: `threetears.core.collections.tables_with_write_generation()`,
