@@ -473,7 +473,12 @@ class DeltaRow(BaseModel):
     )
     d_z: float | None = Field(
         default=None,
-        description="The effect size the comparison reported. `paired` says WHICH one it is — Cohen's d_z or Cohen's d — never this field's name, which is historical.",
+        description=(
+            "A Cohen's d the comparison reported, printed as `d_z` when `paired` and `d` when not — `paired` says "
+            "which, never this field's name, which is historical. The engine's own tests now report Hedges' g "
+            "(`hedges_g`), a different number at eval sizes (0.5 against d's 0.88 at three pairs), and compile no "
+            "effect into this row; a g placed here would print under d's name. A stored row's value is a Cohen's d."
+        ),
     )
     p: float | None = Field(default=None, description="p-value of the significance test, when one was run.")
     n: int | None = Field(
