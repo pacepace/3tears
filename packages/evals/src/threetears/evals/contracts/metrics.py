@@ -943,7 +943,12 @@ _SEED: tuple[MetricDescriptor, ...] = (
         transferability_class="mechanical",
         attribution_scope="end_to_end",
         categories=("serial", "concurrent"),
-        description="Whether the observation was made while other eval jobs were running — a condition, not a result.",
+        description=(
+            "Whether the observation was made while other eval jobs were executing — a condition, not a result. "
+            "Counts runs holding a concurrency slot, never runs queued for one. Results stored by 3tears-evals "
+            "0.66.0 and earlier counted queued runs too, so a stored `serial` from then is trustworthy and a "
+            "stored `concurrent` is only an upper bound: nothing recorded which counted runs were waiting."
+        ),
     ),
     # ---- Run-summary aggregates (RunSummaryRow / DimensionSummaryRow) -------
     # These are the names the run-summary surfaces actually publish. They are
