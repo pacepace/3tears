@@ -164,7 +164,7 @@ async def evaluate_decision(
     :param ctx: evaluation context; :class:`EvaluationContext` says
         which actors it may carry and in which combinations
     :ptype ctx: EvaluationContext
-    :param cache: shared :class:`AclCache` carrying loaders + ttl
+    :param cache: shared :class:`AclCache` carrying loaders + its layers
         layers; required, no silent-bypass path
     :ptype cache: AclCache
     :return: True iff action is allowed

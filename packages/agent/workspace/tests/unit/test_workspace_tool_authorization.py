@@ -208,7 +208,6 @@ def _make_acl_cache() -> tuple[AclCache, _CountingMembershipLoader]:
     cache = AclCache(
         membership_loader=membership_loader,
         grant_loader=_EmptyGrantLoader(),
-        ttl_seconds=60,
     )
     return cache, membership_loader
 

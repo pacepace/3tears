@@ -1,12 +1,16 @@
 # epoch-task-06: Every Collection Carries a Write Generation by Default
 
-**Status:** STAGES 1, 2 AND 3 OF 5 BUILT (expand, migrate writers, switch on the access tables).
-`groups`, `group_members`, `roles` and `role_assignments` carry write generations, and every
-`AclCache` -- the hub's, the gateway's, each agent pod's and the standalone registry's -- is
-evicted row by row from their broadcasts and follows their generation keys. The `acl.*` subjects
-and the TTL remain until contract. What exists, what each build decided, where this note was wrong
-against the code, and what the later stages need are under "Built in the Expand Stage", "Built in
-the Migrate-Writers Stage" and "Built in the Switch-On Stage" at the end. The direction was decided by the product owner on
+**Status:** STAGES 1, 2 AND 3 OF 5 BUILT (expand, migrate writers, switch on the access tables),
+AND STAGE 5 FOR THE ACCESS TABLES (contract). `groups`, `group_members`, `roles`,
+`role_assignments` and `namespaces` carry write generations, and every `AclCache` -- the hub's,
+the gateway's, each agent pod's and the standalone registry's -- is evicted row by row from their
+broadcasts and follows their generation keys. That is now the only invalidation they have: the
+`acl.*` subjects and `AclCache`'s TTL are gone, and a hub start puts the platform migrations' writes
+on the epoch system. Stage 4 (flip the default) and the rest of stage 5 (the L1 max age and the scan
+TTL) wait, for the reason under "Built in the Contract Stage". What exists, what each build decided,
+where this note was wrong against the code, and what the later stages need are under "Built in the
+Expand Stage", "Built in the Migrate-Writers Stage", "Built in the Switch-On Stage" and "Built in
+the Contract Stage (the Access Tables)" at the end. The direction was decided by the product owner on
 2026-10-08 and is recorded under "The Decision"; it is not re-argued here. What this note
 adds is the model, the costs, the rollout, his answers to the questions it raised, and the
 three that wait on the measurement.
@@ -1136,9 +1140,9 @@ until contract, the `acl.*` subjects and the TTL stay.
 
 ### Still Open
 
-- **Hub migrations** write these tables outside any collection and move no generation. Covered by
-  the TTL until contract; the contract stage must put them on the epoch system (for example, the
-  hub advancing every switched-on table a migration wrote, an unknown reach, once after it runs).
+- ~~**Hub migrations** write these tables outside any collection and move no generation.~~ Closed in
+  the contract stage: every hub start, and the migration CLI after a platform write, advances every
+  switched-on table once. See "Built in the Contract Stage (the Access Tables)".
 - A product's per-caller cache in a tool pod (decision 4's second cache): built since, see "The
   Per-Caller Cache" below.
 - The hub's broker-backed registries in `aibots.hub.tools.registry_auth` take a reader-less
@@ -1190,3 +1194,102 @@ Built for the reports product's state limit (its wave 2 chunk 10), 2026-10-09, i
 - **`CallerNamespaces`** asks the hub's `namespace.discover` with the caller's own tokens, keeps the
   names in a `CallerAccessCache`, and fails closed (`CallerNamespacesUnavailable`): no verified agent,
   no token, a pod not connected yet or a failed discovery all refuse, and nothing is cached.
+
+
+## Built in the Contract Stage (the Access Tables)
+
+Built on `feat/generations-contract` in 3tears, the hub (`14-eng-ai-bot-reports`) and the SDK
+(`14-eng-ai-bot-agents-reports`), 2026-10-09. The release needs this stage for the access tables
+(the reports plan's "Before Release"). The owner's rulings it applies: no TTL or other safety net
+on a cache the epoch system invalidates; derived caches row by row, ALL only for an unknown reach.
+
+### What Must Already Be Deployed Everywhere
+
+Contract is the last step of expand, migrate, contract, so it is safe only once nothing older than
+the switch-on stage runs. **Before this release ships anywhere, every one of these is on the
+switch-on release: images built from 3tears `5173b662`, hub `e6b3f9f2` and SDK `3db24dd2`
+(`feature/reports` with the switch-on stage merged) or later:**
+
+- **every hub and gateway replica.** A hub older than switch-on neither advances the access tables
+  for its own writes and the broker's commits nor follows them. A contract follower has no TTL, so a
+  broadcast lost from such a writer would never be corrected.
+- **every agent pod (SDK) and tool pod (framework).** Their own writes go through the broker, which
+  advances, so as writers an older pod is safe; but as a reader a pod older than switch-on follows
+  nothing, and once the hub stops publishing `acl.*` its cache is bounded by its own TTL alone.
+- **the standalone registry**, for the same reason as a pod, with the static grant that lets it read
+  `{ns}-epochs` already rendered to cobalt (the switch-on stage's requirement).
+- **identity-core** writes these tables only through the hub's RPCs, so the hub covers it.
+
+Within the contract release the pieces upgrade in any order: a contract hub publishes no `acl.*`,
+and a switch-on pod still subscribes but follows the generations; a contract pod subscribes nothing.
+**Rolling a hub or gateway back below switch-on, while any contract follower runs, is not safe.**
+
+### What Was Removed
+
+- 3tears `threetears.agent.acl.invalidation_bus` (`subscribe_acl_invalidation`,
+  `unsubscribe_acl_invalidation`, the three publishers, the two protocols) and
+  `threetears.agent.acl.invalidation` (the three payload models).
+- `AclCache(ttl_seconds=)` and every expiry check; an entry stays until a write that reaches it is
+  heard or the cache stops being trusted (below). `date_cached` stays, for diagnosis only.
+- `evict_after_rbac_write`'s publish half (it is now synchronous and evicts the writer's own cache),
+  and `invalidation_publisher` on `MemoryAuthorizerDependencies` and
+  `ConversationAuthorizerDependencies`.
+- The registry stack's `acl.*` subscriptions and `THREETEARS_REGISTRY_ACL_TTL_SECONDS` (not set in
+  any deployment).
+- The `acl.*` grants of the hub, the gateway and the registry. **Kept, dated:** an agent pod's
+  subscribe grant on the three subjects, and `Subjects.acl_invalidate` with it. Nothing publishes
+  them; an SDK pod one release back still subscribes at start, and a refused subscribe is logged at
+  ERROR on every connect. They go once no agent pod older than this release runs.
+- Hub: `publish_acl_invalidation` and every `Hub*` override that existed only to publish (the
+  membership, role and assignment collections' `save_entity` / `delete`, the assignment ensure and
+  revoke, the group delete's `announce_cascade`); the publishes in `repoint_member`,
+  `move_subtree_scopes` and `announce_cascaded_grants`, which keep their row announcements;
+  `BrokerAclGateway(ttl_seconds=, nc=, subject_namespace=)` and its `subscribe_invalidations` /
+  `unsubscribe_invalidations` (the hub and the gateway call `start_following` / `stop_following`).
+- SDK: `ThreeTierStack.subscribe_invalidations`, `build_three_tier_stack(subject_namespace=,
+  acl_ttl_seconds=)`.
+
+### Decided in the Build
+
+**A followed `AclCache` is trusted only while its watches run** (`AclCache.trusted`,
+`followed_by`), the rule `CallerAccessCache` already follows. The TTL was what bounded a cache whose
+watches had failed and which also missed a broadcast; without it nothing would. So
+`follow_access_tables` tells the cache whether every watch is running, a cache whose watches fail
+serves nothing it holds and asks its loaders (and is emptied, so nothing held across the failure is
+served after), and a cache whose follower stopped is never trusted again. A cache nobody ever
+followed is trusted: that is a scratch cache scoped to one request (the hub's RBAC dry run, a test),
+which no write can reach while it lives. `BrokerAclGateway` takes `registry=` and
+`generation_reader=` together or neither, so a production gateway cannot be built half-followed.
+
+**The platform migrations are announced at every hub start, unconditionally**
+(`aibots.hub.common.migration_generations`, over 3tears
+`threetears.core.collections.announce_unheard_writes`). After the migrations ran and the hub's
+source is wired, every switched-on table (the access tables always) is advanced once with no rows,
+so every follower finds an advance it did not hear and drops the table: ALL, because the reach of a
+migration is unknown. A start cannot tell whether an earlier start applied migrations and stopped
+before announcing, so it never skips; the cost is one drop of these tables per follower per hub
+start. A failed advance fails the start. The migration CLI does the same after a platform `upgrade`
+that applied anything or a platform `downgrade`, connecting as the hub does; when it cannot, it
+exits 3 and says that a hub restart announces it. Agent-scope migrations write no platform table.
+
+**The L1 max age and the scan TTL stay; they are not the access tables'.** Stage 5 names them with
+the hub's one caller, `data_version_fence`, and the owner ruled the max age goes at contract. Read
+against the code, neither is an access-table cache: the max age's only caller bounds the two
+data-version tables, which the data-space upgrade writes by raw SQL on its own connection and
+whose bound the upgrade executor waits out, and the scan TTL bounds `ScanCache` entries that depend
+on data tables no generation covers before stage 4. Removing either now would leave those caches
+with nothing. They go with stage 4 and the data-version tables put on the epoch system.
+
+**`invalidate_all` on a namespace teardown** (`deprovision_namespace_tree`) still empties the
+hub's own cache when it removes a tree: a heard change answered with ALL. Over-eviction in one
+process, not a correctness gap; left as it was, and noted.
+
+### Test Evidence
+
+Targeted, with each main checkout's locked tools and the worktrees first on the path. Each new test
+was run against the code before this stage (3tears, hub and SDK at `feature/reports`) and fails
+there: the cache's no-age and trust tests, `evict_after_rbac_write` taking no publisher, the
+follower's trust test, `announce_unheard_writes`, the grant contract, the registry's no-subscribe
+test, the authorizer bundles, the hub's start announcement, the CLI's announcements, the
+gateway's construction, and the SDK stack's.
+

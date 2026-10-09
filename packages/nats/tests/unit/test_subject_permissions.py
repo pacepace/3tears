@@ -2752,3 +2752,23 @@ class TestCollectionKeysPurgeRequest:
         assert subject not in pod.subscribe
         assert subject in hub.subscribe
         assert subject not in agent.publish
+
+
+class TestAclInvalidationSubjectsAreRetired:
+    """epoch-task-06 contract: the access tables' generations replaced the acl invalidation subjects."""
+
+    @pytest.mark.parametrize("principal", list(Principal))
+    def test_nobody_may_publish_them(self, principal: Principal) -> None:
+        perm = _build(principal)
+        assert not [s for s in perm.publish if ".acl." in s], f"{principal} may still publish an acl subject"
+
+    @pytest.mark.parametrize("principal", [p for p in Principal if p is not Principal.AGENT_POD])
+    def test_only_an_agent_pod_may_still_subscribe(self, principal: Principal) -> None:
+        perm = _build(principal)
+        assert not [s for s in perm.subscribe if ".acl." in s], f"{principal} may still subscribe an acl subject"
+
+    def test_an_agent_pod_one_release_back_is_not_refused_its_subscribe(self) -> None:
+        perm = _build(Principal.AGENT_POD)
+        assert {str(Subjects.acl_invalidate(kind)) for kind in ("membership", "assignment", "role")} <= set(
+            perm.subscribe
+        )

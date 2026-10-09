@@ -33,6 +33,7 @@ from threetears.core.collections.generation import (
     NoWriteGeneration,
     UndeclaredWriteGeneration,
     WriteGeneration,
+    announce_unheard_writes,
 )
 from threetears.core.collections.merge import repoint_user_rows
 from threetears.core.collections.reapply import (
@@ -127,6 +128,7 @@ __all__ = [
     "WriteGeneration",
     "apply_salience_decay",
     "bind_collections_bucket",
+    "announce_unheard_writes",
     "deserialize_from_json",
     "encode_jsonb",
     "flush_pending",

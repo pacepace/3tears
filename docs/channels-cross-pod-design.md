@@ -72,7 +72,7 @@ needs (corrected in scriob `docs/arch/api.md`). We **replace** this state layer 
 | Socket lifecycle + auth | `channels.WebSocketHandler` + `auth_validator` | **reuse** (reshaped as needed) |
 | Subjects / namespace prefixing | `nats.Subjects` (`{ns}.…`) + `kv_bucket` (`{ns}-…`) | **reuse** |
 | Authorization (join / broadcast / op) | `agent.acl.authorize_on_entity(ns_entity, action, user_id, agent_id, cache)` | **reuse** |
-| Cross-pod ACL coherence | `agent.acl.invalidation` + `Subjects.acl_invalidate(...)` | **reuse** |
+| Cross-pod ACL coherence | `agent.acl.generation_follow.follow_access_tables` (the access tables' write generations) | **reuse** |
 | Logging / tracing | `observe.get_logger` / `@traced` | **reuse** |
 
 Net-new: the **live room fanout** (message delivery to sockets — not cache invalidation, which the

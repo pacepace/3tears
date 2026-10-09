@@ -1,10 +1,11 @@
-"""unit tests for :class:`AclCache` — three layers, ttl, invalidation.
+"""unit tests for :class:`AclCache` — three layers, no age, trust, invalidation.
 
 verifies:
 
 - each layer (membership, per-namespace assignment, per-type+customer
   assignment) stores and retrieves entries independently
-- ttl expiry returns ``None`` and evicts the entry
+- nothing ages: an entry is served until it is evicted
+- a followed cache serves and keeps entries only while it is trusted
 - targeted invalidation clears only the named entries
 - bulk invalidation (group, namespace, all) fans out correctly
 - size accessors report the right counts per layer
@@ -17,7 +18,8 @@ verifies:
 
 from __future__ import annotations
 
-import time
+import pytest
+
 from threading import Thread
 from uuid import UUID, uuid4
 
@@ -130,19 +132,16 @@ class _NoopGrantLoader:
         return {}
 
 
-def _make_cache(ttl_seconds: int = 60) -> AclCache:
+def _make_cache() -> AclCache:
     """
     construct an :class:`AclCache` wired with noop loaders for unit tests.
 
-    :param ttl_seconds: TTL forwarded to the cache
-    :ptype ttl_seconds: int
     :return: ready-to-use cache instance
     :rtype: AclCache
     """
     return AclCache(
         membership_loader=_NoopMembershipLoader(),
         grant_loader=_NoopGrantLoader(),
-        ttl_seconds=ttl_seconds,
     )
 
 
@@ -158,7 +157,7 @@ class TestMembershipLayer:
         """entry is round-tripped intact."""
         from threetears.agent.acl import MemberType
 
-        cache = _make_cache(ttl_seconds=60)
+        cache = _make_cache()
         user = uuid4()
         customer = uuid4()
         memberships = (
@@ -183,13 +182,13 @@ class TestMembershipLayer:
 
     def test_get_unknown_returns_none(self) -> None:
         """miss returns None without raising."""
-        cache = _make_cache(ttl_seconds=60)
+        cache = _make_cache()
         key = ActorMembershipKey(actor_kind="user", actor_id=uuid4())
         assert cache.get_membership(key) is None
 
     def test_invalidate_drops_entry(self) -> None:
         """invalidate clears the cached entry."""
-        cache = _make_cache(ttl_seconds=60)
+        cache = _make_cache()
         key = ActorMembershipKey(actor_kind="user", actor_id=uuid4())
         cache.put_membership(key, ())
         cache.invalidate_membership(key)
@@ -197,7 +196,7 @@ class TestMembershipLayer:
 
     def test_invalidate_for_actor_helper(self) -> None:
         """convenience helper builds the key from actor_kind + actor_id."""
-        cache = _make_cache(ttl_seconds=60)
+        cache = _make_cache()
         user = uuid4()
         key = ActorMembershipKey(actor_kind="user", actor_id=user)
         cache.put_membership(key, ())
@@ -206,7 +205,7 @@ class TestMembershipLayer:
 
     def test_user_and_agent_keys_are_distinct(self) -> None:
         """``actor_kind`` is part of the key; same id gives two entries."""
-        cache = _make_cache(ttl_seconds=60)
+        cache = _make_cache()
         actor_id = uuid4()
         user_key = ActorMembershipKey(actor_kind="user", actor_id=actor_id)
         agent_key = ActorMembershipKey(actor_kind="agent", actor_id=actor_id)
@@ -229,7 +228,7 @@ class TestGroupNamespaceLayer:
 
     def test_put_then_get(self) -> None:
         """entry round-trip preserves actions and trails."""
-        cache = _make_cache(ttl_seconds=60)
+        cache = _make_cache()
         key = GroupNamespaceKey(group_id=uuid4(), namespace_id=uuid4())
         cache.put_group_namespace(key, frozenset({"read"}), ())
         entry = cache.get_group_namespace(key)
@@ -238,7 +237,7 @@ class TestGroupNamespaceLayer:
 
     def test_invalidate_namespace_drops_every_group(self) -> None:
         """``invalidate_namespace`` drops every group's entry for the namespace."""
-        cache = _make_cache(ttl_seconds=60)
+        cache = _make_cache()
         ns = uuid4()
         key_a = GroupNamespaceKey(group_id=uuid4(), namespace_id=ns)
         key_b = GroupNamespaceKey(group_id=uuid4(), namespace_id=ns)
@@ -263,7 +262,7 @@ class TestGroupTypeCustomerLayer:
 
     def test_put_then_get(self) -> None:
         """entry round-trip works."""
-        cache = _make_cache(ttl_seconds=60)
+        cache = _make_cache()
         key = GroupTypeCustomerKey(
             group_id=uuid4(),
             namespace_type="workspace",
@@ -276,7 +275,7 @@ class TestGroupTypeCustomerLayer:
 
     def test_invalidate_specific_key(self) -> None:
         """targeted invalidate drops one entry without touching others."""
-        cache = _make_cache(ttl_seconds=60)
+        cache = _make_cache()
         key = GroupTypeCustomerKey(
             group_id=uuid4(),
             namespace_type="workspace",
@@ -304,7 +303,7 @@ class TestGroupFanOutInvalidation:
 
     def test_drops_per_namespace_entries_for_group(self) -> None:
         """every per-namespace entry naming the group is removed."""
-        cache = _make_cache(ttl_seconds=60)
+        cache = _make_cache()
         group = uuid4()
         other_group = uuid4()
         ns_a, ns_b = uuid4(), uuid4()
@@ -346,7 +345,7 @@ class TestGroupFanOutInvalidation:
 
     def test_drops_type_customer_entries_for_group(self) -> None:
         """type+customer entries for the group are also dropped."""
-        cache = _make_cache(ttl_seconds=60)
+        cache = _make_cache()
         group = uuid4()
         customer = uuid4()
         cache.put_group_type_customer(
@@ -372,7 +371,7 @@ class TestGroupFanOutInvalidation:
 
     def test_does_not_touch_membership_layer(self) -> None:
         """``invalidate_group`` is scoped to the assignment layers."""
-        cache = _make_cache(ttl_seconds=60)
+        cache = _make_cache()
         actor = uuid4()
         group = uuid4()
         m_key = ActorMembershipKey(actor_kind="user", actor_id=actor)
@@ -383,45 +382,116 @@ class TestGroupFanOutInvalidation:
 
 
 # ---------------------------------------------------------------------------
-# ttl
+# no age, and trust
 # ---------------------------------------------------------------------------
 
 
-class TestTtl:
-    """expired entries return None and are evicted."""
+def _put_one_of_each(cache: AclCache) -> tuple[ActorMembershipKey, GroupNamespaceKey, GroupTypeCustomerKey]:
+    """store one entry in each layer and return their keys."""
+    m_key = ActorMembershipKey(actor_kind="user", actor_id=uuid4())
+    ns_key = GroupNamespaceKey(group_id=uuid4(), namespace_id=uuid4())
+    tc_key = GroupTypeCustomerKey(group_id=uuid4(), namespace_type="workspace", customer_id=uuid4())
+    cache.put_membership(m_key, ())
+    cache.put_group_namespace(ns_key, frozenset({"read"}), ())
+    cache.put_group_type_customer(tc_key, frozenset({"read"}), ())
+    return m_key, ns_key, tc_key
 
-    def test_membership_expires(self) -> None:
-        """membership entry past ttl is dropped on read."""
-        cache = _make_cache(ttl_seconds=0)  # ttl 0s -> always expired
+
+def _all_served(cache: AclCache, keys: tuple[ActorMembershipKey, GroupNamespaceKey, GroupTypeCustomerKey]) -> bool:
+    m_key, ns_key, tc_key = keys
+    return (
+        cache.get_membership(m_key) is not None
+        and cache.get_group_namespace(ns_key) is not None
+        and cache.get_group_type_customer(tc_key) is not None
+    )
+
+
+class TestNoAge:
+    """nothing in the cache expires; only an eviction or lost trust removes an entry."""
+
+    def test_an_entry_is_served_however_old_it_is(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        from threetears.agent.acl import cache as cache_module
+
+        cache = _make_cache()
+        keys = _put_one_of_each(cache)
+
+        class _Later(datetime):
+            @classmethod
+            def now(cls, tz: object = None) -> datetime:  # type: ignore[override]
+                return datetime.now(UTC) + timedelta(days=365)
+
+        monkeypatch.setattr(cache_module, "datetime", _Later)
+        assert _all_served(cache, keys)
+        assert cache.size == 3
+
+    def test_the_constructor_takes_no_age(self) -> None:
+        with pytest.raises(TypeError):
+            AclCache(  # type: ignore[call-arg]
+                membership_loader=_NoopMembershipLoader(),
+                grant_loader=_NoopGrantLoader(),
+                ttl_seconds=60,
+            )
+
+
+class TestTrust:
+    """a followed cache serves and keeps only while its watches run; a never-followed one is a scratch cache."""
+
+    def test_a_cache_nobody_followed_serves_what_it_holds(self) -> None:
+        cache = _make_cache()
+        assert cache.trusted
+        assert _all_served(cache, _put_one_of_each(cache))
+
+    def test_a_followed_cache_serves_while_watching(self) -> None:
+        cache = _make_cache()
+        cache.followed_by(lambda: True)
+        assert cache.trusted
+        assert _all_served(cache, _put_one_of_each(cache))
+
+    def test_losing_trust_empties_it_and_nothing_held_comes_back(self) -> None:
+        cache = _make_cache()
+        watching = [True]
+        cache.followed_by(lambda: watching[0])
+        keys = _put_one_of_each(cache)
+        watching[0] = False
+        m_key, ns_key, tc_key = keys
+        assert cache.get_membership(m_key) is None
+        assert cache.get_group_namespace(ns_key) is None
+        assert cache.get_group_type_customer(tc_key) is None
+        assert cache.size == 0
+        watching[0] = True
+        assert cache.get_membership(m_key) is None
+        assert cache.size == 0
+
+    def test_nothing_is_stored_while_not_trusted(self) -> None:
+        cache = _make_cache()
+        cache.followed_by(lambda: False)
+        _put_one_of_each(cache)
+        assert cache.size == 0
+
+    def test_a_read_begun_while_trusted_is_not_stored_after_trust_was_lost(self) -> None:
+        cache = _make_cache()
+        watching = [True]
+        cache.followed_by(lambda: watching[0])
+        cache.put_membership(ActorMembershipKey(actor_kind="user", actor_id=uuid4()), ())
+        fence = cache.read_fence()
+        watching[0] = False
+        assert not cache.trusted
+        watching[0] = True
         key = ActorMembershipKey(actor_kind="user", actor_id=uuid4())
-        cache.put_membership(key, ())
-        # tiny sleep so the freshness check sees a non-zero age
-        time.sleep(0.001)
+        cache.put_membership(key, (), fence=fence)
         assert cache.get_membership(key) is None
-        # eviction happened: size drops to 0
-        assert cache.membership_size == 0
 
-    def test_per_namespace_expires(self) -> None:
-        """per-namespace entry past ttl is dropped on read."""
-        cache = _make_cache(ttl_seconds=0)
-        key = GroupNamespaceKey(group_id=uuid4(), namespace_id=uuid4())
-        cache.put_group_namespace(key, frozenset({"read"}), ())
-        time.sleep(0.001)
-        assert cache.get_group_namespace(key) is None
-        assert cache.group_namespace_size == 0
-
-    def test_type_customer_expires(self) -> None:
-        """type+customer entry past ttl is dropped on read."""
-        cache = _make_cache(ttl_seconds=0)
-        key = GroupTypeCustomerKey(
-            group_id=uuid4(),
-            namespace_type="workspace",
-            customer_id=uuid4(),
-        )
-        cache.put_group_type_customer(key, frozenset({"read"}), ())
-        time.sleep(0.001)
-        assert cache.get_group_type_customer(key) is None
-        assert cache.group_type_customer_size == 0
+    def test_once_its_follower_stops_it_is_never_trusted_again(self) -> None:
+        cache = _make_cache()
+        cache.followed_by(lambda: True)
+        _put_one_of_each(cache)
+        cache.followed_by(None)
+        assert not cache.trusted
+        assert cache.size == 0
+        assert not _all_served(cache, _put_one_of_each(cache))
+        assert cache.size == 0
 
 
 # ---------------------------------------------------------------------------
@@ -434,7 +504,7 @@ class TestBulkOperations:
 
     def test_invalidate_all_clears_every_layer(self) -> None:
         """one call drops everything across the three layers."""
-        cache = _make_cache(ttl_seconds=60)
+        cache = _make_cache()
         cache.put_membership(
             ActorMembershipKey(actor_kind="user", actor_id=uuid4()),
             (),
@@ -462,7 +532,7 @@ class TestBulkOperations:
 
     def test_size_accessors_per_layer(self) -> None:
         """each layer reports its own size correctly."""
-        cache = _make_cache(ttl_seconds=60)
+        cache = _make_cache()
         for _ in range(3):
             cache.put_membership(
                 ActorMembershipKey(actor_kind="user", actor_id=uuid4()),
@@ -505,7 +575,7 @@ class TestConcurrentAccess:
         iterations with two threads inserting and one fan-out
         invalidation should never raise.
         """
-        cache = _make_cache(ttl_seconds=60)
+        cache = _make_cache()
         errors: list[BaseException] = []
 
         def inserter() -> None:

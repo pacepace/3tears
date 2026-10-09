@@ -6,6 +6,37 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Agent acl, core, nats, registry, memory and conversations: the access tables' contract stage
+
+Stage 5 of `docs/epoch-task-06-collection-generations-by-default.md`, for the access tables. The
+write generations are now the only invalidation of every cache derived from them. **Deploy
+precondition: every hub, gateway, agent pod, tool pod and standalone registry is on the switch-on
+release (3tears `5173b662`, hub `e6b3f9f2`, SDK `3db24dd2`) or later before this ships anywhere;**
+see "What Must Already Be Deployed Everywhere" in the note.
+
+- **Removed, breaking:** `threetears.agent.acl.invalidation_bus` (`subscribe_acl_invalidation`,
+  `unsubscribe_acl_invalidation`, `publish_membership_invalidation`,
+  `publish_assignment_invalidation`, `publish_role_invalidation`, `AclInvalidationPublisher`,
+  `AclInvalidationSubscriber`) and `threetears.agent.acl.invalidation` (`MembershipInvalidatePayload`,
+  `AssignmentInvalidatePayload`, `RoleInvalidatePayload`).
+- **Removed, breaking:** `AclCache(ttl_seconds=)`; nothing in the cache ages. A consumer that passed
+  it drops the argument (14-eng-ai-survey's tenancy integration test passes `ttl_seconds=0`).
+- **Changed, breaking:** `evict_after_rbac_write(cache, *, member_actors=, group_ids=)` is
+  synchronous and takes no publisher; `MemoryAuthorizerDependencies` and
+  `ConversationAuthorizerDependencies` take no `invalidation_publisher`.
+- **Added, `AclCache.followed_by` / `AclCache.trusted`:** a cache `follow_access_tables` follows
+  serves and keeps entries only while every watch runs, is emptied when that stops, and is never
+  trusted again once its follower stops. A cache nobody followed is a scratch cache and is trusted.
+- **Added, `threetears.core.collections.announce_unheard_writes(source, tables)`:** advances each
+  table once with no rows, for writes no collection made (a migration, a restore), so every follower
+  drops the table; attempts every table and raises the failures together.
+- **Changed, grants:** the hub, the gateway and the registry are no longer granted the `acl.*`
+  subjects. An agent pod keeps the subscribe, dated, so a pod one release back is not refused it;
+  `Subjects.acl_invalidate` stays for that grant alone.
+- **Removed:** the registry stack's `acl.*` subscriptions and `THREETEARS_REGISTRY_ACL_TTL_SECONDS`.
+- **Unchanged, on purpose:** `CollectionRegistry.set_l1_max_age` and `ScanCache`'s TTL. Their
+  callers are not access-table caches; they go with stage 4.
+
 ### Agent acl and agent tools: a tool pod's per-caller answer, followed through the access tables
 
 - **Added, `threetears.agent.acl.CallerAccessCache`**: one answer per caller (`CallerKey`: the

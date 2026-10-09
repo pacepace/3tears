@@ -1664,6 +1664,11 @@ def _agent_pod(
         # calls. the ``{instance}`` tail keeps replicas of the same agent independently routable.
         str(Subjects.tools_internal_agent_subtree(a)),  # proxied calls to its own in-process tools
         str(Subjects.tools_probe_agent_subtree(a)),  # the registry's reachability probe for its own pods
+        # nothing publishes the acl invalidation subjects any more (epoch-task-06 contract: the access
+        # tables' row broadcasts and write generations are the only invalidation). Still granted to an
+        # agent pod, and to nobody else, for one reason: an SDK pod a release back still subscribes at
+        # start, and a refused subscribe is logged at ERROR on every connect. Remove these three once
+        # no agent pod older than the contract release runs; nothing is lost when they go.
         str(Subjects.acl_invalidate("membership")),
         str(Subjects.acl_invalidate("assignment")),
         str(Subjects.acl_invalidate("role")),
@@ -2040,9 +2045,6 @@ def _registry(
         str(Subjects.tools_discover()),  # queue-grouped: registry
         str(Subjects.tools_register()),
         str(Subjects.tools_heartbeat_wildcard()),
-        str(Subjects.acl_invalidate("membership")),
-        str(Subjects.acl_invalidate("assignment")),
-        str(Subjects.acl_invalidate("role")),
         CROSS_PLATFORM_CACHE_INVALIDATE,
     )
     return PrincipalPermissions(
@@ -2111,9 +2113,6 @@ def _hub(
         f"{ns}.agents.reregister_request.*.*",  # nudges any agent's pod to re-register ({agent_id}.{pod_id})
         str(Subjects.gateway_completion()),  # hub-side completions (e.g. summarization)
         str(Subjects.gateway_embedding()),
-        str(Subjects.acl_invalidate("membership")),
-        str(Subjects.acl_invalidate("assignment")),
-        str(Subjects.acl_invalidate("role")),
         str(Subjects.gateway_catalog_epoch()),
         str(Subjects.mcp_rbac_epoch()),
         f"{ns}.hub.channel.installs.changed",  # notifies channel adapters of install changes
@@ -2180,9 +2179,6 @@ def _hub(
         str(Subjects.knowledge_draft()),
         str(Subjects.hub_usage_track()),
         str(Subjects.audit_wildcard()),  # unified audit consumer
-        str(Subjects.acl_invalidate("membership")),
-        str(Subjects.acl_invalidate("assignment")),
-        str(Subjects.acl_invalidate("role")),
         f"{ns}.hub.stream.*.*",  # subscribes to agent token streams it dispatched ({agent_id}.{correlation_id})
         str(Subjects.gateway_catalog_epoch()),
         str(Subjects.mcp_rbac_epoch()),
@@ -2299,9 +2295,6 @@ def _gateway(
         str(Subjects.gateway_embedding()),  # queue-grouped: ai-gateway
         str(Subjects.gateway_health()),
         str(Subjects.gateway_catalog_epoch()),
-        str(Subjects.acl_invalidate("membership")),
-        str(Subjects.acl_invalidate("assignment")),
-        str(Subjects.acl_invalidate("role")),
         CROSS_PLATFORM_CACHE_INVALIDATE,
     )
     return PrincipalPermissions(

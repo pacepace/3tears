@@ -171,3 +171,56 @@ async def test_a_watch_on_a_key_never_written_is_watching_but_not_yet_healthy() 
     finally:
         await follower.stop()
     assert not follower.watching
+
+
+class _FailsWhenTold:
+    """stands in for ``follow_generation_key``: watches until told to fail, then fails every time."""
+
+    def __init__(self) -> None:
+        self.fail = asyncio.Event()
+
+    async def __call__(self, registry: Any, reader: Any, table: str, *, grace: timedelta) -> None:
+        await self.fail.wait()
+        raise ConnectionError("the bucket could not be reached")
+
+
+async def test_an_acl_cache_is_trusted_only_while_its_watches_run_and_never_after_they_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """with no age on any entry, a cache whose watches fail could serve a missed write forever."""
+    from uuid import uuid4
+
+    from threetears.agent.acl import AclCache
+    from threetears.agent.acl.cache import ActorMembershipKey
+    from threetears.agent.acl.generation_follow import follow_access_tables
+
+    watches = _FailsWhenTold()
+    monkeypatch.setattr(generation_follow, "follow_generation_key", watches)
+    loader: Any = object()
+    cache = AclCache(membership_loader=loader, grant_loader=loader)
+    following = follow_access_tables(
+        await _listening_registry(),
+        cache,
+        object(),
+        restart_delay=timedelta(milliseconds=1),  # type: ignore[arg-type]
+    )
+    key = ActorMembershipKey(actor_kind="user", actor_id=uuid4())
+    try:
+        assert cache.trusted
+        cache.put_membership(key, ())
+        assert cache.get_membership(key) is not None
+        # the watches fail from here: nothing held is served, and nothing is kept
+        watches.fail.set()
+        for _ in range(200):
+            if not following.follower.watching:
+                break
+            await asyncio.sleep(0.005)
+        assert not following.follower.watching
+        assert cache.get_membership(key) is None
+        assert cache.size == 0
+        cache.put_membership(key, ())
+        assert cache.get_membership(key) is None
+    finally:
+        await following.stop()
+    assert not cache.trusted
+    assert cache.size == 0

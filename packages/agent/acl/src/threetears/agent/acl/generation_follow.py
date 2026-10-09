@@ -325,7 +325,9 @@ def follow_access_tables(
     """bind ``cache`` to the access tables' row broadcasts on ``registry`` and follow the tables.
 
     The one call a consumer makes, once ``registry``'s invalidation listener is running: it is what
-    hears the rows. Stop the returned handle before stopping the listener.
+    hears the rows. Stop the returned handle before stopping the listener. From here the cache serves
+    and keeps entries only while every watch is running (:attr:`AclCache.trusted`), and once the
+    handle stops it never does again.
 
     :param registry: the registry whose listener hears the rows, and which follows the tables
     :ptype registry: CollectionRegistry
@@ -343,14 +345,39 @@ def follow_access_tables(
     :rtype: AccessTableFollowing
     :raises RuntimeError: when the registry's invalidation listener is not running
     """
-    return _bind_and_follow(
+    following = _bind_and_follow(
         registry,
-        lambda degraded: bind_acl_cache_to_access_tables(registry, cache, degraded=degraded),
+        lambda degraded: _acl_cache_bound_and_followed(registry, cache, degraded),
         reader,
         grace=grace,
         restart_delay=restart_delay,
         max_restart_delay=max_restart_delay,
     )
+    cache.followed_by(lambda: following.follower.watching)
+    return following
+
+
+def _acl_cache_bound_and_followed(
+    registry: CollectionRegistry, cache: AclCache, degraded: DegradedEvictions
+) -> Callable[[], None]:
+    """bind the acl cache; the remover also tells it nobody follows it any more, so it never trusts again.
+
+    :param registry: the registry
+    :ptype registry: CollectionRegistry
+    :param cache: the acl cache
+    :ptype cache: AclCache
+    :param degraded: where unknown-reach rows are counted
+    :ptype degraded: DegradedEvictions
+    :return: the call that unbinds it and marks it unfollowed
+    :rtype: Callable[[], None]
+    """
+    unbind = bind_acl_cache_to_access_tables(registry, cache, degraded=degraded)
+
+    def remove() -> None:
+        cache.followed_by(None)
+        unbind()
+
+    return remove
 
 
 def follow_caller_access_cache(

@@ -582,7 +582,7 @@ behavior is set in code. Observed on `develop`:
 | `THREETEARS_NATS_PROXY_TIMEOUT_MS` | `NatsProxyL3Backend` | Per-query timeout for proxied L3 (default `5000`). |
 | `THREETEARS_LOG_LEVEL`, `THREETEARS_LOG_COLOR` | `threetears.observe` | Standalone logging helpers. |
 | `THREETEARS_MCP_TIMEOUT` | `3tears-mcp` | MCP tool call timeout. |
-| `THREETEARS_REGISTRY_*` | `3tears-registry` | `ACL_TTL_SECONDS`, `CALL_TIMEOUT`, `HEALTH_PORT`, `HEARTBEAT_CHECK_INTERVAL`, `HEARTBEAT_TIMEOUT`, `PROBE_TIMEOUT`. |
+| `THREETEARS_REGISTRY_*` | `3tears-registry` | `CALL_TIMEOUT`, `HEALTH_PORT`, `HEARTBEAT_CHECK_INTERVAL`, `HEARTBEAT_TIMEOUT`, `PROBE_TIMEOUT`. |
 | `THREETEARS_TOOLSERVER_*`, `THREETEARS_TOOL_SERVER_HEALTH_PORT` | `3tears-agent-tools` | Tool-server readiness/health tuning. |
 
 ---
