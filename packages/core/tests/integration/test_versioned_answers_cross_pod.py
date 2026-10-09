@@ -58,7 +58,9 @@ class TestTwoReplicas:
             return compute
 
         a, b = _answers(replicas[0], "replica-a"), _answers(replicas[1], "replica-b")
-        got = await asyncio.gather(a.answer("v1", "race", computer("a")), b.answer("v1", "race", computer("b")))
+        got = await asyncio.gather(
+            a.answer("v1", "race", computer("a"), order=1), b.answer("v1", "race", computer("b"), order=1)
+        )
         assert len(calls) == 1, calls
         assert {gzip.decompress(g).decode() for g in got} == {'{"answer": 42}'}
 
@@ -71,8 +73,8 @@ class TestTwoReplicas:
         async def never() -> str:
             raise AssertionError("replica b computed an answer replica a already holds")
 
-        await a.answer("v2", "served", computed)
-        assert gzip.decompress(await b.answer("v2", "served", never)).decode() == "computed by a"
+        await a.answer("v2", "served", computed, order=2)
+        assert gzip.decompress(await b.answer("v2", "served", never, order=2)).decode() == "computed by a"
 
     async def test_retiring_on_one_replica_retires_for_both(self, replicas: tuple[NatsClient, NatsClient]) -> None:
         a, b = _answers(replicas[0], "replica-a"), _answers(replicas[1], "replica-b")
@@ -80,13 +82,15 @@ class TestTwoReplicas:
         async def old() -> str:
             return "old"
 
-        await a.answer("v3", "kept-or-not", old)
-        assert await b.retire_all_but("v4") >= 1
+        await a.answer("v3", "kept-or-not", old, order=3)
+        assert await b.retire_older_than(4) >= 1
         recomputed: list[str] = []
 
         async def again() -> str:
             recomputed.append("x")
             return "again"
 
-        await a.answer("v3", "kept-or-not", again)
-        assert recomputed == ["x"]
+        # v3 is below the floor now: answered, and never stored again
+        await a.answer("v3", "kept-or-not", again, order=3)
+        await a.answer("v3", "kept-or-not", again, order=3)
+        assert recomputed == ["x", "x"]

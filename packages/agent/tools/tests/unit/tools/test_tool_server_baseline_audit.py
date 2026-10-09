@@ -803,3 +803,26 @@ async def test_user_assertion_with_no_conversation_id_denies() -> None:
     env = _audit_envelopes(nats, ".audit.tool.call")[0]
     assert env["outcome"] == "failure"
     assert env["actor_user_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_baseline_audit_outcome_failure_when_the_answer_is_too_large_for_the_bus() -> None:
+    """a success refused on its size is audited as the failure its caller received."""
+    set_default_namespace("ns")
+    nats = _FakeNats()
+    nats.max_payload = 128 * 1024
+    server = ToolServer(
+        namespace="ns",
+        nats_client=nats,
+        pod_id="audit-pod",
+        jwks_provider=_pod_jwks_provider,
+        assertion_replay_guard=FakeReplayGuard(),
+    )
+    server.register(_StubTool(result=ToolResult(success=True, content="x" * (256 * 1024))))
+    msg = _make_msg(_signed_call_payload(pod_id="audit-pod", tool_name="test.stub", tool_version="1.0"))
+
+    await server.handle_call(msg)
+
+    env = _audit_envelopes(nats, ".audit.tool.call")[0]
+    assert env["outcome"] == "failure"
+    assert "max_payload 131072" in env["details"]["failure_reason"]

@@ -585,6 +585,12 @@ class BaseCollection(ABC, Generic[EntityT]):
     #: what the row was. A write that saw no row (an eviction naming only a key) carries none.
     invalidation_columns: ClassVar[tuple[str, ...]] = ()
 
+    #: Whether this collection keeps a copy of its rows in the process's L1. ``False`` declares a
+    #: collection that caches nowhere in L1 -- one whose rows are read from L2 every time, such as
+    #: a cache of computed answers each replica's caller keeps in memory itself -- so it takes no
+    #: L1 backend whatever the registry offers, the way :data:`NO_L2` declares the absence of L2.
+    caches_in_l1: ClassVar[bool] = True
+
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """refuse, at class definition, a declaration that cannot work.
 
@@ -677,7 +683,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         self._flush_strategy = FlushStrategy(config.collection_flush)
         self._flush_tables = frozenset(t.strip() for t in config.collection_flush_tables.split(",") if t.strip())
         # Resolve L1 and L3 from registry
-        self._l1 = registry.get_l1_backend(self.table_name)
+        self._l1 = registry.get_l1_backend(self.table_name) if type(self).caches_in_l1 else None
         self._l1_change_listeners = []
         self.l3_pool = registry.get_l3_pool(self.table_name)
         self._next_absent_marker_sweep = 0.0

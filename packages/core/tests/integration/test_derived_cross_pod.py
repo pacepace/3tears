@@ -235,6 +235,10 @@ class TestCrossPodSingleFlightOverALease:
         await replica_a.fetch_from_store((12,))
         store.rows.clear()
         replica_b = _make_leased_pod(store, nats_clients[1], "replica-b")
-        # the same key again: the first holder released it, so this derives at once rather than waiting
+        # a lease still held would make replica b wait out a peer that never answers: give that wait
+        # 30 s, so only a released lease derives within the bound below
+        replica_b.peer_wait_seconds = 30.0
+        started = asyncio.get_running_loop().time()
         await replica_b.fetch_from_store((12,))
+        assert asyncio.get_running_loop().time() - started < 5.0, "replica b waited: the first lease was not released"
         assert store.derivations == [(12,), (12,)]

@@ -10,14 +10,21 @@ packages (bumped in lock-step).
 
 - **Added, `threetears.core.collections.versioned_answers.VersionedAnswers`**: a `DerivedCollection`
   keyed by `(version, sha256 of the request)` whose value is the answer gzip-compressed, in L2 alone
-  (no L3: a miss computes; no L1). `answer(version, request, compute)` returns the gzip bytes,
+  (no L3: a miss computes; no L1). `answer(version, request, compute, order=)` returns the gzip bytes,
   computing at most once across replicas under the build lock (a tool pod passes a
-  `LeaseBuildLock`); whatever `compute` raises reaches the caller and nothing is cached. Entries never
-  expire: `retire_all_but(version)` deletes every other version's answers, and
-  `current_version(version)` schedules that once per change it sees. Retirement reads an index the
-  owner keeps under its own scope (the versions it holds, and per version the request digests,
-  changed by compare-and-set), never a key listing: a pod's grant on the shared bucket admits no
-  consumer.
+  `LeaseBuildLock`); whatever `compute` raises reaches the caller and nothing is cached; `get` and
+  `get_for` refuse with `AnswerNotComputable`. Entries never expire (owner ruling, 2026-10-08).
+  `current_version(version, order)` retires every version of a LOWER order, never a higher one,
+  serialised and retried on the next call after a failure; `retire_older_than(order)` does it once.
+  Retirement reads an index the owner keeps as rows of an L2-only collection beside the answers,
+  changed only by `l2_cas_mutate` (a pod's grant on the shared bucket admits no key listing): each
+  version's order, a floor below which no version is recorded, and sixteen digest shards per
+  version. A computing replica records before it computes and takes its answer back if the version
+  was retired meanwhile; retirement raises the floor, then empties each shard by compare-and-set; so
+  no answer outlives its index under any interleaving. An index that cannot be written answers the
+  read uncached and stores nothing. Delete markers are not bounded here (the bucket's owner purges).
+- **Added, `BaseCollection.caches_in_l1`**: `False` declares a collection that takes no L1 backend,
+  whatever the registry offers.
 
 ### Core: a derived collection takes its cross-pod build lock, so a tool pod can run one
 
@@ -44,7 +51,11 @@ packages (bumped in lock-step).
 - **Changed, `ToolServer`**: a success of `GZIP_MIN_BYTES` or more is compressed for a caller that
   asked; a caller that did not ask gets plain text, a result its tool compressed itself
   decompressed; an imported API's passthrough body is left alone.
-- **Added, `TOOL_RESULT_TOO_LARGE`**: an answer larger than the connected broker's `max_payload`
+- **Added, `body_for_client`, `ContentEncodingError`, `DecodedTooLargeError`, `DECODED_MAX_BYTES`**:
+  every decode is guarded (bad base64, a corrupt or truncated gzip, text that is not UTF-8 raise
+  `ContentEncodingError`) and bounded (`DecodedTooLargeError` before the text is held, 64 MiB by
+  default); `body_for_client` is the one place a server chooses the gzip bytes or the text.
+- **Added, `TOOL_RESULT_TOO_LARGE`** (audited as the failure the caller received): an answer larger than the connected broker's `max_payload`
   (less 64 KiB for the envelope the registry wraps it in) is refused with both sizes and logged,
   instead of the broker refusing the reply after the tool ran while the caller waits out its timeout.
   A hub maps it to an HTTP status in its error faces.

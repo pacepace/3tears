@@ -6,24 +6,39 @@ version of its copy, say -- need be computed once per version, by one replica, a
 keyed by ``(version, request digest)`` whose value is the answer gzip-compressed, held in L2 alone.
 
 - **L2 only.** The shared ``{ns}-collections`` bucket, under the owner's key scope, is what every
-  replica reads; there is no L3 (the answer is derived, and rebuilt on any miss) and no L1 (a caller
-  keeps its own in-process copy if it wants one). A refused or failed L2 write costs a recompute,
-  never a wrong answer.
+  replica reads; there is no L3 (the answer is derived, and rebuilt on any miss) and no L1
+  (:attr:`~BaseCollection.caches_in_l1` is off; a caller keeps its own in-process copy if it wants
+  one).
 - **Computed once.** A miss computes under the in-process gate and the cross-pod build lock, so one
-  replica derives a key and the others wait for its value (:class:`DerivedCollection`). A tool pod
-  passes a :class:`~threetears.core.collections.derived.LeaseBuildLock`: it may not declare a bucket.
-- **Never expires; retired by version.** An entry is the answer at one version, so it is never stale
-  and carries no lifetime. When the data's version moves, :meth:`retire_all_but` deletes every entry
-  of another version (:meth:`current_version` schedules it once per change seen). A replica still on
-  the old version may compute an old entry again after that; the next retirement takes it.
+  replica derives a key and the others wait for its value. A tool pod passes a
+  :class:`~threetears.core.collections.derived.LeaseBuildLock`: it may not declare a bucket.
+- **Never expires; retired by version, oldest first.** An entry is the answer at one version, so it
+  is never stale and carries no lifetime (owner ruling, 2026-10-08: caches are invalidated by the
+  epoch system, never by a TTL). Each version comes with an ``order`` that grows with the data (the
+  caller's: for a copy of epochs, their sum), because versions are digests and say nothing of which
+  is newer. :meth:`current_version` retires every version of a LOWER order, never a higher one, so a
+  replica still on an older copy cannot delete the answers the rest have moved on to.
 - **Retirement reads an index, never a listing.** A pod's grant on the shared bucket is key-addressed
   (get, put, compare-and-set, delete under its own scope; no consumer), so the entries cannot be
-  listed. Each owner keeps, under its scope, the set of versions it holds answers for
-  (``{table}.versions``) and per version the set of request digests (``{table}.index.{version}``),
-  each a JSON list changed by compare-and-set; a computing replica records its key before it
-  computes, so an entry is never left out of the index.
-- **A failure is never cached.** ``compute`` raising (a conflict, a refusal, data not ready) reaches
-  the caller and leaves nothing behind.
+  listed. The owner keeps an index as rows of a small L2-only collection beside the answers, changed
+  only by :meth:`~BaseCollection.l2_cas_mutate`: ``versions`` (each version's order, and a ``floor``
+  below which no version is recorded any more) and, per version, sixteen shards of request digests
+  (``{version}.{first hex digit}``), so no one value is rewritten by every request.
+- **Race-free by one ordering.** A computing replica records its version (refused at or below the
+  floor) and its digest before it computes, and after its entry lands it reads the floor again: a
+  version retired meanwhile has its entry and digest removed by the replica that wrote them.
+  Retirement raises the floor first, then empties each shard by compare-and-set (re-reading whatever
+  arrived since it read), then forgets the version. So every entry is either reachable from the index
+  or removed by its own writer; a retirement interrupted part way leaves the version listed below the
+  floor, and the next one finishes it.
+- **A failure is never cached, and bookkeeping never fails a read.** ``compute`` raising (a conflict,
+  a refusal, data not ready) reaches the caller and leaves nothing behind. The index failing (L2
+  unreachable, contention past the retry budget) answers the read uncached and writes no entry, so
+  nothing unindexed is ever stored.
+
+**Not bounded here: delete markers.** A KV delete writes a marker, and every answer's key is new, so
+the bucket accumulates one marker per retired answer until the bucket's owner purges them; the
+retirement keeps the answers themselves from accumulating, not their markers.
 """
 
 from __future__ import annotations
@@ -33,36 +48,156 @@ import base64
 import gzip
 import hashlib
 import json
-import random
 import re
 from collections.abc import Awaitable, Callable
-from typing import Any, ClassVar, Final
+from contextvars import ContextVar
+from dataclasses import dataclass
+from typing import Any, ClassVar, Final, Literal
 
-from threetears.core.collections.base import NATS_CLIENT_FROM_REGISTRY
+from threetears.core.collections.base import NATS_CLIENT_FROM_REGISTRY, BaseCollection
 from threetears.core.collections.derived import BuildLock, DerivedCollection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import CoreConfig
 from threetears.core.entities.base import BaseEntity
+from threetears.core.exceptions import ConcurrentModificationError
 from threetears.nats.errors import KvError
 from threetears.observe import get_logger
 
-__all__ = ["VersionedAnswer", "VersionedAnswers"]
+__all__ = ["AnswerNotComputable", "VersionedAnswer", "VersionedAnswers"]
 
 log = get_logger(__name__)
 
-#: a version as a key segment: KV-grammar characters, and no ``_``, which joins the key's two parts, and
-#: no ``.``, which would make ``index.{version}`` more than one token
+#: a version as a key segment: KV-grammar characters without ``_`` (l2_key joins a composite key's
+#: parts with it) or ``.`` (a shard's name is ``{version}.{digit}``)
 _VERSION: Final = re.compile(r"^[-=a-zA-Z0-9]+$")
 
-#: compare-and-set rounds on an index set before giving up, and the jitter between them
-_INDEX_ATTEMPTS: Final = 20
-_INDEX_BACKOFF_SECONDS: Final = 0.02
+#: rounds of re-reading a shard that changed while it was being emptied
+_SHARD_ROUNDS: Final = 8
+
+#: the name of the index row holding each version's order and the floor
+_VERSIONS: Final = "versions"
+
+#: what a write to the index can raise: transport, a grant refusal, or the retry budget spent
+_INDEX_ERRORS: Final = (KvError, ConcurrentModificationError)
+
+_Action = tuple[Literal["upsert", "delete", "noop"], dict[str, Any] | None]
+
+
+class AnswerNotComputable(LookupError):
+    """a read reached ``compute`` without :meth:`VersionedAnswers.answer`: only it knows how to compute."""
+
+
+@dataclass
+class _Pending:
+    """the compute one :meth:`VersionedAnswers.answer` call brought, and whether it ran."""
+
+    compute: Callable[[], Awaitable[str]]
+    ran: bool = False
+
+
+#: the compute of the :meth:`VersionedAnswers.answer` call this task is inside, for ``compute`` to find:
+#: a context variable, so concurrent callers never see each other's and a cancelled one leaves nothing
+_PENDING: ContextVar[_Pending | None] = ContextVar("versioned_answer_pending", default=None)
 
 
 class VersionedAnswer(BaseEntity):
     """one answer: ``version``, ``request`` (a digest), ``body`` (base64 gzip)."""
 
     primary_key_field: str = "request"
+
+
+class _IndexRow(BaseEntity):
+    """one row of the index: ``name``, ``members``, and on ``versions`` the ``floor``."""
+
+    primary_key_field: str = "name"
+
+
+class _AnswerIndex(BaseCollection[_IndexRow]):
+    """the index of a :class:`VersionedAnswers`: rows in L2 alone, changed only by compare-and-set."""
+
+    primary_key_column: str | tuple[str, ...] = ("name",)
+    caches_in_l1: ClassVar[bool] = False
+
+    def __init__(self, registry: CollectionRegistry, config: CoreConfig, nats_client: Any, *, table_name: str) -> None:
+        self._table_name = table_name
+        super().__init__(registry, config, nats_client, None)
+        # L2 alone: the index is rebuilt by the answers it indexes, never read through from a store
+        self.l3_pool = None
+
+    @property
+    def table_name(self) -> str:
+        """the table the index's keys are named by.
+
+        :return: the table name
+        :rtype: str
+        """
+        return self._table_name
+
+    @property
+    def entity_class(self) -> type[_IndexRow]:
+        """the entity class.
+
+        :return: :class:`_IndexRow`
+        :rtype: type[_IndexRow]
+        """
+        return _IndexRow
+
+    async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
+        """nothing: there is no store behind the index.
+
+        :param entity_id: unused
+        :ptype entity_id: Any
+        :return: ``None``
+        :rtype: dict[str, Any] | None
+        """
+        del entity_id
+        return None
+
+    async def save_to_store(self, data: dict[str, Any], original_timestamp: Any = None, *, conn: Any = None) -> int:
+        """nothing: there is no store behind the index.
+
+        :param data: unused
+        :ptype data: dict[str, Any]
+        :param original_timestamp: unused
+        :ptype original_timestamp: Any
+        :param conn: unused
+        :ptype conn: Any
+        :return: ``0``
+        :rtype: int
+        """
+        del data, original_timestamp, conn
+        return 0
+
+    async def delete_from_store(self, entity_id: Any) -> None:
+        """nothing: there is no store behind the index.
+
+        :param entity_id: unused
+        :ptype entity_id: Any
+        :return: nothing
+        :rtype: None
+        """
+        del entity_id
+
+    def serialize(self, data: dict[str, Any]) -> bytes:
+        """a row as L2 holds it: JSON.
+
+        :param data: the row
+        :ptype data: dict[str, Any]
+        :return: JSON bytes
+        :rtype: bytes
+        """
+        return json.dumps(data, default=str).encode("utf-8")
+
+    def deserialize(self, data: bytes) -> dict[str, Any]:
+        """a row back from L2.
+
+        :param data: JSON bytes
+        :ptype data: bytes
+        :return: the row
+        :rtype: dict[str, Any]
+        """
+        row: dict[str, Any] = json.loads(data)
+        return row
 
 
 class VersionedAnswers(DerivedCollection[VersionedAnswer]):
@@ -74,13 +209,15 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
     :ptype config: CoreConfig
     :param nats_client: the L2 client; the registry's when omitted
     :ptype nats_client: Any
-    :param table_name: the table the keys are named by: one per kind of answer
+    :param table_name: the table the keys are named by: one per kind of answer (the index is
+        ``{table_name}_index``)
     :ptype table_name: str
     :param build_lock: the cross-pod build lock; a tool pod passes a ``LeaseBuildLock``
     :ptype build_lock: BuildLock | None
     """
 
     primary_key_column: str | tuple[str, ...] = ("version", "request")
+    caches_in_l1: ClassVar[bool] = False
 
     #: how long a replica waits for a peer computing the same answer before computing it too: an
     #: answer takes up to a few seconds on a large read
@@ -97,12 +234,13 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
     ) -> None:
         self._table_name = table_name
         super().__init__(registry, config, nats_client, None, build_lock=build_lock)
-        # L2 alone: no durable tier to pull through (a miss computes), and no L1 copy to evict
+        # L2 alone: no durable tier to pull through (a miss computes)
         self.l3_pool = None
-        self._l1 = None
-        self._computing: dict[tuple[Any, ...], Callable[[], Awaitable[str]]] = {}
-        self._current: str | None = None
-        self._retiring: set[asyncio.Task[int]] = set()
+        self._index = _AnswerIndex(registry, config, nats_client, table_name=f"{table_name}_index")
+        #: the highest order this replica has retired below, and the highest it has been asked to
+        self._retired_below: int | None = None
+        self._wanted: int | None = None
+        self._retiring: asyncio.Task[None] | None = None
 
     @property
     def table_name(self) -> str:
@@ -126,7 +264,7 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
     # the public surface
     # ------------------------------------------------------------------
 
-    async def answer(self, version: str, request: str, compute: Callable[[], Awaitable[str]]) -> bytes:
+    async def answer(self, version: str, request: str, compute: Callable[[], Awaitable[str]], *, order: int) -> bytes:
         """the answer to ``request`` at ``version``, gzip-compressed: cached, or computed once and cached.
 
         :param version: the data's version the answer is at
@@ -137,27 +275,26 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         :param compute: computes the answer's text at exactly ``version``; it raises rather than answer
             at another, and whatever it raises reaches the caller uncached
         :ptype compute: Callable[[], Awaitable[str]]
+        :param order: where ``version`` stands among the data's versions: higher is newer
+        :ptype order: int
         :return: the answer, gzip bytes
         :rtype: bytes
         :raises ValueError: when ``version`` cannot be a key segment
         """
         key = self.key_of(version, request)
-
-        async def recorded() -> str:
-            # in the index before the entry exists, so retirement can always find it
-            await self._add_to_set(self._index_key("versions"), version)
-            await self._add_to_set(self._index_key(f"index.{version}"), key[1])
-            return await compute()
-
-        # any caller's compute serves the key: the answer is a function of the key alone
-        self._computing[key] = recorded
+        if not await self._recorded(version, key[1], order):
+            # retired, older than what was retired, or the index unreachable: answered, not stored
+            return gzip.compress((await compute()).encode("utf-8"), mtime=0)
+        pending = _Pending(compute)
+        token = _PENDING.set(pending)
         try:
             row = await self.ensure(key)
         finally:
-            if self._computing.get(key) is recorded:
-                del self._computing[key]
+            _PENDING.reset(token)
         if row is None:
             raise RuntimeError(f"{self.table_name}: no answer for {key}; compute returned nothing")
+        if pending.ran:
+            await self._confirm(version, key[1])
         return base64.b64decode(row["body"])
 
     def key_of(self, version: str, request: str) -> tuple[str, str]:
@@ -172,134 +309,173 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         :raises ValueError: when ``version`` is not KV-grammar characters without ``_`` or ``.``
         """
         if not _VERSION.match(version):
-            raise ValueError(f"{version!r} cannot be a version key segment: KV-grammar characters, no '_' and no '.'")
+            raise ValueError(f"{version!r} cannot be a version key segment: KV-grammar characters, no '_' or '.'")
         return version, hashlib.sha256(request.encode("utf-8")).hexdigest()
 
-    def current_version(self, version: str) -> None:
-        """note the data's current version; when it moved, retire every other version's answers.
+    def current_version(self, version: str, order: int) -> None:
+        """note the data's current version; when it is newer than any seen, retire the older ones.
 
-        Cheap to call on every read that learns the version: it does nothing until the version
-        changes, and then schedules one retirement in the background.
+        Cheap to call on every read that learns the version: it does nothing for an order this
+        replica has already retired below or asked to, and otherwise starts (or extends) the one
+        background retirement. A retirement that fails is tried again on the next call.
 
         :param version: the version the caller's read is at
         :ptype version: str
+        :param order: its order: higher is newer
+        :ptype order: int
         :return: nothing
         :rtype: None
         """
-        if version == self._current:
+        del version
+        if self._wanted is not None and order <= self._wanted:
             return
-        self._current = version
-        task = asyncio.get_running_loop().create_task(self.retire_all_but(version))
-        self._retiring.add(task)
-        task.add_done_callback(self._retiring.discard)
+        self._wanted = order
+        if self._retiring is None or self._retiring.done():
+            self._retiring = asyncio.get_running_loop().create_task(self._retire_until_current())
 
-    async def retire_all_but(self, version: str) -> int:
-        """delete every answer this owner holds at a version other than ``version``.
+    async def retire_older_than(self, order: int) -> int:
+        """delete every answer this owner holds at a version of a lower order.
 
-        Reads the owner's index (see the module docstring): each other version's digests, each of
-        their entries deleted, then the version's index, then the version taken off the set.
+        :param order: the order of the version now current
+        :ptype order: int
+        :return: how many answers were deleted
+        :rtype: int
+        :raises KvError: when the index or an entry could not be read or changed
+        :raises ConcurrentModificationError: when the index kept changing past the retry budget
+        """
+        taken: dict[str, int] = {}
 
-        :param version: the version to keep
+        def raise_floor(row: dict[str, Any] | None) -> _Action:
+            nonlocal taken
+            members: dict[str, int] = dict(row["members"]) if row else {}
+            floor = row.get("floor") if row else None
+            taken = {version: older for version, older in members.items() if older < order}
+            new_floor = order - 1 if floor is None else max(floor, order - 1)
+            if row is not None and new_floor == floor:
+                return ("noop", None)
+            return ("upsert", {"name": _VERSIONS, "members": members, "floor": new_floor})
+
+        # first the floor: from here no replica records a version below it, so what is listed is final
+        await self._index.l2_cas_mutate(_VERSIONS, raise_floor)
+        deleted = 0
+        for version, older in sorted(taken.items()):
+            for shard in "0123456789abcdef":
+                deleted += await self._empty_shard(f"{version}.{shard}")
+            await self._index.l2_cas_mutate(_VERSIONS, _forget(version, older))
+        if deleted:
+            log.info("retired old answers: table=%s below=%d deleted=%d", self.table_name, order, deleted)
+        return deleted
+
+    # ------------------------------------------------------------------
+    # the index
+    # ------------------------------------------------------------------
+
+    async def _recorded(self, version: str, digest: str, order: int) -> bool:
+        """record ``version`` and the digest in the index before computing, unless it is retired.
+
+        :param version: the version
         :ptype version: str
+        :param digest: the request's digest
+        :ptype digest: str
+        :param order: the version's order
+        :ptype order: int
+        :return: ``True`` when the answer may be stored; ``False`` when its version is at or below the
+            floor, or the index could not be written (logged)
+        :rtype: bool
+        """
+        refused = False
+
+        def add_version(row: dict[str, Any] | None) -> _Action:
+            nonlocal refused
+            members: dict[str, int] = dict(row["members"]) if row else {}
+            floor = row.get("floor") if row else None
+            refused = floor is not None and order <= floor
+            if refused or members.get(version) == order:
+                return ("noop", None)
+            members[version] = order
+            return ("upsert", {"name": _VERSIONS, "members": members, "floor": floor})
+
+        try:
+            await self._index.l2_cas_mutate(_VERSIONS, add_version)
+            if not refused:
+                shard = f"{version}.{digest[0]}"
+                await self._index.l2_cas_mutate(shard, _add_member(shard, digest))
+        except _INDEX_ERRORS as exc:
+            # NOSILENT: the read is answered uncached; an answer the index does not name is never stored
+            log.warning("answer index unwritable; answering uncached: table=%s error=%s", self.table_name, exc)
+            return False
+        return not refused
+
+    async def _confirm(self, version: str, digest: str) -> None:
+        """after this replica's answer landed: if its version was retired meanwhile, take the answer back.
+
+        :param version: the version
+        :ptype version: str
+        :param digest: the request's digest
+        :ptype digest: str
+        :return: nothing
+        :rtype: None
+        """
+        try:
+            versions = await self._index.ensure(_VERSIONS)
+            floor = versions.get("floor") if versions else None
+            if floor is not None and versions is not None and versions["members"].get(version, floor) <= floor:
+                await self.l2_cas_mutate((version, digest), _delete_present)
+                shard = f"{version}.{digest[0]}"
+                await self._index.l2_cas_mutate(shard, _remove_member(shard, digest))
+        except _INDEX_ERRORS as exc:
+            # NOSILENT: the one window left open is this replica's own answer outliving its version
+            log.warning(
+                "answer landed on a retired version and could not be taken back: table=%s version=%s error=%s",
+                self.table_name,
+                version,
+                exc,
+            )
+
+    async def _empty_shard(self, name: str) -> int:
+        """delete every answer a shard names, then the shard, re-reading whatever arrived meanwhile.
+
+        :param name: the shard's name, ``{version}.{digit}``
+        :ptype name: str
         :return: how many answers were deleted
         :rtype: int
         """
+        version = name.split(".", 1)[0]
         deleted = 0
-        try:
-            kv = await self._ensure_kv()
-            if kv is not None:
-                versions_key = self._index_key("versions")
-                held, _ = await self._read_set(versions_key)
-                for old in sorted(held - {version}):
-                    index_key = self._index_key(f"index.{old}")
-                    digests, _ = await self._read_set(index_key)
-                    for digest in sorted(digests):
-                        if await kv.delete(key=self.l2_key((old, digest))):
-                            deleted += 1
-                    await kv.delete(key=index_key)
-                    await self._remove_from_set(versions_key, old)
-        except KvError as exc:
-            # NOSILENT: an answer left behind is only space until the next retirement; never wrong
-            log.warning("retiring old answers failed: table=%s keep=%s error=%s", self.table_name, version, exc)
-        if deleted:
-            log.info("retired old answers: table=%s keep=%s deleted=%d", self.table_name, version, deleted)
+        for _ in range(_SHARD_ROUNDS):
+            row = await self._index.ensure(name)
+            seen = frozenset(row["members"]) if row else frozenset()
+            for digest in sorted(seen):
+                outcome = await self.l2_cas_mutate((version, digest), _delete_present)
+                deleted += outcome.action == "deleted"
+            emptied = False
+
+            def drop_if_unchanged(current: dict[str, Any] | None, seen: frozenset[str] = seen) -> _Action:
+                nonlocal emptied
+                emptied = current is None or frozenset(current["members"]) <= seen
+                return ("delete", None) if emptied else ("noop", None)
+
+            await self._index.l2_cas_mutate(name, drop_if_unchanged)
+            if emptied:
+                break
         return deleted
 
-    def _index_key(self, name: str) -> str:
-        """an index key under this owner's scope: ``{scope}.{table}.{name}``.
+    async def _retire_until_current(self) -> None:
+        """retire below the highest order asked for, until it is reached or a retirement fails.
 
-        :param name: ``versions`` or ``index.{version}``
-        :ptype name: str
-        :return: the key
-        :rtype: str
-        """
-        return f"{self._registry.kv_key_scope}.{self.table_name}.{name}"
-
-    async def _read_set(self, key: str) -> tuple[set[str], int]:
-        """an index set and the revision it was read at (``0`` when the key never held one).
-
-        :param key: the index key
-        :ptype key: str
-        :return: the members and the revision
-        :rtype: tuple[set[str], int]
-        """
-        kv = await self._ensure_kv()
-        if kv is None:
-            return set(), 0
-        value, revision = await kv.get_latest(key=key)
-        members: set[str] = set(json.loads(value)) if value else set()
-        return members, revision
-
-    async def _change_set(self, key: str, member: str, *, add: bool) -> None:
-        """add ``member`` to the index set at ``key``, or remove it, by compare-and-set.
-
-        :param key: the index key
-        :ptype key: str
-        :param member: the member
-        :ptype member: str
-        :param add: whether to add (else remove)
-        :ptype add: bool
         :return: nothing
         :rtype: None
-        :raises KvError: when the set kept changing under every attempt
         """
-        kv = await self._ensure_kv()
-        if kv is None:
-            return
-        for _ in range(_INDEX_ATTEMPTS):
-            members, revision = await self._read_set(key)
-            if (member in members) == add:
+        while self._wanted is not None and (self._retired_below is None or self._wanted > self._retired_below):
+            target = self._wanted
+            try:
+                await self.retire_older_than(target)
+            except _INDEX_ERRORS as exc:
+                # NOSILENT: the old answers wait for the next call, which tries again
+                log.warning("retiring old answers failed: table=%s below=%d error=%s", self.table_name, target, exc)
+                self._wanted = self._retired_below
                 return
-            changed = members | {member} if add else members - {member}
-            value = json.dumps(sorted(changed)).encode("utf-8")
-            if await kv.update(key=key, value=value, revision=revision) is not None:
-                return
-            await asyncio.sleep(random.uniform(0, _INDEX_BACKOFF_SECONDS))  # noqa: S311 - jitter, not secrecy
-        raise KvError(f"{key}: the index kept changing; {member!r} not {'added' if add else 'removed'}")
-
-    async def _add_to_set(self, key: str, member: str) -> None:
-        """add ``member`` to the index set at ``key``.
-
-        :param key: the index key
-        :ptype key: str
-        :param member: the member
-        :ptype member: str
-        :return: nothing
-        :rtype: None
-        """
-        await self._change_set(key, member, add=True)
-
-    async def _remove_from_set(self, key: str, member: str) -> None:
-        """remove ``member`` from the index set at ``key``.
-
-        :param key: the index key
-        :ptype key: str
-        :param member: the member
-        :ptype member: str
-        :return: nothing
-        :rtype: None
-        """
-        await self._change_set(key, member, add=False)
+            self._retired_below = target
 
     # ------------------------------------------------------------------
     # DerivedCollection's contract
@@ -327,16 +503,23 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         return await self._get_from_l2(entity_id)
 
     async def compute(self, entity_id: Any) -> dict[str, Any] | None:
-        """compute the answer for ``entity_id`` with the waiting caller's ``compute``, and compress it.
+        """compute the answer for ``entity_id`` with the calling :meth:`answer`'s ``compute``, and compress it.
 
         :param entity_id: the key
         :ptype entity_id: Any
         :return: the row
         :rtype: dict[str, Any] | None
+        :raises AnswerNotComputable: when reached by a read other than :meth:`answer` (``get``,
+            ``get_for``), which brings no way to compute
         """
+        pending = _PENDING.get()
+        if pending is None:
+            raise AnswerNotComputable(
+                f"{self.table_name}: an answer is computed only through answer(), which brings its compute"
+            )
+        pending.ran = True
         version, digest = self.normalize_pk(entity_id)
-        compute = self._computing[(version, digest)]
-        text = await compute()
+        text = await pending.compute()
         body = gzip.compress(text.encode("utf-8"), mtime=0)
         return {"version": version, "request": digest, "body": base64.b64encode(body).decode("ascii")}
 
@@ -356,7 +539,7 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         return 0
 
     async def delete_from_store(self, entity_id: Any) -> None:
-        """nothing: there is no durable tier; :meth:`retire_all_but` deletes from L2.
+        """nothing: there is no durable tier; retirement deletes from L2.
 
         :param entity_id: unused
         :ptype entity_id: Any
@@ -385,3 +568,76 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         """
         row: dict[str, Any] = json.loads(data)
         return row
+
+
+def _delete_present(row: dict[str, Any] | None) -> _Action:
+    """delete the row when there is one.
+
+    :param row: the row, or ``None``
+    :ptype row: dict[str, Any] | None
+    :return: the action
+    :rtype: _Action
+    """
+    return ("delete", None) if row is not None else ("noop", None)
+
+
+def _add_member(name: str, member: str) -> Callable[[dict[str, Any] | None], _Action]:
+    """a shard change adding ``member``.
+
+    :param name: the shard's name
+    :ptype name: str
+    :param member: the digest
+    :ptype member: str
+    :return: the change
+    :rtype: Callable[[dict[str, Any] | None], _Action]
+    """
+
+    def change(row: dict[str, Any] | None) -> _Action:
+        members: list[str] = list(row["members"]) if row else []
+        if member in members:
+            return ("noop", None)
+        return ("upsert", {"name": name, "members": [*members, member]})
+
+    return change
+
+
+def _remove_member(name: str, member: str) -> Callable[[dict[str, Any] | None], _Action]:
+    """a shard change removing ``member``, deleting the shard when it empties.
+
+    :param name: the shard's name
+    :ptype name: str
+    :param member: the digest
+    :ptype member: str
+    :return: the change
+    :rtype: Callable[[dict[str, Any] | None], _Action]
+    """
+
+    def change(row: dict[str, Any] | None) -> _Action:
+        members: list[str] = list(row["members"]) if row else []
+        if member not in members:
+            return ("noop", None)
+        rest = [kept for kept in members if kept != member]
+        return ("delete", None) if not rest else ("upsert", {"name": name, "members": rest})
+
+    return change
+
+
+def _forget(version: str, order: int) -> Callable[[dict[str, Any] | None], _Action]:
+    """a ``versions`` change taking ``version`` off, once its shards are empty.
+
+    :param version: the version retired
+    :ptype version: str
+    :param order: its order, as retirement read it
+    :ptype order: int
+    :return: the change
+    :rtype: Callable[[dict[str, Any] | None], _Action]
+    """
+
+    def change(row: dict[str, Any] | None) -> _Action:
+        members: dict[str, int] = dict(row["members"]) if row else {}
+        if members.get(version) != order or row is None:
+            return ("noop", None)
+        del members[version]
+        return ("upsert", {"name": _VERSIONS, "members": members, "floor": row.get("floor")})
+
+    return change

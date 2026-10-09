@@ -23,6 +23,9 @@ from threetears.agent.tools.content_encoding import (
     CONTENT_ENCODING_METADATA_KEY,
     GZIP,
     GZIP_MIN_BYTES,
+    ContentEncodingError,
+    DecodedTooLargeError,
+    body_for_client,
     encode_for_caller,
     gzip_bytes,
     gzipped_content,
@@ -150,3 +153,49 @@ class TestTheWire:
     async def test_the_same_answer_fits_compressed(self) -> None:
         reply = await _reply(_AnswerTool(_ANSWER), accept_encoding=GZIP, max_payload=128 * 1024)
         assert (reply["success"], reply["metadata"]) == (True, {CONTENT_ENCODING_METADATA_KEY: GZIP})
+
+
+class _FailingTool(_AnswerTool):
+    """fails, carrying its own gzip content."""
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        del kwargs
+        return ToolResult(success=False, content=self._content, metadata=self._metadata, error="refused")
+
+
+class TestAFailure:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("accept_encoding", [GZIP, None])
+    async def test_a_failure_carrying_gzip_reaches_every_caller_as_text(self, accept_encoding: str | None) -> None:
+        own = gzipped_content(gzip.compress(b"why it failed"))
+        reply = await _reply(_FailingTool(own, {CONTENT_ENCODING_METADATA_KEY: GZIP}), accept_encoding=accept_encoding)
+        assert (reply["success"], reply["content"], reply["metadata"]) == (False, "why it failed", None)
+
+
+class TestEveryDecodeIsGuardedAndBounded:
+    def test_content_that_decodes_past_the_bound_is_refused_before_it_is_held(self) -> None:
+        compressed = gzipped_content(gzip.compress(b"0" * 10_000))
+        with pytest.raises(DecodedTooLargeError):
+            plain_content(compressed, {CONTENT_ENCODING_METADATA_KEY: GZIP}, max_bytes=9_999)
+        assert plain_content(compressed, {CONTENT_ENCODING_METADATA_KEY: GZIP}, max_bytes=10_000)[0] == "0" * 10_000
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "not base64 at all!",
+            gzipped_content(b"plain bytes, not gzip"),
+            gzipped_content(gzip.compress(b"truncated answer")[:-8]),
+            gzipped_content(gzip.compress(b"\xff\xfe not utf-8")),
+        ],
+        ids=["bad base64", "not gzip", "truncated", "not utf-8"],
+    )
+    def test_content_not_as_declared_raises_one_error(self, content: str) -> None:
+        with pytest.raises(ContentEncodingError):
+            plain_content(content, {CONTENT_ENCODING_METADATA_KEY: GZIP})
+
+    def test_a_client_reading_gzip_gets_the_bytes_and_any_other_the_text(self) -> None:
+        compressed = gzip.compress(_ANSWER.encode())
+        content, metadata = gzipped_content(compressed), {CONTENT_ENCODING_METADATA_KEY: GZIP}
+        assert body_for_client(content, metadata, client_accepts_gzip=True) == (compressed, True)
+        assert body_for_client(content, metadata, client_accepts_gzip=False) == (_ANSWER.encode(), False)
+        assert body_for_client("plain", None, client_accepts_gzip=True) == (b"plain", False)

@@ -3505,7 +3505,12 @@ class ToolServer:
                 outcome = "error"
                 failure_reason = f"tool execution failed: {exc}"
 
-            await self._answer(msg, response, delivery_subject)
+            sent = await self._answer(msg, response, delivery_subject)
+            if sent is not response:
+                # the answer was refused on its size after the tool succeeded: the audit says what
+                # the caller received, not what the tool returned
+                outcome = "failure"
+                failure_reason = sent.error
         finally:
             duration_ms = (time.monotonic() - start_monotonic) * 1000.0
             await self._publish_baseline_audit(
@@ -3542,7 +3547,7 @@ class ToolServer:
         msg: IncomingMessage,
         response: CallResponse,
         delivery_subject: Subject | None,
-    ) -> None:
+    ) -> CallResponse:
         """route one dispatch's answer to wherever this call agreed it would go.
 
         one function for both paths so every branch of the dispatch -- a rejection, an unknown tool,
@@ -3557,14 +3562,15 @@ class ToolServer:
         :param delivery_subject: the durable subject this call was accepted for, or ``None`` for the
             synchronous reply-inbox path
         :ptype delivery_subject: Subject | None
-        :return: nothing
-        :rtype: None
+        :return: what was sent: ``response``, or the refusal that replaced it (:meth:`_carriable`)
+        :rtype: CallResponse
         """
-        response = self._carriable(response)
+        sent = self._carriable(response)
         if delivery_subject is None:
-            await self._respond(msg, response)
+            await self._respond(msg, sent)
         else:
-            await self._deliver(delivery_subject, response)
+            await self._deliver(delivery_subject, sent)
+        return sent
 
     def _carriable(self, response: CallResponse) -> CallResponse:
         """the answer, or a refusal naming its size when the bus could not carry it.
