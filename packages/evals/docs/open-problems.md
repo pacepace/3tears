@@ -117,6 +117,17 @@ A" is exactly the pairwise case.
 
 ## Host contract
 
+### A fold with one arm per knob level is untested
+
+Tracked in [#605](https://github.com/pacepace/3tears/issues/605).
+
+`ResolvesInto` folds a subject component into the knob that writes it when, across the cohort, each level of
+the knob carries one level of the component. The component is part of the variant key, so repeats, `k` or
+further launches of one arm can never refute the fold; only two or more distinct arms at one knob level can. A
+typical sweep has one arm per level, so the test cannot fail, and the engine marks the fold `unverified_fold`
+rather than calling it a checked non-confound. Fix: an optional host reader for the component with the knob's
+contribution removed, which makes a two-arm fold testable.
+
 ### A shared third-party quota can still be exhausted (accepted limit)
 
 Tracked in [#600](https://github.com/pacepace/3tears/issues/600).

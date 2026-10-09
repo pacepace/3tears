@@ -103,10 +103,14 @@ A confounded comparison is often still worth reading; it may not credit the move
 alone. Rules told to the writer in prose were broken (inferring "no effect" from overlapping intervals was
 forbidden in capitals and done anyway), so each rule below is computed into the bundle.
 
-- **A lever seen twice is not a confound.** Setting one entry of a map overlay moves the entry and the
-  merged surface it lands in, and the analysis reported each such arm as confounded by itself. A host now
-  names the surface (`Sweepable.resolves_into`); the engine compares each run's surface with the swept
-  entries removed and folds it away only where those residuals agree. An unreadable residual folds nothing.
+- **A lever seen twice is not a confound.** A knob and the resolved surface it lands in move together, so
+  the analysis reported every sweep of the knob as confounded by itself. A knob now names its surface
+  (`ResolvesInto` on an overlay field, `Sweepable.resolves_into` underneath), and the engine folds the surface
+  into the knob where the runs show it moved with the knob alone: every level of the knob carries one level
+  of the surface. For a map overlay, the surface is compared with the swept entries removed. An unreadable
+  surface folds nothing. The surface is part of the variant key, so only two *arms* at one knob level can
+  show it moving on its own; where no level has two, the fold is applied and disclosed as an
+  `unverified_fold` confound ([open problems](open-problems.md#a-fold-with-one-arm-per-knob-level-is-untested)).
 - **Assert the knob moved before reading the outcome.** A lever names the measure it acts on, and the
   bundle reports it `moved`, `inert` or `unchecked`: see
   [Did a lever take effect](reading-reports.md#did-a-lever-take-effect-mechanism-checks-and-observed-mechanisms).
@@ -139,6 +143,10 @@ Four steps, each fixing the last:
    the rig's, and a candidate failure counts every goal-state check as failed.
 4. A turn ended by the output cap fails, and a trial a failed check already decided is never excluded
    because the judge could not tell. When the swept lever is a model, its own timeouts are the outcome.
+5. An arm whose every call was refused showed the refusals' round trip as its latency and their empty bill as
+   its cost. A failure still counts against its arm in every rate, accuracy included, but latency and cost
+   read only over results that delivered a turn, and an arm with none reads "no successful results". A kind
+   reports how many turns it delivered, so a conversation that failed on its sixth turn keeps the first five.
 
 *Evidence:* agent with tools, account spend limit reached mid-campaign, 54 runs voided, 2026-10, single campaign.
 
