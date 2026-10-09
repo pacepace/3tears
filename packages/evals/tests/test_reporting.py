@@ -3632,12 +3632,10 @@ class TestCostEstimate:
         ``1.96 * n_obs * SEM`` — the construction this replaces — says how precisely the
         history locates its own mean, and it keeps TIGHTENING as history accumulates.
         The caller is asking what the sweep will cost, which needs the variation the
-        sweep's own observations will show as well, on Student's t at n-1 df rather than
-        the large-sample multiplier.
+        sweep's own observations will show as well — read on the log scale, since costs
+        are positive and skewed (``stats.lognormal_sum_prediction_band``).
         """
-        import math
-
-        from threetears.evals.analysis.stats import standard_error_of_mean, t_critical_two_sided
+        from threetears.evals.analysis.stats import lognormal_sum_prediction_band, standard_error_of_mean
 
         costs = [0.10, 0.20, 0.30, 0.40]
         run, results = self._history("sonnet", costs)
@@ -3652,9 +3650,9 @@ class TestCostEstimate:
         sem = standard_error_of_mean(costs)
         assert half_width > 1.96 * n_obs * sem, "the band is no wider than the confidence interval it replaced"
 
-        sample_sd = sem * math.sqrt(len(costs))
-        expected = t_critical_two_sided(0.95, len(costs) - 1) * sample_sd * math.sqrt(n_obs + n_obs**2 / len(costs))
-        assert half_width == pytest.approx(expected)
+        expected = lognormal_sum_prediction_band(costs, n_obs)
+        assert (cell.predicted.interval_low, cell.predicted.interval_high) == pytest.approx(expected)
+        assert cell.band_basis is not None and "lognormal" in cell.band_basis
 
     def test_a_priced_cell_without_a_band_leaves_the_whole_total_unbracketed(self):
         """Summing a banded cell with an unbanded one narrows the envelope on the thinnest cell.

@@ -1120,6 +1120,160 @@ def paired_change(
     return verdict("below_threshold" if significant else "not_separated")
 
 
+def _lower_incomplete_gamma(a: float, x: float) -> float:
+    """The regularized lower incomplete gamma ``P(a, x)``: series below ``a + 1``, continued fraction above."""
+    if x <= 0.0:
+        return 0.0
+    log_front = -x + a * math.log(x) - math.lgamma(a)
+    if x < a + 1.0:
+        term = total = 1.0 / a
+        shape = a
+        for _ in range(1000):
+            shape += 1.0
+            term *= x / shape
+            total += term
+            if abs(term) < abs(total) * 1e-15:
+                break
+        return total * math.exp(log_front)
+    tiny = 1e-300
+    b = x + 1.0 - a
+    c = 1.0 / tiny
+    d = 1.0 / b
+    h = d
+    for i in range(1, 1000):
+        an = -i * (i - a)
+        b += 2.0
+        d = an * d + b
+        d = tiny if abs(d) < tiny else d
+        c = b + an / c
+        c = tiny if abs(c) < tiny else c
+        d = 1.0 / d
+        step = d * c
+        h *= step
+        if abs(step - 1.0) < 1e-15:
+            break
+    return 1.0 - math.exp(log_front) * h
+
+
+#: How many equal-probability points stand for the chi-square law of a spread estimate when a prediction
+#: band integrates over it. 128 places the outermost at the 0.4% quantile; raised to 1,024, the band's ends
+#: moved under 1%, and under 2% at three observations and a log-SD of 1.5, where the band spans eight orders.
+_SPREAD_NODES = 128
+
+
+@functools.cache
+def _chi_square_nodes(df: int) -> tuple[float, ...]:
+    """The chi-square law on ``df`` degrees of freedom as :data:`_SPREAD_NODES` equal-probability points."""
+    nodes = []
+    for index in range(_SPREAD_NODES):
+        target = (index + 0.5) / _SPREAD_NODES
+        low, high = 0.0, df + 100.0 * math.sqrt(df) + 100.0
+        for _ in range(100):
+            middle = 0.5 * (low + high)
+            if _lower_incomplete_gamma(0.5 * df, 0.5 * middle) < target:
+                low = middle
+            else:
+                high = middle
+        nodes.append(0.5 * (low + high))
+    return tuple(nodes)
+
+
+def _log_sum_variance(spread: float, count: int) -> float:
+    """``ln(1 + (e^σ² − 1) / m)``, the log-variance of a sum of ``m`` lognormals matched on two moments."""
+    if spread < 30.0:
+        return math.log1p(math.expm1(spread) / count)
+    return spread - math.log(count) + math.log1p((count - 1) * math.exp(-spread))
+
+
+def lognormal_sum_prediction_band(history: Sequence[float], n_future: int) -> tuple[float, float] | None:
+    """A prediction band at :data:`INTERVAL_LEVEL` for the TOTAL of ``n_future`` new draws like ``history``.
+
+    For positive, right-skewed quantities — what a turn costs — read on the log scale, where they are
+    near normal. The logs of the history give a mean and a spread; the band is the predictive law of the
+    future total under a lognormal with that mean and spread unknown (the reference prior, ``1/σ``): the
+    spread's uncertainty is its chi-square law on ``n − 1`` degrees of freedom, the mean's is normal given
+    the spread, and a sum of ``m`` lognormals is matched on its first two moments (Fenton–Wilkinson).
+    For one future draw this is exactly the log-scale t prediction interval.
+
+    Why not the normal-theory band ``t · s · sqrt(m + m²/n)``: costs are positive and their tail is long.
+    With five historical observations of a lognormal at log-SD 1.0, that band covered a 15-observation
+    sweep's total 82% of the time; this one 96%. It holds within a point or two of 95% on normal costs
+    too (the normal band's own case), and runs wide on lighter tails (gamma, exponential) rather than narrow.
+
+    **It treats every historical observation as an independent draw**, and so does the sweep it predicts.
+    Repeats of one case are not: where cases cost differently and each is repeated, the history's spread
+    and the sweep's both cluster, and the band is narrower than it should be.
+
+    Args:
+        history: Past observations, each positive.
+        n_future: How many new observations the total sums, at least one.
+
+    Returns:
+        ``(low, high)``, or ``None`` with fewer than two observations or any that is not positive — the
+        log scale cannot read a zero, and a caller that has some falls back to a band that can.
+
+    Raises:
+        ValueError: ``n_future`` is below one.
+    """
+    if n_future < 1:
+        raise ValueError(f"a prediction needs at least one future observation, got {n_future}")
+    n = len(history)
+    if n < 2 or any(value <= 0.0 for value in history):
+        return None
+    logs = [math.log(value) for value in history]
+    centre = math.fsum(logs) / n
+    spread = math.fsum((value - centre) ** 2 for value in logs) / (n - 1)
+    if spread == 0.0:
+        total = n_future * math.exp(centre)
+        return total, total
+    df = n - 1
+    components = []
+    for node in _chi_square_nodes(df):
+        variance = df * spread / node
+        sum_variance = _log_sum_variance(variance, n_future)
+        components.append(
+            (
+                math.log(n_future) + centre + 0.5 * variance - 0.5 * sum_variance,
+                math.sqrt(sum_variance + variance / n),
+            )
+        )
+    tail = 0.5 * (1.0 - INTERVAL_LEVEL)
+
+    root_two = math.sqrt(2.0)
+    root_two_pi = math.sqrt(2.0 * math.pi)
+
+    def cdf_and_density(log_total: float) -> tuple[float, float]:
+        mass = density = 0.0
+        for mean, scale in components:
+            z = (log_total - mean) / scale
+            mass += 0.5 * math.erfc(-z / root_two)
+            density += math.exp(-0.5 * z * z) / (scale * root_two_pi)
+        return mass / len(components), density / len(components)
+
+    def quantile(p: float) -> float:
+        # Newton's method on the mixture's CDF, kept inside a bracket that every component's own quantile
+        # bounds, and bisecting whenever a step would leave it.
+        z = NormalDist().inv_cdf(p)
+        low = min(mean + scale * z for mean, scale in components)
+        high = max(mean + scale * z for mean, scale in components)
+        guess = 0.5 * (low + high)
+        for _ in range(100):
+            mass, density = cdf_and_density(guess)
+            if mass < p:
+                low = guess
+            else:
+                high = guess
+            step = guess - (mass - p) / density if density > 0.0 else 0.5 * (low + high)
+            if not low < step < high:
+                step = 0.5 * (low + high)
+            if abs(step - guess) < 1e-12 * max(1.0, abs(guess)):
+                return math.exp(step)
+            guess = step
+        return math.exp(guess)
+
+    return quantile(tail), quantile(1.0 - tail)
+
+
 __all__ = [
     "BAR_SEED_HALF_WIDTH_FRACTION",
     "EQUIVALENCE_TEST_NAME",
@@ -1139,6 +1293,7 @@ __all__ = [
     "composite_significance",
     "holm_adjust",
     "interval_clears",
+    "lognormal_sum_prediction_band",
     "mean_interval",
     "observed_mean_interval",
     "paired_change",

@@ -45,7 +45,11 @@ ceiling of `0` with origin `none_declared`, and a metered call that happens anyw
 2. **Price.** Under an enforced cap, it prices each arm with the host's `LaunchHost.launch_pricer`
    (`ArmQuote.case_source` says which). `threetears.evals.ops.history_launch_pricer` bounds it by the upper
    end of the band of runs launched the same way — template, model, cassette mode, the model each scored
-   dim was judged by, the simulator that ran, resolved apparatus settings.
+   dim was judged by, the simulator that ran, resolved apparatus settings. The band is a 95% prediction band
+   read on the log scale, since costs are positive and a few long conversations cost several times the rest.
+   With three past results it is wide on the high side (three costs of $0.10, $0.20 and $0.30 put a
+   15-observation arm's upper end near $59), so a capped launch on thin history can be refused. It treats
+   each observation as independent, which repeats of one case are not, and says so (`band_basis`).
 3. **Refuse.** It refuses an arm predicted above its run's cap, or one nothing can predict — no pricer, no
    plan, or no history to bound — whose cap the run would merely inherit. An unpriceable arm under a cap
    the launch named runs under it.

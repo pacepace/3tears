@@ -3443,10 +3443,10 @@ def _planned_cost_per_observation(
 
     A planned cell's prediction is its sweep's TOTAL (``n_observations`` draws), and a pivot cell's
     value is a mean per observation, so the prediction is divided by the planned observation count —
-    and so is its band. That is not a rescaling of convenience: the total's half-width is
-    ``t * s * sqrt(n + n²/N)`` over ``N`` historical observations, and divided by ``n`` it is
-    ``t * s * sqrt(1/n + 1/N)``, exactly the prediction band for the mean of the ``n`` planned
-    observations. One derivation, read two ways.
+    and so is its band. That is not a rescaling of convenience: the mean of the ``n`` planned
+    observations is their total over ``n``, so the band on the total, divided by ``n``, is exactly the
+    band on that mean, at the same level and on the same assumptions.
+    One prediction, read two ways.
 
     Args:
         estimate: The estimate, or the planned costs, or None.
@@ -6127,12 +6127,13 @@ def export_projection(projection: ScoreProjection, *, fmt: str) -> ScoreExport:
 # +/-2.4% band off a two-observation basis, and a sweep can then land well outside that
 # band — in either direction, since nothing in that arithmetic prefers over-prediction.
 #
-# The half-width therefore carries both terms: the uncertainty in the mean
-# (n_obs^2 * s^2 / n) and the variation the sweep's own observations will show
-# (n_obs * s^2), on Student's t at n-1 degrees of freedom rather than the large-sample
-# 1.96 — the reasoning `stats.t_critical_two_sided` already carries for every other
-# interval in this tier, applied here at last.
-_COST_ESTIMATE_CONFIDENCE = 0.95
+# The band carries both terms: the uncertainty in where the history's distribution sits, and
+# the variation the sweep's own observations will show. It is read on the LOG scale
+# (`stats.lognormal_sum_prediction_band`), because costs are positive and right-skewed: a few
+# long conversations cost several times the median. The normal-theory band it replaced,
+# `t * s * sqrt(n_obs + n_obs^2 / n)`, covered a lognormal sweep's total (log-SD 1.0, five
+# past observations) 82% of the time against its stated 95%. That band is kept only for a
+# history holding a cost of zero or less, which the log scale cannot read.
 
 # Smallest historical basis that gets a published band at all. Two observations yield
 # exactly ONE difference: whatever spread they show is a single accident with nothing to
@@ -6145,28 +6146,59 @@ _COST_ESTIMATE_CONFIDENCE = 0.95
 # difference.
 COST_ESTIMATE_MIN_BASIS = 3
 
+#: What every band assumes about its observations, stated on each band (:attr:`CostEstimateCell.band_basis`).
+_COST_BAND_INDEPENDENCE = (
+    "Each past observation and each planned one is treated as an independent draw; repeats of one case are not, "
+    "so where cases differ in cost the band is narrower than it should be."
+)
 
-def _cost_band_half_width(*, sem: float, n_historical: int, n_observations: int) -> float:
-    """Half-width of the ~95% prediction band for a sweep of ``n_observations``.
 
-    Predicts the *total* of ``n_observations`` future draws, so it sums the variance
-    of those draws (``n_obs * s^2``) with the uncertainty in the mean they are drawn
-    around (``n_obs^2 * s^2 / n``), on Student's t at ``n_historical - 1`` df.
+def _cost_band(history: Sequence[float], n_observations: int) -> tuple[float, float, str]:
+    """The ~95% prediction band for the total of a sweep of ``n_observations``, and what it assumes.
+
+    Log-scale (:func:`~threetears.evals.analysis.stats.lognormal_sum_prediction_band`) wherever every
+    past cost is positive. A history with a zero or negative cost cannot be read on the log scale, and
+    takes the normal-theory band ``t(0.95, n-1) * s * sqrt(m + m^2/n)`` around ``m`` times its mean, floored
+    at zero — which assumes symmetric costs and says so.
 
     Args:
-        sem: Standard error of the historical per-observation costs (``s / sqrt(n)``).
-        n_historical: How many historical observations the basis rests on; must be at
-            least :data:`COST_ESTIMATE_MIN_BASIS`, so ``df >= 2``.
+        history: The past per-observation costs, at least :data:`COST_ESTIMATE_MIN_BASIS` of them.
         n_observations: How many observations the proposed sweep would run.
 
     Returns:
-        The band's half-width in dollars.
+        ``(low, high, basis)``: the band in dollars and the sentence stating its method and assumptions.
     """
-    from threetears.evals.analysis.stats import t_critical_two_sided
+    from threetears.evals.analysis.stats import (
+        INTERVAL_LEVEL,
+        lognormal_sum_prediction_band,
+        standard_error_of_mean,
+        t_critical_two_sided,
+    )
 
-    sample_sd = sem * math.sqrt(n_historical)
-    multiplier = t_critical_two_sided(_COST_ESTIMATE_CONFIDENCE, n_historical - 1)
-    return multiplier * sample_sd * math.sqrt(n_observations + n_observations**2 / n_historical)
+    n = len(history)
+    log_band = lognormal_sum_prediction_band(history, n_observations)
+    if log_band is not None:
+        return (
+            log_band[0],
+            log_band[1],
+            f"{INTERVAL_LEVEL:.0%} prediction band for the sweep's total from a lognormal fit to {n} past "
+            f"observations, the fit's own uncertainty included. {_COST_BAND_INDEPENDENCE}",
+        )
+    sem = standard_error_of_mean(list(history)) or 0.0
+    centre = n_observations * math.fsum(history) / n
+    half = (
+        t_critical_two_sided(INTERVAL_LEVEL, n - 1)
+        * sem
+        * math.sqrt(n)
+        * math.sqrt(n_observations + n_observations**2 / n)
+    )
+    return (
+        max(0.0, centre - half),
+        centre + half,
+        f"{INTERVAL_LEVEL:.0%} normal-theory prediction band for the sweep's total from {n} past observations — "
+        "some cost nothing, which the log scale cannot read, so this band assumes symmetric costs and is narrow "
+        f"on the high side when a few cost far more than the rest. {_COST_BAND_INDEPENDENCE}",
+    )
 
 
 class CostEstimateError(ValueError):
@@ -6218,7 +6250,8 @@ class CostEstimateCell(EvalBaseModel):
     ``predicted.value`` is ``mean_cost_per_observation × n_observations``.
     ``predicted.interval_low`` / ``interval_high`` are the ~95% **prediction** band for what
     the proposed sweep will cost — not a confidence interval on the historical
-    mean, which is a narrower claim than any caller of this surface is making.
+    mean, which is a narrower claim than any caller of this surface is making — and
+    ``band_basis`` says how it was drawn and what it assumes.
 
     The band is ``None`` when ``n_historical`` is below :data:`COST_ESTIMATE_MIN_BASIS`. At one observation the spread is
     *unknown*, not zero — the same rule the pivot applies to an n=1 cell. At two it
@@ -6240,6 +6273,11 @@ class CostEstimateCell(EvalBaseModel):
     mean_cost_per_observation: float | None = None
     predicted: PredictedValue | None = None
     basis: Literal["historical", "no_history"]
+    #: What the band assumes, in words: how ``predicted.interval_low`` / ``interval_high`` were drawn and what
+    #: they leave out — among them that every observation is treated as independent. ``None`` with no band, or
+    #: on an estimate stored before bands stated it: those were the normal-theory t band, which assumed
+    #: symmetric costs and covered a skewed sweep's total well short of its 95%.
+    band_basis: str | None = None
     #: Matching historical results whose spend could not be priced, and so are not in the basis:
     #: a mean drawn only from the priced ones prices a model that partly runs unpriced as if it
     #: never did. Counted rather than folded in as zeros, which would pull the estimate down.
@@ -6371,13 +6409,16 @@ def compute_estimate_cost(
     corpus and **filtered to the proposed cassette mode** — gives a mean, scaled
     by the proposed observation count, and a ~95% **prediction** band around it.
 
-    **The band predicts the sweep, not the history's mean.** It is
-    ``t(0.95, n-1) * s * sqrt(n_obs + n_obs^2/n)``: the variation the sweep's own
-    observations will show, plus the uncertainty in the mean they are drawn around,
-    on Student's t rather than the large-sample 1.96. A confidence interval on the
-    mean — the previous construction — answers a narrower question and shrinks as
-    history accumulates, which is why it could publish a +/-2.4% band from two
-    observations and then miss the sweep it priced by 12%.
+    **The band predicts the sweep, not the history's mean**: the variation the sweep's own
+    observations will show, plus the uncertainty in where the history's distribution sits. It is
+    read on the log scale, because costs are positive and right-skewed
+    (:func:`~threetears.evals.analysis.stats.lognormal_sum_prediction_band`); a history holding a zero
+    cost takes the normal-theory ``t(0.95, n-1) * s * sqrt(n_obs + n_obs^2/n)`` instead and says so.
+    Each band states its method and assumptions in the cell's ``band_basis`` — among them that every
+    observation is treated as independent, which repeats of one case are not. A confidence interval on
+    the mean — the construction before either — answers a narrower question and shrinks as history
+    accumulates, which is why it could publish a +/-2.4% band from two observations and then miss the
+    sweep it priced by 12%.
 
     **Below :data:`COST_ESTIMATE_MIN_BASIS` historical observations there is no band at all**, only the point
     estimate. Two observations give one difference; a width computed from it is an
@@ -6436,8 +6477,6 @@ def compute_estimate_cost(
         CostEstimateError: The proposal is malformed — no models, or a
             non-positive grid.
     """
-    from threetears.evals.analysis.stats import standard_error_of_mean
-
     if not models:
         raise CostEstimateError("no models proposed — nothing to estimate")
     if k_runs < 1 or n_test_cases < 1 or n_settings < 1:
@@ -6498,22 +6537,22 @@ def compute_estimate_cost(
 
         any_covered = True
         mean = sum(history) / len(history)
-        sem = standard_error_of_mean(history)
         estimate = n_observations * mean
         total_estimate += estimate
 
-        if sem is None or len(history) < COST_ESTIMATE_MIN_BASIS:
+        low: float | None
+        high: float | None
+        band_basis: str | None
+        if len(history) < COST_ESTIMATE_MIN_BASIS:
             # Too thin for a band. At n=1 the spread is unknown, not zero; at n=2 it is
             # one difference, which is an accident rather than a dispersion — and one
             # that prints narrow exactly when the pair lands close. The point estimate
             # stands and the absence is stated, never rendered as a false ± 0 and never
             # as a width the sample cannot support.
-            low = high = None
+            low = high = band_basis = None
             total_bandable = False
         else:
-            half_width = _cost_band_half_width(sem=sem, n_historical=len(history), n_observations=n_observations)
-            low = max(0.0, estimate - half_width)
-            high = estimate + half_width
+            low, high, band_basis = _cost_band(history, n_observations)
             total_low += low
             total_high += high
 
@@ -6531,6 +6570,7 @@ def compute_estimate_cost(
                     method_id=COST_PREDICTION_METHOD,
                     computed_at=stamp,
                 ),
+                band_basis=band_basis,
                 basis="historical",
                 n_unpriced_historical=unpriced_by_model.get(model, 0),
                 basis_cost_compositions=basis_compositions,

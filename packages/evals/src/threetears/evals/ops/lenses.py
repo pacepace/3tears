@@ -485,7 +485,7 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
             basis=(
                 f"the upper end of the band ${predicted.interval_low or 0.0:.2f}-${predicted.interval_high:.2f} "
                 f"around ${predicted.value:.2f}, method {predicted.method_id}, from {cell.n_historical} priced past "
-                f"result(s) of {condition}"
+                f"result(s) of {condition}" + (f" ({cell.band_basis})" if cell.band_basis else "")
             ),
         )
 

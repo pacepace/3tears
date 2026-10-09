@@ -18,7 +18,6 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 
 from __future__ import annotations
 
-import math
 from typing import Any
 
 import pytest
@@ -34,7 +33,7 @@ from threetears.evals.analysis.reporting import (
     compute_estimate_cost,
     compute_pivot,
 )
-from threetears.evals.analysis.stats import t_critical_two_sided
+from threetears.evals.analysis.stats import lognormal_sum_prediction_band
 from threetears.evals.contracts import ValidationFailedError
 from threetears.evals.contracts.models import EvalResult, EvalRun
 from threetears.evals.run.reads import list_runs
@@ -157,10 +156,12 @@ class TestThePivotSetsThePredictionBesideTheObservedCost:
         (cell,) = [cell for cell in self._table(estimate).cells if cell.column == "sonnet"]
         assert cell.predicted is not None and cell.predicted.interval_high is not None
 
-        # History 0.10/0.20/0.30: s = 0.1 over N = 3, the planned cell n = 4 draws.
-        half = t_critical_two_sided(0.95, 2) * 0.1 * math.sqrt(1 / 4 + 1 / 3)
-        assert cell.predicted.interval_high == pytest.approx(0.20 + half)
-        assert cell.predicted.interval_low == pytest.approx(max(0.0, 0.20 - half))
+        # History 0.10/0.20/0.30, the planned cell n = 4 draws: the band on their mean is the band on their total
+        # over 4.
+        total_band = lognormal_sum_prediction_band([0.10, 0.20, 0.30], 4)
+        assert total_band is not None
+        assert cell.predicted.interval_high == pytest.approx(total_band[1] / 4)
+        assert cell.predicted.interval_low == pytest.approx(total_band[0] / 4)
 
     def test_a_planned_cell_that_did_not_run_still_shows_its_prediction(self) -> None:
         estimate = _estimate(models=["sonnet", "haiku"])

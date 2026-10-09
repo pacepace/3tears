@@ -1030,7 +1030,9 @@ def _quote(**overrides: Any) -> ArmQuote:
 def test_the_history_pricer_bounds_an_arm_by_the_upper_band_of_its_template_and_models_past_results():
     """The launch holds this figure to the cap, so it is the band's upper end, not the centre."""
     host, storage = _priced_host()
-    _history(storage, template_id="tpl-priced", model="m-priced", costs=[0.10, 0.20, 0.30])
+    # Close together, so the band's upper end sits well under the other template's $9 an observation: three
+    # observations as spread as 0.10/0.20/0.30 put it near $37 on the log scale, which says nothing here.
+    _history(storage, template_id="tpl-priced", model="m-priced", costs=[0.18, 0.20, 0.22])
     _history(storage, template_id="another-template", model="m-priced", costs=[9.0, 9.0, 9.0])
 
     price = history_launch_pricer(host)(_quote())
