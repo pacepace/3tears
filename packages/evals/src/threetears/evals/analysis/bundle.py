@@ -172,6 +172,8 @@ from threetears.evals.contracts.base import EvalDocumentModel
 
 # At runtime for its field set, which tells a result-level measure from a row-level one.
 from threetears.evals.contracts.models import (
+    goal_check_proofs_as_read,
+    stale_goal_check_proofs,
     ApparatusProvenance,
     CalibrationRating,
     EvalResult,
@@ -2096,7 +2098,8 @@ class AnalysisContextBundle(EvalDocumentModel):
         default_factory=list,
         description=(
             "Per goal check the member runs graded: whether it was shown, at launch, to tell its outcomes apart "
-            "(`proven`), or not (`unproven`: no control; `refuted`: a control it does not beat). The check's pass "
+            "(`proven`), or not (`unproven`: no control, or a proof recorded under an earlier rule (`stale`); "
+            "`refuted`: a control it does not beat, or a check the grammar refused at launch (`refused`)). The check's pass "
             "rate is the measure `goal_state:<check>`; on any check not `proven` that rate may be what a candidate "
             "that did nothing would score, so it never reads as the behaviour measured."
         ),
@@ -2963,9 +2966,26 @@ class GoalCheckProofReading(EvalDocumentModel):
             "its control does not discriminate; otherwise `unproven` — including a run that recorded no proof."
         )
     )
-    runs: int = Field(ge=1, description="Member runs that graded it.")
+    runs: int = Field(ge=1, description="Member runs that graded it, or for a refused check, that refused it.")
     unrecorded: int = Field(
         ge=0, description="Of those, runs launched before proofs were recorded — read as unproven, never as proven."
+    )
+    stale: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Of those, runs that recorded it `proven` under an earlier proof rule (before a control's case "
+            "parameters were read as a case stores them, #665) — read as unproven, and needing a new launch to "
+            "be proven again."
+        ),
+    )
+    refused: str | None = Field(
+        default=None,
+        description=(
+            "Why the grammar refused the check when a member run launched, for a check a template stored before "
+            "the rule still carried: those runs graded it on no cell (their cells are not rig faults for it), so "
+            "it has no pass rate there and its proof is `refuted`. None for a check every run could grade."
+        ),
     )
 
 
@@ -2986,13 +3006,20 @@ def goal_check_proofs_of(runs: Sequence[EvalRun], results: Iterable[EvalResult])
             if result.eval_run_id not in runs_of:
                 runs_of.append(result.eval_run_id)
     by_id = {run.id: run for run in runs}
+    refusals: dict[str, tuple[str, list[str]]] = {}
+    for run in runs:
+        for check, reason in (run.refused_goal_checks or {}).items():
+            refusals.setdefault(check, (reason, []))[1].append(run.id)
     readings = []
     for check, run_ids in graded.items():
-        recorded = [by_id[run_id].goal_check_proofs for run_id in run_ids if run_id in by_id]
+        members = [by_id[run_id] for run_id in run_ids if run_id in by_id]
+        # As read under the current proof rules: a `proven` an older rule stamped is unproven (#665).
+        recorded = [goal_check_proofs_as_read(run) for run in members]
         proofs = [None if record is None else record.get(check, "unproven") for record in recorded]
+        refused = refusals.get(check)
         proof: GoalCheckProof = (
             "refuted"
-            if "refuted" in proofs
+            if "refuted" in proofs or refused is not None
             else "proven"
             if proofs and all(each == "proven" for each in proofs)
             else "unproven"
@@ -3004,8 +3031,23 @@ def goal_check_proofs_of(runs: Sequence[EvalRun], results: Iterable[EvalResult])
                 proof=proof,
                 runs=max(len(run_ids), 1),
                 unrecorded=sum(1 for each in proofs if each is None),
+                stale=sum(1 for run in members if check in stale_goal_check_proofs(run)),
+                refused=None if refused is None else refused[0],
             )
         )
+    # A check the grammar refused is graded on no cell, so no result names it; it is read from the runs.
+    readings.extend(
+        GoalCheckProofReading(
+            check=check,
+            measure_id=goal_check_measure(check),
+            proof="refuted",
+            runs=len(run_ids),
+            unrecorded=0,
+            refused=reason,
+        )
+        for check, (reason, run_ids) in refusals.items()
+        if check not in graded
+    )
     return readings
 
 

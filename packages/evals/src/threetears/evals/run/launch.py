@@ -47,8 +47,10 @@ from threetears.evals.contracts.host.sweepables import CORE_SWEEPABLES
 from threetears.evals.contracts.identity import derive_context_identity, variant_levers_of_run
 from threetears.evals.contracts.models import (
     DEFAULT_LAUNCH_K_RUNS,
+    GOAL_CHECK_PROOF_RULES,
     ApparatusSettingValue,
     EvalRun,
+    refused_goal_checks,
     JudgedArtifact,
     ModelRoleOrigin,
     RoleModelOrigin,
@@ -67,7 +69,14 @@ from threetears.evals.run.lifecycle import record_completeness
 from threetears.evals.run.metering import MeteredCallLedger
 from threetears.evals.contracts.offload import run_blocking, wait_through_cancellation
 from threetears.evals.run.check_controls import goal_check_proofs
-from threetears.evals.run.runner import DEFAULT_CELL_TIMEOUT_S, KindFactory, RunCallbacks, RunnerOptions, execute_run
+from threetears.evals.run.runner import (
+    DEFAULT_CELL_TIMEOUT_S,
+    KindFactory,
+    RunCallbacks,
+    RunnerOptions,
+    execute_run,
+    template_as_graded,
+)
 from threetears.evals.run.simulator import SIMULATOR_REQUEST_SETTINGS
 from threetears.observe import get_logger
 
@@ -765,6 +774,10 @@ class LaunchRequest:
         settings: The host's launch settings as the launch read them, once, when it began — what its
             refusals were made under, and what :func:`launch_run` records and enforces the run's ceilings
             and judge concurrency from. A launcher reads the host's settings from here, never afresh.
+        refused_goal_checks: Each of the stored template's goal checks the current grammar refuses, with why
+            (:func:`~threetears.evals.contracts.models.refused_goal_checks`). ``template`` already leaves them
+            out (:func:`~threetears.evals.run.runner.template_as_graded`), so every launcher and every cell
+            grades the rest, and the run records these (``EvalRun.refused_goal_checks``).
     """
 
     template: EvalTemplate
@@ -790,6 +803,7 @@ class LaunchRequest:
     arm_price: ArmPrice | None
     launch_group: LaunchGroup
     settings: LaunchSettings
+    refused_goal_checks: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
 
     def overlays_as(self, model: type[_Validated]) -> _Validated:
         """The launch's overlays as the kind's own overlay model, typed.
@@ -1863,9 +1877,13 @@ def _arm_requests(
     # One arm per model. Naming none is one arm too — on the kind's role default where it has one,
     # and refused by the launcher of a kind that has none.
     arm_models: list[str | None] = [*models] or [None]
+    # A template stored before a grammar rule can carry a check the rule refuses; every arm grades the rest.
+    refused = refused_goal_checks(dispatched.template.goal_state_checks)
+    graded = template_as_graded(dispatched.template, refused)
     return [
         LaunchRequest(
-            template=dispatched.template,
+            template=graded,
+            refused_goal_checks=MappingProxyType(dict(refused)),
             kind=dispatched.kind,
             subject_id=subject_id,
             candidate_model=arm_model,
@@ -2804,6 +2822,7 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
         configured_max_cost_usd = settings.max_cost_usd
         configured_max_metered_calls = settings.max_metered_calls
 
+        refused_checks = dict(request.refused_goal_checks)
         try:
             run = EvalRun(
                 scope_id=request.scope_id,
@@ -2836,7 +2855,12 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                 resolved_tools_allowed=list(template.tools_allowed) if template.tools_allowed is not None else None,
                 # Whether each goal check beats doing nothing, frozen as this run launched it: the controls are
                 # editable, and every surface showing a check's pass rate marks one that is not proven.
+                # Proven over the checks the cells will grade: a check the current grammar refuses (a template
+                # stored before the rule) is graded on no cell and frozen beside the proofs with its reason, and
+                # one such check no longer refutes every other check's proof by failing the evaluation.
                 goal_check_proofs=goal_check_proofs(template, profile=host.eval_host.profile),
+                goal_check_proof_rules=GOAL_CHECK_PROOF_RULES,
+                refused_goal_checks=refused_checks,
                 cassette_mode=request.cassette_mode,
                 cassette_corpus_id=request.cassette_corpus_id,
                 simulator_model=wiring.simulator_model,

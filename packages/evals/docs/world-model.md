@@ -140,7 +140,11 @@ that the check can tell those two outcomes apart. It is not a reference solution
 solved: the authored end state is stated, never reached by a run. A control states its case parameters as a case
 stores them, each one string, so no check is proven on a type no case can carry. A check launched without a proving control (a
 template saved past authoring, or a quick run) is recorded as unproven on its run and marked wherever its pass
-rate is shown.
+rate is shown. A run stamps the proof rules it was proven under; a `proven` recorded before controls were read as
+a case stores its parameters reads as unproven, counted as needing re-proof, because the controls were not frozen
+with the run and cannot be re-proven for the template it graded. A stored template can carry a check a later
+grammar rule refuses: the launch records it with the reason, grades every cell on the other checks, and the run
+summary, the bundle and the report name it as refused under the current grammar.
 
 **A refused call is not an action.** The [call ledger](concepts.md#goal-state-check) records only calls that
 succeeded; the trace keeps refusals for the judge. Stored runs re-grade from their ledgers (`recheck`) rather than

@@ -19,6 +19,7 @@ from collections.abc import Callable, Sequence
 from itertools import chain
 
 from threetears.evals.analysis.agreement import tier_sentence
+from threetears.evals.contracts.models import CHECK_REFUSED_UNDER_CURRENT_GRAMMAR
 from threetears.evals.analysis.arms import ArmTable, arm_names, arm_table, arm_table_of, short_digest, surface_order
 from threetears.evals.analysis.bundle import (
     NO_QUESTION_EXPLORATORY,
@@ -204,6 +205,12 @@ def build_report(analysis: EvalAnalysis) -> Report:
 
 def _unproven_check_sentence(proof: GoalCheckProofReading) -> str:
     """The disclosure for a goal check not shown to beat doing nothing: what it is, and what its pass rate is not."""
+    if proof.refused is not None:
+        return (
+            f"Goal check {proof.check} is {CHECK_REFUSED_UNDER_CURRENT_GRAMMAR} ({proof.refused}), so "
+            f"{proof.runs} run(s) graded it on no cell; where it has a pass rate ({proof.measure_id}) that rate "
+            "comes from runs launched before the rule, and is not shown to measure the behaviour."
+        )
     why = (
         "its control does not show it tells acting from doing nothing"
         if proof.proof == "refuted"
@@ -211,6 +218,8 @@ def _unproven_check_sentence(proof: GoalCheckProofReading) -> str:
     )
     if proof.unrecorded:
         why += f" ({proof.unrecorded} of {proof.runs} run(s) launched before proofs were recorded)"
+    if proof.stale:
+        why += f" ({proof.stale} of {proof.runs} run(s) recorded it proven under an earlier proof rule; relaunch to re-prove)"
     return (
         f"Goal check {proof.check} is {proof.proof}: {why}. Its pass rate ({proof.measure_id}) may be what a "
         "candidate that did nothing would score, so it is not shown to measure the behaviour."

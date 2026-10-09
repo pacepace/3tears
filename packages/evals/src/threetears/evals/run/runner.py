@@ -2573,6 +2573,29 @@ def grade_goal_checks(
     return outcomes
 
 
+def template_as_graded(template: EvalTemplate, refused: Mapping[str, str] | None) -> EvalTemplate:
+    """The template a run's cells are graded on: its goal checks less the ones the grammar refused at launch.
+
+    A template stored before a grammar rule can carry a check the rule now refuses, and grading it raises in
+    every cell — each then a rig fault, with the check's reason buried in a generic apparatus error and every
+    other measure of the cell lost with it. The launch freezes the refused checks on the run
+    (:func:`~threetears.evals.contracts.models.refused_goal_checks`); the cells grade the rest, and every surface
+    counts the refused check as excluded, with its reason.
+
+    Args:
+        template: The template as stored.
+        refused: The run's refused checks, or None when it recorded none.
+
+    Returns:
+        ``template`` itself when nothing was refused, else a copy without the refused checks.
+    """
+    if not refused:
+        return template
+    return template.model_copy(
+        update={"goal_state_checks": [check for check in template.goal_state_checks if check not in refused]}
+    )
+
+
 def _unevaluated_goal_checks(template: EvalTemplate, *, waiting_on: str) -> list[GoalStateOutcome]:
     """The template's goal-state checks, as a candidate-charged deadline leaves them: unevaluated, failed.
 
@@ -2910,6 +2933,9 @@ async def execute_run(
             "scores with, or pass no judge service."
         )
 
+    # A check the grammar refused at launch is graded on no cell, so a template stored before a grammar rule
+    # does not turn every cell into a rig fault; the run names the check and why (`EvalRun.refused_goal_checks`).
+    template = template_as_graded(template, run.refused_goal_checks)
     callbacks = callbacks or RunCallbacks()
     total = len(test_cases) * run.k_runs
     done = 0
@@ -3179,6 +3205,7 @@ __all__ = [
     "ErrorLedger",
     "EveryCellApparatusFailedError",
     "GoalCheckUnevaluable",
+    "template_as_graded",
     "KindFactory",
     "RunCallbacks",
     "RunnerOptions",

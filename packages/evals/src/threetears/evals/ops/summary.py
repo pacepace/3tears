@@ -43,7 +43,6 @@ from __future__ import annotations
 import math
 
 from collections import Counter
-from collections.abc import Mapping
 
 from pydantic import BaseModel, ConfigDict
 
@@ -63,6 +62,12 @@ from threetears.evals.contracts import (
     delivered_a_turn,
 )
 from threetears.evals.contracts.host import EvalHost
+from threetears.evals.contracts.models import (
+    CHECK_REFUSED_UNDER_CURRENT_GRAMMAR,
+    EvalRun,
+    goal_check_proofs_as_read,
+    stale_goal_check_proofs,
+)
 from threetears.evals.contracts.metrics import describe_measure, summary_population
 from threetears.evals.contracts.usage_capture import blended_cost
 from threetears.evals.run import get_run, list_results
@@ -133,6 +138,13 @@ class GoalCheckSummary(BaseModel):
             check graded against each case's untouched starting state with no calls made. Set where each case's
             seed is in hand (:func:`~threetears.evals.quick.run_eval`'s world path); ``None`` elsewhere.
         did_nothing_cases: The cases that baseline was graded over; ``None`` with it.
+        stale_proof: The run recorded the check ``proven`` under an older proof rule
+            (:func:`~threetears.evals.contracts.models.goal_check_proofs_as_read`), so ``proof`` reads
+            ``unproven`` and the check needs re-proving by a new launch.
+        refused: Why the grammar refused the check when the run launched, for a check a template stored before
+            the rule still carried; ``None`` otherwise. Such a check is graded on none of the run's results,
+            which are not rig faults for it: ``excluded`` counts them.
+        excluded: The results a refused check was not graded on — every result of the run; 0 otherwise.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -143,6 +155,9 @@ class GoalCheckSummary(BaseModel):
     proof: GoalCheckProof | None = None
     did_nothing_passed: int | None = None
     did_nothing_cases: int | None = None
+    stale_proof: bool = False
+    refused: str | None = None
+    excluded: int = 0
 
     @property
     def proven(self) -> bool:
@@ -155,6 +170,11 @@ class GoalCheckSummary(BaseModel):
         Returns:
             One line, without indentation.
         """
+        if self.refused is not None:
+            return (
+                f"goal check {self.check}: {CHECK_REFUSED_UNDER_CURRENT_GRAMMAR} ({self.refused}); graded on none "
+                f"of the {self.excluded} result(s) — rewrite the check and launch again"
+            )
         head = f"goal check {self.check}: passed {self.passed}/{self.n}"
         baseline = None
         if self.did_nothing_passed is not None and self.did_nothing_cases:
@@ -165,7 +185,11 @@ class GoalCheckSummary(BaseModel):
             return f"{head} — NOT A MEASUREMENT: {baseline}, so this pass rate does not beat doing nothing"
         reason = {
             "refuted": "refuted: its control does not show it tells acting from doing nothing",
-            "unproven": "unproven: no control shows it tells acting from doing nothing",
+            "unproven": (
+                "unproven: its proof was recorded under an earlier proof rule and needs re-proving by a new launch"
+                if self.stale_proof
+                else "unproven: no control shows it tells acting from doing nothing"
+            ),
             None: "unproven: this run recorded no proof that it tells acting from doing nothing",
         }[self.proof]
         return f"{head} — {reason}" + ("" if baseline is None else f"; {baseline}")
@@ -479,7 +503,7 @@ def summarize_run(host: EvalHost, run_id: str, scope_id: str) -> EvalSummary:
         judge_cost_usd=blended_cost(judge_rows, _JUDGE_ROLE) if judge_rows else None,
         candidate_calls=sum(row.call_count or 0 for row in candidate_rows),
         candidate_cost_usd=blended_cost(candidate_rows, _CANDIDATE_ROLE) if candidate_rows else None,
-        goal_checks=_goal_checks(results, run.goal_check_proofs),
+        goal_checks=_goal_checks(results, run),
         # Templates are edited in place: one edited since the launch no longer holds what the judge read.
         intent=template.intent if template is not None and template.updated_at <= run.created_at else None,
         errors=errors,
@@ -520,24 +544,35 @@ def _judged_dimensions(results: list[EvalResult]) -> list[DimensionSummary]:
     ]
 
 
-def _goal_checks(results: list[EvalResult], proofs: Mapping[str, GoalCheckProof] | None) -> list[GoalCheckSummary]:
+def _goal_checks(results: list[EvalResult], run: EvalRun) -> list[GoalCheckSummary]:
     """Each goal-state check the results carry, counted as every per-check rate counts it, in the order first met.
 
-    Each carries the proof its run froze at launch; a check the run recorded none for is unproven.
+    Each carries the proof its run froze at launch, as read under the current proof rules
+    (:func:`~threetears.evals.contracts.models.goal_check_proofs_as_read`); a check the run recorded none for is
+    unproven. Each check the grammar refused at launch follows, graded on no result and counted as excluded.
     """
+    proofs = goal_check_proofs_as_read(run)
+    stale = set(stale_goal_check_proofs(run))
     counted: dict[str, list[bool]] = {}
     for result in results:
         for outcome, passed in counted_goal_verdicts(result) or []:
             counted.setdefault(outcome.expression, []).append(passed)
-    return [
+    graded = [
         GoalCheckSummary(
             check=check,
             passed=sum(verdicts),
             n=len(verdicts),
             proof=None if proofs is None else proofs.get(check, "unproven"),
+            stale_proof=check in stale,
         )
         for check, verdicts in counted.items()
     ]
+    refused = [
+        GoalCheckSummary(check=check, passed=0, n=0, proof="refuted", refused=reason, excluded=len(results))
+        for check, reason in (run.refused_goal_checks or {}).items()
+        if check not in counted
+    ]
+    return graded + refused
 
 
 __all__ = ["DimensionSummary", "EvalSummary", "GoalCheckSummary", "MeasureSummary", "dollars_text", "summarize_run"]

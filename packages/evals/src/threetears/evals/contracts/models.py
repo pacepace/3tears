@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import math
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -478,6 +478,19 @@ GoalCheckIntent = Literal["act", "hold"]
 #: check does not tell it from doing nothing, or cannot be evaluated against it. Only ``proven`` reads as a
 #: measurement of the behaviour; the other two are marked wherever the check's pass rate is shown.
 GoalCheckProof = Literal["proven", "unproven", "refuted"]
+
+#: The rules a run's goal-check proofs are derived under, stamped on the run beside them
+#: (``EvalRun.goal_check_proof_rules``). ``1``: a control's case parameters were read under the types it stated,
+#: so a check reading a parameter as a list could pass its control and be stamped proven, then fail every case
+#: (#665). ``2``: a control's parameters are read as a case stores them, one string each, and a control stating
+#: another type is refuted. A ``proven`` recorded under an older rule is read as ``unproven``
+#: (:func:`goal_check_proofs_as_read`): the controls are editable and were not frozen with the run, so the proof
+#: cannot be re-derived for the template the run actually graded, and a proof earned under a rule since found
+#: wrong is not one.
+GOAL_CHECK_PROOF_RULES = 2
+
+#: The words every surface uses for a goal check the current grammar refuses, frozen on the run that excluded it.
+CHECK_REFUSED_UNDER_CURRENT_GRAMMAR = "refused under the current grammar"
 
 
 class ControlEndState(EvalDocumentModel):
@@ -2534,6 +2547,23 @@ class EvalRun(EvalDocumentModel):
             "or assembled without a launch — read as unproven, never as proven. Optional within v8 for that reason."
         ),
     )
+    goal_check_proof_rules: int | None = Field(
+        default=None,
+        description=(
+            "The proof rules `goal_check_proofs` were derived under (`GOAL_CHECK_PROOF_RULES`). None on a run "
+            "launched before the rules were stamped, which are rules 1. A `proven` recorded under rules older than "
+            "the current ones reads as unproven (`goal_check_proofs_as_read`), and is counted as needing re-proof."
+        ),
+    )
+    refused_goal_checks: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Each of the template's goal checks the grammar refused when the run launched -> the refusal's reason. "
+            "A template stored before a grammar rule can carry a check the rule now refuses; the run grades none "
+            "of its cells on it, so the cells are not rig faults, and every surface names the check as refused "
+            "under the current grammar. None = not recorded (a run launched before this was frozen); {} = none."
+        ),
+    )
 
     resolved_tools_allowed: list[str] | None = Field(
         default=None,
@@ -2852,6 +2882,64 @@ class EvalRun(EvalDocumentModel):
                 "capture writes the corpus its own id names, and a run with cassettes off reads none"
             )
         return self
+
+
+def goal_check_proofs_as_read(run: EvalRun) -> dict[str, GoalCheckProof] | None:
+    """A run's goal-check proofs as every surface reads them: a ``proven`` from an older proof rule is ``unproven``.
+
+    ``proven`` is the one proof that reads as measuring the behaviour, so it must have been earned under the rules
+    in force (:data:`GOAL_CHECK_PROOF_RULES`). A run stamped before them may hold a ``proven`` its control earned
+    under a parameter type no case can carry (#665). It cannot be re-derived when read — the controls are editable
+    and were not frozen with the run, so a re-derivation would prove the template as it is now, not the one the
+    run graded — so it is read as ``unproven`` until the template is launched again.
+    ``refuted`` and ``unproven`` stand: an older rule never made a check look worse than it is.
+
+    Args:
+        run: The run.
+
+    Returns:
+        The proofs as read, or None when the run recorded none.
+    """
+    if run.goal_check_proofs is None:
+        return None
+    if (run.goal_check_proof_rules or 1) >= GOAL_CHECK_PROOF_RULES:
+        return dict(run.goal_check_proofs)
+    return {check: "unproven" if proof == "proven" else proof for check, proof in run.goal_check_proofs.items()}
+
+
+def stale_goal_check_proofs(run: EvalRun) -> list[str]:
+    """The checks whose ``proven`` the run recorded under an older proof rule — read as unproven, needing re-proof.
+
+    Args:
+        run: The run.
+
+    Returns:
+        The checks, sorted; empty when the run's proofs are current or it recorded none.
+    """
+    if run.goal_check_proofs is None or (run.goal_check_proof_rules or 1) >= GOAL_CHECK_PROOF_RULES:
+        return []
+    return sorted(check for check, proof in run.goal_check_proofs.items() if proof == "proven")
+
+
+def refused_goal_checks(checks: Sequence[str]) -> dict[str, str]:
+    """The goal checks the current grammar refuses, each with the refusal's reason.
+
+    The grammar refuses at authoring, but a template stored before a rule keeps the check it now refuses, and
+    grading it raises in every cell. Read at launch, so the run grades its cells without the check and names it.
+
+    Args:
+        checks: The template's goal checks.
+
+    Returns:
+        Each refused check -> why; empty when the grammar reads every one.
+    """
+    refused: dict[str, str] = {}
+    for check in checks:
+        try:
+            parse(check)
+        except DSLError as refusal:
+            refused[check] = str(refusal)
+    return refused
 
 
 class EvalRunStamp(EvalDocumentModel):
@@ -4362,6 +4450,11 @@ class EvalCassette(EvalDocumentModel):
 
 __all__ = [
     "stored_variation",
+    "CHECK_REFUSED_UNDER_CURRENT_GRAMMAR",
+    "GOAL_CHECK_PROOF_RULES",
+    "goal_check_proofs_as_read",
+    "refused_goal_checks",
+    "stale_goal_check_proofs",
     "ApparatusSettingValue",
     "MeteredCallOrigin",
     "CANDIDATE_SPEAKER",
