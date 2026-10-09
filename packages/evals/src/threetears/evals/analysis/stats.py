@@ -607,6 +607,8 @@ class KappaMoments(NamedTuple):
     expected: float
     #: The mean squared cost two raters with these marginals would show by chance alone.
     expected_square: float
+    #: Each item's disagreement cost, in the order the pairs were given.
+    costs: tuple[float, ...] = ()
 
 
 def kappa_moments(
@@ -655,14 +657,14 @@ def kappa_moments(
 
     first = [0] * k
     second = [0] * k
-    observed = 0.0
-    observed_square = 0.0
+    costs = []
     for a, b in pairs:
         i, j = index[a], index[b]
         first[i] += 1
         second[j] += 1
-        observed += cost(i, j)
-        observed_square += cost(i, j) ** 2
+        costs.append(cost(i, j))
+    observed = sum(costs)
+    observed_square = sum(c * c for c in costs)
     crossed = [(first[i] * second[j], cost(i, j)) for i in range(k) for j in range(k)]
     return KappaMoments(
         n=n,
@@ -670,6 +672,7 @@ def kappa_moments(
         observed_square=observed_square / n,
         expected=sum(count * c for count, c in crossed) / (n * n),
         expected_square=sum(count * c * c for count, c in crossed) / (n * n),
+        costs=tuple(costs),
     )
 
 

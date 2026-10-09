@@ -89,18 +89,20 @@ from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, Fixtured
 
 TONE = "conversation.tone"
 
-#: Perfectly agreeing results it takes for the 95% interval to clear each bar on these fixtures' 1-5 scores. At
-#: the 20-result floor it does not: twenty results bound a weighted kappa of 1.0 only to about 0.58.
-CALIBRATING_RESULTS = 24
-SEPARATING_RESULTS = 60
+#: Perfectly agreeing results that clear each bar on these fixtures' 1-5 scores: each criterion's floor. Twenty
+#: perfect ratings bound a weighted kappa of 1.0 at about 0.7, over calibration's 0.6; separation's floor is 120,
+#: where a judge at true self-agreement 0.95 earns it most of the time.
+CALIBRATING_RESULTS = CALIBRATION_MIN_RESULTS
+SEPARATING_RESULTS = SEPARATION_MIN_RESULTS
 
 
 class TestTheRuledConstants:
     def test_the_constants_are_the_ruling(self) -> None:
         assert (CALIBRATION_MIN_AGREEMENT, CALIBRATION_MIN_RESULTS) == (0.6, 20)
         assert SEPARATION_MIN_AGREEMENT == 0.8
-        # Not ruled: calibration's floor, so the two agreements are read over comparable evidence.
-        assert SEPARATION_MIN_RESULTS == CALIBRATION_MIN_RESULTS
+        # Not ruled: the fewest results at which a near-perfect judge earns separation most of the time (see
+        # test_simulated_agreement); at calibration's 20 it could never be earned.
+        assert SEPARATION_MIN_RESULTS == 120
 
 
 class TestEachCriterionFiresOnBothSidesOfItsBoundary:
@@ -147,9 +149,10 @@ class TestEachCriterionFiresOnBothSidesOfItsBoundary:
 
     def test_the_floor_counts_results_not_pairs(self) -> None:
         # Forty pairs about nineteen results is nineteen pieces of evidence.
-        assert separation_criterion(40, SEPARATION_MIN_RESULTS - 1, 1.0, (0.9, 1.0)).state == "insufficient"
-        assert calibration_criterion(40, CALIBRATION_MIN_RESULTS - 1, 1.0, (0.9, 1.0)).state == "insufficient"
-        assert separation_criterion(40, SEPARATION_MIN_RESULTS, 1.0, (0.9, 1.0)).state == "met"
+        pairs = 2 * SEPARATION_MIN_RESULTS
+        assert separation_criterion(pairs, SEPARATION_MIN_RESULTS - 1, 1.0, (0.9, 1.0)).state == "insufficient"
+        assert calibration_criterion(pairs, CALIBRATION_MIN_RESULTS - 1, 1.0, (0.9, 1.0)).state == "insufficient"
+        assert separation_criterion(pairs, SEPARATION_MIN_RESULTS, 1.0, (0.9, 1.0)).state == "met"
 
     def test_more_results_than_pairs_is_refused(self) -> None:
         with pytest.raises(ValidationError, match="cannot cover"):
@@ -202,12 +205,36 @@ class TestEachCriterionFiresOnBothSidesOfItsBoundary:
             )
 
 
+class TestACriterionNotYetDecidedSaysWhatItNeeds:
+    def test_an_undecided_one_projects_the_results_that_would_carry_its_bound_clear(self) -> None:
+        # Half-width 0.3 against a 0.15 gap to the bar: four times the results, so 60 more than its 20.
+        criterion = calibration_criterion(20, 20, 0.75, (0.45, 0.9))
+        assert (criterion.state, criterion.results_needed) == ("undecided", 60)
+
+    def test_an_undecided_one_below_the_bar_projects_toward_a_miss(self) -> None:
+        criterion = calibration_criterion(20, 20, 0.5, (0.3, 0.7))
+        assert (criterion.state, criterion.results_needed) == ("undecided", 60)
+
+    def test_one_short_of_its_floor_needs_at_least_the_rest_of_it(self) -> None:
+        assert calibration_criterion(10, 10, 0.9, (0.8, 1.0)).results_needed == 10
+        assert separation_criterion(0, 0, None).results_needed == SEPARATION_MIN_RESULTS
+
+    def test_a_decided_one_needs_nothing_and_an_estimate_on_the_bar_projects_nothing(self) -> None:
+        assert calibration_criterion(20, 20, 0.9, (0.7, 1.0)).results_needed is None
+        assert calibration_criterion(20, 20, 0.6, (0.4, 0.8)).results_needed is None
+
+    def test_it_reaches_the_bundle_s_json(self) -> None:
+        dumped = calibration_criterion(20, 20, 0.75, (0.45, 0.9)).model_dump(mode="json")
+        assert dumped["results_needed"] == 60
+
+
 def _criterion(state: CriterionState, *, separation: bool) -> TierCriterion:
     build = separation_criterion if separation else calibration_criterion
+    floor = SEPARATION_MIN_RESULTS if separation else CALIBRATION_MIN_RESULTS
     return {
-        "met": build(20, 20, 1.0, (0.9, 1.0)),
-        "not_met": build(20, 20, 0.0, (-0.2, 0.2)),
-        "undecided": build(20, 20, 0.7, (0.3, 0.95)),
+        "met": build(floor, floor, 1.0, (0.9, 1.0)),
+        "not_met": build(floor, floor, 0.0, (-0.2, 0.2)),
+        "undecided": build(floor, floor, 0.7, (0.3, 0.95)),
         "insufficient": build(3, 3, 1.0, (0.5, 1.0)),
     }[state]
 
@@ -390,12 +417,21 @@ class TestTheTiersFromResults:
         assert tier.tier == "calibrated"
         assert tier.calibration.lower is not None and tier.calibration.lower >= CALIBRATION_MIN_AGREEMENT
 
-    def test_twenty_perfectly_agreeing_ratings_are_undecided_not_calibrated(self) -> None:
-        # The floor is where a criterion may be decided, not where it is met: twenty results bound the agreement
-        # below the bar however well they agree.
-        tier = self._tiers(rated=CALIBRATION_MIN_RESULTS)
-        assert tier.calibration.agreement == 1.0
-        assert (tier.calibration.state, tier.tier) == ("undecided", "undetermined")
+    def test_twenty_ratings_whose_bound_straddles_the_bar_are_undecided_and_say_how_many_more_would_decide(
+        self,
+    ) -> None:
+        pairs = _shifted(CALIBRATION_MIN_RESULTS, disagreeing=3, shift=2)
+        results = [_scored(f"r-{i}", first) for i, (first, _) in enumerate(pairs)]
+        ratings = [
+            make_calibration_rating(result_id=f"r-{i}", rubric_dim=TONE, score=other)
+            for i, (_, other) in enumerate(pairs)
+        ]
+        (tier,) = judge_evidence_tiers(judge_agreement(ratings, results), judge_self_agreement([]), {_key()})
+        criterion = tier.calibration
+        assert criterion.agreement is not None and criterion.agreement > CALIBRATION_MIN_AGREEMENT
+        assert (criterion.state, tier.tier) == ("undecided", "undetermined")
+        assert criterion.results_needed is not None and criterion.results_needed > 0
+        assert f"about {criterion.results_needed} more results would decide it" in tier_sentence(tier)
 
     def test_nineteen_ratings_do_not(self) -> None:
         tier = self._tiers(rated=CALIBRATION_MIN_RESULTS - 1)
@@ -411,13 +447,17 @@ class TestTheTiersFromResults:
     def test_agreeing_repeats_separate_once_the_interval_clears_the_bar(self) -> None:
         assert self._tiers(repeated=SEPARATING_RESULTS).tier == "separation"
 
-    def test_twenty_perfectly_agreeing_repeats_cannot_separate(self) -> None:
-        tier = self._tiers(repeated=SEPARATION_MIN_RESULTS)
-        assert (tier.separation.agreement, tier.separation.state, tier.tier) == (1.0, "undecided", "undetermined")
+    def test_twenty_perfect_repeats_are_below_separations_floor_and_say_what_they_need(self) -> None:
+        tier = self._tiers(repeated=20)
+        assert (tier.separation.agreement, tier.separation.state, tier.tier) == (1.0, "insufficient", "undetermined")
+        assert tier.separation.results_needed == SEPARATION_MIN_RESULTS - 20
+        assert f"needs {SEPARATION_MIN_RESULTS - 20} more results" in tier_sentence(tier)
 
-    def test_an_undecided_calibration_leaves_a_separated_judge_on_separation(self) -> None:
-        tier = self._tiers(rated=CALIBRATION_MIN_RESULTS, repeated=SEPARATING_RESULTS)
-        assert (tier.calibration.state, tier.separation.state, tier.tier) == ("undecided", "met", "separation")
+    def test_an_unmeasured_calibration_says_how_many_ratings_it_needs(self) -> None:
+        tier = self._tiers(repeated=SEPARATING_RESULTS)
+        assert (tier.calibration.state, tier.calibration.results_needed) == ("insufficient", CALIBRATION_MIN_RESULTS)
+        assert f"needs {CALIBRATION_MIN_RESULTS} results" in tier_sentence(tier)
+        assert (tier.separation.state, tier.separation.results_needed, tier.tier) == ("met", None, "separation")
 
     def test_nineteen_repeats_do_not(self) -> None:
         assert self._tiers(repeated=SEPARATION_MIN_RESULTS - 1).tier == "undetermined"
@@ -474,7 +514,7 @@ class TestAFewResultsCannotEarnATier:
         # By result: the two re-repeated results weigh 1 each, split between the rounds — round 1 carries 19.
         assert itself.weighted_kappa == pytest.approx((19 * first_round + 1 * 1.0) / 20)
         (tier,) = judge_evidence_tiers(judge_agreement([], results), judge_self_agreement(results), {_key()})
-        assert (tier.separation.state, tier.tier) == ("undecided", "undetermined")
+        assert (tier.separation.state, tier.tier) == ("insufficient", "undetermined")
 
     def test_a_small_person_cannot_carry_a_large_one_over_the_calibration_bar(self) -> None:
         # Twenty ratings at about 0.3 and two at 1.0: an unweighted mean reads 0.64 and "met" the bar.
@@ -545,7 +585,7 @@ class TestEachResultWeighsOnceInTheFigure:
         assert itself.weighted_kappa is not None and itself.weighted_kappa < 0.6, (
             "the many re-measurements weigh two results"
         )
-        assert (tier.separation.state, tier.tier) == ("not_met", "undetermined")
+        assert (tier.separation.state, tier.tier) == ("insufficient", "undetermined")
 
     def test_five_annotators_on_three_shared_anchors_do_not_calibrate_a_judge_one_person_found_wanting(self) -> None:
         # Alice rates twenty results at about 0.44: every other one two points off the judge.
@@ -627,7 +667,7 @@ class TestACannotTellRepeatCountsAgainstTheJudge:
         assert (itself.n, itself.results, itself.n_cannot_tell) == (30, 30, 10)
         assert itself.exact_agreement == pytest.approx(20 / 30)
         (tier,) = judge_evidence_tiers(judge_agreement([], results), read, {_key(scale)})
-        assert (tier.separation.state, tier.tier) == ("not_met", "undetermined")
+        assert (tier.separation.state, tier.tier) == ("insufficient", "undetermined")
 
     @pytest.mark.parametrize("first", [1, 3, 5])
     def test_cannot_tell_costs_the_most_a_disagreement_can_wherever_the_first_score_sat(self, first: int) -> None:
@@ -790,32 +830,26 @@ class TestTheBundleDerivesTheTierWhereItShowsIt:
         assert (tier.rubric_dim, tier.tier) == (TOYHOST_JUDGED_DIMENSION, "undetermined")
         assert _shown_tiers(bundle) == {"undetermined"}
 
-    def test_agreeing_repeats_put_every_reading_on_separation(self) -> None:
-        bundle = _bundle(repeats=SEPARATING_RESULTS)
+    def test_every_agreeing_repeat_the_toy_campaign_has_is_still_short_of_separations_floor(self) -> None:
+        # 72 results, all repeated and all agreeing: below the 120 the floor asks, and the tier says how many more.
+        bundle = _bundle(repeats=72)
         (tier,) = bundle.judge_evidence_tiers
-        assert (tier.separation.n, tier.tier) == (SEPARATING_RESULTS, "separation")
-        assert bundle.judge_self_agreement.dimensions[0].n == SEPARATING_RESULTS
-        assert _shown_tiers(bundle) == {"separation"}
+        assert (tier.separation.n, tier.separation.state, tier.tier) == (72, "insufficient", "undetermined")
+        assert tier.separation.results_needed == SEPARATION_MIN_RESULTS - 72
+        assert _shown_tiers(bundle) == {"undetermined"}
 
     def test_nineteen_repeats_leave_them_undetermined(self) -> None:
-        bundle = _bundle(repeats=SEPARATION_MIN_RESULTS - 1)
+        bundle = _bundle(repeats=19)
         assert _shown_tiers(bundle) == {"undetermined"}
 
     def test_agreeing_ratings_calibrate_them(self) -> None:
         assert _shown_tiers(_bundle(rated=CALIBRATING_RESULTS)) == {"calibrated"}
 
-    def test_twenty_agreeing_repeats_leave_them_undetermined_with_the_interval_named(self) -> None:
-        bundle = _bundle(repeats=SEPARATION_MIN_RESULTS)
-        (tier,) = bundle.judge_evidence_tiers
-        assert (tier.separation.state, tier.tier) == ("undecided", "undetermined")
-        assert tier.separation.lower is not None and tier.separation.lower < SEPARATION_MIN_AGREEMENT
-        assert _shown_tiers(bundle) == {"undetermined"}
-
     def test_the_time_axis_cells_carry_the_campaigns_tier(self) -> None:
-        bundle = _bundle(repeats=SEPARATING_RESULTS, two_days=True)
+        bundle = _bundle(rated=CALIBRATING_RESULTS, two_days=True)
         assert bundle.time_axis is not None, "two days of runs give the bundle a time axis"
         tiers = {r.evidence_tier for p in bundle.time_axis.positions for c in p.cells for r in c.judged}
-        assert tiers == {"separation"}
+        assert tiers == {"calibrated"}
 
     def test_a_repeat_moves_the_fingerprint(self) -> None:
         assert _bundle().fingerprint() != _bundle(repeats=1).fingerprint()
@@ -824,28 +858,31 @@ class TestTheBundleDerivesTheTierWhereItShowsIt:
 class TestTheReportStatesEachTier:
     def test_the_code_only_report_states_the_tier_and_its_measurements(self) -> None:
         report = build_code_only_report(
-            _bundle(repeats=SEPARATING_RESULTS),
+            _bundle(rated=CALIBRATING_RESULTS),
             measures=toyhost_profile().measures,
             assembled_at="2026-10-06T00:00:00+00:00",
         )
         texts = [block.text for block in report.blocks if isinstance(block, DisclosureBlock)]
         sentences = [text for text in texts if text.startswith("Judged evidence tier:")]
         assert sentences == [
-            f"Judged evidence tier: {TOYHOST_JUDGED_DIMENSION} (an unnamed judge): separation — agreement with people "
-            "not measured (bar 0.6 over at least 20 results); with its own repeats 1 (95% interval 0.8386 to 1) over "
-            "60 pairs from 60 results, meets (bar 0.8 over at least 20 results)."
+            f"Judged evidence tier: {TOYHOST_JUDGED_DIMENSION} (an unnamed judge): calibrated — agreement with people 1 "
+            "(bounds 0.6904 to 1) over 20 pairs from 20 results, meets (bar 0.6 over at least 20 results); with its "
+            "own repeats not measured (bar 0.8 over at least 120 results) — needs 120 results."
         ]
 
-    def test_an_undecided_criterion_names_its_interval_and_why_it_decides_nothing(self) -> None:
+    def test_a_criterion_short_of_its_floor_says_how_many_more_results_it_needs(self) -> None:
         report = build_code_only_report(
-            _bundle(repeats=SEPARATION_MIN_RESULTS),
+            _bundle(repeats=20),
             measures=toyhost_profile().measures,
             assembled_at="2026-10-06T00:00:00+00:00",
         )
         texts = [block.text for block in report.blocks if isinstance(block, DisclosureBlock)]
         (sentence,) = [text for text in texts if text.startswith("Judged evidence tier:")]
         assert "undetermined — " in sentence
-        assert "with its own repeats 1 (95% interval 0.5722 to 1) over 20 pairs from 20 results, undecided" in sentence
+        assert (
+            "with its own repeats 1 (bounds 0.6904 to 1) over 20 pairs from 20 results, too few results for (bar 0.8 "
+            "over at least 120 results) — needs 100 more results" in sentence
+        )
 
 
 class TestTheWordsClaimOnlyWhatWasMeasured:
@@ -864,7 +901,7 @@ class TestTheWordsClaimOnlyWhatWasMeasured:
             judge_config_id=None,
             tier="separation",
             calibration=calibration_criterion(20, 20, 0.1, (-0.1, 0.3)),
-            separation=separation_criterion(20, 20, 0.9, (0.85, 1.0)),
+            separation=separation_criterion(SEPARATION_MIN_RESULTS, SEPARATION_MIN_RESULTS, 0.9, (0.85, 1.0)),
         )
         assert tier.calibration.state == "not_met", "the case the words must stay true for"
 
@@ -918,10 +955,10 @@ class TestAFindingStandsOnTheTierItsCellsCarry:
         )
         return analysis.resolutions[0]
 
-    async def test_a_finding_citing_a_separated_judge_stands_on_separation(self) -> None:
-        resolution = await self._generated(_bundle(repeats=SEPARATING_RESULTS))
-        assert [row.judged_tier for row in resolution.evidence] == [None, None, "separation"]
-        assert resolution.evidence_tier == "separation"
+    async def test_a_finding_citing_a_calibrated_judge_stands_on_calibrated(self) -> None:
+        resolution = await self._generated(_bundle(rated=CALIBRATING_RESULTS))
+        assert [row.judged_tier for row in resolution.evidence] == [None, None, "calibrated"]
+        assert resolution.evidence_tier == "calibrated"
 
     async def test_the_same_finding_over_an_unmeasured_judge_is_undetermined(self) -> None:
         resolution = await self._generated(_bundle())

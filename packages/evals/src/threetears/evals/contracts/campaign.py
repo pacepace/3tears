@@ -799,7 +799,7 @@ class EvalAnalysis(EvalDocumentModel):
         default=None,
         description=(
             "The rule the judged evidence tiers in `resolutions` and `decision_surface` were decided by. "
-            "`interval_lower_bound`: each criterion on its agreement's 95% interval against the bar. None on an "
+            "`interval_lower_bound`: each criterion on confidence bounds for its agreement against the bar. None on an "
             "analysis stored before that rule, whose tiers were the point estimate against the bar — which awarded "
             "`calibrated` to a judge below the bar as much as a third of the time; every surface rendering such a "
             "tier says it was decided on the point estimate. Optional within v8 for that reason: requiring it "

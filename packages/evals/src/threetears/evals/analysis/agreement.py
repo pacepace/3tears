@@ -54,14 +54,13 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from collections.abc import Iterable, Sequence
-from typing import TYPE_CHECKING, Literal, NamedTuple
+from collections.abc import Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Final, Literal, NamedTuple
 
 from pydantic import Field
 
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.stats import (
-    INTERVAL_LEVEL,
     KappaMoments,
     cohen_kappa,
     kappa_moments,
@@ -176,7 +175,8 @@ class DimensionAgreement(EvalDocumentModel):
     agreement_interval: tuple[float, float] | None = Field(
         default=None,
         description=(
-            "The 95% interval on the figure the `calibrated` tier reads (`weighted_kappa` on 1-5, `kappa` on "
+            "The confidence bounds the `calibrated` tier is decided on — a one-sided 95% lower and a one-sided 97.5% "
+            "upper bound (`agreement_interval`) — on the figure it reads (`weighted_kappa` on 1-5, `kappa` on "
             "pass/fail), over the distinct results — `agreement_interval`. None when that figure is undefined or "
             "rests on fewer than two results."
         ),
@@ -382,17 +382,34 @@ def _agreement_numbers(scale: RubricScale, pairs: Sequence[_Pair]) -> _Agreement
     )
 
 
+#: The one-sided confidence of the bound a tier is AWARDED on: a criterion is met only when its lower bound at
+#: this confidence reaches the bar, so a judge exactly at the bar is awarded the tier at most 5% of the time.
+#: Measured at most 3.6% at 20-40 results (``tests/test_simulated_agreement.py``).
+TIER_LOWER_CONFIDENCE: Final = 0.95
+
+#: The one-sided confidence of the bound a criterion is MISSED on: not met only when its upper bound at this
+#: confidence is below the bar. Stricter than the lower bound's, because the score interval's upper side runs
+#: looser than nominal on few results: at 95% it showed a judge at the bar below it up to 8% of the time; at
+#: 97.5% at most about 5%.
+TIER_UPPER_CONFIDENCE: Final = 0.975
+
+
 def agreement_interval(
     estimate: float, raters: Sequence[tuple[KappaMoments, Sequence[str]]]
 ) -> tuple[float, float] | None:
-    """The 95% interval on a pooled agreement figure: a score interval over the distinct results it rests on.
+    """The bounds a tier is decided on: a score interval on a pooled agreement figure, over its distinct results.
 
-    **Why not the estimate plus or minus a standard error.** At the 20-result floor kappa's sampling spread is
-    about 0.2 and its spread shrinks as agreement rises, so a standard error read off the estimate is smallest
-    exactly when the estimate is luckiest: a jackknife interval awarded ``calibrated`` to a judge at the bar
-    10-25% of the time, and twenty results that all happen to agree read as certainty. A score interval holds
-    each candidate value ``κ0`` to the spread kappa WOULD have there — the set of ``κ0`` the estimate is within
-    ``t`` of — the Wilson interval's construction, which it reduces to on pass/fail.
+    ``(lower, upper)``: the lower end a one-sided :data:`TIER_LOWER_CONFIDENCE` bound, the upper end a one-sided
+    :data:`TIER_UPPER_CONFIDENCE` bound. A tier is a one-sided claim (the judge is at least this good), so it is
+    awarded on a one-sided bound.
+
+    **Why a score interval.** Compared by seeded simulation over six marginals at 20-40 results
+    (``docs/reading-reports.md`` carries the table): the large-sample analytic standard error of weighted kappa
+    (Fleiss, Cohen and Everitt) read on t, and a bootstrap over results (percentile and BCa), awarded the tier
+    to a judge at the bar 5-34% of the time and covered the truth as little as half the time, because their
+    spread is read off the estimate and shrinks to nothing when a few results happen to agree. A score
+    interval holds each candidate value ``κ0`` to the spread kappa WOULD have there — the set of ``κ0`` the
+    estimate is within ``t`` of — the Wilson interval's construction, which it reduces to on pass/fail.
 
     **The spread at ``κ0``.** Kappa is ``1 - D / D_e``: ``D`` the mean disagreement cost over the items, ``D_e``
     the cost chance gives the two raters' marginals. At ``κ0`` the mean cost is ``(1 - κ0) D_e``, and a cost
@@ -401,22 +418,22 @@ def agreement_interval(
     exactly, with no model). On 1-5 ``ρ`` is the larger of what the observed disagreements show and what
     chance disagreements would (``E_chance[c²] / D_e``), so a judge that agrees exactly or by near misses
     is not credited with a spread its few observed disagreements cannot show, and one that reverses the
-    scale is held to the spread it does show.
+    scale is held to the spread it does show. Reading ``ρ`` off the observed disagreements alone awarded the
+    tier at the bar 8-18% of the time.
 
-    **Pooled by result.** Each rater's kappa enters the figure at its result weight (each distinct result
-    weighing 1, split across the raters measuring it — :func:`_pooled_kappa`). Results are independent; the
-    raters of one result are not, so their contributions to it are added at full correlation (the
-    Cauchy-Schwarz bound) — exact when raters' results do not overlap, conservative when they do. The
-    multiplier is Student's t at :data:`~threetears.evals.analysis.stats.INTERVAL_LEVEL` on
-    ``results - 1`` degrees of freedom.
-
-    Seeded simulation (``tests/test_simulated_agreement.py``) holds the rule it serves: at the 20-result
-    floor a judge at the bar earns the tier at most about 1% of the time.
+    **Pooled by result, the result the cluster.** Each rater's kappa enters the figure at its result weight
+    (each distinct result weighing 1, split across the raters measuring it — :func:`_pooled_kappa`). Results
+    are independent; the raters of one result are not — two people who both see the judge misjudge a result
+    both disagree with it. Their contributions to a shared result are added at the correlation their centred
+    costs show across the results they share, pooled over every pair of raters and held to ``[0, 1]``. Seeded
+    simulation with two raters who copy the same truth (correlation 1) held the tier's size at 4.6%, where
+    adding them as independent reached 9.5%. With no result shared the question does not arise. The
+    multiplier is Student's t on ``results - 1`` degrees of freedom.
 
     Args:
         estimate: The pooled figure the interval is around — it always lies inside.
-        raters: Per rater whose kappa entered the figure: its disagreement moments under the figure's cost,
-            and the result each of its pairs is about.
+        raters: Per rater whose kappa entered the figure: its disagreement moments under the figure's cost
+            (with each item's cost), and the result each of its pairs is about.
 
     Returns:
         ``(lower, upper)``, or None when fewer than two distinct results carry the figure.
@@ -440,28 +457,34 @@ def agreement_interval(
     for index, (_, ids) in enumerate(defined):
         for result_id in ids:
             on_result.setdefault(result_id, []).append(index)
+    correlation = _shared_result_correlation(defined, on_result)
     # Results measured by the same raters contribute alike, so each such group is summed once and counted.
     memberships = Counter(tuple(sorted(members)) for members in on_result.values())
-    critical = t_critical_two_sided(INTERVAL_LEVEL, len(measurers) - 1)
+    results = len(measurers)
 
-    def outside(candidate: float) -> bool:
+    def outside(candidate: float, critical: float) -> bool:
         spreads = []
         for coefficient, chance, size in shapes:
             mean = (1 - candidate) * chance
             spreads.append(coefficient * math.sqrt(max(size * mean - mean * mean, 0.0)))
-        variance = sum(count * sum(spreads[index] for index in members) ** 2 for members, count in memberships.items())
+        variance = 0.0
+        for members, count in memberships.items():
+            alone = sum(spreads[index] ** 2 for index in members)
+            together = sum(spreads[index] for index in members) ** 2
+            variance += count * (alone + correlation * (together - alone))
         return (estimate - candidate) ** 2 > critical * critical * variance
 
-    def edge(limit: float) -> float:
+    def edge(limit: float, confidence: float) -> float:
         # Walk out from the estimate to the first value outside, then bisect: the innermost crossing.
+        critical = t_critical_two_sided(2 * confidence - 1, results - 1)
         step = 0.05 if limit > estimate else -0.05
         inside = estimate
         while inside != limit:
             probe = min(inside + step, limit) if step > 0 else max(inside + step, limit)
-            if outside(probe):
+            if outside(probe, critical):
                 for _ in range(40):
                     middle = (inside + probe) / 2
-                    if outside(middle):
+                    if outside(middle, critical):
                         probe = middle
                     else:
                         inside = middle
@@ -469,7 +492,36 @@ def agreement_interval(
             inside = probe
         return limit
 
-    return (edge(min(-1.0, estimate)), edge(max(1.0, estimate)))
+    return (
+        edge(min(-1.0, estimate), TIER_LOWER_CONFIDENCE),
+        edge(max(1.0, estimate), TIER_UPPER_CONFIDENCE),
+    )
+
+
+def _shared_result_correlation(
+    defined: Sequence[tuple[KappaMoments, Sequence[str]]], on_result: Mapping[str, Sequence[int]]
+) -> float:
+    """How alike two raters' disagreements with the judge are on a result both measured: pooled, held to [0, 1].
+
+    Each rater's per-item costs centred on its own mean, cross-multiplied over every pair of raters sharing a
+    result and normalised — one correlation for the figure. 1 (the bound) when no result is shared, where it
+    multiplies nothing.
+    """
+    centred: dict[tuple[int, str], float] = {}
+    for index, (moments, ids) in enumerate(defined):
+        for result_id, cost in zip(ids, moments.costs, strict=True):
+            centred[(index, result_id)] = cost - moments.observed
+    cross = left = right = 0.0
+    for result_id, members in on_result.items():
+        for position, first in enumerate(members):
+            for second in members[position + 1 :]:
+                u, v = centred[(first, result_id)], centred[(second, result_id)]
+                cross += u * v
+                left += u * u
+                right += v * v
+    if left == 0 or right == 0:
+        return 1.0
+    return min(1.0, max(0.0, cross / math.sqrt(left * right)))
 
 
 def _pooled_kappa(per_rater: Sequence[tuple[float | None, Sequence[_Pair]]]) -> float | None:
@@ -561,7 +613,7 @@ class SelfAgreementDimension(EvalDocumentModel):
     agreement_interval: tuple[float, float] | None = Field(
         default=None,
         description=(
-            "The 95% interval on the figure the `separation` tier reads, as `DimensionAgreement.agreement_interval`."
+            "The confidence bounds on the figure the `separation` tier reads, as `DimensionAgreement.agreement_interval`."
         ),
     )
 
@@ -758,23 +810,29 @@ def tier_sentence(tier: JudgeEvidenceTier) -> str:
 
 
 def _criterion_words(criterion: TierCriterion) -> str:
-    """A criterion as a clause: its agreement, interval, pairs and results against the bar, or why there is nothing to read."""
+    """A criterion as a clause: its agreement, bounds, pairs and results against the bar, and what it still needs."""
     bar = f"(bar {format_number(criterion.threshold)} over at least {criterion.min_results} results)"
+    needed = criterion.results_needed
     if criterion.n == 0:
-        return f"not measured {bar}"
+        return f"not measured {bar} — needs {criterion.min_results} results"
     if criterion.agreement is None:
         return f"undefined over {criterion.n} pairs {bar}"
     over = f"over {criterion.n} pairs from {criterion.results} results"
     if criterion.interval is not None:
         low, high = criterion.interval
-        over = f"(95% interval {format_number(low)} to {format_number(high)}) {over}"
+        over = f"(bounds {format_number(low)} to {format_number(high)}) {over}"
     verdict = {
         "met": "meets",
         "not_met": "misses",
-        "undecided": "undecided — the interval straddles",
-        "insufficient": "too few results for" if criterion.results < criterion.min_results else "no interval for",
+        "undecided": "undecided — the bounds straddle",
+        "insufficient": "too few results for" if criterion.results < criterion.min_results else "no bounds for",
     }[criterion.state]
-    return f"{format_number(criterion.agreement)} {over}, {verdict} {bar}"
+    clause = f"{format_number(criterion.agreement)} {over}, {verdict} {bar}"
+    if needed is not None and criterion.state == "insufficient":
+        clause += f" — needs {needed} more results"
+    elif needed is not None:
+        clause += f" — about {needed} more results would decide it if agreement holds"
+    return clause
 
 
 __all__ = [
@@ -787,6 +845,8 @@ __all__ = [
     "UnpairedReason",
     "UnrepeatedReason",
     "UnrepeatedScore",
+    "TIER_LOWER_CONFIDENCE",
+    "TIER_UPPER_CONFIDENCE",
     "agreement_interval",
     "judge_agreement",
     "judge_evidence_tiers",

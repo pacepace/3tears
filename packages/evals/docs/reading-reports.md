@@ -211,20 +211,61 @@ reliability was measured to be (`threetears.evals.contracts.evidence_tiers`, own
 
 | Tier | When |
 |---|---|
-| `calibrated` | the judge agrees with people: the 95% interval on `judge_agreement` (person ratings only) lies at or above `CALIBRATION_MIN_AGREEMENT` (0.6), over at least `CALIBRATION_MIN_RESULTS` (20) distinct results |
-| `separation` | the judge agrees with itself: the 95% interval on `judge_self_agreement` lies at or above `SEPARATION_MIN_AGREEMENT` (0.8), over at least `SEPARATION_MIN_RESULTS` (20) distinct results |
-| `incidental` | both measured over enough results, and both intervals lie below their bars |
-| `undetermined` | not shown either way: too few results, or an interval across a bar — never filed as incidental |
+| `calibrated` | the judge agrees with people: the one-sided 95% lower bound on `judge_agreement` (person ratings only) is at or above `CALIBRATION_MIN_AGREEMENT` (0.6), over at least `CALIBRATION_MIN_RESULTS` (20) distinct results |
+| `separation` | the judge agrees with itself: the one-sided 95% lower bound on `judge_self_agreement` is at or above `SEPARATION_MIN_AGREEMENT` (0.8), over at least `SEPARATION_MIN_RESULTS` (120) distinct results |
+| `incidental` | both measured over enough results, and both upper bounds lie below their bars |
+| `undetermined` | not shown either way: too few results, or bounds across a bar — never filed as incidental |
 
-**A tier is decided on an interval, never the point estimate.** Each criterion is `met` when its interval's
-lower end reaches the bar, `not_met` when its upper end is below it, and `undecided` when it straddles. An
-undecided criterion leaves the reading on the next tier down that is shown. At 20 results kappa's sampling spread
-is about 0.2, and the point estimate awarded `calibrated` to a judge whose true agreement was 0.5 a third of the
-time. The interval holds that to under 1% at the bar, and the price is results. Twenty perfectly agreeing
-results bound a 1-5 kappa only to about 0.58, so they do not calibrate. About 24 do, and separation needs about
-45 to 60. At 60 results a judge at true kappa 0.9 calibrates most of the time. The tier sentence names the
-interval and says which way it fell. An analysis stored before this rule has no `judged_tier_rule`, and its
-tiers are rendered as decided on the point estimate.
+**A tier is decided on confidence bounds, never the point estimate.** A criterion is `met` when its one-sided
+95% lower bound reaches the bar, `not_met` when its one-sided 97.5% upper bound is below it, and `undecided`
+otherwise. An undecided criterion leaves the reading on the next tier down that is shown. At 20 results kappa's
+sampling spread is about 0.2, and the point estimate awarded `calibrated` to a judge whose true agreement was 0.5
+a third of the time. The tier sentence names the bounds, which way they fell, and how many more results the
+criterion needs (`results_needed`): the rest of the floor when it is short, or, when undecided, about how many
+more would carry the bounds clear of the bar if agreement held at its estimate. An analysis stored before this
+rule has no `judged_tier_rule`, and its tiers are rendered as decided on the point estimate.
+
+**Why these bounds.** Three ways to bound kappa were compared by seeded simulation over six marginals (1-5 flat,
+peaked and skewed with quadratic weights, 1-5 with a "can't tell" answer, 1-5 unweighted, pass/fail 1:1 and 3:1),
+500 replicates each. "Size" is how often a judge exactly at the bar is shown over it, at a one-sided 5% bound;
+the target is at most 5%. Power is the range over marginals of how often a better judge earns the tier.
+
+| Method | n | Size, 0.6 bar | Size, 0.8 bar | Power at 0.9, 0.6 bar | Power at 0.95, 0.8 bar | Coverage of a 95% interval |
+|---|---|---|---|---|---|---|
+| Score interval (chosen) | 20 | 3.0% | 3.2% | 12-80% | 0-39% | ≥ 94.0% |
+| | 40 | 3.6% | 3.2% | 57-97% | 7-72% | ≥ 94.6% |
+| | 60 | 4.0% | 3.6% | 71-100% | 37-90% | ≥ 94.8% |
+| Analytic SE (Fleiss-Cohen-Everitt) on t | 20 | 16.6% | 33.6% | 72-91% | 63-76% | ≥ 51.7% |
+| | 60 | 10.8% | 17.6% | 90-100% | 79-96% | ≥ 73.8% |
+| Bootstrap over results, percentile | 20 | 12.6% | 25.8% | 64-89% | 54-73% | ≥ 51.3% |
+| | 60 | 9.2% | 14.4% | 86-100% | 73-95% | ≥ 78.0% |
+| Bootstrap over results, BCa | 20 | 12.0% | 24.2% | 50-86% | 51-70% | ≥ 50.7% |
+| | 60 | 7.0% | 11.4% | 76-100% | 54-92% | ≥ 82.0% |
+
+The analytic and bootstrap bounds read their spread off the estimate, so a sample that happens to agree looks
+certain: their extra power is mostly false awards. The score interval holds each candidate kappa to the spread it
+would have there. A score interval that read the disagreement size off the observed disagreements alone awarded
+the tier at the bar 8-18% of the time, so the size used is the larger of the observed and the chance one. The
+upper bound runs looser than the lower one (a one-sided 95% upper bound showed a judge at the bar below it up to
+8.8% of the time), so a miss is decided on a 97.5% upper bound (1.4-3.7% at the floors). Raters of one result are a
+cluster: their disagreements with the judge are added at the correlation they show on shared results. Two people
+who copy the same truth, added as independent, awarded the tier at the bar 9.5% of the time; with the
+correlation estimated it was at most 4.6%. A bootstrap over results would cluster them too, but it fails at
+these sizes as the table shows.
+
+**How many ratings a judge needs.** Seeded simulation, one rater per result, 1,500 replicates. The chance that a
+judge earns the tier, by distinct results:
+
+| Tier | True agreement | 20 | 40 | 60 | 80 | 100 | 120 | 140 |
+|---|---|---|---|---|---|---|---|---|
+| `calibrated` (bar 0.6) | 0.9 | 14-45% | 57-86% | 71-98% | 81-99% | 90-100% | 94-100% | 97-100% |
+| `calibrated` (bar 0.6) | 0.8 | 4-16% | 23-42% | 35-58% | 46-76% | 53-86% | 62-90% | 69-95% |
+| `separation` (bar 0.8) | 0.95 | below floor | below floor | below floor | below floor | below floor | 70-98% | 76-98% |
+
+The low end of each range is a heavily skewed 1-5 marginal. Plan on about 50 person-rated results for a
+`calibrated` reading of a good judge (80 on a skewed scale), and 120 repeated results for `separation`. A judge at
+true self-agreement 0.9 needs more than 200 repeats for an 80% chance. Separation's floor is 120 rather than 20
+because no valid bound can show a kappa of 0.8 from 20 results: even twenty perfect repeats bound it near 0.7.
 
 **How agreement is computed.** Agreement is one statistic computed by one rule for both — quadratic-weighted
 kappa on 1-5, kappa on pass/fail, per rater (each person; each round of repeats) and pooled by result.

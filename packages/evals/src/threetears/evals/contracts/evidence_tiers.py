@@ -44,17 +44,16 @@ scale and the tiers compare (:func:`threetears.evals.analysis.agreement` holds t
   any other pair (calibration never holds one: a person's rating is a score). Only a repeat that failed
   for infrastructure, or that another judge or judge config answered, is left out — and named.
 
-**A criterion is decided on an interval for the agreement, never on its point estimate.** A tier is a
-claim about the judge, and at the 20-result floor kappa's sampling spread is about 0.2: deciding on the
-point estimate awarded ``calibrated`` to a judge whose true weighted kappa is 0.5 a third of the time.
-So a criterion is ``met`` only when the 95% interval's LOWER bound reaches its threshold, ``not_met``
-only when the UPPER bound is below it, and ``undecided`` when the interval straddles it — neither a pass
-nor a miss (:func:`criterion_state`). The interval is a score interval
-(:func:`threetears.evals.analysis.agreement.agreement_interval`): its spread is evaluated at each candidate
-value of kappa rather than at the estimate, so a run of perfect agreement over few results is not read
-as certainty. At the 20-result floor ``met`` is rarely reachable — ``separation`` not at all, since even
-twenty perfect repeats bound the agreement below 0.8 — which is the honest state of twenty results, not a
-defect: the floor is where a criterion may be decided, not where it is likely to be met.
+**A criterion is decided on confidence bounds for the agreement, never on its point estimate.** A tier is a
+claim about the judge, and at 20 results kappa's sampling spread is about 0.2: deciding on the point estimate
+awarded ``calibrated`` to a judge whose true weighted kappa is 0.5 a third of the time. So a criterion is
+``met`` only when the agreement's one-sided 95% lower bound reaches its threshold, ``not_met`` only when its
+one-sided 97.5% upper bound is below it, and ``undecided`` when neither — neither a pass nor a miss
+(:func:`criterion_state`). The bounds are a score interval
+(:func:`threetears.evals.analysis.agreement.agreement_interval`), chosen over an analytic standard error and a
+bootstrap, which seeded simulation showed award the tier at the bar far beyond 5% at these sample sizes. A
+criterion that is not yet decided says how many more results it needs (:attr:`TierCriterion.results_needed`),
+so a reader plans the ratings instead of reading a bare "undetermined".
 
 **Too little evidence is a state, never a tier.** A measurement over fewer results than its floor, or
 whose kappa is undefined, is ``insufficient``, and a reading whose evidence does not decide its tier is
@@ -85,7 +84,9 @@ from __future__ import annotations
 
 from typing import Final, Literal
 
-from pydantic import Field, model_validator
+import math
+
+from pydantic import Field, computed_field, model_validator
 
 from threetears.evals.contracts.base import EvalDocumentModel
 from threetears.evals.contracts.models import DimName, RubricScale
@@ -104,11 +105,14 @@ CALIBRATION_MIN_RESULTS: Final = 20
 #: calibration) to earn ``separation``. Owner ruling, 2026-10-06.
 SEPARATION_MIN_AGREEMENT: Final = 0.8
 
-#: The fewest distinct results a self-agreement must cover before it can decide anything. The ruling sets
-#: no floor of its own here; this is calibration's, because the ruling asks for the two agreements to be
-#: computed alike so the tiers compare, and a kappa over three results decides nothing either way —
-#: however many times those three are repeated.
-SEPARATION_MIN_RESULTS: Final = CALIBRATION_MIN_RESULTS
+#: The fewest distinct results a self-agreement must cover before it can decide anything. The ruling sets no
+#: floor of its own here. Calibration's 20 was used first, and at 20 results no valid interval can show a
+#: kappa of at least 0.8: twenty perfect repeats bound it near 0.6-0.7, and even the exact null distribution
+#: puts more than 5% of a judge at 0.8 on perfect agreement. A floor nobody can clear decides nothing, so this
+#: is the count at which a near-perfect judge (true self-agreement 0.95) earns the tier at least 80% of the time
+#: on five of six simulated marginals (81-98%; 70% on a heavily skewed 1-5 one). At true 0.9, 80% needs more than
+#: 200 results. ``tests/test_simulated_agreement.py`` holds it.
+SEPARATION_MIN_RESULTS: Final = 120
 
 #: The tier a judged reading stands on: one of the three the evidence can establish, or ``undetermined``
 #: when it establishes none of them.
@@ -132,7 +136,7 @@ JUDGED_TIERS_WEAKEST_FIRST: Final[tuple[JudgedEvidenceTier, ...]] = (
 CriterionState = Literal["met", "not_met", "undecided", "insufficient"]
 
 #: The rule a stored analysis's judged tiers were decided by. ``interval_lower_bound``: each criterion on
-#: its agreement's 95% interval against the bar. A stored analysis carrying none predates it: its tiers were
+#: confidence bounds for its agreement against the bar. A stored analysis carrying none predates it: its tiers were
 #: the point estimate against the bar.
 JudgedTierRule = Literal["interval_lower_bound"]
 
@@ -169,14 +173,17 @@ class TierCriterion(EvalDocumentModel):
     lower: float | None = Field(
         default=None,
         description=(
-            "The lower end of the 95% interval on `agreement` (a score interval over the distinct results — "
+            "The one-sided 95% lower confidence bound on `agreement` (a score interval over the distinct results — "
             "`threetears.evals.analysis.agreement.agreement_interval`); None when `agreement` is None or fewer than "
             "two results carry it. The criterion is met only when this reaches `threshold`."
         ),
     )
     upper: float | None = Field(
         default=None,
-        description="The upper end of the same interval; the criterion is not met only when this is below `threshold`.",
+        description=(
+            "The one-sided 97.5% upper confidence bound on `agreement`; the criterion is not met only when this is "
+            "below `threshold`."
+        ),
     )
     threshold: float = Field(description="The agreement the criterion asks for.")
     min_results: int = Field(ge=1, description="The fewest distinct results it is decided over.")
@@ -212,6 +219,32 @@ class TierCriterion(EvalDocumentModel):
                 f"not {self.state!r}"
             )
         return self
+
+    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
+        description=(
+            "How many more distinct results this criterion needs before it can be decided: for `insufficient`, at "
+            "least the rest of the floor; for `undecided`, about how many more would carry the interval clear of "
+            "the bar if agreement held at its estimate (the interval's half-width shrinking as one over the square "
+            "root of the results) — a planning figure, never a promise. None once decided, and where no estimate "
+            "can say (an undecided estimate exactly on the bar)."
+        )
+    )
+    @property
+    def results_needed(self) -> int | None:
+        """More distinct results before this criterion is decided, as far as its own numbers can project."""
+        if self.state in ("met", "not_met"):
+            return None
+        short = max(self.min_results - self.results, 0)
+        if self.agreement is None or self.lower is None or self.upper is None or self.results == 0:
+            return short or None
+        if self.agreement > self.threshold:
+            ratio = (self.agreement - self.lower) / (self.agreement - self.threshold)
+        elif self.agreement < self.threshold:
+            ratio = (self.upper - self.agreement) / (self.threshold - self.agreement)
+        else:
+            return short or None
+        projected = math.ceil(self.results * ratio * ratio)
+        return max(max(projected, self.min_results) - self.results, 1)
 
     @property
     def interval(self) -> tuple[float, float] | None:
@@ -296,7 +329,7 @@ def criterion_state(
     Args:
         results: The distinct results the agreement covers.
         agreement: The agreement figure, or None when undefined.
-        interval: Its 95% interval ``(lower, upper)``, or None when there is none.
+        interval: Its confidence bounds ``(lower, upper)``, or None when there are none.
         threshold: The agreement asked for (inclusive).
         min_results: The fewest distinct results (inclusive).
 
@@ -342,7 +375,7 @@ def calibration_criterion(
 ) -> TierCriterion:
     """The calibration criterion over ``n`` judge–human pairs covering ``results`` results, at ``agreement``.
 
-    ``interval`` is the agreement's 95% interval; without one the criterion cannot be decided (``insufficient``).
+    ``interval`` is the agreement's confidence bounds; without them the criterion cannot be decided (``insufficient``).
     """
     return _criterion(
         n, results, agreement, interval, threshold=CALIBRATION_MIN_AGREEMENT, min_results=CALIBRATION_MIN_RESULTS
@@ -354,7 +387,7 @@ def separation_criterion(
 ) -> TierCriterion:
     """The separation criterion over ``n`` first-score/repeat pairs covering ``results`` results, at ``agreement``.
 
-    ``interval`` is the agreement's 95% interval; without one the criterion cannot be decided (``insufficient``).
+    ``interval`` is the agreement's confidence bounds; without them the criterion cannot be decided (``insufficient``).
     """
     return _criterion(
         n, results, agreement, interval, threshold=SEPARATION_MIN_AGREEMENT, min_results=SEPARATION_MIN_RESULTS

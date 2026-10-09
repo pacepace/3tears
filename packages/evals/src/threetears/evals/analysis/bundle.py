@@ -1830,12 +1830,14 @@ class AnalysisContextBundle(EvalDocumentModel):
         description=(
             "The evidence tier of each judge's readings on each judged dimension — a judge being a served model "
             "and a judge config — decided by code from `judge_agreement` and `judge_self_agreement`, each criterion on "
-            "its agreement's 95% interval and never the point estimate: `calibrated` (the interval on agreement with "
+            "confidence bounds for its agreement and never the point estimate: `calibrated` (the one-sided 95% lower "
+            "bound on agreement with "
             f"people at or above {format_number(CALIBRATION_MIN_AGREEMENT)}, over at least {CALIBRATION_MIN_RESULTS} "
-            "distinct results), `separation` (the interval on agreement with its own repeats at or above "
+            "distinct results), `separation` (that bound on agreement with its own repeats at or above "
             f"{format_number(SEPARATION_MIN_AGREEMENT)}, over at least {SEPARATION_MIN_RESULTS} distinct results), "
-            "`incidental` (both intervals below their bars), or `undetermined` (not shown either way: too few "
-            "results, or an interval across a bar). Each entry carries both criteria and their intervals. Every "
+            "`incidental` (both upper bounds below their bars), or `undetermined` (not shown either way: too few "
+            "results, or bounds across a bar). Each entry carries both criteria, their bounds, and how many more "
+            "results each needs to be decided (`results_needed`). Every "
             "judged reading in `judged_measures` and `cell_measures` carries the tier of the judges behind it; a "
             "finding citing one stands on it."
         ),
