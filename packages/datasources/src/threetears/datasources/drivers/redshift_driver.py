@@ -191,7 +191,12 @@ from threetears.datasources.drivers.base import (
     observed,
 )
 from threetears.datasources.drivers.connect_guard import ConnectGuard, guarded_connect
-from threetears.datasources.export import DriverExportUnsupportedError, UnloadResult, redshift_unload_statement
+from threetears.datasources.export import (
+    DriverExportUnsupportedError,
+    ExportConfig,
+    ExportResult,
+    redshift_unload_statement,
+)
 from threetears.datasources.drivers.errors import (
     DriverConnectError,
     DriverCredentialPausedError,
@@ -2539,9 +2544,18 @@ class RedshiftDriver(Driver):
         result: RelationFingerprint = await self._acquire_and_run(_op)
         return result
 
+    @property
+    def export_config(self) -> ExportConfig | None:
+        """the datasource's export configuration, as its connection config carries it.
+
+        :return: the export configuration, or None when it has none
+        :rtype: ExportConfig | None
+        """
+        return self._config.export
+
     @traced
     @observed(driver_type="redshift")
-    async def unload(self, select: str, destination: str, *, timeout_seconds: int | None = None) -> UnloadResult:
+    async def unload(self, select: str, destination: str, *, timeout_seconds: int | None = None) -> ExportResult:
         """``UNLOAD`` ``select``'s rows as parquet under the datasource's export prefix, and count them.
 
         The statement is :func:`~threetears.datasources.export.redshift_unload_statement`'s, its
@@ -2555,7 +2569,7 @@ class RedshiftDriver(Driver):
         :param timeout_seconds: per-statement timeout, as :meth:`fetch` takes it
         :ptype timeout_seconds: int | None
         :return: the rows written and where they are
-        :rtype: UnloadResult
+        :rtype: ExportResult
         :raises DriverExportUnsupportedError: when the datasource has no export configured
         :raises ExportRefusedError: when the ``SELECT`` cannot be quoted or the destination is refused
         :raises RuntimeError: if the driver was previously closed
@@ -2586,12 +2600,7 @@ class RedshiftDriver(Driver):
             return await self._bridge.to_thread_with_cancel(lambda: _do_sync(conn), cancel_cb=_closer(conn))
 
         rows: int = await self._acquire_and_run(_op, timeout_overridden=timeout_seconds is not None)
-        return UnloadResult(
-            row_count=rows,
-            bucket=location["bucket"],
-            object_prefix=location["object_prefix"],
-            manifest_path=location["manifest_path"],
-        )
+        return ExportResult(row_count=rows, **location.model_dump())
 
     async def table_hashes(self, schemas: list[str]) -> dict[tuple[str, str], str]:
         """per-table MD5 over the column shape (Tier-2 change-probe).

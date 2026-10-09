@@ -29,8 +29,20 @@ export configured.
 - **Added, `threetears.datasources.export_read`** (the `export` extra, pyarrow): `export_part`
   fingerprints a part, exports it, fingerprints it again and reads the parquet the manifest lists
   through an object store the caller built, refusing (`IncompleteExportError`) a part that moved,
-  counts that disagree (warehouse, manifest, files, fingerprint), or a manifest naming any file
-  outside the export.
+  counts that disagree (warehouse, manifest, files, fingerprint), an answer at another destination
+  than the one asked for, or a manifest naming any file outside the export.
+- **Added, delete after load** (Pace's ruling, 2026-10-09): once a part is proven, `export_part` asks
+  the hub to delete every version under its destination (`DatasourceExportDeleteRequest`, the
+  `export_delete` ask, `DatasourceQueryClient.delete_export`); the hub deletes with a delete-only
+  grant (`ExportConfig.cleanup_access_key_ref`/`cleanup_secret_key_ref`, or its own role), so the
+  reader's keys stay read-only. A delete that fails raises `ExportNotDeletedError`; a refused export
+  is left for an operator. No timer and no lifecycle rule.
+- **Added, `S3ObjectStore.delete_versions(prefix)`**: every version and delete marker under a
+  non-empty prefix, by version id, raising any S3 refused.
+- **Added, `Driver.export_config`**, and one frozen `ExportResult` (with `ExportLocation`) that
+  `Driver.unload` returns and the wire carries (`DatasourceExportResult` is it). The refusal codes
+  `EXPORT_NOT_GRANTED`, `EXPORT_UNSUPPORTED` and `EXPORT_REFUSED` are published constants. Every
+  export grammar is matched whole, so a trailing newline is refused.
 
 ### Core, agent tools and enforcement: a pod's writes move its tables' write generations (migrate-writers stage)
 

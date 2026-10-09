@@ -23,12 +23,15 @@ from threetears.datasources.entities import DataSourceType
 from threetears.datasources.export import (
     DriverExportUnsupportedError,
     ExportConfig,
+    ExportLocation,
     ExportRefusedError,
+    ExportResult,
     check_destination,
     redshift_unload_statement,
     sql_string_literal,
 )
 from threetears.datasources.query_client import (
+    DatasourceExportDeleteRequest,
     DatasourceExportRequest,
     DatasourceQueryRequest,
     RelationFingerprintRequest,
@@ -71,12 +74,14 @@ class TestExportConfig:
     def test_defaults_are_the_exports_prefix_and_the_default_role(self) -> None:
         assert (_CONFIG.prefix, _CONFIG.iam_role) == ("exports/", "default")
 
-    @pytest.mark.parametrize("bucket", ["Bad_Bucket", "s3://bucket", "a", "bucket/key", "a..b"])
+    @pytest.mark.parametrize("bucket", ["Bad_Bucket", "s3://bucket", "a", "bucket/key", "a..b", "bucket-1\n"])
     def test_a_bucket_that_is_not_a_bucket_name_is_refused(self, bucket: str) -> None:
         with pytest.raises(ValidationError):
             ExportConfig(bucket=bucket)
 
-    @pytest.mark.parametrize("prefix", ["exports", "/exports/", "exports/../x/", "../", "exports//", "a/./"])
+    @pytest.mark.parametrize(
+        "prefix", ["exports", "/exports/", "exports/../x/", "../", "exports//", "a/./", "exports/\n"]
+    )
     def test_a_prefix_that_is_not_plain_segments_ending_in_a_slash_is_refused(self, prefix: str) -> None:
         with pytest.raises(ValidationError):
             ExportConfig(bucket="b-1-2", prefix=prefix)
@@ -85,6 +90,18 @@ class TestExportConfig:
         ExportConfig(bucket="b-1-2", iam_role="arn:aws:iam::924165706792:role/redshift-write")
         with pytest.raises(ValidationError):
             ExportConfig(bucket="b-1-2", iam_role="redshift-write' CREDENTIALS 'x")
+        with pytest.raises(ValidationError):
+            ExportConfig(bucket="b-1-2", iam_role="arn:aws:iam::924165706792:role/redshift-write\n")
+
+    def test_the_cleanup_grant_is_a_pair_of_references_or_none(self) -> None:
+        both = ExportConfig(
+            bucket="b-1-2", cleanup_access_key_ref="env://CLEANUP_ID", cleanup_secret_key_ref="env://CLEANUP_SECRET"
+        )
+        assert both.cleanup_access_key_ref == "env://CLEANUP_ID"
+        with pytest.raises(ValidationError):
+            ExportConfig(bucket="b-1-2", cleanup_access_key_ref="env://CLEANUP_ID")
+        with pytest.raises(ValidationError):
+            ExportConfig(bucket="b-1-2", cleanup_access_key_ref="AKIAPLAINVALUE", cleanup_secret_key_ref="env://X")
 
     def test_the_connection_config_carries_it_and_refuses_an_unknown_key(self) -> None:
         assert _redshift(_CONFIG).export == _CONFIG
@@ -112,9 +129,11 @@ class TestUnloadStatement:
             "IAM_ROLE default FORMAT AS PARQUET MANIFEST VERBOSE"
         )
         assert "ALLOWOVERWRITE" not in statement
-        assert location["object_prefix"] == "exports/enr/run-1/VA/"
-        assert location["manifest_path"] == "exports/enr/run-1/VA/manifest"
-        assert location["bucket"] == "bl-eng-aibots-reports-export-dev"
+        assert location == ExportLocation(
+            bucket="bl-eng-aibots-reports-export-dev",
+            object_prefix="exports/enr/run-1/VA/",
+            manifest_path="exports/enr/run-1/VA/manifest",
+        )
 
     def test_a_quote_in_the_select_cannot_close_the_literal(self) -> None:
         statement, _ = redshift_unload_statement("SELECT a FROM t WHERE s = 'VA'", _CONFIG, "x")
@@ -131,7 +150,7 @@ class TestUnloadStatement:
             redshift_unload_statement(select, _CONFIG, "x")
 
     @pytest.mark.parametrize(
-        "destination", ["../other", "a/../b", "/abs", "s3://evil/x", "a/", "", "a//b", "a.b", "a b", "x'y"]
+        "destination", ["../other", "a/../b", "/abs", "s3://evil/x", "a/", "", "a//b", "a.b", "a b", "x'y", "a\n"]
     )
     def test_a_destination_outside_the_prefix_is_refused(self, destination: str) -> None:
         with pytest.raises(ExportRefusedError):
@@ -168,6 +187,16 @@ class TestWire:
         assert wire["identity_token"] == "t"
         assert DatasourceQueryRequest.model_validate_json(request.model_dump_json()).export == request.export
 
+    def test_a_query_request_carries_no_export_delete_field_and_a_delete_round_trips(self) -> None:
+        query = DatasourceQueryRequest(correlation_id=uuid7(), identity_token="t", query="SELECT 1")
+        assert "export_delete" not in json.loads(query.model_dump_json())
+        delete = DatasourceQueryRequest(
+            correlation_id=uuid7(), identity_token="t", export_delete=DatasourceExportDeleteRequest(destination="enr/x")
+        )
+        assert json.loads(delete.model_dump_json())["export_delete"] == {"destination": "enr/x"}
+        with pytest.raises(ValidationError):
+            DatasourceExportDeleteRequest(destination="../x")
+
     def test_exactly_one_ask(self) -> None:
         with pytest.raises(ValidationError):
             DatasourceQueryRequest(
@@ -197,6 +226,7 @@ class TestDriverUnload:
         driver = RedshiftDriver(_redshift(None))
         with pytest.raises(DriverExportUnsupportedError):
             await driver.unload("SELECT 1", "x")
+        assert driver.export_config is None
 
     @pytest.mark.asyncio
     async def test_a_driver_with_no_export_refuses(self) -> None:
@@ -208,6 +238,7 @@ class TestDriverUnload:
         )
         with pytest.raises(DriverExportUnsupportedError):
             await driver.unload("SELECT 1", "x")
+        assert driver.export_config is None
 
     @pytest.mark.asyncio
     async def test_redshift_unloads_and_counts_on_one_session(self) -> None:
@@ -226,12 +257,13 @@ class TestDriverUnload:
         # the count is read right after, on the same cursor and session
         assert statements[statements.index(unloads[0]) + 1] == "SELECT pg_last_unload_count()"
         assert any(s.startswith("SET LOCAL statement_timeout") or "statement_timeout" in s for s in statements)
-        assert result == {
-            "row_count": 7,
-            "bucket": "bl-eng-aibots-reports-export-dev",
-            "object_prefix": "exports/enr/r1/VA/",
-            "manifest_path": "exports/enr/r1/VA/manifest",
-        }
+        assert result == ExportResult(
+            row_count=7,
+            bucket="bl-eng-aibots-reports-export-dev",
+            object_prefix="exports/enr/r1/VA/",
+            manifest_path="exports/enr/r1/VA/manifest",
+        )
+        assert driver.export_config == _CONFIG
 
     @pytest.mark.asyncio
     async def test_a_refused_destination_never_takes_a_connection(self) -> None:

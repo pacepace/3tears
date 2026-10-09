@@ -21,7 +21,13 @@ import pytest
 from pydantic import BaseModel
 
 from threetears.datasources.export import ExportRefusedError
-from threetears.datasources.export_read import IncompleteExportError, export_part, export_select, read_export
+from threetears.datasources.export_read import (
+    ExportNotDeletedError,
+    IncompleteExportError,
+    export_part,
+    export_select,
+    read_export,
+)
 from threetears.datasources.query_client import (
     DatasourceExportResult,
     DatasourceQueryClient,
@@ -145,9 +151,18 @@ class TestReadExport:
 class _Client:
     """a datasource client whose fingerprints and export are scripted."""
 
-    def __init__(self, prints: list[RelationFingerprintResult], exported: int) -> None:
+    def __init__(
+        self,
+        prints: list[RelationFingerprintResult],
+        exported: int,
+        *,
+        answer: DatasourceExportResult | None = None,
+        delete_fails: bool = False,
+    ) -> None:
         self._prints: Iterator[RelationFingerprintResult] = iter(prints)
         self._exported = exported
+        self._answer = answer
+        self._delete_fails = delete_fails
         self.calls: list[tuple[str, Any]] = []
 
     async def relation_fingerprint(self, datasource: str, **kwargs: Any) -> RelationFingerprintResult:
@@ -156,7 +171,13 @@ class _Client:
 
     async def export(self, datasource: str, select: str, *, destination: str) -> DatasourceExportResult:
         self.calls.append(("export", (select, destination)))
-        return _result(self._exported)
+        return self._answer if self._answer is not None else _result(self._exported)
+
+    async def delete_export(self, datasource: str, *, destination: str) -> int:
+        self.calls.append(("delete", destination))
+        if self._delete_fails:
+            raise DatasourceQueryError("EXPORT_UNSUPPORTED", "no cleanup grant")
+        return 2
 
 
 def _print(rows: int, digest: str = "d") -> RelationFingerprintResult:
@@ -183,7 +204,8 @@ class TestExportPart:
         rows = await _part(client, _Store(_export([_ROWS])))
         assert rows == _ROWS
         kinds = [kind for kind, _ in client.calls]
-        assert kinds == ["fingerprint", "export", "fingerprint"]
+        assert kinds == ["fingerprint", "export", "fingerprint", "delete"]
+        assert client.calls[3][1] == "enr/r1/VA", "the proven export was not the one deleted"
         fingerprint = client.calls[0][1]
         assert fingerprint == {
             "relation": "reporting_prod.results",
@@ -260,4 +282,60 @@ class TestClientExport:
         client = DatasourceQueryClient(fake, identity_token=lambda: "tok")  # type: ignore[arg-type]
         with pytest.raises(DatasourceQueryError) as raised:
             await client.export("warehouse", "SELECT 1", destination="enr/x")
+        assert raised.value.error_code == "MALFORMED_RESPONSE"
+
+
+class TestTheExportIsTheOneAskedFor:
+    @pytest.mark.asyncio
+    async def test_an_answer_at_another_destination_is_refused_and_nothing_is_read(self) -> None:
+        other = DatasourceExportResult(
+            row_count=3,
+            bucket=_BUCKET,
+            object_prefix="exports/enr/r0/VA/",
+            manifest_path="exports/enr/r0/VA/manifest",
+        )
+        client = _Client([_print(3), _print(3)], exported=3, answer=other)
+        store = _Store(_export([_ROWS]))
+        with pytest.raises(IncompleteExportError, match="not the destination"):
+            await _part(client, store)
+        assert store.read == []
+
+    @pytest.mark.asyncio
+    async def test_a_manifest_outside_the_exports_prefix_is_refused(self) -> None:
+        result = DatasourceExportResult(
+            row_count=3, bucket=_BUCKET, object_prefix=_PREFIX, manifest_path="exports/enr/r0/VA/manifest"
+        )
+        store = _Store(_export([_ROWS]))
+        with pytest.raises(IncompleteExportError, match="manifest"):
+            await read_export(store, result, bucket=_BUCKET)
+        assert store.read == []
+
+
+class TestDeleteAfterLoad:
+    @pytest.mark.asyncio
+    async def test_a_refused_export_is_left_for_an_operator(self) -> None:
+        client = _Client([_print(3, "a"), _print(3, "b")], exported=3)
+        with pytest.raises(IncompleteExportError):
+            await _part(client, _Store(_export([_ROWS])))
+        assert "delete" not in [kind for kind, _ in client.calls]
+
+    @pytest.mark.asyncio
+    async def test_a_proven_export_that_cannot_be_deleted_is_raised_not_left_silently(self) -> None:
+        client = _Client([_print(3), _print(3)], exported=3, delete_fails=True)
+        with pytest.raises(ExportNotDeletedError, match="still at s3://"):
+            await _part(client, _Store(_export([_ROWS])))
+
+    @pytest.mark.asyncio
+    async def test_the_client_asks_the_hub_to_delete_and_reads_the_count(self) -> None:
+        fake = _FakeNats(DatasourceQueryResponse(success=True, export_deleted=4, correlation_id=uuid7()))
+        client = DatasourceQueryClient(fake, identity_token=lambda: "tok")  # type: ignore[arg-type]
+        assert await client.delete_export("warehouse", destination="enr/x") == 4
+        assert json.loads(fake.messages[0].model_dump_json())["export_delete"] == {"destination": "enr/x"}
+
+    @pytest.mark.asyncio
+    async def test_a_delete_answered_with_no_count_is_not_taken_as_done(self) -> None:
+        fake = _FakeNats(DatasourceQueryResponse(success=True, correlation_id=uuid7()))
+        client = DatasourceQueryClient(fake, identity_token=lambda: "tok")  # type: ignore[arg-type]
+        with pytest.raises(DatasourceQueryError) as raised:
+            await client.delete_export("warehouse", destination="enr/x")
         assert raised.value.error_code == "MALFORMED_RESPONSE"

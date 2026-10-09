@@ -10,6 +10,8 @@ dicts, so a caller can take either path.
 **Proven before it is returned**, every check a refusal (:class:`IncompleteExportError`), never a
 warning:
 
+- the export is the one asked for: its files sit under the destination this call chose, and its
+  manifest is that prefix's own;
 - the part did not move while it was exported: its fingerprint after equals its fingerprint before,
   over the same columns, so the files are one state of the relation and not a mix of two;
 - the warehouse wrote as many rows as the fingerprint counts;
@@ -17,6 +19,12 @@ warning:
   the caller expects (a manifest naming any other location is refused, not followed);
 - the files hold exactly that many rows (and, where the manifest counts each file, as many as it
   says).
+
+**Then it is deleted** (Pace's ruling, 2026-10-09: delete after load, no timer, no lifecycle rule):
+once the part is proven and its rows are in hand, the hub is asked to delete every version under
+the destination (``export_delete``), with a delete-only grant the reader does not hold. A delete
+that fails is raised (:class:`ExportNotDeletedError`) rather than left as a stray copy of warehouse
+rows nobody owns; a refused export is not deleted, so an operator can look at it.
 
 A digest over the parquet itself is not compared: the fingerprint is the warehouse's own hash,
 spelled in its dialect, and is opaque to everything else. The before-and-after pair is what proves
@@ -45,13 +53,24 @@ from threetears.datasources.query_client import (
     RelationFingerprintRequest,
 )
 
-__all__ = ["ExportStore", "IncompleteExportError", "export_part", "export_select", "read_export"]
+__all__ = [
+    "ExportNotDeletedError",
+    "ExportStore",
+    "IncompleteExportError",
+    "export_part",
+    "export_select",
+    "read_export",
+]
 
 log = get_logger(__name__)
 
 
 class IncompleteExportError(RuntimeError):
     """an export could not be shown to hold exactly the part's rows, at one moment; nothing is returned."""
+
+
+class ExportNotDeletedError(RuntimeError):
+    """a proven export could not be deleted; its files are still in the bucket, under the prefix named."""
 
 
 class ExportStore(Protocol):
@@ -169,6 +188,10 @@ async def read_export(store: ExportStore, result: DatasourceExportResult, *, buc
     """
     if result.bucket != bucket:
         raise IncompleteExportError(f"the export is in bucket {result.bucket!r}, not the {bucket!r} this reader reads")
+    if result.manifest_path != f"{result.object_prefix}manifest":
+        raise IncompleteExportError(
+            f"the export's manifest {result.manifest_path!r} is not its prefix {result.object_prefix!r}'s own"
+        )
     rows: list[dict[str, Any]] = []
     if result.row_count > 0:
         manifest = json.loads(await _read_object(store, result.manifest_path))
@@ -217,14 +240,19 @@ async def export_part(
     :ptype where: Mapping[str, str] | None
     :return: the part's rows
     :rtype: list[dict[str, Any]]
-    :raises IncompleteExportError: when the part moved during the export, or the export does not hold
-        exactly its rows
+    :raises IncompleteExportError: when the part moved during the export, the export is not the one
+        asked for, or it does not hold exactly its rows
+    :raises ExportNotDeletedError: when the proven export could not be deleted
     :raises DatasourceQueryError: when the hub refuses the fingerprint or the export
     """
     select = export_select(relation, columns, where)
     filters = dict(where or {})
     before = await client.relation_fingerprint(datasource_name, relation=relation, key=columns, where=filters)
     result = await client.export(datasource_name, select, destination=destination)
+    if not result.object_prefix.endswith(f"/{destination}/"):
+        raise IncompleteExportError(
+            f"the hub answered an export at {result.object_prefix!r}, not the destination {destination!r} asked for"
+        )
     after = await client.relation_fingerprint(datasource_name, relation=relation, key=columns, where=filters)
     if after != before:
         raise IncompleteExportError(
@@ -237,6 +265,13 @@ async def export_part(
             f"{before.row_count}"
         )
     rows = await read_export(store, result, bucket=bucket)
+    try:
+        deleted = await client.delete_export(datasource_name, destination=destination)
+    except Exception as exc:  # prawduct:allow prawduct/broad-except -- re-raised as the named failure, cause chained
+        raise ExportNotDeletedError(
+            f"{relation} {filters or ''}: the export was read and proven, but it could not be deleted and is "
+            f"still at s3://{result.bucket}/{result.object_prefix}: {type(exc).__name__}: {exc}"
+        ) from exc
     log.info(
         "export read",
         extra={
@@ -246,6 +281,7 @@ async def export_part(
                 "where": filters,
                 "rows": len(rows),
                 "object_prefix": result.object_prefix,
+                "versions_deleted": deleted,
             }
         },
     )
