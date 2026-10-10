@@ -105,7 +105,7 @@ async def test_each_tool_shows_a_client_its_hints_schema_and_help() -> None:
     )
     assert admin.annotations.destructiveHint is True
     assert evals.inputSchema["properties"]["action"]["enum"][:2] == ["help", "templates_list"]
-    assert set(admin.inputSchema["properties"]) == {"action", "topic", "run_id", "analysis_id", "confirm"}
+    assert set(admin.inputSchema["properties"]) == {"action", "topic", "run_id", "analysis_id", "insight_id", "confirm"}
     assert evals.description is not None and "action='help'" in evals.description
     assert "## Run and watch" in help_text
 

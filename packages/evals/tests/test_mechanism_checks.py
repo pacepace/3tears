@@ -55,6 +55,7 @@ from threetears.evals.contracts.host import (
     Interval,
     KindContract,
     KindContractError,
+    MemberActsOn,
     ProfileRegistrationError,
     RegistrationError,
     Sweepable,
@@ -495,6 +496,138 @@ class TestAKindOverlayLeverDeclaresItsMechanismToo:
 
         with pytest.raises(KindContractError, match="ActsOn"):
             KindContract("mapped", overlays=_Mapped)
+
+
+class _CappedOverlays(ExtractorOverlays):
+    """The toy extractor's knobs plus an open map of caps, one of whose entries names its mechanism (#585)."""
+
+    caps: Annotated[dict[str, int], MemberActsOn({"max_pages": _CONTEXT})] = Field(
+        default_factory=dict, description="per-tool call caps the extractor honours, by tool"
+    )
+
+
+_MAX_PAGES = "extractor.caps.max_pages"
+_RETRIES = "extractor.caps.retries"
+
+
+def _capped_profile() -> HostProfile:
+    return _profile(kinds=(replace(TOY_EXTRACTOR_CONTRACT, overlays=_CappedOverlays),))
+
+
+def _capped_batch(**caps: int) -> EvalRun:
+    """One toy batch whose launch set only these entries of the ``caps`` map."""
+    overlays = freeze(_CappedOverlays.model_validate({"caps": caps}))
+    salt = "caps-" + "-".join(f"{key}{value}" for key, value in sorted(caps.items()))
+    return _renamed(_chunk_batch(512), salt, overlays=overlays)
+
+
+class TestAMemberOfAnOpenMapDeclaresItsMechanism:
+    """#585: a map's entries are distinct knobs, so each names what it acts on — and only the named one is checked."""
+
+    def test_the_named_member_carries_the_mechanism_and_no_other_does(self) -> None:
+        registry = _capped_profile().sweepables
+        assert registry.acts_on(_MAX_PAGES) == _CONTEXT
+        assert registry.acts_on(_RETRIES) is None
+        assert registry.acts_on("extractor.caps") is None
+
+    def test_a_sweep_of_the_named_member_is_moved(self) -> None:
+        bundle = _bundle(
+            [
+                _Arm(_capped_batch(max_pages=5), _per_document(_CONTEXT, 2000.0, 40.0)),
+                _Arm(_capped_batch(max_pages=20), _per_document(_CONTEXT, 8000.0, 40.0)),
+            ],
+            profile=_capped_profile(),
+        )
+        mechanism = _row(bundle, _MAX_PAGES).mechanism
+        assert (mechanism.state, mechanism.measure) == ("moved", _CONTEXT)
+        assert mechanism.level_means == {"5": pytest.approx(2220.0), "20": pytest.approx(8220.0)}
+
+    def test_a_cap_the_candidate_never_reaches_is_inert(self) -> None:
+        bundle = _bundle(
+            [
+                _Arm(_capped_batch(max_pages=30), _constant({_CONTEXT: 3000})),
+                _Arm(_capped_batch(max_pages=40), _constant({_CONTEXT: 3000})),
+            ],
+            profile=_capped_profile(),
+        )
+        assert _row(bundle, _MAX_PAGES).mechanism.state == "inert"
+
+    def test_a_sweep_of_an_unnamed_member_still_reads_not_declared(self) -> None:
+        bundle = _bundle(
+            [
+                _Arm(_capped_batch(retries=1), _per_document(_CONTEXT, 2000.0, 40.0)),
+                _Arm(_capped_batch(retries=4), _per_document(_CONTEXT, 8000.0, 40.0)),
+            ],
+            profile=_capped_profile(),
+        )
+        assert _row(bundle, _RETRIES).mechanism == MechanismCheck(state="unchecked", reason="not_declared")
+
+    def test_it_moves_no_variant_key(self) -> None:
+        class _Undeclared(ExtractorOverlays):
+            caps: dict[str, int] = Field(default_factory=dict, description="per-tool call caps the extractor honours")
+
+        undeclared = _profile(kinds=(replace(TOY_EXTRACTOR_CONTRACT, overlays=_Undeclared),))
+        batch = _capped_batch(max_pages=20)
+        assert (
+            resolve_variant_identity(run=batch, profile=undeclared).variant_key
+            == resolve_variant_identity(run=batch, profile=_capped_profile()).variant_key
+        )
+
+    @pytest.mark.parametrize("measure", ["no_such_measure", "execution_mode", "reasoning_tokens"])
+    def test_a_member_mechanism_meets_the_plain_field_s_refusals(self, measure: str) -> None:
+        class _Bad(BaseModel):
+            caps: Annotated[dict[str, int], MemberActsOn({"max_pages": measure})] = Field(
+                default_factory=dict, description="caps"
+            )
+
+        with pytest.raises(ProfileRegistrationError, match=measure):
+            _profile(kinds=(KindContract(TOY_EXTRACTOR_KIND, overlays=_Bad),))
+
+    def test_it_is_refused_on_a_field_that_is_not_a_map(self) -> None:
+        class _Scalar(BaseModel):
+            pages: Annotated[int, MemberActsOn({"x": _CONTEXT})] = Field(10, description="pages read")
+
+        with pytest.raises(KindContractError, match="MemberActsOn but is not a map"):
+            KindContract("scalar", overlays=_Scalar)
+
+    def test_a_blank_entry_is_refused(self) -> None:
+        class _Blank(BaseModel):
+            caps: Annotated[dict[str, int], MemberActsOn({"max_pages": " "})] = Field(
+                default_factory=dict, description="caps"
+            )
+
+        with pytest.raises(KindContractError, match="blank entry"):
+            KindContract("blank", overlays=_Blank)
+
+    def test_a_registry_family_refuses_a_member_it_does_not_own(self) -> None:
+        with pytest.raises(RegistrationError, match="no member it recognises"):
+            SHARED_CORE.extend(
+                [
+                    Sweepable(
+                        name="knobs.*",
+                        role="lever",
+                        read=lambda _r, _s: {},
+                        reader_prose="any knob",
+                        open_family="a launch may overlay any knob",
+                        owns_member=lambda name: name.startswith("knobs."),
+                        member_acts_on={"other.cap": _CONTEXT},
+                    )
+                ]
+            )
+
+    def test_member_acts_on_is_refused_off_an_open_family(self) -> None:
+        with pytest.raises(RegistrationError, match="member_acts_on and is not an open family"):
+            SHARED_CORE.extend(
+                [
+                    Sweepable(
+                        name="knob",
+                        role="lever",
+                        read=lambda _r, _s: 1,
+                        reader_prose="a knob",
+                        member_acts_on={"knob.x": _CONTEXT},
+                    )
+                ]
+            )
 
 
 class TestAnUnresolvableMechanismIsRefusedWhereItIsDeclared:

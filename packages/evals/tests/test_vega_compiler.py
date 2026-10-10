@@ -2096,7 +2096,7 @@ class TestAttributionObservationCounts:
                 subsystem={"measure": "pipeline_synthesis_ms", "delta": 87800.0, "n": 5},
             ),
         )
-        assert {"key": "n", "header": "n"} in chart.columns
+        assert {"key": "n", "header": "Cases"} in chart.columns
         assert [row.get("n") for row in chart.rows] == [60, 5, None]
 
     def test_a_derived_remainder_claims_no_observations(self):

@@ -24,7 +24,8 @@ from typing import Any, Literal
 
 from pydantic import Field, TypeAdapter, ValidationError
 
-from threetears.evals.analysis.reads import RunLister, compare_two_runs, export_results, history, pivot
+from threetears.evals.analysis.arms import short_digest
+from threetears.evals.analysis.reads import RunLister, compare_two_runs, export_results, frontier, history, pivot
 from threetears.evals.analysis.numbers import format_number, format_signed
 from threetears.evals.analysis.bundle import PlanningReading, planning_readings
 from threetears.evals.analysis.stats import (
@@ -46,6 +47,7 @@ from threetears.evals.analysis.reporting import (
 )
 from threetears.evals.analysis.reporting import (
     CostEstimate,
+    FrontierResult,
     HistoryResult,
     PivotTable,
     PlannedCost,
@@ -160,7 +162,8 @@ def scope_history(
     Args:
         host: The host whose store and vocabulary are read.
         scope_id: The scope.
-        metric: The measure; ``None`` or blank takes the composite.
+        metric: The measure: the composite, spend, latency, a judged axis, or a numeric measure the host
+            declares (a quick-path scorer's name); ``None`` or blank takes the composite.
         min_absolute_change: The smallest move a regression flag counts, in the measure's unit.
         min_relative_change: The smallest move relative to the baseline a flag counts, as a fraction.
         subject_id: Only this subject's observations.
@@ -182,6 +185,46 @@ def scope_history(
         subject_id=subject_id,
         status=status,
         profile=host.profile,
+    )
+
+
+def scope_frontier(
+    host: EvalHost,
+    scope_id: str,
+    *,
+    bar: float | str | None = None,
+    subject_id: str | None = None,
+    status: str | None = "completed",
+) -> FrontierResult:
+    """Each subject's variants ranked on quality, cost and latency, and the cheapest that clears ``bar``.
+
+    The frontier lens (:func:`~threetears.evals.analysis.frontier`) over the host's runs, read against the host's
+    sweepables so each point names what its runs set away from production. A :func:`~threetears.evals.quick.compare`
+    files every arm under one subject, so its arms (models among them) are one frontier.
+
+    Args:
+        host: The host whose store and vocabulary are read.
+        scope_id: The scope.
+        bar: The pass^k each variant must clear, in ``[0, 1]``; ``None`` or blank ranks without a verdict.
+        subject_id: Only this subject's variants; others are counted as filtered out.
+        status: Only runs with this status; ``"all"`` ranks every run.
+
+    Returns:
+        The frontier.
+
+    Raises:
+        ValidationFailedError: The bar is not a number in ``[0, 1]``, or the status is no run's.
+    """
+    return FrontierResult.model_validate(
+        frontier(
+            host.storage,
+            scope_id,
+            list_runs=_lister(host),
+            bar=bar,
+            subject_id=subject_id,
+            status=status,
+            profile=host.profile,
+        )
     )
 
 
@@ -1127,6 +1170,83 @@ def pivot_text(table: PivotTable) -> str:
     return "\n".join(lines)
 
 
+def _contestant(model: str, variant_key: str) -> str:
+    """A frontier contestant as every surface names one: its model and its variant, the key shortened."""
+    return f"{model} · {short_digest(variant_key)}"
+
+
+def frontier_text(result: FrontierResult) -> str:
+    """A frontier as text: each subject's variants, best pass^k first, with each one's axes and the verdict."""
+    bar = "no bar, so no verdict" if result.bar is None else f"bar {format_number(result.bar)} on pass^k"
+    lines = [
+        f"frontier, {bar}: {len(result.subjects)} subject(s) over {result.n_results} result(s), "
+        f"{result.n_filtered_out} filtered out",
+    ]
+    lines += [text for text in (result.identity_span_disclosure, result.contended_latency_disclosure) if text]
+    for subject in result.subjects:
+        lines.append(f"## subject {subject.subject_label or subject.subject_id}, pass^k at k={subject.k}")
+        if subject.boundary_pillar:
+            lines.append(subject.boundary_pillar)
+        for point in subject.points:
+            quality = (
+                f"pass^{point.k} {format_number(point.pass_hat_k)}"
+                + (
+                    f" [{format_number(point.pass_hat_k_ci_low)}, {format_number(point.pass_hat_k_ci_high)}]"
+                    if point.pass_hat_k_ci_low is not None and point.pass_hat_k_ci_high is not None
+                    else ""
+                )
+                + f" over {point.n_pass_cases} case(s)"
+                if point.pass_hat_k is not None
+                else f"no pass^k ({point.pass_hat_k_unmeasured_reason or 'no case scored that deep'})"
+            )
+            cleared = f", bar {point.bar_decision}" if point.bar_decision is not None else ""
+            cost = (
+                f"${format_number(point.production_replicating_cost)} per result (n={point.n_cost}"
+                + (", partial" if point.cost_is_partial else "")
+                + ")"
+                if point.production_replicating_cost is not None
+                else "cost unobserved"
+            )
+            latency = (
+                f"{format_number(point.mean_total_ms)} ms (n={point.n_latency})"
+                if point.mean_total_ms is not None
+                else "latency unobserved"
+            )
+            standing = (
+                f"disqualified: breached {', '.join(point.disqualified_by)}"
+                if point.disqualified_by
+                else f"dominated by {', '.join(_contestant(rival.model, rival.variant_key) for rival in point.dominated_by)}"
+                if point.dominated
+                else f"domination {point.dominance}"
+                if point.dominance is not None
+                else ""
+            )
+            lines.append(
+                f"- {_contestant(point.model, point.variant_key)}: {quality}{cleared}; {cost}; {latency}"
+                + (f"; {standing}" if standing else "")
+            )
+        verdict = subject.verdict
+        if verdict is not None:
+            tied = (
+                f", tied with {', '.join(_contestant(tie.model, tie.variant_key) for tie in verdict.tied_with)}"
+                if verdict.tied_with
+                else ""
+            )
+            lines.append(
+                f"verdict: {_contestant(verdict.model, verdict.variant_key)} is the cheapest clearing the "
+                f"bar ({verdict.cost_decision}){tied}"
+            )
+        elif result.bar is not None:
+            lines.append(
+                f"verdict: none — {subject.n_cleared_bar} variant(s) cleared the bar with a cost observed, "
+                f"{subject.n_undecided_bar} undecided"
+            )
+    if not result.subjects:
+        lines.append("- no subjects")
+    lines += _exclusions(result.exclusions)
+    return "\n".join(lines)
+
+
 def history_text(result: HistoryResult) -> str:
     """A history as text: each contestant's series, oldest first, with each step's verdict and its test."""
     direction = {True: "higher is better", False: "lower is better", None: "no better direction"}
@@ -1360,6 +1480,7 @@ __all__ = [
     "detectable_effects",
     "estimate_text",
     "export_text",
+    "frontier_text",
     "history_text",
     "launch_estimate",
     "out_of_run_spend_text",
@@ -1367,6 +1488,7 @@ __all__ = [
     "runs_compare",
     "runs_compared_text",
     "scope_export",
+    "scope_frontier",
     "scope_history",
     "scope_out_of_run_spend",
     "scope_pivot",

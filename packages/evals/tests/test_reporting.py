@@ -98,6 +98,7 @@ from packages.evals.tests.factories import make_eval_result, make_eval_run, make
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
 from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRACT
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from packages.evals.tests.fixtures.toyhost.corpus import toyhost_batch, toyhost_measurements
 from packages.evals.tests.host_vocabulary import HOST_NOUNS
 
 #: Whole-word host nouns in PROSE. The list is imported, never retyped; only the matching
@@ -2413,17 +2414,91 @@ class TestPivotAxisResolution:
 
         assert table.rows == ["sonnet", "—"]
 
-    def test_an_unset_dotted_key_is_a_table_of_dashes_not_a_refusal(self):
-        """Refusing would make "nobody overrode this" indistinguishable from a typo."""
+    def test_a_lever_no_run_set_is_a_table_of_dashes_not_a_refusal(self):
+        """Refusing would make "nobody set this" indistinguishable from a typo.
+
+        A member the host's open family claims is a lever before any run carries it.
+        """
         table = compute_pivot(
             [_record(value=1.0)],
-            row_factor="planner.never_set",
+            row_factor="extractor.field_aliases.vendor",
             column_factor="model",
             metric=METRIC_COMPOSITE,
             profile=_JUDGED_HOST,
         )
 
         assert table.rows == ["—"]
+
+    def test_a_dot_does_not_make_an_unregistered_name_a_lever(self):
+        """The name's shape decides nothing (#664): a dotted name no registry admits and no run carries is a typo."""
+        with pytest.raises(PivotError, match="unknown factor 'planner.never_set'"):
+            compute_pivot(
+                [_record(value=1.0)],
+                row_factor="planner.never_set",
+                column_factor="model",
+                metric=METRIC_COMPOSITE,
+                profile=_JUDGED_HOST,
+            )
+
+    def test_an_undotted_lever_is_pivotable_with_one_row_per_level(self):
+        """#664: a lever with a plain name is pivoted through the registry, end to end through the projection.
+
+        The toy host registers ``chunk_tokens`` undotted; two batches at two widths project through
+        ``project_score_records`` (which fills ``factors`` from the registry) and pivot into one row per width.
+        """
+        runs = [toyhost_batch(chunk_tokens=width, retriever_top_k=3) for width in (256, 1024)]
+        results = [
+            result
+            for run in runs
+            for result in toyhost_measurements(
+                run, profile=_JUDGED_HOST, cost_usd=0.02, total_ms=900.0, field_accuracy=0.8
+            )
+        ]
+        records = project_score_records(runs, results, profile=_JUDGED_HOST, archived_run_ids=None).records
+
+        table = compute_pivot(
+            records, row_factor="chunk_tokens", column_factor="model", metric=METRIC_COST_USD, profile=_JUDGED_HOST
+        )
+
+        assert table.rows == ["1024", "256"]
+        assert {cell.row for cell in table.cells if cell.status == "measured"} == {"1024", "256"}
+
+    def test_a_mistyped_lever_is_refused_naming_the_hosts_levers(self):
+        """The hint lists the levers this host registers, not a claim that levers are dotted."""
+        with pytest.raises(PivotError, match="unknown factor 'chunk_token'") as refused:
+            compute_pivot(
+                [_record(factors={"chunk_tokens": "256"})],
+                row_factor="chunk_token",
+                column_factor="model",
+                metric=METRIC_COMPOSITE,
+                profile=_JUDGED_HOST,
+            )
+
+        assert "chunk_tokens" in str(refused.value) and "retriever_top_k" in str(refused.value)
+        assert "dotted" not in str(refused.value)
+
+    def test_a_lever_named_like_a_declared_coordinate_is_refused_not_resolved_by_branch_order(self):
+        """One name, two meanings: a run carrying ``template_id`` as a lever cannot be read off either silently."""
+        with pytest.raises(PivotError, match="both a declared score-record coordinate and a lever"):
+            compute_pivot(
+                [_record(factors={"template_id": "tpl-x"})],
+                row_factor="template_id",
+                column_factor="model",
+                metric=METRIC_COMPOSITE,
+                profile=_JUDGED_HOST,
+            )
+
+    def test_the_candidate_model_lever_reads_the_model_coordinate(self):
+        """The engine's own model lever is projected into ``model``, so the shared name is one quantity."""
+        table = compute_pivot(
+            [_record(model="m1"), _record(model="m2", case="tc-2")],
+            row_factor="model",
+            column_factor="test_case_id",
+            metric=METRIC_COMPOSITE,
+            profile=_JUDGED_HOST,
+        )
+
+        assert table.rows == ["m1", "m2"]
 
     def test_the_open_coordinate_map_is_not_itself_an_axis(self):
         with pytest.raises(PivotError, match="open-coordinate map"):

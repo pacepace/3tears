@@ -40,9 +40,9 @@ its own lever (``gm.house_rules.flanking``), and the whole map is one more lever
 variants however many rules each named.
 
 Two more markers say what a knob does rather than how its levels sit: ``ActsOn`` names the measure it
-is supposed to move, and ``ResolvesInto`` names the host lever it is written into — the resolved
-surface the host records as well — so one turn of the knob reads as one lever rather than two that
-always move together.
+is supposed to move (``MemberActsOn`` names it per entry of a map, whose entries are distinct knobs),
+and ``ResolvesInto`` names the host lever it is written into — the resolved surface the host records
+as well — so one turn of the knob reads as one lever rather than two that always move together.
 
 **What is frozen is the resolved model, defaults included** (:func:`freeze`). A launch naming
 ``difficulty="medium"`` and one naming nothing ran the same knob at the same level, so they record
@@ -127,10 +127,35 @@ class ActsOn:
     as a marker beside ``Ordinal`` and ``Interval``: ``Annotated[Literal["low", "high"], ActsOn("reasoning_ratio")]``.
     The lever it marks gets the same mechanism check, the same refusals (an unknown, non-numeric or
     per-row name is refused when the profile is built) and the same identity guarantee — it is not a
-    level, so it moves no variant key. Refused on a map field, whose entries are distinct knobs.
+    level, so it moves no variant key. Refused on a map field, whose entries are distinct knobs: name
+    each entry's mechanism with :class:`MemberActsOn` instead.
     """
 
     measure: str
+
+
+@dataclass(frozen=True, init=False)
+class MemberActsOn:
+    """Name the measure each listed ENTRY of an overlay map is supposed to move — :class:`ActsOn` per member.
+
+    A map field is an open family, and its entries are distinct knobs one mechanism cannot speak for, so
+    :class:`ActsOn` is refused there. This marker names them one key at a time:
+    ``Annotated[dict[str, int], MemberActsOn({"max_search_calls": "search_calls"})]``. The member lever
+    ``<kind>.<field>.max_search_calls`` then gets the same mechanism check, and the same refusals at the profile
+    (an unknown, non-numeric or per-row measure), as a knob marked :class:`ActsOn`; every entry the marker does
+    not list still reads ``unchecked`` / ``not_declared``. Declaration metadata: it moves no variant key.
+    Refused on a field that is not a map, given twice, or with a blank key or measure.
+    """
+
+    members: tuple[tuple[str, str], ...]
+
+    def __init__(self, members: Mapping[str, str]) -> None:
+        """Record the map's key -> measure pairs.
+
+        Args:
+            members: Each map key a launch may set that has a known mechanism, mapped to the measure's name.
+        """
+        object.__setattr__(self, "members", tuple(members.items()))
 
 
 @dataclass(frozen=True)
@@ -187,6 +212,7 @@ class _Knob:
     numeric: bool
     acts_on: str | None
     resolves_into: str | None
+    member_acts_on: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -392,6 +418,11 @@ class KindContract:
                         owns_member=_member_test(member_prefix),
                         resolves_into=knob.lever,
                         read_residual=self._residual_reader(knob),
+                        member_acts_on=(
+                            {f"{member_prefix}{key}": measure for key, measure in knob.member_acts_on}
+                            if knob.member_acts_on
+                            else None
+                        ),
                     )
                 )
         return tuple(declared)
@@ -576,6 +607,7 @@ def _read_knob(prefix: str, name: str, info: FieldInfo) -> tuple[_Knob | None, l
     interval = next((marker for marker in info.metadata if isinstance(marker, Interval)), None)
     acts_on = [marker.measure for marker in info.metadata if isinstance(marker, ActsOn)]
     resolves_into = [marker.lever for marker in info.metadata if isinstance(marker, ResolvesInto)]
+    member_acts_on = [marker.members for marker in info.metadata if isinstance(marker, MemberActsOn)]
     numeric = annotation in (int, float)
     family = typing.get_origin(annotation) in (dict, Mapping)
     levels: tuple[Any, ...] | None = None
@@ -588,9 +620,22 @@ def _read_knob(prefix: str, name: str, info: FieldInfo) -> tuple[_Knob | None, l
     if family and typing.get_args(annotation)[:1] != (str,):
         problems.append("is a map keyed by something other than str, and each key names a lever")
     if family and acts_on:
-        problems.append("is a map marked ActsOn, and its entries are distinct knobs one mechanism cannot speak for")
+        problems.append(
+            "is a map marked ActsOn, and its entries are distinct knobs one mechanism cannot speak for — "
+            "name each entry's with MemberActsOn"
+        )
     if len(acts_on) > 1:
         problems.append("is marked ActsOn more than once, and a lever names one mechanism")
+    if member_acts_on and not family:
+        problems.append("is marked MemberActsOn but is not a map, so it has no entries to name; mark it ActsOn")
+    if len(member_acts_on) > 1:
+        problems.append("is marked MemberActsOn more than once; name every entry's mechanism in one marker")
+    problems.extend(
+        f"names a blank entry or mechanism in MemberActsOn ({key!r}: {measure!r}), which could never be checked"
+        for members in member_acts_on
+        for key, measure in members
+        if not key.strip() or not measure.strip()
+    )
     if len(resolves_into) > 1:
         problems.append(
             "is marked ResolvesInto more than once, and a knob written into two surfaces could not be folded "
@@ -609,6 +654,7 @@ def _read_knob(prefix: str, name: str, info: FieldInfo) -> tuple[_Knob | None, l
             numeric=numeric,
             acts_on=acts_on[0] if acts_on else None,
             resolves_into=resolves_into[0] if resolves_into else None,
+            member_acts_on=member_acts_on[0] if member_acts_on else (),
         ),
         [],
     )

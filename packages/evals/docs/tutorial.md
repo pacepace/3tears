@@ -444,11 +444,12 @@ in `guardrails=`. [Reading the guardrails](reading-reports.md#reading-the-guardr
 
 Every run so far was stored in memory and gone when the script ended. To keep runs, pass a store. One keyword
 does it: `store=` on `run_eval` or `compare`. `SqliteDocumentStore` keeps every run in one SQLite file, using
-only the standard library. A kept run names its scope (`scope_id=`), where it is found again. Add these imports
-to the top of the file, a scorer for the right queue, and replace `main()`:
+only the standard library. A kept run names its scope (`scope_id=`), where it is found again. Kept runs have a
+history: how a reading moved from one run to the next. Add these imports to the top of the file, a scorer for the
+right queue, and replace `main()`:
 
 ```python
-from threetears.evals.ops import run_get, runs_list
+from threetears.evals.ops import scope_history
 from threetears.evals.quick import callable_host
 from threetears.evals.storage import SqliteDocumentStore
 ```
@@ -463,9 +464,10 @@ async def main() -> None:
     store = SqliteDocumentStore("triage.sqlite")
     await run_eval(CASES, route_v2, [correct], scope_id="tutorial", k=2, store=store)
     host = callable_host([correct], store=store)
-    for run in runs_list(host, "tutorial").runs:
-        (measure,) = run_get(host, run.id, "tutorial").measures
-        print(f"{run.created_at} {run.candidate_model}: {measure.name} {measure.mean:.2f} over {measure.n} result(s)")
+    for series in scope_history(host, "tutorial", metric="correct").series:
+        for point in series.points:
+            step = f", {point.regression.label} from the run before" if point.regression else ""
+            print(f"{point.created_at} {series.model}: correct {point.value:.2f} over {point.n} result(s){step}")
 
 
 asyncio.run(main())
@@ -474,14 +476,18 @@ asyncio.run(main())
 Run the file twice. The second run reads the first run's results from the file, because they are stored there:
 
 ```
-2026-10-10T04:51:01.286666+00:00 route_v2: correct 1.00 over 20 result(s)
-2026-10-10T04:51:05.050664+00:00 route_v2: correct 1.00 over 20 result(s)
+2026-10-10T05:12:13.623675+00:00 route_v2: correct 1.00 over 20 result(s)
+2026-10-10T05:12:18.732953+00:00 route_v2: correct 1.00 over 20 result(s), not_separated from the run before
 ```
 
 - **`callable_host([correct], store=store)`** is the host `run_eval` built for the run. Any later program reads
   the runs through it: the same scorers, over a store opened on the same file.
+- **`scope_history`** follows one reading over time, one series per candidate, oldest run first. Name a scorer
+  as `metric=`. Each run is tested against the run before it, over the cases both ran. `regressed` is the step
+  to act on. `not_separated`, as here, means the two runs could not be told apart, never that nothing changed.
 - **`compare(..., store=store)`** keeps the arms and their campaign the same way, and `margins=`, `ranges=` and
-  `guardrails=` work exactly as in steps 5 and 7.
+  `guardrails=` work exactly as in steps 5 and 7. A later program reads the comparison on the margins, ranges and
+  guardrails it ran under, whatever its own host declares.
 - **A stored run is read by a release that stores the same format.** A release that changes the format refuses
   older runs rather than misreading them: delete the file and run again.
 

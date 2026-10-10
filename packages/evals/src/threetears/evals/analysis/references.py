@@ -72,7 +72,10 @@ class ResolvedReading(BaseModel):
     measure_id: str
     reading: ReadingKind
     mean: float
+    #: Observations behind the mean: a case judged k times counts k. Never shown to a reader as a count.
     n: int
+    #: Distinct test cases behind the mean (the bundle's ``n_independent``): the draws its interval is read over,
+    #: and the count every chart payload's ``n`` and the evidence table carry. None where none was recorded.
     n_cases: int | None
     sem: float | None
     ci_low: float | None

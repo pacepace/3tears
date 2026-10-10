@@ -151,7 +151,7 @@ def sweep_ranking_intent(payload: SweepRankingPayload) -> ChartIntent:
     columns.append(ChartColumn(key="ranked", header=ranked_title))
     columns.append(ChartColumn(key="secondary", header=axis_title(payload.secondary.measure, secondary_unit)))
     if any(row.n is not None for row in payload.rows):
-        columns.append(ChartColumn(key="n", header="n"))
+        columns.append(ChartColumn(key="n", header="Cases"))
     rows = [
         {
             **{f"{LEVER_KEY_PREFIX}{name}": level for name, level in row.config.items()},

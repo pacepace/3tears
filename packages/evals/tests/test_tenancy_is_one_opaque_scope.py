@@ -21,6 +21,16 @@ store method or a branch added later is checked without anyone remembering to ad
    anything is a read of it too. Comparing two scopes for equality is allowed — that is identity,
    which an opaque value still has.
 
+   **The one named exception: a scope no other writer can share.** A function marked
+   ``# scope-default: <rationale>`` on the line above its ``def`` (or its first decorator) may give its
+   scope parameter a default and test whether one was named (``scope_id is None``) — nothing else:
+   every other read in it is flagged as anywhere. The rule exists so a writer to a store that outlives
+   the call chooses the scope its documents land in; the quick path's own in-memory store lives and
+   dies with one call, so the scope it falls back to partitions nothing anyone else reads. The marker
+   sits on the function, as ``# parity-exempt:`` does on a fake, so it moves with the code; the
+   rationale is one line of at least 30 characters, and the marked functions are pinned by name below
+   so a new one is a reviewed change.
+
    **What the detector cannot see**, so its green is not read as wider than it is: a scope is
    recognised by its name — ``scope_id`` or ``_scope_id``, as a variable, an attribute, a
    ``["scope_id"]`` item, a ``.get("scope_id")`` or a ``getattr(x, "scope_id")`` — and by a local
@@ -243,6 +253,32 @@ def _reads_with_fallback(node: ast.Call) -> bool:
     return False
 
 
+#: The marker naming a function's scope default as the deliberate exception, with its reason.
+_DEFAULT_MARKER = "# scope-default:"
+
+#: The shortest rationale the marker accepts — the bar ``# parity-exempt:`` sets.
+_MIN_RATIONALE = 30
+
+
+def _marked_default(fn: ast.AST, lines: list[str]) -> bool:
+    """Whether the line above ``fn`` (or above its first decorator) carries the marker with a real rationale."""
+    if not isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef):
+        return False
+    first = min([fn.lineno, *(decorator.lineno for decorator in fn.decorator_list)])
+    above = lines[first - 2].strip() if first >= 2 else ""
+    return above.startswith(_DEFAULT_MARKER) and len(above.removeprefix(_DEFAULT_MARKER).strip()) >= _MIN_RATIONALE
+
+
+def _is_none_check(node: ast.Compare, aliases: frozenset[str]) -> bool:
+    """``scope_id is None`` / ``is not None``: whether a scope was named, and nothing about its value."""
+    operands = [node.left, *node.comparators]
+    return (
+        all(isinstance(op, ast.Is | ast.IsNot) for op in node.ops)
+        and any(_is_scope(o, aliases) for o in operands)
+        and all(_is_scope(o, aliases) or (isinstance(o, ast.Constant) and o.value is None) for o in operands)
+    )
+
+
 def _defaulted_scope_parameters(fn: _FunctionNode) -> list[str]:
     """The scope parameters of ``fn`` that carry a default, so a caller need not name the scope."""
     args = fn.args
@@ -284,8 +320,14 @@ def _local_aliases(fn: ast.AST, inherited: frozenset[str]) -> frozenset[str]:
         aliases = frozenset(found)
 
 
-def _reads_at(node: ast.AST, aliases: frozenset[str]) -> Iterator[tuple[int, str]]:
-    """The violations ``node`` itself commits, given the scope aliases in force where it sits."""
+def _reads_at(
+    node: ast.AST, aliases: frozenset[str], lines: list[str], *, in_marked: bool = False
+) -> Iterator[tuple[int, str]]:
+    """The violations ``node`` itself commits, given the scope aliases in force where it sits.
+
+    ``in_marked`` is whether ``node`` sits directly in a function marked ``# scope-default:``, where a
+    test of whether a scope was named is the exception's own business.
+    """
 
     def scope(n: ast.AST) -> bool:
         return _is_scope(n, aliases)
@@ -293,7 +335,9 @@ def _reads_at(node: ast.AST, aliases: frozenset[str]) -> Iterator[tuple[int, str
     def scope_or_derived(n: ast.AST) -> bool:
         return scope(n) or _derived_from_scope(n, aliases)
 
-    if isinstance(node, ast.Compare):
+    if isinstance(node, ast.Compare) and in_marked and _is_none_check(node, aliases):
+        pass
+    elif isinstance(node, ast.Compare):
         operands = [node.left, *node.comparators]
         if any(isinstance(op, ast.In | ast.NotIn) for op in node.ops) and any(scope_or_derived(o) for o in operands):
             yield node.lineno, "tests membership with a scope"
@@ -325,7 +369,7 @@ def _reads_at(node: ast.AST, aliases: frozenset[str]) -> Iterator[tuple[int, str
             yield node.lineno, f"reads a scope's value with {func.id}()"
         elif _reads_with_fallback(node):
             yield node.lineno, "reads a scope with a fallback default"
-    if isinstance(node, _FunctionNode):
+    if isinstance(node, _FunctionNode) and not _marked_default(node, lines):
         for name in _defaulted_scope_parameters(node):
             yield node.lineno, f"defaults the scope parameter {name!r}"
 
@@ -340,13 +384,26 @@ def scope_value_reads(source: str) -> Iterator[tuple[int, str]]:
         One entry per violation.
     """
 
-    def visit(node: ast.AST, aliases: frozenset[str]) -> Iterator[tuple[int, str]]:
+    lines = source.splitlines()
+
+    def visit(node: ast.AST, aliases: frozenset[str], in_marked: bool) -> Iterator[tuple[int, str]]:
         for child in ast.iter_child_nodes(node):
-            yield from _reads_at(child, aliases)
-            yield from visit(child, _local_aliases(child, aliases) if isinstance(child, _FunctionNode) else aliases)
+            yield from _reads_at(child, aliases, lines, in_marked=in_marked)
+            if isinstance(child, _FunctionNode):
+                yield from visit(child, _local_aliases(child, aliases), _marked_default(child, lines))
+            elif isinstance(child, ast.ClassDef):
+                yield from visit(child, aliases, False)
+            else:
+                yield from visit(child, aliases, in_marked)
 
     tree = ast.parse(source)
-    yield from visit(tree, _local_aliases(tree, frozenset()))
+    yield from visit(tree, _local_aliases(tree, frozenset()), False)
+
+
+def marked_scope_defaults(source: str) -> list[str]:
+    """The names of the functions in ``source`` that carry the ``# scope-default:`` exception."""
+    lines = source.splitlines()
+    return [node.name for node in ast.walk(ast.parse(source)) if _marked_default(node, lines) and hasattr(node, "name")]
 
 
 class TestTheDetector:
@@ -400,6 +457,18 @@ class TestTheDetector:
             # A local alias carries the scope, so the parameter's name alone cannot be what the check reads.
             'scope = scope_id\nif scope == "prod":\n    pass',
             'def f(run):\n    tenant = run.scope_id\n    other = tenant\n    return other or "default"',
+            # The exception is narrow: a short rationale exempts nothing, and a marked function's other reads,
+            # a nested function in it, and the line below the marker's own function, are all still read.
+            "# scope-default: too short\ndef f(*, scope_id=None):\n    pass",
+            "# scope-default: the call builds and drops its own in-memory store\ndef f(*, scope_id=None):\n"
+            '    return scope_id == "prod"',
+            "# scope-default: the call builds and drops its own in-memory store\ndef f(*, scope_id=None):\n"
+            '    return scope_id or "quick"',
+            "# scope-default: the call builds and drops its own in-memory store\ndef f(*, scope_id=None):\n"
+            "    def g(scope_id=None):\n        return scope_id is None\n    return g",
+            "# scope-default: the call builds and drops its own in-memory store\ndef f(*, scope_id=None):\n"
+            "    pass\ndef h(scope_id=None):\n    pass",
+            "# scope-default: the call builds and drops its own in-memory store\n\ndef f(*, scope_id=None):\n    pass",
         ],
     )
     def test_it_flags_a_read_of_the_value(self, source: str) -> None:
@@ -423,6 +492,11 @@ class TestTheDetector:
             # A name spelled like an alias in one function is not one in its sibling.
             "def a(run):\n    s = run.scope_id\n    return s\ndef b(s):\n    return s or 'x'",
             'same = getattr(a, "scope_id") == getattr(b, "scope_id")',
+            # The named exception: a default, and a test of whether a scope was named, in a marked function.
+            "# scope-default: the call builds and drops its own in-memory store\nasync def f(*, scope_id=None):\n"
+            "    if scope_id is not None:\n        return scope_id\n    return DEFAULT_QUICK_SCOPE",
+            "# scope-default: the call builds and drops its own in-memory store\n@decorated\ndef f(scope_id=None):\n"
+            "    return load(scope_id)",
         ],
     )
     def test_it_passes_identity_and_carriage(self, source: str) -> None:
@@ -438,6 +512,26 @@ def test_the_scan_reaches_the_storage_layer() -> None:
     scanned = {path.relative_to(_SRC).as_posix() for path in _src_files()}
 
     assert {"contracts/storage.py", "contracts/store_port.py", "analysis/campaigns.py"} <= scanned
+
+
+def test_the_scope_defaults_are_only_the_quick_path_s_own_store() -> None:
+    """The exception is pinned: a new ``# scope-default:`` marker fails here until it is reviewed and named.
+
+    Each is the quick path, whose store is the call's own in-memory one unless a ``host=`` or ``store=`` is
+    passed — and :func:`~threetears.evals.quick.one_call.quick_scope` refuses a missing scope with either.
+    """
+    marked = {
+        f"{path.relative_to(_SRC).as_posix()}:{name}"
+        for path in _src_files()
+        for name in marked_scope_defaults(path.read_text(encoding="utf-8"))
+    }
+
+    assert marked == {
+        "quick/compare.py:compare",
+        "quick/one_call.py:quick_scope",
+        "quick/one_call.py:run_eval",
+        "quick/one_call.py:run_arms",
+    }
 
 
 def test_no_code_in_src_reads_a_scope_s_value() -> None:

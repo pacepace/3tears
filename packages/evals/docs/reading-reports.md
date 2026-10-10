@@ -152,7 +152,10 @@ same values drive the CI gate ([The command line](command-line.md#gate)).
 `equivalent` needs a margin and a paired test. A host declares a measure's margin
 (`MetricDescriptor.materiality_threshold`); accuracy, whose description the engine owns, takes one declared on
 the runs at launch (`compare(margins={"accuracy": ...})`, `start_run(margins=...)`), read only when every run of
-the campaign declares the same one, and its verdict says "declared on the runs". On a
+the campaign declares the same one, and its verdict says "declared on the runs". A host's own measures are read
+as their runs were launched to read them: each run records its host's direction, guardrail, margin and range for
+every measure (`EvalRun.declared_measures`), so a stored campaign read later through a host that declares them
+otherwise reaches the same verdicts, and the report names the difference in one line. On a
 measure that declares its range (`value_range`), as every pass rate and 1–5 score does, each one-sided test
 is a bounded test by betting, which holds 5% for any distribution of differences on that range at any number
 of cases. Coarse scores need that: a regression that fails one case in ten leaves twelve agreeing cases 28%
@@ -273,7 +276,9 @@ Prior insights reach the bundle bounded: the newest live insight per claim, at m
 `refused_merges_omitted` and `next_experiments_omitted`. A generation that restates a live insight's claim (same
 words, ignoring case, spacing and a final period) replaces that insight in the ledger rather than adding a second
 one, so regenerating over unchanged evidence leaves the ledger its size. Archiving the analysis that minted an
-insight retracts it; each insight's `invalidation_trigger` states both rules.
+insight retracts it; each insight's `invalidation_trigger` states both rules. The `insights_list` and `insight_get`
+actions show the ledger and each insight's standing (live, retracted or orphaned); `insight_delete` removes one wrong
+insight.
 
 The bundle stays closed: the generator has no tools to fetch more context, such as a `bisect_runs` or `pivot`
 drill-down. A generator that fetched its own context would read different inputs on every call, so nothing could
@@ -361,7 +366,8 @@ core ships no charting library.
 A lever that changed nothing and a lever that never took effect read alike in every outcome measure. A
 `Sweepable` lever may name the measure or covariate it is supposed to move — `acts_on="context_tokens_in"` on a
 chunk-width lever, say; a kind's overlay field does the same with `ActsOn(...)` beside `Ordinal()` and
-`Interval(...)`. Each coverage row of the analysis bundle then tests that measure across the lever's levels with
+`Interval(...)`, and an entry of a map field with `MemberActsOn({key: measure})` (an open family's
+`member_acts_on`). Each coverage row of the analysis bundle then tests that measure across the lever's levels with
 the same separation test the contrasts against the control use (per-case means, paired where the levels share
 cases, Holm-corrected across the lever's pairs): `moved` when some pair separates; `inert` when every level was
 observed, every pair could be tested and none separates — no measurable evidence the lever acted on its mechanism;

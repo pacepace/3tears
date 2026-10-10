@@ -12,6 +12,7 @@ then never name the host::
     python -m threetears.evals bundle CAMPAIGN --host myapp.evals:build_host --scope dev
     python -m threetears.evals spend --host myapp.evals:build_host --scope dev --purpose variation
     python -m threetears.evals gate CAMPAIGN --host myapp.evals:build_host --scope dev --fail-on regressed,breached
+    python -m threetears.evals frontier --host myapp.evals:build_host --scope dev --bar 0.8
 
 - ``run`` launches through :func:`~threetears.evals.run.start_run`, waits for the runs' jobs, and
   prints each run's summary. It exits 0 when every run completed and 1 when any did not. Each
@@ -49,6 +50,9 @@ then never name the host::
   proposals and analysis generations, call by call, with totals overall, per purpose and per launch
   (:func:`~threetears.evals.ops.scope_out_of_run_spend`, the read the ``scope_out_of_run_spend`` action
   makes). ``--purpose``, ``--launch-group`` and ``--template`` narrow it.
+- ``frontier`` prints each subject's variants ranked on quality, cost and latency, and the cheapest that clears
+  ``--bar`` (:func:`~threetears.evals.ops.scope_frontier`, the read the ``scope_frontier`` action makes).
+  ``--subject`` narrows it to one subject, and ``--json`` prints the frontier as JSON.
 
 A product mounting the commands may add its own beside them — ``run_cli(..., commands=[HostCommand(...)])``
 — each parsed like the engine's (``--scope``, and ``--host`` when the host is named on the command line)
@@ -91,7 +95,14 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.contracts import DEFAULT_LAUNCH_K_RUNS, EvalServiceError, OutOfRunPurpose
 from threetears.evals.contracts.host import EvalHost
-from threetears.evals.ops import ReportFormat, out_of_run_spend_text, report_read, scope_out_of_run_spend
+from threetears.evals.ops import (
+    ReportFormat,
+    frontier_text,
+    out_of_run_spend_text,
+    report_read,
+    scope_frontier,
+    scope_out_of_run_spend,
+)
 from threetears.evals.ops.summary import summarize_run
 from threetears.evals.run import LaunchHost, list_runs, list_templates, start_run
 
@@ -99,7 +110,7 @@ from threetears.evals.run import LaunchHost, list_runs, list_templates, start_ru
 HostFactory = Callable[[], EvalHost | LaunchHost]
 
 #: The commands the engine itself carries; a host command may take none of these names.
-ENGINE_COMMANDS: tuple[str, ...] = ("run", "ls", "report", "bundle", "spend", "gate")
+ENGINE_COMMANDS: tuple[str, ...] = ("run", "ls", "report", "bundle", "spend", "gate", "frontier")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -338,6 +349,12 @@ def build_parser(
         metavar="MEASURE",
         help="gate only this reading, by key or as the report heads it; repeat for more (default: every reading)",
     )
+    ranked = command(
+        "frontier", "Rank each subject's variants on quality, cost and latency, and the cheapest that clears a bar."
+    )
+    ranked.add_argument("--bar", type=float, default=None, help="the pass^k a variant must clear, from 0 to 1")
+    ranked.add_argument("--subject", default=None, help="only this subject's variants")
+    ranked.add_argument("--json", action="store_true", help="print the frontier as JSON")
     for host_command in commands:
         host_command.configure(command(host_command.name, host_command.help))
     return parser
@@ -433,6 +450,9 @@ def run_cli(
                     )
                 )
             )
+        elif args.command == "frontier":
+            ranked = scope_frontier(eval_host, args.scope, bar=args.bar, subject_id=args.subject)
+            _say(ranked.model_dump_json(indent=2) if args.json else frontier_text(ranked))
         else:
             _say(inspect_campaign_bundle(eval_host, args.campaign, args.scope).model_dump_json(indent=2))
         return EXIT_OK

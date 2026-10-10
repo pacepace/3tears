@@ -118,4 +118,4 @@ def test_the_engine_commands_still_work_beside_a_host_command(capsys: pytest.Cap
 def test_the_usage_line_names_the_host_commands(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit):
         build_parser(commands=[_Capture().command()]).parse_args([])
-    assert "{run,ls,report,bundle,spend,gate,capture}" in capsys.readouterr().err
+    assert "{run,ls,report,bundle,spend,gate,frontier,capture}" in capsys.readouterr().err

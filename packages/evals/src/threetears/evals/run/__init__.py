@@ -52,6 +52,7 @@ from threetears.evals.run.jobs import (
     EvalJobManager,
     EvalJobTimeout,
     JobTimeoutFactory,
+    RunEndHook,
     default_job_timeout,
 )
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS, JUDGE_MAX_TOKENS, JUDGE_REQUEST_SETTINGS, run_judge_llm
@@ -216,6 +217,7 @@ __all__ = [
     "GoalCheckUnevaluable",
     "InProcessCellExecutor",
     "JobTimeoutFactory",
+    "RunEndHook",
     "JudgeClientFactory",
     "JudgeContext",
     "JudgeInputStore",

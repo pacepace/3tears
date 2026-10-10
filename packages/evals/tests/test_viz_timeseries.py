@@ -390,12 +390,15 @@ class TestTheBuilder:
             for position, point in zip(surface.time_axis.positions, line["points"], strict=True):
                 at = DecisionSurface(cells=position.cells, measures=surface.measures, dimensions=surface.dimensions)
                 reading = resolve_reading(at, cell, "total_ms")
+                # A point's n is its cases, never its observations: the bundle runs each case k times, so the two
+                # differ here and a point counting observations would fail.
+                assert reading.n_cases is not None and reading.n_cases < reading.n, "the bundle repeats each case"
                 assert point["position"] == position.key
                 assert (point["ci"]["mean"], point["ci"]["low"], point["ci"]["high"], point["n"]) == (
                     reading.mean,
                     reading.ci_low,
                     reading.ci_high,
-                    reading.n,
+                    reading.n_cases,
                 )
         assert parse_payload("timeseries", payload) is not None
 
@@ -686,7 +689,7 @@ class TestTheIntent:
             "Mean (s)",
             "Low (s)",
             "High (s)",
-            "n",
+            "Cases",
         ]
 
     def test_the_table_drawn_from_a_bundle_matches_the_bundles_numbers(self) -> None:
@@ -703,8 +706,9 @@ class TestTheIntent:
                 at = DecisionSurface(cells=position.cells, measures=surface.measures, dimensions=surface.dimensions)
                 reading = resolve_reading(at, ref, "total_ms")
                 row = drawn[(line["label"], position.key)]
+                assert reading.n_cases is not None and reading.n_cases < reading.n, "the bundle repeats each case"
                 assert (row["mean"], row["low"], row["high"], row["n"]) == pytest.approx(
-                    (reading.mean / 1000, reading.ci_low / 1000, reading.ci_high / 1000, reading.n)
+                    (reading.mean / 1000, reading.ci_low / 1000, reading.ci_high / 1000, reading.n_cases)
                 )
 
     def test_the_disclosures_name_the_order_the_intervals_and_each_gap(self) -> None:

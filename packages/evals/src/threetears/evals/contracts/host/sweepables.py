@@ -340,7 +340,22 @@ class Sweepable:
     Declaration metadata about what to CHECK, never a value a run ran under: it enters no variant
     key and no measurement context. ``None`` — the normal case — is reported as ``unchecked``, never
     as having taken effect. Valid on a fixed ``lever`` only: an open family's members are distinct
-    knobs that one name could not speak for, and an apparatus or label input is never swept.
+    knobs that one name could not speak for, and an apparatus or label input is never swept. An
+    open family names its members' mechanisms one by one, on :attr:`member_acts_on`.
+    """
+
+    member_acts_on: Mapping[str, str] | None = field(default=None, hash=False)
+    """The measure each NAMED member of this open family is supposed to move: member lever name -> measure.
+
+    :attr:`acts_on`'s per-member form (#585). A family's members are distinct knobs, so no one name
+    speaks for all of them; a host that knows what ONE of them does says so under that member's
+    lever name — the name the family's :attr:`read` resolves it under (``extractor.caps.max_pages``).
+    That member then gets the same mechanism check as a fixed lever, and every member left out still
+    reads ``unchecked`` / ``not_declared``. Each measure meets :attr:`acts_on`'s refusals: a numeric
+    measure each result carries as one value, known to the catalogue or the host's registry, checked
+    where the profile is built. Valid on an :attr:`open_family` declaration only; a key the family's
+    own :attr:`owns_member` would not claim, a blank name, or a member two families both declare is
+    refused at registration. Declaration metadata like :attr:`acts_on`: it enters no key.
     """
 
 
@@ -550,6 +565,33 @@ class SweepableRegistry(HostAttributed):
                 )
         defects.extend(self._role_defects())
         defects.extend(self._resolution_defects())
+        defects.extend(self._member_mechanism_overlaps())
+        return defects
+
+    def _member_mechanism_overlaps(self) -> list[str]:
+        """Refuse a member mechanism two declarations both speak for.
+
+        Across declarations, like :meth:`_resolution_defects`: a member named by two families' ``member_acts_on``,
+        or one a fixed declaration also holds, would have its mechanism decided by whichever was read first.
+
+        Returns:
+            One sentence per member claimed twice; empty when every claim is unique.
+        """
+        defects: list[str] = []
+        owner: dict[str, str] = {}
+        names = {declared.name for declared in self._declarations}
+        for declared in self._declarations:
+            for member in declared.member_acts_on or {}:
+                if member in names:
+                    defects.append(
+                        f"{declared.name!r} declares a mechanism for {member!r}, which is itself a declaration — a "
+                        "fixed lever names its own mechanism on acts_on"
+                    )
+                first = owner.setdefault(member, declared.name)
+                if first != declared.name:
+                    defects.append(
+                        f"{member!r} is given a mechanism by both {first!r} and {declared.name!r} — one lever names one"
+                    )
         return defects
 
     def _resolution_defects(self) -> list[str]:
@@ -682,9 +724,9 @@ class SweepableRegistry(HostAttributed):
         Returns:
             One message per defect, empty when the declaration is well-formed.
         """
+        defects = SweepableRegistry._member_mechanism_defects(declared)
         if declared.acts_on is None:
-            return []
-        defects: list[str] = []
+            return defects
         if not declared.acts_on.strip():
             defects.append(
                 f"{declared.name!r} declares a blank acts_on — a mechanism with no name can never be checked, "
@@ -698,8 +740,40 @@ class SweepableRegistry(HostAttributed):
         if declared.open_family is not None:
             defects.append(
                 f"{declared.name!r} is an open family and declares acts_on — its members are distinct knobs, and "
-                "one mechanism named for all of them would be checked against knobs it does not describe"
+                "one mechanism named for all of them would be checked against knobs it does not describe — "
+                "name each member's on member_acts_on instead"
             )
+        return defects
+
+    @staticmethod
+    def _member_mechanism_defects(declared: Sweepable) -> list[str]:
+        """Check a ``member_acts_on`` declaration is on an open family and names members it owns.
+
+        Args:
+            declared: The declaration to check.
+
+        Returns:
+            One message per defect, empty when the declaration is well-formed or carries none.
+        """
+        if declared.member_acts_on is None:
+            return []
+        defects: list[str] = []
+        if declared.role != "lever" or declared.open_family is None:
+            defects.append(
+                f"{declared.name!r} declares member_acts_on and is not an open family — a fixed lever names its "
+                "one mechanism on acts_on"
+            )
+        for member, measure in declared.member_acts_on.items():
+            if not member.strip() or not measure.strip():
+                defects.append(
+                    f"{declared.name!r} declares a blank member or mechanism in member_acts_on ({member!r}: "
+                    f"{measure!r}) — a name that is blank can never be checked"
+                )
+            elif declared.owns_member is not None and not declared.owns_member(member):
+                defects.append(
+                    f"{declared.name!r} declares a mechanism for {member!r}, which is no member it recognises — the "
+                    "check would wait on a lever the family never resolves"
+                )
         return defects
 
     @staticmethod
@@ -1005,6 +1079,41 @@ class SweepableRegistry(HostAttributed):
     def get(self, name: str) -> Sweepable | None:
         """The declaration for ``name``, or None when this host never declared it."""
         return self._by_name.get(name)
+
+    def acts_on(self, name: str) -> str | None:
+        """The mechanism lever ``name`` declares: a fixed lever's :attr:`Sweepable.acts_on`, or a family member's.
+
+        **The one answer to "what is this lever supposed to move"**, which every mechanism check reads. A family
+        member's comes from its family's :attr:`Sweepable.member_acts_on` (#585), so a member the host named reads
+        exactly as a fixed lever would and every other member reads ``None`` — ``not_declared``.
+
+        Args:
+            name: A lever name, as the coverage row carries it.
+
+        Returns:
+            The measure's name, or None when nothing declares one.
+        """
+        declared = self._by_name.get(name)
+        if declared is not None:
+            return declared.acts_on
+        return next(
+            (
+                measure
+                for family in self.open_families
+                if (measure := (family.member_acts_on or {}).get(name)) is not None
+            ),
+            None,
+        )
+
+    @property
+    def mechanisms(self) -> tuple[tuple[str, str], ...]:
+        """Every declared ``(lever, measure)`` mechanism pair, fixed levers' and named members' alike, in order."""
+        pairs: list[tuple[str, str]] = []
+        for declared in self._declarations:
+            if declared.acts_on is not None:
+                pairs.append((declared.name, declared.acts_on))
+            pairs.extend((member, measure) for member, measure in (declared.member_acts_on or {}).items())
+        return tuple(pairs)
 
     def read_all(self, run: EvalRun, results: Sequence[EvalResult] = ()) -> dict[str, Any]:
         """Read every declared input off one run.

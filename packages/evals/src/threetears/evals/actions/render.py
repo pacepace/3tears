@@ -36,7 +36,12 @@ from threetears.evals.ops import (
     LaunchEstimate,
     EvalSummary,
     FrozenReporterCase,
+    FrontierResult,
     HistoryResult,
+    InsightDeleted,
+    InsightDetail,
+    InsightLine,
+    InsightListing,
     JobsStarted,
     JobStatus,
     OutOfRunSpendReport,
@@ -61,6 +66,7 @@ from threetears.evals.ops import (
     estimate_text,
     format_number,
     export_text,
+    frontier_text,
     history_text,
     out_of_run_spend_text,
     pivot_text,
@@ -591,6 +597,11 @@ def render_runs_compared(compared: RunsCompared) -> str:
     return runs_compared_text(compared)
 
 
+def render_frontier(result: FrontierResult) -> str:
+    """Each subject's variants on quality, cost and latency, and the cheapest that clears the bar."""
+    return frontier_text(result)
+
+
 def render_history(result: HistoryResult) -> str:
     """Each contestant's series, with each step's regression verdict and the test behind it."""
     return history_text(result)
@@ -674,6 +685,51 @@ def render_run_deleted(deleted: RunDeleted) -> str:
     return f"deleted run {deleted.run_id}, its {deleted.results_deleted} result(s); detached from campaigns: {detached}"
 
 
+def _insight_line(insight: InsightLine) -> str:
+    standing = "" if insight.standing == "live" else f", {insight.standing}"
+    return (
+        f"- {insight.id}: {insight.statement} ({insight.confidence}{standing}; subject {insight.subject_id}, "
+        f"campaign {insight.source_campaign_id or '-'}, analysis {insight.source_analysis_id or '-'})"
+    )
+
+
+def render_insights(listing: InsightListing) -> str:
+    """The scope's insights, saying what narrowed the read — an empty filtered read names what it searched."""
+    narrowed = f" ({listing.filters})" if listing.filters else ""
+    if not listing.insights:
+        return f"no insights{narrowed}"
+    lines = [f"insights{narrowed} ({len(listing.insights)})"]
+    lines += [_insight_line(insight) for insight in listing.insights]
+    return "\n".join(lines)
+
+
+def render_insight(detail: InsightDetail) -> str:
+    """One insight in full."""
+    insight = detail.insight
+    runs = ", ".join(insight.evidence_run_ids) or "none"
+    results = ", ".join(insight.evidence_result_ids) or "none"
+    models = ", ".join(f"{role}={model}" for role, model in sorted(insight.model_versions.items())) or "none"
+    lines = [
+        f"insight {insight.id} ({detail.standing}, {insight.confidence})",
+        f"statement: {insight.statement}",
+        f"subject: {insight.subject_id} ({insight.subject_kind or 'no kind'})",
+        f"scope: {insight.scope or '-'}",
+        f"evidence runs: {runs}",
+        f"evidence results: {results}",
+        f"model versions: {models}",
+        f"observed at: {insight.observed_at}",
+        f"minted by: analysis {insight.source_analysis_id or '-'} of campaign {insight.source_campaign_id or '-'}",
+        f"retired when: {insight.invalidation_trigger or '-'}",
+    ]
+    return "\n".join(lines)
+
+
+def render_insight_deleted(deleted: InsightDeleted) -> str:
+    """What deleting an insight removed."""
+    campaign = deleted.source_campaign_id or "no campaign"
+    return f"deleted insight {deleted.insight_id} (minted from {campaign}); no later analysis reads it"
+
+
 def render_analysis_deleted(deleted: AnalysisDeleted) -> str:
     """What deleting an analysis removed."""
     return f"deleted analysis {deleted.analysis_id} of campaign {deleted.campaign_id}; the insights it minted remain"
@@ -702,7 +758,11 @@ __all__ = [
     "render_export",
     "render_help_index",
     "render_help_page",
+    "render_frontier",
     "render_history",
+    "render_insight",
+    "render_insight_deleted",
+    "render_insights",
     "render_job_status",
     "render_jobs_started",
     "render_pivot",

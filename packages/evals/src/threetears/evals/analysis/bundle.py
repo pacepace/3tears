@@ -43,7 +43,7 @@ from collections import defaultdict
 from fractions import Fraction
 from datetime import UTC, datetime
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from itertools import chain, product
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple, Protocol
@@ -179,6 +179,7 @@ from threetears.evals.contracts.metrics import (
     classifier_label_measure,
     classifier_label_of,
     confusion_of,
+    declaration_of,
     describe_measure,
     describe_phase_timing,
     describe_reported_measure,
@@ -204,6 +205,7 @@ from threetears.evals.contracts.models import (
     CalibrationRating,
     EvalResult,
     GoalCheckProof,
+    MeasureDeclaration,
     RubricAxis,
     RubricScale,
 )
@@ -1747,7 +1749,7 @@ class LeverCoverageInput(EvalDocumentModel):
     carrying them is what makes coverage the analysis's spine.
     """
 
-    name: str = Field(description="Lever name — a dotted factor key or 'model'.")
+    name: str = Field(description="Lever name, as the host registered it.")
     levels: list[str] = Field(
         default_factory=list,
         description="Distinct observed values ('—' = ran without the override; 'null' = the launch set it to null).",
@@ -2667,6 +2669,18 @@ class AnalysisContextBundle(EvalDocumentModel):
             "it (`equivalence_margin`, `margin_source` `run`). Read by the contrasts against the control only: a bar "
             "on the measure and the history's movements read its descriptor, which declares none. Empty when no run "
             "declared one."
+        ),
+    )
+    launch_declarations: list[str] = Field(
+        default_factory=list,
+        description=(
+            "One sentence per host measure that is read here otherwise than the reading host now declares it. Each "
+            "measure is read on how its member runs were launched to read it (`EvalRun.declared_measures`: "
+            "direction, merit axis, guardrail, margin, range), so a stored comparison's verdicts do not depend on who "
+            "reads them; a sentence names the declaration read and the reading host's. Where the runs were launched "
+            "under different declarations, no margin is read on the measure and the sentence says so. Empty when "
+            "every measure is read as the reading host declares it, and for runs stored before launches recorded "
+            "their declarations."
         ),
     )
     run_margins_withheld: str | None = Field(
@@ -4028,7 +4042,7 @@ def _undeclarable_host_entries(results: Sequence[EvalResult]) -> list[str]:
     ]
 
 
-def _in_population(population: MeasurePopulation, result: EvalResult) -> bool:
+def in_population(population: MeasurePopulation, result: EvalResult) -> bool:
     """Whether a result is an observation of a measure read over ``population``.
 
     The one membership rule the measure walk applies, per measure and per result: a result the harness
@@ -4140,7 +4154,7 @@ def _collect_measures(
         # Outside its population before anything else: a faulted result is not an observation of a
         # `scored` or `delivered` measure at all, nor a failure that took no turn one of a `delivered`
         # measure, so it can neither contribute a value nor be reported as one lost.
-        if not _in_population(summary_population(descriptor, undeclared), result):
+        if not in_population(summary_population(descriptor, undeclared), result):
             return
         if not _is_reportable(descriptor, profile.measures):
             # An undescribed NUMBER from a telemetry source is the loss worth reporting: a
@@ -5255,7 +5269,7 @@ def _mechanism_value(result: EvalResult, name: str, *, profile: HostProfile) -> 
     """
     # Over every result where the measure declares nothing, as a mechanism always read — except a turn's
     # time or spend, which every reader takes over the turns taken (`summary_population`).
-    if not _in_population(summary_population(describe_measure(name, profile.measures), "all_observed"), result):
+    if not in_population(summary_population(describe_measure(name, profile.measures), "all_observed"), result):
         return None
     outer = [
         value
@@ -5294,7 +5308,7 @@ def _mechanism_observations(results: Sequence[EvalResult], *, profile: HostProfi
     Returns:
         ``{name: {result id: (case id, value)}}``; a result that observed nothing of a name is absent under it.
     """
-    names = {declared.acts_on for declared in profile.sweepables.declarations if declared.acts_on is not None}
+    names = {measure for _lever, measure in profile.sweepables.mechanisms}
     names |= set(_OBSERVED_MECHANISMS)
     observed: _MechanismObservations = {}
     for name in sorted(names):
@@ -5478,8 +5492,7 @@ def _raises_observed_mechanism(lever: str, covariate: str, *, profile: HostProfi
     """
     if lever != _CANDIDATE_MODEL_LEVER:
         return False
-    declared = profile.sweepables.get(lever)
-    return declared is None or declared.acts_on != covariate
+    return profile.sweepables.acts_on(lever) != covariate
 
 
 def _observed_mechanism_confounds(
@@ -6523,7 +6536,7 @@ def _lever_k_floor(
     nothing about.
 
     Args:
-        lever: A dotted factor name or a declared coordinate name.
+        lever: A lever name or a declared coordinate name.
         records: The projected score records (they carry the level and the run).
         k_by_arm: Repeats per case per arm group, keyed as :meth:`_CampaignArms.groups` keys them.
         group_of_run: Run id → the arm group it belongs to.
@@ -6900,7 +6913,6 @@ def _coverage_map(
         for record in cohort_records:
             if (level := _lever_value(record, lever, effective_by_run)) is not None:
                 result_ids_by_level.setdefault(level, set()).add(record.result_id)
-        declared_lever = profile.sweepables.get(lever)
         k = _lever_k_floor(lever, cohort_records, k_by_arm, group_of_run, effective_by_run)
         # A declared axis is asked the authoring gate's own question. A campaign stored before that
         # gate, or past it, can still declare an apparatus or label input, and its row is then
@@ -6942,13 +6954,11 @@ def _coverage_map(
                 + _observed_mechanism_confounds(lever, result_ids_by_level, observations, profile=profile)
                 + _served_model_confounds(chain.from_iterable(result_ids_by_level.values()), served),
                 mechanism=_mechanism_check(
-                    declared_lever.acts_on if declared_lever is not None else None,
+                    acts_on := profile.sweepables.acts_on(lever),
                     result_ids_by_level,
                     observations,
                     # The mechanism measure's declared range, which a shift of every case alike is read on.
-                    describe_measure(declared_lever.acts_on, profile.measures).value_range
-                    if declared_lever is not None and declared_lever.acts_on is not None
-                    else None,
+                    describe_measure(acts_on, profile.measures).value_range if acts_on is not None else None,
                 ),
             )
         )
@@ -7578,6 +7588,9 @@ def assemble_context_bundle(
 
     # Deterministic input order → deterministic lens output → stable fingerprint.
     runs = sorted(resolved, key=lambda r: (r.created_at, r.id))
+    # Before any lens reads a descriptor: each host measure is read as its runs were launched to read it, not as
+    # whoever reads the campaign now declares it, so every lens below reads one set of declarations.
+    profile, launch_declarations = _as_launched(runs, profile)
     run_ids = [run.id for run in runs]
     known_run_ids = set(run_ids)
 
@@ -7912,6 +7925,7 @@ def assemble_context_bundle(
     )
     bundle.measure_catalog = _measure_catalog(bundle, profile=profile)
     bundle.run_margins, bundle.run_margins_withheld = _run_margins(runs)
+    bundle.launch_declarations = launch_declarations
     # After the catalog, which says each measure's better direction and axis: a family is the readings a
     # question's axes name, and a reading with no better end has no verdict to correct.
     bundle.multiple_comparisons, bundle.guardrails = _multiple_comparisons(
@@ -7950,6 +7964,78 @@ def assemble_context_bundle(
     # lens reported, and a reader would take that as a claim the campaign made.
     bundle.confound_catalog = _confound_catalog(bundle, profile=profile)
     return bundle
+
+
+def _declared_words(declaration: MeasureDeclaration) -> str:
+    """A measure's declaration in words, for the sentence naming a difference in one."""
+    direction = {True: "higher is better", False: "lower is better", None: "no better end"}[
+        declaration.higher_is_better
+    ]
+    parts = [direction, "a guardrail" if declaration.guardrail else f"merit axis {declaration.merit_axis or 'none'}"]
+    margin = declaration.materiality_threshold
+    parts.append("no margin" if margin is None else f"margin {format_number(margin)}")
+    bounds = declaration.value_range
+    parts.append("no range" if bounds is None else f"range {format_number(bounds[0])} to {format_number(bounds[1])}")
+    return ", ".join(parts)
+
+
+def _as_launched(runs: Sequence[EvalRun], profile: HostProfile) -> tuple[HostProfile, list[str]]:
+    """The reading host's profile with each of its measures read as the member runs were launched to read it.
+
+    A host's declarations — and on the quick path ``compare(margins=, ranges=, guardrails=)`` — can differ between
+    the process that launched a campaign and one that reads it later. Each run freezes how its launching host
+    declared every measure to be read (``EvalRun.declared_measures``), and a measure every run that recorded a
+    declaration declared alike is read on that declaration, whatever the reading host says; a difference from the
+    reader's is named. Runs launched under different declarations of one measure have no one declaration to read:
+    the measure keeps the reader's, with no margin read on it (no comparison on it can read ``equivalent``), and
+    that is named too. Runs that recorded none (stored before launches recorded them) are read on the reader's.
+
+    Args:
+        runs: The resolved member runs.
+        profile: The reading host's profile.
+
+    Returns:
+        ``(profile, sentences)``: the profile every lens reads, and one sentence per measure read otherwise than
+        the reader declares it.
+    """
+    from threetears.evals.contracts.host.measures import MeasureRegistry
+
+    recorded = [run for run in runs if run.declared_measures]
+    if not recorded:
+        return profile, []
+    sentences: list[str] = []
+    read: dict[str, MetricDescriptor] = {}
+    for name in sorted({name for run in recorded for name in run.declared_measures}):
+        reader = profile.measures.get(name)
+        declarations = [run.declared_measures.get(name) for run in recorded]
+        if reader is None:
+            sentences.append(
+                f"{name} was declared by the host that launched these runs, and the reading host declares no such "
+                "measure, so its readings are read as an undeclared measure's."
+            )
+            continue
+        agreed = declarations[0]
+        if agreed is None or any(declaration != agreed for declaration in declarations):
+            read[name] = MetricDescriptor.model_validate({**reader.model_dump(), "materiality_threshold": None})
+            sentences.append(
+                f"The member runs were launched under different declarations of {name}, so it is read as the reading "
+                "host declares it, with no margin: no comparison on it can read equivalent."
+            )
+            continue
+        if declaration_of(reader) == agreed:
+            continue
+        read[name] = MetricDescriptor.model_validate({**reader.model_dump(), **agreed.model_dump()})
+        sentences.append(
+            f"{name} is read as its runs were launched to read it ({_declared_words(agreed)}), not as the reading "
+            f"host now declares it ({_declared_words(declaration_of(reader))})."
+        )
+    if not read:
+        return profile, sentences
+    measures = MeasureRegistry(
+        [read.get(name) or descriptor for name in profile.measures.names if (descriptor := profile.measures.get(name))],
+        families=profile.measures.families,
+    )
+    return replace(profile, measures=measures), sentences
 
 
 def _run_margins(runs: Sequence[EvalRun]) -> tuple[dict[str, float], str | None]:
