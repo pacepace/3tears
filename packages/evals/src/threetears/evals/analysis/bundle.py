@@ -7894,9 +7894,9 @@ def _declared_words(declaration: MeasureDeclaration) -> str:
     ]
     parts = [direction, "a guardrail" if declaration.guardrail else f"merit axis {declaration.merit_axis or 'none'}"]
     margin = declaration.materiality_threshold
-    parts.append("no margin" if margin is None else f"margin {margin:g}")
+    parts.append("no margin" if margin is None else f"margin {format_number(margin)}")
     bounds = declaration.value_range
-    parts.append("no range" if bounds is None else f"range {bounds[0]:g} to {bounds[1]:g}")
+    parts.append("no range" if bounds is None else f"range {format_number(bounds[0])} to {format_number(bounds[1])}")
     return ", ".join(parts)
 
 
