@@ -1125,6 +1125,35 @@ def _template_id(
     return f"{CALLABLE_HOST_ID}-{digest[:16]}"
 
 
+_LIFECYCLE_STAMPS = frozenset({"created_at", "updated_at"})
+
+
+def _save_unless_unchanged(host: EvalHost, template: EvalTemplate, test_cases: Sequence[EvalTestCase]) -> None:
+    """Store the template and its cases, leaving each one the store already holds unchanged as it is.
+
+    Both are addressed by their content, so a second call over the same cases finds them stored. Saving them again
+    would restamp ``updated_at``, and a template stamped after a run launched reads as edited since: that run's
+    summary withholds its intent and a rejudge of it is refused. So a stored definition that matches this one in
+    everything but its stamps is left alone, and one that differs (an unjudged template's intent, say) is a real
+    edit, saved with its original ``created_at``.
+    """
+    stored = host.storage.load_template(template.id, template.scope_id)
+    if stored is None or stored.model_dump(mode="json", exclude=_LIFECYCLE_STAMPS) != template.model_dump(
+        mode="json", exclude=_LIFECYCLE_STAMPS
+    ):
+        host.storage.save_template(
+            template if stored is None else template.model_copy(update={"created_at": stored.created_at})
+        )
+    for test_case in test_cases:
+        kept = host.storage.load_test_case(test_case.id, test_case.scope_id)
+        if kept is None or kept.model_dump(mode="json", exclude=_LIFECYCLE_STAMPS) != test_case.model_dump(
+            mode="json", exclude=_LIFECYCLE_STAMPS
+        ):
+            host.storage.save_test_case(
+                test_case if kept is None else test_case.model_copy(update={"created_at": kept.created_at})
+            )
+
+
 def _case_payload(case: dict[str, Any], label: str | None, seed: dict[str, Any] | None = None) -> dict[str, Any]:
     """The ``host_payload`` a case's stored test case carries: the case, verbatim, a classifier's expected label, and a world case's starting state."""
     labelled = {} if label is None else {_EXPECTED_KEY: label}
@@ -1596,9 +1625,7 @@ async def run_arms(
             refuse_unsupplied_world(template, profile=host.profile)
         except ValidationFailedError as refused:
             raise ValueError(refused.message) from refused
-    host.storage.save_template(template)
-    for test_case in test_cases:
-        host.storage.save_test_case(test_case)
+    _save_unless_unchanged(host, template, test_cases)
     # Each scorer's declared range, which every score it returns is held to: the bounded tests read it as a fact.
     ranges = {
         name: descriptor.value_range

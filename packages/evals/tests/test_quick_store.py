@@ -12,18 +12,21 @@ file.
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
 import textwrap
 from collections.abc import Mapping
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from threetears.evals.analysis import list_campaigns
-from threetears.evals.quick import callable_host, compare, run_eval
+from threetears.evals.ops import summarize_run
+from threetears.evals.quick import Judge, callable_host, compare, run_eval
 from threetears.evals.run import list_runs
 from threetears.evals.storage import SqliteDocumentStore
 
@@ -99,6 +102,44 @@ async def test_compare_keeps_its_margins_with_a_store(tmp_path: Path) -> None:
             comparison.arms["current"].run_id,
             comparison.arms["cheaper"].run_id,
         }
+
+
+async def _stand_in_judge(*, system: str, user: str, response_format: dict[str, Any] | None = None) -> SimpleNamespace:
+    """An offline judge that gives every answer a 5."""
+    reply = {"reasoning": "stand-in", "criteria_scores": {"answer.acknowledges": 5}}
+    return SimpleNamespace(
+        content=json.dumps(reply),
+        input_tokens=None,
+        output_tokens=None,
+        reasoning_tokens=None,
+        cost_usd=0.0,
+        price_source="stand-in",
+        model="stand-in",
+        served_model=None,
+        stop_reason="end_turn",
+        temperature=0.0,
+    )
+
+
+async def test_rerunning_unchanged_cases_never_makes_an_earlier_run_read_as_edited(tmp_path: Path) -> None:
+    """A second call over the same cases leaves the stored template alone, so the first run keeps its intent.
+
+    The template is addressed by its content, so the second call finds it stored. Restamping it on every call made
+    every earlier judged run's summary read its template as edited since, and withhold the intent its judge read.
+    """
+    judge = Judge(
+        client=SimpleNamespace(generate=_stand_in_judge),
+        model="stand-in",
+        rubric={"acknowledges": "The reply acknowledges the problem."},
+        case_material=lambda case: str(case["n"]),
+    )
+    with SqliteDocumentStore(tmp_path / "evals.sqlite") as store:
+        first = await run_eval(
+            CASES[:3], always_right, judge=judge, scope_id="kept", k=1, store=store, intent="Say it."
+        )
+        await run_eval(CASES[:3], always_right, judge=judge, scope_id="kept", k=1, store=store, intent="Say it.")
+        again = summarize_run(callable_host([], store=store), first.run_id, "kept")
+    assert first.intent == again.intent == "Say it."
 
 
 async def test_a_store_beside_a_host_is_refused() -> None:
