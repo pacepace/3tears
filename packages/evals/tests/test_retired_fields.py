@@ -1,7 +1,7 @@
 """Fields retired within schema v8 read on a stored read and nowhere else.
 
 A field that carried nothing, or a confusable name, is retired without dropping every stored document
-(``__retired_fields__``, :mod:`threetears.evals.contracts.base`). These pin, per retirement, that a document
+(``__retired_fields__``, :mod:`threetears.evals.schema.base`). These pin, per retirement, that a document
 stored before it still loads through storage, reading as the same document minus what it never meant, and
 that a construction naming the old key is refused, saying what became of it.
 """
@@ -14,9 +14,9 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.evals.analysis.reporter_kind import ReporterCase, rebuild_bundle
-from threetears.evals.contracts.campaign import EvalCampaign
-from threetears.evals.contracts.declaration import CampaignDesign
-from threetears.evals.contracts.hashing import canonical_digest
+from threetears.evals.kernel.campaign import EvalCampaign
+from threetears.evals.kernel.declaration import CampaignDesign
+from threetears.evals.schema.hashing import canonical_digest
 from packages.evals.tests.factories import make_analysis, make_campaign, memory_storage
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle, toyhost_design
 

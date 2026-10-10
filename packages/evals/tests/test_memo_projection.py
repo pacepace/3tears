@@ -1,6 +1,6 @@
 """Where each declared question stands, and where the authored document lives.
 
-The generator authors one document (:class:`~threetears.evals.contracts.authored.AuthoredAnalysis`)
+The generator authors one document (:class:`~threetears.evals.kernel.authored.AuthoredAnalysis`)
 and the stored analysis keeps it verbatim. These pin the two projection rules code still holds
 it to: one answer per LIVE declared question, no more and no fewer, and the document as the only
 carrier of what was authored. The position links inside the document (``rests_on``,
@@ -20,11 +20,11 @@ from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
 from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, memo_payload
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from threetears.evals.analysis.generator import generate_analysis
-from threetears.evals.contracts.authored import AuthoredAnalysis, Chart, Finding, QuestionAnswer
-from threetears.evals.contracts.campaign import EvalAnalysis, GenerationProvenance
-from threetears.evals.contracts.declaration import Question
-from threetears.evals.contracts.models import utc_now_iso
-from threetears.evals.contracts.surface import DecisionSurface
+from threetears.evals.kernel.authored import AuthoredAnalysis, Chart, Finding, QuestionAnswer
+from threetears.evals.kernel.campaign import EvalAnalysis, GenerationProvenance
+from threetears.evals.kernel.declaration import Question
+from threetears.evals.schema.models import utc_now_iso
+from threetears.evals.kernel.surface import DecisionSurface
 
 
 def _finding() -> Finding:

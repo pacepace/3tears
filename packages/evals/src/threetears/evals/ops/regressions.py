@@ -17,10 +17,10 @@ runs, so a run that ended any other way is not a point on it and has no step to 
 the completed run is delivered — the step out of it into a later run, where one exists, was that later run's
 to report.
 
-**Which measures fire.** A code-graded measure (:func:`~threetears.evals.contracts.metrics.is_code_graded`)
+**Which measures fire.** A code-graded measure (:func:`~threetears.evals.kernel.metrics.is_code_graded`)
 fires on its flag. A judged measure — the composite, either dual axis, or a host measure whose family a judge
 grades — fires only when every judge behind the step's scores, on both runs, is ``calibrated``
-(:mod:`~threetears.evals.contracts.evidence_tiers`, read over the scope's calibration ratings and judge
+(:mod:`~threetears.evals.kernel.evidence_tiers`, read over the scope's calibration ratings and judge
 repeats). An alert on an uncalibrated score is worse than none, so the check withholds it and logs that it did.
 A judge-graded host measure names no rubric dimension the engine can look a judge up by, so it never fires.
 
@@ -55,12 +55,12 @@ from threetears.evals.analysis.reporting import (
     RegressionFlag,
     compute_history,
 )
-from threetears.evals.contracts.base import EvalBaseModel
-from threetears.evals.contracts.evidence_tiers import JudgedEvidenceTier
-from threetears.evals.contracts.host import EvalHost
-from threetears.evals.contracts.metrics import GradedBy, is_code_graded
-from threetears.evals.contracts.models import EvalResult
-from threetears.evals.contracts.offload import run_blocking
+from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier
+from threetears.evals.kernel.host import EvalHost
+from threetears.evals.kernel.metrics import GradedBy, is_code_graded
+from threetears.evals.schema.models import EvalResult
+from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.ops.lenses import scope_history
 from threetears.observe import get_logger
 

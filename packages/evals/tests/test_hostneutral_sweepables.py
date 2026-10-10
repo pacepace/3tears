@@ -2,7 +2,7 @@
 
 ``judge_request_settings`` and ``simulator_request_settings`` belong to the shared core: each role's output cap and reasoning parameter is an apparatus input, pinned into its role, and
 a run that never recorded one cannot be compared on it. This file reads them through
-:data:`~threetears.evals.contracts.host.sweepables.SHARED_CORE` — the registry every host extends — over run
+:data:`~threetears.evals.kernel.host.sweepables.SHARED_CORE` — the registry every host extends — over run
 documents with no host vocabulary. No host profile is read, and nothing is imported from a
 host adapter.
 
@@ -18,9 +18,9 @@ import pytest
 
 from threetears.evals.analysis.bundle import AnalysisContextBundle
 from threetears.evals.analysis.cells import CELL_MODEL_VERSION
-from threetears.evals.contracts.host.subject import SubjectSnapshot
-from threetears.evals.contracts.host.sweepables import CORE_SWEEPABLES, JUDGE_INPUTS, SHARED_CORE, SIMULATOR_INPUTS
-from threetears.evals.contracts.models import ClientRequestSettings, EvalRun
+from threetears.evals.schema.subject import SubjectSnapshot
+from threetears.evals.kernel.host.sweepables import CORE_SWEEPABLES, JUDGE_INPUTS, SHARED_CORE, SIMULATOR_INPUTS
+from threetears.evals.schema.models import ClientRequestSettings, EvalRun
 
 
 _SUBJECT = SubjectSnapshot(subject_id="summarizer-3", subject_label="Summarizer, config 3", state=None)

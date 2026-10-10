@@ -27,7 +27,7 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis import DisclosureBlock, TableBlock, inspect_campaign_bundle
-from threetears.evals.contracts import RUN_MARGIN_MEASURES, run_margin_refusal
+from threetears.evals.kernel import RUN_MARGIN_MEASURES, run_margin_refusal
 from threetears.evals.quick import Answer, Comparison, callable_host, compare
 
 #: Enough cases for two arms that agree on every one to be shown within 0.1 of each other.

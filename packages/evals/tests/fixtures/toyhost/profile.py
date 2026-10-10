@@ -13,8 +13,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from threetears.evals.contracts import MetricDescriptor
-from threetears.evals.contracts.host import (
+from threetears.evals.kernel import MetricDescriptor
+from threetears.evals.kernel.host import (
     CHART_FONT_CHARACTERS,
     Bar,
     BarRegistry,

@@ -51,7 +51,6 @@ from threetears.evals.ops.analysis import (
     InsightStandingName,
     ProposedBar,
     ReportDocument,
-    ReportFormat,
     UndescribableArmsLine,
     UndescribableArmsListing,
     analyses_list,
@@ -69,8 +68,8 @@ from threetears.evals.ops.analysis import (
     insight_get,
     insights_list,
     report_read,
-    serialize_report,
 )
+from threetears.evals.analysis.report.serialize import ReportFormat, serialize_report
 from threetears.evals.ops.host import AnalysisGeneration, OpsHost
 from threetears.evals.ops.jobs import (
     ANALYSIS_JOB_PREFIX,
@@ -97,15 +96,11 @@ from threetears.evals.ops.lenses import (
     DetectableEffect,
     DetectableEffects,
     LaunchEstimate,
-    OutOfRunSpendReport,
-    OutOfRunSpendTotals,
     estimate_text,
     export_text,
-    frontier_text,
     history_text,
     history_launch_pricer,
     launch_estimate,
-    out_of_run_spend_text,
     pivot_text,
     RunsCompared,
     runs_compare,
@@ -113,8 +108,14 @@ from threetears.evals.ops.lenses import (
     scope_export,
     scope_frontier,
     scope_history,
-    scope_out_of_run_spend,
     scope_pivot,
+)
+from threetears.evals.analysis.lens_text import frontier_text
+from threetears.evals.analysis.out_of_run_spend import (
+    OutOfRunSpendReport,
+    OutOfRunSpendTotals,
+    out_of_run_spend_text,
+    scope_out_of_run_spend,
 )
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.reporter_bank import FrozenReporterCase
@@ -167,12 +168,12 @@ from threetears.evals.ops.runs import (
     case_set_mint,
     case_sets_list,
 )
-from threetears.evals.ops.summary import (
+from threetears.evals.analysis.summary import (
     CaseResult,
     DimensionSummary,
     EvalSummary,
     JudgeGrade,
-    MeasureSummary,
+    RunMeasureSummary,
     dollars_text,
     summarize_run,
 )
@@ -225,7 +226,7 @@ __all__ = [
     "JudgeGrade",
     "LaunchArguments",
     "LaunchEstimate",
-    "MeasureSummary",
+    "RunMeasureSummary",
     "OpsHost",
     "OutOfRunSpendReport",
     "OutOfRunSpendTotals",

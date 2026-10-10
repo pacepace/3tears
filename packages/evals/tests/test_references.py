@@ -18,8 +18,8 @@ from threetears.evals.analysis.references import (
     resolve_reading,
 )
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, t_critical_two_sided
-from threetears.evals.contracts.analysis_measures import MeasureCollection, MeasureSummary
-from threetears.evals.contracts.surface import (
+from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
+from threetears.evals.kernel.surface import (
     CellFacts,
     DecisionSurface,
     JudgedDimensionFacts,

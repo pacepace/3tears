@@ -42,14 +42,14 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis import JudgeKey, judge_agreement, judge_evidence_tiers, judge_self_agreement
-from threetears.evals.contracts import EvalStorage
-from threetears.evals.contracts.candidate_kind import CandidateOutput, CellSink, CellSpanWindow, VariantConfig
-from threetears.evals.contracts.cassettes import CellCassettes
-from threetears.evals.contracts.errors import ConflictError, StorageError, ValidationFailedError
-from threetears.evals.contracts.evidence_tiers import SEPARATION_MIN_RESULTS
-from threetears.evals.contracts.host.eval_host import EvalHost
-from threetears.evals.contracts.identity import resolve_variant_identity
-from threetears.evals.contracts.models import (
+from threetears.evals.kernel import EvalStorage
+from threetears.evals.kernel.candidate_kind import CandidateOutput, CellSink, CellSpanWindow, VariantConfig
+from threetears.evals.kernel.cassettes import CellCassettes
+from threetears.evals.kernel.errors import ConflictError, StorageError, ValidationFailedError
+from threetears.evals.kernel.evidence_tiers import SEPARATION_MIN_RESULTS
+from threetears.evals.kernel.host.eval_host import EvalHost
+from threetears.evals.kernel.identity import resolve_variant_identity
+from threetears.evals.schema.models import (
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
     EvalResult,
@@ -62,7 +62,8 @@ from threetears.evals.contracts.models import (
     RubricDim,
     RubricScore,
 )
-from threetears.evals.contracts.provider import ProviderFailure, withhold_failure_detail
+from threetears.evals.schema.completion import ProviderFailure
+from threetears.evals.kernel.provider import withhold_failure_detail
 from threetears.evals.run import estimate_judge_repeat, repeat_judge_scores
 from threetears.evals.run.judge import CANNOT_TELL, JUDGE_CALL_ATTEMPTS, JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import JudgeService

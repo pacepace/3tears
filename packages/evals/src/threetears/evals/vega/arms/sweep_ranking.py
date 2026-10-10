@@ -57,7 +57,7 @@ from threetears.evals.vega.compiler import (
     value_label_layers,
 )
 from threetears.evals.analysis.viz.intent import ChartIntent
-from threetears.evals.contracts.host import ChartFont
+from threetears.evals.kernel.host import ChartFont
 from threetears.evals.analysis.viz.intents.sweep_ranking import CONFIG_FIELD, LEVER_KEY_PREFIX
 from threetears.evals.vega.palette import CONTEXT_STYLE, SEQUENTIAL_RANGE, font_weights, geometry
 from threetears.evals.analysis.reporting import NULL_LEVEL

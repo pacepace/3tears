@@ -24,8 +24,9 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts import EvalRun, EvalStorage
-from threetears.evals.contracts.host.spend import ExternalSpend
+from threetears.evals.schema import EvalRun
+from threetears.evals.kernel import EvalStorage
+from threetears.evals.schema.external_spend import ExternalSpend
 from threetears.evals.run import (
     CellExecutor,
     CellWork,

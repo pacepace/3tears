@@ -16,7 +16,8 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts import EvalRun, EvalStorage, ValidationFailedError
+from threetears.evals.schema import EvalRun
+from threetears.evals.kernel import EvalStorage, ValidationFailedError
 from threetears.evals.run import KindWiring, LaunchHost, LaunchRequest, MeteredCallLedger, launch_run, start_run
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_SUBJECT

@@ -25,16 +25,15 @@ from threetears.evals.analysis import (
     assemble_context_bundle,
     build_code_only_report,
 )
-from threetears.evals.contracts import (
+from threetears.evals.kernel import (
     CampaignDesign,
     ControlDeclaration,
     EvalCampaign,
-    EvalResult,
-    EvalRun,
     SweptAxis,
     resolve_variant_identity,
 )
-from threetears.evals.contracts.host import SweepableValue
+from threetears.evals.schema import EvalResult, EvalRun
+from threetears.evals.schema import SweepableValue
 from packages.evals.tests.fixtures.toyhost.corpus import (
     TOYHOST_SCOPE,
     TOYHOST_SUBJECT,

@@ -14,9 +14,10 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.contracts.hashing import bytes_digest, canonical_digest
-from threetears.evals.contracts.host.subject import SubjectSnapshot
-from threetears.evals.contracts.host.sweepables import IntervalScale, NominalScale, OrdinalScale, SweepableValue
+from threetears.evals.schema.hashing import bytes_digest, canonical_digest
+from threetears.evals.schema.subject import SubjectSnapshot
+from threetears.evals.kernel.host.sweepables import IntervalScale, NominalScale, OrdinalScale
+from threetears.evals.schema.values import SweepableValue
 
 
 class TestSweepableValueIdentity:

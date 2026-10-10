@@ -13,8 +13,8 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts.models import EvalRun
-from threetears.evals.contracts.storage import JobStore
+from threetears.evals.schema.models import EvalRun
+from threetears.evals.kernel.storage import JobStore
 from threetears.evals.run.jobs import EvalJobManager, WorkFn
 
 __all__ = ["InMemoryRunStore", "blocked_work", "cancelled", "settled", "start_tracked"]

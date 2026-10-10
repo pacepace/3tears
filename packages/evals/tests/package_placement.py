@@ -1,9 +1,9 @@
 """Which engine package a module belongs to: its path, and nothing else.
 
-``threetears.evals`` is eleven subpackages -- ``contracts``, ``run``, ``analysis``, ``gen``, ``storage``,
+``threetears.evals`` is twelve subpackages -- ``schema``, ``kernel``, ``run``, ``analysis``, ``gen``, ``storage``,
 ``testing``, ``quick``, ``ops``, ``actions``, ``transports`` and the optional ``vega`` adapter -- and the gates over it agree on one rule: **a module is in a package because it
 lives in that package's directory.** ``test_package_matrix.py`` holds each package to its row of the allowed-dependency
-matrix and ``test_contracts_installable.py`` probes the contracts package standalone. Both need the
+matrix and ``test_schema_installable.py`` probes the schema package standalone, and with the kernel. Both need the
 same answer to "where does this module live", so the answer lives here once rather than in one of
 those files for the other to import.
 
@@ -35,7 +35,8 @@ EVAL_PACKAGE = "threetears.evals"
 
 #: Package directory (dotted, relative to ``threetears.evals``) -> the package it places a module in.
 PACKAGE_DIRS: dict[str, str] = {
-    "contracts": "contracts",
+    "schema": "schema",
+    "kernel": "kernel",
     "run": "run",
     "analysis": "analysis",
     "gen": "gen",
@@ -49,10 +50,10 @@ PACKAGE_DIRS: dict[str, str] = {
 }
 
 #: The tree markers a path cannot place. The root is the namespace over the packages and is held to
-#: contracts' row, so it may import nothing but contracts. ``__main__`` is ``python -m threetears.evals``,
+#: schema's row, so it may import nothing but the schema. ``__main__`` is ``python -m threetears.evals``,
 #: which only hands over to the command line in ``quick``, and is held to that package's row.
 TREE_MARKERS: dict[str, str] = {
-    "": "contracts",
+    "": "schema",
     "__main__": "quick",
 }
 
@@ -120,7 +121,7 @@ def placement(module: str) -> str | None:
         module: A dotted module name.
 
     Returns:
-        ``"contracts"``, ``"run"``, ``"analysis"`` or ``"gen"``; ``"outside"`` for a module outside
+        A package name from :data:`PACKAGE_DIRS`, such as ``"schema"`` or ``"run"``; ``"outside"`` for a module outside
         ``threetears.evals``; None for a module under it that no package directory holds.
     """
     relative = eval_relative(module)

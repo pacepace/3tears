@@ -9,7 +9,7 @@ the calls it made, which roles spent what, were stored and reachable through no 
 **The listing is light, and the read is cut into parts by weight.** A result row is small; its trace is
 not — the candidate's output, what the judge read and the spans are most of a cell's bytes, which is why
 the store keeps them in a sibling document no list or aggregate reads
-(:class:`~threetears.evals.contracts.models.EvalTrace`). So the listing reads results alone and pages them,
+(:class:`~threetears.evals.schema.models.EvalTrace`). So the listing reads results alone and pages them,
 and a read returns one :data:`ResultPart` of the trace: the ``record`` by default — the output the kind
 stored, its call ledger and the world's end state, beside the result itself — and the judge's evidence and
 the spans only when asked for by name. The judge's evidence restates the conversation as the judge read it
@@ -22,7 +22,7 @@ whether a call succeeded and what the tool answered — is there exactly as far 
 nothing more. A kind that records only what succeeded leaves no trace of a refused call in its output.
 Projecting a typed "actions" view out of the documents would mean the engine guessing a kind's shape, which
 is the one thing the trace's contract forbids. The call ledger beside them is the kind's other record, and
-holds only the calls that succeeded (:mod:`threetears.evals.contracts.call_ledger`): the two are different
+holds only the calls that succeeded (:mod:`threetears.evals.schema.call_ledger`): the two are different
 facts, so both are returned and neither stands in for the other.
 
 **Every read is in the caller's scope.** A run or a result in another scope is not found, as every other
@@ -36,21 +36,17 @@ from typing import Any, Literal
 from pydantic import Field
 
 from threetears.evals.analysis.reporting import LatencyPartition, decompose_total_ms
-from threetears.evals.contracts import (
-    CallLedger,
-    CellTermination,
-    EvalResult,
-    JudgedArtifact,
-    JudgeEvidence,
+from threetears.evals.schema import CallLedger, CellTermination, EvalResult, JudgedArtifact, JudgeEvidence
+from threetears.evals.kernel import (
     ResultCondition,
     ResultOutcome,
     classify_result,
     counted_goal_verdicts,
     resolve_result_condition,
 )
-from threetears.evals.contracts.base import EvalBaseModel
-from threetears.evals.contracts.errors import ValidationFailedError
-from threetears.evals.contracts.host import EvalHost
+from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.kernel.errors import ValidationFailedError
+from threetears.evals.kernel.host import EvalHost
 from threetears.evals.run import get_result, get_result_trace, get_run, list_results
 
 #: Which part of a stored result :func:`result_get` returns. ``record`` is the result with what its kind
@@ -245,7 +241,7 @@ def result_get(host: EvalHost, result_id: str, scope_id: str, *, part: ResultPar
     written (:func:`~threetears.evals.run.get_result_trace`, which logs a record whose trace no document
     backs; it reads here as ``missing``, never as none stored). Nothing is recomputed but the condition and
     the latency partition, each by the one function every surface asks
-    (:func:`~threetears.evals.contracts.resolve_result_condition`,
+    (:func:`~threetears.evals.kernel.resolve_result_condition`,
     :func:`~threetears.evals.analysis.reporting.decompose_total_ms`), so each reads here as it reads anywhere
     else. The whole trace document is read whichever part is asked for: the bound is on what is
     returned, which is what a reader's context pays for.

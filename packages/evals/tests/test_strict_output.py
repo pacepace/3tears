@@ -23,9 +23,9 @@ from threetears.evals.analysis.generator import (
     DEFAULT_ANALYSIS_GEN_REASONING_BUDGET_TOKENS,
     analysis_gen_request_settings_for,
 )
-from threetears.evals.contracts.host.subject import SubjectSnapshot
-from threetears.evals.contracts.host.sweepables import SHARED_CORE
-from threetears.evals.contracts.models import ClientRequestSettings, EvalRun
+from threetears.evals.schema.subject import SubjectSnapshot
+from threetears.evals.kernel.host.sweepables import SHARED_CORE
+from threetears.evals.schema.models import ClientRequestSettings, EvalRun
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 
 _SUBJECT = SubjectSnapshot(subject_id="summarizer-3", subject_label="Summarizer, config 3", state=None)

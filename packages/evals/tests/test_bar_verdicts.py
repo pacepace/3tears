@@ -14,9 +14,9 @@ from __future__ import annotations
 from dataclasses import replace
 
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
-from threetears.evals.contracts.analysis_measures import BarVerdict, MeasureSummary
-from threetears.evals.contracts.host import MeasureRegistry
-from threetears.evals.contracts.host.bars import BarRegistry
+from threetears.evals.kernel.analysis_measures import BarVerdict, MeasureSummary
+from threetears.evals.kernel.host import MeasureRegistry
+from threetears.evals.kernel.host.bars import BarRegistry
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_BARS, TOYHOST_MEASURES, toyhost_profile

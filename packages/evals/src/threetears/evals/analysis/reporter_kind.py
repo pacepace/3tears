@@ -56,14 +56,10 @@ from threetears.evals.analysis.report.words import (
     positions,
     stands_on_words,
 )
-from threetears.evals.contracts.authored import NO_CHART
-from threetears.evals.contracts.base import EvalDocumentModel
-from threetears.evals.contracts.campaign import (
-    ConfidenceTier,
-    EvalAnalysis,
-    FindingResolution,
-)
-from threetears.evals.contracts.candidate_kind import (
+from threetears.evals.kernel.authored import NO_CHART
+from threetears.evals.schema.base import EvalDocumentModel
+from threetears.evals.kernel.campaign import ConfidenceTier, EvalAnalysis, FindingResolution
+from threetears.evals.kernel.candidate_kind import (
     CandidateOutput,
     CandidatePreparationFailed,
     CandidateTelemetry,
@@ -71,18 +67,13 @@ from threetears.evals.contracts.candidate_kind import (
     CellSpanWindow,
     VariantConfig,
 )
-from threetears.evals.contracts.cassettes import CellCassettes
-from threetears.evals.contracts.hashing import canonical_digest
-from threetears.evals.contracts.host.eval_host import EvalHost
-from threetears.evals.contracts.models import DimName, EvalTestCase, JudgedArtifact, JudgeEvidence, RubricDim
-from threetears.evals.contracts.provider import (
-    CompletionGenerator,
-    CompletionResult,
-    RequestCeiling,
-    describe_failure,
-    log_provider_failure,
-)
-from threetears.evals.contracts.usage_capture import CallUsage, RoleUsageLedger
+from threetears.evals.kernel.cassettes import CellCassettes
+from threetears.evals.schema.hashing import canonical_digest
+from threetears.evals.kernel.host.eval_host import EvalHost
+from threetears.evals.schema.models import DimName, EvalTestCase, JudgedArtifact, JudgeEvidence, RubricDim
+from threetears.evals.schema.completion import CompletionGenerator, CompletionResult, RequestCeiling
+from threetears.evals.kernel.provider import describe_failure, log_provider_failure
+from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger
 from threetears.observe import get_logger
 
 log = get_logger(__name__)
@@ -711,7 +702,7 @@ class _RecordingClient:
         Each generator call that returned is a turn the candidate delivered (``turns_delivered``), so a memo
         refused for soundness, cut at its output cap, or failed in its repair call AFTER a call returned and
         was billed keeps that call's time and spend in the arm's cost and latency
-        (:func:`~threetears.evals.contracts.result_condition.delivered_a_turn`). Zero when the first call
+        (:func:`~threetears.evals.kernel.result_condition.delivered_a_turn`). Zero when the first call
         itself raised: nothing was delivered, and nothing is averaged in.
 
         Args:

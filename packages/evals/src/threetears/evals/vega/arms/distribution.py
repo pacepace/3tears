@@ -44,7 +44,7 @@ from threetears.evals.vega.compiler import (
     value_label_mark,
 )
 from threetears.evals.analysis.viz.intent import ChartIntent
-from threetears.evals.contracts.host import ChartFont
+from threetears.evals.kernel.host import ChartFont
 from threetears.evals.vega.palette import font_weights, geometry
 
 #: How tall the cap at a known interval bound is drawn, in px.

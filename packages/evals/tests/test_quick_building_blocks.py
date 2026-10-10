@@ -18,16 +18,11 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts import EvalTemplate, EvalTestCase, MetricDescriptor
-from threetears.evals.contracts.host import (
-    SHARED_CORE,
-    EvalHost,
-    HostProfile,
-    MeasureRegistry,
-    SubjectSnapshot,
-    default_cell_timeout,
-)
-from threetears.evals.contracts.storage import EvalStorage
+from threetears.evals.schema import EvalTemplate, EvalTestCase
+from threetears.evals.kernel import MetricDescriptor
+from threetears.evals.kernel.host import SHARED_CORE, EvalHost, HostProfile, MeasureRegistry, default_cell_timeout
+from threetears.evals.schema import SubjectSnapshot
+from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.quick import (
     CALLABLE_KIND,
     Measure,

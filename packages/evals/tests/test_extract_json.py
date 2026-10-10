@@ -1,4 +1,4 @@
-"""Contract for the one shared LLM-JSON-object extractor, :func:`threetears.evals.contracts.provider.extract_json`.
+"""Contract for the one shared LLM-JSON-object extractor, :func:`threetears.evals.kernel.provider.extract_json`.
 
 Every caller in the repo, eval and host alike, parses with this one function, so
 its strategies and its raising contract are pinned here rather than at any caller:
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from threetears.evals.contracts.provider import extract_json
+from threetears.evals.kernel.provider import extract_json
 
 
 class TestDirectParse:

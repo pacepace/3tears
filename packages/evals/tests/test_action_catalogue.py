@@ -17,7 +17,7 @@ is pinned here holds for FastMCP (``test_fastmcp_transport.py``) and any adapter
 
 from __future__ import annotations
 
-from threetears.evals.contracts import DEFAULT_LAUNCH_K_RUNS
+from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS
 
 from typing import Any
 
@@ -34,7 +34,7 @@ from threetears.evals.actions import (
     read_only_tools,
     standard_tools,
 )
-from threetears.evals.contracts.base import EvalBaseModel
+from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.ops import JobsStarted, OpsHost, RunLine
 from packages.evals.tests.ops_support import CALLER, ops_fixture
 

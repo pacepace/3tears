@@ -1,7 +1,7 @@
 """One job contract for every long-running operation: start, a job id, poll, cancel.
 
 A launch and an analysis generation both take minutes, and both already record their own ending
-durably — a run its ``status``, a generation its :class:`~threetears.evals.contracts.campaign.EvalAnalysisAttempt`.
+durably — a run its ``status``, a generation its :class:`~threetears.evals.kernel.campaign.EvalAnalysisAttempt`.
 So a job here is not a new record: it is a **name for the record that will say how the work ended**,
 and polling reads that record. Nothing about a job lives only in this process's memory, so a job id
 handed to an agent stays answerable after a restart — the answer is then that nothing is running it.
@@ -9,7 +9,7 @@ handed to an agent stays answerable after a restart — the answer is then that 
 **The job id names its record.** ``run:<run id>`` for a launched run (one per arm),
 ``analysis:<campaign id>:<attempt id>`` for a generation — the attempt is filed under its campaign, so
 the id carries both — and ``sweep:<sweep id>`` for a sweep, whose record
-(:class:`~threetears.evals.contracts.campaign.EvalSweep`) names its arms and their runs. :func:`parse_job_id`
+(:class:`~threetears.evals.kernel.campaign.EvalSweep`) names its arms and their runs. :func:`parse_job_id`
 is the one reader of that shape. A sweep is live to a caller only under its own scope's task key
 (:func:`sweep_key`), as a generation is.
 
@@ -32,13 +32,13 @@ from typing import Any, Literal
 from pydantic import Field
 
 from threetears.evals.analysis.service import list_analysis_attempts
-from threetears.evals.contracts.base import EvalBaseModel
-from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
-from threetears.evals.contracts.campaign import EvalSweep
-from threetears.evals.contracts.models import EvalRun
+from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.campaign import EvalSweep
+from threetears.evals.schema.models import EvalRun
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.run.lifecycle import get_run, repair_abandoned_run, require_cancellable
-from threetears.evals.contracts.offload import run_blocking
+from threetears.evals.kernel.offload import run_blocking
 
 #: What a job's work is: a launched run, an analysis generation, or a sweep launching its arms in order.
 JobKind = Literal["run", "analysis", "sweep"]

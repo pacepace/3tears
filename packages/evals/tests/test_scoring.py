@@ -1,4 +1,4 @@
-"""Tests for :mod:`threetears.evals.contracts.scoring` — every pure function that turns eval results into
+"""Tests for :mod:`threetears.evals.kernel.scoring` — every pure function that turns eval results into
 the numbers a run reports.
 
 The module's own thesis is the placement rule, and this file is its mirror: what is asserted
@@ -34,9 +34,9 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis import assemble_context_bundle, run_summary
-from threetears.evals.contracts.campaign import EvalCampaign
-from threetears.evals.contracts.metrics import METRIC_DESCRIPTORS
-from threetears.evals.contracts.models import (
+from threetears.evals.kernel.campaign import EvalCampaign
+from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS
+from threetears.evals.schema.models import (
     TRANSCRIPT_DIM_ID,
     AsyncDelivery,
     EvalResult,
@@ -44,8 +44,8 @@ from threetears.evals.contracts.models import (
     RoleUsage,
     RubricScore,
 )
-from threetears.evals.contracts.result_condition import ResultOutcome
-from threetears.evals.contracts.scoring import (
+from threetears.evals.kernel.result_condition import ResultOutcome
+from threetears.evals.kernel.scoring import (
     NO_PASS_CRITERION_REASON,
     CellSummary,
     compute_async_delivery_summary,
@@ -62,7 +62,7 @@ from threetears.evals.contracts.scoring import (
     result_composite,
     summarize_completeness,
 )
-from threetears.evals.contracts.identity import IDENTITY_VERSION
+from threetears.evals.kernel.identity import IDENTITY_VERSION
 from packages.evals.tests.factories import make_eval_result, make_eval_run, make_scored_result
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile

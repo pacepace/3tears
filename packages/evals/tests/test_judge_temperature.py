@@ -24,10 +24,10 @@ import pytest
 
 from threetears.evals.analysis import assemble_context_bundle
 from threetears.evals.analysis.agreement import judge_agreement, judge_self_agreement
-from threetears.evals.contracts import ValidationFailedError
-from threetears.evals.contracts.host.sweepables import CORE_ROLES, CORE_SWEEPABLES, SHARED_CORE, SweepableRegistry
-from threetears.evals.contracts.identity import derive_context_identity
-from threetears.evals.contracts.models import (
+from threetears.evals.kernel import ValidationFailedError
+from threetears.evals.kernel.host.sweepables import CORE_ROLES, CORE_SWEEPABLES, SHARED_CORE, SweepableRegistry
+from threetears.evals.kernel.identity import derive_context_identity
+from threetears.evals.schema.models import (
     DEFAULT_JUDGE_TEMPERATURE,
     EvalRun,
     MODEL_DEFAULT_TEMPERATURE,
@@ -39,7 +39,7 @@ from threetears.evals.contracts.models import (
     RubricDim,
     RubricScore,
 )
-from threetears.evals.contracts.provider import withhold_failure_detail
+from threetears.evals.kernel.provider import withhold_failure_detail
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import JudgeContext, JudgeService
 from threetears.evals.run.rejudge import recorded_judge_pins

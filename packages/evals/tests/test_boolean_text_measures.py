@@ -19,17 +19,12 @@ from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.references import resolve_reading
 from threetears.evals.analysis.stats import wilson_interval
-from threetears.evals.contracts import (
-    EvalResult,
-    MetricDescriptor,
-    classifier_label_measure,
-    classifier_label_of,
-    confusion_cell,
-)
-from threetears.evals.contracts.analysis_measures import MeasureCollection, MeasureSummary
-from threetears.evals.contracts.host import SHARED_CORE, HostProfile, MeasureRegistry
-from threetears.evals.contracts.metrics import confusion_of, describe_measure
-from threetears.evals.contracts.surface import CellFacts, DecisionSurface, MeasureFacts
+from threetears.evals.schema import EvalResult
+from threetears.evals.kernel import MetricDescriptor, classifier_label_measure, classifier_label_of, confusion_cell
+from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
+from threetears.evals.kernel.host import SHARED_CORE, HostProfile, MeasureRegistry
+from threetears.evals.kernel.metrics import confusion_of, describe_measure
+from threetears.evals.kernel.surface import CellFacts, DecisionSurface, MeasureFacts
 from packages.evals.tests.bundle_support import one_batch_bundle
 from packages.evals.tests.factories import make_eval_result
 
@@ -307,8 +302,8 @@ def test_a_core_named_covariate_no_writer_lands_is_dropped_and_named_never_poole
 
 
 def test_the_covariate_writer_writes_exactly_the_covariate_keys() -> None:
-    from threetears.evals.contracts import RoleUsage
-    from threetears.evals.contracts.covariates import COVARIATE_KEYS, derive_covariates, undeclarable_covariates
+    from threetears.evals.schema import RoleUsage
+    from threetears.evals.kernel.covariates import COVARIATE_KEYS, derive_covariates, undeclarable_covariates
 
     written = derive_covariates(
         usage=[RoleUsage(role="candidate", model="m", prompt_tokens=10, completion_tokens=5, reasoning_tokens=1)],

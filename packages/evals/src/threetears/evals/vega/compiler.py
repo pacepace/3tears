@@ -10,7 +10,7 @@ optional — the ``[vega]`` extra — and nothing in the core imports it.
 
 **The spec carries no colour.** Every consumer supplies the palette as a
 Vega-Lite ``config``: a browser host builds it from its own stylesheet, and the
-server builds it from a :class:`~threetears.evals.contracts.host.ChartPalette` —
+server builds it from a :class:`~threetears.evals.kernel.host.ChartPalette` —
 the host's, or the packaged default — as resolved sRGB hex, because its rasteriser
 cannot parse OKLCH. A colour literal compiled into the spec would defeat both.
 
@@ -69,7 +69,7 @@ from threetears.evals.vega.palette import (
     geometry,
 )
 from threetears.evals.analysis.viz.intent import ChartAxis, ChartIdentity, ChartIntent, chart_intent
-from threetears.evals.contracts.host import ChartFont
+from threetears.evals.kernel.host import ChartFont
 from threetears.evals.analysis.viz.payloads import PayloadError
 from threetears.evals.analysis.viz.quantities import strip_common_prefix
 from threetears.evals.vega.spec_policy import enforce_spec

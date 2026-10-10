@@ -8,7 +8,7 @@ Two rules in the text are load-bearing rather than stylistic, and
 ``tests/test_gen_proposers.py`` asserts both stay in it: dimension names must be
 namespaced ``<context>.<dim>``, because a judge config binds to a dim by name across
 every template, and a reused catalog dim keeps its ``key``. A draft naming a bare
-dimension fails validation (:data:`~threetears.evals.contracts.models.DimName`) and
+dimension fails validation (:data:`~threetears.evals.schema.models.DimName`) and
 the paid call is discarded, so the prompt has to teach the rule.
 
 Seeded empty-slot-only; the store is master once set.
@@ -16,7 +16,7 @@ Seeded empty-slot-only; the store is master once set.
 
 from __future__ import annotations
 
-from threetears.evals.contracts.prompts.seed import SeedSection, SeedTemplate
+from threetears.evals.kernel.prompts.seed import SeedSection, SeedTemplate
 
 #: The seeded default ``eval_proposer`` template: drafts a capability rubric and the variation axes that stress it.
 EVAL_PROPOSER_TEMPLATE_DEFAULT = SeedTemplate(

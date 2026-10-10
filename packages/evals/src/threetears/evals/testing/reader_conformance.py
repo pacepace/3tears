@@ -43,13 +43,13 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from threetears.evals.contracts.hashing import UnhashableContentError, canonical_json
-from threetears.evals.contracts.identity import LeverCoordinateError, derive_variant_identity
+from threetears.evals.schema.hashing import UnhashableContentError, canonical_json
+from threetears.evals.kernel.identity import LeverCoordinateError, derive_variant_identity
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.host.profile import HostProfile
-    from threetears.evals.contracts.host.sweepables import Sweepable
-    from threetears.evals.contracts.models import EvalResult, EvalRun
+    from threetears.evals.kernel.host.profile import HostProfile
+    from threetears.evals.kernel.host.sweepables import Sweepable
+    from threetears.evals.schema.models import EvalResult, EvalRun
 
 __all__ = [
     "READER_CONFORMANCE_CASES",

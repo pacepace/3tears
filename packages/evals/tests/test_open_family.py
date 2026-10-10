@@ -1,8 +1,8 @@
 """A measure family is open: a host declares its own, and says whether code or a judge produced the number.
 
-The engine's six families are named constants (:data:`~threetears.evals.contracts.ENGINE_FAMILIES`). A
+The engine's six families are named constants (:data:`~threetears.evals.kernel.ENGINE_FAMILIES`). A
 host whose measure is a kind of number none of them names declares a
-:class:`~threetears.evals.contracts.MeasureFamily` on its measure registry, and its ``graded_by`` decides
+:class:`~threetears.evals.kernel.MeasureFamily` on its measure registry, and its ``graded_by`` decides
 what the engine does with it: a ``code`` family ranks and may be held to a bar, exactly as ``mechanical``
 does; a ``judge`` family is described and never ranked, exactly as ``rubric`` is.
 
@@ -15,15 +15,10 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.contracts import (
-    ENGINE_FAMILIES,
-    MeasureFamily,
-    MetricDescriptor,
-    list_metrics,
-)
-from threetears.evals.contracts.declaration import UnreadableBarName, resolve_bar_name
-from threetears.evals.contracts.host import MeasureRegistrationError, MeasureRegistry
-from threetears.evals.contracts.metrics import CODE_GRADED_FAMILIES, is_code_graded
+from threetears.evals.kernel import ENGINE_FAMILIES, MeasureFamily, MetricDescriptor, list_metrics
+from threetears.evals.kernel.declaration import UnreadableBarName, resolve_bar_name
+from threetears.evals.kernel.host import MeasureRegistrationError, MeasureRegistry
+from threetears.evals.kernel.metrics import CODE_GRADED_FAMILIES, is_code_graded
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
 from packages.evals.tests.fixtures.toyhost.kind import FIELD_ACCURACY
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_EXTRACTION_FAMILY, toyhost_profile

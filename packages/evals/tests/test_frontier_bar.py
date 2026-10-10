@@ -21,9 +21,9 @@ from dataclasses import replace
 import pytest
 
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
-from threetears.evals.contracts.declaration import BarOverride, CampaignDesign, refuse_an_undeclarable_design
-from threetears.evals.contracts.host.bars import Bar, BarRegistry
-from threetears.evals.contracts.metrics import FRONTIER_RANKING_MEASURE
+from threetears.evals.kernel.declaration import BarOverride, CampaignDesign, refuse_an_undeclarable_design
+from threetears.evals.kernel.host.bars import Bar, BarRegistry
+from threetears.evals.kernel.metrics import FRONTIER_RANKING_MEASURE
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_BARS, toyhost_profile

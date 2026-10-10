@@ -47,7 +47,7 @@ class SoundnessRefusal(GenerationError):
     does not allow the requested writer model. Those
     must NOT be repaired here, and the reason is the truncation case specifically — regenerating a generation that hit
     the output cap spends a second full charge to hit the same cap
-    (:func:`~threetears.evals.contracts.provider.describe_incomplete_completion` says so in the message).
+    (:func:`~threetears.evals.kernel.provider.describe_incomplete_completion` says so in the message).
     A repair that fired there would be the "fallback tier accumulating untraceable
     behavior" the project rule warns about, dressed as a retry.
 
@@ -88,7 +88,7 @@ class SoundnessRefusal(GenerationError):
     **The residual, stated rather than papered over.** That chokepoint reads exactly one
     signal — ``result.stop_reason`` against ``INCOMPLETE_STOP_REASONS`` — so it is only as
     good as the host's normalisation, and
-    :class:`~threetears.evals.contracts.provider.CompletionResult` documents the hole in its own words:
+    :class:`~threetears.evals.schema.completion.CompletionResult` documents the hole in its own words:
     an implementation that passes a raw provider string through (OpenAI's ``length``, say)
     reads as finished here. Widening the repairable class made that residual more expensive,
     not less: such a result used to fail terminally at one billed call, because a parse

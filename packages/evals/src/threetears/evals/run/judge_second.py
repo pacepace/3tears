@@ -17,13 +17,13 @@ Both are one operation, :func:`ask_second_judge`, over the machinery a judge rep
 - **The evidence the first judge read, or no second opinion.** Each result's judge input is rebuilt from what its
   run recorded (:func:`~threetears.evals.run.rejudge.reproducible_judge_inputs`) — the template's intent and rubric,
   the case, and the evidence the cell's kind rendered for its first judge, read back off the stored trace. Only the
-  judge differs, and it is named in full (:class:`~threetears.evals.contracts.models.SecondJudge`).
+  judge differs, and it is named in full (:class:`~threetears.evals.schema.models.SecondJudge`).
 - **Priced before it is paid for.** Every call, parse retries included, is priced on the client it will be made on
   and admitted against the host's out-of-run cap before the first is sent. Each call made is written to the
   out-of-run ledger under purpose ``second_judge``, stamped with the run: measurement cost on its own line, never
   added to the candidate's ``cost_usd``.
 - **A measurement of the judge, never a change to the result.** The second judge's answers are recorded on the
-  result as a :class:`~threetears.evals.contracts.models.SecondJudging` beside the first scores they pair with; the
+  result as a :class:`~threetears.evals.schema.models.SecondJudging` beside the first scores they pair with; the
   scores every lens reads stay the ones the cell was judged with.
 - **A seeded sample, recorded.** The share asked is drawn from the run's judgeable results, sorted by id, with the
   seed given, so the same seed draws the same results; the fraction, the seed and the pass's id are written on every
@@ -41,9 +41,9 @@ from typing import TYPE_CHECKING
 
 from pydantic import ValidationError as PydanticValidationError
 
-from threetears.evals.contracts.base import EvalBaseModel
-from threetears.evals.contracts.errors import ConflictError, NotFoundError, StorageError, ValidationFailedError
-from threetears.evals.contracts.models import (
+from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.kernel.errors import ConflictError, NotFoundError, StorageError, ValidationFailedError
+from threetears.evals.schema.models import (
     NON_TERMINAL_RUN_STATUSES,
     EvalResult,
     EvalRun,
@@ -51,8 +51,8 @@ from threetears.evals.contracts.models import (
     SecondJudgeScore,
     SecondJudging,
 )
-from threetears.evals.contracts.offload import run_blocking
-from threetears.evals.contracts.out_of_run import OutOfRunBudget, PlannedCall
+from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.out_of_run import OutOfRunBudget, PlannedCall
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS, JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_repeat import BudgetedJudgeClient, planned_judge_call
 from threetears.evals.run.judge_service import JudgeService
@@ -66,9 +66,9 @@ from threetears.evals.run.runner import build_judge_context, judge_dims, judge_r
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.host.eval_host import EvalHost
-    from threetears.evals.contracts.models import JudgeConfig
-    from threetears.evals.contracts.storage import EvalStorage
+    from threetears.evals.kernel.host.eval_host import EvalHost
+    from threetears.evals.schema.models import JudgeConfig
+    from threetears.evals.kernel.storage import EvalStorage
     from threetears.evals.run.judge_service import JudgeContext, JudgeOutcome
 
 log = get_logger(__name__)

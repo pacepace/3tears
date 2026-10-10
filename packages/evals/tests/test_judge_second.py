@@ -35,13 +35,13 @@ import pytest
 
 from threetears.evals.analysis import inter_judge_agreement, judge_drift
 from threetears.evals.analysis.agreement import KAPPA_UNDEFINED_ONE_SCORE
-from threetears.evals.contracts import EvalCampaign
-from threetears.evals.contracts.candidate_kind import CandidateOutput, CellSink, CellSpanWindow, VariantConfig
-from threetears.evals.contracts.cassettes import CellCassettes
-from threetears.evals.contracts.errors import ValidationFailedError
-from threetears.evals.contracts.host.eval_host import EvalHost
-from threetears.evals.contracts.identity import resolve_variant_identity
-from threetears.evals.contracts.models import (
+from threetears.evals.kernel import EvalCampaign
+from threetears.evals.kernel.candidate_kind import CandidateOutput, CellSink, CellSpanWindow, VariantConfig
+from threetears.evals.kernel.cassettes import CellCassettes
+from threetears.evals.kernel.errors import ValidationFailedError
+from threetears.evals.kernel.host.eval_host import EvalHost
+from threetears.evals.kernel.identity import resolve_variant_identity
+from threetears.evals.schema.models import (
     EvalResult,
     EvalTemplate,
     EvalTestCase,
@@ -50,16 +50,16 @@ from threetears.evals.contracts.models import (
     RubricDim,
     SecondJudge,
 )
-from threetears.evals.contracts.provider import withhold_failure_detail
+from threetears.evals.kernel.provider import withhold_failure_detail
 from threetears.evals.analysis import assemble_context_bundle
-from threetears.evals.ops.summary import summarize_run
+from threetears.evals.analysis.summary import summarize_run
 from threetears.evals.run import ask_second_judge, estimate_second_judge
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS, JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import JudgeService
 from threetears.evals.run.launch import build_judge_service
 from threetears.evals.run.runner import RunnerOptions, run_one_result
 from threetears.evals.storage import InMemoryDocumentStore
-from threetears.evals.contracts import EvalStorage
+from threetears.evals.kernel import EvalStorage
 from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 

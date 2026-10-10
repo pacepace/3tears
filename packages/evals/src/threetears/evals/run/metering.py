@@ -43,13 +43,13 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from threetears.evals.contracts.host.spend import ExternalSpend
-from threetears.evals.contracts.provider import sum_optional_tokens
+from threetears.evals.schema.external_spend import ExternalSpend
+from threetears.evals.kernel.provider import sum_optional_tokens
 from threetears.evals.run import ceilings
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.models import MeteredCallOrigin
+    from threetears.evals.schema.models import MeteredCallOrigin
 
 log = get_logger(__name__)
 
@@ -323,7 +323,7 @@ class MeteredCallLedger:
         The companion of :meth:`resolve_effective_ceiling`, answering from the same launch and
         recorded beside the number it explains. Delegates to
         :func:`threetears.evals.run.ceilings.resolve_ceiling_origin`, which is the only place a
-        :data:`~threetears.evals.contracts.models.CostCapOrigin` is produced — so a change to that
+        :data:`~threetears.evals.schema.models.CostCapOrigin` is produced — so a change to that
         vocabulary cannot reach the metered-call ledger and miss the cost cap.
 
         Args:
@@ -333,7 +333,7 @@ class MeteredCallLedger:
             enforcement_enabled: Whether the caller enforces eval ceilings at all.
 
         Returns:
-            A :data:`~threetears.evals.contracts.models.MeteredCallOrigin` value: ``"none_declared"``
+            A :data:`~threetears.evals.schema.models.MeteredCallOrigin` value: ``"none_declared"``
             for a host declaring no metered tools, else ``"uncapped"`` when enforcement is off, else
             ``"chosen"`` or ``"inherited"``.
         """
@@ -435,7 +435,7 @@ class MeteredCallLedger:
         calls into a row of their own rather than losing them.
 
         Reads the fields directly rather than through ``getattr`` defaults. The type is
-        shared with the host's tools (:mod:`threetears.evals.contracts.host.spend`), so a shape
+        shared with the host's tools (:mod:`threetears.evals.schema.external_spend`), so a shape
         mismatch is not a state to degrade through: a defaulted read would count the call,
         attribute it to nobody and log nothing, which is a fallback masking a contract
         violation in the one module whose whole stance is that a broken mechanism must

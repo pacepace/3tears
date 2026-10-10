@@ -16,7 +16,7 @@ takes it is ``packages/evals/scripts/measure_font_metrics.py`` — dev tooling, 
 part of the installed package.
 
 **A table belongs to one face, and travels with it.** The table is a
-:class:`~threetears.evals.contracts.host.ChartFont` — the family list a renderer
+:class:`~threetears.evals.kernel.host.ChartFont` — the family list a renderer
 emits and the advances measured for its first family, in one value — so a layout
 can never be computed from one face's widths and drawn in another. The packaged one
 (:func:`packaged_font`) is **Liberation Sans**, chosen because it is the one face this
@@ -55,7 +55,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from threetears.evals.contracts.host import ChartFont, StyleError
+from threetears.evals.kernel.host import ChartFont, StyleError
 
 #: The measured artifact, beside the module that reads it.
 #:
@@ -152,7 +152,7 @@ def write_font_metrics(
     Raises:
         TextMetricsError: The corpus underestimates past :data:`SAFETY_MARGIN`, so a
             label would be truncated rather than moved to its own line, or the table is
-            not a usable :class:`~threetears.evals.contracts.host.ChartFont`; nothing is
+            not a usable :class:`~threetears.evals.kernel.host.ChartFont`; nothing is
             written.
     """
     if worst_ratio - 1.0 > SAFETY_MARGIN:
@@ -190,7 +190,7 @@ def write_font_metrics(
 
 
 def chart_font_from_artifact(artifact: dict[str, Any], *, where: str) -> ChartFont:
-    """The :class:`~threetears.evals.contracts.host.ChartFont` a metrics artifact describes.
+    """The :class:`~threetears.evals.kernel.host.ChartFont` a metrics artifact describes.
 
     Args:
         artifact: A parsed artifact, in the shape :func:`write_font_metrics` writes.

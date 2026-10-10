@@ -8,7 +8,7 @@ the analysis honours the mark.
 
 **Withheld, not pooled.** :func:`withhold_contended_latency` hands every analysis surface each marked result
 with its elapsed-time readings removed: its latency record, its phase timings, the elapsed time of its
-background work and every host measure of elapsed time (:func:`~threetears.evals.contracts.metrics.is_latency_measure`).
+background work and every host measure of elapsed time (:func:`~threetears.evals.kernel.metrics.is_latency_measure`).
 What a surface then reads is only latency taken serially, so a contrast, the Holm family, a bar, the frontier's
 latency axis, a history series, the mechanism and scope lenses, a chart and the report never compare a
 contended reading with anything — and a cell pooling runs of both kinds keeps the serial ones' latency and
@@ -29,11 +29,11 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING
 
-from threetears.evals.contracts.metrics import describe_measure, is_latency_measure
+from threetears.evals.kernel.metrics import describe_measure, is_latency_measure
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.host.measures import MeasureRegistry
-    from threetears.evals.contracts.models import EvalResult
+    from threetears.evals.kernel.host.measures import MeasureRegistry
+    from threetears.evals.schema.models import EvalResult
 
 #: The covariate that marks a result's latency as read under concurrency, and the value that marks it.
 EXECUTION_MODE = "execution_mode"

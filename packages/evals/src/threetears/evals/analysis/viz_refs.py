@@ -1,12 +1,12 @@
 """Compile a chart from the model's authored chart — the model picks the chart and the cells, code draws the numbers.
 
-The model authors one closed chart shape for every type (:class:`~threetears.evals.contracts.authored.Chart`:
+The model authors one closed chart shape for every type (:class:`~threetears.evals.kernel.authored.Chart`:
 ``cells``, ``measures``, ``axis``, ``note``, ``caption``), already checked strictly by
-:func:`~threetears.evals.contracts.authored.validate_authored`. :func:`reference_from_chart` reads its
+:func:`~threetears.evals.kernel.authored.validate_authored`. :func:`reference_from_chart` reads its
 lists by position into the chart type's own typed reference, refusing — in the words of the chart
 the model wrote (:data:`CHART_READINGS`) — any list that is not what the type reads; and
 :func:`build_viz_payload` compiles that reference into the payload the renderers read, from the
-analysis's frozen :class:`~threetears.evals.contracts.surface.DecisionSurface`. Every label and axis
+analysis's frozen :class:`~threetears.evals.kernel.surface.DecisionSurface`. Every label and axis
 title is computed here from the cells and measures, because the authored chart carries none.
 
 **Every number goes through** :func:`~threetears.evals.analysis.references.resolve_reading` — the one
@@ -48,17 +48,17 @@ from threetears.evals.analysis.references import (
     resolve_reading,
 )
 from threetears.evals.analysis.viz.payloads import ABSENT_LEVEL
-from threetears.evals.contracts.authored import Chart
-from threetears.evals.contracts.base import EvalBaseModel
-from threetears.evals.contracts.campaign import ReadingKind, VariantIndexEntry
-from threetears.evals.contracts.host.measures import MeasureRegistry
-from threetears.evals.contracts.metrics import (
+from threetears.evals.kernel.authored import Chart
+from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.kernel.campaign import ReadingKind, VariantIndexEntry
+from threetears.evals.kernel.host.measures import MeasureRegistry
+from threetears.evals.kernel.metrics import (
     MEASURING_SPEND_MEASURES,
     describe_reported_measure,
     materiality,
     remainder_withheld_reason,
 )
-from threetears.evals.contracts.surface import CellFacts, DecisionSurface, TimePosition
+from threetears.evals.kernel.surface import CellFacts, DecisionSurface, TimePosition
 
 #: The dimension a sweep row gains when one arm was measured under more than one rig. Without it
 #: the two cells carry identical levels and draw as one configuration holding two ranks.

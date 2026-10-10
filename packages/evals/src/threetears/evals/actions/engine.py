@@ -18,9 +18,10 @@ from pydantic import Field, ValidationError
 
 from threetears.evals.actions import render
 from threetears.evals.actions.catalogue import Action, ActionCatalogue, Caller
-from threetears.evals.contracts import EvalRunStatus, ResultOutcome, ValidationFailedError
-from threetears.evals.contracts.base import EvalBaseModel
-from threetears.evals.contracts import OutOfRunPurpose
+from threetears.evals.schema import EvalRunStatus
+from threetears.evals.kernel import ResultOutcome, ValidationFailedError
+from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.schema import OutOfRunPurpose
 from threetears.evals.ops import (
     SweepArguments,
     SweepSettings,
@@ -106,7 +107,7 @@ from threetears.evals.ops import (
     scope_pivot,
     templates_list,
 )
-from threetears.evals.contracts.models import SecondJudge
+from threetears.evals.schema.models import SecondJudge
 from threetears.evals.run import SecondJudgeEstimate, run_blocking
 
 # --- the parameters, each declared once ---------------------------------------------------------------

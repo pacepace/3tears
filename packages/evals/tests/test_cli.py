@@ -21,7 +21,8 @@ import jsonschema
 import pytest
 
 from threetears.evals.analysis import NO_ANALYSIS, published_report_schema
-from threetears.evals.contracts import CandidateOutput, EvalRun, EvalTestCase, JudgedArtifact
+from threetears.evals.kernel import CandidateOutput
+from threetears.evals.schema import EvalRun, EvalTestCase, JudgedArtifact
 from threetears.evals.ops import report_read
 from threetears.evals.quick import (
     EXIT_FAILED,

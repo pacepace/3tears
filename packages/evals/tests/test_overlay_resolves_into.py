@@ -41,15 +41,15 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.bundle import UNVERIFIED_FOLD_PREFIX
 from threetears.evals.analysis.generator import build_user_message
-from threetears.evals.contracts import (
+from threetears.evals.kernel import (
     CampaignDesign,
     ControlDeclaration,
     EvalCampaign,
-    EvalRun,
     SweptAxis,
     resolve_variant_identity,
 )
-from threetears.evals.contracts.host import (
+from threetears.evals.schema import EvalRun
+from threetears.evals.kernel.host import (
     SHARED_CORE,
     ActsOn,
     HostProfile,
@@ -59,9 +59,9 @@ from threetears.evals.contracts.host import (
     RegistrationError,
     ResolvesInto,
     Sweepable,
-    SweepableValue,
     freeze,
 )
+from threetears.evals.schema import SweepableValue
 from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRACT
 from packages.evals.tests.fixtures.toyhost.corpus import (
     TOYHOST_SCOPE,
@@ -76,7 +76,7 @@ from packages.evals.tests.fixtures.toyhost.sweepables import TOYHOST_SWEEPABLE_R
 from packages.evals.tests.fixtures.toyhost.variant import variant_levers
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts import EvalResult
+    from threetears.evals.schema import EvalResult
 
 #: The host's lever for the resolved model parameters, and the overlay knob written into it.
 _PARAMS = "llm_parameters"

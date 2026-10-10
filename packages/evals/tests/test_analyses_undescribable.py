@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from threetears.evals.actions import eval_catalogue, standard_tools
-from threetears.evals.contracts.campaign import EvalAnalysis
+from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.ops import UndescribableArmsListing, analyses_undescribable, analysis_generate
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture, settled
 

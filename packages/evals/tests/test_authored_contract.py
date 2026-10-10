@@ -9,8 +9,8 @@ import pytest
 from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 
 from threetears.evals.analysis.viz_refs import REFERENCEABLE_VIZ_TYPES
-from threetears.evals.contracts import authored
-from threetears.evals.contracts.campaign import ENGINE_CAVEAT_KINDS
+from threetears.evals.kernel import authored
+from threetears.evals.kernel.campaign import ENGINE_CAVEAT_KINDS
 
 
 KINDS = ENGINE_CAVEAT_KINDS
@@ -208,14 +208,14 @@ class TestOneVocabulary:
     def test_the_confidence_tiers_are_the_analysis_models_tiers(self):
         import typing
 
-        from threetears.evals.contracts.campaign import CONFIDENCE_TIERS
+        from threetears.evals.kernel.campaign import CONFIDENCE_TIERS
 
         assert set(typing.get_args(authored.Confidence)) == set(CONFIDENCE_TIERS)
 
     def test_the_reading_kinds_are_the_analysis_models_kinds(self):
         import typing
 
-        from threetears.evals.contracts.campaign import ReadingKind
+        from threetears.evals.kernel.campaign import ReadingKind
 
         assert set(typing.get_args(authored.Reading)) == set(typing.get_args(ReadingKind))
 

@@ -2,7 +2,7 @@
 
 :func:`threetears.evals.analysis.surface_table.build_surface_table` turns an analysis's frozen per-cell
 facts into the one table every surface renders. No toy-driving test reaches it, because it reads a
-stored :class:`~threetears.evals.contracts.campaign.EvalAnalysis` rather than a bundle. The substitute
+stored :class:`~threetears.evals.kernel.campaign.EvalAnalysis` rather than a bundle. The substitute
 evidence is an analysis built by hand for an invoice extractor swept over two models. It has no
 adapter import and no host vocabulary.
 
@@ -20,13 +20,13 @@ from threetears.evals.analysis.surface_table import (
     SurfaceTable,
     build_surface_table,
 )
-from threetears.evals.contracts.analysis_measures import BarAdjudication, BarVerdict, MeasureCollection, MeasureSummary
-from threetears.evals.contracts.authored import NO_CHART, AuthoredAnalysis
-from threetears.evals.contracts.campaign import EvalAnalysis, GenerationProvenance, VariantIndexEntry
-from threetears.evals.contracts.declaration import CampaignDesign, ControlDeclaration, SweptAxis
-from threetears.evals.contracts.host.values import SweepableValue
-from threetears.evals.contracts.identity import compute_variant_key
-from threetears.evals.contracts.surface import CellFacts, DecisionSurface, MeasureFacts
+from threetears.evals.kernel.analysis_measures import BarAdjudication, BarVerdict, MeasureCollection, MeasureSummary
+from threetears.evals.kernel.authored import NO_CHART, AuthoredAnalysis
+from threetears.evals.kernel.campaign import EvalAnalysis, GenerationProvenance, VariantIndexEntry
+from threetears.evals.kernel.declaration import CampaignDesign, ControlDeclaration, SweptAxis
+from threetears.evals.schema.values import SweepableValue
+from threetears.evals.kernel.identity import compute_variant_key
+from threetears.evals.kernel.surface import CellFacts, DecisionSurface, MeasureFacts
 
 
 AXIS = "extractor_model"

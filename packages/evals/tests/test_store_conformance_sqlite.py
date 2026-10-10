@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from threetears.evals.contracts import StoreConflict
+from threetears.evals.schema import StoreConflict
 from threetears.evals.storage import SQLITE_STORE_LAYOUT, SqliteDocumentStore
 from threetears.evals.testing import STORE_CONFORMANCE_CASES, StoreConformanceCase
 

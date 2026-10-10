@@ -454,7 +454,7 @@ The engine measures both and labels every judged reading with the result — the
 never hides a reading for a weak tier; it tells you how much weight it can bear.
 
 Every judged reading carries a tier that code decides from what the judge's reliability was measured to be
-(`threetears.evals.contracts.evidence_tiers`): `evidence_tier` on each `judged_measures` arm and each judged
+(`threetears.evals.kernel.evidence_tiers`): `evidence_tier` on each `judged_measures` arm and each judged
 reading on the decision surface, and `judged_tier` on a finding's resolved evidence row. Code decides it, never
 the analysis writer, because how far a score can be leaned on depends on two measurements of the judge and on
 nothing a report's author says:

@@ -28,8 +28,9 @@ import pytest
 from fastmcp import Client, FastMCP
 
 from threetears.evals.actions import eval_catalogue, standard_tools
-from threetears.evals.contracts import IDENTITY_VERSION, EvalRun, EvalStorage, ValidationFailedError
-from threetears.evals.contracts.identity import derive_context_identity, derive_variant_identity
+from threetears.evals.kernel import IDENTITY_VERSION, EvalStorage, ValidationFailedError
+from threetears.evals.schema import EvalRun
+from threetears.evals.kernel.identity import derive_context_identity, derive_variant_identity
 from threetears.evals.ops import LaunchArguments, run_launch
 from threetears.evals.quick import run_cli
 from threetears.evals.run import (

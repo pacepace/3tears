@@ -13,17 +13,14 @@ import logging
 from pathlib import Path
 
 
-from threetears.evals.contracts.provider import (
-    ProviderFailure,
-    describe_and_log_failure,
-    log_provider_failure,
-)
+from threetears.evals.schema.completion import ProviderFailure
+from threetears.evals.kernel.provider import describe_and_log_failure, log_provider_failure
 
 
 _REPO = Path(__file__).resolve().parents[1] / "src"
 _ENVELOPE = '{"error": {"message": "Insufficient credits", "metadata": {"account_id": "acct-SECRET"}}}'
 #: The one module that may read the flag: it is where the logging decision is made.
-_READER = _REPO / "threetears" / "evals" / "contracts" / "provider.py"
+_READER = _REPO / "threetears" / "evals" / "kernel" / "provider.py"
 
 
 class _ProviderDown(Exception):

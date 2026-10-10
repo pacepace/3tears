@@ -7,7 +7,7 @@ legitimately means "this host has no operation registry". It raises nothing, log
 reddens no test — an unwired site just quietly measures less than the operator believes it does.
 
 The host's own wiring of that kind — its trace sink, cell timeout, blocking executor and failure
-describer — carries no default at all on :class:`~threetears.evals.contracts.host.EvalHost`, which
+describer — carries no default at all on :class:`~threetears.evals.kernel.host.EvalHost`, which
 is stronger than any walk: every construction names it. What remains walked here is the
 constructors that still default.
 
@@ -127,7 +127,7 @@ def test_every_host_names_the_wiring_whose_default_would_be_silent(name):
 
     The four used to be ``RunnerOptions`` fields, defaulted, and held by an AST walk over every
     construction site outside ``tests/``. They are the host's now, carried on the one
-    :class:`~threetears.evals.contracts.host.EvalHost` each entrypoint is handed, and the walk is
+    :class:`~threetears.evals.kernel.host.EvalHost` each entrypoint is handed, and the walk is
     replaced by something it could only approximate: the field has no default, so EVERY
     construction — a host's, a probe's, a test's — names it, and one that does not fails on
     construction rather than measuring less than its operator believes. ``None`` is still a legal
@@ -140,7 +140,7 @@ def test_every_host_names_the_wiring_whose_default_would_be_silent(name):
     serves (in a web host: the liveness probes); and a describer that cannot tell an account refusal
     keeps launching cells into a key that refuses every one of them.
     """
-    from threetears.evals.contracts.host import EvalHost
+    from threetears.evals.kernel.host import EvalHost
 
     declared = {field.name: field for field in dataclasses.fields(EvalHost)}
 

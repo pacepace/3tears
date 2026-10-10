@@ -4,7 +4,7 @@ A generation is the analysis side's long work, and it follows the same job contr
 (:mod:`threetears.evals.ops.jobs`): :func:`analysis_generate` checks and builds everything before it
 spends — so a refused generation raises to its caller and costs nothing — then starts the paid call as a
 background task and returns its job. The job's record is the
-:class:`~threetears.evals.contracts.campaign.EvalAnalysisAttempt` the generation writes however it ends.
+:class:`~threetears.evals.kernel.campaign.EvalAnalysisAttempt` the generation writes however it ends.
 
 One generation per campaign runs at a time: a second is refused while the first is live, BEFORE it
 prepares, because preparing builds a client and resolves the prompt — work a refused request need not
@@ -21,7 +21,8 @@ from threetears.evals.analysis.bundle import InsightStanding, insight_standing
 from threetears.evals.analysis.bar_proposals import propose_bars
 from threetears.evals.analysis.campaigns import create_campaign, list_campaigns
 from threetears.evals.analysis.numbers import format_number
-from threetears.evals.analysis.report import Report, ReportBasis, report_html, report_markdown
+from threetears.evals.analysis.report import ReportBasis
+from threetears.evals.analysis.report.serialize import ReportFormat, serialize_report
 from threetears.evals.analysis.service import (
     AnalysisGenerationEstimate,
     campaign_report,
@@ -33,17 +34,13 @@ from threetears.evals.analysis.service import (
     prepare_analysis_generation,
     run_analysis_generation,
 )
-from threetears.evals.contracts.base import EvalBaseModel, VerbatimText
-from threetears.evals.contracts.campaign import ConfidenceTier, EvalAnalysis, EvalCampaign, EvalInsight
-from threetears.evals.contracts.errors import ConflictError, NotFoundError, ValidationFailedError
-from threetears.evals.contracts.host import EvalHost
+from threetears.evals.schema.base import EvalBaseModel, VerbatimText
+from threetears.evals.kernel.campaign import ConfidenceTier, EvalAnalysis, EvalCampaign, EvalInsight
+from threetears.evals.kernel.errors import ConflictError, NotFoundError, ValidationFailedError
+from threetears.evals.kernel.host import EvalHost
 from threetears.evals.ops.host import AnalysisGeneration, OpsHost
 from threetears.evals.ops.jobs import JobHandle, JobsStarted, analysis_job_id, generation_key
 from threetears.evals.run.curation import delete_analysis, delete_insight, set_analysis_archived, set_campaign_archived
-
-#: The forms a report is read in: Markdown (the memo, and what an agent reads), its canonical JSON (what
-#: the published schema validates) and HTML that reads without any script.
-ReportFormat = Literal["markdown", "json", "html"]
 
 
 class CampaignLine(EvalBaseModel):
@@ -500,25 +497,6 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
     )
 
 
-def serialize_report(report: Report, format: ReportFormat) -> str:
-    """A report in one of its three forms.
-
-    Args:
-        report: The report.
-        format: ``markdown``, ``json`` (canonical, what the published schema validates) or ``html``.
-
-    Returns:
-        The serialized report.
-    """
-    match format:
-        case "markdown":
-            return report_markdown(report)
-        case "html":
-            return report_html(report)
-        case "json":
-            return report.to_canonical_json()
-
-
 def report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat) -> ReportDocument:
     """The campaign's report, serialized in one form — the same report the command line's ``report`` prints.
 
@@ -592,7 +570,7 @@ def bars_propose(host: EvalHost, campaign_id: str, scope_id: str) -> BarProposal
     :func:`~threetears.evals.analysis.bar_proposals.propose_bars`, read through: each proposal seeded from the
     incumbent's measured interval and flagged vacuous where nothing could fail it, and every reading nothing
     could be proposed on named with why. **Nothing is registered**: a bar reaches a registry only when a person
-    writes it into the host's registrations, since :class:`~threetears.evals.contracts.host.BarRegistry` has no
+    writes it into the host's registrations, since :class:`~threetears.evals.kernel.host.BarRegistry` has no
     mutation API.
 
     Args:
@@ -769,7 +747,6 @@ __all__ = [
     "InsightStandingName",
     "ProposedBar",
     "ReportDocument",
-    "ReportFormat",
     "UndescribableArmsLine",
     "UndescribableArmsListing",
     "analyses_list",
@@ -787,5 +764,4 @@ __all__ = [
     "insight_get",
     "insights_list",
     "report_read",
-    "serialize_report",
 ]

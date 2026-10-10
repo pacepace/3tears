@@ -7,7 +7,7 @@ The system prompt that steers the analysis generator
 **The schema carries the shape; this prompt is how to judge.** The generator sends the authored
 document's schema as a strict ``response_format`` beside this prompt
 (:func:`threetears.evals.analysis.generator.first_request`, built from
-:mod:`threetears.evals.contracts.authored`), and the same models check what comes back. So this text
+:mod:`threetears.evals.kernel.authored`), and the same models check what comes back. So this text
 restates no field-by-field template: a second description of the shape is a second thing to drift.
 What stays is interpretation a schema cannot say — which finding to write, how firmly, in what
 order, which chart a claim earns — plus the few conventions a schema states badly.

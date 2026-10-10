@@ -27,7 +27,7 @@ import random
 from collections.abc import Callable
 
 from threetears.evals.analysis import JudgeDriftDimension, inter_judge_agreement, judge_drift
-from threetears.evals.contracts.models import EvalResult, RubricScore, SecondJudge, SecondJudgeScore, SecondJudging
+from threetears.evals.schema.models import EvalResult, RubricScore, SecondJudge, SecondJudgeScore, SecondJudging
 from packages.evals.tests.factories import make_eval_result
 from packages.evals.tests.simulation_support import TOLERANCE_Z, at_least, at_most, draw_rater_pairs
 

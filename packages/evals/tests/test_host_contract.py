@@ -6,7 +6,7 @@ here is that sentence applied to one surface.
 
 The four companion gates, and where each lives:
 
-1. **The AST import gate** — ``threetears/evals/contracts/host/**`` and ``threetears/evals/analysis/**``
+1. **The AST import gate** — ``threetears/evals/kernel/host/**`` and ``threetears/evals/analysis/**``
    import nothing from a host. ``test_package_matrix.py`` holds it, for every placed package: each row
    of the allowed-dependency matrix forbids the host.
 2. **No host names in the shared registry** — ``test_no_host_names_in_shared_contract.py`` runs the
@@ -29,11 +29,11 @@ from typing import Any, get_args
 
 import pytest
 
-from threetears.evals.contracts.host import style as style_module
-from threetears.evals.contracts.host.bars import Bar, BarRegistrationError, BarRegistry
-from threetears.evals.contracts.host.measures import MeasureRegistrationError, MeasureRegistry
-from threetears.evals.contracts.host.profile import HostProfile, ProfileRegistrationError
-from threetears.evals.contracts.host.style import (
+from threetears.evals.kernel.host import style as style_module
+from threetears.evals.kernel.host.bars import Bar, BarRegistrationError, BarRegistry
+from threetears.evals.kernel.host.measures import MeasureRegistrationError, MeasureRegistry
+from threetears.evals.kernel.host.profile import HostProfile, ProfileRegistrationError
+from threetears.evals.kernel.host.style import (
     CHART_FONT_CHARACTERS,
     ChartFont,
     ChartPalette,
@@ -41,16 +41,16 @@ from threetears.evals.contracts.host.style import (
     StyleProfile,
     ToneRegister,
 )
-from threetears.evals.contracts.host.sweepables import (
+from threetears.evals.kernel.host.sweepables import (
     CANDIDATE_KIND_LEVER,
     CANDIDATE_MODEL_LEVER,
     SHARED_CORE,
     Sweepable,
     SweepableRegistry,
-    SweepableValue,
 )
-from threetears.evals.contracts.identity import LeverCoordinateError, derive_variant_identity
-from threetears.evals.contracts.metrics import METRIC_DESCRIPTORS, MetricDescriptor
+from threetears.evals.schema.values import SweepableValue
+from threetears.evals.kernel.identity import LeverCoordinateError, derive_variant_identity
+from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, MetricDescriptor
 from packages.evals.tests.fixtures.toyhost.corpus import (
     CLEAN_SWEEP,
     CONFOUNDED_SWEEP,
@@ -164,7 +164,7 @@ def test_coverage_is_derived_from_the_profile_and_cannot_drift_from_it():
 
     Observability is derived the same way and has no method to assert here: the measures registry
     is that map, and it is read by the callers that need a descriptor rather than by a predicate
-    over one (:class:`~threetears.evals.contracts.host.profile.HostProfile` carries why).
+    over one (:class:`~threetears.evals.kernel.host.profile.HostProfile` carries why).
     """
     toy = toyhost_profile()
 
@@ -274,7 +274,7 @@ def test_every_coverage_predicate_on_the_profile_has_a_production_caller():
     """
 
     def _public_methods_returning(module: str, class_name: str, annotation: str) -> set[str]:
-        source = ast.parse((_EVAL_ROOT / "contracts" / "host" / module).read_text())
+        source = ast.parse((_EVAL_ROOT / "kernel" / "host" / module).read_text())
         class_def = next(n for n in ast.walk(source) if isinstance(n, ast.ClassDef) and n.name == class_name)
         return {
             node.name
@@ -367,7 +367,7 @@ def test_the_only_style_text_reaching_a_prompt_is_an_engine_owned_fragment():
     """Style never reaches the model as the host wrote it — the narrow claim, named narrowly.
 
     **This is the seam, not the gate**, and its name says which. It asserts that
-    :func:`~threetears.evals.contracts.host.style.prompt_fragment` is the only function turning style into
+    :func:`~threetears.evals.kernel.host.style.prompt_fragment` is the only function turning style into
     prompt text and that it reads one enum. A gate over the whole ASSEMBLED prompt — where the
     generator actually builds a prompt for a host — is a different check and is not this one: this
     one fails when the seam grows a second door, that one would fail when something comes through it.
@@ -1295,7 +1295,7 @@ def _refusal_prefix(registry: MeasureRegistry) -> str:
     """The attribution a registry's runtime refusal carries, read off the refusal itself.
 
     A lookup of a measure the host never declared is a refusal every registry built on
-    :class:`~threetears.evals.contracts.host.attribution.HostAttributed` words the same way,
+    :class:`~threetears.evals.kernel.host.attribution.HostAttributed` words the same way,
     so the text before the measure's name is exactly the host prefix.
     """
     with pytest.raises(KeyError) as refused:
@@ -1315,7 +1315,7 @@ def test_rebinding_the_same_host_keeps_the_attribution(caplog) -> None:
     import logging
 
     registry = MeasureRegistry([])
-    with caplog.at_level(logging.WARNING, logger="threetears.evals.contracts.host.attribution"):
+    with caplog.at_level(logging.WARNING, logger="threetears.evals.kernel.host.attribution"):
         registry.bind_host("first-host")
         assert _refusal_prefix(registry) == "host 'first-host': "
 
@@ -1339,7 +1339,7 @@ def test_a_second_host_drops_the_attribution_and_says_so_once(caplog) -> None:
 
     registry = MeasureRegistry([])
     registry.bind_host("first-host")
-    with caplog.at_level(logging.WARNING, logger="threetears.evals.contracts.host.attribution"):
+    with caplog.at_level(logging.WARNING, logger="threetears.evals.kernel.host.attribution"):
         registry.bind_host("toyhost")
         registry.bind_host("thirdhost")
 

@@ -25,8 +25,8 @@ from threetears.evals.analysis.report import build_code_only_report
 from threetears.evals.analysis.report.model import DisclosureBlock
 from threetears.evals.analysis.reporting import METRIC_COST_USD, HistoryResult, RegressionFlag, compute_history
 from threetears.evals.analysis.stats import EQUIVALENCE_NEEDS_RANGE, paired_change
-from threetears.evals.contracts.host import HostProfile, MeasureRegistry
-from threetears.evals.contracts.metrics import MetricDescriptor
+from threetears.evals.kernel.host import HostProfile, MeasureRegistry
+from threetears.evals.kernel.metrics import MetricDescriptor
 from threetears.evals.ops import history_text
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile

@@ -25,12 +25,12 @@ from threetears.evals.analysis.arms import arm_names, arm_table_of, writer_arms
 from threetears.evals.analysis.references import ReadingRef
 from threetears.evals.analysis.surface_table import build_surface_table
 from threetears.evals.analysis.viz_refs import FrontierRef, build_viz_payload
-from threetears.evals.contracts.campaign import EvalAnalysis
-from threetears.evals.contracts.declaration import SweptAxis
-from threetears.evals.contracts.host import EvalHost
-from threetears.evals.contracts.host.measures import MeasureRegistrationError, MeasureRegistry
-from threetears.evals.contracts.host.values import IntervalScale, SweepableValue
-from threetears.evals.contracts.metrics import METRIC_DESCRIPTORS, MetricDescriptor, goal_check_of
+from threetears.evals.kernel.campaign import EvalAnalysis
+from threetears.evals.kernel.declaration import SweptAxis
+from threetears.evals.kernel.host import EvalHost
+from threetears.evals.kernel.host.measures import MeasureRegistrationError, MeasureRegistry
+from threetears.evals.schema.values import IntervalScale, SweepableValue
+from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, MetricDescriptor, goal_check_of
 from threetears.evals.vega.compiler import compile_chart, draw_intent
 from packages.evals.tests.fixtures.toyhost.campaign import (
     TOYHOST_AXIS,

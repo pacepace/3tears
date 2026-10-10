@@ -19,7 +19,7 @@ from collections.abc import Callable, Sequence
 from itertools import chain
 
 from threetears.evals.analysis.agreement import tier_sentence
-from threetears.evals.contracts.models import CHECK_REFUSED_UNDER_CURRENT_GRAMMAR
+from threetears.evals.schema.models import CHECK_REFUSED_UNDER_CURRENT_GRAMMAR
 from threetears.evals.analysis.arms import ArmTable, arm_names, arm_table, arm_table_of, short_digest, surface_order
 from threetears.evals.analysis.bundle import (
     AnalysisContextBundle,
@@ -69,22 +69,17 @@ from threetears.evals.analysis.viz.intent import Cell, chart_intent
 from threetears.evals.analysis.viz.payloads import PayloadError
 from threetears.evals.analysis.viz.policy import IntentPolicyError
 from threetears.evals.analysis.viz_refs import DistributionRef, build_viz_payload, cell_arm_labels
-from threetears.evals.contracts.authored import NO_CHART, Finding
-from threetears.evals.contracts.campaign import EvalAnalysis, EvidenceRow, FindingResolution, ReadingKind, Viz
-from threetears.evals.contracts.host.measures import MeasureRegistry
+from threetears.evals.kernel.authored import NO_CHART, Finding
+from threetears.evals.kernel.campaign import EvalAnalysis, EvidenceRow, FindingResolution, ReadingKind, Viz
+from threetears.evals.kernel.host.measures import MeasureRegistry
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.stats import EQUIVALENCE_NEEDS_RANGE, INTERVAL_LEVEL
 from threetears.evals.analysis.viz.quantities import display_scale, with_unit
-from threetears.evals.contracts.analysis_measures import MeasureSummary
-from threetears.evals.contracts.campaign import VariantIndexEntry
-from threetears.evals.contracts.metrics import (
-    ACCURACY_MEASURE,
-    MATCH_MEASURE,
-    ClassifierStatistic,
-    classifier_label_of,
-)
-from threetears.evals.contracts.declaration import JUDGED_MERIT_AXIS, CampaignDesign, Question, exploratory_reading
-from threetears.evals.contracts.surface import (
+from threetears.evals.kernel.analysis_measures import MeasureSummary
+from threetears.evals.kernel.campaign import VariantIndexEntry
+from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, ClassifierStatistic, classifier_label_of
+from threetears.evals.kernel.declaration import JUDGED_MERIT_AXIS, CampaignDesign, Question, exploratory_reading
+from threetears.evals.kernel.surface import (
     STRATUM_MIN_CASES,
     CellFacts,
     DecisionSurface,

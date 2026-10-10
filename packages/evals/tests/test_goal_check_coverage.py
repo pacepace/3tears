@@ -11,8 +11,8 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts.candidate_kind import CandidateOutput, CellSink
-from threetears.evals.contracts.models import EvalTestCase, GoalStateOutcome
+from threetears.evals.kernel.candidate_kind import CandidateOutput, CellSink
+from threetears.evals.schema.models import EvalTestCase, GoalStateOutcome
 from threetears.evals.run.runner import RunnerOptions, execute_run, hold_to_goal_checks
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND, ScriptedExtractionClient, ToyExtractorKind

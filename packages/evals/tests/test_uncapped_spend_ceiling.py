@@ -10,9 +10,9 @@ surfaces that read the declaration: the bisection and the bundle's apparatus sca
 from __future__ import annotations
 
 from threetears.evals.analysis.reads import bisect_runs
-from threetears.evals.contracts import EvalStorage
-from threetears.evals.contracts.host.sweepables import UNCAPPED_SPEND
-from threetears.evals.contracts.models import EvalRun
+from threetears.evals.kernel import EvalStorage
+from threetears.evals.kernel.host.sweepables import UNCAPPED_SPEND
+from threetears.evals.schema.models import EvalRun
 from threetears.evals.analysis import assemble_context_bundle
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_eval_run

@@ -28,8 +28,8 @@ from typing import Protocol
 
 from pydantic import ValidationError
 
-from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
-from threetears.evals.contracts.models import CalibrationRating, EvalResult, RaterKind
+from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.schema.models import CalibrationRating, EvalResult, RaterKind
 from threetears.observe import get_logger
 
 log = get_logger(__name__)
@@ -38,7 +38,7 @@ log = get_logger(__name__)
 class RatingStore(Protocol):
     """The two calls a rating makes: read the rated result, write the rating.
 
-    Structural, so :class:`~threetears.evals.contracts.storage.EvalStorage` satisfies it by having
+    Structural, so :class:`~threetears.evals.kernel.storage.EvalStorage` satisfies it by having
     the methods. Positional parameters are positional-only.
     """
 

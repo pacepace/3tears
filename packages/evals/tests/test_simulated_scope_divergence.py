@@ -27,7 +27,8 @@ import pytest
 
 from threetears.evals.analysis import MeasureMovement, ScopeDivergence, assemble_context_bundle
 from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA, holm_adjust, level_difference
-from threetears.evals.contracts import EvalCampaign, EvalResult, EvalRun, LatencyMetrics
+from threetears.evals.kernel import EvalCampaign
+from threetears.evals.schema import EvalResult, EvalRun, LatencyMetrics
 from packages.evals.tests.fixtures.toyhost.corpus import (
     TOYHOST_DOCUMENTS,
     TOYHOST_SCOPE,
@@ -266,7 +267,7 @@ class TestTheCarrierIsNamedOnlyWhenShown:
         from fractions import Fraction
 
         from threetears.evals.analysis import component_carrier, measure_movement
-        from threetears.evals.contracts.metrics import describe_measure
+        from threetears.evals.kernel.metrics import describe_measure
 
         registry = toyhost_profile().measures
         rng = random.Random(seed)

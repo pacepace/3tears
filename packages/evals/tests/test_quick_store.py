@@ -25,7 +25,7 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis import list_campaigns
-from threetears.evals.contracts.errors import ValidationFailedError
+from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.ops import scope_history, summarize_run
 from threetears.evals.quick import Judge, callable_host, compare, run_eval
 from threetears.evals.run import list_runs

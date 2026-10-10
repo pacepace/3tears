@@ -25,7 +25,8 @@ from threetears.evals.analysis.reporting import (
     export_records_csv,
     project_score_records,
 )
-from threetears.evals.contracts import EvalResult, EvalRun, EvalStorage, EvalTemplate, RoleUsage
+from threetears.evals.schema import EvalResult, EvalRun, EvalTemplate, RoleUsage
+from threetears.evals.kernel import EvalStorage
 from threetears.evals.ops import pivot_text
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_eval_result, make_eval_run, make_template

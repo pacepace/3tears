@@ -26,10 +26,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
-from threetears.evals.contracts.host import SHARED_CORE, RolePins, Sweepable, SweepableRegistry, SweepableValue
+from threetears.evals.kernel.host import SHARED_CORE, RolePins, Sweepable, SweepableRegistry
+from threetears.evals.schema import SweepableValue
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts import EvalResult, EvalRun
+    from threetears.evals.schema import EvalResult, EvalRun
 
 #: Where the toy host keeps its own vocabulary on the shared carrier: ``EvalRun.host_payload``,
 #: the engine-owned opaque slot. The engine stores it verbatim and never reads it, so a host's data

@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts.host.sweepables import UNCAPPED_SPEND
+from threetears.evals.kernel.host.sweepables import UNCAPPED_SPEND
 from threetears.evals.quick import Answer, callable_host, compare, run_eval
 from threetears.evals.run import get_run
 

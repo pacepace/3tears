@@ -1,4 +1,4 @@
-"""The toy host's :class:`~threetears.evals.contracts.host.EvalHost` — the one value it hands the engine.
+"""The toy host's :class:`~threetears.evals.kernel.host.EvalHost` — the one value it hands the engine.
 
 This is what adopting the engine looks like for a product: build the profile, wrap a document store
 in the engine's storage, name the three services that have no safe default, and pass the result to
@@ -12,15 +12,10 @@ the engine's bare cell timeout. A caller that wants spans passes its own sink.
 
 from __future__ import annotations
 
-from threetears.evals.contracts import EvalStorage, withhold_failure_detail
+from threetears.evals.kernel import EvalStorage, withhold_failure_detail
 from threetears.evals.storage import InMemoryDocumentStore
-from threetears.evals.contracts.host import (
-    CompletionClients,
-    EvalHost,
-    HostProfile,
-    TraceSink,
-    default_cell_timeout,
-)
+from threetears.evals.kernel.host import CompletionClients, EvalHost, HostProfile, default_cell_timeout
+from threetears.evals.schema import TraceSink
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
 

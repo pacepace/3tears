@@ -32,17 +32,11 @@ from threetears.evals.analysis import (
     inspect_campaign_bundle,
 )
 from threetears.evals.analysis.errors import SoundnessRefusal
-from threetears.evals.contracts import (
-    CampaignDesign,
-    EvalTemplate,
-    GuardrailMargin,
-    RubricDim,
-    StopReason,
-    refuse_an_undeclarable_design,
-)
-from threetears.evals.contracts.host import MeasureRegistry
-from threetears.evals.contracts.metrics import MetricDescriptor
-from threetears.evals.ops.summary import CaseResult
+from threetears.evals.kernel import CampaignDesign, GuardrailMargin, refuse_an_undeclarable_design
+from threetears.evals.schema import EvalTemplate, RubricDim, StopReason
+from threetears.evals.kernel.host import MeasureRegistry
+from threetears.evals.kernel.metrics import MetricDescriptor
+from threetears.evals.analysis.summary import CaseResult
 from threetears.evals.quick import Comparison, Guardrail, Judge, callable_host, compare, run_eval
 from packages.evals.tests.factories import make_eval_result
 
@@ -416,7 +410,7 @@ class _Reply:
     stop_reason: StopReason = "end_turn"
 
 
-# parity-with: threetears.evals.contracts.CompletionClient
+# parity-with: threetears.evals.schema.CompletionClient
 class _FakeLeakJudge:
     """Passes an answer on every dimension unless it gives the secret away."""
 

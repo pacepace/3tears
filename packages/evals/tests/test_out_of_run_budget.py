@@ -29,13 +29,8 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts import (
-    OutOfRunBudget,
-    OutOfRunSpend,
-    PlannedCall,
-    StorageError,
-    ValidationFailedError,
-)
+from threetears.evals.kernel import OutOfRunBudget, PlannedCall, StorageError, ValidationFailedError
+from threetears.evals.schema import OutOfRunSpend
 
 _MODEL = "writer/model"
 _CALL = PlannedCall(system="write values", user="axis: invoice id")
@@ -63,7 +58,7 @@ class _SimulatorShaped:
     model: str = "served/elsewhere"
 
 
-# parity-with: threetears.evals.contracts.provider.PricedCompletion
+# parity-with: threetears.evals.schema.completion.PricedCompletion
 @dataclass(eq=False)
 class _FakeWriter:
     """A priced client: prices every call at ``ceiling`` and answers ``reported``, or raises ``raises``."""
@@ -84,7 +79,7 @@ class _FakeWriter:
         return self.reported
 
 
-# parity-with: threetears.evals.contracts.out_of_run.OutOfRunSpendStore
+# parity-with: threetears.evals.schema.out_of_run_spend.OutOfRunSpendStore
 @dataclass
 class _FakeLedger:
     """Keeps every row written, or refuses every write when ``failing``."""
@@ -286,7 +281,7 @@ async def test_the_served_model_is_the_one_the_response_named():
 # =============================================================================
 
 
-# parity-with: threetears.evals.contracts.out_of_run.OutOfRunSpendStore
+# parity-with: threetears.evals.schema.out_of_run_spend.OutOfRunSpendStore
 @dataclass
 class _FakeThreadRecordingLedger(_FakeLedger):
     """Records the thread each write ran on."""

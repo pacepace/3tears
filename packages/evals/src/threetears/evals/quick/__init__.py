@@ -28,8 +28,8 @@ the function that computes it (a :class:`Measure`, whose ``descriptor`` the host
 :func:`callable_kind_contracts`, and a :class:`World`'s ``registry`` and ``bindings(state)`` are its world's
 declaration and handles. Each is an ordinary contract object, mixed freely with ones the host writes by hand.
 
-This package composes the others and is composed by nothing: it may import ``contracts``, ``run``,
-``analysis`` and ``storage``, and no package of the engine imports it.
+This package composes the others and is composed by nothing: it may import ``schema``, ``kernel``,
+``run``, ``analysis`` and ``storage``, and no package of the engine imports it.
 
 **This module is the package's public root.** A host imports from here and from no module below it,
 and only the names in ``__all__``.
@@ -77,14 +77,14 @@ from threetears.evals.quick.judged import CaseMaterial, Judge
 from threetears.evals.quick.measures import Measure, measure
 from threetears.evals.quick.tools import CandidateTools, Tool, ToolUsingCandidate
 from threetears.evals.quick.world import CaseSeed, Dimension, ToolRefused, World, WorldCandidate, WorldTool, WorldTools
-from threetears.evals.ops.summary import (
+from threetears.evals.analysis.summary import (
     CaseOutcome,
     CaseResult,
     DimensionSummary,
     EvalSummary,
     GoalCheckSummary,
     JudgeGrade,
-    MeasureSummary,
+    RunMeasureSummary,
     summarize_run,
 )
 
@@ -129,7 +129,7 @@ __all__ = [
     "JudgeGrade",
     "LabelStatistics",
     "Measure",
-    "MeasureSummary",
+    "RunMeasureSummary",
     "Scorer",
     "Tool",
     "ToolUsingCandidate",

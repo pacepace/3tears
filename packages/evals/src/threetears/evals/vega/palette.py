@@ -1,12 +1,12 @@
 """The packaged chart palette, and the Vega-Lite config built from any palette.
 
 **Two palettes reach this module, and one config builder serves both.** A host declares its own
-:class:`~threetears.evals.contracts.host.ChartPalette` on its style profile, and a renderer built for that
+:class:`~threetears.evals.kernel.host.ChartPalette` on its style profile, and a renderer built for that
 style draws in it; a host that declares none draws in the palette packaged here
 (:func:`packaged_palette`). :func:`vega_config` turns either into the Vega-Lite config — the only place a
 palette becomes Vega's vocabulary, so the host contract never names a Vega key. The packaged artifact is
 checked with the contract's own colour check
-(:func:`~threetears.evals.contracts.host.require_resolved_colour`), so "what a palette may hold" has one
+(:func:`~threetears.evals.kernel.host.require_resolved_colour`), so "what a palette may hold" has one
 answer for both.
 
 **The packaged palette is a brand-neutral default.** Its hues and steps are a published, validated
@@ -22,7 +22,7 @@ raised, so the failure is invisible from inside the process that caused it.
 **The rules the packaged palette is held to**, each measured in ``tests/test_vega_render.py`` rather than
 asserted here:
 
-- *Text* — :attr:`~threetears.evals.contracts.host.ChartPalette.ink` and ``muted`` clear 4.5:1 (WCAG)
+- *Text* — :attr:`~threetears.evals.kernel.host.ChartPalette.ink` and ``muted`` clear 4.5:1 (WCAG)
   against the chart surface, and ``on_fill`` clears 4.5:1 over slot 1, the only fill a value is written
   on.
 - *Marks* — slot 1, the single-series colour every unlabelled mark is drawn in, clears 3:1 against the
@@ -36,7 +36,7 @@ asserted here:
 
 A host declaring its own palette is held to the contract's shape, not to these measurements: whether its
 slots separate is its author's measurement to make (see
-:class:`~threetears.evals.contracts.host.ChartPalette`).
+:class:`~threetears.evals.kernel.host.ChartPalette`).
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
-from threetears.evals.contracts.host import ChartFont, ChartPalette, StyleError, require_resolved_colour
+from threetears.evals.kernel.host import ChartFont, ChartPalette, StyleError, require_resolved_colour
 from threetears.evals.vega.text_metrics import packaged_font
 from threetears.observe import get_logger
 
@@ -149,7 +149,7 @@ def check_palette_artifact(palette: dict[str, Any]) -> dict[str, Any]:
 
     Raises:
         PaletteError: A colour is not resolved sRGB hex
-            (:func:`~threetears.evals.contracts.host.require_resolved_colour`).
+            (:func:`~threetears.evals.kernel.host.require_resolved_colour`).
     """
     for path, colour in _colour_values(palette):
         try:
@@ -320,7 +320,7 @@ def vega_config(palette: ChartPalette, font: ChartFont | None = None) -> dict[st
     The colours are the palette's — a host's or :func:`packaged_palette` — and the type scale and
     weights are this renderer's own, from the packaged artifact. The typeface is ``font``'s family list:
     the face whose measured advances the spec's layout was computed from, which is why a typeface
-    arrives here only as a :class:`~threetears.evals.contracts.host.ChartFont` and never as a bare name.
+    arrives here only as a :class:`~threetears.evals.kernel.host.ChartFont` and never as a bare name.
     Pass the same font the spec was compiled with.
 
     Args:

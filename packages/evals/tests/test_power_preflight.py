@@ -32,8 +32,8 @@ from threetears.evals.analysis.stats import (
     paired_t_power,
     variance_components,
 )
-from threetears.evals.contracts import EvalStorage
-from threetears.evals.contracts.host import EvalHost
+from threetears.evals.kernel import EvalStorage
+from threetears.evals.kernel.host import EvalHost
 from threetears.evals.ops import DetectableEffects, LaunchArguments, launch_estimate
 from threetears.evals.ops.lenses import detectable_effects, estimate_text
 from threetears.evals.storage import InMemoryDocumentStore

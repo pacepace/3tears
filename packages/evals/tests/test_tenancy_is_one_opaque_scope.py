@@ -9,7 +9,7 @@ store method or a branch added later is checked without anyone remembering to ad
    scoped read can return.
 2. **Every storage port method names the scope it acts in, or takes it from the document it
    writes.** The ports are every ``Protocol`` in the package whose name ends in ``Store`` —
-   :class:`~threetears.evals.contracts.store_port.DocumentStore` and the narrow ports cut from it alike.
+   :class:`~threetears.evals.schema.store_port.DocumentStore` and the narrow ports cut from it alike.
    A method with neither is a scope-free read or write, the shape the multi-tenant norm forbids.
 3. **No code in ``src/`` interprets a scope's value.** No comparison of a scope against a literal
    or a named constant (an ALL-CAPS name), no membership test in either direction, no truthiness
@@ -56,8 +56,8 @@ import pytest
 from annotated_types import MinLen
 
 import threetears.evals
-from threetears.evals.contracts.base import EvalBaseModel
-from threetears.evals.contracts.store_port import DocumentStore
+from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.schema.store_port import DocumentStore
 
 from packages.evals.tests.stored_models import stored_models
 
@@ -511,7 +511,7 @@ def test_the_scan_reaches_the_storage_layer() -> None:
     """The positive control: the files that handle scopes most are in the scanned population."""
     scanned = {path.relative_to(_SRC).as_posix() for path in _src_files()}
 
-    assert {"contracts/storage.py", "contracts/store_port.py", "analysis/campaigns.py"} <= scanned
+    assert {"kernel/storage.py", "schema/store_port.py", "analysis/campaigns.py"} <= scanned
 
 
 def test_the_scope_defaults_are_only_the_quick_path_s_own_store() -> None:

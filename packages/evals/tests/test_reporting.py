@@ -73,12 +73,12 @@ from threetears.evals.analysis.reporting import (
     serialize_export,
 )
 from threetears.evals.analysis.stats import UNIFORM_MOVE_NEEDS_RANGE, bounded_separation_p
-from threetears.evals.contracts.host import freeze
+from threetears.evals.kernel.host import freeze
 from threetears.evals.ops import pivot_text
-from threetears.evals.contracts.host.values import SweepableValue
-from threetears.evals.contracts.identity import IDENTITY_VERSION, derive_context_identity, resolve_context_identity
-from threetears.evals.contracts.metrics import METRIC_DESCRIPTORS, describe_measure
-from threetears.evals.contracts.models import (
+from threetears.evals.schema.values import SweepableValue
+from threetears.evals.kernel.identity import IDENTITY_VERSION, derive_context_identity, resolve_context_identity
+from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, describe_measure
+from threetears.evals.schema.models import (
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
     AsyncDelivery,
@@ -441,7 +441,7 @@ class TestGoalStateRows:
     """Each goal-state check a result evaluated is one row, keyed by the check, 1.0 passed and 0.0 not."""
 
     def test_one_row_per_check_with_the_check_as_its_coordinate(self):
-        from threetears.evals.contracts.models import GoalStateOutcome
+        from threetears.evals.schema.models import GoalStateOutcome
 
         run, _ = _run_with_results()
         result = make_eval_result(
@@ -737,7 +737,7 @@ class TestPerDimensionRows:
         two weightings genuinely differ, or the equality would hold for a reason
         this test could not see.
         """
-        from threetears.evals.contracts.scoring import compute_dimension_summary
+        from threetears.evals.kernel.scoring import compute_dimension_summary
 
         run, _ = _run_with_results()
         results = self._uneven_corpus(run)
@@ -2852,7 +2852,7 @@ class TestNormalizeStatusFilter:
         else this function accepts is a status a run can actually carry — the
         refusal of anything else is pinned below.
         """
-        from threetears.evals.contracts.status_filter import normalize_status_filter
+        from threetears.evals.kernel.status_filter import normalize_status_filter
 
         assert normalize_status_filter(raw) == expected
 
@@ -2878,7 +2878,7 @@ class TestNormalizeStatusFilter:
         refusal that names the vocabulary teaches `completed` in one round-trip,
         so folding would buy nothing the message does not already give.
         """
-        from threetears.evals.contracts.status_filter import StatusFilterError, normalize_status_filter
+        from threetears.evals.kernel.status_filter import StatusFilterError, normalize_status_filter
 
         with pytest.raises(StatusFilterError, match="unknown run status"):
             normalize_status_filter(raw)
@@ -2892,8 +2892,8 @@ class TestNormalizeStatusFilter:
         written here: a second copy of the vocabulary in the test is the same
         drift the seam avoids by not writing one in the source.
         """
-        from threetears.evals.contracts.models import RUN_STATUSES
-        from threetears.evals.contracts.status_filter import StatusFilterError, normalize_status_filter
+        from threetears.evals.schema.models import RUN_STATUSES
+        from threetears.evals.kernel.status_filter import StatusFilterError, normalize_status_filter
 
         with pytest.raises(StatusFilterError) as excinfo:
             normalize_status_filter("banana")
@@ -2914,8 +2914,8 @@ class TestNormalizeStatusFilter:
         behind refuses a real cohort, and refuses it loudly enough to look like a
         bug in the caller.
         """
-        from threetears.evals.contracts.models import RUN_STATUSES
-        from threetears.evals.contracts.status_filter import normalize_status_filter
+        from threetears.evals.schema.models import RUN_STATUSES
+        from threetears.evals.kernel.status_filter import normalize_status_filter
 
         assert {status: normalize_status_filter(status) for status in RUN_STATUSES} == {
             status: status for status in RUN_STATUSES
@@ -2960,7 +2960,7 @@ class TestValidateStatusFilter:
         `normalize_status_filter` would return `completed` here and quietly hide the
         two of those nine runs that were not.
         """
-        from threetears.evals.contracts.status_filter import validate_status_filter
+        from threetears.evals.kernel.status_filter import validate_status_filter
 
         assert validate_status_filter(raw) == expected
 
@@ -2975,7 +2975,7 @@ class TestValidateStatusFilter:
         this seam invents, and every real status is compared by exact equality to
         `EvalRun.status` downstream.
         """
-        from threetears.evals.contracts.status_filter import StatusFilterError, validate_status_filter
+        from threetears.evals.kernel.status_filter import StatusFilterError, validate_status_filter
 
         with pytest.raises(StatusFilterError, match="unknown run status"):
             validate_status_filter(raw)
@@ -2989,8 +2989,8 @@ class TestValidateStatusFilter:
         reads. Compared over every input EXCEPT the unspecified ones, where the two
         are supposed to disagree — those are pinned per-function above.
         """
-        from threetears.evals.contracts.models import RUN_STATUSES
-        from threetears.evals.contracts.status_filter import (
+        from threetears.evals.schema.models import RUN_STATUSES
+        from threetears.evals.kernel.status_filter import (
             StatusFilterError,
             normalize_status_filter,
             validate_status_filter,
@@ -4919,7 +4919,7 @@ class TestHistoryCostKeepsEveryDollarSpent:
             ).series
             for point in series.points
         ]
-        from threetears.evals.contracts.scoring import compute_cost_summary
+        from threetears.evals.kernel.scoring import compute_cost_summary
 
         (summary,) = compute_cost_summary(results).values()
 
@@ -8081,7 +8081,7 @@ class TestGoalStatePivots:
 
     @staticmethod
     def goal_state_records():
-        from threetears.evals.contracts.models import GoalStateOutcome
+        from threetears.evals.schema.models import GoalStateOutcome
 
         run, _ = _run_with_results()
         results = [

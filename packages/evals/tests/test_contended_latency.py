@@ -26,8 +26,9 @@ from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bu
 from threetears.evals.analysis.report.build import build_code_only_report
 from threetears.evals.analysis.report.model import DisclosureBlock
 from threetears.evals.analysis.reporting import METRIC_TOTAL_MS, compute_frontier, compute_history
-from threetears.evals.contracts import EvalCampaign, EvalResult, EvalRun, Question
-from threetears.evals.contracts.models import LatencyMetrics
+from threetears.evals.kernel import EvalCampaign, Question
+from threetears.evals.schema import EvalResult, EvalRun
+from threetears.evals.schema.models import LatencyMetrics
 from packages.evals.tests.factories import fixture_variant_key, make_eval_result, make_eval_run, minimal_declaration
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile

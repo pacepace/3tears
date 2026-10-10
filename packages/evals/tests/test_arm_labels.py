@@ -42,13 +42,14 @@ from threetears.evals.analysis.arms import (
 )
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.report import ChartBlock, TableBlock, TextBlock
-from threetears.evals.contracts.authored import NO_CHART, AuthoredAnalysis
-from threetears.evals.contracts import EvalCampaign
-from threetears.evals.contracts.campaign import EvalAnalysis, FindingResolution, VariantIndexEntry
-from threetears.evals.contracts.surface import DecisionSurface, StratumFacts
-from threetears.evals.contracts.host import HostProfile, KindContract, SweepableValue
-from threetears.evals.contracts.identity import compute_variant_key
-from threetears.evals.contracts.models import EvalRun
+from threetears.evals.kernel.authored import NO_CHART, AuthoredAnalysis
+from threetears.evals.kernel import EvalCampaign
+from threetears.evals.kernel.campaign import EvalAnalysis, FindingResolution, VariantIndexEntry
+from threetears.evals.kernel.surface import DecisionSurface, StratumFacts
+from threetears.evals.kernel.host import HostProfile, KindContract
+from threetears.evals.schema import SweepableValue
+from threetears.evals.kernel.identity import compute_variant_key
+from threetears.evals.schema.models import EvalRun
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_design
 from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRACT
 from packages.evals.tests.fixtures.toyhost.corpus import (
@@ -555,7 +556,7 @@ class TestAnAnalysisReportNamesArmsByTheRule:
 
 def _sweep_configs(index: list[VariantIndexEntry]) -> list[dict[str, str]]:
     """The configurations a sweep ranking draws over one cell per arm of ``index``."""
-    from threetears.evals.contracts.analysis_measures import MeasureCollection, MeasureSummary
+    from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
     from packages.evals.tests.test_viz_refs import VALID, build, surface
 
     def reading(name: str, mean: float, higher_is_better: bool) -> MeasureSummary:

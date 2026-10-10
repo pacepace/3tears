@@ -35,18 +35,17 @@ from threetears.evals.analysis import (
     assemble_context_bundle,
 )
 from threetears.evals.analysis.bundle import REASONING_SHARE_DIVERGENCE, observed_mechanism_key
-from threetears.evals.contracts import (
+from threetears.evals.kernel import (
     REASONING_RATIO_KEY,
     CampaignDesign,
     ControlDeclaration,
     EvalCampaign,
-    EvalResult,
-    EvalRun,
     SweptAxis,
     resolve_variant_identity,
 )
-from threetears.evals.contracts.metrics import MeasurePopulation, MetricDescriptor
-from threetears.evals.contracts.host import (
+from threetears.evals.schema import EvalResult, EvalRun
+from threetears.evals.kernel.metrics import MeasurePopulation, MetricDescriptor
+from threetears.evals.kernel.host import (
     MeasureRegistry,
     CANDIDATE_MODEL_LEVER,
     SHARED_CORE,
@@ -60,10 +59,10 @@ from threetears.evals.contracts.host import (
     RegistrationError,
     Sweepable,
     SweepableRegistry,
-    SweepableValue,
     freeze,
 )
-from threetears.evals.contracts.host.sweepables import CORE_ROLES, CORE_SWEEPABLES
+from threetears.evals.schema import SweepableValue
+from threetears.evals.kernel.host.sweepables import CORE_ROLES, CORE_SWEEPABLES
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle, toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRACT, ExtractorOverlays
 from packages.evals.tests.fixtures.toyhost.corpus import (

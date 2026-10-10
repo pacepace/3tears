@@ -42,11 +42,11 @@ from threetears.evals.analysis.stats import (
     no_spread_p,
     separation_p,
 )
-from threetears.evals.contracts.base import EvalDocumentModel
-from threetears.evals.contracts.models import SCALES, JudgeTemperature, RubricScale
+from threetears.evals.schema.base import EvalDocumentModel
+from threetears.evals.schema.models import SCALES, JudgeTemperature, RubricScale
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.models import EvalResult
+    from threetears.evals.schema.models import EvalResult
 
 #: What a drift reading can and cannot say, stated on every one.
 DRIFT_DETECTS_MOVEMENT: Final = (

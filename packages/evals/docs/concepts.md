@@ -253,6 +253,13 @@ surface and report tables read analysis cells.
 One trial's record (`EvalResult`): one case, one model, one repeat, with its goal-state outcomes, rubric
 scores, cost and what the kind reported. Its turn-by-turn trace is stored beside it (`EvalTrace`).
 
+#### Evidence core
+The stored documents a later release always reads (`CORE_DOC_TYPES`): cases, runs, results and their traces,
+calibration ratings, out-of-run spend, case sets, and the templates, judge configs and rubric dims they name.
+An older one is upgraded as it is read. Campaigns, analyses, insights, sweeps and cassettes are outside it:
+a release that changes their format refuses them, and they are made again
+([what is kept](adopting-a-host.md#stored-data-what-is-kept)).
+
 #### Battery
 The universal templates, run as one pre-flighted set (`start_universal_battery`): templates marked
 `universal=True` apply to every subject.

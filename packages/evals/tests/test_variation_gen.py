@@ -8,9 +8,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from threetears.evals.contracts import EvalStorage, OutOfRunBudget, OutOfRunSpend
-from threetears.evals.contracts.errors import ValidationFailedError
-from threetears.evals.contracts.models import ActorPolicy, ConversationSpec, EvalTemplate, EvalTestCase, VariationAxis
+from threetears.evals.kernel import EvalStorage, OutOfRunBudget
+from threetears.evals.schema import OutOfRunSpend
+from threetears.evals.kernel.errors import ValidationFailedError
+from threetears.evals.schema.models import ActorPolicy, ConversationSpec, EvalTemplate, EvalTestCase, VariationAxis
 from threetears.evals.gen import price_variations
 from threetears.evals.gen.variation_gen import generate_variations
 from threetears.evals.storage import InMemoryDocumentStore
@@ -38,7 +39,7 @@ class _FakeStorage:
         self.test_cases.append(test_case)
 
 
-# parity-with: threetears.evals.contracts.provider.VariationLLM
+# parity-with: threetears.evals.schema.completion.VariationLLM
 class _FakeLLM:
     """Returns a sequence of canned responses; records each call's args.
 
@@ -197,7 +198,7 @@ async def test_llm_axis_parses_json_object_response():
 
 async def test_llm_axis_uses_json_object_mode():
     """The axis generator opts into json_object structured output like its siblings."""
-    from threetears.evals.contracts.provider import JSON_OBJECT_RESPONSE_FORMAT
+    from threetears.evals.schema.completion import JSON_OBJECT_RESPONSE_FORMAT
 
     template = _template(VariationAxis(name="x", generator="llm"))
     storage = _FakeStorage()
@@ -424,7 +425,7 @@ async def test_generated_cases_are_content_hashed():
     Without it, a regenerated variation set silently becomes different inputs
     wearing the old test-case ids, and every downstream comparison is confounded.
     """
-    from threetears.evals.contracts.identity import compute_content_hash
+    from threetears.evals.kernel.identity import compute_content_hash
 
     template = _template(VariationAxis(name="tone", generator="enum", values=["a", "b"]))
     storage = _FakeStorage()
@@ -451,7 +452,7 @@ async def test_dedup_and_content_identity_agree():
     disagreed, generation would either mint a second case that hashes the same
     as the first, or reuse a case whose content hash says it is different.
     """
-    from threetears.evals.contracts.identity import compute_content_hash
+    from threetears.evals.kernel.identity import compute_content_hash
 
     params_a = {"tone": "casual", "category": "garden"}
     params_b = {"category": "garden", "tone": "casual"}
@@ -477,7 +478,7 @@ async def test_a_case_with_no_generated_content_carries_no_content_hash():
     dict must not be given the digest of ``{}`` — that would assert a
     provenance the case does not have.
     """
-    from threetears.evals.contracts.identity import compute_content_hash
+    from threetears.evals.kernel.identity import compute_content_hash
 
     assert compute_content_hash({}) is None
     assert EvalTestCase(scope_id="u", template_id="t").content_hash is None
@@ -681,7 +682,7 @@ class _FakeThreadRecordingCaseStore(_FakeStorage):
         super().save_test_case(test_case)
 
 
-# parity-with: threetears.evals.contracts.out_of_run.OutOfRunSpendStore
+# parity-with: threetears.evals.schema.out_of_run_spend.OutOfRunSpendStore
 class _FakeThreadRecordingLedger:
     """Records the thread each ledger write ran on."""
 
@@ -694,7 +695,7 @@ class _FakeThreadRecordingLedger:
         self.rows.append(spend)
 
 
-# parity-with: threetears.evals.contracts.provider.VariationLLM
+# parity-with: threetears.evals.schema.completion.VariationLLM
 class _FakeThreadRecordingLLM(_FakeLLM):
     """Records the thread each model call ran on — the loop's, since the client is bound to it."""
 

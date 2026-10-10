@@ -2,7 +2,7 @@
 
 New criteria are pass/fail rather than 1-5. A pass is stored as 1 and a fail as 0, so a
 dimension's mean is its pass rate, and every consumer reads the score through the one predicate
-pair on :class:`~threetears.evals.contracts.models.RubricScore` rather than re-deriving 1-5 arithmetic. Each
+pair on :class:`~threetears.evals.schema.models.RubricScore` rather than re-deriving 1-5 arithmetic. Each
 rule below is asserted beside its 1-5 counterpart, so a check that ignored the scale cannot pass.
 """
 
@@ -16,18 +16,11 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.evals.analysis.reporting import PivotError, compute_pivot, project_score_records
-from threetears.evals.contracts.declaration import resolve_bar_name
-from threetears.evals.contracts.host import MeasureRegistry
-from threetears.evals.contracts.models import (
-    SCALES,
-    JudgedArtifact,
-    JudgeEvidence,
-    RubricDim,
-    RubricScale,
-    RubricScore,
-)
-from threetears.evals.contracts.provider import withhold_failure_detail
-from threetears.evals.contracts.scoring import compute_dimension_summary, compute_pass_hat_k, result_composite
+from threetears.evals.kernel.declaration import resolve_bar_name
+from threetears.evals.kernel.host import MeasureRegistry
+from threetears.evals.schema.models import SCALES, JudgedArtifact, JudgeEvidence, RubricDim, RubricScale, RubricScore
+from threetears.evals.kernel.provider import withhold_failure_detail
+from threetears.evals.kernel.scoring import compute_dimension_summary, compute_pass_hat_k, result_composite
 from threetears.evals.run.judge import SCALE_READERS, run_judge_llm
 from threetears.evals.run.judge_service import JudgeContext, JudgeService
 from packages.evals.tests.factories import make_eval_result, make_eval_run

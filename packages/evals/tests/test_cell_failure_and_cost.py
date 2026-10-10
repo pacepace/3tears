@@ -27,16 +27,18 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts import CallLedger, EvalResult, EvalStorage, WorldSession
-from threetears.evals.contracts.candidate_kind import (
+from threetears.evals.schema import CallLedger, EvalResult
+from threetears.evals.kernel import EvalStorage, WorldSession
+from threetears.evals.kernel.candidate_kind import (
     CandidateOutput,
     CandidateTelemetry,
     CellSink,
     CellSpanWindow,
     VariantConfig,
 )
-from threetears.evals.contracts.host import ApparatusError, EvalHost, SubjectSnapshot, WorldRegistry
-from threetears.evals.contracts.models import (
+from threetears.evals.kernel.host import ApparatusError, EvalHost, WorldRegistry
+from threetears.evals.schema import SubjectSnapshot
+from threetears.evals.schema.models import (
     DEFAULT_JUDGE_TEMPERATURE,
     CassetteKey,
     EvalTemplate,
@@ -47,20 +49,20 @@ from threetears.evals.contracts.models import (
     RubricDim,
     WorldSeed,
 )
-from threetears.evals.contracts.result_condition import ResultOutcome, classify_result
-from threetears.evals.contracts.cassettes import CassetteMiss, CellCassettes
+from threetears.evals.kernel.result_condition import ResultOutcome, classify_result
+from threetears.evals.kernel.cassettes import CassetteMiss, CellCassettes
 from threetears.evals.run.judge import CANNOT_TELL, JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.launch import build_judge_service
 from threetears.evals.run.lifecycle import rejudge_result
 from threetears.evals.analysis.bundle import assemble_context_bundle
 from threetears.evals.analysis.reporting import compute_estimate_cost, compute_orphaned_runs, compute_program_budget
-from threetears.evals.contracts.campaign import EvalCampaign
-from threetears.evals.contracts.usage_capture import RoleUsageLedger
+from threetears.evals.kernel.campaign import EvalCampaign
+from threetears.evals.kernel.usage_capture import RoleUsageLedger
 from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
 from threetears.evals.run.runner import EveryCellApparatusFailedError, RunnerOptions, execute_run, grade_goal_checks
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.scripted_table import ScriptedTable, actor
-from threetears.evals.contracts.models import ConversationSpec, ConversationStopCause
+from threetears.evals.schema.models import ConversationSpec, ConversationStopCause
 from threetears.evals.run import drive_conversation
 from threetears.evals.run.simulator import CandidateTurn, SimulatorTurn, TurnDriver
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
@@ -869,7 +871,7 @@ def test_a_cost_estimate_draws_on_priced_history_and_counts_what_it_left_out():
 
 def test_the_analysis_bundle_counts_unpriced_results_and_never_reads_their_rows_as_their_cost():
     """The rows decompose a cost; with the cost unknown, their priced part must not stand in for it."""
-    from threetears.evals.contracts.models import RoleUsage as Row
+    from threetears.evals.schema.models import RoleUsage as Row
 
     run = make_eval_run(status="completed")
     results = [
@@ -905,7 +907,7 @@ def test_a_judged_cell_states_what_the_arm_costs_apart_from_what_measuring_it_co
     """$0.02 of candidate and $0.05 of judge a result: the arm costs $0.02, and the cost column says so."""
     from threetears.evals.analysis.bundle import bundle_decision_surface
     from threetears.evals.analysis.surface_table import surface_table_of
-    from threetears.evals.contracts.models import RoleUsage as Row
+    from threetears.evals.schema.models import RoleUsage as Row
 
     run = make_eval_run(status="completed")
     results = [

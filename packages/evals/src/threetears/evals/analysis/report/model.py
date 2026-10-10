@@ -32,7 +32,7 @@ cannot be drawn — never a renderer's spec, which is the host's to make.
 
 **Where a caveat goes.** An author's caveat is attached to its finding, always, as written — the author
 placed it there, and moving it would be code overruling the author about what qualifies their claim. The
-authored :class:`~threetears.evals.contracts.authored.Caveat` carries no magnitude, so placing caveats by
+authored :class:`~threetears.evals.kernel.authored.Caveat` carries no magnitude, so placing caveats by
 how material they are would mean reading materiality out of prose, which code does not do; the number
 that does say whether a difference is worth acting on — a measure's materiality threshold — is code's,
 and it already labels the delta it applies to (``immaterial``) where that delta is drawn. What belongs in
@@ -49,8 +49,8 @@ from pydantic import ConfigDict, Field, model_validator
 
 from threetears.evals.analysis.viz.intent import Cell, ChartColumn, ChartIntent, ChartType
 from threetears.evals.analysis.viz.intents.distribution import SHAPE_UNKNOWN
-from threetears.evals.contracts.base import EvalBaseModel
-from threetears.evals.contracts.prose import ModelProse
+from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.schema.prose import ModelProse
 
 #: The report shape's version. Moves when a field or block kind is added, renamed or removed, or when a
 #: field's meaning moves under its name; a host reads it to know what it was handed.

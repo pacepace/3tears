@@ -49,13 +49,16 @@ durable sibling, `SqliteDocumentStore`, keeps every document in one SQLite file 
 a host with no database of its own can use it as its store.
 
 Import only from a public root (`threetears.evals.PUBLIC_ROOTS` lists them, including
-`threetears.evals.contracts.host`, `threetears.evals.analysis.viz` and `threetears.evals.vega`), and only the names
+`threetears.evals.kernel.host`, `threetears.evals.analysis.viz` and `threetears.evals.vega`), and only the names
 its `__all__` declares; never from a module below one. Every engine type a public signature hands you — a protocol you implement, a value you
 receive, an exception you catch, a literal you annotate with — is exported from one of those roots.
+The stored documents and the ports you implement (`DocumentStore`, `CompletionClient`, `TraceSink`) are in
+`threetears.evals.schema`; the behaviour over them (identity, scoring, `EvalStorage`, the candidate kind) is in
+`threetears.evals.kernel`, with the host contract under `threetears.evals.kernel.host`.
 
 ## The host
 
-**Your app is one value, the host.** Build an `EvalHost` (in `threetears.evals.contracts.host`) and
+**Your app is one value, the host.** Build an `EvalHost` (in `threetears.evals.kernel.host`) and
 pass it to every entrypoint. It holds:
 
 - your `HostProfile` — the levers you sweep, the measures you record, your bars and your world. Every measure
@@ -117,15 +120,37 @@ def test_my_store_conforms(case: StoreConformanceCase, tmp_path: Path) -> None:
 
 The engine reads and writes through `EvalStorage`, built over that one store. Its consumers name the
 area they touch rather than the whole of it — `RunStore`, `ResultStore`, `RunRecordStore`,
-`DefinitionStore`, `CassetteStore` and `JobStore` (in `threetears.evals.contracts`) — so a function
+`DefinitionStore`, `CassetteStore` and `JobStore` (in `threetears.evals.kernel`) — so a function
 typed `DefinitionStore` cannot reach a run, and a test of one hands it only that area.
 
-**Stored data is disposable, and reads are strict.** Every stored model refuses an unknown field, a
-missing required one, and a document written under any schema version other than this build's
-`EVAL_SCHEMA_VERSION`. There is no migration and no tolerant reader: across a schema change, drop
-the eval documents and regenerate them. Identity keys carry their own `IDENTITY_VERSION`, so keys
-from different predicates never silently pool. After a bump, `analyses_undescribable` (operation and
-action) lists the scope's analyses holding an arm this build can no longer describe.
+## Stored data: what is kept
+
+**The evidence core is kept.** Every later release reads it, from core v8 (the first release) on. The core is
+what the engine cannot regenerate and an audit needs: test cases, runs, results, traces, calibration ratings,
+the out-of-run spend ledger, case sets, and the templates, judge configs and rubric dims (with their
+tombstones) those documents name by id. `CORE_DOC_TYPES` (in `threetears.evals.schema`) lists them.
+
+**A release that changes a core shape ships an upgrader, and your store needs no migration.** Every change
+to a core shape bumps `CORE_SCHEMA_VERSION`, an added optional field included. Each bump comes with one
+upgrade step, tested against stored documents from every earlier core version. Reading an older core
+document upgrades it in memory before it is validated; the stored bytes stay as they are until the engine
+next writes that document, at the current version. So one scope can hold documents at several core versions.
+A step never changes a field the store filters, sorts or projects on (`CORE_ADDRESSING_FIELDS`), so an index
+your adapter keeps on those fields stays valid.
+
+**Everything else is regenerated.** Campaigns, analyses, insights and sweeps are built over the core, and
+a cassette is re-captured. When one of their shapes changes, `REGENERABLE_SCHEMA_VERSION` is bumped and a
+document written under another version is refused: make it again over the kept runs (create the campaign,
+generate the analysis), or re-capture the cassette. After a bump, `analyses_undescribable` (operation and action) lists the scope's analyses holding
+an arm this build can no longer describe.
+
+**Each version space moves on its own.** Core documents, regenerable documents, the bundle, the report
+(`REPORT_VERSION`) and the identity keys (`IDENTITY_VERSION`) carry separate versions. An upgrade never
+recomputes an identity key, so keys from different predicates never silently pool.
+
+**Reads stay strict.** Every stored model refuses an unknown field and a missing required one. A core
+document written by a newer release is refused, never guessed at, so when two builds share one store,
+upgrade the older one. A core document from before the first release (below core v8) is refused too.
 
 ## The kind: what you are evaluating
 

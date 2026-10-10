@@ -22,9 +22,9 @@ from __future__ import annotations
 import asyncio
 
 from threetears.evals.analysis import BundleInspection, inspect_campaign_bundle
-from threetears.evals.contracts import MetricDescriptor
-from threetears.evals.contracts.host import EvalHost
-from threetears.evals.contracts.metrics import describe_reported_measure
+from threetears.evals.kernel import MetricDescriptor
+from threetears.evals.kernel.host import EvalHost
+from threetears.evals.kernel.metrics import describe_reported_measure
 from packages.evals.tests.fixtures.courierhost import (
     COURIER_MEASURES,
     COURIER_SCOPE,

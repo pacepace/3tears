@@ -40,7 +40,7 @@ from threetears.evals.analysis.stats import (
     separation_p,
     separation_test,
 )
-from threetears.evals.contracts.metrics import confusion_cell
+from threetears.evals.kernel.metrics import confusion_cell
 
 __all__ = [
     "TOLERANCE_Z",

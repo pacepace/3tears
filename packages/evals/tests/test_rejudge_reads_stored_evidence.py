@@ -1,7 +1,7 @@
 """A re-judge sends the judge exactly what the first judge read, for every judged kind.
 
 The evidence a judge reads — the subject, the case material and the artifact — is rendered by the
-candidate's kind and stored on the cell's :class:`~threetears.evals.contracts.models.EvalTrace` beside
+candidate's kind and stored on the cell's :class:`~threetears.evals.schema.models.EvalTrace` beside
 the kind's declaration. A re-judge reads both back rather than re-rendering anything, so:
 
 * a DOCUMENT result is re-scored as the document it was — on its rubric, under the document
@@ -25,11 +25,11 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts.candidate_kind import CandidateOutput, CellSink, CellSpanWindow, VariantConfig
-from threetears.evals.contracts.cassettes import CellCassettes
-from threetears.evals.contracts.errors import ValidationFailedError
-from threetears.evals.contracts.host.eval_host import EvalHost
-from threetears.evals.contracts.models import (
+from threetears.evals.kernel.candidate_kind import CandidateOutput, CellSink, CellSpanWindow, VariantConfig
+from threetears.evals.kernel.cassettes import CellCassettes
+from threetears.evals.kernel.errors import ValidationFailedError
+from threetears.evals.kernel.host.eval_host import EvalHost
+from threetears.evals.schema.models import (
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
     EvalResult,
@@ -42,13 +42,13 @@ from threetears.evals.contracts.models import (
     eval_trace_doc_id,
     scored_dim_ids,
 )
-from threetears.evals.contracts.provider import withhold_failure_detail
+from threetears.evals.kernel.provider import withhold_failure_detail
 from threetears.evals.run.judge import CANNOT_TELL, JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import JudgeService
 from threetears.evals.run.lifecycle import rejudge_result
 from threetears.evals.run.launch import build_judge_service
 from threetears.evals.run.runner import RunnerOptions, run_one_result
-from threetears.evals.contracts.identity import resolve_variant_identity
+from threetears.evals.kernel.identity import resolve_variant_identity
 from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 
@@ -314,8 +314,8 @@ _WITH_A_GUARDRAIL = [
 
 async def test_a_cannot_tell_on_a_guardrail_leaves_the_trial_in_the_capability_measures():
     """The guardrail is in neither pass^k nor the composite, so a can't-tell on it must not drop the trial."""
-    from threetears.evals.contracts.result_condition import trial_exclusion
-    from threetears.evals.contracts.scoring import result_composite
+    from threetears.evals.kernel.result_condition import trial_exclusion
+    from threetears.evals.kernel.scoring import result_composite
 
     judge = _ScriptedJudge(cannot_tell={_GUARDRAIL})
     _, result = await _judged_and_stored(JudgedArtifact.DOCUMENT, judge, rubric=_WITH_A_GUARDRAIL)
@@ -327,7 +327,7 @@ async def test_a_cannot_tell_on_a_guardrail_leaves_the_trial_in_the_capability_m
 
 
 async def test_a_cannot_tell_on_a_capability_dim_still_drops_the_trial():
-    from threetears.evals.contracts.result_condition import trial_exclusion
+    from threetears.evals.kernel.result_condition import trial_exclusion
 
     judge = _ScriptedJudge(cannot_tell={_DIM})
     _, result = await _judged_and_stored(JudgedArtifact.DOCUMENT, judge, rubric=_WITH_A_GUARDRAIL)
@@ -337,7 +337,7 @@ async def test_a_cannot_tell_on_a_capability_dim_still_drops_the_trial():
 
 
 async def test_a_rejudge_stamps_a_guardrail_s_cannot_tell_too():
-    from threetears.evals.contracts.result_condition import trial_exclusion
+    from threetears.evals.kernel.result_condition import trial_exclusion
 
     judge = _ScriptedJudge(failing={_GUARDRAIL})
     host, result = await _judged_and_stored(JudgedArtifact.DOCUMENT, judge, rubric=_WITH_A_GUARDRAIL)

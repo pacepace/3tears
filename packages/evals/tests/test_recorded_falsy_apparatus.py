@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts.host.sweepables import Sweepable, SweepableRegistry
+from threetears.evals.kernel.host.sweepables import Sweepable, SweepableRegistry
 
 _REGISTRY = SweepableRegistry(
     (

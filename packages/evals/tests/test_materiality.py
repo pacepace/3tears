@@ -1,7 +1,7 @@
 """A difference below a measure's declared materiality threshold is labelled immaterial — wherever one is stated.
 
 ``MetricDescriptor.materiality_threshold`` is the host's word for "smaller than this is not worth acting
-on". It is read by one predicate, :func:`~threetears.evals.contracts.materiality`, at every place the
+on". It is read by one predicate, :func:`~threetears.evals.kernel.materiality`, at every place the
 engine states a difference:
 
 * **the analysis bundle**, where every :class:`~threetears.evals.analysis.MeasureMovement` between two
@@ -24,10 +24,10 @@ from pydantic import ValidationError
 from threetears.evals.analysis import MeasureMovement, assemble_context_bundle
 from threetears.evals.analysis.bundle import cell_measure_facts
 from threetears.evals.analysis.viz import chart_intent
-from threetears.evals.contracts import MetricDescriptor, materiality
-from threetears.evals.contracts.models import LatencyMetrics
-from threetears.evals.contracts.host import HostProfile, MeasureRegistry
-from threetears.evals.contracts.surface import MeasureFacts
+from threetears.evals.kernel import MetricDescriptor, materiality
+from threetears.evals.schema.models import LatencyMetrics
+from threetears.evals.kernel.host import HostProfile, MeasureRegistry
+from threetears.evals.kernel.surface import MeasureFacts
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle, toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.kind import FIELD_ACCURACY

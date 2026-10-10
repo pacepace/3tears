@@ -16,9 +16,9 @@ import pytest
 
 from threetears.evals.analysis.errors import GenerationError
 from threetears.evals.analysis.generator import generate_analysis
-from threetears.evals.contracts import ValidationFailedError
-from threetears.evals.contracts.host import HostProfile
-from threetears.evals.contracts.models import utc_now_iso
+from threetears.evals.kernel import ValidationFailedError
+from threetears.evals.kernel.host import HostProfile
+from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.ops import analysis_estimate, analysis_generate
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile

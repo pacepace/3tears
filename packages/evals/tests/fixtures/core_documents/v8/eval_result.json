@@ -1,0 +1,69 @@
+{
+  "async_deliveries": null,
+  "candidate_error": null,
+  "candidate_instance_id": null,
+  "candidate_kind": "test-kind",
+  "cost_roles": [
+    "candidate",
+    "inner_agent",
+    "judge",
+    "simulator"
+  ],
+  "cost_usd": 0.01,
+  "covariates": {},
+  "doc_type": "eval_result",
+  "eval_run_id": "run-1",
+  "goal_state_outcomes": [
+    {
+      "detail": "",
+      "expression": "state.shop.cart.length >= 1",
+      "passed": true
+    }
+  ],
+  "has_trace": false,
+  "host_measures": {},
+  "id": "01a124dd-d342-74ae-ae9c-b5d9f371eb92",
+  "identity_version": 24,
+  "infra_error": null,
+  "judge_cannot_tell": {},
+  "judge_cannot_tell_boundary": [],
+  "judge_config_ids": {},
+  "judge_error": null,
+  "judge_model": null,
+  "judge_reasoning": "",
+  "judge_repeats": [],
+  "judge_rescores": [],
+  "judge_seconds": [],
+  "k_iteration": 1,
+  "kind_payload": null,
+  "latency": null,
+  "metered_calls_refused": null,
+  "model": "sonnet",
+  "outcome_score": null,
+  "phase_timings": {},
+  "precondition_outcomes": [],
+  "rubric_scores": [
+    {
+      "axis": null,
+      "dim": "conversation.tone",
+      "judge_temperature": null,
+      "reasoning": "",
+      "scale": "ordinal",
+      "score": 4,
+      "served_model": null
+    }
+  ],
+  "runner_error": null,
+  "schema_version": 8,
+  "scope_id": "uni-1",
+  "scored_at": "2026-10-10T08:11:19.747001+00:00",
+  "stop_cause": null,
+  "subject_id": null,
+  "termination": "completed",
+  "test_case_id": "tc-1",
+  "transcript_score": null,
+  "turns_delivered": null,
+  "usage": [],
+  "variant_key": "020840424f6ccfbe507edcf35a47e2ac79fe8414a4045cea92060d16ff171555",
+  "world_events": null
+}

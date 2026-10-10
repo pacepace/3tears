@@ -15,8 +15,8 @@ from typing import Any
 from threetears.evals.analysis import prepare_analysis_generation, run_analysis_generation
 from threetears.evals.analysis.bundle import assemble_context_bundle, superseding_insights
 from threetears.evals.analysis.generator import build_user_message
-from threetears.evals.contracts.campaign import EvalCampaign, EvalInsight
-from threetears.evals.contracts.host import EvalHost
+from threetears.evals.kernel.campaign import EvalCampaign, EvalInsight
+from threetears.evals.kernel.host import EvalHost
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import (
     TOYHOST_SCOPE,

@@ -1,7 +1,7 @@
 """Resolve the model's references against the decision surface — the one place a number is filled.
 
 The generating model names WHERE a number lives — a cell and a measure (or a judged dimension) —
-and this module reads the figure off the analysis's :class:`~threetears.evals.contracts.surface.DecisionSurface`.
+and this module reads the figure off the analysis's :class:`~threetears.evals.kernel.surface.DecisionSurface`.
 Every code-filled number on an analysis goes through :func:`resolve_reading`: evidence rows and
 the chart compilers in :mod:`threetears.evals.analysis.viz_refs`. One
 resolver rather than one per consumer, because two lookups of "the value of this measure at this
@@ -49,12 +49,12 @@ from threetears.evals.analysis import stats
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.numbers import format_number
-from threetears.evals.contracts.analysis_measures import MeasureSummary
-from threetears.evals.contracts.base import EvalBaseModel
-from threetears.evals.contracts.campaign import ReadingKind
-from threetears.evals.contracts.evidence_tiers import JudgedEvidenceTier
-from threetears.evals.contracts.metrics import MeritAxis, classifier_label_of
-from threetears.evals.contracts.surface import (
+from threetears.evals.kernel.analysis_measures import MeasureSummary
+from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.kernel.campaign import ReadingKind
+from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier
+from threetears.evals.kernel.metrics import MeritAxis, classifier_label_of
+from threetears.evals.kernel.surface import (
     CellFacts,
     DecisionSurface,
     JudgedDimensionFacts,

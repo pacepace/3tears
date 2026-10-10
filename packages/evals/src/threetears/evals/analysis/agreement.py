@@ -1,7 +1,7 @@
 """Judge-versus-human agreement: how often the judge scored a dimension the way people did.
 
 A judge's consistency across repeats measures its precision; only people can say whether it is
-right. People say so in :class:`~threetears.evals.contracts.models.CalibrationRating` documents, one
+right. People say so in :class:`~threetears.evals.schema.models.CalibrationRating` documents, one
 per rater and kind of rater per dimension per result, and this module sets each beside the score the judge gave the
 same dimension of the same result and reads the pairs per dimension:
 
@@ -28,12 +28,12 @@ perfectly on a constant score) is EXCLUDED from the mean before the weights are 
 raise it, and results only they rated are not among ``results`` and carry no weight; the dimension's kappa is
 undefined only when every person's is. ``n`` and ``exact_agreement`` stay per rating — counts, which nothing
 double-weights. ``results`` is the distinct results the pooled kappa covers, and it is what the evidence tiers'
-floor counts (:mod:`threetears.evals.contracts.evidence_tiers`).
+floor counts (:mod:`threetears.evals.kernel.evidence_tiers`).
 
 **One group per dimension, scale and judge** (:class:`JudgeKey`). The judge is the model that served the
-score (:attr:`~threetears.evals.contracts.models.RubricScore.served_model`), the versioned judge config
+score (:attr:`~threetears.evals.schema.models.RubricScore.served_model`), the versioned judge config
 that asked for it (the result's ``judge_config_ids``; ``None`` = the built-in prompt) AND the temperature the
-call was sent at (:attr:`~threetears.evals.contracts.models.RubricScore.judge_temperature`), so a campaign
+call was sent at (:attr:`~threetears.evals.schema.models.RubricScore.judge_temperature`), so a campaign
 sweeping its judge — model, prompt or sampling — reads each judge's agreement separately: pooling them would
 credit one judge with the other's calibration, which is the comparison a judge swap is decided on. A dimension rated on a
 scale it was later moved off is two groups for the same reason.
@@ -67,8 +67,8 @@ from threetears.evals.analysis.stats import (
     kappa_moments,
     t_critical_two_sided,
 )
-from threetears.evals.contracts.base import EvalDocumentModel
-from threetears.evals.contracts.evidence_tiers import (
+from threetears.evals.schema.base import EvalDocumentModel
+from threetears.evals.kernel.evidence_tiers import (
     JudgedEvidenceTier,
     JudgeEvidenceTier,
     TierCriterion,
@@ -78,10 +78,10 @@ from threetears.evals.contracts.evidence_tiers import (
     tier_of,
     weakest_judged_tier,
 )
-from threetears.evals.contracts.models import MODEL_DEFAULT_TEMPERATURE, SCALES, JudgeTemperature, RubricScale
+from threetears.evals.schema.models import MODEL_DEFAULT_TEMPERATURE, SCALES, JudgeTemperature, RubricScale
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.models import CalibrationRating, EvalResult
+    from threetears.evals.schema.models import CalibrationRating, EvalResult
 
 
 #: Why a rating has no judge score to be read against.
@@ -343,7 +343,7 @@ def _agreement_numbers(scale: RubricScale, pairs: Sequence[_Pair]) -> _Agreement
     """Read one group's pairs: the ONE computation calibration and self-agreement share.
 
     Each rater's Cohen's kappa over the pairs that rater gave, then the mean of the defined ones weighted by
-    result — each distinct result weighing 1, split across the raters that measured it (see the module docstring and :mod:`threetears.evals.contracts.evidence_tiers`); on a
+    result — each distinct result weighing 1, split across the raters that measured it (see the module docstring and :mod:`threetears.evals.kernel.evidence_tiers`); on a
     1-5 scale the same with quadratic weights. A "can't tell" answer is its own category, maximally far from
     every score, and a disagreement in exact agreement. ``results`` counts the distinct results among the
     raters whose kappa is defined — the raters the pooled figure actually rests on.
@@ -682,7 +682,7 @@ class JudgeSelfAgreement(EvalDocumentModel):
 def judge_self_agreement(results: Iterable[EvalResult]) -> JudgeSelfAgreement:
     """Pair each repeated score with the first score it repeated, and read agreement the way calibration does.
 
-    The pair is the one the repeat recorded (:class:`~threetears.evals.contracts.models.RepeatedScore`),
+    The pair is the one the repeat recorded (:class:`~threetears.evals.schema.models.RepeatedScore`),
     so a re-judge that later rewrote the result's score does not split it. The repeat stands where the
     person stands in :func:`judge_agreement` and each round of repeats is a rater, so the figures are the
     same statistic over the same pooling, and the two tiers they decide compare.
@@ -867,7 +867,7 @@ class InterJudgeAgreement(EvalDocumentModel):
 def inter_judge_agreement(results: Iterable[EvalResult], *, pass_id: str | None = None) -> InterJudgeAgreement:
     """Pair each second judge's score with the first score it answers, and read agreement the way calibration does.
 
-    The pair is the one the pass recorded (:class:`~threetears.evals.contracts.models.SecondJudgeScore`), so a
+    The pair is the one the pass recorded (:class:`~threetears.evals.schema.models.SecondJudgeScore`), so a
     re-judge that later rewrote the result's score does not split it. The second judge stands where the person stands
     in :func:`judge_agreement`, each pass a rater, so the figures are the same statistic over the same pooling
     (:func:`_agreement_numbers`). The figure is quadratic-weighted kappa on 1-5 and unweighted kappa on pass/fail; an

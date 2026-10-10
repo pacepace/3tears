@@ -1,11 +1,11 @@
 """The engine's analysis package: campaigns, context bundles, generated analyses and the read lenses.
 
-It turns a campaign's runs into a generated, stored analysis. Of the engine it imports only itself
-and :mod:`threetears.evals.contracts`, and ships no charting library. The
+It turns a campaign's runs into a generated, stored analysis. Of the engine it imports only itself,
+:mod:`threetears.evals.schema` and :mod:`threetears.evals.kernel`, and ships no charting library. The
 stored shapes it writes into — the
-:class:`~threetears.evals.contracts.campaign.EvalCampaign` hub and the
-:class:`~threetears.evals.contracts.campaign.EvalAnalysis` /
-:class:`~threetears.evals.contracts.campaign.EvalInsight` documents — live in the contracts package,
+:class:`~threetears.evals.kernel.campaign.EvalCampaign` hub and the
+:class:`~threetears.evals.kernel.campaign.EvalAnalysis` /
+:class:`~threetears.evals.kernel.campaign.EvalInsight` documents — live in the kernel,
 not here. The pipeline:
 
 - ``reporting``, ``stats`` and ``numbers`` — the query-time projection of runs + results into
@@ -319,7 +319,43 @@ from threetears.evals.analysis.surface_table import (
 )
 
 
+from threetears.evals.analysis.lens_text import frontier_text
+from threetears.evals.analysis.out_of_run_spend import (
+    OutOfRunSpendReport,
+    OutOfRunSpendTotals,
+    out_of_run_spend_text,
+    scope_out_of_run_spend,
+)
+from threetears.evals.analysis.report.serialize import ReportFormat, serialize_report
+from threetears.evals.analysis.summary import (
+    CaseOutcome,
+    CaseResult,
+    DimensionSummary,
+    EvalSummary,
+    GoalCheckSummary,
+    JudgeGrade,
+    RunMeasureSummary,
+    dollars_text,
+    summarize_run,
+)
+
 __all__ = [
+    "frontier_text",
+    "OutOfRunSpendReport",
+    "OutOfRunSpendTotals",
+    "out_of_run_spend_text",
+    "scope_out_of_run_spend",
+    "ReportFormat",
+    "serialize_report",
+    "CaseOutcome",
+    "CaseResult",
+    "DimensionSummary",
+    "EvalSummary",
+    "GoalCheckSummary",
+    "JudgeGrade",
+    "RunMeasureSummary",
+    "dollars_text",
+    "summarize_run",
     "REPORT_VERSION",
     "SECTION_TITLES",
     "ChartBlock",

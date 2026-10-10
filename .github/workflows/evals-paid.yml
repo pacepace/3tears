@@ -15,7 +15,7 @@ on:
     paths:
       - packages/evals/src/threetears/evals/analysis/generator.py
       - packages/evals/src/threetears/evals/analysis/gen_prompt.py
-      - packages/evals/src/threetears/evals/contracts/authored.py
+      - packages/evals/src/threetears/evals/kernel/authored.py
       - packages/evals/tests/fixtures/toyhost/**
       - packages/evals/tests/test_paid_analysis_generation.py
       - .github/workflows/evals-paid.yml

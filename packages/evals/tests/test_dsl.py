@@ -7,19 +7,13 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-import threetears.evals.contracts.dsl as _dsl
-from threetears.evals.contracts import Firings, Precondition, WorldEvent
-from threetears.evals.contracts.dsl import (
-    NOT_ESTABLISHED,
-    DSLError,
-    Missing,
-    evaluate,
-    evaluate_with_detail,
-    extract_paths,
-    parse,
-)
-from threetears.evals.contracts.host import Triggered, WorldDimension, WorldRegistry
-from threetears.evals.contracts.call_ledger import CallLedger
+import threetears.evals.kernel.dsl as _dsl
+import threetears.evals.schema.goal_grammar as _grammar
+from threetears.evals.schema import Firings, Precondition, WorldEvent
+from threetears.evals.kernel.dsl import NOT_ESTABLISHED, Missing, evaluate, evaluate_with_detail
+from threetears.evals.schema.goal_grammar import DSLError, extract_paths, parse
+from threetears.evals.kernel.host import Triggered, WorldDimension, WorldRegistry
+from threetears.evals.schema.call_ledger import CallLedger
 
 
 def _state_with(**dimensions: dict[str, Any]) -> dict[str, Any]:
@@ -962,10 +956,10 @@ def _docstring_examples() -> list[str]:
     Returns:
         The example expressions, in the order they are documented.
     """
-    assert _dsl.__doc__, "the dsl module docstring is the corpus these tests read"
+    assert _grammar.__doc__, "the dsl module docstring is the corpus these tests read"
     return [
         line.strip()
-        for line in _dsl.__doc__.splitlines()
+        for line in _grammar.__doc__.splitlines()
         if line.startswith("    ") and line.strip() and not line.strip().startswith("#")
     ]
 
@@ -1157,7 +1151,7 @@ class TestFired:
 
     def test_referenced_fires_names_each_dimension_once_in_source_order(self) -> None:
         expression = 'fired("b") and (fired_armed("a") or not fired("b")) and fired_armed("c")'
-        assert _dsl.referenced_fires(expression) == ("b", "a", "c")
+        assert _grammar.referenced_fires(expression) == ("b", "a", "c")
 
     def test_a_fired_name_that_is_not_a_triggered_dimension_is_named(self) -> None:
         world = self._triggered_world()

@@ -17,9 +17,9 @@ from threetears.evals.analysis.bundle import ComparisonVerdict
 from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.viz.intent import Cell
 from threetears.evals.analysis.viz_refs import cell_arm_labels
-from threetears.evals.contracts.campaign import ConfidenceTier, EvalAnalysis, EvidenceRow, EvidenceTier
-from threetears.evals.contracts.analysis_measures import BarDecision
-from threetears.evals.contracts.surface import GuardrailDecision
+from threetears.evals.kernel.campaign import ConfidenceTier, EvalAnalysis, EvidenceRow, EvidenceTier
+from threetears.evals.kernel.analysis_measures import BarDecision
+from threetears.evals.kernel.surface import GuardrailDecision
 
 
 def _literal_values(annotation: Any) -> frozenset[str]:
@@ -197,7 +197,7 @@ def evidence_rows(
     """A finding's evidence as table rows, keyed by :data:`EVIDENCE_COLUMNS` — each reading by what a reader calls it.
 
     The measure is headed as the decision surface heads it
-    (:meth:`~threetears.evals.contracts.surface.DecisionSurface.measure_heading`), never by its key unless nothing
+    (:meth:`~threetears.evals.kernel.surface.DecisionSurface.measure_heading`), never by its key unless nothing
     names it; the key stays on the analysis's evidence rows, which every reader of the record can cite.
 
     Args:

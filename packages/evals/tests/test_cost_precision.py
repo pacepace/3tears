@@ -20,10 +20,10 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis import inspect_campaign_bundle
-from threetears.evals.contracts import RoleUsageLedger
-from threetears.evals.contracts.host.spend import ExternalSpend
-from threetears.evals.contracts.spend import ExternalRateTable
-from threetears.evals.contracts.usage_capture import blended_cost, production_replicating_cost
+from threetears.evals.kernel import RoleUsageLedger
+from threetears.evals.schema.external_spend import ExternalSpend
+from threetears.evals.kernel.spend import ExternalRateTable
+from threetears.evals.kernel.usage_capture import blended_cost, production_replicating_cost
 from threetears.evals.quick import Answer, compare
 from threetears.evals.ops import dollars_text
 from threetears.evals.run import list_results

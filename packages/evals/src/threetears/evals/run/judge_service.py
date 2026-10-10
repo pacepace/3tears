@@ -6,7 +6,7 @@ construction-memoization). **Calls may run concurrently on one cached client** �
 the runner gathers a result's ``2 + N`` calls under ``eval.judge_concurrency`` —
 which is sound only because the port requires each ``generate()`` to build its
 own request rather than share instance state
-(:class:`~threetears.evals.contracts.provider.CompletionClient`); the runner was once serial
+(:class:`~threetears.evals.schema.completion.CompletionClient`); the runner was once serial
 for exactly the want of that guarantee.
 
 Three scoring entry points:
@@ -23,17 +23,17 @@ Three scoring entry points:
 
 **What every call reads is the kind's, not the engine's.** The candidate's kind renders the
 judge's evidence — who the candidate is, what its output is judged against, and the output itself
-(:class:`~threetears.evals.contracts.models.JudgeEvidence`) — and this service places those three
+(:class:`~threetears.evals.schema.models.JudgeEvidence`) — and this service places those three
 strings in the prompt without reading them. The engine renders no transcript and no subject of its
 own: only the kind knows how its turns and tool calls read as text, and which facts in play a judge
 should see that the candidate's interlocutors did not. The kind's declaration
-(:class:`~threetears.evals.contracts.models.JudgedArtifact`) picks the axes and the wording.
+(:class:`~threetears.evals.schema.models.JudgedArtifact`) picks the axes and the wording.
 
 Each call resolves a versioned :class:`JudgeConfig` (pre-resolved per dim at run
 start, keyed by ``rubric_dim_id``); when one exists its ``prompt_template`` is
 used as the judging instructions and its ``model`` / ``temperature`` select the
 client. With no config, a built-in default prompt + the default judge client
-are used, at :data:`~threetears.evals.contracts.models.DEFAULT_JUDGE_TEMPERATURE` —
+are used, at :data:`~threetears.evals.schema.models.DEFAULT_JUDGE_TEMPERATURE` —
 the same temperature a config defaults to, so configuring a dim's prompt never
 changes how it is sampled (#633). Every score records the temperature its call
 was actually sent at. The fixed JSON-format instruction is appended to **both** so the
@@ -51,7 +51,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, NamedTuple, Self
 
-from threetears.evals.contracts.models import (
+from threetears.evals.schema.models import (
     DEFAULT_JUDGE_TEMPERATURE,
     OUTCOME_DIM_ID,
     SCALE_LEVELS,
@@ -67,9 +67,9 @@ from threetears.evals.contracts.models import (
     RubricScore,
     UsageRole,
 )
-from threetears.evals.contracts.host.eval_host import CompletionClients
-from threetears.evals.contracts.provider import BoundCompletionClient, ProviderFailureDescriber
-from threetears.evals.contracts.usage_capture import CallUsage, RoleUsageLedger, blended_cost
+from threetears.evals.kernel.host.eval_host import CompletionClients
+from threetears.evals.schema.completion import BoundCompletionClient, ProviderFailureDescriber
+from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger, blended_cost
 from threetears.evals.run.judge import CANNOT_TELL, run_judge_llm
 from threetears.observe import get_logger
 
@@ -79,7 +79,7 @@ log = get_logger(__name__)
 #: ``None`` when this dim states no model of its own — what the factory
 #: substitutes is the caller's business, and the run-scoped one supplies the
 #: run's judge pin. ``temperature`` is what the call is requested at: the dim's
-#: config's, else :data:`~threetears.evals.contracts.models.DEFAULT_JUDGE_TEMPERATURE`
+#: config's, else :data:`~threetears.evals.schema.models.DEFAULT_JUDGE_TEMPERATURE`
 #: — the service never asks for the provider default, and a client whose model
 #: refuses a temperature sends none and reports that on its completion. The
 #: service caches the result so identical configs reuse one client.
@@ -198,7 +198,7 @@ def fold_judge_outcomes(outcomes: list[tuple[str, JudgeOutcome]]) -> JudgeFold:
 
     Judge cost comes off the usage ledger rather than a per-call cost field, because a dim
     that burned tokens and then failed to parse is spend the run still paid. It is ``None``
-    when any call went unpriced (:func:`~threetears.evals.contracts.usage_capture.blended_cost`).
+    when any call went unpriced (:func:`~threetears.evals.kernel.usage_capture.blended_cost`).
 
     Args:
         outcomes: ``(dim_id, outcome)`` for every call made, in call order.
@@ -210,7 +210,7 @@ def fold_judge_outcomes(outcomes: list[tuple[str, JudgeOutcome]]) -> JudgeFold:
     errors: list[tuple[str, str]] = []
     cannot_tell: dict[str, str] = {}
     # Per-dim judge configs may each pin their own model, so the ledger splits rows by
-    # model rather than blending the dims into one — see threetears.evals.contracts.usage_capture.
+    # model rather than blending the dims into one — see threetears.evals.kernel.usage_capture.
     ledger = RoleUsageLedger(role="judge")
     for dim_id, outcome in outcomes:
         if outcome.usage is not None:
@@ -398,7 +398,7 @@ class JudgeService:
                 that can say a call was refused for the calling account. Required: a reading that
                 cannot tell would quietly turn an account refusal into one excluded dim after
                 another, so a caller with no reading of its own names
-                :func:`~threetears.evals.contracts.provider.withhold_failure_detail` explicitly.
+                :func:`~threetears.evals.kernel.provider.withhold_failure_detail` explicitly.
         """
         self._client_factory = client_factory
         self._failure_describer = failure_describer

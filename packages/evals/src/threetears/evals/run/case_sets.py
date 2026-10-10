@@ -1,9 +1,9 @@
 """Named, versioned case sets: minting the next version, and resolving one a launch targets.
 
-A :class:`~threetears.evals.contracts.models.CaseSet` is a name, a version and a frozen, ordered list of one
+A :class:`~threetears.evals.schema.models.CaseSet` is a name, a version and a frozen, ordered list of one
 template's test cases. It is append-only: :func:`mint_case_set` writes the next version, and storing a version
 that exists is refused, so ``smoke v1`` names the same cases however the template has been edited since. A launch
-names a set (:class:`~threetears.evals.contracts.models.CaseSetRef`); :func:`resolve_case_set` turns it into the
+names a set (:class:`~threetears.evals.schema.models.CaseSetRef`); :func:`resolve_case_set` turns it into the
 cases the launch runs, refusing a set whose cases no longer all resolve, and the run records the set beside the
 ids it froze. The set is a label on that frozen identity, never a second one.
 """
@@ -13,12 +13,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
-from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
-from threetears.evals.contracts.models import CaseSet, CaseSetRef
+from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.schema.models import CaseSet, CaseSetRef
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.models import EvalTemplate, EvalTestCase
-    from threetears.evals.contracts.storage import CaseSetStore
+    from threetears.evals.schema.models import EvalTemplate, EvalTestCase
+    from threetears.evals.kernel.storage import CaseSetStore
 
 
 def _cases_of(storage: CaseSetStore, test_case_ids: Sequence[str], scope_id: str) -> dict[str, EvalTestCase]:

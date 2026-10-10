@@ -11,8 +11,9 @@ from collections.abc import Sequence
 
 import pytest
 
-from threetears.evals.contracts import EvalStorage, RubricScore
-from threetears.evals.contracts.models import TRANSCRIPT_DIM_ID, EvalResult, EvalRun
+from threetears.evals.kernel import EvalStorage
+from threetears.evals.schema import RubricScore
+from threetears.evals.schema.models import TRANSCRIPT_DIM_ID, EvalResult, EvalRun
 from threetears.evals.ops import RegressionAlert, RegressionSink, RegressionWatch
 from threetears.evals.run import default_job_timeout
 from threetears.evals.run.launch import LaunchHost

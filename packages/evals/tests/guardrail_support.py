@@ -12,9 +12,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
-from threetears.evals.contracts import EvalCampaign, EvalResult, Question, RubricScore
-from threetears.evals.contracts.host import HostProfile
-from threetears.evals.contracts.models import RubricAxis, RubricScale
+from threetears.evals.kernel import EvalCampaign, Question
+from threetears.evals.schema import EvalResult, RubricScore
+from threetears.evals.kernel.host import HostProfile
+from threetears.evals.schema.models import RubricAxis, RubricScale
 from packages.evals.tests.factories import fixture_variant_key, make_eval_result, make_eval_run, minimal_declaration
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile

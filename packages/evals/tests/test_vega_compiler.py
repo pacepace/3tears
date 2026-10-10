@@ -59,7 +59,7 @@ from threetears.evals.vega.text_metrics import (
     text_width,
     write_font_metrics,
 )
-from threetears.evals.contracts.host import CHART_FONT_CHARACTERS, ChartFont
+from threetears.evals.kernel.host import CHART_FONT_CHARACTERS, ChartFont
 from packages.evals.tests.chart_examples import (
     DELTA_TABLE,
     DISTRIBUTION,

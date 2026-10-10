@@ -2,13 +2,13 @@
 
 from types import SimpleNamespace
 
-from threetears.evals.contracts.host.spend import ExternalSpend
+from threetears.evals.schema.external_spend import ExternalSpend
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.contracts.models import AsyncDelivery, AsyncExternalSpend, RoleUsage
-from threetears.evals.contracts.spend import ExternalRateTable
-from threetears.evals.contracts.usage_capture import (
+from threetears.evals.schema.models import AsyncDelivery, AsyncExternalSpend, RoleUsage
+from threetears.evals.kernel.spend import ExternalRateTable
+from threetears.evals.kernel.usage_capture import (
     RoleUsageLedger,
     async_delivery_usage,
     cell_cost,
@@ -590,8 +590,8 @@ def test_the_program_cost_still_reports_what_the_eval_really_spent():
 
 def test_count_substituted_deliveries_of_an_unobserved_lifecycle_is_zero():
     """A result whose kind reports no delivery stream had no delivery the harness could substitute."""
-    from threetears.evals.contracts.models import EvalResult
-    from threetears.evals.contracts.usage_capture import count_substituted_deliveries
+    from threetears.evals.schema.models import EvalResult
+    from threetears.evals.kernel.usage_capture import count_substituted_deliveries
 
     base = {
         **result_capture_defaults(),

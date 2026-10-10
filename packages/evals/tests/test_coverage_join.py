@@ -12,8 +12,8 @@ from __future__ import annotations
 from typing import Any
 
 from threetears.evals.analysis.report import DisclosureBlock, Report, TableBlock, TextBlock, build_report
-from threetears.evals.contracts.authored import NO_CHART, AuthoredAnalysis, Finding, NextStep
-from threetears.evals.contracts.campaign import CoverageLens, LeverCoverage
+from threetears.evals.kernel.authored import NO_CHART, AuthoredAnalysis, Finding, NextStep
+from threetears.evals.kernel.campaign import CoverageLens, LeverCoverage
 from packages.evals.tests.factories import make_analysis
 
 

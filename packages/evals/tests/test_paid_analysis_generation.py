@@ -43,8 +43,8 @@ from threetears.evals.analysis.generator import (
     GenerationTally,
     generate_analysis,
 )
-from threetears.evals.contracts.campaign import EvalAnalysis
-from threetears.evals.contracts.models import utc_now_iso
+from threetears.evals.kernel.campaign import EvalAnalysis
+from threetears.evals.schema.models import utc_now_iso
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 

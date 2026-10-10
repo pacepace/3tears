@@ -2,7 +2,7 @@
 
 This is the path a product follows, and it is short on purpose. Write the knobs a launch may turn as
 one plain Pydantic model, a field each with a default and a description, and what a template states
-for the kind as another; wrap both in a :class:`~threetears.evals.contracts.host.KindContract` named
+for the kind as another; wrap both in a :class:`~threetears.evals.kernel.host.KindContract` named
 for the kind, and name the contract on the profile's ``kinds`` (``profile.py``) — once, and nowhere
 else. Everything else is the engine's: the profile adds the contract's levers to the registry every
 lens reads, a launch's overlays are validated against the overlay model before any run exists and
@@ -37,7 +37,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
-from threetears.evals.contracts.host import ActsOn, Interval, KindContract, Ordinal
+from threetears.evals.kernel.host import ActsOn, Interval, KindContract, Ordinal
 from packages.evals.tests.fixtures.toyhost.kind import INVOICE_FIELDS, TOY_EXTRACTOR_KIND, InvoiceField
 
 

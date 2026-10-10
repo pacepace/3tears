@@ -488,8 +488,10 @@ Run the file twice. The second run reads the first run's results from the file, 
 - **`compare(..., store=store)`** keeps the arms and their campaign the same way, and `margins=`, `ranges=` and
   `guardrails=` work exactly as in steps 5 and 7. A later program reads the comparison on the margins, ranges and
   guardrails it ran under, whatever its own host declares.
-- **A stored run is read by a release that stores the same format.** A release that changes the format refuses
-  older runs rather than misreading them: delete the file and run again.
+- **Keep the file across releases.** Runs, results and cases are the evidence core: a later release reads them
+  as stored, upgrading an older one as it reads it. A comparison's campaign and analysis are not kept that way.
+  When their format changes, a release refuses them, and you make them again over the kept runs
+  ([what is kept](adopting-a-host.md#stored-data-what-is-kept)).
 
 ## 9. Where next
 

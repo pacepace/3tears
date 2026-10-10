@@ -8,8 +8,8 @@ import typing
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.contracts.campaign import EvidenceRow, EvidenceTier, FindingResolution, evidence_tier_of
-from threetears.evals.contracts.evidence_tiers import JUDGED_TIERS_WEAKEST_FIRST, JudgedEvidenceTier
+from threetears.evals.kernel.campaign import EvidenceRow, EvidenceTier, FindingResolution, evidence_tier_of
+from threetears.evals.kernel.evidence_tiers import JUDGED_TIERS_WEAKEST_FIRST, JudgedEvidenceTier
 
 
 def _row(reading: str, tier: JudgedEvidenceTier | None = None) -> EvidenceRow:

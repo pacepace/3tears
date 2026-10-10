@@ -24,10 +24,10 @@ from threetears.evals.analysis.reporting import (
     measurement_window_disclosure,
 )
 from threetears.evals.analysis.reads import comparison_sets
-from threetears.evals.contracts.host import SubjectSnapshot
-from threetears.evals.contracts.models import EvalResult, EvalRun
+from threetears.evals.schema import SubjectSnapshot
+from threetears.evals.schema.models import EvalResult, EvalRun
 from threetears.evals.run.reads import list_runs
-from threetears.evals.contracts.identity import IDENTITY_VERSION
+from threetears.evals.kernel.identity import IDENTITY_VERSION
 from packages.evals.tests.factories import as_listed
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile

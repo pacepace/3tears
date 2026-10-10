@@ -37,7 +37,7 @@ write that declaration yourself. The handles must be production's own write and 
 must name **every** surface that shows the dimension to the agent:
 
 ```python
-from threetears.evals.contracts.host import WorldDimension, WorldRegistry
+from threetears.evals.kernel.host import WorldDimension, WorldRegistry
 
 room = {"light": "off", "daylight": "dark"}  # stands in for your production state
 
@@ -101,7 +101,7 @@ A goal check is an expression over the world the agent left (`state.<dimension>`
 (`calls("<world>.<tool>")`, `call_count`, `called_before`, `called_after`, `last_call_was`), whether it
 deliberately passed (`passed()`), what fired (`fired`), and the case's own parameters (`variation.<name>`). It also has `any`/`all` generators, `contains`,
 `intersects` and `length`. A path that holds nothing is *not established*, and a check resting on one fails. The
-full grammar is in the `threetears.evals.contracts.dsl` docstring.
+full grammar is in the `threetears.evals.kernel.dsl` docstring.
 
 **Read effects, not parameters.** `state.light == "on"` grades the room. `calls("room.switch_light")[0].to == "on"`
 grades what the agent asked for, and passes one that asked for the right thing and left the room wrong.
@@ -119,8 +119,13 @@ verdict on both, so you can try your controls on the quick host from step 2 befo
 the template is a host's job:
 
 ```python
-from threetears.evals.contracts import (
-    ControlEndState, GoalCheckControl, GoalCheckControls, Precondition, RecordedCall, WorldSeed,
+from threetears.evals.schema import (
+    ControlEndState,
+    GoalCheckControl,
+    GoalCheckControls,
+    Precondition,
+    RecordedCall,
+    WorldSeed,
 )
 from threetears.evals.quick import CALLABLE_KIND
 from threetears.evals.run import create_template
@@ -207,7 +212,7 @@ A declaration is a claim. The kit tests it through your own handles. It **moves 
 back**, so run it against a rig, in your test suite:
 
 ```python
-from threetears.evals.contracts.host import check_world_conformance
+from threetears.evals.kernel.host import check_world_conformance
 
 report = await check_world_conformance(REGISTRY, expressions=[LIGHT_ON, 'state.light == "off"'])
 for result in report.results:

@@ -20,8 +20,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from threetears.evals.contracts import EvalRun, EvalStorage, NotFoundError, WorldSeed
-from threetears.evals.contracts.host import CompletionClients, HostProfile, TraceSink, WorldPlacement
+from threetears.evals.schema import EvalRun, WorldSeed
+from threetears.evals.kernel import EvalStorage, NotFoundError
+from threetears.evals.kernel.host import CompletionClients, HostProfile
+from threetears.evals.schema import TraceSink
+from threetears.evals.schema import WorldPlacement
 from threetears.evals.run import (
     ArmPlan,
     CellExecutor,
@@ -133,7 +136,7 @@ def toyhost_launch_host(
     cell_executor: CellExecutor | None = None,
     kind_cell_timeout_s: float | None = None,
 ) -> tuple[LaunchHost, ScriptedExtractionClient]:
-    """The toy host as a launching host: its :class:`~threetears.evals.contracts.host.EvalHost`, plus its launch registry.
+    """The toy host as a launching host: its :class:`~threetears.evals.kernel.host.EvalHost`, plus its launch registry.
 
     Args:
         profile: The vocabulary; ``None`` is the toy host's own.

@@ -1,7 +1,7 @@
 """Variation generation for eval templates.
 
-Generates concrete :class:`~threetears.evals.contracts.models.EvalTestCase` documents
-from a template's :class:`~threetears.evals.contracts.models.VariationAxis` declarations.
+Generates concrete :class:`~threetears.evals.schema.models.EvalTestCase` documents
+from a template's :class:`~threetears.evals.schema.models.VariationAxis` declarations.
 Each test case freezes one combination of axis values; existing test cases
 with the same variation_params are reused (not duplicated).
 
@@ -16,7 +16,7 @@ Three axis generator types:
   read off the client. A launch asks its host for that client in the
   ``variation`` role, before any run starts: those calls are outside every
   run's cost cap and metered-call ceiling, so they go through an
-  :class:`~threetears.evals.contracts.out_of_run.OutOfRunBudget` instead — every
+  :class:`~threetears.evals.kernel.out_of_run.OutOfRunBudget` instead — every
   ``llm`` axis's call is priced before the first is made, refused together when
   the out-of-run cap cannot pay for them, and ledgered once made.
 
@@ -46,26 +46,21 @@ import itertools
 import random
 from typing import TYPE_CHECKING, NamedTuple, Protocol
 
-from threetears.evals.contracts.errors import ValidationFailedError
-from threetears.evals.contracts.hashing import canonical_json
-from threetears.evals.contracts.identity import compute_content_hash
-from threetears.evals.contracts.models import EvalTemplate, EvalTestCase, VariationAxis, VariationCounts
-from threetears.evals.contracts.offload import run_blocking
-from threetears.evals.contracts.out_of_run import (
-    AdmittedCall,
-    OutOfRunBudget,
-    OutOfRunSpend,
-    existing_axis_values,
-    plan_variation_calls,
-)
-from threetears.evals.contracts.provider import extract_json
+from threetears.evals.kernel.errors import ValidationFailedError
+from threetears.evals.schema.hashing import canonical_json
+from threetears.evals.kernel.identity import compute_content_hash
+from threetears.evals.schema.models import EvalTemplate, EvalTestCase, VariationAxis, VariationCounts
+from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.out_of_run import AdmittedCall, OutOfRunBudget, existing_axis_values, plan_variation_calls
+from threetears.evals.schema.out_of_run_spend import OutOfRunSpend
+from threetears.evals.kernel.provider import extract_json
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
     from concurrent.futures import Executor
 
-    from threetears.evals.contracts.storage import EvalStorage
-    from threetears.evals.contracts.provider import VariationLLM
+    from threetears.evals.kernel.storage import EvalStorage
+    from threetears.evals.schema.completion import VariationLLM
 
 log = get_logger(__name__)
 
@@ -78,7 +73,7 @@ class EvalTestCaseStore(Protocol):
     written back; nothing else about a store is generation's business.
 
     Structural, so a host's own storage satisfies it by having the methods —
-    :class:`~threetears.evals.contracts.storage.EvalStorage` does, with no
+    :class:`~threetears.evals.kernel.storage.EvalStorage` does, with no
     inheritance and no registration.
 
     Named for the document it stores rather than shortened to ``TestCaseStore``:
@@ -297,7 +292,7 @@ async def price_variations(
 
     What a host's own pre-flight asks before it lets any work start. The engine's battery prices its
     templates' generations itself, from the same plan
-    (:func:`~threetears.evals.contracts.out_of_run.plan_variation_calls`) through ``budget.quote``.
+    (:func:`~threetears.evals.kernel.out_of_run.plan_variation_calls`) through ``budget.quote``.
     Commits nothing to ``budget``.
 
     Args:
@@ -368,7 +363,7 @@ def _parse_llm_axis_values(
     """Read up to ``n_variations`` novel values for ``axis`` off the model's reply.
 
     Values already in ``existing_values`` are excluded; the rest are returned in the order produced,
-    deduplicated. Robust (via :func:`~threetears.evals.contracts.provider.extract_json`) to
+    deduplicated. Robust (via :func:`~threetears.evals.kernel.provider.extract_json`) to
     code-fenced output and surrounding commentary, and to duplicate values within the response
     (kept once).
 

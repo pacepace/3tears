@@ -2,11 +2,11 @@
 
 A goal check reads three things about a finished cell, and the runner stores all three exactly as the
 cell left them: the calls its candidate made (the trace's
-:attr:`~threetears.evals.contracts.models.EvalTrace.call_ledger`, read by ``called_before``,
+:attr:`~threetears.evals.schema.models.EvalTrace.call_ledger`, read by ``called_before``,
 ``calls`` …), the world it left behind (the trace's
-:attr:`~threetears.evals.contracts.models.EvalTrace.end_state`, read by ``state.<dimension>``), and the
+:attr:`~threetears.evals.schema.models.EvalTrace.end_state`, read by ``state.<dimension>``), and the
 triggered dimensions that fired (the result's
-:attr:`~threetears.evals.contracts.models.EvalResult.world_events`, read by ``fired()`` and ``fired_armed()``). So a stored
+:attr:`~threetears.evals.schema.models.EvalResult.world_events`, read by ``fired()`` and ``fired_armed()``). So a stored
 result is re-graded from what its candidate DID and what its world BECAME, through
 :func:`~threetears.evals.run.runner.grade_goal_checks` — the function every kind grades a live cell
 with — and a change to the goal language reaches results stored before it without re-running them.
@@ -14,7 +14,7 @@ Nothing here is kind-shaped: no kind replays its own trace, because each input w
 engine's own type.
 
 **It establishes no more than the original grading could.** What fired is read through
-:meth:`~threetears.evals.contracts.world_events.Firings.of` with the provenance of the run the result
+:meth:`~threetears.evals.schema.world_events.Firings.of` with the provenance of the run the result
 belongs to — the rule the cell was graded under. A witnessed cell had no seed, so its stored events say
 ``armed=False`` because nothing could mark them armed; ``fired_armed()`` on it stays *not established*
 on re-check, negated or not, instead of reading those events as "nothing armed fired".
@@ -50,27 +50,27 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Protocol
 
-from threetears.evals.contracts.call_ledger import CallLedger
+from threetears.evals.schema.call_ledger import CallLedger
 
 from pydantic import Field
 
-from threetears.evals.contracts.base import EvalBaseModel
-from threetears.evals.contracts.dsl import (
+from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.schema.goal_grammar import (
     DSLError,
     extract_paths,
     reads_call_ledger,
     referenced_fires,
     speaks_the_goal_language,
 )
-from threetears.evals.contracts.errors import ConflictError, NotFoundError, ValidationFailedError
-from threetears.evals.contracts.models import NON_TERMINAL_RUN_STATUSES, ApparatusProvenance, GoalStateOutcome
-from threetears.evals.contracts.world_events import Firings
+from threetears.evals.kernel.errors import ConflictError, NotFoundError, ValidationFailedError
+from threetears.evals.schema.models import NON_TERMINAL_RUN_STATUSES, ApparatusProvenance, GoalStateOutcome
+from threetears.evals.schema.world_events import Firings
 from threetears.evals.run.runner import GoalCheckUnevaluable, grade_goal_checks
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.host.world import WorldRegistry
-    from threetears.evals.contracts.models import EvalResult, EvalRun, EvalTestCase, EvalTrace
+    from threetears.evals.kernel.host.world import WorldRegistry
+    from threetears.evals.schema.models import EvalResult, EvalRun, EvalTestCase, EvalTrace
 
 log = get_logger(__name__)
 
@@ -176,7 +176,7 @@ def recheck_result(
         world: The host's world registry, which ``state.<dimension>`` resolves through; ``None`` keeps
             every outcome reading world state as stored.
         provenance: The apparatus provenance of the run the result belongs to, which decides what its
-            world events can establish (:meth:`~threetears.evals.contracts.world_events.Firings.of`) — a
+            world events can establish (:meth:`~threetears.evals.schema.world_events.Firings.of`) — a
             witnessed cell's ``fired_armed()`` is not established, as it was when the cell was graded.
 
     Returns:

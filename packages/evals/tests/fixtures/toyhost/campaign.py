@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from typing import TypedDict
 
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
-from threetears.evals.contracts import (
+from threetears.evals.kernel import (
     BarOverride,
     CampaignDesign,
     ControlDeclaration,
@@ -24,7 +24,8 @@ from threetears.evals.contracts import (
     Question,
     SweptAxis,
 )
-from threetears.evals.contracts.host import HostProfile, IntervalScale, SweepableValue
+from threetears.evals.kernel.host import HostProfile
+from threetears.evals.schema import IntervalScale, SweepableValue
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.corpus import (
     TOYHOST_GRADER_VERSION,

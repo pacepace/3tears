@@ -1,52 +1,31 @@
 """The eval engine's own model bases: their stance, pinned, and reads as strict as construction.
 
-The stance is spelled once in ``threetears.evals.contracts.base`` and pinned literally below, so a
-change to it is diff-visible on its own terms. Stored eval documents are disposable, so there is no
-tolerant read: a stored document carrying a field the model does not declare, or written under
-another schema version, is refused — and the last tests here assert that through real storage.
+The stance is spelled once in ``threetears.evals.schema.base`` and pinned literally below, so a
+change to it is diff-visible on its own terms. There is no tolerant read: a stored document carrying a
+field the model does not declare is refused, and so is one at a version this build does not read — any
+other version for a regenerable document, a newer or pre-release one for a core document — and the last
+tests here assert that through real storage.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
 from typing import Any, ClassVar
 
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.contracts.base import EvalBaseModel, EvalDocumentModel
-from threetears.evals.contracts.models import (
-    EVAL_SCHEMA_VERSION,
-    CaseSet,
-    CassetteKey,
-    EvalCassette,
+from threetears.evals.schema.base import CoreDocumentModel, EvalBaseModel, EvalDocumentModel
+from threetears.evals.schema.versioning import CORE_BASELINE_VERSION, CORE_SCHEMA_VERSION, REGENERABLE_SCHEMA_VERSION
+from threetears.evals.schema.models import (
     EvalResult,
     EvalRun,
-    RubricDimTombstone,
-    JudgeConfigTombstone,
 )
-from threetears.evals.contracts.campaign import EvalSweep, SweepArmRecord
-from threetears.evals.contracts.out_of_run import OutOfRunSpend
-from threetears.evals.contracts.storage import EvalStorage
-from threetears.evals.contracts.identity import IDENTITY_VERSION
-from packages.evals.tests.factories import (
-    make_analysis,
-    make_analysis_attempt,
-    make_calibration_rating,
-    make_campaign,
-    make_eval_result,
-    make_eval_run,
-    make_eval_trace,
-    make_insight,
-    make_judge_config,
-    make_rubric_dim,
-    make_template,
-    make_test_case,
-)
+from threetears.evals.kernel.storage import EvalStorage
+from threetears.evals.kernel.identity import IDENTITY_VERSION
 from packages.evals.tests.factories import memory_storage
 from threetears.evals.storage import InMemoryDocumentStore
-from packages.evals.tests.stored_models import stored_models
+from packages.evals.tests.stored_models import sampled_model_names, stored_models, stored_sample
 
 
 class _Sample(EvalBaseModel):
@@ -212,11 +191,11 @@ def test_the_engine_models_are_on_the_engine_base():
     from threetears.evals.analysis.reporting import ScoreRecord
     from threetears.evals.analysis.viz.intent import ChartIntent
     from threetears.evals.analysis.report import Report
-    from threetears.evals.contracts.identity import DerivedContextIdentity
-    from threetears.evals.contracts.metrics import MetricDescriptor
-    from threetears.evals.contracts.models import EvalRun
-    from threetears.evals.contracts.result_condition import ResultCondition
-    from threetears.evals.contracts.usage_capture import ResolvedUsage
+    from threetears.evals.kernel.identity import DerivedContextIdentity
+    from threetears.evals.kernel.metrics import MetricDescriptor
+    from threetears.evals.schema.models import EvalRun
+    from threetears.evals.kernel.result_condition import ResultCondition
+    from threetears.evals.kernel.usage_capture import ResolvedUsage
 
     for cls in (
         DerivedContextIdentity,
@@ -301,14 +280,18 @@ def test_a_stored_nested_field_the_model_does_not_declare_is_refused():
         storage.load_eval_result(result.id, result.scope_id)
 
 
-@pytest.mark.parametrize("version", [EVAL_SCHEMA_VERSION - 1, EVAL_SCHEMA_VERSION + 1])
-def test_a_document_written_under_another_schema_version_is_refused(version: int):
-    """A shape-compatible document from another schema still does not load: the version says it is not this one."""
+@pytest.mark.parametrize(
+    ("version", "why"),
+    [(CORE_BASELINE_VERSION - 1, "before the first public release"), (CORE_SCHEMA_VERSION + 1, "by a newer build")],
+)
+def test_a_core_document_at_a_version_this_build_does_not_read_is_refused(version: int, why: str):
+    """A shape-compatible core document from before the baseline or from a newer build does not load, saying which."""
     result, storage, store = _stored_result()
     _tamper(store, result, schema_version=version)
 
-    with pytest.raises(ValidationError, match=f"eval schema v{version}"):
+    with pytest.raises(ValidationError, match=f"core v{version}") as refused:
         storage.load_eval_result(result.id, result.scope_id)
+    assert why in str(refused.value)
 
 
 # =============================================================================
@@ -316,84 +299,9 @@ def test_a_document_written_under_another_schema_version_is_refused(version: int
 # =============================================================================
 
 
-def _cassette() -> EvalCassette:
-    """One action-seam recording, built the way the cassette proxy builds one."""
-    key = CassetteKey(
-        corpus_id="run-capture",
-        template_id="tpl-1",
-        test_case_id="tc-1",
-        tool="search",
-        action="query",
-        params_hash="0" * 16,
-        occurrence=0,
-    )
-    return EvalCassette.build(key, scope_id="uni-1", seam="action", captured_model="m", response={"hits": []})
-
-
-def _out_of_run_spend() -> OutOfRunSpend:
-    """One ledgered proposer call, as an out-of-run budget writes one."""
-    return OutOfRunSpend(
-        scope_id="uni-1",
-        purpose="proposer",
-        model="m",
-        outcome="completed",
-        stop_reason="end_turn",
-        prompt_tokens=120,
-        completion_tokens=40,
-        cost_usd=0.002,
-        price_source="provider",
-        priced_ceiling_usd=0.01,
-        cap_usd=1.0,
-        subject_id="subj-1",
-    )
-
-
-#: A valid instance of every stored model, by name. Keyed by the derived population below, so a
-#: stored model added without a row here fails :func:`test_every_stored_model_has_a_sample` rather
-#: than slipping past both refusals.
-_SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
-    "CalibrationRating": make_calibration_rating,
-    "EvalSweep": lambda: EvalSweep(
-        scope_id="uni-1",
-        campaign_id="c-1",
-        template_id="t-1",
-        subject_id="s-1",
-        arms=[SweepArmRecord(label="a", model="m")],
-        max_concurrent_arms=1,
-    ),
-    "CaseSet": lambda: CaseSet(scope_id="uni-1", name="smoke", version=1, template_id="t-1", test_case_ids=["c-1"]),
-    "CatalogRubricDim": make_rubric_dim,
-    "EvalAnalysis": make_analysis,
-    "EvalAnalysisAttempt": make_analysis_attempt,
-    "EvalCampaign": make_campaign,
-    "EvalCassette": _cassette,
-    "EvalInsight": make_insight,
-    "EvalResult": make_eval_result,
-    "EvalRun": make_eval_run,
-    "EvalTemplate": make_template,
-    "EvalTestCase": make_test_case,
-    "EvalTrace": make_eval_trace,
-    "JudgeConfig": make_judge_config,
-    "OutOfRunSpend": _out_of_run_spend,
-    "RubricDimTombstone": lambda: RubricDimTombstone(scope_id="uni-1", key="conversation.tone", deleted_dim_id="d-1"),
-    "JudgeConfigTombstone": lambda: JudgeConfigTombstone(
-        scope_id="uni-1", rubric_dim_id="conversation.tone", name="tone-strict", deleted_config_id="c-1"
-    ),
-}
-
-
-def _stored_document(model: type[EvalBaseModel]) -> dict[str, Any]:
-    """A stored document of ``model``, as the store hands it back, after checking it loads untampered."""
-    sample = _SAMPLES[model.__name__]()
-    assert type(sample) is model, f"the sample for {model.__name__} is a {type(sample).__name__}"
-    document = sample.to_dict()
-    assert model.from_dict(document) == sample, "the control: an untampered document reads back whole"
-    return document
-
-
 def test_every_stored_model_has_a_sample() -> None:
     """The population is derived; this keeps the sample table from silently trailing it."""
-    assert sorted(_SAMPLES) == [model.__name__ for model in stored_models()]
+    assert sampled_model_names() == [model.__name__ for model in stored_models()]
 
 
 @pytest.mark.parametrize("model", stored_models(), ids=lambda model: model.__name__)
@@ -403,22 +311,63 @@ def test_every_stored_model_refuses_a_field_it_does_not_declare(model: type[Eval
     Read through ``from_dict``, which is every storage load path (``EvalStorage._hydrate``), so a
     model that relaxed its ``extra`` stance on its own would be named here.
     """
-    document = _stored_document(model)
+    document = stored_sample(model)
 
     with pytest.raises(ValidationError, match="extra_forbidden"):
         model.from_dict({**document, "written_by_a_newer_build": True})
 
 
-@pytest.mark.parametrize("version", [EVAL_SCHEMA_VERSION - 1, EVAL_SCHEMA_VERSION + 1])
-@pytest.mark.parametrize("model", stored_models(), ids=lambda model: model.__name__)
-def test_every_stored_model_refuses_a_document_from_another_schema_version(
+def _regenerable_models() -> list[type[EvalBaseModel]]:
+    return [model for model in stored_models() if not issubclass(model, CoreDocumentModel)]
+
+
+def _core_models() -> list[type[EvalBaseModel]]:
+    return [model for model in stored_models() if issubclass(model, CoreDocumentModel)]
+
+
+@pytest.mark.parametrize("version", [REGENERABLE_SCHEMA_VERSION - 1, REGENERABLE_SCHEMA_VERSION + 1])
+@pytest.mark.parametrize("model", _regenerable_models(), ids=lambda model: model.__name__)
+def test_every_regenerable_model_refuses_a_document_from_another_schema_version(
     model: type[EvalBaseModel], version: int
 ) -> None:
-    """A stored document from another schema does not load, whichever model it is."""
-    document = _stored_document(model)
+    """A regenerable document from another schema does not load, whichever model it is: it is regenerated."""
+    document = stored_sample(model)
 
     with pytest.raises(ValidationError, match=f"eval schema v{version}"):
         model.from_dict({**document, "schema_version": version})
+
+
+@pytest.mark.parametrize("version", [CORE_BASELINE_VERSION - 1, CORE_SCHEMA_VERSION + 1, "8", None])
+@pytest.mark.parametrize("model", _core_models(), ids=lambda model: model.__name__)
+def test_every_core_model_refuses_a_document_at_a_version_it_does_not_read(
+    model: type[EvalBaseModel], version: object
+) -> None:
+    """A core document from before the baseline, from a newer build, or with no version number does not load."""
+    document = stored_sample(model)
+
+    with pytest.raises(ValidationError, match=r"core v|not a core version number"):
+        model.from_dict({**document, "schema_version": version})
+
+
+@pytest.mark.parametrize("version", range(CORE_BASELINE_VERSION, CORE_SCHEMA_VERSION + 1))
+@pytest.mark.parametrize("model", _core_models(), ids=lambda model: model.__name__)
+def test_every_core_model_reads_a_document_at_every_version_from_the_baseline(
+    model: type[EvalBaseModel], version: int
+) -> None:
+    """A core document at any version from the baseline to this build's reads, at this build's version."""
+    document = stored_sample(model)
+
+    assert model.from_dict({**document, "schema_version": version}).schema_version == CORE_SCHEMA_VERSION  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("version", [CORE_SCHEMA_VERSION - 1, CORE_SCHEMA_VERSION + 1])
+@pytest.mark.parametrize("model", _core_models(), ids=lambda model: model.__name__)
+def test_a_core_model_is_built_only_at_the_current_version(model: type[EvalBaseModel], version: int) -> None:
+    """Only the stored read upgrades: a construction or payload naming another core version is refused."""
+    document = stored_sample(model)
+
+    with pytest.raises(ValidationError, match=f"not v{version}"):
+        model.model_validate({**document, "schema_version": version})
 
 
 # --- a field retired within a schema version -------------------------------------------------------

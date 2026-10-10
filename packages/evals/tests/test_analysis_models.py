@@ -7,7 +7,7 @@ filled — every confidence a tier, never a typed probability, the
 WITHIN-doc position checks (every link names a real finding, nothing invalidates itself or cycles,
 one resolution per finding), and campaign-scoped / subject-scoped retrieval.
 
-Storage is exercised through a real :class:`~threetears.evals.contracts.storage.EvalStorage`
+Storage is exercised through a real :class:`~threetears.evals.kernel.storage.EvalStorage`
 over the same in-memory evals-repo stand-in the campaign tests use.
 """
 
@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.contracts.authored import (
+from threetears.evals.kernel.authored import (
     AuthoredAnalysis,
     Caveat,
     Chart,
@@ -30,7 +30,7 @@ from threetears.evals.contracts.authored import (
     NextStep,
     QuestionAnswer,
 )
-from threetears.evals.contracts.campaign import (
+from threetears.evals.kernel.campaign import (
     CoverageLens,
     EvalAnalysis,
     EvalInsight,
@@ -41,7 +41,7 @@ from threetears.evals.contracts.campaign import (
     RunIndexEntry,
     Viz,
 )
-from threetears.evals.contracts.surface import DecisionSurface
+from threetears.evals.kernel.surface import DecisionSurface
 
 # Reuse the campaign tests' in-memory evals-repo stand-in + storage wiring.
 from packages.evals.tests.factories import memory_storage
@@ -335,7 +335,7 @@ def test_the_stored_tiers_are_the_authored_tiers():
     """One declaration of the tiers: what a writer may author and what a stored analysis may hold cannot diverge."""
     from typing import get_args
 
-    from threetears.evals.contracts import authored, campaign
+    from threetears.evals.kernel import authored, campaign
 
     assert campaign.ConfidenceTier is authored.Confidence
     assert campaign.CONFIDENCE_TIERS == get_args(authored.Confidence) == ("very_high", "high", "medium", "low")

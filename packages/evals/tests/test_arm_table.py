@@ -22,17 +22,12 @@ from threetears.evals.analysis.arms import arm_table
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.report import build_report
 from threetears.evals.analysis.report.model import DisclosureBlock, TableBlock
-from threetears.evals.contracts.authored import NO_CHART, AuthoredAnalysis, EvidenceRef
-from threetears.evals.contracts.campaign import (
-    EvalAnalysis,
-    FindingResolution,
-    GenerationProvenance,
-    VariantIndexEntry,
-)
-from threetears.evals.contracts.declaration import CampaignDesign, ControlDeclaration, SweptAxis
-from threetears.evals.contracts.host.values import SweepableValue
-from threetears.evals.contracts.identity import compute_variant_key
-from threetears.evals.contracts.surface import DecisionSurface
+from threetears.evals.kernel.authored import NO_CHART, AuthoredAnalysis, EvidenceRef
+from threetears.evals.kernel.campaign import EvalAnalysis, FindingResolution, GenerationProvenance, VariantIndexEntry
+from threetears.evals.kernel.declaration import CampaignDesign, ControlDeclaration, SweptAxis
+from threetears.evals.schema.values import SweepableValue
+from threetears.evals.kernel.identity import compute_variant_key
+from threetears.evals.kernel.surface import DecisionSurface
 
 
 _AXIS = "candidate_model"

@@ -28,11 +28,9 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import Any
 
-from threetears.evals.contracts import (
+from threetears.evals.schema import (
     CalibrationRating,
-    EvalAnalysis,
     EvalCaseStratum,
-    EvalInsight,
     EvalResult,
     EvalRun,
     GoalStateOutcome,
@@ -40,9 +38,11 @@ from threetears.evals.contracts import (
     RoleUsage,
     RubricScore,
     omit_paths,
-    resolve_variant_identity,
 )
-from threetears.evals.contracts.host import HostProfile, SubjectSnapshot, SweepableValue, WorldPlacement
+from threetears.evals.kernel import EvalAnalysis, EvalInsight, resolve_variant_identity
+from threetears.evals.kernel.host import HostProfile
+from threetears.evals.schema import SubjectSnapshot, SweepableValue
+from threetears.evals.schema import WorldPlacement
 from packages.evals.tests.fixtures.toyhost.kind import FIELD_ACCURACY, TOY_EXTRACTOR_KIND
 from packages.evals.tests.fixtures.toyhost.world import toyhost_world
 
@@ -161,7 +161,7 @@ TOYHOST_OBSERVATIONAL_PLACEMENTS: dict[str, WorldPlacement] = toyhost_world()[0]
 def toyhost_observation(**toyhost_values: Any) -> EvalRun:
     """One toy-host observation, carrying only toy-host vocabulary.
 
-    The carrier is the engine's own :class:`~threetears.evals.contracts.EvalRun`, and the toy host's
+    The carrier is the engine's own :class:`~threetears.evals.schema.EvalRun`, and the toy host's
     vocabulary rides in its opaque ``host_payload`` slot, where the host's readers find it.
 
     Args:

@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts.host import CANDIDATE_MODEL_LEVER
+from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER
 from threetears.evals.quick import Comparison
 from packages.evals.tests.example_loader import load_example
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations

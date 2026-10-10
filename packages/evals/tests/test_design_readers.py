@@ -29,8 +29,8 @@ from threetears.evals.analysis import (
     assemble_context_bundle,
     build_code_only_report,
 )
-from threetears.evals.contracts import NotFoundError
-from threetears.evals.contracts.declaration import Question
+from threetears.evals.kernel import NotFoundError
+from threetears.evals.kernel.declaration import Question
 from threetears.evals.run import set_campaign_archived
 from packages.evals.tests.factories import make_campaign, memory_storage
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_QUESTION_ID, toyhost_campaign

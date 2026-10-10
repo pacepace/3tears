@@ -6,7 +6,7 @@ This module is the read tier's foundation: one projection,
 answers *which of these runs may honestly be compared with each other*.
 
 **Nothing here is stored.** Records are recomputed per query, exactly as
-:func:`~threetears.evals.contracts.scoring.compute_pass_hat_k` is. That keeps the row shape free to
+:func:`~threetears.evals.kernel.scoring.compute_pass_hat_k` is. That keeps the row shape free to
 evolve while the surfaces that consume it are still being learned — a persisted
 projection would freeze it against every future consumer. Aggregation is
 calibrated to a corpus of dozens-to-hundreds of cells (one operator, one
@@ -57,15 +57,15 @@ from threetears.evals.analysis.stats import (
     interval_clears,
     separation_test,
 )
-from threetears.evals.contracts.analysis_measures import BarDecision
-from threetears.evals.contracts.base import EvalBaseModel, EvalDocumentModel, VerbatimText
-from threetears.evals.contracts.hashing import canonical_digest, canonical_json
-from threetears.evals.contracts.host.profile import HostProfile
-from threetears.evals.contracts.host.values import PooledProductionFooting, ProductionFooting
-from threetears.evals.contracts.host.sweepables import CANDIDATE_MODEL_LEVER
-from threetears.evals.contracts.identity import IDENTITY_VERSION, resolve_context_identity
-from threetears.evals.contracts.metrics import MetricDescriptor, describe_measure
-from threetears.evals.contracts.models import (
+from threetears.evals.kernel.analysis_measures import BarDecision
+from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel, VerbatimText
+from threetears.evals.schema.hashing import canonical_digest, canonical_json
+from threetears.evals.kernel.host.profile import HostProfile
+from threetears.evals.schema.values import PooledProductionFooting, ProductionFooting
+from threetears.evals.kernel.host.sweepables import CANDIDATE_MODEL_LEVER
+from threetears.evals.kernel.identity import IDENTITY_VERSION, resolve_context_identity
+from threetears.evals.kernel.metrics import MetricDescriptor, describe_measure
+from threetears.evals.schema.models import (
     NON_TERMINAL_RUN_STATUSES,
     OUTCOME_DIM_ID,
     RESERVED_DIM_IDS,
@@ -74,8 +74,8 @@ from threetears.evals.contracts.models import (
     RubricScale,
     utc_now_iso,
 )
-from threetears.evals.contracts.surface import FrontierDominance, GuardrailDecision
-from threetears.evals.contracts.result_condition import (
+from threetears.evals.kernel.surface import FrontierDominance, GuardrailDecision
+from threetears.evals.kernel.result_condition import (
     JUDGE_CANNOT_TELL_OUTCOME,
     ResultOutcome,
     classify_result,
@@ -86,7 +86,7 @@ from threetears.evals.contracts.result_condition import (
     harness_faulted,
     trial_exclusion,
 )
-from threetears.evals.contracts.scoring import (
+from threetears.evals.kernel.scoring import (
     CompositeBasis,
     PassHatPoint,
     composite_basis,
@@ -103,7 +103,7 @@ from threetears.observe import get_logger
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from threetears.evals.contracts.models import (
+    from threetears.evals.schema.models import (
         CaseSetRef,
         EvalResult,
         EvalRun,
@@ -118,7 +118,7 @@ log = get_logger(__name__)
 # The measures this projection emits today.
 #
 # These are OBSERVATION-level names and are deliberately not the registry's
-# aggregate names: `threetears.evals.contracts.metrics` describes `mean_composite`,
+# aggregate names: `threetears.evals.kernel.metrics` describes `mean_composite`,
 # `composite_a/_b/_delta` — all of which are aggregates OVER these rows, not the
 # rows themselves. Do not "fix" the mismatch by renaming these to a registry key:
 # `describe_measure` is a total function, so a wrong name resolves to the
@@ -561,7 +561,7 @@ class LatencyPartition(EvalBaseModel):
 
     **Derived, never stored.** ``orchestration_ms`` is ``total_ms`` minus the two
     parts, recomputed per query exactly as :func:`project_score_records` and
-    :func:`~threetears.evals.contracts.scoring.compute_pass_hat_k` are. A persisted copy would be a
+    :func:`~threetears.evals.kernel.scoring.compute_pass_hat_k` are. A persisted copy would be a
     second answer to a question the three captured components already settle.
 
     **What is deliberately NOT in here.** The drain wait, the judge phase and every
@@ -571,7 +571,7 @@ class LatencyPartition(EvalBaseModel):
     components of it, which the registry records by leaving their ``contained_by``
     unset. Folding any of them into the remainder is the arithmetic that once produced
     a ~95-second unattributed swing describing no stretch of wall-clock at all, and
-    the reason this class takes a :class:`~threetears.evals.contracts.models.LatencyMetrics` and
+    the reason this class takes a :class:`~threetears.evals.schema.models.LatencyMetrics` and
     reads three fields of it rather than summing whatever it holds.
 
     Exactly one of the split and ``withheld`` is present, enforced below: a caller
@@ -901,7 +901,7 @@ class ScoreRecord(EvalBaseModel):
 
     **Each identity key travels with the predicate version that produced it.**
     ``variant_key`` and ``context_key`` are derived by separate predicates that
-    today share one :data:`~threetears.evals.contracts.identity.IDENTITY_VERSION` counter — so a
+    today share one :data:`~threetears.evals.kernel.identity.IDENTITY_VERSION` counter — so a
     bump for either moves the number stamped beside *both*, and a row can carry a
     version whose change did not touch its own predicate. Each key still needs its
     own column: a single ``identity_version`` on the row could only qualify one of
@@ -1456,7 +1456,7 @@ def lever_level(value: Any) -> str:
     **Content, never a display.** A host's own display for a level is more readable (``"20 chars ·
     3f9a1c"``) and is the wrong thing to bin on: a display is an abbreviation, two different levels
     can share one, and cohorts keyed on it would MERGE two variants — the direction nothing
-    downstream can undo. :attr:`~threetears.evals.contracts.campaign.VariantIndexEntry.levers` carries
+    downstream can undo. :attr:`~threetears.evals.kernel.campaign.VariantIndexEntry.levers` carries
     the display beside the content hash for a reader who needs to recognise the level.
 
     **``None`` is** :data:`NULL_LEVEL`, **deliberately.** A caller hands one in only for a lever the
@@ -1519,8 +1519,8 @@ def dim_judge_model(run: EvalRun, rubric_dim: str | None) -> str | None:
 
     A lookup on the run's own attribution map, deliberately not a second
     evaluation of the judge-model cascade. The cascade is applied once, at launch,
-    by :func:`~threetears.evals.contracts.models.resolve_effective_judges`, and its answer is
-    stored on :attr:`~threetears.evals.contracts.models.EvalRun.effective_judges` — the same
+    by :func:`~threetears.evals.schema.models.resolve_effective_judges`, and its answer is
+    stored on :attr:`~threetears.evals.schema.models.EvalRun.effective_judges` — the same
     map the run summary's "Judged by" block renders and
     the ``judge_dim_divergence`` sweepable bisects on. Re-deriving it here
     would put a fourth reader on a rule that has already had three, and the whole
@@ -1613,7 +1613,7 @@ def project_score_records(
         its own — and emits a single dimensionless null row when the judge scored
         none.
     """
-    from threetears.evals.contracts.usage_capture import count_substituted_deliveries
+    from threetears.evals.kernel.usage_capture import count_substituted_deliveries
 
     placed, exclusions = place_results(
         runs, results, known_run_ids, source="project_score_records", archived_run_ids=archived_run_ids
@@ -2329,9 +2329,9 @@ def cassette_mode_disclosure(modes_by_run: Mapping[str, str]) -> str | None:
 
     Reports what the runs RECORDED and says so in those words, because nothing on a run
     corroborates the mode it recorded. Three candidate corroborators were checked and each
-    is the same claim one level down or weaker than it: :attr:`~threetears.evals.contracts.models.EvalRun.cassette_corpus_id` is
+    is the same claim one level down or weaker than it: :attr:`~threetears.evals.schema.models.EvalRun.cassette_corpus_id` is
     set exactly when the run claims replay, and
-    :func:`~threetears.evals.contracts.usage_capture.count_substituted_deliveries` counts seeded case
+    :func:`~threetears.evals.kernel.usage_capture.count_substituted_deliveries` counts seeded case
     findings alongside replayed cassettes, so a non-zero count does not evidence replay
     and a zero one cannot separate "did not replay" from "replayed a template with no
     async delivery". So this asserts only the record and names the ambiguity, the choice
@@ -2348,7 +2348,7 @@ def cassette_mode_disclosure(modes_by_run: Mapping[str, str]) -> str | None:
     is reported and is the same figure the live arm would report. Saying "a replayed arm's
     cost is withheld" flatly was wrong for the second seam and told a reader to expect a
     blank where a number correctly appears — see
-    :func:`~threetears.evals.contracts.usage_capture.production_replicating_cost`. A span that stays
+    :func:`~threetears.evals.kernel.usage_capture.production_replicating_cost`. A span that stays
     within ``off``/``capture`` is a difference in what was *recorded* while both arms ran
     live. Both are disclosed, because both are a difference in a condition that should have
     been holding still; the branch decides only what the sentence says the difference costs.
@@ -3171,7 +3171,7 @@ class PivotCell(EvalBaseModel):
     #: cell with no valued observation.
     composite_basis: CompositeBasis | None = None
     #: Of the ``n`` valued observations, how many carried a background delivery a harness supplied — seeded
-    #: or replayed (:func:`~threetears.evals.contracts.usage_capture.count_substituted_deliveries`). Counted on
+    #: or replayed (:func:`~threetears.evals.kernel.usage_capture.count_substituted_deliveries`). Counted on
     #: every metric, because a substituted delivery is what the candidate read as well as what it did not pay
     #: for. ``0`` on a cell whose observations ran every delivery live.
     n_substituted: int = 0
@@ -3292,7 +3292,7 @@ def _reads_a_lever(factor: str, *, records: Sequence[ScoreRecord], profile: Host
     the rows and was refused at the pivot while a campaign could declare it as an axis.
 
     A name is a **lever** when the host's registry admits it as one
-    (:meth:`~threetears.evals.contracts.host.sweepables.SweepableRegistry.refuse_as_axis`: a fixed lever,
+    (:meth:`~threetears.evals.kernel.host.sweepables.SweepableRegistry.refuse_as_axis`: a fixed lever,
     or a member some open family's membership test claims — the same decision a campaign's declared axis
     goes through), or when some row carries it in ``factors``, which only the registry's own resolution
     writes. The second half covers a family that declares no membership test: its members are knowable
@@ -3302,7 +3302,7 @@ def _reads_a_lever(factor: str, *, records: Sequence[ScoreRecord], profile: Host
     **One name, two meanings, is refused rather than resolved by branch order.** A host lever that takes
     a declared coordinate's name (``template_id``, ``scope_id``, …) would be read off whichever branch
     ran first, so it is refused, naming the rename. Refused here rather than at registration because
-    the registry lives in ``contracts`` and the coordinate set is this module's record — ``contracts``
+    the registry lives in ``kernel.host`` and the coordinate set is this module's record — the kernel
     does not import ``analysis``. The one exception is the engine's own candidate-model lever: the
     projection writes it into the ``model`` coordinate and keeps it out of ``factors`` (see
     :func:`_run_factors`), so the two names are one quantity and the field is read.
@@ -4230,7 +4230,7 @@ def normalize_bar(value: float | str | None) -> float | None:
     """Parse a caller's quality bar to a float, identically on every surface.
 
     Lives here, in one place as
-    :func:`~threetears.evals.contracts.status_filter.normalize_status_filter` does,
+    :func:`~threetears.evals.kernel.status_filter.normalize_status_filter` does,
     so REST (which hands a validated float) and MCP (which hands the raw string a
     tool argument arrives as) reach :func:`compute_frontier` through one coercion, rather
     than each parsing it and disagreeing about what a blank or a non-number means
@@ -4300,7 +4300,7 @@ def _template_span_entries(templates_by_run: Mapping[str, str | None]) -> list[s
     Args:
         templates_by_run: One ``template_id`` per contributing run, keyed by run id. A
             ``None`` is a real observed state — an ad-hoc run assembled from explicit
-            test-case ids, per :attr:`~threetears.evals.contracts.models.EvalRun.template_id` — so it
+            test-case ids, per :attr:`~threetears.evals.schema.models.EvalRun.template_id` — so it
             counts as its own suite rather than being dropped or merged into a neighbour.
 
     Returns:
@@ -4765,7 +4765,7 @@ class FrontierResult(EvalDocumentModel):
     control_variant_key: str | None = None
     #: The 1–5 level a capability criterion had to reach for an attempt to pass, in every pass^k here
     #: (#642): the behavior's declared threshold
-    #: (:meth:`~threetears.evals.contracts.host.BarRegistry.pass_threshold`) where the caller had one, else 3.
+    #: (:meth:`~threetears.evals.kernel.host.BarRegistry.pass_threshold`) where the caller had one, else 3.
     #: A frontier stored before this was recorded defaults to 3, which is the threshold every pass^k was
     #: computed at then.
     rubric_threshold: int = 3
@@ -4915,8 +4915,8 @@ def _frontier_point(
     """Aggregate one contestant's results into a single frontier point, and the per-case values behind it.
 
     Every axis aggregates over its own measured subset — pass^k reuses
-    :func:`~threetears.evals.contracts.scoring.pool_pass_hat_k` (which drops infra-excluded
-    iterations, and pools a case's attempts across the runs of one cell), composite drops the nulls :func:`~threetears.evals.contracts.scoring.result_composite`
+    :func:`~threetears.evals.kernel.scoring.pool_pass_hat_k` (which drops infra-excluded
+    iterations, and pools a case's attempts across the runs of one cell), composite drops the nulls :func:`~threetears.evals.kernel.scoring.result_composite`
     returns for infra-excluded and no-rubric results, cost sums only the
     production-replicating roles per result and means over the results that
     reported one, and latency means over the results that harvested a total. The
@@ -4933,13 +4933,13 @@ def _frontier_point(
             beside it.
         k: The subject's depth, at which ``pass_hat_k`` is read (:attr:`SubjectFrontier.k`).
         cell_of_run: Run id → the cell its attempts are repeats of
-            (:func:`~threetears.evals.contracts.scoring.pass_hat_k_cell`), so two runs of one
+            (:func:`~threetears.evals.kernel.scoring.pass_hat_k_cell`), so two runs of one
             configuration pool their attempts at a case and two configurations never do.
         rubric_threshold: Pass threshold forwarded to pass^k.
         cassette_modes_by_run: Every candidate run's recorded ``cassette_mode``, keyed by
             run id; narrowed here to the runs these results came from. **Required and
             deliberately without a default**, for the reason
-            :func:`~threetears.evals.contracts.usage_capture.production_replicating_cost` refuses one:
+            :func:`~threetears.evals.kernel.usage_capture.production_replicating_cost` refuses one:
             the map's absence and a genuinely uniform pool both yield no disclosure, so a
             default would let a caller that never supplied it render a live-versus-replayed
             pool as clean — the single failure this parameter exists to make impossible.
@@ -4964,7 +4964,7 @@ def _frontier_point(
         on. Domination and the bar are filled by the caller, which needs the subject's other
         points and the bar to decide them.
     """
-    from threetears.evals.contracts.usage_capture import count_substituted_deliveries, production_replicating_cost
+    from threetears.evals.kernel.usage_capture import count_substituted_deliveries, production_replicating_cost
 
     model = results[0].model
     # Unpacked from the group key, never re-derived off a row.
@@ -5546,7 +5546,7 @@ def compute_frontier(
     **One depth per subject.** Every point's pass^k is read at :attr:`SubjectFrontier.k`, the
     shallowest ``k_runs`` among the subject's ranked runs, and estimated without bias from each
     case's attempts pooled across the runs of one cell
-    (:func:`~threetears.evals.contracts.scoring.pool_pass_hat_k`): two runs of one variant under
+    (:func:`~threetears.evals.kernel.scoring.pool_pass_hat_k`): two runs of one variant under
     one ``context_key`` are more attempts at the same cases, while the same case measured under
     another context is a separate case beside it. So a repeat run sharpens a contestant's estimate
     rather than doubling its case count, and no contestant is ranked on a different depth than
@@ -6238,7 +6238,7 @@ def _history_value_of(metric: str) -> Callable[[EvalResult], float | None]:
     if metric == METRIC_COST_USD:
         # Measuring spend, so every dollar the program spent: the population program spend keeps on every
         # surface that reads it — the cost pivot, a run summary's `mean_cost_usd`
-        # (:func:`~threetears.evals.contracts.scoring.compute_cost_summary`) and the budget view. A call the
+        # (:func:`~threetears.evals.kernel.scoring.compute_cost_summary`) and the budget view. A call the
         # model refused before any turn was still billed, and a cell the harness faulted spent what it spent.
         # Leaving the refusal out while the pivot kept it gave one corpus two figures for one quantity. What an
         # arm COSTS reads only the turns taken, and is `production_replicating_cost`, which no series offers.
@@ -6326,7 +6326,7 @@ def _host_measure_value_of(descriptor: MetricDescriptor) -> Callable[[EvalResult
             way a step is a decline.
     """
     from threetears.evals.analysis.bundle import in_population
-    from threetears.evals.contracts.metrics import summary_population
+    from threetears.evals.kernel.metrics import summary_population
 
     name = descriptor.name
     if descriptor.data_type != "numeric" or descriptor.higher_is_better is None:
@@ -6762,7 +6762,7 @@ def pooled_composite_basis(results: Sequence[EvalResult] | Sequence[ScoreRecord]
     Every surface that means composites across results pools numbers each meaned over whatever dimensions
     its result carried, so two pools that read alike can average different questions. Shared, as
     :func:`pooled_cost_compositions` is, so every surface reads one predicate
-    (:func:`~threetears.evals.contracts.scoring.pool_composite_bases`).
+    (:func:`~threetears.evals.kernel.scoring.pool_composite_bases`).
 
     Args:
         results: The results whose composites the caller pooled, or the composite rows a pivot cell pooled
