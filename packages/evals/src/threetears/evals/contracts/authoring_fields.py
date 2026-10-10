@@ -31,7 +31,7 @@ def reject_unknown_authoring_fields(
     operator asked for applied.
 
     Checked here rather than at each surface so MCP and REST inherit one contract
-    structurally; a second guard at the handlers is one that drifts. ``campaign_update``
+    structurally; a second guard at the handlers is one that drifts. ``update_campaign``
     already did this with an explicit allowlist and is the shape followed.
 
     Server-owned fields stay IGNORED rather than refused. They are documented that way, and
