@@ -136,7 +136,6 @@ from threetears.evals.analysis.reporting import (
     COST_PREDICTION_METHOD,
     DECLARED_INPUT_ORIGIN,
     DEFAULT_WEIGHTING,
-    HISTORY_METRICS,
     METRIC_COMPOSITE,
     METRIC_OUTCOME,
     METRIC_SCORE,
@@ -148,6 +147,7 @@ from threetears.evals.analysis.reporting import (
     difference_was_declared_at_launch,
     metric_help,
 )
+from threetears.evals.analysis.lenses.history import HISTORY_METRICS
 from threetears.evals.analysis.significance import format_significance, significance_disclosure
 from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.analysis.gate import (
@@ -285,23 +285,20 @@ from threetears.evals.analysis.reporting import (
     FrontierPoint,
     FrontierResult,
     FrontierVerdict,
-    HistoryResult,
     LatencyPartition,
-    MeasureSeries,
     MeasurementWindow,
     PivotCell,
     PivotTable,
     PlannedCost,
     PredictedValue,
     ProjectionExclusions,
-    RegressionFlag,
-    SeriesPoint,
     ServedModelReading,
     ServedModelState,
     SimpsonsFlag,
     SubjectFrontier,
     FrontierBoundaryCheck,
 )
+from threetears.evals.analysis.lenses.history import HistoryResult, MeasureSeries, RegressionFlag, SeriesPoint
 from threetears.evals.analysis.lenses.export import ExportFormat, ScoreExport
 from threetears.evals.analysis.service import AnalysisStore
 from threetears.evals.analysis.surface_table import (

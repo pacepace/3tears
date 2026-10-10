@@ -25,7 +25,8 @@ from typing import Any
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
 from threetears.evals.analysis.report.build import build_code_only_report
 from threetears.evals.analysis.report.model import DisclosureBlock
-from threetears.evals.analysis.reporting import METRIC_TOTAL_MS, compute_frontier, compute_history
+from threetears.evals.analysis.reporting import METRIC_TOTAL_MS, compute_frontier
+from threetears.evals.analysis.lenses.history import compute_history
 from threetears.evals.kernel import EvalCampaign, Question
 from threetears.evals.schema import EvalResult, EvalRun
 from threetears.evals.schema.models import LatencyMetrics

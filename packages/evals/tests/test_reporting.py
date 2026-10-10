@@ -46,7 +46,6 @@ from threetears.evals.analysis.reporting import (
     ComparisonSet,
     CostEstimateError,
     FrontierError,
-    HistoryError,
     LatencyPartition,
     PivotError,
     PredictedValue,
@@ -56,7 +55,6 @@ from threetears.evals.analysis.reporting import (
     compute_comparison_sets,
     compute_estimate_cost,
     compute_frontier,
-    compute_history,
     compute_pivot,
     decompose_total_ms,
     difference_was_declared_at_launch,
@@ -64,6 +62,7 @@ from threetears.evals.analysis.reporting import (
     place_results,
     project_score_records,
 )
+from threetears.evals.analysis.lenses.history import HistoryError, compute_history
 from threetears.evals.analysis.lenses.program_budget import compute_program_budget
 from threetears.evals.analysis.lenses.orphaned_runs import compute_orphaned_runs
 from threetears.evals.analysis.lenses.export import ExportError, export_projection, export_records_csv, serialize_export

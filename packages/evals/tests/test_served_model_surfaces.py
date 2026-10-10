@@ -17,13 +17,8 @@ import csv
 import io
 
 from threetears.evals.analysis import SERVED_MODEL_UNRECORDED, ServedModelReading, compare_two_runs
-from threetears.evals.analysis.reporting import (
-    METRIC_COMPOSITE,
-    compute_frontier,
-    compute_history,
-    compute_pivot,
-    project_score_records,
-)
+from threetears.evals.analysis.reporting import METRIC_COMPOSITE, compute_frontier, compute_pivot, project_score_records
+from threetears.evals.analysis.lenses.history import compute_history
 from threetears.evals.analysis.lenses.export import export_records_csv
 from threetears.evals.schema import EvalResult, EvalRun, EvalTemplate, RoleUsage
 from threetears.evals.kernel import EvalStorage

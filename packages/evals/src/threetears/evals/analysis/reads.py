@@ -46,19 +46,17 @@ from threetears.evals.analysis.reporting import (
     CostEstimate,
     PlannedCost,
     FrontierError,
-    HistoryError,
-    HistoryResult,
     PivotError,
     PivotTable,
     compute_comparison_sets,
     compute_frontier,
-    compute_history,
     compute_pivot,
     normalize_bar,
     pooled_composite_basis,
     pooled_served_models,
     project_score_records,
 )
+from threetears.evals.analysis.lenses.history import HistoryError, HistoryResult, compute_history
 from threetears.evals.analysis.lenses.program_budget import compute_program_budget
 from threetears.evals.analysis.lenses.orphaned_runs import compute_orphaned_runs
 from threetears.evals.analysis.lenses.export import ExportError, ScoreExport, export_projection
