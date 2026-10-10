@@ -4272,6 +4272,63 @@ class TestSweepRankingDrawsAnAbsenceAsAnAbsence:
         assert compile_chart("sweep_ranking", payload).rows
 
 
+class TestSweepRankingSetsANullLevelApartFromItsRamp:
+    """A numeric lever overlaid to `null` keeps its ramp, and `null` draws apart (#694).
+
+    `null` does not parse as a number, so before the fix one `null` level flipped a
+    `null / 6 / 12` knob to categorical and drew all three levels as hues.
+    """
+
+    NULLED = {
+        **SWEEP_RANKING,
+        "rows": [
+            {"config": {"model": "gpt-5", "timeout": "12"}, "ranked_value": 0.72, "secondary_value": 0.011},
+            {"config": {"model": "model-b", "timeout": "6"}, "ranked_value": 0.61, "secondary_value": 0.009},
+            {"config": {"model": "null", "timeout": "null"}, "ranked_value": 0.55, "secondary_value": 0.014},
+        ],
+    }
+
+    def _barcode(self):
+        return compile_chart("sweep_ranking", self.NULLED).spec["hconcat"][0]
+
+    def _rects(self):
+        return [layer for layer in self._barcode()["layer"] if layer["mark"]["type"] == "rect"]
+
+    def test_the_numeric_levels_keep_the_sequential_ramp(self):
+        cells = self._barcode()["data"]["values"]
+        ranks = {cell["level"]: cell["rank"] for cell in cells if cell["dimension"] == "timeout"}
+        assert ranks == {"6": 0.0, "12": 1.0, "null": None}
+        ramp = [layer for layer in self._rects() if layer["encoding"].get("color", {}).get("type") == "quantitative"]
+        assert len(ramp) == 1
+
+    def test_null_is_a_distinct_labelled_mark_outside_every_colour_domain(self):
+        set_apart = [layer for layer in self._rects() if layer["mark"].get("filled") is False]
+        assert len(set_apart) == 1
+        assert set_apart[0]["mark"]["style"] == CONTEXT_STYLE
+        assert "color" not in set_apart[0]["encoding"]
+        assert {"field": "level", "equal": "null"} in [step["filter"] for step in set_apart[0]["transform"]]
+        (word,) = [layer for layer in self._barcode()["layer"] if layer["mark"]["type"] == "text"]
+        assert word["encoding"]["text"] == {"field": "level", "type": "nominal"}
+        assert {"field": "dimension", "oneOf": ["timeout"]} in [step["filter"] for step in word["transform"]]
+
+    def test_every_cell_is_drawn_by_exactly_one_rect_layer(self):
+        """A categorical lever's own `null` level keeps its hue; the ordered lever's `null` does not take it."""
+        cells = self._barcode()["data"]["values"]
+        drawn = collections.Counter()
+        for layer in self._rects():
+            for cell in cells:
+                if all(_matches(cell, step["filter"]) for step in layer["transform"]):
+                    drawn[(cell["display"], cell["dimension"], layer["mark"].get("filled", True))] += 1
+        assert set(drawn.values()) == {1} and len(drawn) == len(cells), drawn
+        assert (next(c["display"] for c in cells if c["level"] == "null"), "timeout", False) in drawn
+        assert (next(c["display"] for c in cells if c["level"] == "null"), "model", True) in drawn
+
+    def test_the_disclosures_say_why_null_is_off_the_ramp(self):
+        disclosed = _disclosed(compile_chart("sweep_ranking", self.NULLED))
+        assert "timeout draws as a light-to-dark ramp" in disclosed
+        assert "null on timeout is set apart from the ramp" in disclosed
+
+
 def _matches(cell, predicate):
     """Whether one barcode cell satisfies one Vega-Lite filter predicate."""
     value = cell[predicate["field"]]

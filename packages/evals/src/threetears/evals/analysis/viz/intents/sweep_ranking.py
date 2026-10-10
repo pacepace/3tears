@@ -20,7 +20,14 @@ from threetears.evals.analysis.viz.intent import (
     ChartIdentity,
     ChartIntent,
 )
-from threetears.evals.analysis.viz.payloads import ABSENT_LEVEL, ResolvedDimension, SweepRankingPayload, SweepRow
+from threetears.evals.analysis.reporting import NULL_LEVEL
+from threetears.evals.analysis.viz.payloads import (
+    ABSENT_LEVEL,
+    OFF_SCALE_LEVELS,
+    ResolvedDimension,
+    SweepRankingPayload,
+    SweepRow,
+)
 from threetears.evals.analysis.viz.quantities import axis_title, display_scale, with_unit
 
 #: How many configurations a figure draws before it starts omitting them. Past this the figure keeps
@@ -69,10 +76,11 @@ def ordered_levels(dimension: str, payload: SweepRankingPayload) -> list[str]:
         payload: The sweep, which knows every level the lever was swept at.
 
     Returns:
-        The levels, low to high, without the absence sentinel.
+        The levels, low to high, without the off-scale levels (the absence sentinel, and ``null``), which have
+        no place on the ramp.
     """
     levels = {row.config[dimension] for row in payload.rows}
-    return sorted((level for level in levels if level != ABSENT_LEVEL), key=float)
+    return sorted((level for level in levels if level not in OFF_SCALE_LEVELS), key=float)
 
 
 def sweep_ranking_intent(payload: SweepRankingPayload) -> ChartIntent:
@@ -134,7 +142,9 @@ def sweep_ranking_intent(payload: SweepRankingPayload) -> ChartIntent:
                     field=field,
                     scheme="sequential" if name in ordered else "categorical",
                     domain=domain,
-                    uncoloured=[ABSENT_LEVEL],
+                    # An ordered lever's `null` is off its scale too: no ramp step, drawn apart by the
+                    # renderer (#694). A categorical lever's `null` is a level like any other and keeps a hue.
+                    uncoloured=[ABSENT_LEVEL, NULL_LEVEL] if name in ordered else [ABSENT_LEVEL],
                 )
             )
     columns = [ChartColumn(key=f"{LEVER_KEY_PREFIX}{name}", header=name) for name in order]
@@ -239,6 +249,7 @@ def _disclosures(
     """
     inferred = [lever.name for lever in resolved if not lever.declared]
     ramped = [lever.name for lever in resolved if lever.ordered]
+    nulled = [name for name in ramped if any(row.config[name] == NULL_LEVEL for row in payload.rows)]
     demoted = [lever.name for lever in resolved if lever.demoted]
     values = [row.secondary_value * secondary_scale for row in payload.rows]
     secondary = payload.secondary.measure
@@ -270,6 +281,12 @@ def _disclosures(
             ),
             f"{spread}.",
             f"{', '.join(ramped)} draw{'s' if len(ramped) == 1 else ''} as a light-to-dark ramp." if ramped else "",
+            (
+                f"{NULL_LEVEL} on {', '.join(nulled)} is set apart from the ramp and drawn as an outlined cell: the "
+                "lever was set to nothing, which is not a point on its scale."
+                if nulled
+                else ""
+            ),
             (
                 f"Whether {', '.join(inferred)} {'is' if len(inferred) == 1 else 'are'} ordered was inferred from the "
                 "levels rather than declared."
