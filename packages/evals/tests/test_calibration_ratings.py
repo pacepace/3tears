@@ -575,7 +575,7 @@ class TestTheBundleReadsRatingsWrittenThroughTheOperation:
         assert layout.raters == ["reviewer-1", "reviewer-2"]
         assert after.judge_agreement.unpaired == []
         assert after.fingerprint() != before.fingerprint(), "a new rating is evidence that moved"
-        assert after.schema_version == 49
+        assert after.schema_version == 50
 
 
 class TestTheReporterReadCarriesTheRunsRatings:

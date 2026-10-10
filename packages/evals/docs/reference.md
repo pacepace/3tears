@@ -1099,6 +1099,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`CostEstimate`** · model · A proposed run/campaign's predicted cost, per model and in total, banded where n allows.
 - **`CostEstimateCell`** · model · The predicted cost of running one proposed model, from its historical per-observation cost.
 - **`DeclarableAxes`** · model · What a campaign may declare it sweeps on this host — the vocabulary the authoring gate reads.
+- **`DeclaredLevelCoverage`** · model · Whether one level the campaign DECLARED for an axis was run — the declaration's delta, by name.
 - **`DesignArm`** · model · One arm of the campaign, the runs that measured it, and what it moved off the control.
 - **`DimensionAgreement`** · model · How one judge's scores on one dimension agreed with people's ratings of the same results.
 - **`DimensionReading`** · model · A dimension the judge scored that no label speaks to — reported, never compared.
@@ -1897,7 +1898,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `schema_version` | `int` | `49` | Bundle-shape version, for future evolution + fingerprint clarity. |
+| `schema_version` | `int` | `50` | Bundle-shape version, for future evolution + fingerprint clarity. |
 | `campaign_id` | `str` | required | The campaign this bundle summarises. |
 | `subject_id` | `str` | required | The analysed subject's stable id. |
 | `subject_kind` | `str` | `''` | Discriminator; data, never a code branch. |
