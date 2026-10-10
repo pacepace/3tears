@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, Self
@@ -40,7 +40,11 @@ from threetears.evals.contracts import (
     StopReason,
     refuse_an_undeclarable_design,
 )
+from threetears.evals.contracts.host import MeasureRegistry
+from threetears.evals.contracts.metrics import MetricDescriptor
+from threetears.evals.ops.summary import CaseResult
 from threetears.evals.quick import Comparison, Guardrail, Judge, callable_host, compare, run_eval
+from packages.evals.tests.factories import make_eval_result
 
 #: Fifty cases: an arm alike with the control on every one is shown within 0.1 of it (the bounded test's interval
 #: at n=50 is ±0.081; at 40 it is ±0.1002, which does not), and twenty leaks in fifty are shown worse by more.
@@ -339,6 +343,44 @@ class TestARefusedGuardrail:
         wide = {guardrail: Guardrail(margin=1.0, direction="higher_is_better")}
         with pytest.raises(ValueError, match="is as wide as every value it can return"):
             await _compare(scorers=scorers, guardrails=wide, ranges=ranges)
+
+
+class TestAMissIsTheWrongSideOfZeroForEveryDirection:
+    """A miss is a scorer on the wrong side of 0 for its direction, guardrail or not (``CaseResult.of``)."""
+
+    def _reasons(self, values: dict[str, float], directions: dict[str, bool | None] | None) -> list[str]:
+        result = make_eval_result(goal_state_outcomes=[], rubric_scores=[], host_measures=values)
+        read = CaseResult.of(result, case="c", given=None, expected=None, answer=None, higher_is_better=directions)
+        return read.missed_because
+
+    def test_lower_is_better_misses_above_zero_and_not_at_zero_guardrail_or_not(self) -> None:
+        directions = {"errors": False, "correct": True}
+        assert self._reasons({"errors": 0.0, "correct": 1.0}, directions) == []
+        assert self._reasons({"errors": 2.0, "correct": 1.0}, directions) == ["errors gave 2"]
+
+    def test_higher_is_better_misses_at_zero_or_below(self) -> None:
+        assert self._reasons({"correct": 0.0}, {"correct": True}) == ["correct gave 0"]
+        assert self._reasons({"correct": 0.0}, None) == ["correct gave 0"], "a scorer's default is higher-is-better"
+
+    def test_a_measure_with_no_direction_never_misses(self) -> None:
+        assert self._reasons({"length": 0.0}, {"length": None}) == []
+        assert self._reasons({"length": 7.0}, {"length": None}) == []
+
+    async def test_a_caller_s_own_lower_is_better_measure_lists_its_zeros_as_no_miss(self) -> None:
+        """Before, only a lower-is-better *guardrail* missed above 0; a caller's own such measure missed at 0."""
+        host = callable_host([correct, leaked])
+        measures = host.profile.measures
+        own = [
+            MetricDescriptor.model_validate({**descriptor.model_dump(), "higher_is_better": False})
+            if descriptor.name == "leaked"
+            else descriptor
+            for descriptor in (measures.get(name) for name in measures.names)
+            if descriptor is not None
+        ]
+        host = replace(host, profile=replace(host.profile, measures=MeasureRegistry(own, families=measures.families)))
+        summary = await run_eval(CASES, ARMS["leaky"], [correct, leaked], scope_id="own-measure", host=host, k=1)
+        reasons = [reason for miss in summary.misses() for reason in miss.missed_because]
+        assert reasons == ["leaked gave 1"] * 20, "a leak is the miss, and a clean answer is not"
 
 
 class TestTheSingleRunSummary:

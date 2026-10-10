@@ -326,7 +326,8 @@ table, each measure that declares no margin and so can never read equivalent. A 
 `undecided`. See [reading a comparison](reading-reports.md#reading-a-comparison).
 
 #### Miss
-A result the candidate got wrong: a wrong label, a scorer that gave 0 or less, a failed goal check, a failed
+A result the candidate got wrong: a wrong label, a scorer on the wrong side of 0 (0 or less where higher is better,
+above 0 where lower is better, as `leaked` is; never for a measure with no direction), a failed goal check, a failed
 pass/fail judgement, or a result the candidate failed outright (it raised, say). An excluded result is never a
 miss. `summary.misses()` lists them, each with its reason; the [tutorial](tutorial.md#3-read-your-misses) says how
 to read them.
