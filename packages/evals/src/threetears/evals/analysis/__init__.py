@@ -269,11 +269,11 @@ from threetears.evals.analysis.reporter_kind import (
 from threetears.evals.analysis.reporting import (
     FrontierDominance,
     LatencyPartition,
-    MeasurementWindow,
     ProjectionExclusions,
     ServedModelReading,
     ServedModelState,
 )
+from threetears.evals.analysis.measurement_windows import MeasurementWindow
 from threetears.evals.analysis.lenses.comparison_sets import CaseSetIdentity, ComparisonSet, ComparisonSetsResult
 from threetears.evals.analysis.lenses.cost_estimate import CostEstimate, CostEstimateCell, PlannedCost, PredictedValue
 from threetears.evals.analysis.lenses.pivot import PivotCell, PivotTable, SimpsonsFlag

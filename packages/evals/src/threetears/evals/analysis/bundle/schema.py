@@ -38,7 +38,8 @@ from threetears.evals.analysis.cells import (
     SubjectKeyInstability,
 )
 from threetears.evals.analysis.numbers import format_number
-from threetears.evals.analysis.reporting import MeasurementWindow, served_model_state
+from threetears.evals.analysis.reporting import served_model_state
+from threetears.evals.analysis.measurement_windows import MeasurementWindow
 from threetears.evals.analysis.lenses.comparison_sets import ComparisonSetsResult
 from threetears.evals.analysis.lenses.frontier import FrontierResult
 from threetears.evals.analysis.stats import (

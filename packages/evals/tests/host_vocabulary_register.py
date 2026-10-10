@@ -62,6 +62,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "analysis/lenses/contestants.py": {},
     "analysis/lenses/aggregation.py": {},
     "analysis/cassette_mode.py": {},
+    "analysis/measurement_windows.py": {},
     "analysis/contention.py": {},
     "analysis/gate.py": {},
     "analysis/judge_drift.py": {},

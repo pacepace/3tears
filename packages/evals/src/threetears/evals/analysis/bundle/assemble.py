@@ -59,7 +59,8 @@ from threetears.evals.analysis.cells import (
     subject_key_instabilities,
 )
 from threetears.evals.analysis.numbers import format_number
-from threetears.evals.analysis.reporting import measurement_window, measurement_window_disclosure, project_score_records
+from threetears.evals.analysis.reporting import project_score_records
+from threetears.evals.analysis.measurement_windows import measurement_window, measurement_window_disclosure
 from threetears.evals.analysis.lenses.comparison_sets import compute_comparison_sets
 from threetears.evals.analysis.lenses.frontier import compute_frontier
 from threetears.evals.analysis.lenses.program_budget import compute_program_budget

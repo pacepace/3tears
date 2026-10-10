@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 
 from threetears.evals.analysis import reporting
-from threetears.evals.analysis.reporting import (
+from threetears.evals.analysis.measurement_windows import (
     DISJOINT_WINDOWS_CLAUSE,
     MAX_INLINE_MEASUREMENT_WINDOWS,
     MeasurementWindow,
