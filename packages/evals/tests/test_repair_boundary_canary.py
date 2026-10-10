@@ -43,6 +43,10 @@ _TERMINAL_RAISERS = {
     # through is broken before a token is spent. There is no output because there was no call, and
     # no output a model could produce would repair it — the defect is in the evidence handed to it.
     "refuse_an_undescribable_arm_table",
+    # Nothing was sent: the host does not allow this writer model (#644). Knowable from the caller's own
+    # request before a token is spent, and no output could repair it — a second call is the same model
+    # refused the same way.
+    "refuse_an_unlisted_writer",
 }
 
 #: Every module of the analysis package, DERIVED rather than listed. A hand-maintained list is

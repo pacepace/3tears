@@ -42,20 +42,24 @@ class SoundnessRefusal(GenerationError):
 
     A bare ``GenerationError`` means there was no output to correct: the provider cut the
     call short (an output-cap truncation or a content filter), or nothing was ever sent —
-    because the resolved prompt predates the memo contract, or because the bundle describes
-    no arm at all, so nothing the memo said could name which arm it meant. Those
+    because the resolved prompt predates the memo contract, because the bundle describes
+    no arm at all, so nothing the memo said could name which arm it meant, or because the host
+    does not allow the requested writer model. Those
     must NOT be repaired here, and the reason is the truncation case specifically — regenerating a generation that hit
     the output cap spends a second full charge to hit the same cap
     (:func:`~threetears.evals.contracts.provider.describe_incomplete_completion` says so in the message).
     A repair that fired there would be the "fallback tier accumulating untraceable
     behavior" the project rule warns about, dressed as a retry.
 
-    **The two nothing-was-sent cases are preconditions on what the CALLER holds, and that is why
+    **The nothing-was-sent cases are preconditions on what the CALLER holds, and that is why
     they belong on this side.** A repair round-trip corrects what a generator claimed; neither a
-    prompt that never asks for a memo nor a bundle whose every arm carries a key and no levels is
-    something the generator said, so there is no claim to correct and a second call reaches the
-    identical place at a second full charge. Both are decidable for free before the first call,
-    and both are refused there. Adding a third such case means arguing it here.
+    prompt that never asks for a memo, nor a bundle whose every arm carries a key and no levels, nor
+    a writer model the host's ``analysis_writer_models`` does not list (#644) is something the
+    generator said, so there is no claim to correct and a second call reaches the identical place at
+    a second full charge. Each is decidable for free before the first call, and each is refused there
+    (:func:`~threetears.evals.analysis.generator.refuse_an_unlisted_writer` is the third, argued
+    here: the request names a writer the host refuses, so no call is made and none could succeed).
+    Adding another such case means arguing it here.
 
     **The boundary used to sit one step further out, and drawing it by exception class made
     it inconsistent.** Schema-validation and parse failures were excluded alongside
