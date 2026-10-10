@@ -35,7 +35,8 @@ here, from the public roots, on the terms the engine already sets:
   turn, the runner reads it back after the last, and the checks grade it, through the engine's own world
   session and goal-state evaluation (:mod:`threetears.evals.quick.world`).
 - **The host**, when none is given, is :func:`callable_host`: the shared sweepable core, one measure
-  per scorer, no world, and the in-memory reference store. Given one, its storage and vocabulary are
+  per scorer, no world, and the in-memory reference store, or the store handed as ``store=`` (a
+  :class:`~threetears.evals.storage.SqliteDocumentStore` keeps the runs past the process). Given one, its storage and vocabulary are
   used: every scorer must already be a measure it declares, and it must declare a contract for the
   callable kind that seats no judge, simulator or spend ceiling — and, for a judged call, a contract
   for the judged kind that seats the judge and nothing else of the engine's.
@@ -66,12 +67,14 @@ from threetears.evals.contracts import (
     DEFAULT_LAUNCH_K_RUNS,
     MATCH_MEASURE,
     METRIC_DESCRIPTORS,
+    SCALES,
     CandidateOutput,
     CandidateTelemetry,
     CassetteMode,
     CellCassettes,
     CellSink,
     CellSpanWindow,
+    DocumentStore,
     EvalRun,
     EvalStorage,
     EvalTemplate,
@@ -90,6 +93,7 @@ from threetears.evals.contracts.models import stored_variation
 from threetears.evals.contracts.host import (
     SHARED_CORE,
     ApparatusError,
+    CompletionClients,
     EvalHost,
     HostProfile,
     KindContract,
@@ -99,6 +103,7 @@ from threetears.evals.contracts.host import (
     Sweepable,
     SweepableRegistry,
     SweepableValue,
+    TraceSink,
     WorldPlacement,
     WorldRegistry,
     default_cell_timeout,
@@ -127,6 +132,7 @@ from threetears.evals.run import (
 from threetears.evals.run.authoring import refuse_unsupplied_world
 from threetears.evals.contracts.errors import ValidationFailedError
 from threetears.evals.quick.answer import unwrap_answer
+from threetears.evals.quick.guardrails import Guardrail
 from threetears.evals.quick.judged import Judge, judge_evidence
 from threetears.evals.quick.levers import CallableLevers, levers_model
 from threetears.evals.quick.tools import CellTools, Tool, ToolUsingCandidate, refuse_unusable_tools
@@ -277,7 +283,11 @@ def _scorer_reader_name(name: str) -> str:
 
 
 def scorer_measure(
-    scorer: Scorer, *, margin: float | None = None, value_range: tuple[float, float] | None = None
+    scorer: Scorer,
+    *,
+    margin: float | None = None,
+    value_range: tuple[float, float] | None = None,
+    guardrail: Guardrail | None = None,
 ) -> MetricDescriptor:
     """The measure one scorer function reports: a quality score, higher is better, over scored results.
 
@@ -287,6 +297,10 @@ def scorer_measure(
     (``compare(ranges=...)``), or on none, since nothing else says what its values can be: its intervals are
     then the unclipped t intervals, and it takes no margin (:func:`refuse_unusable_margins`).
 
+    Declared a guardrail (``guardrail=``), it is instead a measure no arm may get worse on: on no merit axis, so it
+    joins no contrast and no composite, with the guardrail's direction and its margin as the measure's
+    ``materiality_threshold``.
+
     Args:
         scorer: The scorer. Its ``__name__`` names the measure and the first line of its docstring,
             when it has one, describes it.
@@ -294,12 +308,34 @@ def scorer_measure(
             still be too small to act on, so a contrast on it can read ``equivalent``. ``None`` declares none,
             and no contrast on it can.
         value_range: The lowest and highest value a non-``bool`` scorer can return, or ``None``.
+        guardrail: Declares the measure a guardrail, with its margin and direction; ``None`` for a quality score.
+            A guardrail takes no ``margin`` beside it: its margin is the guardrail's own.
 
     Returns:
         The descriptor :func:`callable_host` registers for it.
+
+    Raises:
+        ValueError: Both ``margin`` and ``guardrail`` are given.
     """
     name = _scorer_name(scorer)
     doc = inspect.getdoc(scorer)
+    if guardrail is not None:
+        if margin is not None:
+            raise ValueError(_MARGIN_ON_A_GUARDRAIL.format(name=name))
+        return MetricDescriptor(
+            name=name,
+            reader_name=_scorer_reader_name(name),
+            data_type="numeric",
+            family="mechanical",
+            transferability_class="mechanical",
+            attribution_scope="end_to_end",
+            description=doc.splitlines()[0] if doc else f"The score the {name} function gave the candidate's answer.",
+            higher_is_better=guardrail.higher_is_better,
+            guardrail=True,
+            population="scored",
+            materiality_threshold=guardrail.margin,
+            value_range=(0.0, 1.0) if _returns_bool(scorer) else value_range,
+        )
     return MetricDescriptor(
         name=name,
         # The def's own name in words, marked a score so it never heads a column alike with an engine measure.
@@ -405,6 +441,95 @@ def refuse_unusable_margins(
             )
 
 
+def refuse_a_store_beside_a_host(store: DocumentStore | None, host: EvalHost | None) -> None:
+    """Refuse ``store=`` beside ``host=``: a host brings its own storage, and one call stores in one place.
+
+    Raises:
+        ValueError: Both were given.
+    """
+    if store is not None and host is not None:
+        raise ValueError(
+            f"store= is where the host this call builds keeps the runs, and host {host.profile.host_id!r} brings its "
+            "own storage; pass one or the other (callable_host(..., store=...) builds a host over a store)"
+        )
+
+
+#: Why a scorer named in both ``margins=`` and ``guardrails=`` is refused, naming it.
+_MARGIN_ON_A_GUARDRAIL = (
+    "{name!r} is declared a guardrail and given a margin in margins= too: a guardrail is never contrasted, so a "
+    "margin for equivalence has no use on it, and its own margin is Guardrail(margin=...); drop it from margins="
+)
+
+
+def refuse_unusable_guardrails(
+    scorers: Sequence[Scorer],
+    guardrails: Mapping[str, Guardrail],
+    *,
+    margins: Mapping[str, float] | None = None,
+    ranges: Mapping[str, tuple[float, float]] | None = None,
+    judge: Judge | None = None,
+) -> None:
+    """Refuse a guardrail no scorer's measure, or judged dimension, could carry, naming the ones that can.
+
+    Args:
+        scorers: The scorers whose measures a guardrail may be declared on.
+        guardrails: Each guardrail, by the name of the scorer (or the judge's rubric dimension) it is declared on.
+        margins: The margins declared beside them, by scorer.
+        ranges: The ranges declared for scorers returning a number, by scorer (``compare(ranges=...)``).
+        judge: The judge whose rubric dimensions a guardrail may also be declared on, or ``None``.
+
+    Raises:
+        ValueError: A guardrail that is not a :class:`~threetears.evals.quick.Guardrail` (a bare margin among
+            them); on an engine core measure (the classifier's accuracy among them), or a name no scorer or
+            dimension has; on a scorer also given a margin; a margin as wide as the scorer's range (0 to 1 for a
+            pass/fail) or the dimension's scale; or a lower-is-better direction on a judged dimension.
+    """
+    names = [_scorer_name(scorer) for scorer in scorers]
+    by_name = dict(zip(names, scorers, strict=True))
+    dims = {dim.name: dim for dim in judge.dims} if judge is not None else {}
+    for name, guardrail in guardrails.items():
+        if not isinstance(guardrail, Guardrail):
+            raise ValueError(
+                f"guardrails= maps a name to a Guardrail, its margin and direction both declared "
+                f"(guardrails={{{name!r}: Guardrail(margin=0.02, direction='higher_is_better')}}), not {guardrail!r}"
+            )
+        if name in _CLASSIFIER_NAMES or name in METRIC_DESCRIPTORS:
+            raise ValueError(
+                f"a guardrail on {name!r} cannot be declared: it is an engine core measure, read under the core's own "
+                "description. Grade what the candidate must not get worse on with a scorer "
+                "(def no_leak(case, answer) -> bool: ...) and declare the guardrail on that"
+            )
+        if name in by_name:
+            if margins and name in margins:
+                raise ValueError(_MARGIN_ON_A_GUARDRAIL.format(name=name))
+            bounds = (0.0, 1.0) if _returns_bool(by_name[name]) else (ranges or {}).get(name)
+            if bounds is not None and guardrail.margin >= bounds[1] - bounds[0]:
+                raise ValueError(
+                    f"a margin of {guardrail.margin!r} on {name!r}, which scores {bounds[0]:g} to {bounds[1]:g}, is "
+                    "as wide as every value it can return, so every arm would hold whatever it did; declare a "
+                    "smaller one"
+                )
+            continue
+        dim = dims.get(judge.dim_name(name)) if judge is not None else None
+        if dim is None:
+            said = ", ".join(map(repr, [*names, *dims])) or "none were given"
+            raise ValueError(
+                f"guardrails= names {name!r}, which no scorer reports and no rubric dimension of the judge scores; a "
+                f"guardrail is declared on a scorer's measure, by its def's name, or on a judged dimension: {said}"
+            )
+        if not guardrail.higher_is_better:
+            raise ValueError(
+                f"{dim.name!r} is judged with higher better, so its guardrail's direction is 'higher_is_better': "
+                "word the dimension as what the answer must do (never_leaks), and a higher score is the safer one"
+            )
+        low, high = SCALES[dim.scale].value_range
+        if guardrail.margin >= high - low:
+            raise ValueError(
+                f"a margin of {guardrail.margin!r} on {dim.name!r}, judged {low:g} to {high:g}, is as wide as its "
+                "scale, so every arm would hold whatever it did; declare a smaller one"
+            )
+
+
 def callable_kind_contracts(levers: Sequence[str] = ()) -> tuple[KindContract, KindContract]:
     """The contracts of both callable kinds, declaring ``levers`` as each run's levels beside its model.
 
@@ -471,12 +596,17 @@ def callable_host(
     arms: bool = False,
     margins: Mapping[str, float] | None = None,
     ranges: Mapping[str, tuple[float, float]] | None = None,
+    store: DocumentStore | None = None,
+    clients: CompletionClients | None = None,
+    trace_sink: TraceSink | None = None,
+    guardrails: Mapping[str, Guardrail] | None = None,
 ) -> EvalHost:
     """The least host there is: the shared core, one measure per scorer, no world, an in-memory store.
 
-    What :func:`run_eval` builds when it is handed no host. Its store lives as long as the returned
-    value, so a caller wanting to run several candidates into one store and compare them builds this
-    once and hands it to each call. A classifier's ``match`` and ``confusion_cell`` are core measures,
+    What :func:`run_eval` builds when it is handed no host. With no ``store``, its store lives as long as the
+    returned value, so a caller wanting to run several candidates into one store and compare them builds this
+    once and hands it to each call. With one, the runs are wherever that store keeps them, and a later process
+    reads them through ``callable_host(<the same scorers>, store=<the same store>)``. A classifier's ``match`` and ``confusion_cell`` are core measures,
     so a host for a classifier with no scorers of its own declares none: ``callable_host()``. It declares
     the contracts of both callable kinds, so one host serves judged and unjudged calls alike.
 
@@ -494,6 +624,18 @@ def callable_host(
         ranges: The lowest and highest score a scorer returning a number can give, by the scorer's name
             (``{"rating": (1, 5)}``): its intervals stay inside it, and a margin on it can be tested. A ``bool``
             scorer is on 0 to 1 already. A score outside its range excludes its cell, naming the scorer.
+        store: Where every document is stored (any :class:`~threetears.evals.contracts.DocumentStore`):
+            :class:`~threetears.evals.storage.SqliteDocumentStore` keeps the runs in a file. ``None`` builds a fresh
+            :class:`~threetears.evals.storage.InMemoryDocumentStore`, which keeps nothing past the process.
+        clients: The completion clients the engine's own model calls use after the run (a re-judge, an
+            analysis), as :class:`~threetears.evals.contracts.host.EvalHost` takes them; ``None`` supplies none,
+            and a call needing them is refused. A :class:`~threetears.evals.quick.Judge` brings its own for the run.
+        trace_sink: Where each cell's trace is sent, as :class:`~threetears.evals.contracts.host.EvalHost` takes
+            it; ``None`` traces nothing.
+        guardrails: The scorers declared guardrails, by name, each with its margin and direction
+            (:class:`~threetears.evals.quick.Guardrail`): measures no arm may get worse on, decided apart from
+            every contrast. A guardrail on a judged dimension is the campaign's to declare, so it is
+            :func:`~threetears.evals.quick.compare`'s, not a host's. ``None`` declares none.
 
     Returns:
         The host.
@@ -501,13 +643,16 @@ def callable_host(
     Raises:
         ValueError: A scorer has no usable name, two share one, or one takes a classifier measure's name or
             any other engine core measure's; a lever name is unusable or repeated; a margin names no scorer,
-            is not a positive number or is on a scorer with no range; or a range is unusable
-            (:func:`refuse_unusable_margins`).
+            is not a positive number or is on a scorer with no range; a range is unusable
+            (:func:`refuse_unusable_margins`); or a guardrail names no scorer, is not a ``Guardrail``, is declared
+            on a scorer given a margin too, or is as wide as its scorer's range.
     """
     _refuse_unnamed_or_repeated(scorers)
     margins = dict(margins or {})
     ranges = dict(ranges or {})
     refuse_unusable_margins(scorers, margins, ranges)
+    guardrails = dict(guardrails or {})
+    refuse_unusable_guardrails(scorers, guardrails, margins=margins, ranges=ranges)
     return EvalHost(
         profile=HostProfile(
             host_id=CALLABLE_HOST_ID,
@@ -519,6 +664,7 @@ def callable_host(
                     scorer,
                     margin=margins.get(_scorer_name(scorer)),
                     value_range=_as_range(ranges.get(_scorer_name(scorer))),
+                    guardrail=guardrails.get(_scorer_name(scorer)),
                 )
                 for scorer in scorers
             ),
@@ -530,11 +676,12 @@ def callable_host(
             tool_actions=None if world is None else world.tool_actions,
             variant_levers=_arm_levels if arms else None,
         ),
-        storage=EvalStorage(InMemoryDocumentStore()),
+        storage=EvalStorage(InMemoryDocumentStore() if store is None else store),
         failure_describer=withhold_failure_detail,
-        trace_sink=None,
+        trace_sink=trace_sink,
         blocking_executor=None,
         cell_timeout=default_cell_timeout,
+        clients=clients,
     )
 
 
@@ -1174,6 +1321,7 @@ async def run_eval(
     seed: CaseSeed | None = None,
     goal_checks: Sequence[str] = (),
     host: EvalHost | None = None,
+    store: DocumentStore | None = None,
     k: int = DEFAULT_LAUNCH_K_RUNS,
     model: str | None = None,
     levers: Mapping[str, str] | None = None,
@@ -1217,12 +1365,17 @@ async def run_eval(
             judge reads beside each answer (as ``**Intent:**`` in its prompt) and so can move its scores.
             ``None`` takes the first line of the candidate's docstring, or, with no docstring, a generic
             sentence. A judged run's summary renders it with where it came from.
-        host: Where to run and store: ``None`` builds :func:`callable_host` over the scorers, whose
-            in-memory store lives only as long as this call. A host of the caller's own must declare
-            a measure for every scorer, and a contract for the callable kind (:data:`CALLABLE_KIND_CONTRACT`,
-            or one seating only apparatus of its own — never anything in :data:`CALLABLE_UNSEATED`), and for
-            a judged call one for the judged kind (:data:`JUDGED_CALLABLE_KIND_CONTRACT`, or one seating
-            the judge and nothing in :data:`JUDGED_CALLABLE_UNSEATED`).
+        host: Where to run and store: ``None`` builds :func:`callable_host` over the scorers and ``store``. A
+            host of the caller's own must declare a measure for every scorer, and a contract for the callable
+            kind (:data:`CALLABLE_KIND_CONTRACT`, or one seating only apparatus of its own — never anything in
+            :data:`CALLABLE_UNSEATED`), and for a judged call one for the judged kind
+            (:data:`JUDGED_CALLABLE_KIND_CONTRACT`, or one seating the judge and nothing in
+            :data:`JUDGED_CALLABLE_UNSEATED`).
+        store: Where the host ``run_eval`` builds stores the run (any
+            :class:`~threetears.evals.contracts.DocumentStore`), so it outlives this call:
+            ``store=SqliteDocumentStore("evals.sqlite")`` keeps it in a file another process reads through
+            ``callable_host(<the same scorers>, store=...)``. ``None`` stores it in memory, for this call alone.
+            Never with ``host``, which brings its own storage.
         k: Repeats per case.
         model: The arm's label, stored as the run's candidate model and keyed into its variant;
             ``None`` takes the candidate's ``__name__``.
@@ -1281,8 +1434,8 @@ async def run_eval(
             capture or replay of a candidate that declares no tools; for a world run, no ``seed=``, a
             ``seed=`` that raises or gives a case a state the world refuses or leaves a dimension
             unset, a goal check reading state or naming a tool the world lacks, or a given host that
-            does not declare the world; ``seed=`` or ``goal_checks=`` with no ``world=``; and
-            ``world=`` with ``tools=`` or a cassette mode other than ``'off'``.
+            does not declare the world; ``seed=`` or ``goal_checks=`` with no ``world=``;
+            ``world=`` with ``tools=`` or a cassette mode other than ``'off'``; and ``store=`` with ``host=``.
         ValidationFailedError: The launch refused: a ``k`` outside the run's bounds, ``levers`` naming a
             lever the host does not declare, leaving out one it does, or giving one a blank or non-string
             level, a replay naming no corpus or one that is no capture of these cases in this scope, or a
@@ -1300,6 +1453,7 @@ async def run_eval(
         seed=seed,
         goal_checks=goal_checks,
         host=host,
+        store=store,
         k=k,
         tools=tools,
         cassette_mode=cassette_mode,
@@ -1349,6 +1503,7 @@ async def run_arms(
     seed: CaseSeed | None = None,
     goal_checks: Sequence[str] = (),
     host: EvalHost | None = None,
+    store: DocumentStore | None = None,
     k: int = DEFAULT_LAUNCH_K_RUNS,
     tools: Mapping[str, Tool] | None = None,
     cassette_mode: CassetteMode = "off",
@@ -1374,6 +1529,7 @@ async def run_arms(
     Returns:
         Each arm's finished run's summary, read back from the store, in arm order.
     """
+    refuse_a_store_beside_a_host(store, host)
     plain_cases = _plain_cases(cases)
     names = _case_names(plain_cases)
     _refuse_an_unusable_cap(max_cost_usd)
@@ -1401,7 +1557,7 @@ async def run_arms(
     labels = None if expected is None else _expected_labels(plain_cases, expected, names)
     seeds = _world_seeds(plain_cases, world, seed, goal_checks, host, names)
     if host is None:
-        host = callable_host(scorers, levers=tuple(arms[0].levers or ()), world=world)
+        host = callable_host(scorers, levers=tuple(arms[0].levers or ()), world=world, store=store)
     else:
         _refuse_an_undeclared_callable_contract(host, judged=judge is not None)
         _refuse_undeclared_measures(host, scorers)
@@ -1551,6 +1707,13 @@ def _with_case_results(
         key=lambda result: (order.get(result.test_case_id, len(order)), result.k_iteration),
     )
     payloads = {test_case.id: test_case.host_payload for test_case in test_cases}
+    breached_above_zero = frozenset(
+        name
+        for name in host.profile.measures.names
+        if (descriptor := host.profile.measures.get(name)) is not None
+        and descriptor.guardrail
+        and descriptor.higher_is_better is False
+    )
     case_results = []
     for result in stored:
         payload = payloads.get(result.test_case_id, {})
@@ -1563,6 +1726,7 @@ def _with_case_results(
                 given=payload.get(_CASE_KEY),
                 expected=payload.get(_EXPECTED_KEY),
                 answer=_stored_answer(trace.trace if trace is not None else []),
+                breached_above_zero=breached_above_zero,
             )
         )
     return summary.model_copy(update={"case_results": case_results})

@@ -292,7 +292,8 @@ config; a model that refuses a temperature is sent none, and each score records 
 #### Guardrail
 Something the candidate must not do: leak data, take a destructive action, break policy. A judged dimension
 on the `boundary` axis (`RubricDim.axis`, which the judge stamps on every score and every "can't tell") or a
-measure the host declares `guardrail=True` is one. Guardrails never join the composite, pass^k or a comparison
+measure the host declares `guardrail=True` is one; on the quick path, `compare(guardrails=...)` declares either,
+with its margin and direction (`Guardrail`). Guardrails never join the composite, pass^k or a comparison
 family, so a "can't tell" on one leaves the trial in both; the bundle decides each one for every arm against
 the control as `held`, `breached` or `undecided`. A catalog dim's `axis` is its embedded dim's, so copying a
 boundary catalog dim into a template keeps it a guardrail. *Example:*

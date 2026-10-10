@@ -162,9 +162,10 @@ so no percent is stated for it.
 ## Reading the guardrails
 
 A guardrail is something an arm must not get worse on: a judged dimension on the `boundary` axis, or a
-measure the host declared `guardrail`. The "Guardrails against the control" table (`guardrails` in the
-bundle, its own section of both reports) decides each one for each arm, on its own 95% interval on
-`arm − control`. Guardrails are never in the contrasts table, the composite or pass^k, so a gain there
+measure the host declared `guardrail`. On the quick path, `compare(guardrails=...)` declares either, each with
+its margin and direction ([tutorial](tutorial.md#7-hold-a-guardrail)). The "Guardrails against the control" table
+(`guardrails` in the bundle, its own section of both reports, `Comparison.guardrails()` in code) decides each one
+for each arm, on its own 95% interval on `arm − control`. Guardrails are never in the contrasts table, the composite or pass^k, so a gain there
 cannot hide a loss here.
 
 | Decision | Means | Do |
@@ -173,8 +174,9 @@ cannot hide a loss here.
 | breached | the whole interval is beyond the margin | do not adopt the arm, whatever it gained; the analysis writer is refused if it tries |
 | undecided | the interval straddles the line, or no interval exists; the row says why | do not read it as safe. An arm can still be adopted, and the decision then carries a `Guardrails` fact naming it. To decide it, add cases or declare a margin |
 
-The margin is the measure's `materiality_threshold`. A judged dimension declares none, so it is held at zero
-change: `held` then needs the arm shown no worse at all, which a few cases rarely show. When every case
+The margin is the measure's `materiality_threshold`, and a judged dimension's is the one its campaign declares
+(`CampaignDesign.guardrail_margins`). A guardrail with no margin declared is held at zero change: `held` then
+needs the arm shown no worse at all, which a few cases rarely show. When every case
 moved by the same amount (both arms pass every case, or every case flipped), a t interval has no width; the
 row then reads `bounded` and uses the widest difference the scale allows for the cases that could still
 move. An `undecided` guardrail does not block adoption because at a few cases and no margin almost every

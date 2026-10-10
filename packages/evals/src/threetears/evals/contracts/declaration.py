@@ -59,6 +59,7 @@ from threetears.evals.contracts.metrics import (
 )
 from threetears.evals.contracts.models import (
     RESERVED_DIM_IDS,
+    SCALES,
     ApparatusProvenance,
     EvalResult,
     EvalTemplate,
@@ -225,6 +226,33 @@ class BarOverride(EvalDocumentModel):
             "`refuse_an_undeclarable_design` refuses a bar whose direction contradicts the one the "
             "host declared for that measure, which is the check that fires when no incumbent exists."
         )
+    )
+
+
+class GuardrailMargin(EvalDocumentModel):
+    """How much worse than the control an arm may be on one judged guardrail, and still hold it.
+
+    A measure's margin is its descriptor's ``materiality_threshold``, declared by the host. A judged dimension has
+    no descriptor of its own to carry one — the engine describes every rubric dimension alike — so a boundary
+    dimension's margin is declared here, by the campaign that decides it. With none, the dimension is held at zero
+    change: ``held`` then needs the arm shown no worse at all.
+    """
+
+    dimension: str = Field(
+        min_length=1,
+        description=(
+            "The judged guardrail: a rubric dimension of the campaign's template on the `boundary` axis, spelled "
+            "exactly as the template writes it. A capability dimension, a measure or an undeclared name is refused "
+            "at authoring time."
+        ),
+    )
+    margin: float = Field(
+        gt=0.0,
+        allow_inf_nan=False,
+        description=(
+            "The worsening tolerated before `breached`, in the dimension's own units (points of a 1-5 scale, a share "
+            "of a pass/fail one): positive, and narrower than the scale."
+        ),
     )
 
 
@@ -414,6 +442,14 @@ class CampaignDesign(EvalDocumentModel):
         default_factory=list,
         description="Standards this campaign holds itself to, tighter than the registered ones. Empty = the registry's bars apply unchanged.",
     )
+    guardrail_margins: list[GuardrailMargin] = Field(
+        default_factory=list,
+        description=(
+            "The margin of each judged guardrail (a boundary rubric dimension) this campaign decides, one per "
+            "dimension. Empty = none declared, and every judged guardrail is held at zero change, as it was before "
+            "this field existed. A measure's margin is its descriptor's `materiality_threshold`, never declared here."
+        ),
+    )
     control: str | None = Field(
         default=None,
         description=(
@@ -541,7 +577,8 @@ class CampaignDesign(EvalDocumentModel):
             The validated design.
 
         Raises:
-            ValueError: An axis id, a measure id or a merit-priority axis appears twice.
+            ValueError: An axis id, a measure id, a guardrail margin's dimension or a merit-priority axis appears
+                twice.
         """
         axes = [axis.axis_id for axis in self.axes]
         if duplicates := sorted({axis for axis in axes if axes.count(axis) > 1}):
@@ -554,6 +591,12 @@ class CampaignDesign(EvalDocumentModel):
             raise ValueError(
                 f"more than one bar on: {', '.join(duplicates)} — both would read as this campaign's "
                 f"standard on that measure and nothing decides which one it is held to"
+            )
+        guarded = [entry.dimension for entry in self.guardrail_margins]
+        if duplicates := sorted({name for name in guarded if guarded.count(name) > 1}):
+            raise ValueError(
+                f"more than one guardrail margin on: {', '.join(duplicates)} — nothing would decide which one the "
+                "dimension is held to"
             )
         priority = list(self.merit_priority)
         if duplicates := sorted({axis for axis in priority if priority.count(axis) > 1}):
@@ -923,6 +966,39 @@ class UndeclarableAxisError(ValueError):
     """
 
 
+def _refuse_unreadable_guardrail_margins(design: CampaignDesign, template: EvalTemplate | None) -> None:
+    """Refuse a guardrail margin on anything but a boundary dimension of the campaign's template, or wider than its scale.
+
+    Raises:
+        ValueError: A margin names a dimension the template does not declare, or one on the capability axis (a
+            margin there would be read by nothing); or it is as wide as the dimension's scale, so every arm holds.
+    """
+    if not design.guardrail_margins:
+        return
+    dims = {dim.name: dim for dim in template.rubric} if template is not None else {}
+    boundary = sorted(name for name, dim in dims.items() if dim.axis == "boundary")
+    for entry in design.guardrail_margins:
+        dim = dims.get(entry.dimension)
+        if dim is None or dim.axis != "boundary":
+            why = (
+                "this campaign names no template that could be read, so no rubric dimension is known"
+                if template is None
+                else "the template declares no such dimension"
+                if dim is None
+                else "it is on the capability axis, which is compared, not held"
+            )
+            raise ValueError(
+                f"a guardrail margin names '{entry.dimension}': {why}. A guardrail margin is declared on a rubric "
+                f"dimension of the campaign's template on the boundary axis: {', '.join(boundary) or 'it declares none'}"
+            )
+        low, high = SCALES[dim.scale].value_range
+        if entry.margin >= high - low:
+            raise ValueError(
+                f"a guardrail margin of {entry.margin!r} on '{entry.dimension}', scored {low:g} to {high:g}, is as "
+                "wide as its scale, so every arm would hold whatever it did"
+            )
+
+
 def refuse_an_undeclarable_design(
     design: CampaignDesign,
     *,
@@ -1024,6 +1100,7 @@ def refuse_an_undeclarable_design(
     # goal-state names; with no template only the two reserved axes every run scores are known.
     rubric = {dim.name: dim.scale for dim in template.rubric} if template is not None else {}
     checks = list(template.goal_state_checks) if template is not None else []
+    _refuse_unreadable_guardrail_margins(design, template)
     resolved = {
         override.measure_id: resolve_bar_name(
             override.measure_id, rubric_dimensions=rubric, goal_state_checks=checks, measures=profile.measures
@@ -1191,6 +1268,7 @@ __all__ = [
     "BarOverride",
     "CampaignDesign",
     "ControlDeclaration",
+    "GuardrailMargin",
     "Question",
     "SweptAxis",
     "UndeclarableAxisError",
