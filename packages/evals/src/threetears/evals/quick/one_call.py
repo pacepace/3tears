@@ -35,7 +35,8 @@ here, from the public roots, on the terms the engine already sets:
   turn, the runner reads it back after the last, and the checks grade it, through the engine's own world
   session and goal-state evaluation (:mod:`threetears.evals.quick.world`).
 - **The host**, when none is given, is :func:`callable_host`: the shared sweepable core, one measure
-  per scorer, no world, and the in-memory reference store. Given one, its storage and vocabulary are
+  per scorer, no world, and the in-memory reference store, or the store handed as ``store=`` (a
+  :class:`~threetears.evals.storage.SqliteDocumentStore` keeps the runs past the process). Given one, its storage and vocabulary are
   used: every scorer must already be a measure it declares, and it must declare a contract for the
   callable kind that seats no judge, simulator or spend ceiling — and, for a judged call, a contract
   for the judged kind that seats the judge and nothing else of the engine's.
@@ -73,6 +74,7 @@ from threetears.evals.contracts import (
     CellCassettes,
     CellSink,
     CellSpanWindow,
+    DocumentStore,
     EvalRun,
     EvalStorage,
     EvalTemplate,
@@ -91,6 +93,7 @@ from threetears.evals.contracts.models import stored_variation
 from threetears.evals.contracts.host import (
     SHARED_CORE,
     ApparatusError,
+    CompletionClients,
     EvalHost,
     HostProfile,
     KindContract,
@@ -100,6 +103,7 @@ from threetears.evals.contracts.host import (
     Sweepable,
     SweepableRegistry,
     SweepableValue,
+    TraceSink,
     WorldPlacement,
     WorldRegistry,
     default_cell_timeout,
@@ -436,6 +440,19 @@ def refuse_unusable_margins(
             )
 
 
+def refuse_a_store_beside_a_host(store: DocumentStore | None, host: EvalHost | None) -> None:
+    """Refuse ``store=`` beside ``host=``: a host brings its own storage, and one call stores in one place.
+
+    Raises:
+        ValueError: Both were given.
+    """
+    if store is not None and host is not None:
+        raise ValueError(
+            f"store= is where the host this call builds keeps the runs, and host {host.profile.host_id!r} brings its "
+            "own storage; pass one or the other (callable_host(..., store=...) builds a host over a store)"
+        )
+
+
 #: Why a scorer named in both ``margins=`` and ``guardrails=`` is refused, naming it.
 _MARGIN_ON_A_GUARDRAIL = (
     "{name!r} is declared a guardrail and given a margin in margins= too: a guardrail is never contrasted, so a "
@@ -578,13 +595,17 @@ def callable_host(
     arms: bool = False,
     margins: Mapping[str, float] | None = None,
     ranges: Mapping[str, tuple[float, float]] | None = None,
+    store: DocumentStore | None = None,
+    clients: CompletionClients | None = None,
+    trace_sink: TraceSink | None = None,
     guardrails: Mapping[str, Guardrail] | None = None,
 ) -> EvalHost:
     """The least host there is: the shared core, one measure per scorer, no world, an in-memory store.
 
-    What :func:`run_eval` builds when it is handed no host. Its store lives as long as the returned
-    value, so a caller wanting to run several candidates into one store and compare them builds this
-    once and hands it to each call. A classifier's ``match`` and ``confusion_cell`` are core measures,
+    What :func:`run_eval` builds when it is handed no host. With no ``store``, its store lives as long as the
+    returned value, so a caller wanting to run several candidates into one store and compare them builds this
+    once and hands it to each call. With one, the runs are wherever that store keeps them, and a later process
+    reads them through ``callable_host(<the same scorers>, store=<the same store>)``. A classifier's ``match`` and ``confusion_cell`` are core measures,
     so a host for a classifier with no scorers of its own declares none: ``callable_host()``. It declares
     the contracts of both callable kinds, so one host serves judged and unjudged calls alike.
 
@@ -602,6 +623,14 @@ def callable_host(
         ranges: The lowest and highest score a scorer returning a number can give, by the scorer's name
             (``{"rating": (1, 5)}``): its intervals stay inside it, and a margin on it can be tested. A ``bool``
             scorer is on 0 to 1 already. A score outside its range excludes its cell, naming the scorer.
+        store: Where every document is stored (any :class:`~threetears.evals.contracts.DocumentStore`):
+            :class:`~threetears.evals.storage.SqliteDocumentStore` keeps the runs in a file. ``None`` builds a fresh
+            :class:`~threetears.evals.storage.InMemoryDocumentStore`, which keeps nothing past the process.
+        clients: The completion clients the engine's own model calls use after the run (a re-judge, an
+            analysis), as :class:`~threetears.evals.contracts.host.EvalHost` takes them; ``None`` supplies none,
+            and a call needing them is refused. A :class:`~threetears.evals.quick.Judge` brings its own for the run.
+        trace_sink: Where each cell's trace is sent, as :class:`~threetears.evals.contracts.host.EvalHost` takes
+            it; ``None`` traces nothing.
         guardrails: The scorers declared guardrails, by name, each with its margin and direction
             (:class:`~threetears.evals.quick.Guardrail`): measures no arm may get worse on, decided apart from
             every contrast. A guardrail on a judged dimension is the campaign's to declare, so it is
@@ -646,11 +675,12 @@ def callable_host(
             tool_actions=None if world is None else world.tool_actions,
             variant_levers=_arm_levels if arms else None,
         ),
-        storage=EvalStorage(InMemoryDocumentStore()),
+        storage=EvalStorage(InMemoryDocumentStore() if store is None else store),
         failure_describer=withhold_failure_detail,
-        trace_sink=None,
+        trace_sink=trace_sink,
         blocking_executor=None,
         cell_timeout=default_cell_timeout,
+        clients=clients,
     )
 
 
@@ -1282,26 +1312,27 @@ def _kind_factory(
 DEFAULT_QUICK_SCOPE = "quick"
 
 
-def quick_scope(scope_id: str | None, host: EvalHost | None) -> str:
-    """The scope a quick call stores in: the one named, else :data:`DEFAULT_QUICK_SCOPE` when it builds its own host.
+def quick_scope(scope_id: str | None, host: EvalHost | None, store: DocumentStore | None = None) -> str:
+    """The scope a quick call stores in: the one named, else :data:`DEFAULT_QUICK_SCOPE` when its store is the call's own.
 
     Args:
         scope_id: The scope the caller named, or None.
         host: The caller's own host, or None for the one the call builds.
+        store: The caller's own store for the host the call builds, or None for an in-memory one.
 
     Returns:
         The scope.
 
     Raises:
-        ValueError: A host of the caller's own and no scope: its store outlives the call, so where its runs land
-            is the caller's to say.
+        ValueError: A host or a store of the caller's own and no scope: either outlives the call, so where its runs
+            land is the caller's to say.
     """
     if scope_id is not None:
         return scope_id
-    if host is not None:
+    if host is not None or store is not None:
         raise ValueError(
-            "scope_id= is required with a host of your own: its store outlives this call, and the scope is where its "
-            "runs and campaigns are found again"
+            f"scope_id= is required with a {'host' if host is not None else 'store'} of your own: its store outlives "
+            "this call, and the scope is where its runs and campaigns are found again"
         )
     return DEFAULT_QUICK_SCOPE
 
@@ -1319,6 +1350,7 @@ async def run_eval(
     seed: CaseSeed | None = None,
     goal_checks: Sequence[str] = (),
     host: EvalHost | None = None,
+    store: DocumentStore | None = None,
     k: int = DEFAULT_LAUNCH_K_RUNS,
     model: str | None = None,
     levers: Mapping[str, str] | None = None,
@@ -1344,9 +1376,10 @@ async def run_eval(
         scorers: The grades. Each is reported as a measure named by its ``__name__``; ``True`` and
             ``False`` count as 1 and 0, and higher is better. None is needed when ``expected`` or
             ``judge`` is given.
-        scope_id: The scope the template, cases and run are stored in. With no ``host``, ``None`` stores them in
-            :data:`DEFAULT_QUICK_SCOPE`, inside the in-memory store this call builds and drops; a host of your own
-            names its scope, since its store outlives the call and the scope is where its runs are found.
+        scope_id: The scope the template, cases and run are stored in. With no ``host`` and no ``store``, ``None``
+            stores them in :data:`DEFAULT_QUICK_SCOPE`, inside the in-memory store this call builds and drops; with
+            a host or a store of your own, name it, since that store outlives the call and the scope is where its
+            runs are found again.
         expected: Declares the candidate a classifier: called once per case, it returns the label a
             correct answer gives. Each cell then lands ``match`` (the answer is that label) and
             ``confusion_cell`` (expected, then predicted), and the summary carries the confusion matrix
@@ -1363,12 +1396,17 @@ async def run_eval(
             judge reads beside each answer (as ``**Intent:**`` in its prompt) and so can move its scores.
             ``None`` takes the first line of the candidate's docstring, or, with no docstring, a generic
             sentence. A judged run's summary renders it with where it came from.
-        host: Where to run and store: ``None`` builds :func:`callable_host` over the scorers, whose
-            in-memory store lives only as long as this call. A host of the caller's own must declare
-            a measure for every scorer, and a contract for the callable kind (:data:`CALLABLE_KIND_CONTRACT`,
-            or one seating only apparatus of its own — never anything in :data:`CALLABLE_UNSEATED`), and for
-            a judged call one for the judged kind (:data:`JUDGED_CALLABLE_KIND_CONTRACT`, or one seating
-            the judge and nothing in :data:`JUDGED_CALLABLE_UNSEATED`).
+        host: Where to run and store: ``None`` builds :func:`callable_host` over the scorers and ``store``. A
+            host of the caller's own must declare a measure for every scorer, and a contract for the callable
+            kind (:data:`CALLABLE_KIND_CONTRACT`, or one seating only apparatus of its own — never anything in
+            :data:`CALLABLE_UNSEATED`), and for a judged call one for the judged kind
+            (:data:`JUDGED_CALLABLE_KIND_CONTRACT`, or one seating the judge and nothing in
+            :data:`JUDGED_CALLABLE_UNSEATED`).
+        store: Where the host ``run_eval`` builds stores the run (any
+            :class:`~threetears.evals.contracts.DocumentStore`), so it outlives this call:
+            ``store=SqliteDocumentStore("evals.sqlite")`` keeps it in a file another process reads through
+            ``callable_host(<the same scorers>, store=...)``. ``None`` stores it in memory, for this call alone.
+            Never with ``host``, which brings its own storage.
         k: Repeats per case.
         model: The arm's label, stored as the run's candidate model and keyed into its variant;
             ``None`` takes the candidate's ``__name__``.
@@ -1409,7 +1447,7 @@ async def run_eval(
         so the answers can be read after this call returns whatever store the run used.
 
     Raises:
-        ValueError: No ``scope_id`` with a ``host`` of your own, no cases, a case that is not a JSON object with
+        ValueError: No ``scope_id`` with a ``host`` or ``store`` of your own, no cases, a case that is not a JSON object with
             string keys, a case ``id`` that is not a non-blank string or an int or that two cases share, a ``max_cost_usd`` that is not a positive
             number, a synchronous candidate handed tools or a world, no scorer, ``expected``
             or ``judge``, an ``intent`` that is not a non-blank string, a scorer with no name, a repeated one or
@@ -1423,8 +1461,8 @@ async def run_eval(
             capture or replay of a candidate that declares no tools; for a world run, no ``seed=``, a
             ``seed=`` that raises or gives a case a state the world refuses or leaves a dimension
             unset, a goal check reading state or naming a tool the world lacks, or a given host that
-            does not declare the world; ``seed=`` or ``goal_checks=`` with no ``world=``; and
-            ``world=`` with ``tools=`` or a cassette mode other than ``'off'``.
+            does not declare the world; ``seed=`` or ``goal_checks=`` with no ``world=``;
+            ``world=`` with ``tools=`` or a cassette mode other than ``'off'``; and ``store=`` with ``host=``.
         ValidationFailedError: The launch refused: a ``k`` outside the run's bounds, ``levers`` naming a
             lever the host does not declare, leaving out one it does, or giving one a blank or non-string
             level, a replay naming no corpus or one that is no capture of these cases in this scope, or a
@@ -1442,6 +1480,7 @@ async def run_eval(
         seed=seed,
         goal_checks=goal_checks,
         host=host,
+        store=store,
         k=k,
         tools=tools,
         cassette_mode=cassette_mode,
@@ -1490,6 +1529,7 @@ async def run_arms(
     seed: CaseSeed | None = None,
     goal_checks: Sequence[str] = (),
     host: EvalHost | None = None,
+    store: DocumentStore | None = None,
     k: int = DEFAULT_LAUNCH_K_RUNS,
     tools: Mapping[str, Tool] | None = None,
     cassette_mode: CassetteMode = "off",
@@ -1516,7 +1556,8 @@ async def run_arms(
     Returns:
         Each arm's finished run's summary, read back from the store, in arm order.
     """
-    scope_id = quick_scope(scope_id, host)
+    refuse_a_store_beside_a_host(store, host)
+    scope_id = quick_scope(scope_id, host, store)
     plain_cases = _plain_cases(cases)
     names = _case_names(plain_cases)
     _refuse_an_unusable_cap(max_cost_usd)
@@ -1544,7 +1585,7 @@ async def run_arms(
     labels = None if expected is None else _expected_labels(plain_cases, expected, names)
     seeds = _world_seeds(plain_cases, world, seed, goal_checks, host, names)
     if host is None:
-        host = callable_host(scorers, levers=tuple(arms[0].levers or ()), world=world)
+        host = callable_host(scorers, levers=tuple(arms[0].levers or ()), world=world, store=store)
     else:
         _refuse_an_undeclared_callable_contract(host, judged=judge is not None)
         _refuse_undeclared_measures(host, scorers)

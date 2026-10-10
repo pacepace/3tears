@@ -5,8 +5,11 @@ The port itself — :class:`~threetears.evals.contracts.DocumentStore`, its
 lives in :mod:`threetears.evals.contracts`, which depends on nothing but pydantic. This package holds
 adapters BEHIND that port, so an adapter's dependencies never reach the contracts.
 
-Today it holds one: :class:`InMemoryDocumentStore`, the reference adapter for tests, examples and a
-quick start, and the shape to compare a real adapter against. A host with its own database writes
+It holds two. :class:`InMemoryDocumentStore` is the reference adapter for tests, examples and a quick
+start, and the shape to compare a real adapter against; nothing it holds outlives the process.
+:class:`SqliteDocumentStore` keeps every document in one SQLite file through the standard library, for
+keeping runs without running a database (``run_eval(..., store=SqliteDocumentStore("evals.sqlite"))``).
+Both pass every case of the store conformance kit. A host with its own database writes
 its own adapter, passes it to :class:`~threetears.evals.contracts.EvalStorage`, and proves it with
 the store conformance kit in :mod:`threetears.evals.testing`.
 
@@ -17,5 +20,6 @@ and only the names in ``__all__``.
 from __future__ import annotations
 
 from threetears.evals.storage.memory import InMemoryDocumentStore
+from threetears.evals.storage.sqlite import SQLITE_STORE_LAYOUT, SqliteDocumentStore
 
-__all__ = ["InMemoryDocumentStore"]
+__all__ = ["SQLITE_STORE_LAYOUT", "InMemoryDocumentStore", "SqliteDocumentStore"]

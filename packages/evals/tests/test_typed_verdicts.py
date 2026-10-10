@@ -21,6 +21,8 @@ from typing import Any
 
 import pytest
 
+from threetears.evals.storage import InMemoryDocumentStore
+
 from threetears.evals.analysis import (
     DEFAULT_FAIL_ON,
     GATE_TOKENS,
@@ -295,6 +297,8 @@ class TestANewcomerNeedsNoScope:
         )
         assert comparison.scope_id == DEFAULT_QUICK_SCOPE
 
-    async def test_a_host_of_your_own_names_its_scope(self) -> None:
+    async def test_a_host_or_a_store_of_your_own_names_its_scope(self) -> None:
         with pytest.raises(ValueError, match="scope_id= is required with a host of your own"):
             await run_eval(CASES[:4], _answers(0), [correct], host=callable_host([correct]), k=1)
+        with pytest.raises(ValueError, match="scope_id= is required with a store of your own"):
+            await run_eval(CASES[:4], _answers(0), [correct], store=InMemoryDocumentStore(), k=1)
