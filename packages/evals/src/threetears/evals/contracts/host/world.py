@@ -24,7 +24,7 @@ name: a host may spell its dimensions ``inventory.orders`` with tools as their c
 is one host's convention and reading it would be interpreting a name.
 
 **Two algebras, asked at two moments.** :data:`WorldCapability` is what a host CAN do, computed
-from a registration; :data:`WorldPlacement` is what one run DID, computed by
+from a registration; :data:`~threetears.evals.contracts.models.WorldPlacement` is what one run DID, computed by
 :meth:`WorldRegistry.place` from facts its caller reads off that run. The authoring gate reads the
 first, because at authoring time no run exists; a run record carries the second, and nothing
 anywhere declares it.
@@ -43,7 +43,7 @@ import copy
 import inspect
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from threetears.evals.contracts.host.attribution import HostAttributed
 from threetears.evals.contracts.host.world_schema import (
@@ -52,6 +52,10 @@ from threetears.evals.contracts.host.world_schema import (
     nested_schemas,
     schema_violations,
 )
+
+
+if TYPE_CHECKING:
+    from threetears.evals.contracts.models import EvalTemplate, Precondition, WorldPlacement
 
 #: Is a dimension's ``read`` computed from the world, or an authored claim about it?
 #:
@@ -80,33 +84,6 @@ TriggerKind = Literal["turn", "event", "human"]
 #: The fourth combination — neither seedable nor perceivable — is refused at registration, so it
 #: is not a value here. That is a field, not a dimension.
 WorldCapability = Literal["representable", "judge_only", "witnessed"]
-
-#: What a RUN did with a dimension, computed from that run's own record and nothing else.
-#:
-#: The same two bits as :data:`WorldCapability`, asked one moment later. Capability asks whether a
-#: seed handle exists and whether any surface could present the dimension; this asks whether THIS
-#: run seeded it and whether THIS subject could perceive it — and both halves are derived from the
-#: run, never declared on it. A declared per-run mode would be a claim that can disagree with the
-#: run, and it cannot express the normal case: a run that seeds some dimensions and witnesses
-#: others.
-#:
-#: The names are deliberately the capability's own where the meaning is the same, because they mean
-#: the same thing one level down and inventing a second vocabulary for it would make two readers of
-#: one distinction. Where they differ is the fourth value:
-#:
-#: * ``representable`` — this run seeded it and this subject perceived it. The precondition the
-#:   scenario presumed, instantiated.
-#: * ``judge_only`` — this run seeded it and this subject did not perceive it. A goal check reads
-#:   what the subject never saw, which is legitimate and worth warning about when a template
-#:   *presumes* it.
-#: * ``witnessed`` — this subject perceived it and this run did not set it. A confound rather than
-#:   an authoring error, carrying a disclosure obligation and a pooling rule.
-#: * ``out_of_play`` — neither. **Refused at registration and ordinary here**, which is the whole
-#:   reason this is a separate vocabulary: a dimension nothing can ever reach is a field, but a
-#:   dimension THIS run neither seeded nor exposed is simply not in play as a precondition for it,
-#:   and every run of a host whose world is larger than the subject it built has some.
-WorldPlacement = Literal["representable", "judge_only", "witnessed", "out_of_play"]
-
 
 #: How the engine calls each handle role. A host binds the callable and the engine calls it, so
 #: the shape is contract — and a generic caller cannot guess a signature.
@@ -1329,14 +1306,76 @@ class WorldRegistry(HostAttributed):
             raise
 
 
+def resolve_preconditions(template: EvalTemplate, world: WorldRegistry | None) -> list[Precondition]:
+    """Refuse a template's presumption naming a dimension this host's world does not declare.
+
+    Called where a stored template is USED — read by id, or launched — so a template
+    presuming a dimension somebody removed says so on the surface an author is looking at
+    rather than mid-run. Resolving it to nothing instead would turn a removed dimension into
+    a template that quietly presumes less than it says, which is missing-value semantics one
+    layer up and the defect this whole contract exists to catch.
+
+    **Not on enumeration**, deliberately. A listing is a catalogue rather than a use, it is
+    how an operator finds the offending template, and one of its callers seeds definitions at
+    web startup — so a refusal reaching every enumeration would take the recovery down along
+    with the problem, and the web process's boot with it.
+
+    **Names are the compatibility surface**, so this is what a world-registry rename costs: a
+    stored template referencing the old name stops loading, loudly, naming the path. That is
+    the intended price rather than an accident of the implementation — the alternative is a
+    corpus of scenarios silently presuming nothing. The recovery survives the refusal, which
+    is the property that makes the price payable: an update reads the stored shape through
+    storage rather than through the use path, so a refused template is still editable into
+    one that resolves — and still listable, and still deletable.
+
+    **Preconditions only, and ``goal_state_checks`` deliberately not.** A goal check reading
+    an unregistered path is a real defect — it scores the subject down for a state nobody
+    wrote — but it is caught statically, by the conformance kit's vocabulary check and by the
+    authoring gate, where it can be reported without making a stored template unreadable. A
+    host part-way through registering its carriers has goal checks over paths no dimension
+    speaks for yet, and refusing to load them would refuse the corpus rather than the defect.
+
+    Args:
+        template: The stored template being used.
+        world: The host's world registry, or None when the host declares no world at
+            all. None is not an empty registry: it says this host instantiates nothing, so
+            "the registry no longer has it" is a question with no subject. Whether a template
+            may presume a world on such a host is the authoring gate's to answer, through
+            ``HostProfile.representable``, which calls it inapplicable rather than uncovered.
+
+    Returns:
+        The preconditions in declaration order — what a run asserts before the first turn.
+
+    Raises:
+        ValueError: A precondition reads a path no declared dimension covers. Its callers
+            translate it — an untranslated ``ValueError`` reaches an operator as a 500 with
+            no message, which is the opposite of failing loudly.
+    """
+    if world is None or not template.preconditions:
+        return list(template.preconditions)
+    unresolved = [
+        f"{path!r} (presuming {precondition.presumes!r})"
+        for precondition in template.preconditions
+        for path in precondition.presumed_paths
+        if world.resolve_path(path) is None
+    ]
+    if unresolved:
+        raise ValueError(
+            f"template {template.name!r} presumes world state this host does not declare: "
+            + "; ".join(unresolved)
+            + " — a dimension was removed or renamed, or the precondition names it wrongly"
+        )
+    return list(template.preconditions)
+
+
 __all__ = [
+    "resolve_preconditions",
     "Evidence",
     "TriggerKind",
     "Triggered",
     "When",
     "WorldCapability",
     "WorldDimension",
-    "WorldPlacement",
     "WorldRegistrationError",
     "WorldRegistry",
 ]

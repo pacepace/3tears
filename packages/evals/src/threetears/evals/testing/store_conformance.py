@@ -23,7 +23,7 @@ the kit's own scopes, and leaves what it wrote behind; every case but one writes
 ``doc_type`` values, and that one (``doc_types.every_engine_type_is_stored``) writes one document of
 each type the engine writes, so a store that routes documents by ``doc_type`` — a table per type —
 fails it for any type it has no route for. **When the engine adds a document type, that case is how an
-adopter's store learns of it**: the type joins :data:`~threetears.evals.contracts.storage.EVAL_DOC_TYPES`
+adopter's store learns of it**: the type joins :data:`~threetears.evals.contracts.models.EVAL_DOC_TYPES`
 and the case goes red until the store routes it.
 
 **What it cannot see.** Concurrency is checked only within one process, and only probabilistically:
@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any
 
-from threetears.evals.contracts.storage import EVAL_DOC_TYPES
+from threetears.evals.contracts.models import EVAL_DOC_TYPES
 from threetears.evals.contracts.store_port import DocumentStore, StoreConflict
 
 __all__ = [

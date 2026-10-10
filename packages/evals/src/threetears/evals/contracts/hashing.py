@@ -3,7 +3,7 @@
 A leaf on purpose: it imports nothing from :mod:`threetears.evals` and nothing from
 any host package, so both the identity predicates and the host contract can reach it without
 either importing the other. That mattered the moment a host-supplied value became
-content-addressed — :class:`~threetears.evals.contracts.host.sweepables.SweepableValue` hashes what a host
+content-addressed — :class:`~threetears.evals.contracts.host.values.SweepableValue` hashes what a host
 handed over, and :mod:`threetears.evals.contracts.identity` hashes what the engine composed from those
 values, so the two layers must agree byte-for-byte on what "the same content" means. One
 implementation is how they agree; two would be a drift nobody could see until two runs that

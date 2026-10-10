@@ -38,7 +38,7 @@ class _FakeStorage:
         self.test_cases.append(test_case)
 
 
-# parity-with: threetears.evals.contracts.provider.VariationLLM
+# parity-with: threetears.evals.contracts.completion.VariationLLM
 class _FakeLLM:
     """Returns a sequence of canned responses; records each call's args.
 
@@ -197,7 +197,7 @@ async def test_llm_axis_parses_json_object_response():
 
 async def test_llm_axis_uses_json_object_mode():
     """The axis generator opts into json_object structured output like its siblings."""
-    from threetears.evals.contracts.provider import JSON_OBJECT_RESPONSE_FORMAT
+    from threetears.evals.contracts.completion import JSON_OBJECT_RESPONSE_FORMAT
 
     template = _template(VariationAxis(name="x", generator="llm"))
     storage = _FakeStorage()
@@ -681,7 +681,7 @@ class _FakeThreadRecordingCaseStore(_FakeStorage):
         super().save_test_case(test_case)
 
 
-# parity-with: threetears.evals.contracts.out_of_run.OutOfRunSpendStore
+# parity-with: threetears.evals.contracts.out_of_run_spend.OutOfRunSpendStore
 class _FakeThreadRecordingLedger:
     """Records the thread each ledger write ran on."""
 
@@ -694,7 +694,7 @@ class _FakeThreadRecordingLedger:
         self.rows.append(spend)
 
 
-# parity-with: threetears.evals.contracts.provider.VariationLLM
+# parity-with: threetears.evals.contracts.completion.VariationLLM
 class _FakeThreadRecordingLLM(_FakeLLM):
     """Records the thread each model call ran on — the loop's, since the client is bound to it."""
 

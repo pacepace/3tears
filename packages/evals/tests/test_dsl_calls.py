@@ -13,12 +13,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from threetears.evals.contracts.goal_grammar import DSLError, extract_text_matches, parse
 from threetears.evals.contracts.dsl import (
-    DSLError,
     call_parameter_matches,
     evaluate,
-    extract_text_matches,
-    parse,
     undefined_call_references,
     world_prose_matches,
 )

@@ -88,7 +88,7 @@ class SoundnessRefusal(GenerationError):
     **The residual, stated rather than papered over.** That chokepoint reads exactly one
     signal — ``result.stop_reason`` against ``INCOMPLETE_STOP_REASONS`` — so it is only as
     good as the host's normalisation, and
-    :class:`~threetears.evals.contracts.provider.CompletionResult` documents the hole in its own words:
+    :class:`~threetears.evals.contracts.completion.CompletionResult` documents the hole in its own words:
     an implementation that passes a raw provider string through (OpenAI's ``length``, say)
     reads as finished here. Widening the repairable class made that residual more expensive,
     not less: such a result used to fail terminally at one billed call, because a parse

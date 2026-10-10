@@ -47,8 +47,8 @@ from threetears.evals.contracts.host.sweepables import (
     SHARED_CORE,
     Sweepable,
     SweepableRegistry,
-    SweepableValue,
 )
+from threetears.evals.contracts.host.values import SweepableValue
 from threetears.evals.contracts.identity import LeverCoordinateError, derive_variant_identity
 from threetears.evals.contracts.metrics import METRIC_DESCRIPTORS, MetricDescriptor
 from packages.evals.tests.fixtures.toyhost.corpus import (

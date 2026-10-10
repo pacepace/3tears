@@ -55,7 +55,7 @@ from threetears.evals.contracts.call_ledger import CallLedger
 from pydantic import Field
 
 from threetears.evals.contracts.base import EvalBaseModel
-from threetears.evals.contracts.dsl import (
+from threetears.evals.contracts.goal_grammar import (
     DSLError,
     extract_paths,
     reads_call_ledger,

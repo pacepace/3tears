@@ -40,10 +40,9 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ValidationError
 
 from threetears.evals.contracts.authoring_fields import reject_unknown_authoring_fields
+from threetears.evals.contracts.goal_grammar import DSLError, extract_paths
 from threetears.evals.contracts.dsl import (
-    DSLError,
     call_parameter_matches,
-    extract_paths,
     undefined_call_references,
     undefined_fire_references,
     world_prose_matches,
@@ -52,6 +51,7 @@ from threetears.evals.contracts.errors import ConflictError, NotFoundError, Stor
 from threetears.evals.contracts.host.eval_host import EvalHost
 from threetears.evals.contracts.host.kinds import freeze
 from threetears.evals.contracts.host.profile import HostProfile
+from threetears.evals.contracts.host.world import resolve_preconditions
 from threetears.evals.contracts.models import (
     CatalogRubricDim,
     EvalTemplate,
@@ -243,14 +243,14 @@ def refuse_stale_presumptions(template: EvalTemplate, *, profile: HostProfile) -
 
     Raises:
         ValidationFailedError: A precondition names a path no declared dimension covers.
-            Translated here rather than left as the model's ``ValueError`` — an untranslated
+            Translated here rather than left as the resolution's ``ValueError`` — an untranslated
             one reaches an operator as a 500 with no message, which is the opposite of failing
             loudly.
     """
     if not template.preconditions:
         return
     try:
-        template.resolve_preconditions(profile.world)
+        resolve_preconditions(template, profile.world)
     except ValueError as e:
         raise ValidationFailedError(str(e)) from e
 

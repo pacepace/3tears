@@ -139,7 +139,7 @@ def schema_nodes_at(schema: Mapping[str, Any], segments: tuple[str, ...]) -> tup
     Args:
         schema: The root schema — a world dimension's value schema, or an action's parameter schema.
         segments: What the expression addresses below the root, as
-            :attr:`threetears.evals.contracts.dsl.TextMatch.operand` spells it.
+            :attr:`threetears.evals.contracts.goal_grammar.TextMatch.operand` spells it.
 
     Returns:
         The addressed nodes, each a schema the position can take; empty where no shape describes the position

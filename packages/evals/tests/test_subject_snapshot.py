@@ -16,7 +16,8 @@ from pydantic import ValidationError
 
 from threetears.evals.contracts.hashing import bytes_digest, canonical_digest
 from threetears.evals.contracts.host.subject import SubjectSnapshot
-from threetears.evals.contracts.host.sweepables import IntervalScale, NominalScale, OrdinalScale, SweepableValue
+from threetears.evals.contracts.host.sweepables import IntervalScale, NominalScale, OrdinalScale
+from threetears.evals.contracts.host.values import SweepableValue
 
 
 class TestSweepableValueIdentity:

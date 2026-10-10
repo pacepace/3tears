@@ -61,7 +61,7 @@ from threetears.evals.contracts.errors import NotFoundError, ValidationFailedErr
 from threetears.evals.contracts.host import DEFAULT_PASS_THRESHOLD, EvalHost, pass_threshold_label
 from threetears.evals.contracts.metrics import measure_title
 from threetears.evals.contracts.models import EvalRun, EvalTemplate
-from threetears.evals.contracts.out_of_run import OutOfRunPurpose, OutOfRunSpend
+from threetears.evals.contracts.out_of_run_spend import OutOfRunPurpose, OutOfRunSpend
 from threetears.evals.contracts.scoring import CompositeBasis
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.runs import LaunchArguments

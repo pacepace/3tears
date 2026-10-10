@@ -62,7 +62,8 @@ from threetears.evals.contracts.models import (
     RubricDim,
     RubricScore,
 )
-from threetears.evals.contracts.provider import ProviderFailure, withhold_failure_detail
+from threetears.evals.contracts.completion import ProviderFailure
+from threetears.evals.contracts.provider import withhold_failure_detail
 from threetears.evals.run import estimate_judge_repeat, repeat_judge_scores
 from threetears.evals.run.judge import CANNOT_TELL, JUDGE_CALL_ATTEMPTS, JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import JudgeService

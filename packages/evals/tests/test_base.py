@@ -27,7 +27,7 @@ from threetears.evals.contracts.models import (
     JudgeConfigTombstone,
 )
 from threetears.evals.contracts.campaign import EvalSweep, SweepArmRecord
-from threetears.evals.contracts.out_of_run import OutOfRunSpend
+from threetears.evals.contracts.out_of_run_spend import OutOfRunSpend
 from threetears.evals.contracts.storage import EvalStorage
 from threetears.evals.contracts.identity import IDENTITY_VERSION
 from packages.evals.tests.factories import (

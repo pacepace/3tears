@@ -13,7 +13,7 @@ once it is, through the :class:`~threetears.evals.contracts.out_of_run.OutOfRunB
 **What arrives here is text.** The host renders the subject feed from its own subject, the
 catalog feed from its rubric-dim store, and the system prompt from its prompt registry — each
 for the axis it is proposing on — then hands this module the three strings and a
-:class:`~threetears.evals.contracts.provider.BoundCompletionClient`. So the proposer knows neither what
+:class:`~threetears.evals.contracts.completion.BoundCompletionClient`. So the proposer knows neither what
 a subject is nor where a prompt is kept, and every host drafts with the same code whatever its
 subject is.
 """
@@ -26,13 +26,15 @@ from pydantic import ValidationError
 
 from threetears.evals.contracts.errors import ValidationFailedError
 from threetears.evals.contracts.models import RubricAxis, RubricProposal
-from threetears.evals.contracts.out_of_run import OutOfRunSpend, PlannedCall
-from threetears.evals.contracts.provider import JSON_OBJECT_RESPONSE_FORMAT, extract_json
+from threetears.evals.contracts.out_of_run_spend import OutOfRunSpend
+from threetears.evals.contracts.out_of_run import PlannedCall
+from threetears.evals.contracts.completion import JSON_OBJECT_RESPONSE_FORMAT
+from threetears.evals.contracts.provider import extract_json
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
     from threetears.evals.contracts.out_of_run import OutOfRunBudget
-    from threetears.evals.contracts.provider import BoundCompletionClient
+    from threetears.evals.contracts.completion import BoundCompletionClient
 
 log = get_logger(__name__)
 

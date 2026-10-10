@@ -39,7 +39,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError,
 
 from threetears.evals.contracts.host.eval_host import EvalHost
 from threetears.evals.contracts.host.kinds import freeze
-from threetears.evals.contracts.host.world import WorldPlacement
+from threetears.evals.contracts.models import WorldPlacement
 
 from threetears.evals.contracts.arguments import normalize_blank
 from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
@@ -98,7 +98,7 @@ if TYPE_CHECKING:
     from threetears.evals.contracts.host.subject import SubjectSnapshot
     from threetears.evals.contracts.host.sweepables import SweepableRegistry
     from threetears.evals.contracts.models import EvalTemplate, JudgeConfig, VariationCounts
-    from threetears.evals.contracts.provider import PricedCompletion
+    from threetears.evals.contracts.completion import PricedCompletion
     from threetears.evals.contracts.scoring import CellSummary
     from threetears.evals.contracts.storage import DefinitionStore
     from threetears.evals.contracts.usage_capture import ExternalRateTable

@@ -117,7 +117,7 @@ from threetears.evals.contracts.models import (
     SimulatorPurpose,
     WorldRound,
 )
-from threetears.evals.contracts.provider import SimulatorLLM
+from threetears.evals.contracts.completion import SimulatorLLM
 from threetears.evals.contracts.world_events import WorldEvent
 from threetears.evals.contracts.usage_capture import CallUsage, RoleUsageLedger
 

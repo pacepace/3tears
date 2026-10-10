@@ -464,6 +464,8 @@ The engine's contracts: the stored shapes, and the vocabulary every other packag
   <br>`'rig'` | `'world'`
 - **`WorldEventKind`** · literal · What moved the world: a triggered dimension's condition, by its trigger kind, or ambient perturbation.
   <br>`'turn'` | `'event'` | `'human'` | `'ambient'`
+- **`WorldPlacement`** · literal · What a RUN did with a dimension, computed from that run's own record and nothing else.
+  <br>`'representable'` | `'judge_only'` | `'witnessed'` | `'out_of_play'`
 
 **Constants**
 
@@ -579,6 +581,8 @@ The host contract — what a consuming product declares, and what the engine nev
   <br>`pass_threshold_label(k: int | None, threshold: int) -> str`
 - **`require_resolved_colour`** · function · The palette's one colour check: `value` is resolved sRGB hex (`#rrggbb`), or a refusal.
   <br>`require_resolved_colour(where: str, value: object) -> str`
+- **`resolve_preconditions`** · function · Refuse a template's presumption naming a dimension this host's world does not declare.
+  <br>`resolve_preconditions(template: EvalTemplate, world: WorldRegistry | None) -> list[Precondition]`
 - **`schema_violations`** · function · Every way `value` fails `schema`, each naming the path it fails at.
   <br>`schema_violations(schema: Mapping[str, Any], value: Any, *, at: str) -> list[str]`
 - **`served_models_by_score`** · function · Who scored each of one result's stored scores, as the provider named it — `None` where it did not.
@@ -686,8 +690,6 @@ The host contract — what a consuming product declares, and what the engine nev
   <br>`Literal['initial'] | Triggered`
 - **`WorldCapability`** · literal · What a run can do with a dimension, computed from its registration and nothing else.
   <br>`'representable'` | `'judge_only'` | `'witnessed'`
-- **`WorldPlacement`** · literal · What a RUN did with a dimension, computed from that run's own record and nothing else.
-  <br>`'representable'` | `'judge_only'` | `'witnessed'` | `'out_of_play'`
 
 **Constants**
 

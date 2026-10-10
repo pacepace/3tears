@@ -112,7 +112,7 @@ that lands after the declaration with nobody classifying it leaves the canary pa
 proves only that it is not looking — so the completeness test below refuses an unclassified
 module. Three classifications are worth their reasons:
 
-- ``contracts/provider.py`` — **shared contract, declared.** It is the extraction seam's own port:
+- ``contracts/completion.py`` and ``contracts/provider.py`` — **shared contract, declared.** They are the extraction seam's own port:
   the completion protocol every eval consumer is constructed with, plus the provider
   trivia the host's LLM layer used to own. A second consumer implements
   ``CompletionClient`` and inherits the rest verbatim, so nothing in it may name a host.
@@ -215,6 +215,8 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # Named, versioned case sets: engine vocabulary for which cases a launch targets.
     "run/case_sets.py",
     "contracts/dsl.py",
+    # The goal grammar, the static half the stored template validates through.
+    "contracts/goal_grammar.py",
     # The model-prose marker. Shared contract by construction: the models above
     # declare their prose fields with it and `dsl.py` reads its schema helpers.
     "contracts/prose.py",
@@ -244,6 +246,8 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # so a host noun reaching here reaches every key and every bundle at once.
     "contracts/hashing.py",
     "contracts/provider.py",
+    # The completion port itself, split from how the engine reads what it returns.
+    "contracts/completion.py",
     "run/fidelity.py",
     # The criteria judge. It left the host-coupled set when its last host reach went: the JSON
     # parser it calls now lives in contracts, and it logs under its own module name rather than the
@@ -257,6 +261,7 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # model is the host's word carried as data, so a host noun here would be one host's rate or model
     # written into the cap every host's generation is held to.
     "contracts/out_of_run.py",
+    "contracts/out_of_run_spend.py",
     # How the engine hands a blocking call to an executor its host chooses, and waits through a
     # cancellation on one — here because the shared contract's own coroutines (the out-of-run ledger,
     # case generation, an analysis attempt) make store calls. A host noun here would be the engine

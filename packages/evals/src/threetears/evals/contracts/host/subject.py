@@ -10,7 +10,7 @@ live round-trip contract against that host's running component. Every consumer t
 Two rules shape what replaced it.
 
 **The snapshot holds identity, never content.** :attr:`SubjectSnapshot.components` maps a
-host-registered name to a :class:`~threetears.evals.contracts.host.sweepables.SweepableValue`, which carries a
+host-registered name to a :class:`~threetears.evals.contracts.host.values.SweepableValue`, which carries a
 content *hash*. A snapshot that stored the component text instead would grow with whatever the
 candidate produced — carried memory, accumulated notes — and an eval run's retention must be
 bounded by its matrix, never by what it observed. So the subject's prose is addressable from here
@@ -50,7 +50,7 @@ from datetime import UTC, datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from threetears.evals.contracts.host.sweepables import SweepableValue
+from threetears.evals.contracts.host.values import SweepableValue
 
 
 def _now_iso() -> str:

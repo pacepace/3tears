@@ -21,7 +21,8 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from threetears.evals.contracts import EvalRun, EvalStorage, NotFoundError, WorldSeed
-from threetears.evals.contracts.host import CompletionClients, HostProfile, TraceSink, WorldPlacement
+from threetears.evals.contracts.host import CompletionClients, HostProfile, TraceSink
+from threetears.evals.contracts import WorldPlacement
 from threetears.evals.run import (
     ArmPlan,
     CellExecutor,

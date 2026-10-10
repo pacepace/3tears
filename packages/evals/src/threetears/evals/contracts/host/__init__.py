@@ -87,7 +87,7 @@ from threetears.evals.contracts.host.values import (
     ProductionFooting,
     SweepableValue,
 )
-from threetears.evals.contracts.host.world import Triggered, WorldDimension, WorldRegistry
+from threetears.evals.contracts.host.world import Triggered, WorldDimension, WorldRegistry, resolve_preconditions
 from threetears.evals.contracts.host.world_schema import UnsupportedSchemaError, nested_schemas, schema_violations
 from threetears.evals.contracts.host.world_conformance import (
     CheckName,
@@ -123,14 +123,7 @@ from threetears.evals.contracts.host.sweepables import (
     SweepableRole,
 )
 from threetears.evals.contracts.host.values import OrdinalScale, Scale
-from threetears.evals.contracts.host.world import (
-    Evidence,
-    TriggerKind,
-    When,
-    WorldCapability,
-    WorldPlacement,
-    WorldRegistrationError,
-)
+from threetears.evals.contracts.host.world import Evidence, TriggerKind, When, WorldCapability, WorldRegistrationError
 from threetears.evals.contracts.host.world_seed import SeedRefusalKind
 from threetears.evals.contracts.schema_nesting import NestedSchema
 
@@ -218,9 +211,9 @@ __all__ = [
     "WorldConformanceError",
     "WorldConformanceReport",
     "WorldDimension",
-    "WorldPlacement",
     "WorldRegistrationError",
     "WorldRegistry",
+    "resolve_preconditions",
     "check_seed",
     "check_world_conformance",
     "default_cell_timeout",

@@ -71,7 +71,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts.hashing import canonical_digest
-from threetears.evals.contracts.host.sweepables import SweepableValue
+from threetears.evals.contracts.host.values import SweepableValue
 from threetears.evals.contracts.models import ContextComponents
 
 if TYPE_CHECKING:

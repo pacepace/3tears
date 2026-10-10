@@ -105,10 +105,10 @@ from threetears.evals.contracts.host import (
     SweepableRegistry,
     SweepableValue,
     TraceSink,
-    WorldPlacement,
     WorldRegistry,
     default_cell_timeout,
 )
+from threetears.evals.contracts import WorldPlacement
 from threetears.evals.contracts.host.sweepables import CORE_ROLES, CORE_SWEEPABLES
 from threetears.evals.ops.summary import CaseResult, EvalSummary, summarize_run
 from threetears.evals.run import (

@@ -54,10 +54,10 @@ from threetears.evals.contracts.offload import run_blocking
 from threetears.evals.contracts.out_of_run import (
     AdmittedCall,
     OutOfRunBudget,
-    OutOfRunSpend,
     existing_axis_values,
     plan_variation_calls,
 )
+from threetears.evals.contracts.out_of_run_spend import OutOfRunSpend
 from threetears.evals.contracts.provider import extract_json
 from threetears.observe import get_logger
 
@@ -65,7 +65,7 @@ if TYPE_CHECKING:
     from concurrent.futures import Executor
 
     from threetears.evals.contracts.storage import EvalStorage
-    from threetears.evals.contracts.provider import VariationLLM
+    from threetears.evals.contracts.completion import VariationLLM
 
 log = get_logger(__name__)
 

@@ -2,7 +2,7 @@
 
 ``contains()`` keeps membership over structured values; a substring or equality test over text a
 model wrote is what an authoring gate refuses. The language reports the comparisons
-(:func:`~threetears.evals.contracts.dsl.extract_text_matches`); the host's vocabulary says which read prose
+(:func:`~threetears.evals.contracts.goal_grammar.extract_text_matches`); the host's vocabulary says which read prose
 (:func:`~threetears.evals.contracts.dsl.world_prose_matches`). Each refusal below has its accepted sibling on
 the SAME registry, so an inverted rule cannot pass.
 """
@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import pytest
 
-from threetears.evals.contracts import dsl as _dsl
-from threetears.evals.contracts.dsl import DSLError, extract_text_matches, world_prose_matches
+from threetears.evals.contracts import goal_grammar as _grammar
+from threetears.evals.contracts.goal_grammar import DSLError, extract_text_matches
+from threetears.evals.contracts.dsl import world_prose_matches
 from threetears.evals.contracts.host.world import WorldDimension, WorldRegistry
 from threetears.evals.contracts.prose import PROSE_SCHEMA_KEY, schema_is_prose, schema_nodes_at
 
@@ -134,10 +135,10 @@ class TestAShapeListIsReadThroughEveryShape:
 class TestTheExtractor:
     def test_every_documented_example_is_walkable(self):
         """The whole taught surface runs through the text-match walker without raising."""
-        assert _dsl.__doc__
+        assert _grammar.__doc__
         examples = [
             line.strip().split("#", 1)[0].strip()
-            for line in _dsl.__doc__.splitlines()
+            for line in _grammar.__doc__.splitlines()
             if line.startswith("    ") and line.strip() and not line.strip().startswith(("*", "-"))
         ]
         walked = 0

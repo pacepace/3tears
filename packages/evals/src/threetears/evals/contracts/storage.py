@@ -40,6 +40,7 @@ from threetears.evals.contracts.campaign import EvalAnalysis, EvalAnalysisAttemp
 from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts.errors import ConflictError, StorageError
 from threetears.evals.contracts.models import (
+    EVAL_DOC_TYPES,
     NON_TERMINAL_RUN_STATUSES,
     CalibrationRating,
     CassetteKey,
@@ -60,7 +61,7 @@ from threetears.evals.contracts.models import (
     case_set_doc_id,
     eval_trace_doc_id,
 )
-from threetears.evals.contracts.out_of_run import OutOfRunPurpose, OutOfRunSpend, OutOfRunSpendStore
+from threetears.evals.contracts.out_of_run_spend import OutOfRunPurpose, OutOfRunSpend, OutOfRunSpendStore
 from threetears.evals.contracts.store_port import DocumentStore, StoreConflict
 from threetears.observe import get_logger
 
@@ -95,34 +96,6 @@ class NonTerminalRunScan(NamedTuple):
     ``scanned`` arithmetic, because a run nothing can read is precisely the one
     an operator most needs counted.
     """
-
-
-#: Every ``doc_type`` the engine writes — the set the operator wipe sweeps.
-#:
-#: Exactly the engine's own types. A host's documents in the same store are the host's to name, and
-#: reach the wipe as ``EvalStorage(host_doc_types=...)`` rather than by an edit here. A type added
-#: to the schema and not to this tuple leaves documents behind that an operator was told were gone,
-#: which ``tests/test_storage_one_store.py`` pins against the model graph.
-EVAL_DOC_TYPES = (
-    "eval_template",
-    "judge_config",
-    "rubric_dim",
-    "rubric_dim_tombstone",
-    "judge_config_tombstone",
-    "eval_campaign",
-    "eval_analysis",
-    "eval_analysis_attempt",
-    "eval_insight",
-    "eval_run",
-    "eval_result",
-    "eval_trace",
-    "eval_test_case",
-    "eval_cassette",
-    "calibration_rating",
-    "eval_out_of_run_spend",
-    "case_set",
-    "eval_sweep",
-)
 
 
 def save_document(repo: DocumentStore, document: dict[str, Any], *, if_match: str | None = None) -> None:
@@ -1690,7 +1663,6 @@ if TYPE_CHECKING:
 
 
 __all__ = [
-    "EVAL_DOC_TYPES",
     "CaseSetStore",
     "CassetteStore",
     "DefinitionStore",

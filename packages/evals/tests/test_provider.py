@@ -14,12 +14,14 @@ from typing import get_args
 
 import pytest
 
-from threetears.evals.contracts.provider import (
+from threetears.evals.contracts.completion import (
     COMPLETION_RESULT_ATTRIBUTES,
-    INCOMPLETE_STOP_REASONS,
     JSON_OBJECT_RESPONSE_FORMAT,
     USAGE_LEDGER_ATTRIBUTES,
     StopReason,
+)
+from threetears.evals.contracts.provider import (
+    INCOMPLETE_STOP_REASONS,
     describe_incomplete_completion,
     extract_json,
     extract_json_array,

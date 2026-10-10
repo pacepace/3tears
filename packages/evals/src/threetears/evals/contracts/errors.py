@@ -87,7 +87,7 @@ class ProviderRefusedError(EvalServiceError):
     """A paid provider call made on the caller's behalf raised (status 502).
 
     Raised for a failure whose payload the host's
-    :class:`~threetears.evals.contracts.provider.ProviderFailureDescriber` withheld — a provider
+    :class:`~threetears.evals.contracts.completion.ProviderFailureDescriber` withheld — a provider
     status error in its chain, or no describer able to say otherwise, since that fallback withholds all;
     a defect or a transport failure propagates as itself, so this status and code never point
     an operator at a provider for a fault that is not the provider's. The message is that

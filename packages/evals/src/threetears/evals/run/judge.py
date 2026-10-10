@@ -10,7 +10,7 @@ This module holds the callable that code outside the rubric judge depends on:
 
 **This is engine, and a host calling it is a host using the engine's public API**.
 It is constructed with the injected
-:class:`~threetears.evals.contracts.provider.CompletionClient` rather than building one, takes
+:class:`~threetears.evals.contracts.completion.CompletionClient` rather than building one, takes
 prompts and criteria as plain data, returns eval's own
 :class:`~threetears.evals.contracts.usage_capture.CallUsage`, and names no host concept. The
 in-package caller is what forecloses the alternative rather than merely arguing
@@ -36,9 +36,8 @@ from threetears.evals.contracts.models import (
     ClientRequestSettings,
     JudgeTemperature,
 )
+from threetears.evals.contracts.completion import JSON_OBJECT_RESPONSE_FORMAT, ProviderFailureDescriber
 from threetears.evals.contracts.provider import (
-    JSON_OBJECT_RESPONSE_FORMAT,
-    ProviderFailureDescriber,
     describe_and_log_failure,
     describe_incomplete_completion,
     extract_json,
@@ -311,7 +310,7 @@ async def run_judge_llm(
 
     Args:
         client: LLM client with an async ``generate(system=..., user=...)``
-            method returning a :class:`~threetears.evals.contracts.provider.CompletionResult`:
+            method returning a :class:`~threetears.evals.contracts.completion.CompletionResult`:
             ``content``, ``input_tokens``, ``output_tokens``, ``cost_usd``,
             ``model``, ``served_model``, ``reasoning_tokens`` and the normalized ``stop_reason``.
         system_prompt: System prompt for the judge.
@@ -516,7 +515,7 @@ async def run_judge_llm(
 def sent_temperature(completion: Any) -> JudgeTemperature | None:
     """The temperature a judge completion was actually sent at, as its client reports it (#633).
 
-    Read off :attr:`~threetears.evals.contracts.provider.CompletionResult.temperature`, which the client
+    Read off :attr:`~threetears.evals.contracts.completion.CompletionResult.temperature`, which the client
     sets to what its request carried — ``None`` when it sent none, as it must for a model that refuses a
     temperature. The engine asks every judge call for :data:`~threetears.evals.contracts.models.DEFAULT_JUDGE_TEMPERATURE`
     unless a config says otherwise, and never assumes the request was honoured.

@@ -13,11 +13,8 @@ import logging
 from pathlib import Path
 
 
-from threetears.evals.contracts.provider import (
-    ProviderFailure,
-    describe_and_log_failure,
-    log_provider_failure,
-)
+from threetears.evals.contracts.completion import ProviderFailure
+from threetears.evals.contracts.provider import describe_and_log_failure, log_provider_failure
 
 
 _REPO = Path(__file__).resolve().parents[1] / "src"

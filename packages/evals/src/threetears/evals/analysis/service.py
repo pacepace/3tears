@@ -79,7 +79,7 @@ if TYPE_CHECKING:
     from threetears.evals.contracts.host.eval_host import EvalHost
     from concurrent.futures import Executor
 
-    from threetears.evals.contracts.provider import BoundCompletionClient, CompletionResult
+    from threetears.evals.contracts.completion import BoundCompletionClient, CompletionResult
 
 log = get_logger(__name__)
 

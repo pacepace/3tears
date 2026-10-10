@@ -18,7 +18,8 @@ import pytest
 from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.run.jobs import EvalJobManager
 from threetears.evals.run.lifecycle import sweep_abandoned_runs
-from threetears.evals.contracts.storage import EVAL_DOC_TYPES, EvalStorage
+from threetears.evals.contracts.models import EVAL_DOC_TYPES
+from threetears.evals.contracts.storage import EvalStorage
 
 from packages.evals.tests.factories import (
     make_analysis,

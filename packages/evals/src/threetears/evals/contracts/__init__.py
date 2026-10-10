@@ -59,12 +59,8 @@ from threetears.evals.contracts.declaration import (
     refuse_an_undeclarable_design,
     resolve_bar_name,
 )
-from threetears.evals.contracts.dsl import (
-    NOT_ESTABLISHED,
-    DSLError,
-    extract_paths,
-    referenced_actions,
-)
+from threetears.evals.contracts.dsl import NOT_ESTABLISHED
+from threetears.evals.contracts.goal_grammar import DSLError, extract_paths, referenced_actions
 from threetears.evals.contracts.evidence_tiers import (
     CALIBRATION_MIN_AGREEMENT,
     CALIBRATION_MIN_RESULTS,
@@ -192,18 +188,20 @@ from threetears.evals.contracts.models import (
 from threetears.evals.contracts.out_of_run import (
     AdmittedCall,
     OutOfRunBudget,
-    OutOfRunOutcome,
-    OutOfRunPurpose,
-    OutOfRunSpend,
-    OutOfRunSpendStore,
     PlannedCall,
     RecordedCompletion,
     existing_axis_values,
     plan_variation_calls,
 )
+from threetears.evals.contracts.out_of_run_spend import (
+    OutOfRunOutcome,
+    OutOfRunPurpose,
+    OutOfRunSpend,
+    OutOfRunSpendStore,
+)
 from threetears.evals.contracts.prompts.seed import KIND_TEMPLATE, KIND_TEXT, SeedPrompt, SeedSection, SeedTemplate
 from threetears.evals.contracts.prose import PROSE_SCHEMA_KEY
-from threetears.evals.contracts.provider import (
+from threetears.evals.contracts.completion import (
     BoundCompletionClient,
     CompletionClient,
     PricedCompletion,
@@ -212,6 +210,8 @@ from threetears.evals.contracts.provider import (
     RequestCeiling,
     SimulatorLLM,
     VariationLLM,
+)
+from threetears.evals.contracts.provider import (
     describe_and_log_failure,
     extract_json,
     extract_json_array,
@@ -236,8 +236,8 @@ from threetears.evals.contracts.scoring import (
     summarize_completeness,
 )
 from threetears.evals.contracts.spend import ExternalRateTable
+from threetears.evals.contracts.models import EVAL_DOC_TYPES, WorldPlacement
 from threetears.evals.contracts.storage import (
-    EVAL_DOC_TYPES,
     CaseSetStore,
     CassetteStore,
     DefinitionStore,
@@ -320,7 +320,7 @@ from threetears.evals.contracts.declaration import (
     Question,
     SweptAxis,
 )
-from threetears.evals.contracts.dsl import ExtractedPaths
+from threetears.evals.contracts.goal_grammar import ExtractedPaths
 from threetears.evals.contracts.identity import DerivedContextIdentity, DerivedVariantIdentity, LeverCoordinateError
 from threetears.evals.contracts.judge_attribution import JudgeAttributionState
 from threetears.evals.contracts.metrics import (
@@ -369,13 +369,13 @@ from threetears.evals.contracts.models import (
     UsageRole,
     VariationAxis,
 )
-from threetears.evals.contracts.provider import (
+from threetears.evals.contracts.completion import (
     CompletionGenerator,
     CompletionResult,
-    INCOMPLETE_STOP_REASONS,
     JSON_OBJECT_RESPONSE_FORMAT,
     StopReason,
 )
+from threetears.evals.contracts.provider import INCOMPLETE_STOP_REASONS
 from threetears.evals.contracts.result_condition import JudgingState
 from threetears.evals.contracts.storage import NonTerminalRunScan
 from threetears.evals.contracts.store_port import keep_fields, omit_paths
@@ -406,6 +406,7 @@ __all__ = [
     "DEFAULT_JUDGE_TEMPERATURE",
     "DEFAULT_LAUNCH_K_RUNS",
     "EVAL_DOC_TYPES",
+    "WorldPlacement",
     "EVAL_SCHEMA_VERSION",
     "IDENTITY_VERSION",
     "INCOMPLETE_STOP_REASONS",

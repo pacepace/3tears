@@ -75,13 +75,8 @@ from threetears.evals.contracts.cassettes import CellCassettes
 from threetears.evals.contracts.hashing import canonical_digest
 from threetears.evals.contracts.host.eval_host import EvalHost
 from threetears.evals.contracts.models import DimName, EvalTestCase, JudgedArtifact, JudgeEvidence, RubricDim
-from threetears.evals.contracts.provider import (
-    CompletionGenerator,
-    CompletionResult,
-    RequestCeiling,
-    describe_failure,
-    log_provider_failure,
-)
+from threetears.evals.contracts.completion import CompletionGenerator, CompletionResult, RequestCeiling
+from threetears.evals.contracts.provider import describe_failure, log_provider_failure
 from threetears.evals.contracts.usage_capture import CallUsage, RoleUsageLedger
 from threetears.observe import get_logger
 

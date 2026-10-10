@@ -14,7 +14,8 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.evals.contracts import CallLedger, DSLError, EvalTemplate, WorldSeed
-from threetears.evals.contracts.dsl import evaluate, reads_call_ledger
+from threetears.evals.contracts.dsl import evaluate
+from threetears.evals.contracts.goal_grammar import reads_call_ledger
 from threetears.evals.contracts.models import WORLD_SPEAKER, ConversationSpec, ConversationStopCause, WorldRound
 from threetears.evals.contracts.world_session import WorldSession
 from threetears.evals.run import drive_conversation

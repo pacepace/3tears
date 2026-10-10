@@ -79,7 +79,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, NamedTuple
 
-from threetears.evals.contracts.dsl import DSLError, extract_paths
+from threetears.evals.contracts.goal_grammar import DSLError, extract_paths
 from threetears.evals.contracts.host.world import Triggered, WorldDimension, WorldRegistry
 from threetears.evals.contracts.host.world_schema import UnsupportedSchemaError, honoured_kind, json_equal
 

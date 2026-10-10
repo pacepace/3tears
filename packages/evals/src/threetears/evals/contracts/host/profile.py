@@ -90,12 +90,8 @@ from threetears.evals.contracts.host.bars import BarRegistry
 from threetears.evals.contracts.host.kinds import KindContract
 from threetears.evals.contracts.host.measures import MeasureRegistry
 from threetears.evals.contracts.host.style import StyleProfile
-from threetears.evals.contracts.host.sweepables import (
-    CANDIDATE_KIND_LEVER,
-    CANDIDATE_MODEL_LEVER,
-    SweepableRegistry,
-    SweepableValue,
-)
+from threetears.evals.contracts.host.sweepables import CANDIDATE_KIND_LEVER, CANDIDATE_MODEL_LEVER, SweepableRegistry
+from threetears.evals.contracts.host.values import SweepableValue
 from threetears.evals.contracts.host.world import WorldRegistry
 from threetears.observe import get_logger
 

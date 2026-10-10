@@ -6,7 +6,7 @@ construction-memoization). **Calls may run concurrently on one cached client** â
 the runner gathers a result's ``2 + N`` calls under ``eval.judge_concurrency`` â€”
 which is sound only because the port requires each ``generate()`` to build its
 own request rather than share instance state
-(:class:`~threetears.evals.contracts.provider.CompletionClient`); the runner was once serial
+(:class:`~threetears.evals.contracts.completion.CompletionClient`); the runner was once serial
 for exactly the want of that guarantee.
 
 Three scoring entry points:
@@ -68,7 +68,7 @@ from threetears.evals.contracts.models import (
     UsageRole,
 )
 from threetears.evals.contracts.host.eval_host import CompletionClients
-from threetears.evals.contracts.provider import BoundCompletionClient, ProviderFailureDescriber
+from threetears.evals.contracts.completion import BoundCompletionClient, ProviderFailureDescriber
 from threetears.evals.contracts.usage_capture import CallUsage, RoleUsageLedger, blended_cost
 from threetears.evals.run.judge import CANNOT_TELL, run_judge_llm
 from threetears.observe import get_logger

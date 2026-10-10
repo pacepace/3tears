@@ -2801,7 +2801,7 @@ async def judge_dims(
     no call reads another's output. The judge client builds each request locally, which
     is what makes gathering on the one client the service caches per ``(model,
     temperature)`` sound; the port states the requirement
-    (:class:`~threetears.evals.contracts.provider.CompletionClient`). ``concurrency=1`` reproduces a
+    (:class:`~threetears.evals.contracts.completion.CompletionClient`). ``concurrency=1`` reproduces a
     serial phase exactly.
 
     The order is DIMENSION order — transcript axis, outcome axis, then ``template.rubric``

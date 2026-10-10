@@ -46,8 +46,9 @@ from threetears.evals.contracts.models import (
     RepeatedScore,
 )
 from threetears.evals.contracts.offload import run_blocking
-from threetears.evals.contracts.out_of_run import AdmittedCall, OutOfRunBudget, OutOfRunPurpose, PlannedCall
-from threetears.evals.contracts.provider import JSON_OBJECT_RESPONSE_FORMAT
+from threetears.evals.contracts.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
+from threetears.evals.contracts.out_of_run_spend import OutOfRunPurpose
+from threetears.evals.contracts.completion import JSON_OBJECT_RESPONSE_FORMAT
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS
 from threetears.evals.run.judge_service import JudgeService, judge_clients_for_run
 from threetears.evals.run.rejudge import (
@@ -62,7 +63,7 @@ from threetears.observe import get_logger
 if TYPE_CHECKING:
     from threetears.evals.contracts.host.eval_host import EvalHost
     from threetears.evals.contracts.models import JudgeConfig
-    from threetears.evals.contracts.provider import BoundCompletionClient, CompletionResult
+    from threetears.evals.contracts.completion import BoundCompletionClient, CompletionResult
     from threetears.evals.contracts.storage import EvalStorage
     from threetears.evals.run.judge_service import JudgeContext, JudgeOutcome, JudgeRequest
 

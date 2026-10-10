@@ -42,7 +42,8 @@ from threetears.evals.contracts import (
     omit_paths,
     resolve_variant_identity,
 )
-from threetears.evals.contracts.host import HostProfile, SubjectSnapshot, SweepableValue, WorldPlacement
+from threetears.evals.contracts.host import HostProfile, SubjectSnapshot, SweepableValue
+from threetears.evals.contracts import WorldPlacement
 from packages.evals.tests.fixtures.toyhost.kind import FIELD_ACCURACY, TOY_EXTRACTOR_KIND
 from packages.evals.tests.fixtures.toyhost.world import toyhost_world
 

@@ -86,7 +86,7 @@ class _Completion:
     content: str
 
 
-# parity-with: threetears.evals.contracts.provider.BoundCompletionClient
+# parity-with: threetears.evals.contracts.completion.BoundCompletionClient
 @dataclass
 class _FakeWriter:
     """A variation writer that answers with the toy host's document ids, naming the model it resolved to."""

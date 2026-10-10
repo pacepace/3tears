@@ -55,7 +55,7 @@ if TYPE_CHECKING:
     from threetears.evals.contracts.host.profile import HostProfile
     from threetears.evals.contracts.host.timeouts import CellTimeoutFactory
     from threetears.evals.contracts.host.traces import TraceSink
-    from threetears.evals.contracts.provider import BoundCompletionClient, ProviderFailureDescriber
+    from threetears.evals.contracts.completion import BoundCompletionClient, ProviderFailureDescriber
     from threetears.evals.contracts.storage import EvalStorage
 
 #: The apparatus roles the engine asks a host for a completion client in. ``judge`` scores a cell,
@@ -74,7 +74,7 @@ class CompletionClients(Protocol):
     """The host's completion-client factory: one client per role, model and temperature.
 
     The engine never builds a client and never names a provider. It asks the host for one bound to
-    a model, uses it, and releases it (:meth:`~threetears.evals.contracts.provider.CompletionClient.aclose`)
+    a model, uses it, and releases it (:meth:`~threetears.evals.contracts.completion.CompletionClient.aclose`)
     — so a client is built per unit of work, never cached here.
     """
 

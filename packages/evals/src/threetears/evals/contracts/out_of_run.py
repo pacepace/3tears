@@ -10,22 +10,23 @@ cap as their spend arrives (``EvalRunCostCap``); these happen before any run exi
 after the runs have ended, so nothing would bound or record them. This module is what does:
 
 * **Priced before the call.** :meth:`OutOfRunBudget.admit` asks the client what each planned call
-  can cost at most (:meth:`~threetears.evals.contracts.provider.PricedCompletion.price_ceiling` — the
+  can cost at most (:meth:`~threetears.evals.contracts.completion.PricedCompletion.price_ceiling` — the
   host's answer, since the engine knows neither a model's rates nor the output cap the client was
   built with) and refuses the whole set when the ceilings together would pass the cap, before any
   of them is made. Under an enforced cap a call the client cannot price is refused too: unknown is
   not $0.
 * **Ledgered after it.** :meth:`OutOfRunBudget.generate` makes an admitted call and writes one
-  :class:`OutOfRunSpend` document for it — what the provider reported, the ceiling it was admitted
+  :class:`~threetears.evals.contracts.out_of_run_spend.OutOfRunSpend` document for it — what the provider reported, the ceiling it was admitted
   at and the cap it was admitted under — whether the call returned or raised, because a raised
   call can have been billed too, and whether or not what the provider reported can be stored as
   reported: an attribute the ledger cannot hold (a raw provider stop reason, a negative count) is
   recorded as unreadable, never a reason to drop the row of a call that was paid for. What the ledger
-  reads off a completion is :class:`~threetears.evals.contracts.provider.CompletionResult`'s attributes,
+  reads off a completion is :class:`~threetears.evals.contracts.completion.CompletionResult`'s attributes,
   by those names — the one completion protocol the engine reads, whatever the client's shape.
 
-The ledger is a stored document type of its own (``eval_out_of_run_spend``) in the scope the work
-was for, keyed by nothing but its id: one document per call, never rewritten.
+The ledger is a stored document type of its own (``eval_out_of_run_spend``,
+:mod:`threetears.evals.contracts.out_of_run_spend`) in the scope the work was for, keyed by nothing but
+its id: one document per call, never rewritten.
 
 What a case generation's calls ARE is here too (:func:`plan_variation_calls`): the generation that
 makes them (:mod:`threetears.evals.gen`) and the battery that prices every template's generation before
@@ -39,150 +40,27 @@ import math
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Annotated, Any, Literal, NamedTuple, Protocol, Self
+from typing import TYPE_CHECKING, Annotated, Any, NamedTuple
 
-from pydantic import Field, TypeAdapter, ValidationError, field_validator, model_validator
-
-from threetears.evals.contracts.base import EvalDocumentModel
+from pydantic import TypeAdapter, ValidationError
 from threetears.evals.contracts.errors import ValidationFailedError
-from threetears.evals.contracts.offload import run_blocking
 from threetears.evals.contracts.models import (
-    EVAL_SCHEMA_VERSION,
     EvalTemplate,
     EvalTestCase,
-    SchemaVersion,
     VariationAxis,
-    utc_now_iso,
 )
-from threetears.evals.contracts.provider import JSON_OBJECT_RESPONSE_FORMAT, StopReason
+from threetears.evals.contracts.offload import run_blocking
+from threetears.evals.contracts.completion import JSON_OBJECT_RESPONSE_FORMAT
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
     from concurrent.futures import Executor
 
-    from threetears.evals.contracts.provider import PricedCompletion
+    from threetears.evals.contracts.completion import PricedCompletion
+
+from threetears.evals.contracts.out_of_run_spend import OutOfRunPurpose, OutOfRunSpend, OutOfRunSpendStore
 
 log = get_logger(__name__)
-
-#: What an out-of-run call was for: ``variation`` writes a launch's generated cases (an ``llm``
-#: variation axis's values), ``proposer`` drafts a rubric for operator review, ``analysis`` writes a
-#: campaign's analysis memo (its first call and the one repair round-trip a refused output buys), ``judge``
-#: repeats a finished run's judge scores to measure the judge's agreement with itself
-#: (:func:`~threetears.evals.run.repeat_judge_scores`), ``second_judge`` asks a judge other than the run's to score
-#: a finished run's evidence (:func:`~threetears.evals.run.ask_second_judge`) — measurement cost on its own line, never
-#: the candidate's. Each but ``second_judge`` is the :data:`~threetears.evals.contracts.host.CompletionRole` the host
-#: built the client in; a second judge's client is built in the ``judge`` role.
-OutOfRunPurpose = Literal["variation", "proposer", "analysis", "judge", "second_judge"]
-
-#: How an out-of-run call ended: it returned a completion, or it raised. A raised call is still a
-#: ledger row — the provider may have billed it — carrying no usage, since nothing reported any.
-OutOfRunOutcome = Literal["completed", "raised"]
-
-
-class OutOfRunSpend(EvalDocumentModel):
-    """One call the engine made outside any run, as it was admitted and as the provider reported it.
-
-    Written by :meth:`OutOfRunBudget.generate` for every call it makes, never rewritten. **Missing is
-    not zero**: a token count or a cost the provider did not report is ``None``, as on
-    :class:`~threetears.evals.contracts.models.RoleUsage`, and a raised call carries no usage at all.
-    """
-
-    doc_type: Literal["eval_out_of_run_spend"] = "eval_out_of_run_spend"
-    schema_version: SchemaVersion = EVAL_SCHEMA_VERSION
-    id: str = Field(default_factory=lambda: str(uuid.uuid7()))
-    scope_id: str = Field(min_length=1, description="The scope the work was for, which its ledger lives in.")
-    purpose: OutOfRunPurpose
-    model: str = Field(min_length=1, description="The model the client named — what the call was priced and asked as.")
-    served_model: str | None = Field(
-        default=None, description="The model the provider's response named as having answered; None when it named none."
-    )
-    outcome: OutOfRunOutcome
-    failure: str | None = Field(
-        default=None,
-        description=(
-            "For a raised call, the exception's class — never its text, which on some providers is the response "
-            "envelope with the account in it. None for a completed call."
-        ),
-    )
-    stop_reason: StopReason | None = Field(
-        default=None, description="Why a completed call stopped, normalised; None for a raised call."
-    )
-    prompt_tokens: int | None = Field(default=None, ge=0)
-    completion_tokens: int | None = Field(default=None, ge=0)
-    reasoning_tokens: int | None = Field(default=None, ge=0)
-    cost_usd: float | None = Field(
-        default=None, ge=0.0, description="What the call cost as reported; None when unpriced."
-    )
-    price_source: str | None = Field(default=None, description="Where cost_usd came from, as the client named it.")
-    unreadable: list[str] = Field(
-        default_factory=list,
-        description=(
-            "The attributes a completed call reported that could not be stored as reported — a raw provider stop "
-            "reason outside StopReason, a negative count — each recorded as None here. Never a reason to drop the "
-            "row: the call was paid for. Empty when every reported attribute was stored."
-        ),
-    )
-    priced_ceiling_usd: float | None = Field(
-        default=None,
-        ge=0.0,
-        description="The most the client said the call could cost, asked before it was made; None when it could not say.",
-    )
-    cap_usd: float | None = Field(
-        default=None,
-        gt=0.0,
-        description="The cap the call was admitted under; None when the host enforces no out-of-run cap.",
-    )
-    template_id: str | None = Field(default=None, description="The template the work was for, when it was for one.")
-    subject_id: str | None = Field(default=None, description="The subject the work was for, when it was for one.")
-    launch_group_id: str | None = Field(
-        default=None, description="The launch a case generation was made for; its runs carry the same group id."
-    )
-    campaign_id: str | None = Field(
-        default=None, description="The campaign an analysis generation was written for, when it was for one."
-    )
-    run_id: str | None = Field(
-        default=None, description="The finished run a judge repeat re-scored results of, when it was for one."
-    )
-    created_at: str = Field(default_factory=utc_now_iso)
-
-    @field_validator("doc_type")
-    @classmethod
-    def check_doc_type(cls, v: str) -> str:
-        """Reject documents loaded into the wrong model class."""
-        if v != "eval_out_of_run_spend":
-            raise ValueError(f"doc_type must be 'eval_out_of_run_spend', got '{v}'")
-        return v
-
-    @model_validator(mode="after")
-    def _outcome_decides_what_is_recorded(self) -> Self:
-        """Refuse a raised call carrying usage or naming no failure, and a completed one carrying a failure."""
-        if self.outcome == "raised":
-            reported = {
-                name: getattr(self, name)
-                for name in ("stop_reason", "prompt_tokens", "completion_tokens", "reasoning_tokens", "cost_usd")
-                if getattr(self, name) is not None
-            }
-            if self.unreadable:
-                reported["unreadable"] = self.unreadable
-            if reported:
-                raise ValueError(f"a raised call reported nothing, and this one carries {sorted(reported)}")
-            if not self.failure:
-                raise ValueError("a raised call names the exception's class in failure")
-        elif self.failure is not None:
-            raise ValueError("a completed call carries no failure")
-        return self
-
-
-class OutOfRunSpendStore(Protocol):
-    """The one write the out-of-run ledger makes.
-
-    Structural, so :class:`~threetears.evals.contracts.storage.EvalStorage` satisfies it by having the
-    method. Raises ``StorageError`` on a failed write rather than returning a flag.
-    """
-
-    def save_out_of_run_spend(self, spend: OutOfRunSpend, /) -> None:
-        """Write one ledger row."""
-        ...
 
 
 @dataclass(frozen=True)
@@ -513,7 +391,7 @@ class OutOfRunBudget:
 
 
 #: The ledger field each reported attribute of a completion is stored in, keyed by ledger field, valued by the
-#: :class:`~threetears.evals.contracts.provider.CompletionResult` attribute it is read from.
+#: :class:`~threetears.evals.contracts.completion.CompletionResult` attribute it is read from.
 _COMPLETION_ATTRIBUTES: dict[str, str] = {
     "served_model": "served_model",
     "stop_reason": "stop_reason",
@@ -571,10 +449,6 @@ def _storable(admitted: AdmittedCall, reported: dict[str, Any]) -> dict[str, Any
 __all__ = [
     "AdmittedCall",
     "OutOfRunBudget",
-    "OutOfRunOutcome",
-    "OutOfRunPurpose",
-    "OutOfRunSpend",
-    "OutOfRunSpendStore",
     "PlannedCall",
     "RecordedCompletion",
     "existing_axis_values",

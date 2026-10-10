@@ -48,7 +48,7 @@ measured by evaluating the reporter as a candidate, not by code here.
 
 **Closed dependency set.** The generator depends only on the bundle, the
 resolved prompt string, the host's profile, and an injected model-provider client (a
-:class:`~threetears.evals.contracts.provider.CompletionClient`) — never on the runner/simulator/world.
+:class:`~threetears.evals.contracts.completion.CompletionClient`) — never on the runner/simulator/world.
 The caller (the host's service layer) resolves the prompt from the registry, builds the client, and
 supplies the provenance id of the registry entry it resolved; keeping all three out of here is
 what makes a fresh, cheap unit test possible and the extraction seam clean.
@@ -127,12 +127,13 @@ from threetears.evals.contracts.host.profile import HostProfile
 from threetears.evals.contracts.host.style import prompt_fragment
 from threetears.evals.contracts.identity import IDENTITY_VERSION
 from threetears.evals.contracts.models import ClientRequestSettings, utc_now_iso
-from threetears.evals.contracts.provider import RequestCeiling, describe_incomplete_completion, extract_json
+from threetears.evals.contracts.completion import RequestCeiling
+from threetears.evals.contracts.provider import describe_incomplete_completion, extract_json
 from threetears.evals.contracts.surface import DecisionSurface
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:  # the model-provider PORT — a protocol, injected; never constructed here.
-    from threetears.evals.contracts.provider import CompletionGenerator, CompletionResult
+    from threetears.evals.contracts.completion import CompletionGenerator, CompletionResult
 
 log = get_logger(__name__)
 

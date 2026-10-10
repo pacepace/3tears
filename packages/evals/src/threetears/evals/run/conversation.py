@@ -37,7 +37,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from threetears.evals.contracts.candidate_kind import CellSink
 from threetears.evals.contracts.models import ConversationStopCause
 from threetears.evals.contracts.world_session import WorldSession
-from threetears.evals.contracts.provider import SimulatorLLM
+from threetears.evals.contracts.completion import SimulatorLLM
 from threetears.evals.run.simulator import CandidateTurn, SimulatorTurn, TurnDriver
 
 

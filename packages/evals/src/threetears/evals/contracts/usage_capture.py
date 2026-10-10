@@ -42,7 +42,8 @@ from typing import TYPE_CHECKING, Any, Literal
 from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts.host.spend import ExternalSpend
 from threetears.evals.contracts.models import CellTermination, RoleUsage, SimulatorPurpose, UsageRole
-from threetears.evals.contracts.provider import USAGE_LEDGER_ATTRIBUTES, sum_optional_tokens
+from threetears.evals.contracts.completion import USAGE_LEDGER_ATTRIBUTES
+from threetears.evals.contracts.provider import sum_optional_tokens
 from threetears.evals.contracts.spend import ExternalRateTable, reported_price_source
 from threetears.observe import get_logger
 
@@ -110,7 +111,7 @@ def blended_cost_roles(rate_table: ExternalRateTable | None) -> tuple[UsageRole,
 class CallUsage:
     """One LLM call's observed usage, for roles whose client result doesn't survive to the runner.
 
-    Field names deliberately mirror :class:`~threetears.evals.contracts.provider.CompletionResult` so
+    Field names deliberately mirror :class:`~threetears.evals.contracts.completion.CompletionResult` so
     both feed :meth:`RoleUsageLedger.add_llm_result` through the same duck type — the
     ledger's subset of that protocol, which also names what eval reads off a completion
     elsewhere (``content``, and the ``stop_reason`` a truncation is read from). ``cost_usd``
@@ -134,7 +135,7 @@ class CallUsage:
     price_source: str | None = None
     #: Provider calls folded into this usage — more than one when a caller retried and
     #: aggregated the attempts, all of which spent real tokens. The one attribute the ledger
-    #: reads that is not a :class:`~threetears.evals.contracts.provider.CompletionResult` member
+    #: reads that is not a :class:`~threetears.evals.contracts.completion.CompletionResult` member
     #: (:data:`CALL_USAGE_ONLY_ATTRIBUTES`): a completion is one call by definition, so the
     #: protocol has nothing to say here, and the ledger reads an absent one as 1.
     calls: int = 1
@@ -144,12 +145,12 @@ class CallUsage:
         """What one completion reports, read by the ledger's declared attribute names.
 
         For a caller that must hold a completion's spend past the completion itself (the simulator
-        keeps one per call). Read through :data:`~threetears.evals.contracts.provider.USAGE_LEDGER_ATTRIBUTES`,
+        keeps one per call). Read through :data:`~threetears.evals.contracts.completion.USAGE_LEDGER_ATTRIBUTES`,
         so this and :meth:`RoleUsageLedger.add_llm_result` cannot read different names; an attribute the
         completion lacks reads as unreported, never zero.
 
         Args:
-            completion: A :class:`~threetears.evals.contracts.provider.CompletionResult`-shaped object.
+            completion: A :class:`~threetears.evals.contracts.completion.CompletionResult`-shaped object.
 
         Returns:
             One call's usage.
@@ -161,7 +162,7 @@ class CallUsage:
 
 
 #: The attributes :meth:`RoleUsageLedger.add_llm_result` reads beyond
-#: :data:`~threetears.evals.contracts.provider.USAGE_LEDGER_ATTRIBUTES` — declared on :class:`CallUsage`
+#: :data:`~threetears.evals.contracts.completion.USAGE_LEDGER_ATTRIBUTES` — declared on :class:`CallUsage`
 #: alone. See :attr:`CallUsage.calls`.
 CALL_USAGE_ONLY_ATTRIBUTES: tuple[str, ...] = ("calls",)
 
@@ -323,7 +324,7 @@ class RoleUsageLedger:
         satisfying their narrow client protocols, and test doubles legitimately supply only
         the fields they exercise. An absent ``reasoning_tokens`` attribute is the same
         statement as an unreported one — unknown, not zero. The names read are declared once
-        (:data:`~threetears.evals.contracts.provider.USAGE_LEDGER_ATTRIBUTES`, plus
+        (:data:`~threetears.evals.contracts.completion.USAGE_LEDGER_ATTRIBUTES`, plus
         :data:`CALL_USAGE_ONLY_ATTRIBUTES`), and a host checks its completion type against them with
         :func:`~threetears.evals.testing.check_completion_conformance`, because the defensive read is
         also what would make a renamed attribute degrade every row to "unreported" in silence.
