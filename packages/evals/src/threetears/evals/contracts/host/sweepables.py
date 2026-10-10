@@ -349,7 +349,7 @@ class Sweepable:
 
     :attr:`acts_on`'s per-member form (#585). A family's members are distinct knobs, so no one name
     speaks for all of them; a host that knows what ONE of them does says so under that member's
-    lever name — the name the family's :attr:`read` resolves it under (``persona.tool_configs.research.max_search_calls``).
+    lever name — the name the family's :attr:`read` resolves it under (``extractor.caps.max_pages``).
     That member then gets the same mechanism check as a fixed lever, and every member left out still
     reads ``unchecked`` / ``not_declared``. Each measure meets :attr:`acts_on`'s refusals: a numeric
     measure each result carries as one value, known to the catalogue or the host's registry, checked

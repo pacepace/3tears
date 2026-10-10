@@ -212,6 +212,8 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # The run package's public root, its exports scanned; declared module by module for the
     # reason `gen/__init__.py` is.
     "run/__init__.py",
+    # Named, versioned case sets: engine vocabulary for which cases a launch targets.
+    "run/case_sets.py",
     "contracts/dsl.py",
     # The model-prose marker. Shared contract by construction: the models above
     # declare their prose fields with it and `dsl.py` reads its schema helpers.

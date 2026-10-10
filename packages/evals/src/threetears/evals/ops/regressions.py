@@ -2,7 +2,7 @@
 
 :func:`~threetears.evals.ops.scope_history` finds a regression only when someone reads for it. A
 :class:`RegressionWatch` reads for it when a run ends: handed to a
-:class:`~threetears.evals.run.launch.LaunchHost` as its ``on_run_end`` listener, it checks each measure the
+:class:`~threetears.evals.run.launch.LaunchHost` as its ``on_run_end`` hook, it checks each measure the
 host names against the completed run's contestant history, and hands every regression on the step INTO that
 run to the host's :class:`RegressionSink`. The engine delivers nothing itself: no watch, or a watch whose
 sink drops what it is given, and nobody hears.
@@ -26,7 +26,7 @@ A judge-graded host measure names no rubric dimension the engine can look a judg
 
 **A sink that fails changes nothing.** Each alert is delivered on its own: a sink that raises is logged and
 the next alert is still delivered, and neither can reach the run, whose status was recorded before any check
-began (:class:`~threetears.evals.run.jobs.RunEndListener`).
+began (:class:`~threetears.evals.run.jobs.RunEndHook`).
 """
 
 from __future__ import annotations
@@ -133,7 +133,7 @@ def _step_judges(metric: str, results: Iterable[EvalResult]) -> set[JudgeKey]:
 class RegressionWatch:
     """Checks a completed run's measures against its contestant's history, and delivers each regression.
 
-    A :class:`~threetears.evals.run.jobs.RunEndListener`: hand it to the
+    A :class:`~threetears.evals.run.jobs.RunEndHook`: hand it to the
     :class:`~threetears.evals.run.launch.LaunchHost` that launches the host's runs (``on_run_end=``). See the
     module docstring for which runs, steps and measures fire.
 

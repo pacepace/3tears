@@ -73,7 +73,7 @@ from threetears.evals.run.jobs import (
     MAX_CONCURRENT_JOBS,
     EvalJobManager,
     JobTimeoutFactory,
-    RunEndListener,
+    RunEndHook,
     adaptive_job_timeout_s,
 )
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
@@ -444,7 +444,7 @@ class LaunchHost:
         on_job_progress: Called with ``(run id, progress)`` on every progress write — typically a
             broadcast to an operator's view — or ``None``.
         on_run_end: Told each run's recorded terminal status
-            (:class:`~threetears.evals.run.jobs.RunEndListener`) — a
+            (:class:`~threetears.evals.run.jobs.RunEndHook`) — a
             :class:`~threetears.evals.ops.RegressionWatch` to check a completed run against its contestant's
             history — or ``None`` for nobody.
         job_manager: The process's job manager, built here over :attr:`eval_host`'s storage and
@@ -462,7 +462,7 @@ class LaunchHost:
     max_concurrent_jobs: int = MAX_CONCURRENT_JOBS
     cell_executor: CellExecutor | None = None
     on_job_progress: Callable[[str, dict[str, Any]], None] | None = None
-    on_run_end: RunEndListener | None = None
+    on_run_end: RunEndHook | None = None
     job_manager: EvalJobManager = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:

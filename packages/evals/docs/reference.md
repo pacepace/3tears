@@ -921,7 +921,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`ReproducibleJudgeInputs`** · class · The stored records a result's judge calls are rebuilt from, each the one its run recorded.
 - **`ResultRecheck`** · model · What a re-check found for one stored result.
 - **`RunCallbacks`** · dataclass · Optional progress / persistence hooks for the run loop.
-- **`RunEndListener`** · protocol · What a host hands the job manager to hear that a run's terminal status was recorded.
+- **`RunEndHook`** · protocol · What a host hands the job manager to hear that a run's terminal status was recorded.
 - **`RunJudge`** · dataclass · A judged run's judge, as `build_judge_service` resolved it from one config load.
 - **`RunnerOptions`** · dataclass · The run's own knobs that don't fit on the run document — per-run values, never host wiring.
 - **`RunRecheck`** · model · What a re-check of one run found, and whether it was written.

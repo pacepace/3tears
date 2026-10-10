@@ -107,7 +107,7 @@ ProgressFn = Callable[[dict[str, Any]], Awaitable[None]]
 WorkFn = Callable[[ProgressFn], Awaitable[None]]
 
 
-class RunEndListener(Protocol):
+class RunEndHook(Protocol):
     """What a host hands the job manager to hear that a run's terminal status was recorded.
 
     Called once per run, after the terminal write landed and outside the run's concurrency slot, with
@@ -115,7 +115,7 @@ class RunEndListener(Protocol):
     or refused, since then no new terminal status was recorded. It runs inside the run's job task, so
     :meth:`EvalJobManager.wait_for` returns after it has. It cannot change how the run ended: whatever it
     raises is logged and dropped. :class:`~threetears.evals.ops.RegressionWatch` is the engine's one
-    listener, and checks a completed run's measures against its contestant's history.
+    hook, and checks a completed run's measures against its contestant's history.
     """
 
     async def __call__(self, run_id: str, scope_id: str, status: str) -> None:
@@ -474,7 +474,7 @@ class EvalJobManager:
         *,
         job_timeout_factory: JobTimeoutFactory | None = None,
         blocking_executor: Executor | None = None,
-        on_run_end: RunEndListener | None = None,
+        on_run_end: RunEndHook | None = None,
     ):
         """Wire the job manager to storage and configure concurrency.
 
@@ -506,7 +506,7 @@ class EvalJobManager:
                 eval traffic (a liveness probe, say) passes a pool of its
                 own; the same construction-site gate requires every non-test
                 site to name one.
-            on_run_end: Told each run's recorded terminal status (:class:`RunEndListener`), or
+            on_run_end: Told each run's recorded terminal status (:class:`RunEndHook`), or
                 ``None`` for nobody. What it raises is logged and never changes the run.
         """
         self._storage = storage
@@ -522,7 +522,7 @@ class EvalJobManager:
         self._on_run_end = on_run_end
         # The terminal status each in-flight run's write actually recorded, keyed by run id: set by
         # _set_status when a terminal write lands, read once by _run_job as the job ends, so the
-        # listener hears the stored status and only one that was stored.
+        # hook hears the stored status and only one that was stored.
         self._recorded_end: dict[str, str] = {}
         # Operator-supplied cancellation reasons keyed by job id. Written by
         # cancel_job, consumed (popped) by the job's own CancelledError
@@ -1080,18 +1080,18 @@ class EvalJobManager:
             self._work_ran.pop(run_id, None)
 
     async def _tell_run_end(self, run_id: str, scope_id: str, status: str) -> None:
-        """Hand the recorded terminal status to the run-end listener, if any; never let it change the run.
+        """Hand the recorded terminal status to the run-end hook, if any; never let it change the run.
 
-        After the concurrency slot is released, so a slow listener holds up no queued run. A listener that
-        raises is logged and dropped: the run's status is already stored, and nothing a listener does can
+        After the concurrency slot is released, so a slow hook holds up no queued run. A hook that
+        raises is logged and dropped: the run's status is already stored, and nothing a hook does can
         reopen it.
         """
         if self._on_run_end is None:
             return
         try:
             await self._on_run_end(run_id, scope_id, status)
-        except Exception:  # prawduct:ok-broad-except — a listener's failure must not corrupt the run's ending
-            log.exception("eval.run_end listener failed for run=%s status=%s; the run's status stands", run_id, status)
+        except Exception:  # prawduct:ok-broad-except — a hook's failure must not corrupt the run's ending
+            log.exception("eval.run_end hook failed for run=%s status=%s; the run's status stands", run_id, status)
 
     async def _set_status(
         self,
@@ -1330,7 +1330,7 @@ __all__ = [
     "EvalJobTimeout",
     "JobTimeoutFactory",
     "ProgressFn",
-    "RunEndListener",
+    "RunEndHook",
     "WorkFn",
     "adaptive_job_timeout_s",
     "default_job_timeout",
