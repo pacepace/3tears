@@ -1,0 +1,17 @@
+{
+  "archived": false,
+  "archived_reason": null,
+  "content_hash": null,
+  "created_at": "2026-10-10T08:11:19.750266+00:00",
+  "doc_type": "eval_test_case",
+  "host_payload": {},
+  "id": "01a124dd-d346-713b-8fa5-ad295ec2a9ff",
+  "schema_version": 8,
+  "scope_id": "uni-1",
+  "stratum": null,
+  "template_id": "tpl-1",
+  "variation_params": {
+    "category_pair": "garden + stationery",
+    "tone": "casual"
+  }
+}

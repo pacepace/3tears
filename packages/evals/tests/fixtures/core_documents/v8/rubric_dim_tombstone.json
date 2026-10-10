@@ -1,0 +1,9 @@
+{
+  "deleted_at": "2026-10-10T08:11:19.754273+00:00",
+  "deleted_dim_id": "d-1",
+  "doc_type": "rubric_dim_tombstone",
+  "id": "01a124dd-d34a-7596-a806-38542da47784",
+  "key": "conversation.tone",
+  "schema_version": 8,
+  "scope_id": "uni-1"
+}
