@@ -76,7 +76,7 @@ from threetears.evals.ops import (
 
 if TYPE_CHECKING:
     from threetears.evals.actions.catalogue import Action, MountedTool
-    from threetears.evals.run import SecondJudgeEstimate
+    from threetears.evals.run import JudgeTemperatureComparison, JudgeTemperatureEstimate, SecondJudgeEstimate
 
 
 # --- help --------------------------------------------------------------------------------------------
@@ -678,6 +678,16 @@ def render_second_judge_estimate(estimate: SecondJudgeEstimate) -> str:
         f"{estimate.eligible} judgeable result(s), {estimate.dims} dim(s), at most {estimate.max_calls} call(s) priced "
         f"at up to {ceiling}; out-of-run cap {cap}; {verdict}."
     )
+
+
+def render_judge_temperature(comparison: JudgeTemperatureComparison) -> str:
+    """A judge temperature comparison: what it re-judged and spent, then each dimension's two settings side by side."""
+    return comparison.render()
+
+
+def render_judge_temperature_estimate(estimate: JudgeTemperatureEstimate) -> str:
+    """A judge temperature comparison's price before it starts, against the cap, and whether it would start."""
+    return estimate.render()
 
 
 def render_run_deleted(deleted: RunDeleted) -> str:

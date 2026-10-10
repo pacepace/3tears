@@ -38,6 +38,14 @@ from threetears.evals.run.judge_second import (
     ask_second_judge,
     estimate_second_judge,
 )
+from threetears.evals.run.judge_temperature import (
+    DEFAULT_TEMPERATURE_REPEATS,
+    JudgeTemperatureComparison,
+    JudgeTemperatureEstimate,
+    TemperatureSelection,
+    compare_judge_temperatures,
+    estimate_judge_temperature_comparison,
+)
 from threetears.evals.run.lifecycle import get_run
 from threetears.evals.run.ratings import rate_result
 from threetears.evals.run.reads import list_runs
@@ -500,6 +508,89 @@ async def judge_repeat(
     """
     return await repeat_judge_scores(
         host.eval_host, run_id, scope_id, out_of_run_cap_usd=host.out_of_run_cap(), result_ids=result_ids
+    )
+
+
+async def judge_temperature_estimate(
+    host: OpsHost,
+    run_id: str,
+    scope_id: str,
+    *,
+    selection: TemperatureSelection = "borderline",
+    repeats: int = DEFAULT_TEMPERATURE_REPEATS,
+    result_ids: list[str] | None = None,
+) -> JudgeTemperatureEstimate:
+    """What comparing a finished run's judge at the pinned temperature and the provider default would cost — no call.
+
+    The comparison's own collection, selection and admission (:func:`judge_temperature` refuses by the same rule), so
+    ``would_start`` is its answer.
+
+    Args:
+        host: The host: its store, its judge clients and its out-of-run cap.
+        run_id: The finished run.
+        scope_id: The scope it lives in.
+        selection: ``borderline`` (the default) or ``all`` scored dims.
+        repeats: Calls per dim at each temperature.
+        result_ids: The results to draw from; ``None`` for every result of the run.
+
+    Returns:
+        The estimate.
+
+    Raises:
+        NotFoundError: No run with that id, or a record it names does not load.
+        ValidationFailedError: The comparison cannot be made.
+    """
+    return await estimate_judge_temperature_comparison(
+        host.eval_host,
+        run_id,
+        scope_id,
+        out_of_run_cap_usd=host.out_of_run_cap(),
+        selection=selection,
+        repeats=repeats,
+        result_ids=result_ids,
+    )
+
+
+async def judge_temperature(
+    host: OpsHost,
+    run_id: str,
+    scope_id: str,
+    *,
+    selection: TemperatureSelection = "borderline",
+    repeats: int = DEFAULT_TEMPERATURE_REPEATS,
+    result_ids: list[str] | None = None,
+) -> JudgeTemperatureComparison:
+    """Re-judge a finished run's borderline cases at the pinned temperature and at the provider default (#633).
+
+    The measurement the judge temperature policy rests on: per dimension, score variance across repeats and the
+    judge's self-agreement at each setting, side by side (:func:`~threetears.evals.run.compare_judge_temperatures`).
+    Every call is priced and admitted against the host's out-of-run cap before the first is sent, and ledgered under
+    purpose ``judge``. Nothing is written to the results.
+
+    Args:
+        host: The host: its store, its judge clients and its out-of-run cap.
+        run_id: The finished run.
+        scope_id: The scope it lives in.
+        selection: ``borderline`` (the default) or ``all`` scored dims.
+        repeats: Calls per dim at each temperature.
+        result_ids: The results to draw from; ``None`` for every result of the run.
+
+    Returns:
+        The comparison.
+
+    Raises:
+        NotFoundError: No run with that id, or a record it names does not load.
+        ValidationFailedError: The comparison cannot be made, or its calls are priced above the cap or cannot be
+            priced under it — before any call.
+    """
+    return await compare_judge_temperatures(
+        host.eval_host,
+        run_id,
+        scope_id,
+        out_of_run_cap_usd=host.out_of_run_cap(),
+        selection=selection,
+        repeats=repeats,
+        result_ids=result_ids,
     )
 
 

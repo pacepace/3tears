@@ -195,7 +195,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`'chosen'` | `'inherited'`
 - **`OutOfRunOutcome`** · literal · How an out-of-run call ended: it returned a completion, or it raised.
   <br>`'completed'` | `'raised'`
-- **`OutOfRunPurpose`** · literal · What an out-of-run call was for: `variation` writes a launch's generated cases (an `llm` variation axis's values), `proposer` drafts a rubric for operator review, `analysis` writes a campaign's analysis memo (its first call and the one repair round-trip a refused output buys), `judge` repeats a finished run's judge scores to measure the judge's agreement with itself (`repeat_judge_scores`), `second_judge` asks a judge other than the run's to score a finished run's evidence (`ask_second_judge`) — measurement cost on its own line, never the candidate's.
+- **`OutOfRunPurpose`** · literal · What an out-of-run call was for: `variation` writes a launch's generated cases (an `llm` variation axis's values), `proposer` drafts a rubric for operator review, `analysis` writes a campaign's analysis memo (its first call and the one repair round-trip a refused output buys), `judge` repeats a finished run's judge scores to measure the judge's agreement with itself (`repeat_judge_scores`), or at two temperatures to measure what temperature does to it (`compare_judge_temperatures`), `second_judge` asks a judge other than the run's to score a finished run's evidence (`ask_second_judge`) — measurement cost on its own line, never the candidate's.
   <br>`'variation'` | `'proposer'` | `'analysis'` | `'judge'` | `'second_judge'`
 - **`RaterKind`** · literal · Who wrote a calibration rating: a `person`, whose rating is the human side of judge calibration, or an `agent` (a model acting through a tool), whose rating is not.
   <br>`'person'` | `'agent'`
@@ -746,6 +746,8 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`ask_second_judge(host: EvalHost, run_id: str, scope_id: str, *, judge: SecondJudge, out_of_run_cap_usd: float | None, sample_fraction: float = 1.0, seed: int = 0, result_ids: Sequence[str] | None = None) -> SecondJudgeReport`
 - **`assert_preconditions`** · function · Assert at t=0 that the world this template presumes actually holds.
   <br>`assert_preconditions(template: EvalTemplate, test_case: EvalTestCase, seeded: Mapping[str, Any], *, world: WorldRegistry | None) -> list[PreconditionOutcome]`
+- **`borderline_dims`** · function · The scored dims of `result` that are borderline: the cases temperature is expected to move.
+  <br>`borderline_dims(result: EvalResult) -> set[str]`
 - **`build_judge_context`** · function · The evidence a result's judge reads, built from the cell's own records.
   <br>`build_judge_context(*, template: EvalTemplate, test_case: EvalTestCase, goal_outcomes: list[GoalStateOutcome], judged_artifact: JudgedArtifact, judge_evidence: JudgeEvidence) -> JudgeContext`
 - **`build_judge_service`** · function · Build the `JudgeService` for a run, with its judge attribution.
@@ -754,6 +756,8 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`callers_missing_the_constructor(contract: FidelityContract) -> list[str]`
 - **`cancel_run`** · function · Cancel a pending/running eval run so it stops burning cost and quota.
   <br>`cancel_run(storage: RunRecordStore, run_id: str, scope_id: str, *, job_manager: EvalJobManager | None, reason: str | None = None) -> EvalRun`
+- **`compare_judge_temperatures`** · async function · Re-judge a finished run's borderline cases `repeats` times at each temperature, and read the two side by side.
+  <br>`compare_judge_temperatures(host: EvalHost, run_id: str, scope_id: str, *, out_of_run_cap_usd: float | None, selection: TemperatureSelection = 'borderline', repeats: int = 5, result_ids: Sequence[str] | None = None) -> JudgeTemperatureComparison`
 - **`create_judge_config`** · function · Create and persist a judge config from an authoring definition.
   <br>`create_judge_config(storage: DefinitionStore, definition: dict[str, Any], *, scope_id: str) -> JudgeConfig`
 - **`create_rubric_dim`** · function · Create and persist a catalog rubric dim from an authoring definition.
@@ -778,6 +782,8 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`drive_conversation(driver: TurnDriver, candidate_turn: Callable[[Sequence[SimulatorTurn]], Awaitable[CandidateTurn]], post_user_turn: Callable[[SimulatorTurn], Awaitable[None]], *, llm: SimulatorLLM, sink: CellSink, world: WorldSession | None = None) -> ConversationStopCause`
 - **`estimate_judge_repeat`** · async function · Price repeating a run's judge scores against the cap it would be held to, and make no call.
   <br>`estimate_judge_repeat(host: EvalHost, run_id: str, scope_id: str, *, out_of_run_cap_usd: float | None, result_ids: Sequence[str] | None = None) -> JudgeRepeatEstimate`
+- **`estimate_judge_temperature_comparison`** · async function · Price comparing a run's judge at the two temperatures against the cap it would be held to, and make no call.
+  <br>`estimate_judge_temperature_comparison(host: EvalHost, run_id: str, scope_id: str, *, out_of_run_cap_usd: float | None, selection: TemperatureSelection = 'borderline', repeats: int = 5, result_ids: Sequence[str] | None = None) -> JudgeTemperatureEstimate`
 - **`estimate_second_judge`** · async function · Price asking a second judge about a run against the cap it would be held to, and make no call.
   <br>`estimate_second_judge(host: EvalHost, run_id: str, scope_id: str, *, judge: SecondJudge, out_of_run_cap_usd: float | None, sample_fraction: float = 1.0, seed: int = 0, result_ids: Sequence[str] | None = None) -> SecondJudgeEstimate`
 - **`evaluate_goal_state`** · function · Run every expression in `template.goal_state_checks` and capture outcomes.
@@ -932,6 +938,8 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`JudgeRepeatSkip`** · model · A result of the run that is not repeated, and why.
 - **`JudgeRequest`** · class · One judge call as it is sent: what `JudgeService._score` hands the client.
 - **`JudgeService`** · class · Stateless single-dim judge. See module docstring for the contract.
+- **`JudgeTemperatureComparison`** · model · The measurement: a run's borderline cases re-judged at the pinned temperature and at the provider's default.
+- **`JudgeTemperatureEstimate`** · model · What comparing a run's judge at the two temperatures would be priced at, against its cap — no call made.
 - **`KeptOutcome`** · model · One stored outcome a re-check left as it was, and why.
 - **`KindFactory`** · protocol · Builds the candidate kind for one cell.
 - **`KindWiring`** · dataclass · What one kind's launcher resolved for its arm — everything `launch_run` cannot know itself.
@@ -981,6 +989,8 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`'n_variations'` | `'judge_model'` | `'judge_config_ids'` | `'simulator_model'` | `'cassette_mode'`
 - **`RequestSettingsPolicy`** · literal · How a caller treats the run's recorded judge request settings.
   <br>`'today'` | `'as_recorded'`
+- **`TemperatureSelection`** · literal · Which scored dims are re-judged: `borderline` (stored score inside its scale, or a recorded repeat or second judge disagreed on it — `borderline_dims`) or `all`.
+  <br>`'borderline'` | `'all'`
 - **`TemplatePreflight`** · type alias · Checks one of a battery's templates the way its launch would, before any template launches.
   <br>`Callable[['EvalTemplate', str], Awaitable[None]]`
 - **`WorkFn`** · type alias · A job's work: an async function handed its progress callback.
@@ -990,6 +1000,8 @@ The engine's run package: launching and executing a run, judging it, metering it
 
 - **`DEFAULT_MAX_CONCURRENT_CELLS`** · constant (int) · The width a run executes its cells at when latency is not under test and the host's settings name none: enough to turn hours of a slow candidate into a fraction of that, few enough that a provider's rate limit is not the first thing a default launch meets.
   <br>`= 4`
+- **`DEFAULT_TEMPERATURE_REPEATS`** · constant (int) · How many times each dim is judged at each setting when the caller names no number.
+  <br>`= 5`
 - **`JUDGE_CALL_ATTEMPTS`** · constant (int) · Calls one judge dimension can make: the first, plus its parse retries.
   <br>`= 2`
 - **`JUDGE_MAX_TOKENS`** · constant (int) · The eval judge's output cap: the reasoning budget plus the answer budget, DERIVED rather than chosen, so it always sits above the ceiling it wraps.
@@ -1734,6 +1746,10 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`judge_second(host: OpsHost, run_id: str, scope_id: str, *, judge: SecondJudge, sample_fraction: float = 1.0, seed: int = 0, result_ids: list[str] | None = None) -> SecondJudgeRead`
 - **`judge_second_estimate`** · async function · What asking a second judge about a finished run would be priced at, against the host's out-of-run cap — no call.
   <br>`judge_second_estimate(host: OpsHost, run_id: str, scope_id: str, *, judge: SecondJudge, sample_fraction: float = 1.0, seed: int = 0, result_ids: list[str] | None = None) -> SecondJudgeEstimate`
+- **`judge_temperature`** · async function · Re-judge a finished run's borderline cases at the pinned temperature and at the provider default (#633).
+  <br>`judge_temperature(host: OpsHost, run_id: str, scope_id: str, *, selection: TemperatureSelection = 'borderline', repeats: int = 5, result_ids: list[str] | None = None) -> JudgeTemperatureComparison`
+- **`judge_temperature_estimate`** · async function · What comparing a finished run's judge at the pinned temperature and the provider default would cost — no call.
+  <br>`judge_temperature_estimate(host: OpsHost, run_id: str, scope_id: str, *, selection: TemperatureSelection = 'borderline', repeats: int = 5, result_ids: list[str] | None = None) -> JudgeTemperatureEstimate`
 - **`launch_estimate`** · async function · What `run_launch` with `arguments` would cost, priced by the launch's own rule.
   <br>`launch_estimate(host: OpsHost, arguments: LaunchArguments, scope_id: str, *, n_test_cases: int | None = None) -> LaunchEstimate`
 - **`parse_job_id`** · function · Read a job id back into what it names.
@@ -2451,6 +2467,8 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `judge_second` | `spend` | `run_id`, `second_judge_model`, `second_judge_config_ids?`, `second_judge_temperature?`, `result_ids?`, `sample_fraction?`, `sample_seed?` | Ask a second judge to score a seeded share of a finished run's judged results; read agreement. |
 | `judge_second_estimate` | `read` | `run_id`, `second_judge_model`, `second_judge_config_ids?`, `second_judge_temperature?`, `result_ids?`, `sample_fraction?`, `sample_seed?` | Price a second judge's pass over a run against the host's out-of-run cap, without spending. |
 | `judge_drift_check` | `spend` | `run_id`, `second_judge_model`, `second_judge_config_ids?`, `second_judge_temperature?`, `result_ids?` | Re-score every judged result of a run under a changed judge; read how far each dimension moved. |
+| `judge_temperature` | `spend` | `run_id`, `selection?`, `repeats?`, `result_ids?` | Re-judge a run's borderline cases at temperature 0 and at the provider default; compare spread. |
+| `judge_temperature_estimate` | `read` | `run_id`, `selection?`, `repeats?`, `result_ids?` | Price a judge temperature comparison against the host's out-of-run cap, without spending. |
 | `analyses_list` | `read` | `campaign_id` | List a campaign's stored analyses. |
 | `insights_list` | `read` | `subject_filter?`, `campaign_filter?` | List the scope's insights — the durable claims analyses minted — newest first. |
 | `insight_get` | `read` | `insight_id` | Read one insight in full: its statement, evidence runs, provenance and standing. |
@@ -2540,6 +2558,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `rating_reason` | `string` | Why that score, in the rater's own words. |
 | `reason` | `string` or `null` | Why, recorded on a cancelled run. |
 | `recorded_analysis_id` | `string` or `null` | A stored analysis of the campaign whose memo the case pins as the one it got, as analyses_list names it; omitted freezes the bundle alone, which only a generating candidate can run. |
+| `repeats` | `integer` | How many times each dim is judged at each temperature. |
 | `reporter_case_id` | `string` | A reporter case's id, as reporter_case_freeze or reporter_cases_list returns it. |
 | `result_id` | `string` | A result's id, as results_list names it. |
 | `result_ids` | array of `string` or `null` | The run's results to draw from; omitted for every result of the run. |
@@ -2554,6 +2573,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `second_judge_config_ids` | `object` or `null` | dim -> the versioned judge config whose prompt asks the second judge for that dim; omitted for the prompts the run recorded. A dim absent from a map given is asked with the built-in prompt. |
 | `second_judge_model` | `string` | The model the second judge sends every judged dimension to. |
 | `second_judge_temperature` | `number` or `null` | The temperature every second-judge call is requested at; omitted for what each prompt asks. |
+| `selection` | `'borderline'` \| `'all'` | Which scored dims are re-judged: borderline (stored score inside the scale, or a recorded repeat or second judge disagreed) or all. |
 | `simulator_model` | `string` or `null` | The simulated user's model, where the kind has one. |
 | `status` | `'pending'` \| `'running'` \| `'completed'` \| `'failed'` \| `'cancelled'` \| `'budget_stopped'` \| `'exhausted'` or `null` | List only runs with this stored status. |
 | `subject_filter` | `string` or `null` | Read only this subject's runs or insights; omitted reads every subject. |
@@ -2735,6 +2755,37 @@ options:
   --bar BAR             the pass^k a variant must clear, from 0 to 1
   --subject SUBJECT     only this subject's variants
   --json                print the frontier as JSON
+```
+
+### `judge-temperature`
+
+```text
+usage: python -m threetears.evals judge-temperature [-h] --host MODULE:FACTORY --scope SCOPE
+                                                    (--max-cost-usd DOLLARS | --no-cap)
+                                                    [--repeats N] [--all] [--result ID]
+                                                    [--estimate] [--json]
+                                                    RUN
+
+Re-judge a run's borderline cases at the pinned judge temperature and at the provider default, and
+compare the spread of their scores. Spends, under the out-of-run cap it names.
+
+positional arguments:
+  RUN                   the finished run, by id
+
+options:
+  -h, --help            show this help message and exit
+  --host MODULE:FACTORY
+                        the host to work in
+  --scope SCOPE         the scope to read and write in
+  --max-cost-usd DOLLARS
+                        the most the comparison's calls may be priced at together; every call is
+                        priced before the first
+  --no-cap              enforce no out-of-run cap (calls are still ledgered)
+  --repeats N           calls per dim at each temperature (default 5, at least 2)
+  --all                 re-judge every scored dim, not only the borderline ones
+  --result ID           only this result of the run; repeat for more (default: every result)
+  --estimate            price it against the cap and call nothing
+  --json                print the comparison (or estimate) as JSON
 ```
 
 <a id="measures"></a>

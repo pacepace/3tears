@@ -203,7 +203,7 @@ class BudgetedJudgeClient:
 
 
 @dataclass(frozen=True)
-class _Planned:
+class PlannedRepeat:
     """One result to repeat: what its judge read, and the dims it holds a score on, in dimension order."""
 
     result: EvalResult
@@ -212,12 +212,12 @@ class _Planned:
 
 
 @dataclass(frozen=True)
-class _Collected:
+class CollectedRepeat:
     """What a repeat of a run reads before it builds anything."""
 
     run: EvalRun
     judge_model: str
-    planned: list[_Planned]
+    planned: list[PlannedRepeat]
     skipped: list[JudgeRepeatSkip]
 
 
@@ -230,7 +230,9 @@ def _scored_dims(result: EvalResult) -> set[str]:
     }
 
 
-def _collect(storage: EvalStorage, run_id: str, scope_id: str, result_ids: Sequence[str] | None) -> _Collected:
+def collect_repeatable(
+    storage: EvalStorage, run_id: str, scope_id: str, result_ids: Sequence[str] | None
+) -> CollectedRepeat:
     """Load the run and every result to repeat, refusing what cannot be reproduced — blocking, so off the loop.
 
     Raises:
@@ -253,7 +255,7 @@ def _collect(storage: EvalStorage, run_id: str, scope_id: str, result_ids: Seque
             raise ValidationFailedError(f"result(s) {stray} are not results of run '{run_id}' in this scope")
         wanted = set(result_ids)
         results = [result for result in results if result.id in wanted]
-    planned: list[_Planned] = []
+    planned: list[PlannedRepeat] = []
     skipped: list[JudgeRepeatSkip] = []
     for result in results:
         scored = _scored_dims(result)
@@ -271,18 +273,18 @@ def _collect(storage: EvalStorage, run_id: str, scope_id: str, result_ids: Seque
         if not dims:
             skipped.append(JudgeRepeatSkip(result_id=result.id, reason="none of its scored dims is one its run judged"))
             continue
-        planned.append(_Planned(result=result, inputs=inputs, dims=dims))
+        planned.append(PlannedRepeat(result=result, inputs=inputs, dims=dims))
     if not planned:
         why = "; ".join(f"{skip.result_id}: {skip.reason}" for skip in skipped) or "it has no results"
         raise ValidationFailedError(f"no result of run '{run_id}' can be repeated — {why}")
-    return _Collected(run=run, judge_model=judge_model, planned=planned, skipped=skipped)
+    return CollectedRepeat(run=run, judge_model=judge_model, planned=planned, skipped=skipped)
 
 
 @dataclass
 class _Prepared:
     """A repeat built and priced: the judge service over budgeted clients, and each result's context and calls."""
 
-    collected: _Collected
+    collected: CollectedRepeat
     budget: OutOfRunBudget
     service: JudgeService
     contexts: list[JudgeContext]
@@ -303,7 +305,9 @@ async def _prepare(
     The caller owns ``service`` and enters it, which releases every client built here.
     """
     clients = host.completion_clients("a judge repeat")
-    collected = await run_blocking(host.blocking_executor, _collect, host.storage, run_id, scope_id, result_ids)
+    collected = await run_blocking(
+        host.blocking_executor, collect_repeatable, host.storage, run_id, scope_id, result_ids
+    )
     budget = OutOfRunBudget(
         store=host.storage,
         scope_id=scope_id,
