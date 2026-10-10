@@ -483,6 +483,7 @@ def frontier(
     subject_id: str | None = None,
     status: str | None = "completed",
     profile: HostProfile | None = None,
+    control_variant_key: str | None = None,
 ) -> dict[str, Any]:
     """Rank each subject's variants on quality x cost x latency, cheapest above bar.
 
@@ -512,6 +513,8 @@ def frontier(
             against (#571): every point and verdict then names what each of its runs set away from the subject's
             production configuration, read off the WHOLE run. ``None`` leaves that disclosure ``None`` — nobody
             checked, never "nothing moved".
+        control_variant_key: The variant each contestant's boundary (guardrail) dimensions are held against;
+            ``None`` checks none, and the answer says so per subject.
 
     Returns:
         A JSON-safe :class:`~threetears.evals.analysis.reporting.FrontierResult` dict.
@@ -546,6 +549,7 @@ def frontier(
             known_run_ids={run.id for run in all_runs},
             archived_run_ids=archived_run_ids,
             profile=profile,
+            control_variant_key=(control_variant_key or "").strip() or None,
         )
     except FrontierError as e:
         raise ValidationFailedError(str(e)) from e

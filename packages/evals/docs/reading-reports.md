@@ -205,6 +205,12 @@ which blocks an arm rather than clearing one; that claim's rate is not guarantee
 column marks such a row `(t: no declared range)`. An `undecided` guardrail does not block adoption because at a few cases and no margin almost every
 guardrail is undecided, and a rule that blocked them all would block every adoption.
 
+**On the frontier.** The frontier holds each contestant's judged guardrails against the campaign's control by the
+same rule. A contestant that breaches one is disqualified, and its row names the dimension (`disqualified_by`).
+One that does not hold every guardrail is never the frontier's pick. With no control there is nothing to hold a
+contestant against: the subject's `boundary_pillar` says the pillar was not checked, and a verdict lists the
+dimensions it was not checked on (`boundary_unchecked`).
+
 ## Readings no question asked about: exploratory
 
 A campaign's declared questions say what it set out to learn. A reading on no axis a live question names is

@@ -95,6 +95,7 @@ from threetears.evals.ops.lenses import (
     scope_out_of_run_spend,
     scope_pivot,
 )
+from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.reporter_bank import FrozenReporterCase
 from threetears.evals.ops.reporter import (
     AmbiguousReporterPair,
@@ -123,10 +124,14 @@ from threetears.evals.ops.runs import (
     RunDeleted,
     RunLine,
     RunListing,
+    SecondJudgeRead,
     TemplateLine,
     TemplateListing,
+    judge_drift_check,
     judge_repeat,
     judge_repeat_estimate,
+    judge_second,
+    judge_second_estimate,
     result_rate,
     run_archive,
     run_delete,
@@ -212,6 +217,7 @@ __all__ = [
     "campaign_create",
     "campaigns_list",
     "dollars_text",
+    "format_number",
     "estimate_text",
     "export_text",
     "generation_key",
@@ -247,4 +253,8 @@ __all__ = [
     "templates_list",
     "judge_repeat",
     "judge_repeat_estimate",
+    "SecondJudgeRead",
+    "judge_drift_check",
+    "judge_second",
+    "judge_second_estimate",
 ]

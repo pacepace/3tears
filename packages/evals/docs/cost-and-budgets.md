@@ -137,6 +137,11 @@ included — priced and admitted before the first is sent, and ledgered under pu
 id. (What a judge repeat is for is in
 [Reading reports](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers).)
 
+**Second judges.** A second judge (`judge_second`, `judge_drift_check`) is held to the same cap, priced and
+admitted the same way, and ledgered under purpose `second_judge` with the run's id. It is measurement cost on its
+own line: never in a result's `cost_usd`, never in the run's judge spend. `run_get` shows it as
+`second_judge_cost_usd`.
+
 **A host's own `spend` actions.** A host's own `spend` action carries no such obligation: the class is a
 label a tool cut splits on, metered only as far as the host's handler meters it.
 
