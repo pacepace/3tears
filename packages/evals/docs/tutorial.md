@@ -1,9 +1,9 @@
 # Tutorial: your first eval, end to end
 
 **For** anyone new to 3tears-evals, or new to evals. **Answers:** how to write cases, run them, read what went
-wrong, compare two versions, read the verdict, grade with an LLM judge, and hold a line no version may cross. It runs offline and costs nothing:
-small scripted stand-ins play the model. Every term is defined where it first appears,
-and [Concepts](concepts.md) is the glossary.
+wrong, compare two versions, read the verdict, grade with an LLM judge, hold a line no version may cross, and keep
+your runs. It runs offline and costs nothing: small scripted stand-ins play the model. Every term is defined where
+it first appears, and [Concepts](concepts.md) is the glossary.
 
 The running example is a support-ticket router. It reads a ticket and picks one queue: `billing`, `bug`,
 `account` or `other`.
@@ -438,7 +438,46 @@ v3: 1.00 -> 1.00, interval [-0.3085, 0.3085] at 95% (bounded: every case moved a
 says what one arm breached, is undecided on, and held. A judged rubric dimension can be a guardrail too: name it
 in `guardrails=`. [Reading the guardrails](reading-reports.md#reading-the-guardrails) has the details.
 
-## 8. Where next
+## 8. Keep your runs
+
+Every run so far was stored in memory and gone when the script ended. To keep runs, pass a store. One keyword
+does it: `store=` on `run_eval` or `compare`. `SqliteDocumentStore` keeps every run in one SQLite file, using
+only the standard library. Add these imports to the top of the file, and replace `main()`:
+
+```python
+from threetears.evals.ops import run_get, runs_list
+from threetears.evals.quick import callable_host
+from threetears.evals.storage import SqliteDocumentStore
+```
+
+```python
+async def main() -> None:
+    store = SqliteDocumentStore("triage.sqlite")
+    await run_eval(CASES, route_v2, [correct], scope_id="tutorial", k=2, store=store)
+    host = callable_host([correct], store=store)
+    for run in runs_list(host, "tutorial").runs:
+        (measure,) = run_get(host, run.id, "tutorial").measures
+        print(f"{run.created_at} {run.candidate_model}: {measure.name} {measure.mean:.2f} over {measure.n} result(s)")
+
+
+asyncio.run(main())
+```
+
+Run the file twice. The second run reads the first run's results from the file, because they are stored there:
+
+```
+2026-10-10T04:51:01.286666+00:00 route_v2: correct 1.00 over 20 result(s)
+2026-10-10T04:51:05.050664+00:00 route_v2: correct 1.00 over 20 result(s)
+```
+
+- **`callable_host([correct], store=store)`** is the host `run_eval` built for the run. Any later program reads
+  the runs through it: the same scorers, over a store opened on the same file.
+- **`compare(..., store=store)`** keeps the arms and their campaign the same way, and `margins=`, `ranges=` and
+  `guardrails=` work exactly as in steps 5 and 7.
+- **A stored run is read by a release that stores the same format.** A release that changes the format refuses
+  older runs rather than misreading them: delete the file and run again.
+
+## 9. Where next
 
 | To | Read | Example |
 |---|---|---|
@@ -449,7 +488,7 @@ in `guardrails=`. [Reading the guardrails](reading-reports.md#reading-the-guardr
 | evaluate an agent by what it does, not what it says | [Evaluating a tool-using agent](evaluating-agents.md) | [`world.py`](../examples/world.py) |
 | write reports to files | [Reading reports](reading-reports.md) | [`reports.py`](../examples/reports.py) |
 | build a classifier set worth trusting | [Designing a classifier eval set](designing-classifier-evals.md) | |
-| keep runs in your own storage, over weeks | [Adopting the engine](adopting-a-host.md) | |
+| keep runs in your own database, and launch from your app | [Adopting the engine](adopting-a-host.md) | |
 
 ## Exploring, or declaring a design
 
