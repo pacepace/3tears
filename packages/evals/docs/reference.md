@@ -1557,6 +1557,12 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`history_launch_pricer(host: EvalHost) -> LaunchPricer`
 - **`history_text`** · function · A history as text: each contestant's series, oldest first, with each step's verdict and its test.
   <br>`history_text(result: HistoryResult) -> str`
+- **`insight_delete`** · function · Destroy one insight — the intended answer to a wrong one, since an insight has no archive.
+  <br>`insight_delete(host: EvalHost, insight_id: str, scope_id: str, *, confirm: str | None) -> InsightDeleted`
+- **`insight_get`** · function · One insight in full: everything stored on it, and where it stands.
+  <br>`insight_get(host: EvalHost, insight_id: str, scope_id: str) -> InsightDetail`
+- **`insights_list`** · function · The scope's insight ledger, newest observation first, each with where it stands.
+  <br>`insights_list(host: EvalHost, scope_id: str, *, subject_id: str | None = None, source_campaign_id: str | None = None) -> InsightListing`
 - **`job_cancel`** · async function · Ask a running job to stop, then report where it stands.
   <br>`job_cancel(host: OpsHost, job_id: str, scope_id: str, *, reason: str | None = None) -> JobStatus`
 - **`job_poll`** · async function · Where a job stands, read from the record its work writes.
@@ -1629,6 +1635,10 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`CampaignDefinition`** · model · What creating a campaign names: what it is called, its subject and behaviour, its runs, and what it set out to learn.
 - **`CampaignLine`** · model · One campaign, as a listing shows it.
 - **`CampaignListing`** · model · A scope's campaigns, newest first.
+- **`InsightDeleted`** · model · What deleting an insight removed: the one insight, never the analysis that minted it.
+- **`InsightDetail`** · model · One insight in full — as stored — and where it stands.
+- **`InsightLine`** · model · One insight in the ledger, as a listing shows it.
+- **`InsightListing`** · model · The scope's insights, newest observation first, and the filters they were read under.
 - **`JobHandle`** · model · A started job: the id to poll, and what it is working on.
 - **`JobsStarted`** · model · What starting long work returns: one handle per job, in the order the work was asked for.
 - **`JobStatus`** · model · Where one job stands, read from the record its work writes.
@@ -1657,6 +1667,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 
 **Types**
 
+- **`InsightStandingName`** · literal · Where an insight stands, read from the analysis that minted it at every read and never stamped on the insight (`insight_standing`): `live` — fed to later generations as prior context; `retracted` — its analysis is archived, so no generation reads it; `orphaned` — its analysis was deleted, so it is still read but its provenance cannot be followed.
+  <br>`'live'` | `'retracted'` | `'orphaned'`
 - **`JobKind`** · literal · What a job's work is: a launched run, or an analysis generation.
   <br>`'run'` | `'analysis'`
 - **`JobState`** · literal · Where a job stands.
@@ -2225,6 +2237,8 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `analysis_generate` | `spend`, job | `campaign_id`, `model?` | Generate a campaign's analysis with a paid model call, as a job to poll. |
 | `analysis_estimate` | `read` | `campaign_id`, `model?` | Price a campaign's analysis generation against the host's out-of-run cap, without spending. |
 | `analyses_list` | `read` | `campaign_id` | List a campaign's stored analyses. |
+| `insights_list` | `read` | `subject_filter?`, `campaign_filter?` | List the scope's insights — the durable claims analyses minted — newest first. |
+| `insight_get` | `read` | `insight_id` | Read one insight in full: its statement, evidence runs, provenance and standing. |
 | `report_read` | `read` | `campaign_id`, `format?` | Read a campaign's report — its analysis, else its evidence alone — as Markdown, JSON or HTML. |
 | `reporter_case_freeze` | `write` | `template_id`, `campaign_id`, `recorded_analysis_id?`, `labels?`, `supersedes?` | Freeze a campaign's analysis bundle, and the memo it got, into a case of a reporter template. |
 | `reporter_cases_list` | `read` | `template_id`, `include_archived?` | List a reporter template's cases: which each campaign and memo launches, superseded or retired. |
@@ -2246,6 +2260,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `reporter_case_archive` | `write` | `reporter_case_id`, `archived?`, `archive_reason?` | Retire a reporter case (or restore it): no launch runs it again, nothing destroyed. |
 | `run_delete` | `destructive` | `run_id`, `confirm` | Destroy a run, its results and its campaign memberships. Unrecoverable; archive instead. |
 | `analysis_delete` | `destructive` | `analysis_id`, `confirm` | Destroy a stored analysis; the insights it minted remain. Unrecoverable; archive instead. |
+| `insight_delete` | `destructive` | `insight_id`, `confirm` | Destroy one insight, so no later analysis reads it as prior context. Unrecoverable. |
 
 <a id="action-parameters"></a>
 ### Parameters
@@ -2259,6 +2274,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `bar` | `number` or `null` | The pass^k a variant must clear, from 0 to 1; omitted ranks the variants without a verdict. |
 | `baseline_run_id` | `string` | The run read as the baseline (A), as runs_list names it. |
 | `behavior` | `string` | Which aspect of the subject is under test. |
+| `campaign_filter` | `string` or `null` | List only the insights this campaign's analyses minted, by id; omitted lists every campaign's. |
 | `campaign_id` | `string` | A campaign's id, as campaigns_list names it. |
 | `candidate_run_id` | `string` | The run read against the baseline (B), as runs_list names it. |
 | `column_factor` | `string` | The coordinate the columns are; a pooled ranking across the rows is checked for reversal on it. |
@@ -2271,6 +2287,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `export_run_ids` | array of `string` or `null` | Export only these runs, archived ones included since they are named; omitted exports all. |
 | `format` | `'markdown'` \| `'json'` \| `'html'` | The report's form: markdown (the memo), json (the schema's form), html (script-free). |
 | `include_archived` | `boolean` | List archived records too; they are left out by default. |
+| `insight_id` | `string` | An insight's id, as insights_list names it. |
 | `job_id` | `string` | A job's id, exactly as the action that started it returned it. |
 | `judge_model` | `string` or `null` | The judge model, where the kind is model-judged. |
 | `k_runs` | `integer` | Repeats of every case, for pass^k. |
@@ -2305,7 +2322,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `score` | `integer` | The score, on the dimension's scale: 1-5, or 1 (pass) / 0 (fail). |
 | `simulator_model` | `string` or `null` | The simulated user's model, where the kind has one. |
 | `status` | `'pending'` \| `'running'` \| `'completed'` \| `'failed'` \| `'cancelled'` \| `'budget_stopped'` \| `'exhausted'` or `null` | List only runs with this stored status. |
-| `subject_filter` | `string` or `null` | Read only this subject's runs; omitted reads every subject. |
+| `subject_filter` | `string` or `null` | Read only this subject's runs or insights; omitted reads every subject. |
 | `subject_id` | `string` | The subject the runs measure, as the host names it. |
 | `supersedes` | array of `string` | The live case(s) of this campaign and memo the freeze replaces, by id — needed to revise a case's labels or re-freeze moved evidence; every live case of the pair when it holds several. |
 | `template_filter` | `string` or `null` | Only calls made for this template, by id. |

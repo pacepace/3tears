@@ -232,7 +232,9 @@ Prior insights reach the bundle bounded: the newest live insight per claim, at m
 `refused_merges_omitted` and `next_experiments_omitted`. A generation that restates a live insight's claim (same
 words, ignoring case, spacing and a final period) replaces that insight in the ledger rather than adding a second
 one, so regenerating over unchanged evidence leaves the ledger its size. Archiving the analysis that minted an
-insight retracts it; each insight's `invalidation_trigger` states both rules.
+insight retracts it; each insight's `invalidation_trigger` states both rules. The `insights_list` and `insight_get`
+actions show the ledger and each insight's standing (live, retracted or orphaned); `insight_delete` removes one wrong
+insight.
 
 The bundle stays closed: the generator has no tools to fetch more context, such as a `bisect_runs` or `pivot`
 drill-down. A generator that fetched its own context would read different inputs on every call, so nothing could
