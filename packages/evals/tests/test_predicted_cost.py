@@ -27,12 +27,11 @@ from threetears.evals.analysis.reporting import (
     METRIC_COMPOSITE,
     METRIC_COST_USD,
     CostEstimate,
-    PivotError,
     PlannedCost,
     ScoreRecord,
     compute_estimate_cost,
-    compute_pivot,
 )
+from threetears.evals.analysis.lenses.pivot import PivotError, compute_pivot
 from threetears.evals.analysis.stats import lognormal_sum_prediction_band
 from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.schema.models import EvalResult, EvalRun

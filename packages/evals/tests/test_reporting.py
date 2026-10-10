@@ -27,9 +27,6 @@ from threetears.evals.analysis.reporting import (
     BADGE_ROLES_DIFFER,
     BADGE_TOOL_CONFIG_DIFFERS,
     CASSETTE_SPAN_CLAUSE,
-    CELL_MEASURED,
-    CELL_UNMEASURED,
-    CELL_WITHHELD,
     METRIC_COMPOSITE,
     METRIC_COST_USD,
     METRIC_GOAL_STATE,
@@ -45,19 +42,24 @@ from threetears.evals.analysis.reporting import (
     ComparisonSet,
     CostEstimateError,
     LatencyPartition,
-    PivotError,
     PredictedValue,
     ScoreProjection,
     ScoreRecord,
     cassette_mode_disclosure,
     compute_comparison_sets,
     compute_estimate_cost,
-    compute_pivot,
     decompose_total_ms,
     difference_was_declared_at_launch,
     dim_judge_model,
     place_results,
     project_score_records,
+)
+from threetears.evals.analysis.lenses.pivot import (
+    CELL_MEASURED,
+    CELL_UNMEASURED,
+    CELL_WITHHELD,
+    PivotError,
+    compute_pivot,
 )
 from threetears.evals.analysis.lenses.frontier import FrontierResult, FrontierError, compute_frontier
 from threetears.evals.analysis.lenses.history import HistoryError, compute_history
