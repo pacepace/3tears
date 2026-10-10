@@ -5685,7 +5685,7 @@ def _unknown_history_metric(metric: str) -> str:
             "scale — each of those is one value per result, which is what this surface can plot. "
             f"For history, {expected}."
         )
-    return f"unknown history metric {metric!r} — {expected}"
+    return f"unknown history metric {metric!r} — {expected}, or a numeric measure the host declares (a scorer's name)"
 
 
 def _attribution_withheld(descriptor: MetricDescriptor) -> bool:
@@ -6051,6 +6051,48 @@ def _history_value_of(metric: str) -> Callable[[EvalResult], float | None]:
     raise HistoryError(_unknown_history_metric(metric))
 
 
+def _host_measure_value_of(descriptor: MetricDescriptor) -> Callable[[EvalResult], float | None]:
+    """Pick the per-result reader for a measure the host declared, such as a quick-path scorer's.
+
+    A host measure is landed on each result's ``host_measures`` (a scorer's grade on the quick path), so it
+    has a per-result reading, and a series of its per-case means is the same quantity a comparison of it
+    pools. Each result is read over the population every other surface reads the measure over
+    (``summary_population``, ``"scored"`` when undeclared, through the bundle's own membership rule), so a
+    cell the harness faulted is never in it. A ``bool`` counts as 1 or 0.
+
+    Args:
+        descriptor: The host's descriptor of the measure.
+
+    Returns:
+        The per-result reader, ``None`` where the result carries no number for the measure.
+
+    Raises:
+        HistoryError: The measure is not numeric, or declares no direction — a series could not say which
+            way a step is a decline.
+    """
+    from threetears.evals.analysis.bundle import _in_population
+    from threetears.evals.contracts.metrics import summary_population
+
+    name = descriptor.name
+    if descriptor.data_type != "numeric" or descriptor.higher_is_better is None:
+        raise HistoryError(
+            f"history cannot series {name!r} — the host declares it "
+            + ("with no direction" if descriptor.data_type == "numeric" else f"as {descriptor.data_type or 'untyped'}")
+            + ", and a series flags a step as a decline only on a numeric measure whose better direction is "
+            "declared (higher_is_better)"
+        )
+    population = summary_population(descriptor, "scored")
+
+    def host_measure_value(result: EvalResult) -> float | None:
+        """Read the declared measure off one result, or ``None`` where it is not an observation of it."""
+        value = result.host_measures.get(name)
+        if value is None or isinstance(value, str) or not _in_population(population, result):
+            return None
+        return float(value)
+
+    return host_measure_value
+
+
 def _per_case_means(
     results: list[EvalResult], value_of: Callable[[EvalResult], float | None]
 ) -> tuple[dict[str, float], int]:
@@ -6152,8 +6194,9 @@ def compute_history(
         metric: A measure in :data:`HISTORY_METRICS`, or the registry name of its
             aggregate as ``list_metrics`` publishes it (``mean_composite`` for
             ``composite``, and so on through
-            :data:`_AGGREGATE_OF_OBSERVATION`) — see :func:`resolve_measure_name`.
-            Defaults to composite quality.
+            :data:`_AGGREGATE_OF_OBSERVATION`) — see :func:`resolve_measure_name` — or a
+            numeric, directional measure the host declares (a quick-path scorer's name),
+            read off each result's ``host_measures``. Defaults to composite quality.
         min_absolute_change: Smallest absolute move that counts as a regression,
             in the measure's own unit. ``0.0`` lets significance alone flag.
         min_relative_change: Smallest move relative to the baseline that counts, as
@@ -6193,12 +6236,17 @@ def compute_history(
     # name is the wrong thing to quote back.
     requested = metric
     metric = resolve_measure_name(metric)
-    if metric not in HISTORY_METRICS:
+    declared = None if metric in HISTORY_METRICS else profile.measures.get(metric)
+    if metric not in HISTORY_METRICS and declared is None:
         raise HistoryError(_unknown_history_metric(requested))
 
-    value_of = _history_value_of(metric)
-    descriptor = _describe_aggregate(metric, profile=profile)
-    # All HISTORY_METRICS are directional; the guard keeps the type honest without
+    if declared is not None:
+        value_of = _host_measure_value_of(declared)
+        descriptor = declared
+    else:
+        value_of = _history_value_of(metric)
+        descriptor = _describe_aggregate(metric, profile=profile)
+    # Every HISTORY_METRICS member is directional, and a host measure without a direction was refused; the guard keeps the type honest without
     # asserting an impossible None away.
     direction = descriptor.higher_is_better if descriptor.higher_is_better is not None else True
     # Decided from the descriptor once, before any row is read, so a corpus that yields no

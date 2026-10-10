@@ -151,7 +151,8 @@ def scope_history(
     Args:
         host: The host whose store and vocabulary are read.
         scope_id: The scope.
-        metric: The measure; ``None`` or blank takes the composite.
+        metric: The measure: the composite, spend, latency, a judged axis, or a numeric measure the host
+            declares (a quick-path scorer's name); ``None`` or blank takes the composite.
         min_absolute_change: The smallest move a regression flag counts, in the measure's unit.
         min_relative_change: The smallest move relative to the baseline a flag counts, as a fraction.
         subject_id: Only this subject's observations.

@@ -1125,7 +1125,7 @@ def _template_id(
     return f"{CALLABLE_HOST_ID}-{digest[:16]}"
 
 
-_LIFECYCLE_STAMPS = frozenset({"created_at", "updated_at"})
+_LIFECYCLE_STAMPS: set[str] = {"created_at", "updated_at"}
 
 
 def _save_unless_unchanged(host: EvalHost, template: EvalTemplate, test_cases: Sequence[EvalTestCase]) -> None:

@@ -25,7 +25,8 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis import list_campaigns
-from threetears.evals.ops import summarize_run
+from threetears.evals.contracts.errors import ValidationFailedError
+from threetears.evals.ops import scope_history, summarize_run
 from threetears.evals.quick import Judge, callable_host, compare, run_eval
 from threetears.evals.run import list_runs
 from threetears.evals.storage import SqliteDocumentStore
@@ -78,6 +79,32 @@ async def test_a_run_eval_run_is_read_back_by_a_new_process(tmp_path: Path) -> N
         f"{first.run_id} always_right 12 correct 1.0",
         f"{second.run_id} misses_one 12 correct {10 / 12}",
     ]
+
+
+async def misses_half(case: Mapping[str, Any]) -> str:
+    return "wrong" if case["n"] % 2 else "right"
+
+
+async def test_a_kept_scorer_has_a_history_read_back_from_the_file(tmp_path: Path) -> None:
+    """``scope_history(metric=<scorer>)`` series a quick-path scorer, read through a host over the reopened file."""
+    path = tmp_path / "evals.sqlite"
+    with SqliteDocumentStore(path) as store:
+        first = await run_eval(CASES[:12], always_right, [correct], scope_id="kept", k=2, store=store, model="router")
+        second = await run_eval(CASES[:12], misses_half, [correct], scope_id="kept", k=2, store=store, model="router")
+    with SqliteDocumentStore(path) as reopened:
+        host = callable_host([correct], store=reopened)
+        history = scope_history(host, "kept", metric="correct")
+        with pytest.raises(ValidationFailedError, match="a numeric measure the host declares"):
+            scope_history(host, "kept", metric="corect")
+    (series,) = history.series
+    assert series.model == "router" and history.higher_is_better is True
+    assert [(point.run_id, point.value, point.n, point.n_cases) for point in series.points] == [
+        (first.run_id, 1.0, 24, 12),
+        (second.run_id, 0.5, 24, 12),
+    ]
+    assert series.points[0].regression is None
+    flag = series.points[1].regression
+    assert flag is not None and flag.label == "regressed" and flag.n_pairs == 12
 
 
 async def test_compare_keeps_its_margins_with_a_store(tmp_path: Path) -> None:
