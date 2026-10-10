@@ -130,13 +130,15 @@ def _without_latency(result: EvalResult, measures: MeasureRegistry | None) -> Ev
     )
 
 
-def contended_latency_sentence(withheld: int, of: int, *, where: str = "") -> str | None:
+def contended_latency_sentence(withheld: int, of: int, *, where: str = "", declared: bool = False) -> str | None:
     """The one line a surface prints when it left latency read under concurrency out, or ``None``.
 
     Args:
         withheld: How many results' latency was left out.
         of: How many results the surface read.
         where: Where, when only part of the surface was affected (``" in 2 of 5 cells"``); blank for all of it.
+        declared: The campaign declares latency under test, so the runs read under concurrency are ones it cannot
+            read its question from — the remedy says so.
 
     Returns:
         The sentence, or ``None`` when nothing was withheld.
@@ -149,7 +151,12 @@ def contended_latency_sentence(withheld: int, of: int, *, where: str = "") -> st
         f"Latency is not compared here: {count} was read while other cells or runs executed beside it "
         f"(execution_mode `{CONCURRENT}`), so it is left out of every comparison, bar and ranking"
         + ("." if every else ", and the latency shown is read only from results measured serially.")
-        + " Launch with measure_latency=True to read latency clean."
+        + (
+            " This campaign declares latency under test, and those runs were not measured that way: relaunch them "
+            "with measure_latency=True."
+            if declared
+            else " Launch with measure_latency=True to read latency clean."
+        )
     )
 
 

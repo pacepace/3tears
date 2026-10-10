@@ -212,3 +212,18 @@ class TestTheScopeLenses:
         history = compute_history(runs, everything, archived_run_ids=None, profile=_PROFILE)
 
         assert history.contended_latency_disclosure is None
+
+
+class TestACampaignDeclaringLatencyUnderTest:
+    def test_its_runs_read_under_concurrency_are_named_with_the_remedy(self) -> None:
+        campaign, runs, results = _campaign([(CONTROL, "serial", 0.0), (CONTRAST, "concurrent", 0.0)])
+        assert campaign.declared_design is not None
+        declared = campaign.model_copy(
+            update={"declared_design": campaign.declared_design.model_copy(update={"measure_latency": True})}
+        )
+
+        bundle = assemble_context_bundle(declared, storage=ToyhostStorage(runs, results), profile=_PROFILE)
+
+        assert bundle.latency_contended is not None
+        assert "This campaign declares latency under test" in bundle.latency_contended
+        assert bundle.latency_contended.count("measure_latency=True") == 1

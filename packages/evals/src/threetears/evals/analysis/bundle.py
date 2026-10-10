@@ -7960,13 +7960,7 @@ def _latency_contended(
             withheld += here
             cells.append(CellCoordinate(variant_key=variant_key, apparatus_class_id=apparatus_class_id))
     where = "" if len(cells) == len(results_by_cell) else f" in {len(cells)} of {len(results_by_cell)} cells"
-    sentence = contended_latency_sentence(withheld, total, where=where)
-    if sentence is not None and declared:
-        sentence += (
-            " This campaign declares latency under test, and those runs were not measured that way: relaunch them "
-            "with measure_latency=True, or read its latency from the runs that were."
-        )
-    return cells, sentence
+    return cells, contended_latency_sentence(withheld, total, where=where, declared=declared)
 
 
 def _all_failed(cells: list[CellFacts]) -> tuple[list[CellCoordinate], str | None]:
