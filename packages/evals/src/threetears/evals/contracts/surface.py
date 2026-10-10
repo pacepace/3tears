@@ -60,6 +60,14 @@ class JudgedReading(EvalDocumentModel):
     )
     n: int = Field(ge=0, description="Scores contributing to the mean — one per scored, non-faulted observation.")
     n_independent: int = Field(ge=0, description="Distinct test cases behind those scores.")
+    case_means: list[float] | None = Field(
+        default=None,
+        description=(
+            "Each test case's mean over its observations, ascending, recorded only below 5 cases (the chart band "
+            "floor): a chart draws these as points rather than an interval band there. None at 5 cases or more, "
+            "and on a summary stored before it, which reads as not recorded."
+        ),
+    )
     n_infra_excluded: int = Field(
         default=0, ge=0, description="Scores on observations the harness faulted, left out of n and the mean."
     )
@@ -738,6 +746,15 @@ class DecisionSurface(EvalDocumentModel):
             "a frontier chart and the frontier table cannot disagree. An arm the lens placed as more than one "
             "contestant (two identity versions, or two subjects) is absent: it has no one standing. None on a "
             "surface frozen before standings were carried; a chart drawn from one states no domination."
+        ),
+    )
+    frontier_disqualified: dict[str, list[DimName]] | None = Field(
+        default=None,
+        description=(
+            "The arms the frontier lens disqualified on its boundary pillar, keyed by variant, each with the boundary "
+            "(guardrail) dimensions it breached against the control — copied from the lens, so a frontier chart draws "
+            "the cross the table names. An arm absent was not disqualified. None on a surface frozen before "
+            "disqualifications were carried (schema v8, #613): a chart drawn from one marks none, as it did then."
         ),
     )
     rubric_threshold: int = Field(

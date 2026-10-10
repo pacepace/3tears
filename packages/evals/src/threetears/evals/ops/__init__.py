@@ -40,6 +40,7 @@ from threetears.evals.ops.analysis import (
     AnalysisGenerationEstimate,
     AnalysisLine,
     AnalysisListing,
+    BarProposals,
     CampaignDefinition,
     CampaignLine,
     CampaignListing,
@@ -48,6 +49,7 @@ from threetears.evals.ops.analysis import (
     InsightLine,
     InsightListing,
     InsightStandingName,
+    ProposedBar,
     ReportDocument,
     ReportFormat,
     UndescribableArmsLine,
@@ -58,6 +60,8 @@ from threetears.evals.ops.analysis import (
     analysis_delete,
     analysis_estimate,
     analysis_generate,
+    bar_proposals_text,
+    bars_propose,
     campaign_archive,
     campaign_create,
     campaigns_list,
@@ -83,10 +87,15 @@ from threetears.evals.ops.jobs import (
     job_poll,
     parse_job_id,
     run_job_id,
+    SWEEP_JOB_PREFIX,
+    sweep_job_id,
 )
+from threetears.evals.ops.sweeps import SweepArguments, SweepArm, SweepSettings, sweep_launch
 from threetears.evals.analysis import CostEstimate, FrontierResult, HistoryResult, PivotTable, ScoreExport
 from threetears.evals.ops.lenses import (
     ArmEstimate,
+    DetectableEffect,
+    DetectableEffects,
     LaunchEstimate,
     OutOfRunSpendReport,
     OutOfRunSpendTotals,
@@ -107,6 +116,7 @@ from threetears.evals.ops.lenses import (
     scope_out_of_run_spend,
     scope_pivot,
 )
+from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.reporter_bank import FrozenReporterCase
 from threetears.evals.ops.regressions import RegressionAlert, RegressionSink, RegressionWatch
 from threetears.evals.ops.reporter import (
@@ -131,15 +141,22 @@ from threetears.evals.ops.results import (
     results_list,
 )
 from threetears.evals.ops.runs import (
+    CaseSetLine,
+    CaseSetListing,
+    CaseSetMint,
     LaunchArguments,
     ResultRated,
     RunDeleted,
     RunLine,
     RunListing,
+    SecondJudgeRead,
     TemplateLine,
     TemplateListing,
+    judge_drift_check,
     judge_repeat,
     judge_repeat_estimate,
+    judge_second,
+    judge_second_estimate,
     result_rate,
     run_archive,
     run_delete,
@@ -147,6 +164,8 @@ from threetears.evals.ops.runs import (
     run_launch,
     runs_list,
     templates_list,
+    case_set_mint,
+    case_sets_list,
 )
 from threetears.evals.ops.summary import (
     CaseResult,
@@ -159,6 +178,17 @@ from threetears.evals.ops.summary import (
 )
 
 __all__ = [
+    "SWEEP_JOB_PREFIX",
+    "SweepArguments",
+    "SweepArm",
+    "SweepSettings",
+    "sweep_job_id",
+    "sweep_launch",
+    "CaseSetLine",
+    "CaseSetListing",
+    "CaseSetMint",
+    "case_set_mint",
+    "case_sets_list",
     "ANALYSIS_JOB_PREFIX",
     "RUN_JOB_PREFIX",
     "TERMINAL_JOB_STATES",
@@ -169,11 +199,14 @@ __all__ = [
     "AnalysisGeneration",
     "AnalysisLine",
     "AnalysisListing",
+    "BarProposals",
     "CampaignDefinition",
     "CampaignLine",
     "CampaignListing",
     "CaseResult",
     "CostEstimate",
+    "DetectableEffect",
+    "DetectableEffects",
     "DimensionSummary",
     "EvalSummary",
     "FrozenReporterCase",
@@ -197,6 +230,7 @@ __all__ = [
     "OutOfRunSpendReport",
     "OutOfRunSpendTotals",
     "PivotTable",
+    "ProposedBar",
     "ReportDocument",
     "ReportFormat",
     "RegressionAlert",
@@ -229,11 +263,14 @@ __all__ = [
     "analysis_delete",
     "analysis_estimate",
     "analysis_generate",
+    "bar_proposals_text",
+    "bars_propose",
     "analysis_job_id",
     "campaign_archive",
     "campaign_create",
     "campaigns_list",
     "dollars_text",
+    "format_number",
     "estimate_text",
     "export_text",
     "frontier_text",
@@ -274,4 +311,8 @@ __all__ = [
     "templates_list",
     "judge_repeat",
     "judge_repeat_estimate",
+    "SecondJudgeRead",
+    "judge_drift_check",
+    "judge_second",
+    "judge_second_estimate",
 ]

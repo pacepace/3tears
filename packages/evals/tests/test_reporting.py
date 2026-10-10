@@ -18,6 +18,7 @@ from pydantic import ValidationError
 
 from threetears.evals.analysis import reporting
 from threetears.evals.analysis.reporting import (
+    FrontierResult,
     BADGE_CASE_SET_DIFFERS,
     BADGE_CASE_SET_UNRESOLVED,
     BADGE_CASSETTE_MODE_DIFFERS,
@@ -6296,28 +6297,77 @@ class TestFrontierHonestSampleSize:
         assert point.n_composite_cases == 2
 
 
-class TestFrontierTwoPillarDisclosure:
-    """The descoped boundary pillar is stated on every answer, never silent."""
+_BOUNDARY_DIM = "refuse.harm"
 
-    def test_disclosure_is_present_and_names_the_gap(self):
+
+def _with_boundary(results, score):
+    """``results`` each scored ``score`` on a pass/fail boundary (guardrail) dimension, as the judge stamps it."""
+    for result in results:
+        result.rubric_scores = [
+            *result.rubric_scores,
+            RubricScore(dim=_BOUNDARY_DIM, scale="pass_fail", axis="boundary", score=score),
+        ]
+    return results
+
+
+class TestFrontierBoundaryPillar:
+    """#613: a contestant that breaches a boundary dimension is disqualified, named by it, and never the pick."""
+
+    def _corpus(self):
         run = _fr_run()
-        result = _fr_result(run, model="m", variant_key="vk", test_case_id="c1", roles={"candidate": 0.1})
+        control = _with_boundary(_fr_cases(run, 20, model="m-ctrl", variant_key="vk-ctrl", roles={"candidate": 0.5}), 1)
+        cheap = _with_boundary(_fr_cases(run, 20, model="m-cheap", variant_key="vk-cheap", roles={"candidate": 0.1}), 0)
+        mid = _with_boundary(_fr_cases(run, 20, model="m-mid", variant_key="vk-mid", roles={"candidate": 0.3}), 1)
+        return run, control + cheap + mid
 
-        disclosure = compute_frontier([run], [result], archived_run_ids=None).two_pillar
+    def test_a_contestant_failing_only_the_boundary_dim_is_disqualified_and_named(self):
+        run, results = self._corpus()
 
-        assert disclosure.boundary_pillar_available is False
-        assert "capability" in disclosure.verdict_rests_on
-        # Scores now carry their axis, so the gap is no longer a missing axis: it is that the frontier
-        # leaves boundary dimensions out and does not disqualify on them.
-        assert "does not disqualify" in disclosure.reason
+        subject = compute_frontier(
+            [run],
+            results,
+            bar=0.5,
+            archived_run_ids=None,
+            control_variant_key="vk-ctrl",
+            guardrail_margins={_BOUNDARY_DIM: 0.2},
+        ).subjects[0]
 
-    def test_disclosure_survives_an_empty_corpus(self):
-        # Even with nothing to rank, the answer must state the pillar is absent —
-        # so "nothing was disqualified" can never be read as "nothing was checked".
-        result = compute_frontier([], [], archived_run_ids=None)
+        cheap, mid = _point_by_model(subject, "m-cheap"), _point_by_model(subject, "m-mid")
+        assert cheap.bar_decision == "cleared", "it clears the capability bar: only the boundary dim fails it"
+        assert cheap.disqualified_by == [_BOUNDARY_DIM]
+        assert [(c.dimension, c.decision) for c in cheap.boundary_checks] == [(_BOUNDARY_DIM, "breached")]
+        assert [(c.dimension, c.decision) for c in mid.boundary_checks] == [(_BOUNDARY_DIM, "held")]
+        assert subject.verdict is not None and subject.verdict.variant_key == "vk-mid"
+        assert subject.verdict.boundary_unchecked == []
+        assert (subject.boundary_dimensions, subject.n_disqualified) == ([_BOUNDARY_DIM], 1)
+        assert subject.boundary_pillar is not None and subject.boundary_pillar.startswith("checked")
 
-        assert result.subjects == []
-        assert result.two_pillar.boundary_pillar_available is False
+    def test_with_no_control_the_pillar_is_unchecked_and_the_verdict_says_so(self):
+        run, results = self._corpus()
+
+        frontier = compute_frontier([run], results, bar=0.5, archived_run_ids=None)
+
+        subject = frontier.subjects[0]
+        assert frontier.control_variant_key is None
+        assert all(point.boundary_checks == [] and point.disqualified_by == [] for point in subject.points)
+        assert subject.boundary_pillar is not None and subject.boundary_pillar.startswith("not checked")
+        assert subject.verdict is not None and subject.verdict.boundary_unchecked == [_BOUNDARY_DIM]
+
+    def test_a_subject_with_no_boundary_dim_states_nothing(self):
+        run = _fr_run()
+        results = _fr_cases(run, 3, model="m", variant_key="vk", roles={"candidate": 0.1})
+
+        subject = compute_frontier([run], results, archived_run_ids=None, control_variant_key="vk").subjects[0]
+
+        assert (subject.boundary_dimensions, subject.boundary_pillar) == ([], None)
+
+    def test_a_frozen_frontier_carrying_the_retired_disclosure_still_reads(self):
+        stored = compute_frontier([], [], archived_run_ids=None).to_dict()
+        stored["two_pillar"] = {"boundary_pillar_available": False}
+
+        assert FrontierResult.from_dict(stored).subjects == []
+        with pytest.raises(ValidationError, match="two_pillar"):
+            FrontierResult.model_validate(stored)
 
 
 class TestFrontierExclusions:

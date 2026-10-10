@@ -36,6 +36,7 @@ from collections.abc import Awaitable, Callable, Sequence
 
 from threetears.evals.contracts.candidate_kind import CellSink
 from threetears.evals.contracts.models import ConversationStopCause
+from threetears.evals.contracts.world_session import WorldSession
 from threetears.evals.contracts.provider import SimulatorLLM
 from threetears.evals.run.simulator import CandidateTurn, SimulatorTurn, TurnDriver
 
@@ -47,6 +48,7 @@ async def drive_conversation(
     *,
     llm: SimulatorLLM,
     sink: CellSink,
+    world: WorldSession | None = None,
 ) -> ConversationStopCause:
     """Run ``driver``'s conversation from its first turn until it stops on a structural signal.
 
@@ -65,6 +67,13 @@ async def drive_conversation(
     not answered. The turn budget cannot be spent by that answer: the round began with ``candidate_turns <
     max_turns``.
 
+    **A world round has no speaker.** On a round the template declares a world round
+    (``ConversationSpec.world_rounds``), the loop fires its triggered dimension through ``world`` — the cell's
+    world session, whose seed armed it — and hands ``candidate_turn`` one turn spoken by
+    :data:`~threetears.evals.contracts.models.WORLD_SPEAKER` that names what fired, instead of any actor's line.
+    Nothing is posted through ``post_user_turn``: the host's fire handle moved the candidate's world, and the
+    kind decides how its candidate perceives it. A conversation of world rounds alone runs no simulator call.
+
     Args:
         driver: A fresh driver over the template's ``conversation`` block.
         candidate_turn: The candidate's answer to one round, handed that round's delivered utterances.
@@ -72,15 +81,23 @@ async def drive_conversation(
         llm: The simulator-role client, for utterances and ``llm_decided`` picks alike.
         sink: The cell's sink, asked before every paid call whether the run's cost cap is reached
             counting the simulator's spend so far (see the module docstring).
+        world: The cell's world session, which fires each world round's dimension; required when the
+            conversation declares world rounds.
 
     Returns:
         Why the conversation stopped: ``max_turns``, ``user_done`` or ``budget_stopped``.
 
     Raises:
-        ValueError: ``driver`` has already taken a turn; this drives a conversation from its start.
+        ValueError: ``driver`` has already taken a turn; this drives a conversation from its start. Or the
+            conversation declares world rounds and no world session was handed in to fire them.
     """
     if driver.user_turns or driver.candidate_turns or driver.stop_cause is not None:
         raise ValueError("drive_conversation runs a conversation from its start, and this driver has already run")
+    if driver.conversation.world_rounds and world is None:
+        raise ValueError(
+            "the conversation declares world rounds, and no world session was handed in to fire them; pass the "
+            "cell's world session as world="
+        )
 
     def affordable() -> bool:
         """Whether the run's cap leaves room for another paid call; stops the driver when it does not."""
@@ -95,8 +112,17 @@ async def drive_conversation(
         await _side(driver, ConversationStopCause.APPARATUS_ERROR, post_user_turn(opener))
         round_turns.append(opener)
     while driver.should_continue():
+        if (world_round := driver.world_round()) is not None:
+            assert world is not None  # refused above for a conversation with world rounds
+            event = await _side(
+                driver,
+                ConversationStopCause.APPARATUS_ERROR,
+                world.fire(world_round.dimension, turn=driver.candidate_turns + 1),
+            )
+            round_turns = [driver.record_world_event(world_round, event)]
         while (
-            affordable()
+            world_round is None
+            and affordable()
             and (actor := await _side(driver, ConversationStopCause.SIMULATOR_ERROR, driver.next_speaker(llm)))
             is not None
         ):

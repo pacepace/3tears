@@ -757,6 +757,189 @@ def judge_self_agreement(results: Iterable[EvalResult]) -> JudgeSelfAgreement:
 
 
 # ---------------------------------------------------------------------------
+# The judge against a second judge
+# ---------------------------------------------------------------------------
+
+#: Why a second judge's score has no pair to be read in: its call failed — an infrastructure fault, which says
+#: nothing about either judge. (A second judge answering "can't tell" IS paired, as a disagreement.)
+UnpairedSecondReason = Literal["second_failed"]
+
+#: What an undefined kappa means, stated wherever one is: never a zero, never perfect agreement.
+KAPPA_UNDEFINED_ONE_SCORE = (
+    "undefined: every pair carries one and the same score on both sides, so chance alone predicts no disagreement "
+    "and kappa's denominator is zero — this is not perfect agreement, and it is not zero"
+)
+
+
+class InterJudgeDimension(EvalDocumentModel):
+    """How a second judge's scores on one dimension agreed with the run's judge's scores of the same evidence."""
+
+    rubric_dim: str = Field(min_length=1, description="The judged dimension.")
+    scale: RubricScale = Field(description="The scale both judges scored it on.")
+    judge_model: str | None = Field(
+        description="The model that served the first scores, as the provider named it; None when it named none."
+    )
+    judge_config_id: str | None = Field(
+        description="The versioned JudgeConfig that asked for the first scores; None = the built-in prompt."
+    )
+    judge_temperature: JudgeTemperature | None = Field(
+        default=None, description="The temperature the first scores were sent at; None = not recorded."
+    )
+    second_model: str = Field(min_length=1, description="The model the second judge was asked as.")
+    second_judge_config_id: str | None = Field(
+        description="The versioned JudgeConfig that asked the second judge; None = the built-in prompt."
+    )
+    second_temperature: float | None = Field(
+        description="The temperature the second judge was requested at; None = what each dimension's prompt asks for."
+    )
+    second_served_models: list[str] = Field(
+        default_factory=list,
+        description="The models the second judge's responses named as having answered, sorted; empty when none named one.",
+    )
+    n: int = Field(ge=1, description='Pairs read: one per second score, a "can\'t tell" answer included.')
+    results: int = Field(
+        ge=0, description="The distinct results among the passes whose kappa entered `kappa`. 0 when it is undefined."
+    )
+    n_cannot_tell: int = Field(
+        ge=0,
+        description=(
+            "Pairs where the second judge answered it could not tell on a dimension the first scored. Counted in `n` "
+            "and as disagreements, and read in `kappa` as a category of its own, maximally far from every score."
+        ),
+    )
+    passes: list[str] = Field(
+        min_length=1,
+        description=(
+            "The second-judge passes among the pairs, by id, sorted. Each pass is a rater: the kappas pool per pass, "
+            "weighted by the results each measured, as calibration pools per person."
+        ),
+    )
+    exact_agreement: float = Field(
+        ge=0.0, le=1.0, description="The share of pairs where the two judges gave the same score."
+    )
+    kappa_weighting: Literal["quadratic", "none"] = Field(
+        description="How `kappa` weighs a disagreement: quadratic on a 1-5 dimension, unweighted on pass/fail."
+    )
+    kappa: float | None = Field(
+        description=(
+            "Cohen's kappa between the two judges — quadratic-weighted on 1-5, unweighted on pass/fail — per pass, "
+            "pooled by result. None when it is undefined, and `kappa_undefined` says why: never read as 0."
+        ),
+    )
+    kappa_undefined: str | None = Field(
+        default=None, description="Why `kappa` is undefined, when it is; None when it is defined."
+    )
+    agreement_interval: tuple[float, float] | None = Field(
+        default=None,
+        description=(
+            "Confidence bounds on `kappa` over its distinct results — a one-sided 95% lower and 97.5% upper bound, "
+            "the bounds the evidence tiers are decided on (`agreement_interval`). None when `kappa` is undefined or "
+            "rests on fewer than two results. The point figure is never the finding; these bounds are."
+        ),
+    )
+
+
+class UnpairedSecondScore(EvalDocumentModel):
+    """A second judge's score with no pair to read, and why."""
+
+    result_id: str = Field(min_length=1, description="The result asked about.")
+    rubric_dim: str = Field(min_length=1, description="The dimension.")
+    pass_id: str = Field(min_length=1, description="The pass that asked.")
+    reason: UnpairedSecondReason
+
+
+class InterJudgeAgreement(EvalDocumentModel):
+    """Every second-judge score read, paired with the run's judge's where it can be, and agreement per dimension."""
+
+    scores_read: int = Field(default=0, ge=0, description="Every second-judge score read: the pairs plus the unpaired.")
+    dimensions: list[InterJudgeDimension] = Field(
+        default_factory=list,
+        description=(
+            "One per (dimension, scale, first judge, second judge) with at least one pair, ordered by those. Empty "
+            "when no second judge was asked: agreement between judges is then unmeasured, which is a state, not a zero."
+        ),
+    )
+    unpaired: list[UnpairedSecondScore] = Field(
+        default_factory=list, description="Second-judge scores that could not be paired, in the order they were read."
+    )
+
+
+def inter_judge_agreement(results: Iterable[EvalResult], *, pass_id: str | None = None) -> InterJudgeAgreement:
+    """Pair each second judge's score with the first score it answers, and read agreement the way calibration does.
+
+    The pair is the one the pass recorded (:class:`~threetears.evals.contracts.models.SecondJudgeScore`), so a
+    re-judge that later rewrote the result's score does not split it. The second judge stands where the person stands
+    in :func:`judge_agreement`, each pass a rater, so the figures are the same statistic over the same pooling
+    (:func:`_agreement_numbers`). The figure is quadratic-weighted kappa on 1-5 and unweighted kappa on pass/fail; an
+    undefined one is stated as undefined, with why.
+
+    Args:
+        results: The results whose second-judge scores to read.
+        pass_id: Read only this pass's pairs; ``None`` for every pass.
+
+    Returns:
+        The agreement per (dimension, scale, first judge, second judge), and the scores that could not be paired.
+    """
+    groups: dict[tuple[JudgeKey, str, str | None, float | None], list[_Pair]] = {}
+    served: dict[tuple[JudgeKey, str, str | None, float | None], set[str]] = {}
+    unpaired: list[UnpairedSecondScore] = []
+    read = 0
+    for result in results:
+        for judging in result.judge_seconds:
+            if pass_id is not None and judging.pass_id != pass_id:
+                continue
+            for entry in judging.scores:
+                read += 1
+                if entry.second is None and entry.cannot_tell is None:
+                    unpaired.append(
+                        UnpairedSecondScore(
+                            result_id=result.id, rubric_dim=entry.dim, pass_id=judging.pass_id, reason="second_failed"
+                        )
+                    )
+                    continue
+                first = JudgeKey(
+                    entry.dim,
+                    entry.scale,
+                    entry.first_served_model,
+                    entry.first_judge_config_id,
+                    entry.first_judge_temperature,
+                )
+                key = (first, judging.judge.model, judging.judge_config_ids.get(entry.dim), judging.judge.temperature)
+                second = entry.second.score if entry.second is not None else None
+                groups.setdefault(key, []).append(_Pair(entry.first_score, second, judging.pass_id, result.id))
+                if entry.second is not None and entry.second.served_model is not None:
+                    served.setdefault(key, set()).add(entry.second.served_model)
+    dimensions = []
+    for key in sorted(groups, key=lambda k: (*_sort_key(k[0]), k[1], k[2] or "", "" if k[3] is None else str(k[3]))):
+        first, model, config_id, temperature = key
+        numbers = _agreement_numbers(first.scale, groups[key])
+        figure = numbers.weighted_kappa if first.scale == "ordinal" else numbers.kappa
+        dimensions.append(
+            InterJudgeDimension(
+                rubric_dim=first.rubric_dim,
+                scale=first.scale,
+                judge_model=first.judge_model,
+                judge_config_id=first.judge_config_id,
+                judge_temperature=first.judge_temperature,
+                second_model=model,
+                second_judge_config_id=config_id,
+                second_temperature=temperature,
+                second_served_models=sorted(served.get(key, set())),
+                n=numbers.n,
+                results=numbers.results,
+                n_cannot_tell=numbers.cannot_tell,
+                passes=numbers.raters,
+                exact_agreement=numbers.exact_agreement,
+                kappa_weighting="quadratic" if first.scale == "ordinal" else "none",
+                kappa=figure,
+                kappa_undefined=KAPPA_UNDEFINED_ONE_SCORE if figure is None else None,
+                agreement_interval=numbers.interval,
+            )
+        )
+    return InterJudgeAgreement(scores_read=read, dimensions=dimensions, unpaired=unpaired)
+
+
+# ---------------------------------------------------------------------------
 # The tiers the two agreements decide
 # ---------------------------------------------------------------------------
 
@@ -892,17 +1075,23 @@ def _criterion_words(criterion: TierCriterion) -> str:
 
 __all__ = [
     "DimensionAgreement",
+    "InterJudgeAgreement",
+    "InterJudgeDimension",
     "JudgeAgreement",
     "JudgeKey",
     "JudgeSelfAgreement",
     "SelfAgreementDimension",
+    "KAPPA_UNDEFINED_ONE_SCORE",
     "UnpairedRating",
     "UnpairedReason",
+    "UnpairedSecondReason",
+    "UnpairedSecondScore",
     "UnrepeatedReason",
     "UnrepeatedScore",
     "TIER_LOWER_CONFIDENCE",
     "TIER_UPPER_CONFIDENCE",
     "agreement_interval",
+    "inter_judge_agreement",
     "judge_agreement",
     "judge_evidence_tiers",
     "judge_key",

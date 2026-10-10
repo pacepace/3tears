@@ -40,6 +40,8 @@ from __future__ import annotations
 
 from threetears.evals.analysis.agreement import (
     DimensionAgreement,
+    InterJudgeAgreement,
+    InterJudgeDimension,
     JudgeAgreement,
     JudgeKey,
     JudgeSelfAgreement,
@@ -47,7 +49,10 @@ from threetears.evals.analysis.agreement import (
     UnpairedRating,
     UnpairedReason,
     UnrepeatedReason,
+    UnpairedSecondReason,
+    UnpairedSecondScore,
     UnrepeatedScore,
+    inter_judge_agreement,
     judge_agreement,
     judge_evidence_tiers,
     judge_key,
@@ -55,10 +60,14 @@ from threetears.evals.analysis.agreement import (
     tier_for_judges,
     tier_sentence,
 )
+from threetears.evals.analysis.judge_drift import DriftVerdict, JudgeDrift, JudgeDriftDimension, judge_drift
 from threetears.evals.analysis.arms import ArmTable, cell_label, multi_rig_variants, short_digest
 from threetears.evals.analysis.bar_proposals import BaselineBarProposals, propose_bars
 from threetears.evals.analysis.bundle import (
     AnalysisContextBundle,
+    JudgeChange,
+    JudgeDriftLink,
+    JudgeIdentityLevel,
     BundleInspection,
     GoalCheckProofReading,
     InsightStanding,
@@ -210,6 +219,7 @@ from threetears.evals.analysis.stats import EQUIVALENCE_TEST_NAME, PAIRED_TEST_N
 from threetears.evals.analysis.surface_table import SurfaceTable
 from threetears.evals.analysis.arms import ArmLevel, ArmMeasurement, ArmRow, ArmStatus
 from threetears.evals.analysis.bundle import (
+    AliasedFactors,
     ArmMechanismReading,
     ArmServedModel,
     CampaignReadStore,
@@ -219,8 +229,13 @@ from threetears.evals.analysis.bundle import (
     ComparisonVerdict,
     Confound,
     HeldFixedReading,
+    DeclaredCellCoverage,
+    DeclaredCrossing,
     DeclaredLevelCoverage,
     DesignArm,
+    FactorPairCell,
+    FactorPairPivot,
+    FactorPairScan,
     FamilyComparison,
     JudgedArm,
     JudgedMeasure,
@@ -290,7 +305,7 @@ from threetears.evals.analysis.reporting import (
     ServedModelState,
     SimpsonsFlag,
     SubjectFrontier,
-    TwoPillarDisclosure,
+    FrontierBoundaryCheck,
 )
 from threetears.evals.analysis.service import AnalysisStore
 from threetears.evals.analysis.surface_table import (
@@ -363,6 +378,7 @@ __all__ = [
     "SCOPED_METRICS_HELP",  # debt: retires when the English moves to one renderer
     "SERVED_MODEL_UNRECORDED",
     "WEIGHTING_EQUAL_PER_SCENARIO",
+    "AliasedFactors",
     "AmbiguousPair",
     "AnalysisContextBundle",
     "AnalysisStore",
@@ -394,10 +410,15 @@ __all__ = [
     "HeldFixedReading",
     "CriterionDrift",
     "DeclarableAxes",
+    "DeclaredCellCoverage",
+    "DeclaredCrossing",
     "DeclaredLevelCoverage",
     "DesignArm",
     "DimensionAgreement",
     "DimensionReading",
+    "FactorPairCell",
+    "FactorPairPivot",
+    "FactorPairScan",
     "FamilyComparison",
     "FrontierCostDecision",
     "FrontierCostTie",
@@ -414,6 +435,16 @@ __all__ = [
     "JudgeAgreement",
     "JudgeKey",
     "JudgeSelfAgreement",
+    "InterJudgeAgreement",
+    "InterJudgeDimension",
+    "UnpairedSecondScore",
+    "UnpairedSecondReason",
+    "DriftVerdict",
+    "JudgeChange",
+    "JudgeDriftLink",
+    "JudgeIdentityLevel",
+    "JudgeDrift",
+    "JudgeDriftDimension",
     "JudgedArm",
     "JudgedMeasure",
     "LabelCriterion",
@@ -481,7 +512,7 @@ __all__ = [
     "SurfaceVerdict",
     "TelemetryRollup",
     "TokenRollup",
-    "TwoPillarDisclosure",
+    "FrontierBoundaryCheck",
     "UnpairedRating",
     "UnrepeatedReason",
     "UnrepeatedScore",
@@ -526,6 +557,8 @@ __all__ = [
     "judge_evidence_tiers",
     "judge_key",
     "judge_self_agreement",
+    "inter_judge_agreement",
+    "judge_drift",
     "judge_phase_ceiling_s",
     "list_analyses",
     "list_analysis_attempts",

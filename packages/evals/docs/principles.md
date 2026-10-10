@@ -86,7 +86,8 @@ self-consistency measures precision, not accuracy.
 
 **Bars start where the incumbent performs ("never ship worse than what runs today") and only tighten.**
 A proposed bar is never adopted
-automatically, and one looser than the registered bar is refused. A bar decides on the interval against the
+automatically (the `bars_propose` action proposes them from a single-cell baseline campaign and registers
+nothing; a person writes the bar into the host's registrations), and one looser than the registered bar is refused. A bar decides on the interval against the
 measure's declared margin, never the mean: cleared, missed, or undecided when the interval straddles the line,
 which is neither a pass nor a failure. A bar at the mean, read on a cell's mean, failed an unchanged incumbent
 about half the time.

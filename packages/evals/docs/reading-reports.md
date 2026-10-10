@@ -11,7 +11,9 @@ Every campaign is read through one document, the **report**: blocks in reading o
 author wrote, with a role), `table`, `chart` and `disclosure` (what code must add), each linked to the findings it
 belongs to or rests on. With an **analysis** (a model reading the campaign's numbers and writing findings), the
 report carries those findings beside the evidence; without one it is a **code-only report**, every table and
-chart code can build and a line saying no analysis was generated. Either way every number comes from code, and a
+chart code can build and a line saying no analysis was generated. Either way the decision surface's charts lead its
+table, and a finding's evidence that compares arms is drawn ahead of its table unless the author's own chart drew:
+the chart is the reading form, the table the audit form. Either way every number comes from code, and a
 model never decides how much a judged score can be trusted. [`examples/reports.py`](../examples/reports.py) writes
 one to files, offline. `analysis_report(storage, analysis_id, scope_id)` returns a generated analysis's `Report`:
 
@@ -38,10 +40,10 @@ which the published schema and the model both refuse. It holds:
 - the arm table: each arm and every lever it ran, with no status column (every arm is unresolved, since
   nothing decided) and no finding column (there are no findings);
 - the guardrails, each decided for each arm against the control ([below](#reading-the-guardrails));
-- the decision surface;
+- the decision surface, led by a distribution chart per judged dimension and per measure with a better end,
+  drawn across the arms, except a label's statistics (they are in the labels table), `match` where `accuracy` is
+  charted, a cost no result reported, and a reading only one arm drew (nothing to compare);
 - the contrasts the evidence tested against the control;
-- a distribution chart per judged dimension and per measure with a better end, except a label's statistics
-  (they are in the labels table), `match` where `accuracy` is charted, and a cost no result reported;
 - for a classifier, one `labels` table of each label's precision, recall and F1, a row per label and arm:
   precision and recall with their 95% Wilson intervals over the cases, F1 with none (it has none by construction), and
   every figure with the n it is counted over;
@@ -52,6 +54,12 @@ which the published schema and the model both refuse. It holds:
 An analysis adds that reading: findings, each with the evidence it rests on and the caveats that qualify it;
 a decision per declared question, with its confidence; which arm won and why; and what to run next. No
 headline, finding, decision or answer to a declared question appears in a code-only report.
+
+**Coverage, joined.** An analysis's report opens What to run next with a `coverage` table: each lever of the
+coverage map, its status, the findings whose `axes` name it (or "no finding") and the next steps whose `lever`
+names it. A `thin` or `unswept` lever no step names reads "no next step names it". A step naming a lever with
+no coverage row is a proposal, not a gap, and says so beside it. The methods count the levers no finding names;
+a measured lever with no finding may simply have had nothing to say, so nothing acts on the count.
 
 `Report.basis` says which a report is; `REPORT_VERSION` is 5.
 
@@ -206,6 +214,12 @@ which blocks an arm rather than clearing one; that claim's rate is not guarantee
 column marks such a row `(t: no declared range)`. An `undecided` guardrail does not block adoption because at a few cases and no margin almost every
 guardrail is undecided, and a rule that blocked them all would block every adoption.
 
+**On the frontier.** The frontier holds each contestant's judged guardrails against the campaign's control by the
+same rule. A contestant that breaches one is disqualified, and its row names the dimension (`disqualified_by`).
+One that does not hold every guardrail is never the frontier's pick. With no control there is nothing to hold a
+contestant against: the subject's `boundary_pillar` says the pillar was not checked, and a verdict lists the
+dimensions it was not checked on (`boundary_unchecked`).
+
 ## Readings no question asked about: exploratory
 
 A campaign's declared questions say what it set out to learn. A reading on no axis a live question names is
@@ -235,6 +249,7 @@ unit of analysis: a case's repeats are averaged first, because they are not inde
 | Scope divergence, mechanism checks | The difference tested directly, paired or Welch as for a contrast; a gap with no spread is read by an exact permutation test, which can reach 0.05 only from six shared cases, or unshared where 2 / C(n_a + n_b, n_a) ≤ 0.05 (four a side, or three against five). |
 | Frontier | Dominance by the contrasts' test, Holm across the subject's pairs; latency ranked on the mean; p95 median-unbiased (Hyndman–Fan type 8) from 13 observations; cost band a lognormal prediction band. |
 | Run history | Paired test per adjacent pair of runs, uncorrected; `equivalent` by the same bounded TOST against the threshold, on the measure's declared range (with none, untested, and each step's flag says why). |
+| Detectable difference (a launch estimate) | The smallest true difference the paired t-test on `n` cases finds with 80% power at α/m (Holm's first step over the `m` comparisons planned), by the noncentral t. The variance is measured on earlier runs of the template: repeat noise, plus how far two arms disagree about a case (or one arm's case spread, twice, where no earlier pair shares cases). Assumes near-normal per-case differences and one real difference in the family. |
 | Judge agreement and evidence tiers | Cohen's κ, quadratic-weighted on 1–5; tiers decided on a score interval for κ (one-sided 95% lower bound to award, 97.5% upper bound to deny). |
 
 The [simulation suite](measuring-soundly.md) checks each method's error rate against a known truth.
@@ -332,7 +347,9 @@ A chart block carries the chart's **intent** (`ChartIntent`, from `threetears.ev
 a charting library's spec: its type from eval's eight, the rows it draws, what each field encodes
 (identity, length, position, interval with what it varies over, level, class, ordinal, count, label), its axes with
 their units and zero baselines, its order, the colour *slots* it uses and what it must disclose — plus its
-values as drawn, which the HTML shows as a table.
+values as drawn, which the HTML shows as a table. An interval is drawn as a band only over 5 or more cases
+(`SMALL_N_BAND_FLOOR`): below that a distribution draws each case's value as a point and says why, a timeseries
+leaves a stated gap, and a null result is refused. The interval itself still appears in the tables.
 
 How a chart looks is the host's: a renderer reads the intent and the host's palette —
 `StyleProfile.chart_palette`, a renderer-neutral `ChartPalette` (the eight numbered series slots, slots
@@ -536,7 +553,7 @@ imports the adapter.
 The packaged palette is a brand-neutral default with a light and a dark variant (`packaged_palette("light")`,
 `packaged_palette("dark")`), a published categorical palette ordered so the four validated slots can be told
 apart as a set. The package's tests hold text to 4.5:1 against the chart surface, slot 1 (every single-series
-mark), `highlight` and `context` to 3:1, and slots 1-4 to an OKLab ΔE of at least 6 under simulated protanopia
+mark) and `context` to 3:1, and slots 1-4 to an OKLab ΔE of at least 6 under simulated protanopia
 and deuteranopia. Several categorical slots fall below 3:1 on the light surface, so a chart never relies on
 colour alone to identify a category: it labels the marks or names the level in the values table. A host's own
 `ChartPalette` is held to the contract's shape only.

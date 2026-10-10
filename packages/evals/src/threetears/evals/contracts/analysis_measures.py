@@ -130,6 +130,14 @@ class MeasureSummary(EvalDocumentModel):
             "at small n). None below n=2, or over a single case."
         ),
     )
+    case_means: list[float] | None = Field(
+        default=None,
+        description=(
+            "Each test case's mean over its observations (a boolean's share held), ascending, recorded only below 5 cases (the chart band "
+            "floor): a chart draws these as points rather than an interval band there. None at 5 cases or more, "
+            "and on a summary stored before it, which reads as not recorded."
+        ),
+    )
     categories: dict[str, int] = Field(
         default_factory=dict, description="Value counts for a categorical measure; empty for a numeric one."
     )

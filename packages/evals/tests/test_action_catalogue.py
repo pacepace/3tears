@@ -89,7 +89,10 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "templates_list": "read",
         "runs_list": "read",
         "campaigns_list": "read",
+        "case_sets_list": "read",
+        "case_set_mint": "write",
         "run_launch": "spend",
+        "sweep_launch": "spend",
         "launch_estimate": "read",
         "job_poll": "read",
         "job_cancel": "write",
@@ -99,11 +102,15 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "campaign_create": "write",
         "analysis_generate": "spend",
         "analysis_estimate": "read",
+        "judge_second": "spend",
+        "judge_second_estimate": "read",
+        "judge_drift_check": "spend",
         "analyses_list": "read",
         "insights_list": "read",
         "insight_get": "read",
         "analyses_undescribable": "read",
         "report_read": "read",
+        "bars_propose": "read",
         "reporter_case_freeze": "write",
         "reporter_cases_list": "read",
         "scope_pivot": "read",
@@ -121,7 +128,11 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "analysis_delete": "destructive",
         "insight_delete": "destructive",
     }
-    assert {action.name for action in engine_actions() if action.long_running} == {"run_launch", "analysis_generate"}
+    assert {action.name for action in engine_actions() if action.long_running} == {
+        "run_launch",
+        "sweep_launch",
+        "analysis_generate",
+    }
 
 
 def test_the_standard_tools_split_on_class_and_take_the_hosts_prefix() -> None:

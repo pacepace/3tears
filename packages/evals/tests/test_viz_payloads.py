@@ -958,3 +958,9 @@ class TestOrderednessInference:
 
     def test_a_lever_nobody_set_has_no_order_to_have(self):
         assert infer_ordered([ABSENT_LEVEL, ABSENT_LEVEL]) is False
+
+    def test_a_null_level_does_not_make_a_numeric_lever_categorical(self):
+        """A lever overlaid to `null` resolves to the level `null` (#574); it is set apart, not parsed (#694)."""
+        assert infer_ordered(["null", "6", "12"]) is True
+        assert infer_ordered(["null", "null"]) is False
+        assert infer_ordered(["null", "gpt-5"]) is False

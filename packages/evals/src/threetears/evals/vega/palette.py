@@ -26,7 +26,7 @@ asserted here:
   against the chart surface, and ``on_fill`` clears 4.5:1 over slot 1, the only fill a value is written
   on.
 - *Marks* — slot 1, the single-series colour every unlabelled mark is drawn in, clears 3:1 against the
-  chart surface in both themes, as do ``highlight`` and ``context``.
+  chart surface in both themes, as does ``context``.
 - *Categorical separation* — slots 1 to :func:`validated_slots` clear OKLab ΔE 6 between EVERY pair under
   simulated protanopia and deuteranopia (Machado 2009, severity 1) and ΔE 15 under normal vision; all
   :func:`series_slots` slots clear ΔE 8 and ΔE 15 between neighbours.

@@ -58,6 +58,12 @@ DISPLAY_FIELD = "display"
 UNPRICED_CLASS = "Not priced"
 
 
+#: The frontier's figure title. It names the comparison, never a quantity: both quantities are already
+#: titles on their own axes (the y title drawn flat above the plot), so a title built from them put
+#: each name on the figure twice, the quality label in two stacked lines (#668).
+FRONTIER_TITLE = "Where each contestant sits on the trade-off"
+
+
 def _classify(point: FrontierVizPoint) -> str:
     """Which contention class a point belongs to.
 
@@ -171,7 +177,7 @@ def frontier_intent(payload: FrontierPayload) -> ChartIntent:
     columns.append(ChartColumn(key=CLASS_FIELD, header="Contention"))
     return ChartIntent(
         type="frontier",
-        title=f"{quality_title} against {cost_title}",
+        title=FRONTIER_TITLE,
         payload=payload.model_dump(mode="json"),
         scale=1.0,
         unit="",
@@ -207,6 +213,7 @@ __all__ = [
     "CLASS_SHAPES",
     "DISPLAY_FIELD",
     "EMPHATIC_CLASSES",
+    "FRONTIER_TITLE",
     "NOT_SHOWN_DOMINATED",
     "NOT_TESTED",
     "UNPRICED_CLASS",

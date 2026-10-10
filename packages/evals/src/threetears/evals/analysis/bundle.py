@@ -45,7 +45,7 @@ from datetime import UTC, datetime
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
-from itertools import chain
+from itertools import chain, product
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple, Protocol
 
 from pydantic import BaseModel, Field, model_validator
@@ -58,6 +58,9 @@ from threetears.evals.analysis.agreement import (
     judge_evidence_tiers,
     judge_key,
     judge_self_agreement,
+    InterJudgeAgreement,
+    InterJudgeDimension,
+    inter_judge_agreement,
     tier_for_judges,
 )
 from threetears.evals.contracts.evidence_tiers import (
@@ -68,6 +71,7 @@ from threetears.evals.contracts.evidence_tiers import (
     JudgedEvidenceTier,
     JudgeEvidenceTier,
 )
+from threetears.evals.analysis.judge_drift import JudgeDrift, judge_drift
 from threetears.evals.analysis.arms import arm_names, surface_order
 from threetears.evals.analysis.contention import (
     contended_latency_sentence,
@@ -120,6 +124,7 @@ from threetears.evals.analysis.stats import (
     LevelDifference,
     clustered_standard_error,
     composite_significance,
+    contrast_samples,
     difference_interval,
     equivalence_untested_reason,
     exact_decimal,
@@ -133,6 +138,7 @@ from threetears.evals.analysis.stats import (
     paired_equivalence,
     proportion_interval,
     separation_p,
+    small_sample_case_means,
 )
 from threetears.evals.contracts.analysis_measures import BarAdjudication, BarVerdict, MeasureCollection, MeasureSummary
 from threetears.evals.contracts.campaign import (
@@ -200,6 +206,7 @@ from threetears.evals.contracts.models import (
     GoalCheckProof,
     MeasureDeclaration,
     RubricAxis,
+    RubricScale,
 )
 from threetears.evals.contracts.provider import sum_optional_tokens
 from threetears.evals.contracts.result_condition import (
@@ -235,7 +242,7 @@ from threetears.evals.contracts.usage_capture import (
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.contracts.host.measures import MeasureRegistry
     from threetears.evals.contracts.campaign import EvalCampaign
-    from threetears.evals.contracts.models import EvalCaseStratum, EvalRun
+    from threetears.evals.contracts.models import EvalCaseStratum, EvalRun, SecondJudge
 
 
 class CampaignReadStore(Protocol):
@@ -361,6 +368,11 @@ _MAX_DIVERGENCES = 8
 _MAX_REFUSED_MERGES = 8
 _MAX_NEXT_EXPERIMENTS = 8
 _MAX_PRIOR_INSIGHTS = 12
+# Pivots over co-varying factor pairs, which grow with the square of the factors in the worst case.
+_MAX_FACTOR_PAIR_PIVOTS = 8
+# The cells of a declared crossing listed, which grow with the product of the declared levels.
+_MAX_DECLARED_CELLS = 64
+_CELL_STATES = ("ran", "not_run", "skipped_by_design", "undetermined")
 
 # Why another swept lever varying inside a cohort clouds the comparison. Generic on
 # purpose: which lever it is says nothing extra here, because a campaign sweeping it
@@ -1295,6 +1307,14 @@ class JudgedArm(EvalDocumentModel):
             "mean: a judge reading a broken transcript is not measuring the candidate."
         ),
     )
+    case_means: list[float] | None = Field(
+        default=None,
+        description=(
+            "Each test case's mean over its observations, ascending, recorded only below 5 cases (the chart band "
+            "floor): a chart draws these as points rather than an interval band there. None at 5 cases or more, "
+            "and on a summary stored before it, which reads as not recorded."
+        ),
+    )
     n_cannot_tell: int = Field(
         default=0,
         ge=0,
@@ -1361,6 +1381,64 @@ class JudgedMeasure(EvalDocumentModel):
     arms: list[JudgedArm] = Field(
         default_factory=list,
         description="One entry per cell carrying a score on this dimension, ordered by (variant_key, apparatus_class_id).",
+    )
+    second_judges: list[InterJudgeDimension] = Field(
+        default_factory=list,
+        description=(
+            "How far each second judge asked about the member runs agreed with their judge on this dimension — n, exact "
+            "agreement, kappa and its bounds (`inter_judge_agreement`), beside the scores it qualifies. Empty when no "
+            "second judge was asked: agreement between judges is then unmeasured, not perfect."
+        ),
+    )
+
+
+class JudgeIdentityLevel(EvalDocumentModel):
+    """One judge the member runs were scored by, as each run recorded it at launch, and the runs and arms under it."""
+
+    judge_model: str = Field(
+        min_length=1, description="The run's judge pin: the model every unconfigured dim was sent to."
+    )
+    judge_config_ids: dict[str, str] = Field(
+        default_factory=dict,
+        description="dim -> the versioned JudgeConfig the run pinned; absent = the built-in prompt.",
+    )
+    judge_temperature: float | None = Field(
+        default=None, description="The temperature unconfigured dims were requested at; None = not recorded."
+    )
+    run_ids: list[str] = Field(min_length=1, description="The member runs judged this way, sorted.")
+    variant_keys: list[str] = Field(default_factory=list, description="The arms those runs measured, sorted.")
+
+
+class JudgeDriftLink(EvalDocumentModel):
+    """A drift reading that spans a judge change: evidence of one side re-scored by the other side's judge."""
+
+    from_level: int = Field(ge=0, description="The index in `levels` whose runs' evidence was re-scored.")
+    to_level: int = Field(ge=0, description="The index in `levels` whose judge re-scored it.")
+    run_ids: list[str] = Field(min_length=1, description="The runs whose stored evidence was re-scored, sorted.")
+    pass_ids: list[str] = Field(min_length=1, description="The second-judge passes read, sorted.")
+    drift: JudgeDrift = Field(description="How far each dimension moved between the two judges on the same evidence.")
+
+
+class JudgeChange(EvalDocumentModel):
+    """Whether the member runs were judged by more than one judge, which, and the drift readings that span the change."""
+
+    levels: list[JudgeIdentityLevel] = Field(
+        default_factory=list,
+        description=(
+            "Each judge the judged member runs recorded, ordered by model, configs and temperature. More than one is a "
+            "judge change: a judged difference between arms on different levels may be the judge, not the subject."
+        ),
+    )
+    drift_links: list[JudgeDriftLink] = Field(
+        default_factory=list,
+        description=(
+            "Drift readings among the member runs that re-scored one level's evidence under another level's judge. "
+            "Empty when none exists — then nothing measured how far the judge change alone moves the scores."
+        ),
+    )
+    sentence: str | None = Field(
+        default=None,
+        description="The sentence to quote about the change; None when every judged member run had one judge.",
     )
 
 
@@ -1543,6 +1621,103 @@ class DeclaredLevelCoverage(EvalDocumentModel):
             "'not run' cannot be claimed."
         )
     )
+
+
+class DeclaredCellCoverage(EvalDocumentModel):
+    """One combination of declared levels (a cell), and whether it ran, was skipped on purpose, or is missing."""
+
+    levels: dict[str, str] = Field(
+        description="Each declared axis's level in this cell, as the declaration renders it."
+    )
+    state: Literal["ran", "not_run", "skipped_by_design", "undetermined"] = Field(
+        description=(
+            "ran = some run sat at every one of these levels. skipped_by_design = the design left it out on purpose "
+            "(its crossing, or skipped_cells) and it did not run: no gap. not_run = the design meant to run it and no "
+            "run did: a gap. undetermined = meant to run, no run is known to sit here, but some run's level on an "
+            "axis could not be established."
+        )
+    )
+
+
+class DeclaredCrossing(EvalDocumentModel):
+    """Every cell of a design that says which combinations of its levels it meant to run."""
+
+    crossing: Literal["full", "star"] | None = Field(
+        description="The design's declared crossing; None where only skipped_cells were named (full less those)."
+    )
+    n_cells: int = Field(ge=0, description="Every combination of the declared levels.")
+    n_ran: int = Field(ge=0)
+    n_not_run: int = Field(ge=0, description="Meant to run and never did: the gaps.")
+    n_skipped_by_design: int = Field(ge=0)
+    n_undetermined: int = Field(ge=0)
+    cells: list[DeclaredCellCoverage] = Field(description="The cells, in declaration order; capped, gaps kept first.")
+    cells_omitted: int = Field(default=0, ge=0)
+    sentence: str = Field(description="What the crossing comes to, gaps and skips counted apart.")
+
+
+class AliasedFactors(EvalDocumentModel):
+    """Factors that moved in lockstep: every one splits the runs into the same groups, so no comparison separates them."""
+
+    factors: list[str] = Field(description="The factors, sorted; two or more.")
+    n_runs: int = Field(ge=0, description="The runs whose levels of every one of these factors were read.")
+    n_levels: int = Field(ge=2, description="How many groups each of them splits those runs into.")
+    sentence: str = Field(description="The one sentence that names the group; quote it rather than a factor apiece.")
+
+
+class FactorPairCell(EvalDocumentModel):
+    """One combination of two factors' levels, and how many runs sat at it."""
+
+    row_level: str
+    column_level: str
+    n_runs: int = Field(ge=0)
+    status: Literal["ran", "not_run"] = Field(
+        description="ran = some run sat at both levels; not_run = none did, a hole in the design."
+    )
+
+
+class FactorPairPivot(EvalDocumentModel):
+    """Two co-varying factors crossed: every combination of their observed levels, the unrun ones as ``not_run``."""
+
+    row_factor: str
+    column_factor: str
+    row_aliases: list[str] = Field(
+        default_factory=list, description="Factors in the row factor's lockstep group, which this pivot stands for too."
+    )
+    column_aliases: list[str] = Field(
+        default_factory=list,
+        description="Factors in the column factor's lockstep group, which this pivot stands for too.",
+    )
+    cells: list[FactorPairCell] = Field(description="The full cross of observed levels, row-major in level order.")
+
+
+#: What the pair scan cannot see, stated wherever its result is.
+INTERACTION_ALIASING_UNCHECKED = (
+    "Only pairs of factors are checked: a factor that moved with a combination of two others (C = A⊕B, an "
+    "interaction) is not detected, so it is neither grouped nor shown."
+)
+
+
+class FactorPairScan(EvalDocumentModel):
+    """Every pair of varying factors checked for co-varying, with a pivot for each co-varying pair outside a group.
+
+    Two factors co-vary when one never moves while the other holds still: across the runs at any one level of
+    either, the other takes a single level. Every pair is checked; only the pivots are bounded, so the count says
+    how complete the short list is.
+    """
+
+    factors: list[str] = Field(
+        description=(
+            "Every factor that varied: the swept levers and candidate model the coverage reads, and each apparatus "
+            "dimension every run recorded."
+        )
+    )
+    n_pairs_examined: int = Field(ge=0)
+    n_covarying: int = Field(ge=0, description="Pairs that co-vary, inside a lockstep group or not.")
+    n_covarying_in_groups: int = Field(ge=0, description="Of those, the pairs whose two factors share a group.")
+    pivots: list[FactorPairPivot] = Field(default_factory=list)
+    pivots_omitted: int = Field(default=0, ge=0, description="Pivots past the cap, fewest holes first.")
+    completeness: str = Field(description="The sentence stating what was examined and what is shown.")
+    interaction_aliasing: str = Field(default=INTERACTION_ALIASING_UNCHECKED)
 
 
 class LeverCoverageInput(EvalDocumentModel):
@@ -2391,6 +2566,33 @@ class AnalysisContextBundle(EvalDocumentModel):
             "finding citing one stands on it."
         ),
     )
+    inter_judge_agreement: InterJudgeAgreement = Field(
+        default_factory=InterJudgeAgreement,
+        description=(
+            "How a second judge's scores of the member runs' stored evidence agreed with their judge's, per judged "
+            "dimension, first judge and second judge: n, distinct results, exact agreement, and kappa "
+            "(quadratic-weighted on 1-5, unweighted on pass/fail) with its confidence bounds — read exactly as "
+            "`judge_agreement` is. An undefined kappa says why, never 0. Empty when no second judge was asked. Each "
+            "judged dimension's rows are also on its `judged_measures` entry."
+        ),
+    )
+    judge_drift: JudgeDrift = Field(
+        default_factory=JudgeDrift,
+        description=(
+            "How far each judged dimension's scores moved when a second judge re-scored the member runs' stored "
+            "evidence: the movement over cases, its interval, and separated / not separated / untested, Holm-adjusted "
+            "over the dimensions. It detects movement between two judges, never which judge is right."
+        ),
+    )
+    judge_change: JudgeChange = Field(
+        default_factory=JudgeChange,
+        description=(
+            "Each judge the judged member runs were scored by (model pin, configs, temperature), the runs and arms "
+            "under each, and the drift readings that span a change. When there is more than one, quote `sentence`: a "
+            "judged difference between arms judged differently may be the judge's, and where `drift_links` is empty "
+            "nothing measured how much."
+        ),
+    )
     goal_check_proofs: list[GoalCheckProofReading] = Field(
         default_factory=list,
         description=(
@@ -2518,6 +2720,30 @@ class AnalysisContextBundle(EvalDocumentModel):
             "answer even when the campaign compared nothing. Empty means the rig held — a claim only "
             "made about runs that recorded a value, since an unrecorded dimension is 'undecided' here "
             "as everywhere else."
+        ),
+    )
+    aliased_factors: list[AliasedFactors] = Field(
+        default_factory=list,
+        description=(
+            "Factors that moved in lockstep across the campaign: each group's factors split the runs identically, "
+            "so no comparison separates them. Name a group once, by its sentence, never one factor at a time. "
+            "Pairs only: see factor_pairs.interaction_aliasing."
+        ),
+    )
+    factor_pairs: FactorPairScan | None = Field(
+        default=None,
+        description=(
+            "Every pair of varying factors checked for co-varying, with a pivot (unrun combinations as not_run) "
+            "for each co-varying pair outside a lockstep group, and how many pairs were examined. None on a "
+            "bundle assembled before the scan existed."
+        ),
+    )
+    declared_crossing: DeclaredCrossing | None = Field(
+        default=None,
+        description=(
+            "Where the declared design says which combinations of its levels it meant to run: every cell, marked "
+            "ran, not_run (a gap), skipped_by_design (left out on purpose: never a gap) or undetermined. None when "
+            "there is no design or it says nothing about combinations, so no unrun combination is read either way."
         ),
     )
     arm_mechanisms: list[ArmMechanismReading] = Field(
@@ -3313,8 +3539,9 @@ def _scalar_leaves(model: BaseModel) -> Iterator[tuple[str, float | str]]:
 #: and walking it would pool that as a second cost observation of the cell, beside the prose
 #: of its timestamp, prior error and model reported as measurements the registry lost. A repeat
 #: of the judge's scores is a measurement of the JUDGE, read by ``judge_self_agreement``; walking
-#: it would pool a repeat's score as a second observation of the candidate's cell.
-RECORD_CARRIERS: frozenset[str] = frozenset({"judge_rescores", "judge_repeats"})
+#: it would pool a repeat's score as a second observation of the candidate's cell. A second judge's scores are the
+#: same: a measurement of the judges, read by ``inter_judge_agreement`` and ``judge_drift``.
+RECORD_CARRIERS: frozenset[str] = frozenset({"judge_rescores", "judge_repeats", "judge_seconds"})
 
 
 def _carrier_leaves(result: EvalResult, *, profile: HostProfile) -> Iterator[tuple[str, float | str, bool, str, str]]:
@@ -4085,6 +4312,7 @@ def _measure_summary(
             "n_true": n_true,
             "ci_low": None if interval is None else interval[0],
             "ci_high": None if interval is None else interval[1],
+            "case_means": small_sample_case_means([1.0 if value is True else 0.0 for value in values], cases),
         }
     elif descriptor.data_type == "categorical":
         counts: dict[str, int] = {}
@@ -4122,6 +4350,8 @@ def _measure_summary(
             # `stats.observed_mean_interval`, so `accuracy` and the `match` it is derived from agree.
             "ci_low": None if interval is None else interval[0],
             "ci_high": None if interval is None else interval[1],
+            # Below the band floor a chart draws the cases rather than the interval, so it needs them.
+            "case_means": small_sample_case_means(observed, cases),
         }
     return MeasureSummary(
         name=descriptor.name,
@@ -6316,6 +6546,123 @@ def _reportable_levers(
     return moved | declared | (engaged & resolved)
 
 
+def _run_axis_identities(
+    axis_id: str, run: EvalRun, results: list[EvalResult], *, profile: HostProfile
+) -> set[str] | None:
+    """The identities a run's level on one declared axis can be joined to a declared level by, or None if unknown.
+
+    Its variant coordinate where it has one (the engine's own and the host's), else the value the host's registry
+    resolves for it, as its canonical digest and, for a string that may itself be a digest, as itself.
+
+    Args:
+        axis_id: The declared axis.
+        run: The run.
+        results: The run's results.
+        profile: The host whose vocabulary this reads.
+
+    Returns:
+        The identities, or None when the run's level on the axis cannot be established.
+    """
+    coordinates = {
+        **profile.engine_levels(run),
+        **(profile.variant_levers(run) if profile.variant_levers is not None else {}),
+    }
+    if (coordinate := coordinates.get(axis_id)) is not None:
+        return {coordinate.content_hash}
+    value = profile.sweepables.resolve_levers(run, results).values.get(axis_id)
+    if value is None:
+        return None
+    return {canonical_digest(value), value} if isinstance(value, str) else {canonical_digest(value)}
+
+
+def _declared_crossing(
+    design: CampaignDesign | None,
+    runs: list[EvalRun],
+    results_by_run: dict[str, list[EvalResult]],
+    *,
+    profile: HostProfile,
+) -> DeclaredCrossing | None:
+    """Mark every cell of a design that says which combinations it meant to run: ran, missing, or skipped by design.
+
+    A cell is one declared level of every declared axis. A run sits at a cell when each axis's level joins to
+    that cell's level (:func:`_run_axis_identities`). An unrun cell the design left out on purpose
+    (:meth:`~threetears.evals.contracts.declaration.CampaignDesign.skipped_by_design`) is ``skipped_by_design``
+    and is never a gap; an unrun cell it meant to run is ``not_run``, unless some run's level on an axis cannot
+    be established, when it may be sitting there and the cell is ``undetermined``.
+
+    Args:
+        design: The campaign's declaration.
+        runs: The campaign's resolved runs.
+        results_by_run: Each run's results.
+        profile: The host whose vocabulary this reads.
+
+    Returns:
+        The crossing, or None when there is no design or it says nothing about combinations — today's reading,
+        where an unrun combination is neither skipped nor missing.
+    """
+    if design is None or not design.declares_cells():
+        return None
+    ran: set[tuple[str, ...]] = set()
+    unestablished = False
+    for run in runs:
+        levels: list[str | None] = []
+        for axis in design.axes:
+            identities = _run_axis_identities(axis.axis_id, run, results_by_run.get(run.id, []), profile=profile)
+            if identities is None:
+                unestablished = True
+                levels.append(None)
+                continue
+            matched = [level.content_hash for level in axis.values if level.content_hash in identities]
+            levels.append(matched[0] if matched else None)
+        if all(level is not None for level in levels):
+            ran.add(tuple(level for level in levels if level is not None))
+    cells = []
+    for combination in product(*(axis.values for axis in design.axes)):
+        identity = tuple(level.content_hash for level in combination)
+        state: Literal["ran", "not_run", "skipped_by_design", "undetermined"]
+        if identity in ran:
+            state = "ran"
+        elif design.skipped_by_design(identity):
+            state = "skipped_by_design"
+        else:
+            state = "undetermined" if unestablished else "not_run"
+        cells.append(
+            DeclaredCellCoverage(
+                levels={axis.axis_id: level.display for axis, level in zip(design.axes, combination, strict=True)},
+                state=state,
+            )
+        )
+    counts = {state: sum(1 for cell in cells if cell.state == state) for state in _CELL_STATES}
+    kept, omitted = _capped(
+        cells, _MAX_DECLARED_CELLS, weight=lambda cell: {"not_run": 2, "undetermined": 1}.get(cell.state, 0)
+    )
+    planned = len(cells) - counts["skipped_by_design"]
+    sentence = (
+        f"The design declares {len(cells)} cell(s) over its {len(design.axes)} axis(es) and meant to run {planned}: "
+        f"{counts['ran']} ran"
+        + (f", {counts['not_run']} never ran (a gap)" if counts["not_run"] else "")
+        + (f", {counts['undetermined']} cannot be established" if counts["undetermined"] else "")
+        + (
+            f"; {counts['skipped_by_design']} were skipped by design, which is no gap"
+            if counts["skipped_by_design"]
+            else ""
+        )
+        + (f"; {omitted} cell(s) are left out of the list, gaps last to go" if omitted else "")
+        + "."
+    )
+    return DeclaredCrossing(
+        crossing=design.crossing,
+        n_cells=len(cells),
+        n_ran=counts["ran"],
+        n_not_run=counts["not_run"],
+        n_skipped_by_design=counts["skipped_by_design"],
+        n_undetermined=counts["undetermined"],
+        cells=kept,
+        cells_omitted=omitted,
+        sentence=sentence,
+    )
+
+
 def _declared_level_coverage(
     axis: SweptAxis,
     runs: list[EvalRun],
@@ -6343,20 +6690,11 @@ def _declared_level_coverage(
     observed: set[str] = set()
     unestablished = False
     for run in runs:
-        coordinates = {
-            **profile.engine_levels(run),
-            **(profile.variant_levers(run) if profile.variant_levers is not None else {}),
-        }
-        if (coordinate := coordinates.get(axis.axis_id)) is not None:
-            observed.add(coordinate.content_hash)
-            continue
-        value = profile.sweepables.resolve_levers(run, results_by_run.get(run.id, [])).values.get(axis.axis_id)
-        if value is None:
+        identities = _run_axis_identities(axis.axis_id, run, results_by_run.get(run.id, []), profile=profile)
+        if identities is None:
             unestablished = True
-            continue
-        observed.add(canonical_digest(value))
-        if isinstance(value, str):
-            observed.add(value)
+        else:
+            observed |= identities
     return [
         DeclaredLevelCoverage(
             display=level.display,
@@ -6545,6 +6883,164 @@ def _coverage_map(
             )
         )
     return coverage
+
+
+def _factor_aliasing(
+    run_ids: list[str],
+    lever_levels: dict[str, dict[str, list[str]]],
+    apparatus_levels: dict[str, dict[str, str | None]],
+) -> tuple[list[AliasedFactors], FactorPairScan]:
+    """Group the factors that moved in lockstep, and check every pair of factors for co-varying.
+
+    A factor is anything that varied across the campaign's runs: a swept lever or the candidate model, as
+    :func:`_lever_levels` reads them, and an apparatus dimension every run recorded at two or more levels (one some
+    run never recorded is undecided, not a partition, and is named in ``apparatus_confounds``). Each factor
+    splits the runs it was read on into groups, one per level. **Factors whose splits are identical are aliased**
+    — the same runs, grouped the same way, whatever the levels are called — and are reported as one group.
+
+    A pair **co-varies** when neither can be compared holding the other fixed: across the runs at any one level
+    of one, the other takes a single level. Every pair is checked; a co-varying pair whose factors are not in one
+    group gets a pivot crossing the two (a group stands in for each of its members, so its mates share one
+    pivot), with every combination no run sat at as ``not_run``. Only interactions go unchecked
+    (:data:`INTERACTION_ALIASING_UNCHECKED`).
+
+    Args:
+        run_ids: The campaign's resolved runs.
+        lever_levels: Lever → level → run ids, from :func:`_lever_levels`.
+        apparatus_levels: Dimension → run id → level key, from :func:`_apparatus_levels`.
+
+    Returns:
+        The lockstep groups (sorted by their first factor), and the pair scan.
+    """
+    by_factor: dict[str, dict[str, str]] = {}
+    for lever, by_level in lever_levels.items():
+        by_factor[lever] = {run_id: level for level, members in by_level.items() for run_id in members}
+    for dimension, by_run in apparatus_levels.items():
+        levels = [by_run.get(run_id) for run_id in run_ids]
+        if dimension in by_factor or any(level is None for level in levels) or len(set(levels)) < 2:
+            continue
+        by_factor[dimension] = {run_id: str(by_run[run_id]) for run_id in run_ids}
+    factors = sorted(name for name, by_run in by_factor.items() if len(set(by_run.values())) >= 2)
+
+    def split(name: str) -> frozenset[frozenset[str]]:
+        blocks: dict[str, set[str]] = {}
+        for run_id, level in by_factor[name].items():
+            blocks.setdefault(level, set()).add(run_id)
+        return frozenset(frozenset(block) for block in blocks.values())
+
+    by_split: dict[frozenset[frozenset[str]], list[str]] = {}
+    for name in factors:
+        by_split.setdefault(split(name), []).append(name)
+    group_of = {name: members[0] for members in by_split.values() for name in members}
+    groups = []
+    for blocks, members in sorted(by_split.items(), key=lambda item: item[1][0]):
+        if len(members) < 2:
+            continue
+        n_runs = sum(len(block) for block in blocks)
+        across = f"all {n_runs} runs" if n_runs == len(run_ids) else f"the {n_runs} runs that recorded them"
+        groups.append(
+            AliasedFactors(
+                factors=members,
+                n_runs=n_runs,
+                n_levels=len(blocks),
+                sentence=(
+                    f"{_listed_names(members)} move together across {across}, splitting them into the same "
+                    f"{len(blocks)} groups; no comparison separates them, so a difference across them belongs to all "
+                    f"{len(members)} at once."
+                ),
+            )
+        )
+
+    def varies_within(name: str, other: str) -> bool:
+        shared = by_factor[name].keys() & by_factor[other].keys()
+        seen: dict[str, set[str]] = {}
+        for run_id in shared:
+            seen.setdefault(by_factor[other][run_id], set()).add(by_factor[name][run_id])
+        return any(len(levels) >= 2 for levels in seen.values())
+
+    n_pairs = n_covarying = n_in_groups = 0
+    pivots: dict[tuple[str, str], FactorPairPivot] = {}
+    for index, row in enumerate(factors):
+        for column in factors[index + 1 :]:
+            n_pairs += 1
+            if varies_within(row, column) and varies_within(column, row):
+                continue
+            n_covarying += 1
+            if group_of[row] == group_of[column]:
+                n_in_groups += 1
+                continue
+            first, second = sorted((group_of[row], group_of[column]))
+            key = (first, second)
+            if key not in pivots:
+                pivots[key] = _factor_pair_pivot(key[0], key[1], by_factor, group_of)
+    ordered = [pivots[key] for key in sorted(pivots)]
+    kept, omitted = _capped(
+        ordered,
+        _MAX_FACTOR_PAIR_PIVOTS,
+        weight=lambda pivot: sum(1 for cell in pivot.cells if cell.status == "not_run"),
+    )
+    outside = n_covarying - n_in_groups
+    if len(factors) < 2:
+        completeness = f"{len(factors)} factor varied, so no pair of factors could co-vary."
+    else:
+        completeness = (
+            f"{n_pairs} factor pair(s) examined over the {len(factors)} factors that varied; {n_covarying} co-vary"
+            + (f", {n_in_groups} of them inside a group that moves in lockstep" if n_in_groups else "")
+            + (
+                f"; the {outside} outside any group are shown in {len(ordered)} pivot(s), a group's members sharing one"
+                if outside
+                else ""
+            )
+            + (f", of which {omitted} with the fewest unrun combinations are left out" if omitted else "")
+            + "."
+        )
+    return groups, FactorPairScan(
+        factors=factors,
+        n_pairs_examined=n_pairs,
+        n_covarying=n_covarying,
+        n_covarying_in_groups=n_in_groups,
+        pivots=kept,
+        pivots_omitted=omitted,
+        completeness=completeness,
+    )
+
+
+def _factor_pair_pivot(
+    row: str,
+    column: str,
+    by_factor: dict[str, dict[str, str]],
+    group_of: dict[str, str],
+) -> FactorPairPivot:
+    """Cross two factors' observed levels over the runs both were read on, counting the runs at each combination."""
+    shared = sorted(by_factor[row].keys() & by_factor[column].keys())
+    counts: dict[tuple[str, str], int] = {}
+    for run_id in shared:
+        combination = (by_factor[row][run_id], by_factor[column][run_id])
+        counts[combination] = counts.get(combination, 0) + 1
+    rows = sorted({by_factor[row][run_id] for run_id in shared})
+    columns = sorted({by_factor[column][run_id] for run_id in shared})
+    mates = {name: [other for other in group_of if group_of[other] == name and other != name] for name in (row, column)}
+    return FactorPairPivot(
+        row_factor=row,
+        column_factor=column,
+        row_aliases=sorted(mates[row]),
+        column_aliases=sorted(mates[column]),
+        cells=[
+            FactorPairCell(
+                row_level=row_level,
+                column_level=column_level,
+                n_runs=counts.get((row_level, column_level), 0),
+                status="ran" if (row_level, column_level) in counts else "not_run",
+            )
+            for row_level in rows
+            for column_level in columns
+        ],
+    )
+
+
+def _listed_names(names: list[str]) -> str:
+    """``a``, ``a and b``, ``a, b and c``."""
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + f" and {names[-1]}"
 
 
 #: Apparatus dimensions that joined the rig after cells were minted under ids that never digested them, each
@@ -7101,6 +7597,7 @@ def assemble_context_bundle(
         profile=profile,
     )
     reportable = {entry.name for entry in coverage}
+    aliasing = _factor_aliasing(run_ids, _lever_levels(runs, results_by_run, profile=profile), apparatus_levels)
 
     # The cell algebra, over observations rather than runs. Independent of `design`, which is
     # the point: a cell is what pools, and pooling must not depend on whether anyone designated
@@ -7181,6 +7678,14 @@ def assemble_context_bundle(
             archived_run_ids=None,
             rubric_threshold=profile.bars.pass_threshold(campaign.behavior),
             profile=profile,
+            # The boundary pillar: each contestant's guardrail dimensions held against the campaign's control arm,
+            # at the margins it declares, by the rule the bundle's guardrails are decided by (#613).
+            control_variant_key=design.control_arm.variant_key if design.control_arm is not None else None,
+            guardrail_margins=(
+                {entry.dimension: entry.margin for entry in campaign.declared_design.guardrail_margins}
+                if campaign.declared_design is not None
+                else None
+            ),
         ),
         frontier_bar_withheld=frontier_bar_withheld,
         telemetry=_telemetry_rollup(runs, results, budget, profile=profile),
@@ -7220,6 +7725,9 @@ def assemble_context_bundle(
         # lenses iterate levers — so without this, a campaign whose template changed
         # underneath it reports that fact nowhere at all.
         apparatus_confounds=_apparatus_confounds(run_ids, apparatus_levels, profile=profile),
+        aliased_factors=aliasing[0],
+        factor_pairs=aliasing[1],
+        declared_crossing=_declared_crossing(campaign.declared_design, runs, results_by_run, profile=profile),
         arm_mechanisms=_arm_mechanisms(arms, results_by_run, mechanisms),
         arm_served_models=_arm_served_models(arms, results_by_run, served),
         arm_production_footings=_arm_production_footings(arms, results_by_run, profile=profile),
@@ -7253,6 +7761,9 @@ def assemble_context_bundle(
     bundle.judge_evidence_tiers = judge_evidence_tiers(
         bundle.judge_agreement, bundle.judge_self_agreement, _judged_keys(results)
     )
+    bundle.inter_judge_agreement = inter_judge_agreement(results)
+    bundle.judge_drift = judge_drift(results)
+    bundle.judge_change = _judge_change(runs, results_by_run)
     bundle.goal_check_proofs = goal_check_proofs_of(runs, results)
     # Judged quality and the bars, per cell. Both read the cell algebra's own grouping, so every
     # per-arm number here describes observations the bundle already calls one arm, and neither
@@ -7265,9 +7776,18 @@ def assemble_context_bundle(
         contended_ids,
         declared=campaign.declared_design is not None and campaign.declared_design.measure_latency,
     )
-    bundle.judged_measures = _judged_measures(
-        projection.records, results_by_cell, campaign.declared_design, tiers=bundle.judge_evidence_tiers
-    )
+    bundle.judged_measures = [
+        measure.model_copy(
+            update={
+                "second_judges": [
+                    row for row in bundle.inter_judge_agreement.dimensions if row.rubric_dim == measure.name
+                ]
+            }
+        )
+        for measure in _judged_measures(
+            projection.records, results_by_cell, campaign.declared_design, tiers=bundle.judge_evidence_tiers
+        )
+    ]
     bundle.bar_adjudications = _bar_adjudications(
         campaign.behavior,
         campaign.declared_design,
@@ -7665,6 +8185,7 @@ def _judged_measures(
                     n_cannot_tell=len(cannot_tell),
                     mean=sum(values) / len(values) if values else None,
                     sem=clustered_standard_error(values, value_cases) if values else None,
+                    case_means=small_sample_case_means(values, value_cases),
                     evidence_tier=tier_for_judges(tiers, served),
                 )
             )
@@ -8279,6 +8800,80 @@ def _per_case_values(
     return values
 
 
+class PlanningReading(NamedTuple):
+    """One reading a comparison family could test, as earlier runs observed it: every repeat, by run and case."""
+
+    reading: ReadingKind
+    name: str
+    higher_is_better: bool
+    #: The reading's declared inclusive bounds, or None where it declares none.
+    value_range: tuple[float, float] | None
+    #: ``{run id: {test case id: [one value per repeat]}}``, in run and case order.
+    repeats: dict[str, dict[str, list[float]]]
+
+
+def planning_readings(
+    runs: list[EvalRun], results_by_run: dict[str, list[EvalResult]], *, profile: HostProfile
+) -> list[PlanningReading]:
+    """Every reading an unscoped comparison family would test, with each earlier run's per-repeat values.
+
+    What a power pre-flight plans from: the readings :func:`_family_readings` admits for a question that names
+    no axis (a measure with a better end on a merit axis, a capability judged dimension), each observation
+    read by the one walk a family's per-case value is read by (:func:`_per_case_values`, over the one result),
+    so a repeat's value here and a case's mean in a comparison are one computation. Guardrails are left out:
+    they are held, not tested for a difference; so is latency read under concurrency, which no comparison reads.
+
+    Args:
+        runs: The earlier runs.
+        results_by_run: Each run's results.
+        profile: The host whose vocabulary this reads.
+
+    Returns:
+        One entry per reading with a value, sorted by reading kind and name.
+    """
+    results_by_run = _failures_as_misses({run.id: results_by_run.get(run.id, []) for run in runs})
+    # Latency read under concurrency is in no comparison (#701), so it plans none either.
+    results_by_run = {
+        run_id: withhold_contended_latency(run_results, profile.measures)
+        for run_id, run_results in results_by_run.items()
+    }
+    results = [result for run in runs for result in results_by_run[run.id]]
+    projection = project_score_records(runs, results, known_run_ids=None, archived_run_ids=None, profile=profile)
+    judged_rows: dict[str, list[ScoreRecord]] = {}
+    scales: dict[str, RubricScale] = {}
+    for record in projection.records:
+        judged_rows.setdefault(record.result_id, []).append(record)
+        if record.metric == METRIC_SCORE and record.rubric_dim and record.rubric_scale is not None:
+            scales[record.rubric_dim] = record.rubric_scale
+    boundary = _boundary_dimensions(results)
+    repeats: dict[tuple[ReadingKind, str], dict[str, dict[str, list[float]]]] = {}
+    for run in runs:
+        for result in sorted(results_by_run[run.id], key=lambda one: (one.test_case_id, one.k_iteration, one.id)):
+            for reading, by_case in _per_case_values([result], judged_rows, profile=profile).items():
+                for case_id, value in by_case.items():
+                    repeats.setdefault(reading, {}).setdefault(run.id, {}).setdefault(case_id, []).append(value)
+    readings = []
+    for (kind, name), by_run in sorted(repeats.items()):
+        if kind == "measure":
+            descriptor = describe_reported_measure(name, profile.measures)
+            if (
+                descriptor.higher_is_better is None
+                or classifier_label_of(name) is not None
+                or not axis_in_question_scope(descriptor.merit_axis, [])
+            ):
+                continue
+            higher, value_range = descriptor.higher_is_better, descriptor.value_range
+        else:
+            if name in boundary:
+                continue
+            judged = describe_rubric_dim(name, scale=scales.get(name, "ordinal"))
+            if judged.higher_is_better is None:
+                continue
+            higher, value_range = judged.higher_is_better, judged.value_range
+        readings.append(PlanningReading(kind, name, higher, value_range, by_run))
+    return readings
+
+
 def _family_readings(
     axes: list[MeritAxis], catalog: dict[str, MetricDescriptor], judged_measures: list[JudgedMeasure]
 ) -> dict[tuple[ReadingKind, str], bool]:
@@ -8328,14 +8923,10 @@ def _test_samples(
     of a contrast, a comparison's and a guardrail's alike.
 
     Returns:
-        ``(control sample, contrast sample, paired)``, the two aligned by case when paired.
+        ``(control sample, contrast sample, paired)``, the two aligned by case when paired
+        (:func:`~threetears.evals.analysis.stats.contrast_samples`, the rule the frontier's boundary pillar reads too).
     """
-    shared = sorted(set(control_values) & set(contrast_values))
-    paired = len(shared) >= 2
-    # Unpaired, each side in its cases' sorted order too: a bounded test bets in an order fixed before the values.
-    a = [control_values[case] for case in (shared if paired else sorted(control_values))]
-    b = [contrast_values[case] for case in (shared if paired else sorted(contrast_values))]
-    return a, b, paired
+    return contrast_samples(control_values, contrast_values)
 
 
 class _Tested(NamedTuple):
@@ -8912,6 +9503,103 @@ def _guardrails_of(
     )
 
 
+#: What a judge change across the member runs means for a judged comparison, quoted when there is one.
+_JUDGE_CHANGE_SENTENCE = (
+    "The judged member runs were scored by {n} different judges (model, prompts or temperature), so a judged "
+    "difference between arms judged differently may be the judge's rather than the subject's."
+)
+_JUDGE_CHANGE_DRIFT = (
+    " A drift reading re-scored one side's evidence under the other side's judge ({links}); read its movement before "
+    "attributing a judged difference to the subject."
+)
+_JUDGE_CHANGE_NO_DRIFT = (
+    " Nothing measured how far the judge change alone moves the scores: re-score one side's stored evidence under "
+    "the other side's judge (judge_drift_check) to read it."
+)
+
+
+def _judge_identity(run: EvalRun) -> tuple[str, tuple[tuple[str, str], ...], float | None] | None:
+    """A judged run's judge as it recorded it at launch — pin, configs, temperature — or None for an unjudged run."""
+    if run.judge_model is None:
+        return None
+    return run.judge_model, tuple(sorted((run.judge_config_ids or {}).items())), run.judge_temperature
+
+
+def _names_level(
+    judge: SecondJudge,
+    level: tuple[str, tuple[tuple[str, str], ...], float | None],
+    own: tuple[str, tuple[tuple[str, str], ...], float | None],
+) -> bool:
+    """Whether a second judge is the judge ``level`` names, asked of a run judged as ``own``.
+
+    The model must be the level's pin; the prompts are the run's own when the second judge named none; and its
+    temperature, when it named none, is what each prompt asks for — the run's own sampling.
+    """
+    configs = own[1] if judge.config_ids is None else tuple(sorted(judge.config_ids.items()))
+    temperature = own[2] if judge.temperature is None else judge.temperature
+    return judge.model == level[0] and configs == level[1] and temperature == level[2]
+
+
+def _judge_change(runs: Sequence[EvalRun], results_by_run: Mapping[str, Sequence[EvalResult]]) -> JudgeChange:
+    """Each judge the judged member runs recorded, and every drift reading among them that spans two of them."""
+    by_level: dict[tuple[str, tuple[tuple[str, str], ...], float | None], list[EvalRun]] = {}
+    for run in runs:
+        if (identity := _judge_identity(run)) is not None:
+            by_level.setdefault(identity, []).append(run)
+    ordered = sorted(by_level, key=lambda level: (level[0], level[1], "" if level[2] is None else str(level[2])))
+    levels = [
+        JudgeIdentityLevel(
+            judge_model=level[0],
+            judge_config_ids=dict(level[1]),
+            judge_temperature=level[2],
+            run_ids=sorted(run.id for run in by_level[level]),
+            variant_keys=sorted(
+                {key for run in by_level[level] if (key := variant_key_of_run(results_by_run.get(run.id, [])))}
+            ),
+        )
+        for level in ordered
+    ]
+    if len(levels) < 2:
+        return JudgeChange(levels=levels)
+    links = []
+    for source_index, source in enumerate(ordered):
+        for target_index, target in enumerate(ordered):
+            if source_index == target_index:
+                continue
+            spanning = [
+                (run, judging.pass_id)
+                for run in by_level[source]
+                for result in results_by_run.get(run.id, [])
+                for judging in result.judge_seconds
+                if _names_level(judging.judge, target, source)
+            ]
+            if not spanning:
+                continue
+            pass_ids = sorted({pass_id for _, pass_id in spanning})
+            run_ids = sorted({run.id for run, _ in spanning})
+            read = [
+                result.model_copy(update={"judge_seconds": [j for j in result.judge_seconds if j.pass_id in pass_ids]})
+                for run_id in run_ids
+                for result in results_by_run.get(run_id, [])
+            ]
+            links.append(
+                JudgeDriftLink(
+                    from_level=source_index,
+                    to_level=target_index,
+                    run_ids=run_ids,
+                    pass_ids=pass_ids,
+                    drift=judge_drift(read),
+                )
+            )
+    sentence = _JUDGE_CHANGE_SENTENCE.format(n=len(levels))
+    if links:
+        named = ", ".join(f"level {link.from_level} under level {link.to_level}'s judge" for link in links)
+        sentence += _JUDGE_CHANGE_DRIFT.format(links=named)
+    else:
+        sentence += _JUDGE_CHANGE_NO_DRIFT
+    return JudgeChange(levels=levels, drift_links=links, sentence=sentence)
+
+
 def _judged_by_cell(judged_measures: list[JudgedMeasure]) -> dict[_CellKey, list[JudgedReading]]:
     """The judged measures transposed — each cell's readings, one per dimension it was scored on.
 
@@ -8932,6 +9620,7 @@ def _judged_by_cell(judged_measures: list[JudgedMeasure]) -> dict[_CellKey, list
                     sem=arm.sem,
                     n=arm.n,
                     n_independent=arm.n_independent,
+                    case_means=arm.case_means,
                     n_infra_excluded=arm.n_infra_excluded,
                     n_cannot_tell=arm.n_cannot_tell,
                     evidence_tier=arm.evidence_tier,
@@ -9316,6 +10005,12 @@ def bundle_decision_surface(bundle: AnalysisContextBundle) -> DecisionSurface:
         dimensions=cell_dimension_facts(bundle),
         time_axis=bundle.time_axis,
         frontier_dominance=_frontier_dominance(bundle.frontier),
+        frontier_disqualified={
+            point.variant_key: list(point.disqualified_by)
+            for subject in bundle.frontier.subjects
+            for point in subject.points
+            if point.disqualified_by
+        },
         rubric_threshold=bundle.frontier.rubric_threshold,
         guardrails=bundle.guardrails,
     )
@@ -9595,14 +10290,22 @@ def _telemetry_rollup(
 
 
 __all__ = [
+    "INTERACTION_ALIASING_UNCHECKED",
+    "AliasedFactors",
     "AnalysisContextBundle",
     "BundleInspection",
+    "DeclaredCellCoverage",
+    "DeclaredCrossing",
     "DeclaredLevelCoverage",
+    "FactorPairCell",
+    "FactorPairPivot",
+    "FactorPairScan",
     "GoalCheckProofReading",
     "LeverCoverageInput",
     "MeasureCollection",
     "MeasureMovement",
     "MeasureSummary",
+    "PlanningReading",
     "RunSummary",
     "ScopeDivergence",
     "TelemetryRollup",
@@ -9614,5 +10317,6 @@ __all__ = [
     "host_declarations_digest",
     "insight_restatement_key",
     "measure_movement",
+    "planning_readings",
     "superseding_insights",
 ]

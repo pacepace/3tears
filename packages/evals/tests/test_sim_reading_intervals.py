@@ -34,10 +34,13 @@ import pytest
 
 from threetears.evals.analysis.stats import (
     INTERVAL_LEVEL,
+    SMALL_N_BAND_FLOOR,
+    case_means,
     clustered_standard_error,
     mean_interval,
     observed_mean_interval,
     proportion_interval,
+    small_sample_case_means,
     standard_error_of_mean,
     wilson_interval,
 )
@@ -247,3 +250,16 @@ def test_a_repeated_rate_keeps_a_width_and_contains_itself_at_both_ends(cases: i
 def test_observations_and_cases_must_align() -> None:
     with pytest.raises(ValueError, match="every observation needs its case"):
         observed_mean_interval([1.0, 2.0], cases=[0])
+
+
+def test_case_means_average_each_case_and_sort_by_value() -> None:
+    """One value per case: a repeated case contributes its mean, never its repeats (#677)."""
+    assert case_means([4.0, 6.0, 1.0, 9.0], ["b", "b", "a", "c"]) == [1.0, 5.0, 9.0]
+
+
+def test_case_means_are_recorded_only_below_the_band_floor() -> None:
+    four = [float(index) for index in range(SMALL_N_BAND_FLOOR - 1)]
+    five = [float(index) for index in range(SMALL_N_BAND_FLOOR)]
+    assert small_sample_case_means(four, list(range(len(four)))) == four
+    assert small_sample_case_means(five, list(range(len(five)))) is None
+    assert small_sample_case_means([], []) is None

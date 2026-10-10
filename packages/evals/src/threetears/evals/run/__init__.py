@@ -121,6 +121,13 @@ from threetears.evals.run.judge_repeat import (
     estimate_judge_repeat,
     repeat_judge_scores,
 )
+from threetears.evals.run.judge_second import (
+    SecondJudgeEstimate,
+    SecondJudgeReport,
+    SecondJudgeSkip,
+    estimate_second_judge,
+    ask_second_judge,
+)
 from threetears.evals.run.rejudge import reproducible_judge_inputs
 from threetears.evals.run.runner import (
     CellContext,
@@ -153,6 +160,7 @@ from threetears.evals.run.simulator import (
 )
 from threetears.evals.run.witnessed import WitnessedJudging, record_witnessed_cell, stamp_witnessed_judge
 from threetears.evals.run.budget import AccountExhaustedError, BudgetStoppedError, CapBreach, EvalRunCostCap
+from threetears.evals.run.case_sets import mint_case_set, resolve_case_set
 from threetears.evals.run.ceilings import (
     CeilingRaisedError,
     refuse_raised_ceiling,
@@ -316,6 +324,8 @@ __all__ = [
     "set_run_archived",
     "start_run",
     "start_universal_battery",
+    "mint_case_set",
+    "resolve_case_set",
     "sweep_abandoned_runs",
     "update_judge_config",
     "update_rubric_dim",
@@ -325,4 +335,9 @@ __all__ = [
     "JudgeRepeatReport",
     "JudgeRepeatSkip",
     "estimate_judge_repeat",
+    "SecondJudgeEstimate",
+    "SecondJudgeReport",
+    "SecondJudgeSkip",
+    "estimate_second_judge",
+    "ask_second_judge",
 ]

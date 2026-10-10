@@ -70,7 +70,7 @@ from threetears.evals.analysis.viz.payloads import PayloadError
 from threetears.evals.analysis.viz.policy import IntentPolicyError
 from threetears.evals.analysis.viz_refs import DistributionRef, build_viz_payload, cell_arm_labels
 from threetears.evals.contracts.authored import NO_CHART, Finding
-from threetears.evals.contracts.campaign import EvalAnalysis, FindingResolution, ReadingKind, Viz
+from threetears.evals.contracts.campaign import EvalAnalysis, EvidenceRow, FindingResolution, ReadingKind, Viz
 from threetears.evals.contracts.host.measures import MeasureRegistry
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.stats import EQUIVALENCE_NEEDS_RANGE, INTERVAL_LEVEL
@@ -182,18 +182,27 @@ def build_report(analysis: EvalAnalysis) -> Report:
         )
 
     blocks.extend(_arm_blocks(arm_table(analysis)))
+    # Compiled from the frozen surface by the code-only report's own compiler, with no model in the loop, and
+    # ahead of the table: the chart is the reading form, the table the audit form (#643). A stored analysis
+    # carries no host registry, and a distribution reads none.
+    blocks.extend(_surface_chart_blocks(surface, analysis.variant_index, MeasureRegistry([])))
     blocks.extend(_surface_blocks(build_surface_table(analysis)))
     blocks.extend(_strata_blocks(analysis.decision_surface, analysis.variant_index))
 
+    blocks.extend(_coverage_blocks(analysis))
+    coverage_status = {row.name: row.status for row in analysis.coverage.levers}
     for step in document.next:
         facts = [Fact(name="Leverage", value=step.leverage)]
         if step.lever:
-            facts.append(Fact(name="Lever", value=step.lever))
+            # Joined on the stored lever name; a lever with no coverage row is proposed, not a gap, and says so.
+            status = coverage_status.get(step.lever)
+            facts.append(Fact(name="Lever", value=f"{step.lever} ({status or 'no coverage row'})"))
         blocks.append(TextBlock(section="next", role="next_step", body=step.title, facts=facts))
         if step.why.strip():
             blocks.append(TextBlock(section="next", role="next_step_why", body=step.why))
 
     blocks.extend(_method_blocks(analysis))
+    blocks.extend(_unfound_lever_blocks(analysis))
     generation = analysis.generation
     return Report(
         basis="analysis",
@@ -213,6 +222,79 @@ def build_report(analysis: EvalAnalysis) -> Report:
         blocks=blocks,
         verdicts=[*guardrails_read, *bar_verdicts(surface, cell_name)],
     )
+
+
+def _levers_without_finding(analysis: EvalAnalysis) -> list[str]:
+    """The levers in the coverage map that no finding names in its ``axes`` — the map's side of the join (#631).
+
+    Computed from the stored fields on read, never by matching prose: a lever is named when it is, exactly, one
+    of a finding's ``axes``. A measured lever with no finding is not a defect (its arms may not have differed);
+    this is a count of the writer's own output, which a reader sees and nothing acts on.
+
+    Args:
+        analysis: The analysis.
+
+    Returns:
+        The unnamed levers, in coverage order.
+    """
+    named = {axis for finding in analysis.document.findings for axis in finding.axes}
+    return [row.name for row in analysis.coverage.levers if row.name not in named]
+
+
+def _coverage_blocks(analysis: EvalAnalysis) -> list[ReportBlock]:
+    """The coverage map joined to the findings and the next steps, on the stored lever names (#630, #631).
+
+    One row per lever: its status, the findings naming it in their ``axes`` (or "no finding"), and the next
+    steps whose ``lever`` names it. A ``thin`` or ``unswept`` lever no step names says so, rather than leaving
+    the slot empty; a step naming a lever with no coverage row renders under the steps, unattached.
+    """
+    levers = analysis.coverage.levers
+    if not levers:
+        return []
+    findings = analysis.document.findings
+    rows: list[dict[str, Cell]] = []
+    for row in levers:
+        named = [position for position, finding in enumerate(findings) if row.name in finding.axes]
+        steps = [step.title for step in analysis.document.next if step.lever == row.name]
+        gap = row.status in ("thin", "unswept")
+        rows.append(
+            {
+                "lever": row.name,
+                "status": row.status,
+                "findings": positions(named) or "no finding",
+                "next": "; ".join(steps) or ("no next step names it" if gap else None),
+            }
+        )
+    return [
+        TableBlock(
+            section="next",
+            name="coverage",
+            title="Coverage: each lever, the findings naming it, and the next step that would measure it",
+            columns=[
+                TableColumn(key="lever", header="Lever"),
+                TableColumn(key="status", header="Coverage"),
+                TableColumn(key="findings", header="Named by finding"),
+                TableColumn(key="next", header="Next step naming it"),
+            ],
+            rows=rows,
+            order="as the coverage map lists the levers",
+            total_rows=len(rows),
+        )
+    ]
+
+
+def _unfound_lever_blocks(analysis: EvalAnalysis) -> list[ReportBlock]:
+    """The methods count of coverage levers no finding names (#631): said, never acted on."""
+    levers = analysis.coverage.levers
+    if not levers:
+        return []
+    unnamed = _levers_without_finding(analysis)
+    text = (
+        f"{len(unnamed)} of the {len(levers)} lever(s) in the coverage map are named by no finding: {_listed(unnamed)}."
+        if unnamed
+        else f"Every one of the {len(levers)} lever(s) in the coverage map is named by a finding."
+    )
+    return [DisclosureBlock(section="methods", source="surface", text=text)]
 
 
 def _unproven_check_sentence(proof: GoalCheckProofReading) -> str:
@@ -276,6 +358,10 @@ def _finding_blocks(
     if finding.body.strip():
         blocks.append(TextBlock(section="findings", role="finding_body", finding=position, body=finding.body))
     if resolution is not None and resolution.evidence:
+        if resolution.chart is None:
+            # The evidence compiled to the chart that leads it, where it compares arms and the author's own
+            # chart did not draw: a finding already carrying a drawn chart is not given a second one.
+            blocks.extend(_evidence_chart_blocks(analysis, position, resolution.evidence))
         rows = evidence_rows(analysis, resolution.evidence, arm)
         blocks.append(
             TableBlock(
@@ -309,6 +395,58 @@ def _finding_blocks(
     )
     if finding.durable.strip():
         blocks.append(TextBlock(section="findings", role="carried_forward", finding=position, body=finding.durable))
+    return blocks
+
+
+def _evidence_chart_blocks(analysis: EvalAnalysis, position: int, evidence: Sequence[EvidenceRow]) -> list[ReportBlock]:
+    """A finding's evidence table compiled to charts: one distribution per reading it cites at two or more cells.
+
+    The same compiler the surface charts take, so a cited reading is drawn as the surface draws it. A reading
+    cited at one cell compares nothing and stays a row; a chart this build cannot draw is disclosed with the
+    reason rather than dropped (#643).
+
+    Args:
+        analysis: The analysis, whose frozen surface every number is read from.
+        position: The finding's position.
+        evidence: The finding's resolved rows.
+
+    Returns:
+        The chart blocks, in the order the readings were first cited.
+    """
+    cited: dict[tuple[str, ReadingKind], list[str]] = {}
+    for row in evidence:
+        cells = cited.setdefault((row.measure_id, row.reading), [])
+        if row.cell_ref not in cells:
+            cells.append(row.cell_ref)
+    blocks: list[ReportBlock] = []
+    for (name, reading), cells in cited.items():
+        if len(cells) < 2:
+            continue
+        try:
+            payload = build_viz_payload(
+                DistributionRef(cells=cells, measure_id=name, reading=reading),
+                analysis.decision_surface,
+                list(analysis.variant_index),
+                measures=MeasureRegistry([]),
+            )
+            blocks.append(
+                ChartBlock(
+                    section="findings",
+                    finding=position,
+                    viz_type="distribution",
+                    intent=chart_intent("distribution", payload),
+                )
+            )
+        except (UnresolvableReference, PayloadError, IntentPolicyError) as undrawable:
+            what = f"{name} (judged)" if reading == "judged" else name
+            blocks.append(
+                DisclosureBlock(
+                    section="findings",
+                    finding=position,
+                    source="chart",
+                    text=f"The {what} evidence chart cannot be drawn: {undrawable}.",
+                )
+            )
     return blocks
 
 
@@ -1036,10 +1174,11 @@ def build_code_only_report(
             )
         )
     )
+    # The charts lead the surface table they draw: the chart is the reading form, the table the audit form.
+    blocks.extend(_measure_chart_blocks(surface, bundle, measures))
     blocks.extend(_surface_blocks(surface_table_of(surface, variant_index), provenance=False))
     blocks.extend(_strata_blocks(surface, variant_index))
     blocks.extend(_comparison_blocks(bundle, surface, contrasts_read))
-    blocks.extend(_measure_chart_blocks(surface, bundle, measures))
     blocks.extend(_label_blocks(surface, variant_index))
     blocks.extend(_time_axis_blocks(surface.time_axis))
     if bundle.time_axis_withheld:
@@ -1372,13 +1511,9 @@ def _measure_chart_blocks(
       (the bundle leaves its stored zeros out), so there is nothing to chart; the bundle's one sentence saying
       so stands in its place, naming the arms when only some went unmeasured.
     """
-    readings: list[tuple[str, ReadingKind]] = [
-        *((name, "measure") for name, facts in sorted(surface.measures.items()) if _chartable(name, facts, surface)),
-        *((name, "judged") for name in sorted(surface.dimensions)),
-    ]
+    blocks: list[ReportBlock] = []
     cells = cell_index(surface)
     labels = cell_arm_labels(surface, bundle.variant_index)
-    blocks: list[ReportBlock] = []
     if bundle.cost_unmeasured:
         unmeasured = [cell_ref(cell.variant_key, cell.apparatus_class_id) for cell in bundle.cost_unmeasured_cells]
         named = (
@@ -1395,6 +1530,34 @@ def _measure_chart_blocks(
             else " Read under concurrency: " + "; ".join(labels.get(ref, ref) for ref in contended) + "."
         )
         blocks.append(DisclosureBlock(section="surface", source="measurement", text=bundle.latency_contended + named))
+    blocks.extend(_surface_chart_blocks(surface, bundle.variant_index, measures))
+    return blocks
+
+
+def _surface_chart_blocks(
+    surface: DecisionSurface, variant_index: Sequence[VariantIndexEntry], measures: MeasureRegistry
+) -> list[ReportBlock]:
+    """The decision surface's readings compiled to charts, one distribution per chartable reading (#643).
+
+    The one compiler both reports use, so a stored analysis's surface is drawn exactly as a code-only
+    report's is, and ahead of the surface table: the chart is the reading form, the table the audit form.
+    A reading drawn at fewer than two cells has nothing to compare, so it stays in the table alone.
+
+    Args:
+        surface: The decision surface.
+        variant_index: How each cell is labelled.
+        measures: The host's measure registry, which a payload reads.
+
+    Returns:
+        The chart blocks and the disclosures of what they left out.
+    """
+    readings: list[tuple[str, ReadingKind]] = [
+        *((name, "measure") for name, facts in sorted(surface.measures.items()) if _chartable(name, facts, surface)),
+        *((name, "judged") for name in sorted(surface.dimensions)),
+    ]
+    cells = cell_index(surface)
+    labels = cell_arm_labels(surface, list(variant_index))
+    blocks: list[ReportBlock] = []
     for name, reading in readings:
         drawn: list[str] = []
         left_out: list[str] = []
@@ -1421,15 +1584,15 @@ def _measure_chart_blocks(
                     ),
                 )
             )
-        if not drawn:
-            # Every cell that measured it was left out, which the disclosure above already says — or no
-            # cell measured it at all, and there is nothing to chart and nothing withheld.
+        if len(drawn) < 2:
+            # Nothing to compare: every cell that measured it was left out (the disclosure above says so), one
+            # cell drew it (the table states that one figure), or no cell measured it at all.
             continue
         try:
             payload = build_viz_payload(
                 DistributionRef(cells=drawn, measure_id=name, reading=reading),
                 surface,
-                bundle.variant_index,
+                list(variant_index),
                 measures=measures,
             )
             blocks.append(
@@ -1670,6 +1833,26 @@ def _evidence_disclosures(bundle: AnalysisContextBundle) -> list[ReportBlock]:
     for dimension in unverified:
         reason = bundle.confound_catalog[dimension]
         say("comparisons", reason[:1].upper() + reason[1:] + ".")
+    # Factors that moved in lockstep are named once, as a group, and every co-varying pair's holes are listed (#596).
+    for group in bundle.aliased_factors:
+        say("comparisons", group.sentence)
+    if bundle.factor_pairs is not None and bundle.factor_pairs.factors:
+        say("comparisons", f"{bundle.factor_pairs.completeness} {bundle.factor_pairs.interaction_aliasing}")
+        for pivot in bundle.factor_pairs.pivots:
+            holes = [f"{cell.row_level} with {cell.column_level}" for cell in pivot.cells if cell.status == "not_run"]
+            if holes:
+                say(
+                    "comparisons",
+                    f"{pivot.row_factor} and {pivot.column_factor} co-vary; {len(holes)} of their {len(pivot.cells)} "
+                    f"combinations never ran: {_listed(holes)}.",
+                )
+    # A design that says which combinations it meant to run names its gaps apart from what it skipped (#654).
+    if bundle.declared_crossing is not None:
+        say("comparisons", bundle.declared_crossing.sentence)
+        for state, lead in (("not_run", "Declared cells never run"), ("skipped_by_design", "Cells skipped by design")):
+            cells = [" × ".join(cell.levels.values()) for cell in bundle.declared_crossing.cells if cell.state == state]
+            if cells:
+                say("comparisons", f"{lead}: {'; '.join(cells)}.")
     # A declared level that never ran leaves `levels` silently; the row's declared_levels names it.
     for row in bundle.coverage:
         not_run = [level.display for level in row.declared_levels if level.state == "not_run"]

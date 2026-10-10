@@ -98,8 +98,8 @@ never scored. The quick path states none: each case's seed already sets every di
 ## Step 3: write goal checks
 
 A goal check is an expression over the world the agent left (`state.<dimension>`), the calls it made
-(`calls("<world>.<tool>")`, `call_count`, `called_before`, `called_after`, `last_call_was`), what fired
-(`fired`), and the case's own parameters (`variation.<name>`). It also has `any`/`all` generators, `contains`,
+(`calls("<world>.<tool>")`, `call_count`, `called_before`, `called_after`, `last_call_was`), whether it
+deliberately passed (`passed()`), what fired (`fired`), and the case's own parameters (`variation.<name>`). It also has `any`/`all` generators, `contains`,
 `intersects` and `length`. A path that holds nothing is *not established*, and a check resting on one fails. The
 full grammar is in the `threetears.evals.contracts.dsl` docstring.
 
@@ -160,8 +160,12 @@ candidate did nothing and passes (True) on control" — the same verdict on both
 
 Three pitfalls:
 
-- `called_before(a, b)` is **false when `b` never happened**. "Never order before searching" is
-  `call_count("shop.order") == 0 or called_before("shop.search", "shop.order")`.
+- `called_before(a, b)` and `called_after(a, b)` are **false when either action never happened**. "Never
+  order before searching" is `call_count("shop.order") == 0 or called_before("shop.search", "shop.order")`.
+  `last_call_was` reads only the cell's final call.
+- **A deliberate pass is `passed()`, not a host's spelling.** Your kind records a pass with
+  `CallLedger.record_pass()`, and `passed()` holds when the cell recorded a pass and no call. Acting and then
+  passing is not a pass. The call builtins never see the pass entry.
 - A string comparison over a call parameter is allowed only where the tool's own schema closes the value
   (`enum`, `const` or `pattern`). Anything else compares text the model wrote, which belongs to a judge. The
   authoring gate refuses it; `run_eval` does not check this today, so hold yourself to it.

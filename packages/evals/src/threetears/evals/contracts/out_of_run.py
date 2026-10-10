@@ -1,10 +1,11 @@
 """Calls the engine makes outside any run: priced before they are made, and ledgered once they are.
 
-Four engine calls have no run around them: a launch's case generation (an ``llm`` variation axis's
+Five engine calls have no run around them: a launch's case generation (an ``llm`` variation axis's
 writer, :func:`~threetears.evals.gen.generate_variations`), the rubric proposer
 (:func:`~threetears.evals.gen.propose_draft`), an analysis generation
-(:func:`~threetears.evals.analysis.run_analysis_generation`) and a judge repeat
-(:func:`~threetears.evals.run.repeat_judge_scores`). A run's own calls are bounded by its cost
+(:func:`~threetears.evals.analysis.run_analysis_generation`), a judge repeat
+(:func:`~threetears.evals.run.repeat_judge_scores`) and a second judge
+(:func:`~threetears.evals.run.ask_second_judge`). A run's own calls are bounded by its cost
 cap as their spend arrives (``EvalRunCostCap``); these happen before any run exists, with none coming, or
 after the runs have ended, so nothing would bound or record them. This module is what does:
 
@@ -67,9 +68,11 @@ log = get_logger(__name__)
 #: variation axis's values), ``proposer`` drafts a rubric for operator review, ``analysis`` writes a
 #: campaign's analysis memo (its first call and the one repair round-trip a refused output buys), ``judge``
 #: repeats a finished run's judge scores to measure the judge's agreement with itself
-#: (:func:`~threetears.evals.run.repeat_judge_scores`). Each is the
-#: :data:`~threetears.evals.contracts.host.CompletionRole` the host built the client in.
-OutOfRunPurpose = Literal["variation", "proposer", "analysis", "judge"]
+#: (:func:`~threetears.evals.run.repeat_judge_scores`), ``second_judge`` asks a judge other than the run's to score
+#: a finished run's evidence (:func:`~threetears.evals.run.ask_second_judge`) — measurement cost on its own line, never
+#: the candidate's. Each but ``second_judge`` is the :data:`~threetears.evals.contracts.host.CompletionRole` the host
+#: built the client in; a second judge's client is built in the ``judge`` role.
+OutOfRunPurpose = Literal["variation", "proposer", "analysis", "judge", "second_judge"]
 
 #: How an out-of-run call ended: it returned a completion, or it raised. A raised call is still a
 #: ledger row — the provider may have billed it — carrying no usage, since nothing reported any.

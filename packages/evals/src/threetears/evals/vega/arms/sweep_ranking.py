@@ -60,7 +60,9 @@ from threetears.evals.analysis.viz.intent import ChartIntent
 from threetears.evals.contracts.host import ChartFont
 from threetears.evals.analysis.viz.intents.sweep_ranking import CONFIG_FIELD, LEVER_KEY_PREFIX
 from threetears.evals.vega.palette import CONTEXT_STYLE, SEQUENTIAL_RANGE, font_weights, geometry
+from threetears.evals.analysis.reporting import NULL_LEVEL
 from threetears.evals.analysis.viz.payloads import ABSENT_LEVEL
+from threetears.evals.vega.text_metrics import fits
 from threetears.evals.vega.spec_policy import RANKING_SPEC_NAME
 
 #: The row key holding a configuration's identity — what both panels align on.
@@ -178,7 +180,7 @@ def compile_sweep_ranking(intent: ChartIntent, *, font: ChartFont | None = None)
         )
         for entry in ranking
     ]
-    barcode = _barcode_panel(marks, identity, levers, set(ramps), height)
+    barcode = _barcode_panel(marks, identity, levers, set(ramps), height, font=font)
     ranked = _ranking_panel(ranking, identity, value_axis, labels, height, ranking_width, font=font)
     names = categories.label_layer(clearance_above=_POINT_RADIUS)
     if names is not None:
@@ -223,6 +225,8 @@ def _barcode_panel(
     order: list[str],
     ordered_levers: set[str],
     height: int,
+    *,
+    font: ChartFont | None = None,
 ) -> dict[str, Any]:
     """The glyph: one fused cell per lever per configuration.
 
@@ -237,6 +241,8 @@ def _barcode_panel(
         order: The dimension names, in column order.
         ordered_levers: Which of them carry an order.
         height: The panel height in px, shared with the ranking beside it.
+        font: The typeface the chart is laid out in; ``None`` for the packaged face. It decides whether
+            the word ``null`` fits inside a cell.
 
     Returns:
         The barcode view.
@@ -246,12 +252,13 @@ def _barcode_panel(
     # fraction that leaves `_COLUMN_GAP` px between columns is solved from the width rather than guessed.
     columns = max(len(order), 1)
     step = (sizes["gutter_left"] + _COLUMN_GAP) / columns
+    padding = min(_COLUMN_GAP / step, 0.5) if columns > 1 else 0
     column = {
         "field": _DIMENSION_FIELD,
         "type": "nominal",
         "sort": order,
         # Columns separated, cells within a column fused: see the module header.
-        "scale": {"paddingInner": min(_COLUMN_GAP / step, 0.5) if columns > 1 else 0, "paddingOuter": 0},
+        "scale": {"paddingInner": padding, "paddingOuter": 0},
         # No labels: a lever's name does not fit a cell's width and the label rules forbid
         # both truncating it and shrinking it, so the columns are named in a
         # disclosure line and spelled in full in the values table instead.
@@ -272,6 +279,16 @@ def _barcode_panel(
         }
     )
     ranks = [mark[_RANK_FIELD] for mark in marks if mark[_RANK_FIELD] is not None]
+    # `null` on an ordered lever is a level the operator set (the lever overlaid to nothing), so it is
+    # neither the absence's neutral nor a point on the ramp. It draws apart, as an outlined cell carrying
+    # its word where the cell is wide enough, so the numeric levels keep their ramp (#694).
+    nulled = [
+        lever
+        for lever in order
+        if lever in ordered_levers
+        and any(mark[_DIMENSION_FIELD] == lever and mark[_LEVEL_FIELD] == NULL_LEVEL for mark in marks)
+    ]
+    categorical_levers = [lever for lever in order if lever not in ordered_levers]
     layers: list[dict[str, Any]] = []
     if any(mark[_LEVEL_FIELD] == ABSENT_LEVEL for mark in marks):
         layers.append(
@@ -314,6 +331,10 @@ def _barcode_panel(
             {
                 "transform": [
                     {"filter": {"field": _RANK_FIELD, "valid": False}},
+                    # Scoped to the categorical levers too: a categorical lever may carry the
+                    # word `null` as a level, and an ordered lever's set-apart `null` must not
+                    # pick up that level's hue.
+                    {"filter": {"field": _DIMENSION_FIELD, "oneOf": categorical_levers}},
                     {"filter": {"field": _LEVEL_FIELD, "oneOf": categorical}},
                 ],
                 "mark": {"type": "rect", "tooltip": True},
@@ -336,6 +357,33 @@ def _barcode_panel(
                 },
             }
         )
+    if nulled:
+        set_apart = [
+            {"filter": {"field": _DIMENSION_FIELD, "oneOf": nulled}},
+            {"filter": {"field": _LEVEL_FIELD, "equal": NULL_LEVEL}},
+        ]
+        layers.append(
+            {
+                "transform": set_apart,
+                # Unfilled, in the context ink by name: distinct from the absence's filled neutral and from
+                # every filled step of the ramp, without spending a hue.
+                "mark": {"type": "rect", "tooltip": True, "filled": False, "style": CONTEXT_STYLE},
+                "encoding": {"x": column, "y": identity, "tooltip": _cell_tooltip()},
+            }
+        )
+        cell_width = step * (1 - padding)
+        if fits(NULL_LEVEL, _name_font_size(), cell_width, font):
+            layers.append(
+                {
+                    "transform": set_apart,
+                    "mark": {"type": "text", "align": "center", "baseline": "middle", "fontSize": _name_font_size()},
+                    "encoding": {
+                        "x": column | {"bandPosition": 0.5},
+                        "y": identity | {"bandPosition": 0.5},
+                        "text": {"field": _LEVEL_FIELD, "type": "nominal"},
+                    },
+                }
+            )
     view: dict[str, Any] = {
         "data": {"values": marks},
         "width": sizes["gutter_left"],

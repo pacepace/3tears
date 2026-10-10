@@ -21,14 +21,16 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
-from threetears.evals.analysis.numbers import format_number
 from threetears.evals.contracts import GoalStateOutcome, ResultOutcome, counted_goal_verdicts
 from threetears.evals.contracts.errors import EvalServiceError
 from threetears.evals.ops import (
     AnalysisDeleted,
+    CaseSetLine,
+    CaseSetListing,
     AnalysisGenerationEstimate,
     AnalysisLine,
     AnalysisListing,
+    BarProposals,
     CampaignLine,
     CampaignListing,
     LaunchEstimate,
@@ -56,10 +58,13 @@ from threetears.evals.ops import (
     RunListing,
     RunsCompared,
     ScoreExport,
+    SecondJudgeRead,
     TemplateListing,
+    bar_proposals_text,
     UndescribableArmsListing,
     dollars_text,
     estimate_text,
+    format_number,
     export_text,
     frontier_text,
     history_text,
@@ -70,6 +75,7 @@ from threetears.evals.ops import (
 
 if TYPE_CHECKING:
     from threetears.evals.actions.catalogue import Action, MountedTool
+    from threetears.evals.run import SecondJudgeEstimate
 
 
 # --- help --------------------------------------------------------------------------------------------
@@ -446,6 +452,20 @@ def render_campaign(campaign: CampaignLine) -> str:
     )
 
 
+def render_case_set(case_set: CaseSetLine) -> str:
+    """One version of a case set on one line."""
+    tracked = "" if case_set.tracked else ", one-off"
+    return (
+        f"- {case_set.label}: template {case_set.template_id}, {len(case_set.test_case_ids)} case(s) "
+        f"({', '.join(case_set.test_case_ids)}){tracked}"
+    )
+
+
+def render_case_sets(listing: CaseSetListing) -> str:
+    """A scope's case sets, every version."""
+    return "\n".join([f"case sets ({len(listing.case_sets)})", *(render_case_set(c) for c in listing.case_sets)])
+
+
 def render_campaigns(listing: CampaignListing) -> str:
     """A scope's campaigns."""
     return "\n".join([f"campaigns ({len(listing.campaigns)})", *(render_campaign(c) for c in listing.campaigns)])
@@ -492,6 +512,11 @@ def render_analysis_estimate(estimate: AnalysisGenerationEstimate) -> str:
         f"up to {ceiling}, out-of-run cap {cap}; {verdict}. A generation makes at most {estimate.max_calls} call(s): "
         "a refused output buys one repair round-trip, priced against what is left of the cap before it is sent."
     )
+
+
+def render_bar_proposals(proposals: BarProposals) -> str:
+    """Each proposed bar with its seed and any vacuity, then every reading nothing could be proposed on."""
+    return bar_proposals_text(proposals)
 
 
 def render_report(document: ReportDocument) -> str:
@@ -605,6 +630,55 @@ def render_result_rated(rated: ResultRated) -> str:
     )
 
 
+def _bounds(interval: tuple[float, float] | None) -> str:
+    """An interval as ``[low, high]``, or a word saying there is none."""
+    return "no interval" if interval is None else f"[{interval[0]:.3g}, {interval[1]:.3g}]"
+
+
+def render_second_judge(read: SecondJudgeRead) -> str:
+    """A second judge's pass: what it asked and spent apart from the candidate, then agreement and drift per dim."""
+    report = read.report
+    cost = _usd(report.cost_usd) if report.cost_usd is not None else "unpriced"
+    lines = [
+        f"second judge {report.judge.model} on run {report.run_id} (pass {report.pass_id}): asked about "
+        f"{len(report.judged)} of {report.eligible} judgeable result(s) (fraction {report.sample_fraction:g}, seed "
+        f"{report.sample_seed}); {report.scores_paired} score(s) paired, {report.scores_unanswered} unanswered; "
+        f"{report.calls_made} call(s), {cost} — measurement cost, ledgered under second_judge, never the candidate's",
+    ]
+    if report.stopped:
+        lines.append(f"stopped: {report.stopped}")
+    lines += [f"skipped {skip.result_id}: {skip.reason}" for skip in report.skipped]
+    lines += [f"unwritten {result_id}: paid for, record not stored" for result_id in report.unwritten]
+    lines.append("agreement between the judges")
+    for row in read.agreement.dimensions:
+        kappa = (
+            f"kappa ({row.kappa_weighting}) {row.kappa:.3g}, bounds {_bounds(row.agreement_interval)}"
+            if row.kappa is not None
+            else f"kappa {row.kappa_undefined}"
+        )
+        lines.append(f"- {row.rubric_dim}: n={row.n}, exact agreement {row.exact_agreement:.0%}, {kappa}")
+    lines.append(read.drift.disclosure)
+    for drift in read.drift.dimensions:
+        delta = "n/a" if drift.delta is None else f"{drift.delta:+.3g}"
+        lines.append(
+            f"- {drift.rubric_dim}: {drift.verdict}, movement {delta} over {drift.n_cases} case(s), "
+            f"{_bounds(drift.interval)}"
+        )
+    return "\n".join(lines)
+
+
+def render_second_judge_estimate(estimate: SecondJudgeEstimate) -> str:
+    """A second judge's price before it starts, against the cap, and whether it would start."""
+    ceiling = _usd(estimate.ceiling_usd) if estimate.ceiling_usd is not None else "unpriceable"
+    cap = _usd(estimate.cap_usd) if estimate.cap_usd is not None else "none enforced"
+    verdict = "would start" if estimate.would_start else f"would be refused: {estimate.refusal}"
+    return (
+        f"estimate: second judge {estimate.judge.model} on run {estimate.run_id} — {len(estimate.sampled)} of "
+        f"{estimate.eligible} judgeable result(s), {estimate.dims} dim(s), at most {estimate.max_calls} call(s) priced "
+        f"at up to {ceiling}; out-of-run cap {cap}; {verdict}."
+    )
+
+
 def render_run_deleted(deleted: RunDeleted) -> str:
     """What deleting a run removed."""
     detached = ", ".join(deleted.campaigns_detached) or "none"
@@ -679,6 +753,7 @@ __all__ = [
     "render_results",
     "render_campaign",
     "render_campaigns",
+    "render_bar_proposals",
     "render_estimate",
     "render_export",
     "render_help_index",
