@@ -155,6 +155,12 @@ back at the next seed. ``EvalRun`` gained ``goal_check_proof_rules`` (None on a 
 1, so its ``proven`` checks read unproven) and ``refused_goal_checks`` (None, not recorded), and ``EvalResult``
 gained ``judge_cannot_tell_boundary`` (empty, its can't-tells read as capability) — all optional within v8.
 
+**Within v8, not a bump**: ``ClientRequestSettings.strict_output`` joined as a defaulted field (#686) — whether a
+role's requests were to be routed only to providers honouring every parameter sent. A stamp stored before it
+carries none and reads False, "no such requirement was stated", which is what the engine sent then. Its apparatus
+level (``judge_request_settings`` / ``simulator_request_settings``) leaves the flag out while it is False, so a
+stored run's level is unchanged; a judge stamp carrying True reads as a different level from one stored before.
+
 **Within v8, not a bump**: ``CampaignDesign.guardrail_margins`` joined as an OPTIONAL field (#697) — the margin
 each judged guardrail (a boundary rubric dimension) is held to. A campaign, or an analysis's design snapshot,
 stored before it carries none and reads as declaring none: its judged guardrails are held at zero change, exactly
@@ -2310,6 +2316,16 @@ class ClientRequestSettings(EvalDocumentModel):
             "The reasoning effort level sent with every request (the provider's `reasoning.effort`): a level, not a "
             "token bound, so `max_tokens` stays the only hard stop. None = no effort was sent. Never set beside "
             "`reasoning_max_tokens`."
+        ),
+    )
+
+    strict_output: bool = Field(
+        default=False,
+        description=(
+            "Whether every request of this role must be routed only to a provider that honours every parameter "
+            "sent (an OpenRouter-style `provider.require_parameters`), so a strict `response_format` or a reasoning "
+            "bound is enforced rather than silently dropped. The host's client builder applies it. False = no such "
+            "requirement was stated, which is also how a stamp stored before this field reads: none was."
         ),
     )
 

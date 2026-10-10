@@ -114,4 +114,4 @@ class TestTheRunRecordsHowItsApparatusWasAsked:
         ],
     )
     def test_asking_for_reasoning_either_way_alone_is_accepted(self, fields) -> None:
-        assert ClientRequestSettings(**fields).model_dump(exclude_none=True) == fields
+        assert ClientRequestSettings(**fields).model_dump(exclude_defaults=True) == fields

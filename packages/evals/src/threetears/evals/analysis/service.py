@@ -359,7 +359,8 @@ async def _assemble(
 
     Raises:
         NotFoundError: No campaign with that id.
-        ValidationFailedError: The bundle has no resolvable runs, or the preset does not exist.
+        ValidationFailedError: The bundle has no resolvable runs, the preset does not exist, or the writer
+            model is not one the host allows (``HostProfile.analysis_writer_models``).
         ValueError: The host supplies no completion clients.
     """
     clients = host.completion_clients("an analysis generation")
@@ -397,6 +398,10 @@ async def _assemble(
             + ")"
         )
 
+    # A requested writer the host does not allow is refused before the prompt is resolved or a client
+    # built; the host's default is checked once the client says which model it resolved to.
+    if model is not None and (ineligible := host.profile.analysis_writer_refusal(model)) is not None:
+        raise ValidationFailedError(ineligible)
     prompt = await resolve_prompt()
     system, user, contract = first_request(bundle, prompt, host.profile)
 
@@ -404,6 +409,9 @@ async def _assemble(
     # pre-spend disclosure log and stored provenance, rather than re-implementing the host's
     # resolution cascade here.
     client = clients("analysis", model)
+    if model is None and (ineligible := host.profile.analysis_writer_refusal(client.model_name)) is not None:
+        await _release(client)
+        raise ValidationFailedError(f"the host's default writer: {ineligible}")
     return _Assembled(
         campaign=campaign,
         bundle=bundle,
@@ -460,7 +468,8 @@ async def estimate_analysis_generation(
 
     Raises:
         NotFoundError: No campaign with that id.
-        ValidationFailedError: The bundle has no resolvable runs, or the preset does not exist.
+        ValidationFailedError: The bundle has no resolvable runs, the preset does not exist, or the writer
+            model is not one the host allows.
         ValueError: The host supplies no completion clients.
     """
     assembled = await _assemble(host, campaign_id, scope_id, model=model, resolve_prompt=resolve_prompt)
@@ -522,7 +531,8 @@ async def prepare_analysis_generation(
 
     Raises:
         NotFoundError: No campaign with that id.
-        ValidationFailedError: The bundle has no resolvable runs, the preset does not exist, or the first call
+        ValidationFailedError: The bundle has no resolvable runs, the preset does not exist, the writer model is
+            not one the host allows, or the first call
             cannot be priced under an enforced cap or is priced above it — the client it built released.
         ValueError: The host supplies no completion clients.
     """

@@ -1000,7 +1000,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`frozen_case_receipt`** · function · Project a stored reporter case onto the receipt a freeze answers with.
   <br>`frozen_case_receipt(test_case: EvalTestCase) -> FrozenReporterCase`
 - **`generate_analysis`** · async function · Generate one campaign's analysis from its context bundle, in one LLM call or two.
-  <br>`generate_analysis(bundle: AnalysisContextBundle, *, prompt: str, model: str, client: CompletionGenerator, prompt_id: str, bundle_assembled_at: str, prompt_version: str | None = None, tally: GenerationTally | None = None, admit: CallAdmission | None = None, profile: HostProfile) -> tuple[EvalAnalysis, list[EvalInsight]]`
+  <br>`generate_analysis(bundle: AnalysisContextBundle, *, prompt: str, model: str, client: CompletionGenerator, prompt_id: str, bundle_assembled_at: str, prompt_version: str | None = None, tally: GenerationTally | None = None, admit: CallAdmission | None = None, profile: HostProfile, measuring_writers: bool = False) -> tuple[EvalAnalysis, list[EvalInsight]]`
 - **`generation_ceiling_s`** · function · The wall-clock ceiling of one `generate_analysis`, derived from the ceilings it wraps.
   <br>`generation_ceiling_s(*, request_s: RequestCeiling, generator_max_tokens: int) -> float`
 - **`get_analysis`** · function · Load a stored analysis by id.
@@ -1533,6 +1533,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 
 - **`analyses_list`** · function · A campaign's stored analyses.
   <br>`analyses_list(host: EvalHost, campaign_id: str, scope_id: str) -> AnalysisListing`
+- **`analyses_undescribable`** · function · The scope's analyses holding an arm whose levels this build cannot describe, with each one's count and reasons.
+  <br>`analyses_undescribable(host: EvalHost, scope_id: str) -> UndescribableArmsListing`
 - **`analysis_archive`** · function · Archive or restore a stored analysis — the reversible answer to deleting it.
   <br>`analysis_archive(host: EvalHost, analysis_id: str, scope_id: str, *, archived: bool, reason: str | None = None) -> AnalysisLine`
 - **`analysis_delete`** · function · Destroy a stored analysis — its insights stay; archive is the reversible answer.
@@ -1655,6 +1657,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`TemplateListing`** · model · A scope's templates.
 - **`TraceJudge`** · model · The `judge` part of a stored trace: what the judge was sent, as the kind rendered it.
 - **`TraceRecord`** · model · The `record` part of a stored trace: what the kind stored about the cell, without the two heavy parts.
+- **`UndescribableArmsLine`** · model · One stored analysis holding at least one arm whose levels this build cannot describe.
+- **`UndescribableArmsListing`** · model · The scope's stored analyses that hold an arm whose levels this build cannot describe.
 - **`UnreadableReporterCase`** · model · A stored case carrying a reporter case this build cannot read.
 
 **Types**
@@ -1834,6 +1838,7 @@ Everything the engine knows about one consuming product.
 | `kinds` | `tuple[KindContract, ...]` | `()` | What each candidate kind's runs carry beyond the engine's own fields: its overlays and its spec. |
 | `listing_elisions` | `frozenset[str]` | `frozenset()` | Paths inside `EvalRun.host_payload` that a read LISTING many runs leaves out. |
 | `release_label` | `str \| None` | `None` | The `label` sweepable whose value names the BUILD of the product that ran — an app version. |
+| `analysis_writer_models` | `tuple[str, ...]` | `()` | The model ids this host allows to write a campaign's analysis. Empty: any model. |
 | `sweepables` | `SweepableRegistry` | derived | Every input this host's runs carry: `host_sweepables` plus each kind contract's levers. |
 
 <a id="documents"></a>
@@ -2230,6 +2235,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `analysis_generate` | `spend`, job | `campaign_id`, `model?` | Generate a campaign's analysis with a paid model call, as a job to poll. |
 | `analysis_estimate` | `read` | `campaign_id`, `model?` | Price a campaign's analysis generation against the host's out-of-run cap, without spending. |
 | `analyses_list` | `read` | `campaign_id` | List a campaign's stored analyses. |
+| `analyses_undescribable` | `read` | — | List the scope's analyses holding an arm whose levels this build cannot describe. |
 | `report_read` | `read` | `campaign_id`, `format?` | Read a campaign's report — its analysis, else its evidence alone — as Markdown, JSON or HTML. |
 | `reporter_case_freeze` | `write` | `template_id`, `campaign_id`, `recorded_analysis_id?`, `labels?`, `supersedes?` | Freeze a campaign's analysis bundle, and the memo it got, into a case of a reporter template. |
 | `reporter_cases_list` | `read` | `template_id`, `include_archived?` | List a reporter template's cases: which each campaign and memo launches, superseded or retired. |
@@ -2286,7 +2292,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `metric` | `string` or `null` | The measure to read; omitted reads the composite score. |
 | `min_absolute_change` | `number` | The smallest move a regression flag counts, in the measure's unit; 0 lets the test decide. |
 | `min_relative_change` | `number` | The smallest move from the baseline a flag counts, as a fraction; 0 lets the test decide. |
-| `model` | `string` or `null` | The analysis generator's model; omitted for the host's. |
+| `model` | `string` or `null` | The analysis generator's model; omitted for the host's. A model outside the host's allowed writers is refused before anything is spent. |
 | `models` | array of `string` | Candidate models, one arm and one run each; empty runs the kind's own default. |
 | `n_test_cases` | `integer` or `null` | A case count to price each planned arm at in place of its plan's, for a what-if grid. |
 | `n_variations` | `integer` | New cases to generate from the template's variation axes; 0 runs its stored cases. |
