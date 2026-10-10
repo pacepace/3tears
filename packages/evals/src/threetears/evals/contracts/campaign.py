@@ -344,7 +344,9 @@ class GenerationProvenance(EvalDocumentModel):
     artifact as one accepted first time, and an operator comparing generator models has to
     be able to see which needed one — a silent repair would hide exactly the defect rate
     the comparison exists to measure. A ``0``/``None`` pair reads as "accepted as emitted".
-    Every field is required: the generator states each one, so none is ever assumed.
+    Every field is required but two: the generator states each one, so none is ever assumed.
+    ``bundle_schema_version`` and ``host_declarations_digest`` joined within schema v8, so an
+    analysis stored before them carries None — read as "not recorded", never as "the same as now".
     """
 
     prompt_id: str = Field(description="Id of the prompt template used to generate the analysis.")
@@ -395,6 +397,25 @@ class GenerationProvenance(EvalDocumentModel):
             "observations belong together, and that claim is only legible beside the rule that grouped "
             "them — two analyses whose cells were computed under different definitions are not "
             "comparable on n, on k, or on any per-cell number."
+        ),
+    )
+    bundle_schema_version: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "The ``AnalysisContextBundle.schema_version`` the generation ran over — the package's bundle shape. "
+            "With ``host_declarations_digest`` it is what lets a re-assembly that no longer reproduces "
+            "``bundle_fingerprint`` say whether the package's shape, the host's declarations or the evidence "
+            "moved. None on an analysis stored before it was recorded: that analysis cannot say, and is never read "
+            "as having run over the current version."
+        ),
+    )
+    host_declarations_digest: str | None = Field(
+        default=None,
+        description=(
+            "The ``AnalysisContextBundle.host_declarations_digest`` the generation ran over: a digest of the "
+            "host's declared sweepables and world dimensions, derived from its registries at assembly. None on an "
+            "analysis stored before it was recorded, which cannot say."
         ),
     )
     user_message_digest: str = Field(
@@ -1075,7 +1096,8 @@ class EvalInsight(EvalDocumentModel):
 
     Lives in the ``scope_id`` of the analysis that minted it. Traces back to the analysis that minted it
     via ``source_campaign_id`` / ``source_analysis_id``; ``invalidation_trigger``
-    records the condition under which the insight should be re-checked.
+    states the two rules that retire it — its analysis archived, or a later analysis restating it
+    (:func:`~threetears.evals.analysis.bundle.superseding_insights`).
     """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
@@ -1098,7 +1120,14 @@ class EvalInsight(EvalDocumentModel):
     evidence_result_ids: _LLMList[str] = Field(default_factory=list, description="Result ids the insight rests on.")
     observed_at: str = Field(default_factory=utc_now_iso)
     model_versions: dict[str, str] = Field(default_factory=dict, description="Model ids in play when observed.")
-    invalidation_trigger: _LLMProse = Field(default="", description="Condition under which to re-check the insight.")
+    invalidation_trigger: _LLMProse = Field(
+        default="",
+        description=(
+            "What retires the insight, as the engine carries it out: written at mint, naming the analysis whose "
+            "archive retracts it and that a later analysis of the subject restating the claim replaces it in "
+            "place. Blank on an insight minted before it was written, which the same two rules retire."
+        ),
+    )
     source_campaign_id: str = Field(default="", description="Campaign that produced the analysis this came from.")
     source_analysis_id: str = Field(default="", description="Analysis that minted this insight.")
 

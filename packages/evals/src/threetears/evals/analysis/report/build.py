@@ -1460,6 +1460,12 @@ def _evidence_disclosures(bundle: AnalysisContextBundle) -> list[ReportBlock]:
             f"Arm {short_digest(merge.variant_key)} was measured in {len(merge.apparatus_class_ids)} cells that did "
             f"not pool ({merge.reason.replace('_', ' ')}{dimensions}).",
         )
+    if bundle.refused_merges_omitted:
+        say(
+            "apparatus",
+            f"{bundle.refused_merges_omitted} more pair(s) of cells of one arm did not pool; they are left out of "
+            "this list, the smallest first.",
+        )
     return blocks
 
 

@@ -78,6 +78,7 @@ from threetears.evals.analysis.bundle import (
     LeverCoverageInput,
     RunSummary,
     bundle_decision_surface,
+    insight_restatement_key,
 )
 from threetears.evals.analysis.cells import cell_ref, variant_of_cell_ref
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal, UnresolvableReference
@@ -403,6 +404,8 @@ async def generate_analysis(
             repaired_refusal=refusal,
             user_message_digest=sent_digest,
             cell_model_version=bundle.cell_model_version,
+            bundle_schema_version=bundle.schema_version,
+            host_declarations_digest=bundle.host_declarations_digest,
         )
 
     try:
@@ -1112,16 +1115,28 @@ def _is_viz_type(value: str) -> TypeIs[VizType]:
 
 
 def _insights_of(analysis: EvalAnalysis, bundle: AnalysisContextBundle, surface: DecisionSurface) -> list[EvalInsight]:
-    """Mint one durable insight per finding that states one, citing the runs behind its evidence.
+    """Mint one durable insight per claim the findings state, citing the runs behind its evidence.
 
     The model names what is durable; the runs it rests on are read off the cells its evidence cites,
-    so an insight cannot cite a run the finding did not.
+    so an insight cannot cite a run the finding did not. Two findings stating one claim
+    (:func:`~threetears.evals.analysis.bundle.insight_restatement_key`) mint it once, from the first.
+    Each insight's ``invalidation_trigger`` names what retires it, which the engine carries out:
+    archiving this analysis, or a later analysis restating the claim.
     """
     cells = cell_index(surface)
     insights = []
+    stated: set[str] = set()
+    trigger = (
+        f"Retracted if analysis {analysis.id} is archived; replaced in place when a later analysis of this "
+        "subject states the same claim."
+    )
     for finding in analysis.document.findings:
         if not finding.durable.strip():
             continue
+        key = insight_restatement_key(finding.durable)
+        if key in stated:
+            continue
+        stated.add(key)
         runs = sorted({run for row in finding.evidence if row.cell in cells for run in cells[row.cell].run_ids})
         insights.append(
             EvalInsight(
@@ -1132,6 +1147,7 @@ def _insights_of(analysis: EvalAnalysis, bundle: AnalysisContextBundle, surface:
                 confidence=finding.confidence,
                 evidence_run_ids=runs,
                 model_versions=bundle.model_versions,
+                invalidation_trigger=trigger,
                 source_campaign_id=bundle.campaign_id,
                 source_analysis_id=analysis.id,
             )
@@ -1184,6 +1200,11 @@ def build_user_message(bundle: AnalysisContextBundle) -> str:
     """
     payload = bundle.to_dict()
     del payload["variant_index"]
+    # Provenance for code comparing two bundles, and the engine's own retirement rule on each prior insight:
+    # nothing the writer can read a finding off, and each one billed on every generation.
+    del payload["host_declarations_digest"]
+    for insight in payload["prior_insights"]:
+        del insight["invalidation_trigger"]
     for family in payload["multiple_comparisons"]["families"]:
         for comparison in family["comparisons"]:
             del comparison["p_raw"]
