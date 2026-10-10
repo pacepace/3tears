@@ -276,14 +276,16 @@ def _scorer_reader_name(name: str) -> str:
     return f"{words[:1].upper()}{words[1:]} score"
 
 
-def scorer_measure(scorer: Scorer, *, margin: float | None = None) -> MetricDescriptor:
+def scorer_measure(
+    scorer: Scorer, *, margin: float | None = None, value_range: tuple[float, float] | None = None
+) -> MetricDescriptor:
     """The measure one scorer function reports: a quality score, higher is better, over scored results.
 
     A scorer whose return is annotated ``bool`` is a pass/fail and is declared on the range 0 to 1, margin or
     not: its intervals stay inside what a pass rate can be, and with a margin its equivalence test is the
-    bounded one that holds its error rate at any n. Any other scorer declares no range, since nothing says what
-    its values can be: its intervals are the unclipped t intervals, and a margin on it is never tested for
-    equivalence (a host of your own declares the measure's ``value_range``).
+    bounded one that holds its error rate at any n. Any other scorer is on the range its caller declares
+    (``compare(ranges=...)``), or on none, since nothing else says what its values can be: its intervals are
+    then the unclipped t intervals, and it takes no margin (:func:`refuse_unusable_margins`).
 
     Args:
         scorer: The scorer. Its ``__name__`` names the measure and the first line of its docstring,
@@ -291,6 +293,7 @@ def scorer_measure(scorer: Scorer, *, margin: float | None = None) -> MetricDesc
         margin: The measure's declared margin (``materiality_threshold``): the most a difference in it may be and
             still be too small to act on, so a contrast on it can read ``equivalent``. ``None`` declares none,
             and no contrast on it can.
+        value_range: The lowest and highest value a non-``bool`` scorer can return, or ``None``.
 
     Returns:
         The descriptor :func:`callable_host` registers for it.
@@ -310,8 +313,13 @@ def scorer_measure(scorer: Scorer, *, margin: float | None = None) -> MetricDesc
         merit_axis="quality",
         population="scored",
         materiality_threshold=margin,
-        value_range=(0.0, 1.0) if _returns_bool(scorer) else None,
+        value_range=(0.0, 1.0) if _returns_bool(scorer) else value_range,
     )
+
+
+def _as_range(bounds: tuple[float, float] | None) -> tuple[float, float] | None:
+    """A declared range as two floats, or None when none is declared."""
+    return None if bounds is None else (float(bounds[0]), float(bounds[1]))
 
 
 def _returns_bool(scorer: Scorer) -> bool:
@@ -323,18 +331,53 @@ def _returns_bool(scorer: Scorer) -> bool:
     return returned is bool or returned == "bool"
 
 
-def refuse_unusable_margins(scorers: Sequence[Scorer], margins: Mapping[str, float]) -> None:
-    """Refuse a margin no scorer's measure could carry, naming the measures that can carry one.
+def refuse_unusable_margins(
+    scorers: Sequence[Scorer],
+    margins: Mapping[str, float],
+    ranges: Mapping[str, tuple[float, float]] | None = None,
+) -> None:
+    """Refuse a margin or a range no scorer's measure could carry, naming what can carry one.
+
+    A margin is what lets a contrast read ``equivalent``, and the equivalence test needs the measure's range
+    (#695). A ``bool`` scorer is on 0 to 1; any other has the range ``ranges`` declares for it, or none, and a
+    margin on it with none is refused here rather than accepted and never tested.
 
     Args:
         scorers: The scorers whose measures the margins are declared on.
         margins: Each margin, by the name of the scorer it is declared on.
+        ranges: Each non-``bool`` scorer's range, by its name.
 
     Raises:
-        ValueError: A margin on a name no scorer has (the classifier's accuracy and every engine core measure
-            among them), or one that is not a positive finite number.
+        ValueError: A margin or range on a name no scorer has (the classifier's accuracy and every engine core
+            measure among them), a margin that is not a positive finite number, a range on a ``bool`` scorer or
+            one that is not two finite numbers, low below high, or a margin on a scorer with no range.
     """
+    ranges = dict(ranges or {})
     names = [_scorer_name(scorer) for scorer in scorers]
+    by_name = dict(zip(names, scorers, strict=True))
+    for name, bounds in ranges.items():
+        if name not in names:
+            raise ValueError(
+                f"ranges= names {name!r}, which no scorer reports; a range is declared on a scorer's measure, by "
+                f"its def's name: {', '.join(map(repr, names)) or 'none were given'}"
+            )
+        if _returns_bool(by_name[name]):
+            raise ValueError(
+                f"{name!r} returns a bool, a pass/fail, which is on 0 to 1 already: declare ranges= only for a "
+                "scorer returning a number"
+            )
+        if (
+            not isinstance(bounds, tuple | list)
+            or len(bounds) != 2
+            or any(
+                isinstance(end, bool) or not isinstance(end, int | float) or not math.isfinite(end) for end in bounds
+            )
+            or not bounds[0] < bounds[1]
+        ):
+            raise ValueError(
+                f"the range of {name!r} is the lowest and the highest score it can return, as two numbers, low "
+                f"first: ranges={{{name!r}: (1, 5)}} for a 1-to-5 score, not {bounds!r}"
+            )
     for name, margin in margins.items():
         if name in _CLASSIFIER_NAMES or name in METRIC_DESCRIPTORS:
             raise ValueError(
@@ -352,6 +395,13 @@ def refuse_unusable_margins(scorers: Sequence[Scorer], margins: Mapping[str, flo
             raise ValueError(
                 f"the margin on {name!r} is a positive number in the measure's own units (0.05 is five points on a "
                 f"pass rate), not {margin!r}"
+            )
+        if not _returns_bool(by_name[name]) and name not in ranges:
+            raise ValueError(
+                f"a margin on {name!r} needs its range too: {name!r} does not return a bool, so nothing says what "
+                "its scores can be, and with no range no test can show two arms inside a margin (one rare large "
+                f"score can hide a move). Declare the lowest and highest score it can return beside the margin: "
+                f"ranges={{{name!r}: (1, 5)}} for a 1-to-5 score. A pass/fail scorer annotated -> bool needs none"
             )
 
 
@@ -420,6 +470,7 @@ def callable_host(
     world: World | None = None,
     arms: bool = False,
     margins: Mapping[str, float] | None = None,
+    ranges: Mapping[str, tuple[float, float]] | None = None,
 ) -> EvalHost:
     """The least host there is: the shared core, one measure per scorer, no world, an in-memory store.
 
@@ -440,18 +491,23 @@ def callable_host(
             host. A run that states no arm (a ``run_eval`` in this host) is at its candidate model's label.
         margins: A margin declared on a scorer's measure, by the scorer's name (:func:`scorer_measure`), so a
             contrast on it can read ``equivalent``; ``None`` declares none. No margin is ever assumed.
+        ranges: The lowest and highest score a scorer returning a number can give, by the scorer's name
+            (``{"rating": (1, 5)}``): its intervals stay inside it, and a margin on it can be tested. A ``bool``
+            scorer is on 0 to 1 already. A score outside its range excludes its cell, naming the scorer.
 
     Returns:
         The host.
 
     Raises:
         ValueError: A scorer has no usable name, two share one, or one takes a classifier measure's name or
-            any other engine core measure's; a lever name is unusable or repeated; or a margin names no scorer
-            or is not a positive number.
+            any other engine core measure's; a lever name is unusable or repeated; a margin names no scorer,
+            is not a positive number or is on a scorer with no range; or a range is unusable
+            (:func:`refuse_unusable_margins`).
     """
     _refuse_unnamed_or_repeated(scorers)
     margins = dict(margins or {})
-    refuse_unusable_margins(scorers, margins)
+    ranges = dict(ranges or {})
+    refuse_unusable_margins(scorers, margins, ranges)
     return EvalHost(
         profile=HostProfile(
             host_id=CALLABLE_HOST_ID,
@@ -459,7 +515,12 @@ def callable_host(
             if arms
             else SHARED_CORE,
             measures=MeasureRegistry(
-                scorer_measure(scorer, margin=margins.get(_scorer_name(scorer))) for scorer in scorers
+                scorer_measure(
+                    scorer,
+                    margin=margins.get(_scorer_name(scorer)),
+                    value_range=_as_range(ranges.get(_scorer_name(scorer))),
+                )
+                for scorer in scorers
             ),
             kinds=callable_kind_contracts(levers),
             world=None if world is None else world.registry,
@@ -493,7 +554,7 @@ class CallableKind:
     spend as the cell's ``candidate`` usage. A candidate that raises FAILS its cell (a
     candidate error lowers the score; a broken candidate must not vanish); a scorer that raises, or
     returns something that is not a number, EXCLUDES it, because the grader is the rig rather than
-    the thing under test. A classifying kind also lands ``match`` and ``confusion_cell`` against the
+    the thing under test; so does a score outside the range its measure declares. A classifying kind also lands ``match`` and ``confusion_cell`` against the
     expected label its case carries, the answer counted as :data:`UNUSABLE_ANSWER` when it is no label.
     A judged kind is a document kind: every answer carries the evidence its judge reads
     (:func:`~threetears.evals.quick.judged.judge_evidence`), and the engine's judge scores it after ``invoke``.
@@ -512,6 +573,7 @@ class CallableKind:
         classifies: bool = False,
         judge: Judge | None = None,
         tools: Mapping[str, Tool] | None = None,
+        ranges: Mapping[str, tuple[float, float]] | None = None,
     ) -> None:
         """Bind the candidate and its scorers.
 
@@ -522,8 +584,10 @@ class CallableKind:
             judge: The judge whose evidence each answer carries, or ``None`` for an unjudged kind.
             tools: The tools the candidate is called with beside each case, or ``None`` for a candidate
                 called with the case alone.
+            ranges: Each scorer's declared range, by its name, which every score it returns must lie in.
         """
         self._candidate = candidate
+        self._ranges = dict(ranges or {})
         self._tools = dict(tools) if tools is not None else None
         self._scorers = tuple(scorers)
         self._classifies = classifies
@@ -625,6 +689,16 @@ class CallableKind:
                 return CandidateOutput(
                     output=trace,
                     infra_errors=[f"the scorer {name} returned {score!r}, not a finite number or a bool"],
+                    judge_evidence=evidence,
+                    telemetry=telemetry,
+                )
+            if name in self._ranges and not self._ranges[name][0] <= score <= self._ranges[name][1]:
+                low, high = self._ranges[name]
+                return CandidateOutput(
+                    output=trace,
+                    infra_errors=[
+                        f"the scorer {name} returned {score!r}, outside the range {low:g} to {high:g} declared for it"
+                    ],
                     judge_evidence=evidence,
                     telemetry=telemetry,
                 )
@@ -1064,16 +1138,22 @@ def _kind_factory(
     judge: Judge | None,
     world: World | None,
     tools: Mapping[str, Tool] | None,
+    ranges: Mapping[str, tuple[float, float]],
 ) -> KindFactory:
     """The factory building each cell's kind: one :class:`CallableKind` for every cell, or a world cell's own kind."""
     if world is None:
         kind = CallableKind(
-            cast(Candidate | ToolUsingCandidate, candidate), scorers, classifies=classifies, judge=judge, tools=tools
+            cast(Candidate | ToolUsingCandidate, candidate),
+            scorers,
+            classifies=classifies,
+            judge=judge,
+            tools=tools,
+            ranges=ranges,
         )
         return lambda _cell: kind
 
     def over(acting: Candidate) -> CallableKind:
-        return CallableKind(acting, scorers, classifies=classifies, judge=judge)
+        return CallableKind(acting, scorers, classifies=classifies, judge=judge, ranges=ranges)
 
     def cell_kind(context: CellContext) -> WorldCellKind:
         return WorldCellKind(world, cast(WorldCandidate, candidate), over, context)
@@ -1363,12 +1443,24 @@ async def run_arms(
     host.storage.save_template(template)
     for test_case in test_cases:
         host.storage.save_test_case(test_case)
+    # Each scorer's declared range, which every score it returns is held to: the bounded tests read it as a fact.
+    ranges = {
+        name: descriptor.value_range
+        for name in map(_scorer_name, scorers)
+        if (descriptor := host.profile.measures.get(name)) is not None and descriptor.value_range is not None
+    }
     wired = [
         _WiredArm(
             model=model,
             levers=dict(arm.levers or {}),
             kind_factory=_kind_factory(
-                arm.candidate, scorers, classifies=labels is not None, judge=judge, world=world, tools=tools
+                arm.candidate,
+                scorers,
+                classifies=labels is not None,
+                judge=judge,
+                world=world,
+                tools=tools,
+                ranges=ranges,
             ),
             arm=arm.arm,
         )
