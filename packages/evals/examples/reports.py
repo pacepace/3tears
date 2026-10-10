@@ -1,9 +1,10 @@
 """How do I turn a finished campaign into the files people read: verdicts, report files and charts?
 
-The earlier examples printed a campaign's report; here it is written out. The verdicts are read as data,
-the report goes to Markdown and HTML beside the evidence bundle its numbers come from, and each chart to a
-Vega-Lite spec (and an SVG, with the ``[vega]`` extra). New here: ``report_markdown``, ``report_html``,
-``inspect_campaign_bundle`` and ``VegaRenderer``. Reading a report further: ``docs/reading-reports.md``.
+The earlier examples printed a campaign's report; here it is written out. The verdicts are read as typed data
+and gated as a CI step gates them, the report goes to Markdown and HTML beside the evidence bundle its numbers
+come from, and each chart to a Vega-Lite spec (and an SVG, with the ``[vega]`` extra). New here:
+``report_markdown``, ``report_html``, ``inspect_campaign_bundle``, ``VegaRenderer`` and ``Comparison.gate``.
+Reading a report further: ``docs/reading-reports.md``.
 
 Run it with ``python packages/evals/examples/reports.py``; the files go to ``./eval-report/``.
 It calls no model: both arms are keyword stand-ins, so it always runs offline and costs nothing.
@@ -67,16 +68,17 @@ async def main(out_dir: Path = Path("eval-report")) -> dict[tuple[str, str], str
         {"baseline": offline_triage(BASELINE_WORDS), "candidate": offline_triage(CANDIDATE_WORDS)},
         expected=lambda case: case["label"],
         control="baseline",
-        scope_id="reports-example",
         k=2,
     )
     report = comparison.report
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # The verdicts as data: one row per arm and reading (accuracy, cost_usd), each a dict keyed by column.
-    verdicts = {(row["arm"], row["reading"]): row["verdict"] for row in comparison.contrasts()}
-    for (arm, reading), verdict in verdicts.items():
-        print(f"{arm} on {reading}: {verdict}")
+    # The verdicts as data: each contrast's typed outcome, which a program branches on, beside the words printed.
+    verdicts = {(row["arm"], row["reading"]): row["outcome"] for row in comparison.contrasts()}
+    for row in comparison.contrasts():
+        print(f"{row['arm']} on {row['reading']}: {row['outcome']} ({row['verdict']})")
+    # The same verdicts as a CI gate: it fails on a regression or a guardrail not shown held, by default.
+    print(comparison.gate().render())
 
     (out_dir / "report.md").write_text(report_markdown(report), encoding="utf-8")  # for a pull request or an agent
     (out_dir / "report.html").write_text(report_html(report), encoding="utf-8")  # for a person; no script

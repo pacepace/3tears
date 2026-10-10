@@ -82,7 +82,7 @@ def test_the_cli_runs_the_courier_end_to_end_from_a_subprocess() -> None:
     out = completed.stdout
     for model in COURIER_MODELS:
         assert f"completed: {model} over 3 case(s) x k=2" in out
-    assert out.count("6 result(s): 6 scored, 0 failed by the candidate, 0 excluded") == 2
+    assert out.count("6 result(s): 6 scored\n") == 2, "no failure, no exclusion and no judge: no zero counts"
     # The pro planner is never late; the lite one misses stops behind the two closed roads.
     assert "on_time_rate: mean 1 (n=6" in out
     assert "on_time_rate: mean 0.639 (n=6" in out

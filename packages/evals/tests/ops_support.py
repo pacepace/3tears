@@ -15,7 +15,7 @@ from typing import Any
 from threetears.evals.actions import Caller
 from threetears.evals.analysis import assemble_context_bundle
 from threetears.evals.contracts import EvalCampaign, EvalStorage
-from threetears.evals.contracts.host import EvalHost
+from threetears.evals.contracts.host import EvalHost, HostProfile
 from threetears.evals.ops import AnalysisGeneration, JobStatus, OpsHost, job_poll
 from threetears.evals.run import LaunchSettings
 from threetears.evals.storage import InMemoryDocumentStore
@@ -94,6 +94,7 @@ def ops_fixture(
     ceiling_usd: float | None = FIXTURED_CALL_CEILING_USD,
     first_output: str | None = None,
     settings: LaunchSettings = TOYHOST_LAUNCH_SETTINGS,
+    profile: HostProfile | None = None,
 ) -> OpsFixture:
     """The toy host as an operations host: its template saved, its corpus campaign stored.
 
@@ -103,6 +104,7 @@ def ops_fixture(
         ceiling_usd: What each generator call is priced at, at most; ``None`` for a writer that cannot price.
         first_output: What each writer's first call returns in place of the memo, when set.
         settings: The launch settings — the run and out-of-run caps, and whether they are enforced.
+        profile: The host's vocabulary; ``None`` is the toy host's own.
 
     Returns:
         The fixture.
@@ -126,7 +128,7 @@ def ops_fixture(
         writers.append(writer)
         return writer
 
-    launch, _client = toyhost_launch_host(storage=storage, clients=clients, settings=lambda: settings)
+    launch, _client = toyhost_launch_host(profile=profile, storage=storage, clients=clients, settings=lambda: settings)
     hosts.append(launch.eval_host)
 
     async def prompt() -> str:

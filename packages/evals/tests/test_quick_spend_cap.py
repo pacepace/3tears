@@ -105,3 +105,12 @@ async def test_compare_caps_the_whole_comparison_each_arm_at_an_equal_share() ->
 async def test_compare_with_no_cap_runs_every_arm_uncapped() -> None:
     comparison = await compare(CASES, {"a": silent, "b": costly}, [even], control="a", scope_id=SCOPE, k=1)
     assert all(summary.max_cost_usd_origin == "uncapped" for summary in comparison.arms.values())
+
+
+async def test_a_free_run_with_no_cap_and_no_judge_prints_no_cap_line_and_no_zero_counts() -> None:
+    """#700: a newcomer's first run is not handed the cap and rig vocabulary of a setup it does not have."""
+    summary = await run_eval(CASES, silent, [even], k=1)
+    rendered = summary.render()
+    assert summary.max_cost_usd_origin == "uncapped" and "spend cap" not in rendered
+    assert f"  {summary.n_results} result(s): {summary.n_results} scored\n" in rendered
+    assert "excluded" not in rendered and "failed by the candidate" not in rendered

@@ -141,15 +141,34 @@ the one requested.
 its unconfigured dimensions were requested at the provider's default, which is not today's 0, so such a run's
 roles component is not composable, its scores' judge reads unknown, and nothing pools it with a run judged at 0.
 
+**Within v8, not a bump**: ``EvalRun.measure_latency`` and ``EvalRun.cell_concurrency`` joined as OPTIONAL fields
+(#701) — whether the launch declared latency under test, and how many of the run's cells executed at once. A run
+stored before them carries None in both: its cells executed one at a time (the runner of that build had no other
+way), so its ``cell_concurrency`` reads as 1, and whether it declared latency reads as not recorded — never as
+declared. Whether another RUN executed beside it is what its results' ``execution_mode`` says, as it always was.
+``CampaignDesign.measure_latency`` joined the same way, defaulting to False: a campaign (or an analysis's design
+snapshot) stored before it reads as not declaring latency under test, which is what it declared — a stored
+design asking about latency still loads, and is refused only when it is declared again.
+
 ``JudgeConfigTombstone`` joined the same way, for a judge config's slot; a config deleted before it is written
 back at the next seed. ``EvalRun`` gained ``goal_check_proof_rules`` (None on a run stored before it, read as rules
 1, so its ``proven`` checks read unproven) and ``refused_goal_checks`` (None, not recorded), and ``EvalResult``
 gained ``judge_cannot_tell_boundary`` (empty, its can't-tells read as capability) — all optional within v8.
 
+**Within v8, not a bump**: ``ClientRequestSettings.strict_output`` joined as a defaulted field (#686) — whether a
+role's requests were to be routed only to providers honouring every parameter sent. A stamp stored before it
+carries none and reads False, "no such requirement was stated", which is what the engine sent then. Its apparatus
+level (``judge_request_settings`` / ``simulator_request_settings``) leaves the flag out while it is False, so a
+stored run's level is unchanged; a judge stamp carrying True reads as a different level from one stored before.
+
 **Within v8, not a bump**: ``CampaignDesign.guardrail_margins`` joined as an OPTIONAL field (#697) — the margin
 each judged guardrail (a boundary rubric dimension) is held to. A campaign, or an analysis's design snapshot,
 stored before it carries none and reads as declaring none: its judged guardrails are held at zero change, exactly
 as they were decided then, so no stored decision moves.
+
+**Within v8, not a bump**: ``EvalRun.declared_margins`` joined as an OPTIONAL field (#698) — the margins a launch
+declared on core rate measures (accuracy). A run stored before it carries none and reads as declaring none, so no
+comparison over it reads a margin it never declared.
 
 **Within v8, not a bump**: ``MeasureSummary.case_means`` and ``JudgedReading.case_means`` joined as OPTIONAL fields
 (#677) — each case's mean, recorded only below 5 cases, where a chart draws the cases as points instead of an
@@ -2309,6 +2328,16 @@ class ClientRequestSettings(EvalDocumentModel):
         ),
     )
 
+    strict_output: bool = Field(
+        default=False,
+        description=(
+            "Whether every request of this role must be routed only to a provider that honours every parameter "
+            "sent (an OpenRouter-style `provider.require_parameters`), so a strict `response_format` or a reasoning "
+            "bound is enforced rather than silently dropped. The host's client builder applies it. False = no such "
+            "requirement was stated, which is also how a stamp stored before this field reads: none was."
+        ),
+    )
+
     @model_validator(mode="after")
     def _one_way_to_ask_for_reasoning(self) -> Self:
         """Refuse a settings value that asks for reasoning both by a token budget and by an effort level.
@@ -2584,6 +2613,19 @@ class EvalRun(EvalDocumentModel):
             "condition. Empty when the launch set none, which is a level."
         ),
     )
+    declared_margins: dict[str, float] = Field(
+        default_factory=dict,
+        description=(
+            "Margins the launch declared on core rate measures (``accuracy``), by measure, in the measure's units: "
+            "the most two arms may differ on it and still be alike. A core measure's descriptor is the engine's and "
+            "declares no margin, so a run-scoped one is how a comparison of runs can read `equivalent` on it; the "
+            "analysis reads it only when every member run of the campaign declares the same margin, and each "
+            "contrast tested against it names it (``FamilyComparison.margin_source`` `run`). Declared at launch, "
+            "before any result, so it is chosen before the data is seen. Not part of the measurement context: a "
+            "margin changes how a difference is read, not what was measured. Empty when the launch declared none, "
+            "and on every run stored before run-scoped margins existed, which then read as declaring none."
+        ),
+    )
     resolved_world_seed: dict[str, Any] = Field(
         default_factory=dict,
         description=(
@@ -2691,6 +2733,27 @@ class EvalRun(EvalDocumentModel):
             "'replay'. A capture run writes the corpus its own id names, so two runs capturing at once never "
             "write into each other's, and a replay binds to one whole recording rather than to whatever the "
             "latest capture of each case happened to leave."
+        ),
+    )
+    measure_latency: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the launch declared latency under test (`start_run(measure_latency=True)`). True: the run "
+            "executed its cells one at a time, with no other run executing beside it, so the latency it recorded "
+            "is read clean. False: it was not under test, and the run executed its cells concurrently "
+            "(`cell_concurrency`). None: launched before 3tears-evals recorded the declaration (or recorded by a "
+            "writer that is no launch) — such a run executed its cells one at a time, and whether it ran beside "
+            "another run is what its results' `execution_mode` says."
+        ),
+    )
+    cell_concurrency: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "How many of the run's cells executed at once: 1 is serial. Above 1, every result stamps "
+            "`execution_mode` `concurrent` and its latency is kept out of every comparison, bar and ranking. "
+            "None: a run stored before the width was recorded, whose cells executed one at a time — read as 1, "
+            "never as unknown, because the runner of that build could not run them otherwise."
         ),
     )
 

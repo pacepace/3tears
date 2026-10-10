@@ -43,7 +43,7 @@ from __future__ import annotations
 import math
 
 from collections import Counter
-from collections.abc import Collection, Mapping
+from collections.abc import Mapping
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, JsonValue
@@ -266,6 +266,14 @@ class JudgeGrade(BaseModel):
     reasoning: str
 
 
+def _misses(value: float, higher_is_better: bool | None) -> bool:
+    """Whether a scorer's value is a miss for its direction: 0 or less where higher is better, above 0 where lower
+    is, and never where the measure declares no direction."""
+    if higher_is_better is None:
+        return False
+    return value <= 0 if higher_is_better else value > 0
+
+
 class CaseResult(BaseModel):
     """One case's answer on one repeat, every grade it got, and why it failed or was excluded.
 
@@ -289,9 +297,11 @@ class CaseResult(BaseModel):
         goal_checks: Each goal-state check, by its expression, and whether the end state passed it.
         errors: Why the result failed or was excluded, as the run recorded it; empty for a scored result.
         missed_because: Why the result is a miss, one line per reason; empty when it is not one. A miss is a
-            result the candidate failed, a classifier answer that is not the expected label, a scorer that gave
-            0 or less (``False`` counts as 0) — or more than 0, for a guardrail declared lower-is-better — a goal check the end state failed, or a pass/fail dimension the
-            judge failed. An excluded result is never a miss: it says nothing about the candidate.
+            result the candidate failed, a classifier answer that is not the expected label, a scorer on the
+            wrong side of 0 for its direction — 0 or less where higher is better (``False`` counts as 0), more
+            than 0 where lower is better, and never for a measure that declares no direction — a goal check the end
+            state failed, or a pass/fail dimension the judge failed. An excluded result is never a miss: it says
+            nothing about the candidate.
         cost_usd: What the result spent, as reported and priced; ``None`` when any of it went unpriced.
     """
 
@@ -325,7 +335,7 @@ class CaseResult(BaseModel):
         given: JsonValue,
         expected: str | None,
         answer: JsonValue,
-        breached_above_zero: Collection[str] = (),
+        higher_is_better: Mapping[str, bool | None] | None = None,
     ) -> CaseResult:
         """One stored result, read as a case result.
 
@@ -335,8 +345,10 @@ class CaseResult(BaseModel):
             given: The case, as given.
             expected: A classifier's expected label, or ``None``.
             answer: The candidate's answer, as its kind stored it.
-            breached_above_zero: The measures that count something the candidate must not do — a guardrail
-                declared lower-is-better, such as ``leaked`` — so a value above 0 is the miss and 0 is not.
+            higher_is_better: Each measure's declared direction, by name. Lower-is-better (``leaked``, a count
+                of errors) misses above 0 and not at 0, guardrail or not; a measure that declares no direction
+                misses never, since "worse" needs one; a measure not named reads as higher-is-better, a scorer's
+                default.
 
         Returns:
             The case result, its miss reasons decided by the rule :attr:`missed_because` states.
@@ -370,7 +382,7 @@ class CaseResult(BaseModel):
                 for name, value in result.host_measures.items()
                 if name not in (MATCH_MEASURE, CONFUSION_CELL_MEASURE)
                 and not isinstance(value, str)
-                and (float(value) > 0 if name in breached_above_zero else float(value) <= 0)
+                and _misses(float(value), (higher_is_better or {}).get(name, True))
             )
             missed.extend(f"goal check {check} failed" for check, passed in goal_checks.items() if not passed)
             missed.extend(
@@ -548,7 +560,7 @@ class EvalSummary(BaseModel):
         """The results the candidate missed, each saying why (:attr:`CaseResult.missed_because`).
 
         A miss is a result the candidate failed, a classifier answer that is not the expected label, a scorer
-        that gave 0 or less (``False`` counts as 0) — more than 0 on a lower-is-better guardrail — a goal check
+        on the wrong side of 0 for its direction (:attr:`CaseResult.missed_because`), a goal check
         the end state failed, or a pass/fail dimension the judge failed. An excluded result is not a miss — it says nothing about the candidate —
         so read :meth:`results` for those; the summary's :attr:`n_excluded` counts them.
 
@@ -563,19 +575,32 @@ class EvalSummary(BaseModel):
     def render(self) -> str:
         """The summary as a few lines of text for a terminal.
 
+        The results line counts the failures and the rig's exclusions only when there are some, or a judge is in
+        play; the spend-cap line prints only when a cap bounded the run, a judge ran, or the candidate reported
+        spend — a first run of a free function is not handed the vocabulary of a rig it does not have.
+
         Returns:
             The text, without a trailing newline.
         """
+        # A judge is the rig a first run can meet, and the spend it bills is what a cap bounds: with neither in
+        # play, the rig's exclusions and the cap say nothing a newcomer can act on, so they print only when they do.
+        judged = bool(self.judged) or self.judge_calls > 0
+        counts = [f"{self.n_scored} scored"]
+        if self.n_candidate_failed:
+            counts.append(f"{self.n_candidate_failed} failed by the candidate")
+        if self.n_excluded or judged:
+            counts.append(f"{self.n_excluded} excluded")
         lines = [
             f"run {self.run_id} {self.status}: "
             + (self.candidate_model if self.arm is None else f"arm {self.arm} (model {self.candidate_model})")
             + f" over {self.n_cases} case(s) x k={self.k_runs}",
-            f"  {self.n_results} result(s): {self.n_scored} scored, {self.n_candidate_failed} failed by the "
-            f"candidate, {self.n_excluded} excluded",
+            f"  {self.n_results} result(s): {', '.join(counts)}",
         ]
         if self.stopped_because is not None:
             lines.append(f"  stopped: {self.stopped_because}")
-        if (cap := _spend_cap_line(self)) is not None:
+        if (self.max_cost_usd is not None or judged or self.candidate_calls) and (
+            cap := _spend_cap_line(self)
+        ) is not None:
             lines.append(f"  {cap}")
         for measure in self.measures:
             left_out = _left_out(measure)

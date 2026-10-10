@@ -35,6 +35,7 @@ from typing import Any, Literal
 
 from pydantic import Field
 
+from threetears.evals.analysis.reporting import LatencyPartition, decompose_total_ms
 from threetears.evals.contracts import (
     CallLedger,
     CellTermination,
@@ -77,6 +78,9 @@ class ResultLine(EvalBaseModel):
     )
     termination: CellTermination = Field(description="How the cell ended as work, as the runner recorded it.")
     cost_usd: float | None = Field(description="The cell's blended spend; None when a call in it went unpriced.")
+    total_ms: float | None = Field(
+        description="Wall-clock of the candidate's turns, in milliseconds; None when nothing timed them."
+    )
     goal_checks_passed: int | None = Field(
         description="Goal checks counted as passed, as every rate counts them (all failed on a candidate failure); "
         "None for a harness fault, whose checks enter no rate."
@@ -151,6 +155,11 @@ class ResultDetail(EvalBaseModel):
         default=None, description="With part judge: what the judge was sent; None when nothing was."
     )
     spans: list[dict[str, Any]] | None = Field(default=None, description="With part spans: the stored spans.")
+    latency_partition: LatencyPartition = Field(
+        description="The result's total_ms split into llm_ms, tool_ms and the orchestration_ms remainder, or the "
+        "sentence saying why the split is withheld — derived on each read by the one function the analysis uses, "
+        "never stored."
+    )
 
 
 def _line(result: EvalResult) -> ResultLine:
@@ -164,6 +173,7 @@ def _line(result: EvalResult) -> ResultLine:
         condition=classify_result(result),
         termination=result.termination,
         cost_usd=result.cost_usd,
+        total_ms=None if result.latency is None else result.latency.total_ms,
         goal_checks_passed=None if counted is None else sum(passed for _, passed in counted),
         goal_checks=len(result.goal_state_outcomes),
         judge_scores={score.dim: score.score for score in result.judge_scores()},
@@ -233,10 +243,11 @@ def result_get(host: EvalHost, result_id: str, scope_id: str, *, part: ResultPar
 
     Two point reads on the result's own partition: the result, then its trace when its record says one was
     written (:func:`~threetears.evals.run.get_result_trace`, which logs a record whose trace no document
-    backs; it reads here as ``missing``, never as none stored). Nothing is recomputed but the condition,
-    which is resolved by the one function every surface asks
-    (:func:`~threetears.evals.contracts.resolve_result_condition`), so its disclosure reads here as it reads
-    anywhere else. The whole trace document is read whichever part is asked for: the bound is on what is
+    backs; it reads here as ``missing``, never as none stored). Nothing is recomputed but the condition and
+    the latency partition, each by the one function every surface asks
+    (:func:`~threetears.evals.contracts.resolve_result_condition`,
+    :func:`~threetears.evals.analysis.reporting.decompose_total_ms`), so each reads here as it reads anywhere
+    else. The whole trace document is read whichever part is asked for: the bound is on what is
     returned, which is what a reader's context pays for.
 
     Args:
@@ -277,6 +288,7 @@ def result_get(host: EvalHost, result_id: str, scope_id: str, *, part: ResultPar
         record=record,
         judge=judge,
         spans=spans,
+        latency_partition=decompose_total_ms(result.latency),
     )
 
 
