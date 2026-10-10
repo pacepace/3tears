@@ -312,6 +312,9 @@ class TestPaletteDiscipline:
         with caplog.at_level(logging.WARNING, logger="threetears.evals.vega.spec_policy"):
             check_spec(self._coloured([f"c{index}" for index in range(9)]))
         assert any("recycles from slot 1" in record.getMessage() for record in caplog.records)
+        # The warning routes only to re-encodings an arm draws; highlight-plus-context had
+        # no arm and was withdrawn with its palette token (#678).
+        assert not any("highlight" in record.getMessage() for record in caplog.records)
 
     def test_a_domain_inside_the_palette_is_not_warned_about(self, caplog):
         """The negative half, so the assertion above is known to discriminate."""

@@ -634,7 +634,7 @@ class TestPaletteArtifact:
     def test_the_marks_drawn_without_a_label_clear_three_to_one(self):
         """Slot 1 is the colour of every single-series mark, so it may never lean on a label to be seen.
 
-        `highlight` and `context` are held to the same 3:1 non-text bar: a receded mark is
+        `context` is held to the same 3:1 non-text bar: a receded mark is
         still a mark the reader is meant to find. The other categorical slots are not —
         several fall below 3:1 on the light surface, which is why a categorical colour is
         never the only thing naming a level.
@@ -644,7 +644,6 @@ class TestPaletteArtifact:
             mode = palette[theme]
             for role, colour in (
                 ("series[0]", mode["series"][0]),
-                ("highlight", mode["highlight"]),
                 ("context", mode["context"]),
             ):
                 ratio = _contrast_ratio(colour, mode["background"])
@@ -703,18 +702,18 @@ class TestPaletteArtifact:
             )
 
     def test_the_named_roles_are_present_and_are_not_categorical_slots(self):
-        """`highlight`, `context` and the sequential ramp mean something; they are not spare hues.
+        """`context` and the sequential ramp mean something; they are not spare hues.
 
-        Carried separately from `series` so no index can ever reach them: assigning
-        `highlight` as "series 5" would put the one emphasised mark's colour in a
-        categorical set, which is the one thing its once-per-figure discipline forbids.
+        Carried separately from `series` so no index can ever reach them. There is no
+        `highlight` role: it was declared for a highlight-plus-context arm that was never
+        built, so nothing drew with it, and it was withdrawn (#678).
         """
         palette = load_palette()
         for theme in ("light", "dark"):
             mode = palette[theme]
-            assert mode["highlight"].startswith("#") and mode["context"].startswith("#")
+            assert mode["context"].startswith("#")
+            assert "highlight" not in mode
             assert len(mode["sequential"]) == 5
-            assert mode["highlight"] not in mode["series"] + mode["sequential"]
             assert mode["context"] not in mode["series"]
 
     def test_the_chart_type_scale_reaches_the_config_at_the_weight_floor(self):
@@ -1254,8 +1253,8 @@ class TestThePackagedPaletteIsHeldByTheContractsColourCheck:
 
     def test_an_artifact_carrying_oklch_is_refused(self):
         artifact = json.loads(json.dumps(load_palette()))
-        artifact["dark"]["highlight"] = "oklch(0.70 0.22 295)"
-        with pytest.raises(PaletteError, match=r"dark\.highlight.*not resolved sRGB hex"):
+        artifact["dark"]["context"] = "oklch(0.70 0.22 295)"
+        with pytest.raises(PaletteError, match=r"dark\.context.*not resolved sRGB hex"):
             check_palette_artifact(artifact)
 
     def test_the_packaged_variants_are_palettes(self):

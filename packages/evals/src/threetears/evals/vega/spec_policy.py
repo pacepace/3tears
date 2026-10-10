@@ -639,17 +639,15 @@ def _check_palette(unit: dict[str, Any]) -> list[str]:
         # (:func:`_check_direct_labels`), which has already taken identity off the hue
         # channel by the time the hue channel weakens.
         #
-        # Three re-encodings named, and only two of them can currently be drawn: the
-        # ordered ramp lives in the sweep arm and the facet in the distribution one,
-        # while highlight-plus-context has its token authored and no arm that draws
-        # it. Named anyway, because the advice is the palette rule's own, and the honest
-        # reading of the gap is that a required mechanism is missing rather than that the
-        # advice is wrong. Narrowing the advice here would answer that question by
-        # deleting it.
+        # Two re-encodings named, and both can be drawn: the ordered ramp lives in the
+        # sweep arm and the facet in the distribution one. A third (one series in a
+        # highlight colour against a muted context, for a flat ranking) was once named
+        # here with no arm that drew it; it was withdrawn with its palette token (#678),
+        # so the warning never routes a host to a mechanism that does not exist.
         log.warning(
             "chart draws %d categories against %d palette slots — the palette recycles from slot 1, so series %d "
-            "repeats series 1's hue. Prefer an ordered ramp if the dimension is ordered, a facet if the sweep is "
-            "crossed, or highlight-plus-context if the ranking is flat.",
+            "repeats series 1's hue. Prefer an ordered ramp if the dimension is ordered, or a facet if the sweep "
+            "is crossed.",
             len(domain),
             slots,
             slots + 1,

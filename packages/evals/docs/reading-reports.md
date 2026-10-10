@@ -505,7 +505,7 @@ imports the adapter.
 The packaged palette is a brand-neutral default with a light and a dark variant (`packaged_palette("light")`,
 `packaged_palette("dark")`), a published categorical palette ordered so the four validated slots can be told
 apart as a set. The package's tests hold text to 4.5:1 against the chart surface, slot 1 (every single-series
-mark), `highlight` and `context` to 3:1, and slots 1-4 to an OKLab ΔE of at least 6 under simulated protanopia
+mark) and `context` to 3:1, and slots 1-4 to an OKLab ΔE of at least 6 under simulated protanopia
 and deuteranopia. Several categorical slots fall below 3:1 on the light surface, so a chart never relies on
 colour alone to identify a category: it labels the marks or names the level in the values table. A host's own
 `ChartPalette` is held to the contract's shape only.

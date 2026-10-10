@@ -2958,7 +2958,7 @@ class TestValuesAreWrittenOnTheMarks:
         assert layer["mark"]["align"] == "right", "a label the gap cannot hold is written on the mark"
 
     def test_values_are_suppressed_past_the_stated_mark_count(self):
-        """Past it, highlight-plus-context takes over and only named marks are labelled."""
+        """Past it, no mark carries its value; the values table states them."""
         limit = geometry()["value_label_max_marks"]
         parts = [{"label": f"p{index}", "value": float(index + 1)} for index in range(limit)]
         at_limit = {"measure": "m", "unit": "runs", "parts": parts}
