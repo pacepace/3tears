@@ -11,7 +11,9 @@ Every campaign is read through one document, the **report**: blocks in reading o
 author wrote, with a role), `table`, `chart` and `disclosure` (what code must add), each linked to the findings it
 belongs to or rests on. With an **analysis** (a model reading the campaign's numbers and writing findings), the
 report carries those findings beside the evidence; without one it is a **code-only report**, every table and
-chart code can build and a line saying no analysis was generated. Either way every number comes from code, and a
+chart code can build and a line saying no analysis was generated. Either way the decision surface's charts lead its
+table, and a finding's evidence that compares arms is drawn ahead of its table unless the author's own chart drew:
+the chart is the reading form, the table the audit form. Either way every number comes from code, and a
 model never decides how much a judged score can be trusted. [`examples/reports.py`](../examples/reports.py) writes
 one to files, offline. `analysis_report(storage, analysis_id, scope_id)` returns a generated analysis's `Report`:
 
@@ -38,10 +40,10 @@ which the published schema and the model both refuse. It holds:
 - the arm table: each arm and every lever it ran, with no status column (every arm is unresolved, since
   nothing decided) and no finding column (there are no findings);
 - the guardrails, each decided for each arm against the control ([below](#reading-the-guardrails));
-- the decision surface;
+- the decision surface, led by a distribution chart per judged dimension and per measure with a better end,
+  drawn across the arms, except a label's statistics (they are in the labels table), `match` where `accuracy` is
+  charted, a cost no result reported, and a reading only one arm drew (nothing to compare);
 - the contrasts the evidence tested against the control;
-- a distribution chart per judged dimension and per measure with a better end, except a label's statistics
-  (they are in the labels table), `match` where `accuracy` is charted, and a cost no result reported;
 - for a classifier, one `labels` table of each label's precision, recall and F1, a row per label and arm:
   precision and recall with their 95% Wilson intervals over the cases, F1 with none (it has none by construction), and
   every figure with the n it is counted over;
@@ -327,7 +329,9 @@ A chart block carries the chart's **intent** (`ChartIntent`, from `threetears.ev
 a charting library's spec: its type from eval's eight, the rows it draws, what each field encodes
 (identity, length, position, interval with what it varies over, level, class, ordinal, count, label), its axes with
 their units and zero baselines, its order, the colour *slots* it uses and what it must disclose — plus its
-values as drawn, which the HTML shows as a table.
+values as drawn, which the HTML shows as a table. An interval is drawn as a band only over 5 or more cases
+(`SMALL_N_BAND_FLOOR`): below that a distribution draws each case's value as a point and says why, a timeseries
+leaves a stated gap, and a null result is refused. The interval itself still appears in the tables.
 
 How a chart looks is the host's: a renderer reads the intent and the host's palette —
 `StyleProfile.chart_palette`, a renderer-neutral `ChartPalette` (the eight numbered series slots, slots
@@ -530,7 +534,7 @@ imports the adapter.
 The packaged palette is a brand-neutral default with a light and a dark variant (`packaged_palette("light")`,
 `packaged_palette("dark")`), a published categorical palette ordered so the four validated slots can be told
 apart as a set. The package's tests hold text to 4.5:1 against the chart surface, slot 1 (every single-series
-mark), `highlight` and `context` to 3:1, and slots 1-4 to an OKLab ΔE of at least 6 under simulated protanopia
+mark) and `context` to 3:1, and slots 1-4 to an OKLab ΔE of at least 6 under simulated protanopia
 and deuteranopia. Several categorical slots fall below 3:1 on the light surface, so a chart never relies on
 colour alone to identify a category: it labels the marks or names the level in the values table. A host's own
 `ChartPalette` is held to the contract's shape only.

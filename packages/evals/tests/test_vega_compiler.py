@@ -1117,6 +1117,12 @@ class TestTheMarginalIsRugOrBinnedBySampleCount:
         assert sum(row["count"] for row in bins) == limit + 1, "every observation lands in exactly one bin"
         assert not self._drawn(spec, "rug"), "and no rug survives"
 
+    def test_the_marginal_s_unlabelled_rise_axis_passes_the_crop_label_rule(self):
+        """The one `labels: False` in the package is zero-based, so #636's rule leaves it alone."""
+        spec = compile_chart("distribution", self._one_group(geometry()["rug_max_per_series"] + 1)).spec
+        assert '"labels": false' in json.dumps(spec), "the marginal's rise axis still suppresses its labels"
+        assert not any("suppresses its tick labels" in violation for violation in check_spec(spec))
+
     def test_the_bins_line_up_across_rows_rather_than_following_each_row_s_range(self):
         """Rows binned to their own ranges are two histograms drawn to two rulers.
 
@@ -2004,11 +2010,25 @@ class TestAttributionNeverBalances:
         assert "stack" not in encoding["x"]
         assert encoding["x"]["scale"]["zero"] is True
 
-    def test_the_derived_remainder_is_recessive(self):
-        """It is computed rather than observed, so it must not read as a third measurement."""
-        encoding = _mark_layer(compile_chart("attribution", ATTRIBUTION_EARNED).spec, "bar")["encoding"]
-        assert encoding["opacity"]["condition"]["test"] == "datum.derived"
-        assert encoding["opacity"]["condition"]["value"] < encoding["opacity"]["value"]
+    def test_the_derived_remainder_recedes_by_name(self):
+        """It is computed rather than observed, so it must not read as a third measurement.
+
+        The recession is the `chart-context` style on a layer of its own, never a compiled
+        alpha, and the measured movements keep full ink.
+        """
+        measured, derived = _mark_layers(compile_chart("attribution", ATTRIBUTION_EARNED).spec, "bar")
+        assert measured["transform"] == [{"filter": "!datum.derived"}]
+        assert measured["mark"].get("style") is None
+        assert derived["transform"] == [{"filter": "datum.derived"}]
+        assert derived["mark"]["style"] == CONTEXT_STYLE
+        for layer in (measured, derived):
+            assert "opacity" not in layer["mark"]
+            assert "opacity" not in layer["encoding"]
+
+    def test_a_withheld_remainder_draws_no_receding_layer(self):
+        """An empty filter is an invisible mark that still joins scale resolution."""
+        (only,) = _mark_layers(compile_chart("attribution", ATTRIBUTION_WITHHELD).spec, "bar")
+        assert only["mark"].get("style") is None
 
     def test_no_identity_rides_on_colour(self):
         """Same rule as every other type here — the scopes are on the axis."""
@@ -2938,7 +2958,7 @@ class TestValuesAreWrittenOnTheMarks:
         assert layer["mark"]["align"] == "right", "a label the gap cannot hold is written on the mark"
 
     def test_values_are_suppressed_past_the_stated_mark_count(self):
-        """Past it, highlight-plus-context takes over and only named marks are labelled."""
+        """Past it, no mark carries its value; the values table states them."""
         limit = geometry()["value_label_max_marks"]
         parts = [{"label": f"p{index}", "value": float(index + 1)} for index in range(limit)]
         at_limit = {"measure": "m", "unit": "runs", "parts": parts}
@@ -3323,36 +3343,90 @@ class TestACompiledSpecStatesNoAppearanceValue:
         artifact is drawn on. `chart-context` is how a mark says "I carry no
         identity" and lets the renderer decide what that looks like.
 
-        **Two carve-outs, and each is a real distinction rather than a hole.**
+        Both places an opacity can live are read: the mark, and the `opacity`
+        ENCODING, including every branch of a condition. An encoding is where the
+        attribution chart once hid its emphasis (a conditional 0.35 on the derived
+        remainder), and a gate reading only the mark could not see it.
 
-        A DATA-DRIVEN opacity encoding stays legal, because there the alpha is the
-        encoding — a rug of raw samples and an interval whose coverage is
-        unrecorded both use it to say marks ACCUMULATE or a bound is unknown, which
-        is a fact about the data and identical in both themes.
-
-        And `1` stays legal, because it states no appearance: it opts OUT of a
-        renderer default. Vega-Lite draws a point at 0.7 so a cloud reads as
-        density, which for a figure of a handful of answers means every mark draws
-        in a blend of the palette hue and whatever sits behind it — a different
-        colour per theme, arrived at by not deciding. Full ink is the same
-        instruction on both surfaces.
-
-        What is refused is any other constant: a number chosen to make one mark
-        quieter than another, which is a judgement about a surface the compiler
-        cannot see.
+        **What is admitted, and why.** `1` states no appearance: it opts OUT of a
+        renderer default (Vega-Lite draws a point at 0.7). Any other alpha is
+        admitted only on a layer named in :data:`_DENSITY_OPACITY`, for what the
+        alpha MEANS there (marks pile up, so overlap reads as density), never because
+        it holds an allowed value. The same 0.35 used for emphasis is refused.
         """
-        for layer in _mark_layers(compile_chart(viz_type, EVERY_TYPE[viz_type]).spec):
-            mark = layer["mark"]
-            if not isinstance(mark, dict) or "opacity" not in mark:
+        offences = _opacity_offences(viz_type, compile_chart(viz_type, EVERY_TYPE[viz_type]).spec)
+        assert not offences, offences
+
+    def test_the_gate_refuses_an_emphasis_opacity_stated_in_an_encoding(self):
+        """Reintroduce the attribution chart's old conditional and the gate must fail."""
+        spec = copy.deepcopy(compile_chart("attribution", ATTRIBUTION_EARNED).spec)
+        bar = _mark_layer(spec, "bar")
+        bar["encoding"]["opacity"] = {
+            "condition": {"test": "datum.derived", "value": SECONDARY_OPACITY},
+            "value": 1,
+        }
+        assert _opacity_offences("attribution", spec)
+
+    def test_the_gate_admits_the_density_weight_by_meaning_not_by_value(self):
+        """The overlap band's 0.35 is admitted; the same number on another layer is not."""
+        spec = copy.deepcopy(compile_chart("null_result", NULL_RESULT).spec)
+        assert not _opacity_offences("null_result", spec)
+        for layer in _mark_layers(spec):
+            if layer["mark"]["type"] != "rect":
+                layer["mark"]["opacity"] = SECONDARY_OPACITY
+                break
+        assert _opacity_offences("null_result", spec)
+
+
+#: The layers whose compiled alpha is a fact about the DATA, keyed by chart type and
+#: the layer's identity, with what the alpha means there. Admission is by meaning:
+#: a layer absent from this table may state no opacity but `1`, whatever its value.
+_DENSITY_OPACITY: dict[tuple[str, str], str] = {
+    ("null_result", "rect"): "the overlap band: the stretch two intervals share, translucent so both stay visible",
+    ("distribution", "bin"): "the marginal's histogram bins, which sit under the sample marks they summarise",
+    ("distribution", "recorded-bin"): "a recorded bin, drawn in the same band and ink as a computed one",
+}
+
+
+def _layer_identity(layer):
+    """What :data:`_DENSITY_OPACITY` keys a layer by: its row kind if it filters on one, else its mark type."""
+    for step in layer.get("transform") or []:
+        selected = step.get("filter")
+        if isinstance(selected, dict) and "equal" in selected:
+            return str(selected["equal"])
+    mark = layer["mark"]
+    return mark["type"] if isinstance(mark, dict) else mark
+
+
+def _opacity_offences(viz_type, spec):
+    """Every compiled opacity in ``spec`` that is neither full ink nor an admitted density weight."""
+    offences = []
+    for layer in _mark_layers(spec):
+        mark = layer["mark"] if isinstance(layer["mark"], dict) else {}
+        stated = []
+        if "opacity" in mark:
+            stated.append(("mark", mark["opacity"]))
+        channel = (layer.get("encoding") or {}).get("opacity")
+        if channel is not None:
+            if "field" in channel or "condition" not in channel and "value" not in channel:
+                offences.append(f"{viz_type}: an opacity encoding reads the data ({channel!r})")
+            conditions = channel.get("condition", [])
+            for branch in conditions if isinstance(conditions, list) else [conditions]:
+                stated.append(("encoding condition", branch.get("value")))
+            if "value" in channel:
+                stated.append(("encoding", channel["value"]))
+        identity = _layer_identity(layer)
+        for where, value in stated:
+            if value == 1:
                 continue
-            assert mark["opacity"] in (1, SECONDARY_OPACITY), (
-                f"{viz_type} states a bespoke opacity {mark['opacity']!r}; the density weight and full ink are the only "
-                "flat values left, and anything expressing EMPHASIS asks for `chart-context` by name"
-            )
-            assert mark["opacity"] == 1 or mark.get("style") is None, (
-                f"{viz_type} recedes a mark by style AND by opacity — the style already carries the theme's answer, "
-                "and the number overrides it with one chosen for neither theme"
-            )
+            if (viz_type, identity) not in _DENSITY_OPACITY:
+                offences.append(
+                    f"{viz_type}: {where} opacity {value!r} on the {identity!r} layer is emphasis, not density; "
+                    "ask for `chart-context` by name"
+                )
+            elif mark.get("style") is not None:
+                offences.append(f"{viz_type}: the {identity!r} layer recedes by style AND by opacity")
+    return offences
 
 
 def _point_layers(spec):
@@ -3534,6 +3608,35 @@ class TestAFrontierKeepsItsAuthorsOneSentence:
         ]
         assert shaped, "the fixture stopped drawing a shape encoding, so this asserts nothing"
         assert all(layer["encoding"]["shape"]["legend"] is None for layer in shaped)
+
+
+class TestAFrontierNamesEachQuantityOnce:
+    """Each quantity is named on its own axis and nowhere else in the figure (#668).
+
+    The figure title used to be `<quality> against <cost>`, so the quality label sat
+    in two stacked lines: the title, and the flat y-axis title directly beneath it.
+    """
+
+    @pytest.mark.parametrize(
+        ("cost_label", "quality_label"),
+        [("Cost / run ($)", "pass^k"), (None, None)],
+        ids=["labelled", "defaults"],
+    )
+    def test_the_title_restates_neither_quantity(self, cost_label, quality_label):
+        payload = FRONTIER | {"cost_label": cost_label, "quality_label": quality_label}
+        spec = compile_chart("frontier", payload).spec
+        cost, quality = cost_label or "Cost", quality_label or "Quality"
+        title = _title_text(spec).lower()
+        assert cost.lower() not in title and quality.lower() not in title, title
+        axis_titles = {
+            channel: {
+                layer["encoding"][channel]["axis"]["title"]
+                for layer in _mark_layers(spec)
+                if channel in layer.get("encoding", {}) and "axis" in layer["encoding"][channel]
+            }
+            for channel in ("x", "y")
+        }
+        assert axis_titles == {"x": {cost}, "y": {quality}}
 
 
 class TestFrontierDisclosesWhatItCouldNotDraw:
@@ -4167,6 +4270,63 @@ class TestSweepRankingDrawsAnAbsenceAsAnAbsence:
             ],
         }
         assert compile_chart("sweep_ranking", payload).rows
+
+
+class TestSweepRankingSetsANullLevelApartFromItsRamp:
+    """A numeric lever overlaid to `null` keeps its ramp, and `null` draws apart (#694).
+
+    `null` does not parse as a number, so before the fix one `null` level flipped a
+    `null / 6 / 12` knob to categorical and drew all three levels as hues.
+    """
+
+    NULLED = {
+        **SWEEP_RANKING,
+        "rows": [
+            {"config": {"model": "gpt-5", "timeout": "12"}, "ranked_value": 0.72, "secondary_value": 0.011},
+            {"config": {"model": "model-b", "timeout": "6"}, "ranked_value": 0.61, "secondary_value": 0.009},
+            {"config": {"model": "null", "timeout": "null"}, "ranked_value": 0.55, "secondary_value": 0.014},
+        ],
+    }
+
+    def _barcode(self):
+        return compile_chart("sweep_ranking", self.NULLED).spec["hconcat"][0]
+
+    def _rects(self):
+        return [layer for layer in self._barcode()["layer"] if layer["mark"]["type"] == "rect"]
+
+    def test_the_numeric_levels_keep_the_sequential_ramp(self):
+        cells = self._barcode()["data"]["values"]
+        ranks = {cell["level"]: cell["rank"] for cell in cells if cell["dimension"] == "timeout"}
+        assert ranks == {"6": 0.0, "12": 1.0, "null": None}
+        ramp = [layer for layer in self._rects() if layer["encoding"].get("color", {}).get("type") == "quantitative"]
+        assert len(ramp) == 1
+
+    def test_null_is_a_distinct_labelled_mark_outside_every_colour_domain(self):
+        set_apart = [layer for layer in self._rects() if layer["mark"].get("filled") is False]
+        assert len(set_apart) == 1
+        assert set_apart[0]["mark"]["style"] == CONTEXT_STYLE
+        assert "color" not in set_apart[0]["encoding"]
+        assert {"field": "level", "equal": "null"} in [step["filter"] for step in set_apart[0]["transform"]]
+        (word,) = [layer for layer in self._barcode()["layer"] if layer["mark"]["type"] == "text"]
+        assert word["encoding"]["text"] == {"field": "level", "type": "nominal"}
+        assert {"field": "dimension", "oneOf": ["timeout"]} in [step["filter"] for step in word["transform"]]
+
+    def test_every_cell_is_drawn_by_exactly_one_rect_layer(self):
+        """A categorical lever's own `null` level keeps its hue; the ordered lever's `null` does not take it."""
+        cells = self._barcode()["data"]["values"]
+        drawn = collections.Counter()
+        for layer in self._rects():
+            for cell in cells:
+                if all(_matches(cell, step["filter"]) for step in layer["transform"]):
+                    drawn[(cell["display"], cell["dimension"], layer["mark"].get("filled", True))] += 1
+        assert set(drawn.values()) == {1} and len(drawn) == len(cells), drawn
+        assert (next(c["display"] for c in cells if c["level"] == "null"), "timeout", False) in drawn
+        assert (next(c["display"] for c in cells if c["level"] == "null"), "model", True) in drawn
+
+    def test_the_disclosures_say_why_null_is_off_the_ramp(self):
+        disclosed = _disclosed(compile_chart("sweep_ranking", self.NULLED))
+        assert "timeout draws as a light-to-dark ramp" in disclosed
+        assert "null on timeout is set apart from the ramp" in disclosed
 
 
 def _matches(cell, predicate):

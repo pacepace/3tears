@@ -495,11 +495,59 @@ def test_a_drawn_interval_states_the_level_its_width_was_computed_at(monkeypatch
 
 def test_a_clustered_cell_and_an_unclustered_one_draw_comparable_intervals():
     """Every interval is over its cell's cases, so a cell repeating its cases needs no wording of its own (#590)."""
-    cells = [_cell("A", n_independent=2), _cell("B"), _cell("C")]
+    cells = [_cell("A", n_independent=5), _cell("B"), _cell("C")]
     payload = build(VALID["distribution"], surface(cells))
 
     variabilities = {group["ci"]["variability"] for group in payload["groups"]}
     assert variabilities == {"the cell's cases (repeats of one case clustered)"}
+
+
+def _small(arm: str, case_values: list[float] | None) -> CellFacts:
+    """``arm``'s cell over ``len(case_values)`` cases, its turn time carrying those per-case values."""
+    cases = len(case_values) if case_values else 3
+    cell = _cell(arm, n=cases, n_independent=cases)
+    measures = [
+        m.model_copy(update={"case_means": case_values}) if m.name == "total_ms" else m for m in cell.measures.measures
+    ]
+    return cell.model_copy(update={"measures": MeasureCollection(measures=measures)})
+
+
+def test_a_reading_over_three_cases_draws_three_points_and_no_band():
+    """Below the band floor the chart draws each case, never a t interval from n = 3 (#677)."""
+    cells = [_small("A", [1100.0, 1200.0, 1300.0]), _cell("B"), _cell("C")]
+    payload = build(VALID["distribution"], surface(cells))
+
+    small, *rest = payload["groups"]
+    assert small["samples"] == [1100.0, 1200.0, 1300.0]
+    assert "ci" not in small
+    assert all("ci" in group for group in rest), "a cell at the floor or above keeps its band"
+    compiled = compile_chart("distribution", payload)
+    drawn = [row for row in compiled.intent.data if row["label"] == LABEL["A"]]
+    assert [row["sample"] for row in drawn if "sample" in row] == [1.1, 1.2, 1.3]
+    assert not any("low" in row for row in drawn), "no band for the three-case cell"
+    assert any("no interval band" in line and LABEL["A"] in line for line in compiled.disclosures)
+
+
+def test_a_reading_over_five_cases_draws_a_band():
+    cells = [_cell("A", n=5, n_independent=5), _cell("B"), _cell("C")]
+    payload = build(VALID["distribution"], surface(cells))
+
+    assert all("ci" in group and "samples" not in group for group in payload["groups"])
+    assert not any("no interval band" in line for line in compile_chart("distribution", payload).disclosures)
+
+
+def test_a_small_reading_with_no_recorded_cases_is_refused_rather_than_banded():
+    """An analysis stored before per-case values were recorded cannot draw the points, and never draws the band."""
+    cells = [_small("A", None), _cell("B"), _cell("C")]
+    with pytest.raises(UnresolvableReference, match="per-case values were not recorded"):
+        build(VALID["distribution"], surface(cells))
+
+
+def test_a_null_result_over_three_cases_is_refused():
+    """A null result's whole argument is two bands; below the floor there is no band to draw."""
+    cells = [_cell("A"), _small("B", [900.0, 1000.0, 1100.0]), _cell("C")]
+    with pytest.raises(UnresolvableReference, match="fewer than the 5 an interval band is drawn from"):
+        build(VALID["null_result"], surface(cells))
 
 
 def test_a_null_result_carries_two_intervals_and_the_authored_mechanism():

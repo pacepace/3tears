@@ -223,17 +223,42 @@ def cell_arm_labels(surface: DecisionSurface, variant_index: list[VariantIndexEn
 _VARIABILITY = "the cell's cases (repeats of one case clustered)"
 
 
-def _interval(reading: ResolvedReading) -> dict[str, Any]:
+def _below_band_floor(reading: ResolvedReading) -> bool:
+    """Whether a reading has too few cases for its interval to be drawn as a band (#677).
+
+    A reading whose case count is unknown (``n_cases`` None) is not judged here: its interval, if any,
+    stands as it did.
+    """
+    return reading.n_cases is not None and reading.n_cases < stats.SMALL_N_BAND_FLOOR
+
+
+def _cases_phrase(reading: ResolvedReading) -> str:
+    return f"{reading.n_cases} case{'' if reading.n_cases == 1 else 's'}"
+
+
+def _interval(reading: ResolvedReading, *, banded: bool = True) -> dict[str, Any]:
     """A reading's interval in the payload's ``ci`` shape, or a refusal when it has none.
 
+    Args:
+        reading: The reading.
+        banded: Whether the chart draws this interval as a band, which is refused below
+            :data:`~threetears.evals.analysis.stats.SMALL_N_BAND_FLOOR` cases.
+
     Raises:
-        UnresolvableReference: The reading has no interval (fewer than two observations, or one case).
+        UnresolvableReference: The reading has no interval (fewer than two observations, or one case), or
+            ``banded`` and it has fewer cases than a band is drawn from.
     """
     if reading.ci_low is None or reading.ci_high is None:
         raise UnresolvableReference(
             f"reference names {reading.measure_id!r} at cell {reading.cell_ref!r}, which has no interval "
             f"({reading.dispersion}) — this chart draws intervals, so name a cell with at least 2 observations of it, "
             "over at least 2 cases"
+        )
+    if banded and _below_band_floor(reading):
+        raise UnresolvableReference(
+            f"reference names {reading.measure_id!r} at cell {reading.cell_ref!r}, which has "
+            f"{_cases_phrase(reading)}, fewer than the {stats.SMALL_N_BAND_FLOOR} an interval band is drawn from — "
+            "a t interval that small is too wide and unstable to draw; a distribution draws each case as a point"
         )
     return {
         "low": reading.ci_low,
@@ -342,13 +367,30 @@ def _delta_table(ref: DeltaTableRef, surface: DecisionSurface, labels: dict[str,
     }
 
 
+def _distribution_group(reading: ResolvedReading, label: str) -> dict[str, Any]:
+    """One cell's group: its interval band, or below the band floor its cases as points and no band (#677).
+
+    Raises:
+        UnresolvableReference: The reading has no interval at all, or is below the band floor and its
+            per-case values were not recorded (a surface stored before they were).
+    """
+    interval = _interval(reading, banded=False)
+    if not _below_band_floor(reading):
+        return {"label": label, "ci": interval, "n": reading.n}
+    if not reading.case_means or len(reading.case_means) < 2:
+        raise UnresolvableReference(
+            f"reference names {reading.measure_id!r} at cell {reading.cell_ref!r}, which has "
+            f"{_cases_phrase(reading)}, fewer than the {stats.SMALL_N_BAND_FLOOR} an interval band is drawn from, "
+            "and its per-case values were not recorded — this analysis was stored before they were"
+        )
+    return {"label": label, "samples": list(reading.case_means), "n": reading.n}
+
+
 def _distribution(ref: DistributionRef, surface: DecisionSurface, labels: dict[str, str]) -> dict[str, Any]:
     readings = [resolve_reading(surface, cell, ref.measure_id, ref.reading) for cell in ref.cells]
     return {
         "caption": ref.caption,
-        "groups": [
-            {"label": labels[reading.cell_ref], "ci": _interval(reading), "n": reading.n} for reading in readings
-        ],
+        "groups": [_distribution_group(reading, labels[reading.cell_ref]) for reading in readings],
         "unit": readings[0].unit,
         # The value axis is the reading drawn, named — without it every distribution titles itself
         # "Distribution", and two on one page cannot be told apart.
@@ -630,6 +672,10 @@ def _position_point(
     reading = resolve_reading(at, cell, ref.measure_id, ref.reading)
     if reading.ci_low is None or reading.ci_high is None:
         return None, f"{reading.n} observation{'' if reading.n == 1 else 's'} there, too few for an interval"
+    if _below_band_floor(reading):
+        return None, (
+            f"{_cases_phrase(reading)} there, fewer than the {stats.SMALL_N_BAND_FLOOR} an interval is drawn from"
+        )
     return {"position": position.key, "ci": _interval(reading), "n": reading.n}, ""
 
 

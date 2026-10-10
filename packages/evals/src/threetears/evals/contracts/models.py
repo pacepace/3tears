@@ -169,6 +169,11 @@ as they were decided then, so no stored decision moves.
 **Within v8, not a bump**: ``EvalRun.declared_margins`` joined as an OPTIONAL field (#698) — the margins a launch
 declared on core rate measures (accuracy). A run stored before it carries none and reads as declaring none, so no
 comparison over it reads a margin it never declared.
+
+**Within v8, not a bump**: ``MeasureSummary.case_means`` and ``JudgedReading.case_means`` joined as OPTIONAL fields
+(#677) — each case's mean, recorded only below 5 cases, where a chart draws the cases as points instead of an
+interval band. An analysis stored before them carries None and reads as not recorded: its small cells draw no band
+and no points, and the chart is refused with that reason rather than drawn from the interval.
 """
 
 

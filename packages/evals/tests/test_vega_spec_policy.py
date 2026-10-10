@@ -312,6 +312,9 @@ class TestPaletteDiscipline:
         with caplog.at_level(logging.WARNING, logger="threetears.evals.vega.spec_policy"):
             check_spec(self._coloured([f"c{index}" for index in range(9)]))
         assert any("recycles from slot 1" in record.getMessage() for record in caplog.records)
+        # The warning routes only to re-encodings an arm draws; highlight-plus-context had
+        # no arm and was withdrawn with its palette token (#678).
+        assert not any("highlight" in record.getMessage() for record in caplog.records)
 
     def test_a_domain_inside_the_palette_is_not_warned_about(self, caplog):
         """The negative half, so the assertion above is known to discriminate."""
@@ -867,6 +870,50 @@ class TestACroppedPositionAxisSaysSo:
         violations = check_spec(spec)
         assert any("excludes zero" in violation for violation in violations)
         assert not any("states no footnote" in violation for violation in violations)
+
+
+class TestACroppedAxisKeepsItsTickLabels:
+    """The labelled ticks are a crop's only disclosure, so a cropped axis may not suppress them (#636)."""
+
+    def _point(self, domain, axis):
+        spec = _bar(mark="point")
+        spec["encoding"]["x"]["scale"] = {"domain": domain}
+        spec["encoding"]["x"]["axis"] = axis
+        return spec
+
+    @pytest.mark.parametrize(
+        "axis", [{"title": "latency (ms)", "labels": False}, None], ids=["labels-false", "no-axis"]
+    )
+    def test_a_cropped_unlabelled_position_axis_is_refused(self, axis):
+        violations = check_spec(self._point([10, 20], axis))
+        assert any("suppresses its tick labels" in violation for violation in violations), violations
+
+    def test_a_cropped_labelled_axis_passes(self):
+        assert check_spec(self._point([10, 20], {"title": "latency (ms)"})) == []
+
+    def test_a_zero_based_unlabelled_axis_passes(self):
+        """The distribution marginal's rise axis: `[0, cell]`, shape rather than counts."""
+        violations = check_spec(self._point([0, 20], {"title": "latency (ms)", "labels": False}))
+        assert not any("suppresses its tick labels" in violation for violation in violations)
+
+    def test_zero_false_without_a_domain_counts_as_a_crop(self):
+        spec = _bar(mark="point")
+        spec["encoding"]["x"]["scale"] = {"zero": False}
+        spec["encoding"]["x"]["axis"] = {"title": "latency (ms)", "labels": False}
+        assert any("suppresses its tick labels" in violation for violation in check_spec(spec))
+
+    def test_a_layer_suppressing_a_duplicate_of_a_labelled_axis_passes(self):
+        """A layer frame shares one axis per channel; another layer labelling it discloses the crop."""
+        labelled = self._point([10, 20], {"title": "latency (ms)"})
+        quiet = self._point([10, 20], None)
+        spec = {"layer": [labelled, quiet]}
+        assert not any("suppresses its tick labels" in violation for violation in check_spec(spec))
+
+    def test_the_rule_is_scoped_to_its_frame(self):
+        """A concatenated panel's suppressed axis is caught, and its labelled sibling does not excuse it."""
+        spec = {"hconcat": [self._point([10, 20], {"title": "latency (ms)"}), self._point([10, 20], None)]}
+        violations = [v for v in check_spec(spec) if "suppresses its tick labels" in v]
+        assert len(violations) == 1 and "hconcat[1]" in violations[0]
 
 
 class TestAQuantityMayBeNamedAboveThePanel:

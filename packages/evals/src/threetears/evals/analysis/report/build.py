@@ -70,7 +70,7 @@ from threetears.evals.analysis.viz.payloads import PayloadError
 from threetears.evals.analysis.viz.policy import IntentPolicyError
 from threetears.evals.analysis.viz_refs import DistributionRef, build_viz_payload, cell_arm_labels
 from threetears.evals.contracts.authored import NO_CHART, Finding
-from threetears.evals.contracts.campaign import EvalAnalysis, FindingResolution, ReadingKind, Viz
+from threetears.evals.contracts.campaign import EvalAnalysis, EvidenceRow, FindingResolution, ReadingKind, Viz
 from threetears.evals.contracts.host.measures import MeasureRegistry
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.stats import EQUIVALENCE_NEEDS_RANGE, INTERVAL_LEVEL
@@ -182,6 +182,10 @@ def build_report(analysis: EvalAnalysis) -> Report:
         )
 
     blocks.extend(_arm_blocks(arm_table(analysis)))
+    # Compiled from the frozen surface by the code-only report's own compiler, with no model in the loop, and
+    # ahead of the table: the chart is the reading form, the table the audit form (#643). A stored analysis
+    # carries no host registry, and a distribution reads none.
+    blocks.extend(_surface_chart_blocks(surface, analysis.variant_index, MeasureRegistry([])))
     blocks.extend(_surface_blocks(build_surface_table(analysis)))
     blocks.extend(_strata_blocks(analysis.decision_surface, analysis.variant_index))
 
@@ -276,6 +280,10 @@ def _finding_blocks(
     if finding.body.strip():
         blocks.append(TextBlock(section="findings", role="finding_body", finding=position, body=finding.body))
     if resolution is not None and resolution.evidence:
+        if resolution.chart is None:
+            # The evidence compiled to the chart that leads it, where it compares arms and the author's own
+            # chart did not draw: a finding already carrying a drawn chart is not given a second one.
+            blocks.extend(_evidence_chart_blocks(analysis, position, resolution.evidence))
         rows = evidence_rows(analysis, resolution.evidence, arm)
         blocks.append(
             TableBlock(
@@ -309,6 +317,58 @@ def _finding_blocks(
     )
     if finding.durable.strip():
         blocks.append(TextBlock(section="findings", role="carried_forward", finding=position, body=finding.durable))
+    return blocks
+
+
+def _evidence_chart_blocks(analysis: EvalAnalysis, position: int, evidence: Sequence[EvidenceRow]) -> list[ReportBlock]:
+    """A finding's evidence table compiled to charts: one distribution per reading it cites at two or more cells.
+
+    The same compiler the surface charts take, so a cited reading is drawn as the surface draws it. A reading
+    cited at one cell compares nothing and stays a row; a chart this build cannot draw is disclosed with the
+    reason rather than dropped (#643).
+
+    Args:
+        analysis: The analysis, whose frozen surface every number is read from.
+        position: The finding's position.
+        evidence: The finding's resolved rows.
+
+    Returns:
+        The chart blocks, in the order the readings were first cited.
+    """
+    cited: dict[tuple[str, ReadingKind], list[str]] = {}
+    for row in evidence:
+        cells = cited.setdefault((row.measure_id, row.reading), [])
+        if row.cell_ref not in cells:
+            cells.append(row.cell_ref)
+    blocks: list[ReportBlock] = []
+    for (name, reading), cells in cited.items():
+        if len(cells) < 2:
+            continue
+        try:
+            payload = build_viz_payload(
+                DistributionRef(cells=cells, measure_id=name, reading=reading),
+                analysis.decision_surface,
+                list(analysis.variant_index),
+                measures=MeasureRegistry([]),
+            )
+            blocks.append(
+                ChartBlock(
+                    section="findings",
+                    finding=position,
+                    viz_type="distribution",
+                    intent=chart_intent("distribution", payload),
+                )
+            )
+        except (UnresolvableReference, PayloadError, IntentPolicyError) as undrawable:
+            what = f"{name} (judged)" if reading == "judged" else name
+            blocks.append(
+                DisclosureBlock(
+                    section="findings",
+                    finding=position,
+                    source="chart",
+                    text=f"The {what} evidence chart cannot be drawn: {undrawable}.",
+                )
+            )
     return blocks
 
 
@@ -1036,10 +1096,11 @@ def build_code_only_report(
             )
         )
     )
+    # The charts lead the surface table they draw: the chart is the reading form, the table the audit form.
+    blocks.extend(_measure_chart_blocks(surface, bundle, measures))
     blocks.extend(_surface_blocks(surface_table_of(surface, variant_index), provenance=False))
     blocks.extend(_strata_blocks(surface, variant_index))
     blocks.extend(_comparison_blocks(bundle, surface, contrasts_read))
-    blocks.extend(_measure_chart_blocks(surface, bundle, measures))
     blocks.extend(_label_blocks(surface, variant_index))
     blocks.extend(_time_axis_blocks(surface.time_axis))
     if bundle.time_axis_withheld:
@@ -1368,13 +1429,9 @@ def _measure_chart_blocks(
       (the bundle leaves its stored zeros out), so there is nothing to chart; the bundle's one sentence saying
       so stands in its place, naming the arms when only some went unmeasured.
     """
-    readings: list[tuple[str, ReadingKind]] = [
-        *((name, "measure") for name, facts in sorted(surface.measures.items()) if _chartable(name, facts, surface)),
-        *((name, "judged") for name in sorted(surface.dimensions)),
-    ]
+    blocks: list[ReportBlock] = []
     cells = cell_index(surface)
     labels = cell_arm_labels(surface, bundle.variant_index)
-    blocks: list[ReportBlock] = []
     if bundle.cost_unmeasured:
         unmeasured = [cell_ref(cell.variant_key, cell.apparatus_class_id) for cell in bundle.cost_unmeasured_cells]
         named = (
@@ -1391,6 +1448,34 @@ def _measure_chart_blocks(
             else " Read under concurrency: " + "; ".join(labels.get(ref, ref) for ref in contended) + "."
         )
         blocks.append(DisclosureBlock(section="surface", source="measurement", text=bundle.latency_contended + named))
+    blocks.extend(_surface_chart_blocks(surface, bundle.variant_index, measures))
+    return blocks
+
+
+def _surface_chart_blocks(
+    surface: DecisionSurface, variant_index: Sequence[VariantIndexEntry], measures: MeasureRegistry
+) -> list[ReportBlock]:
+    """The decision surface's readings compiled to charts, one distribution per chartable reading (#643).
+
+    The one compiler both reports use, so a stored analysis's surface is drawn exactly as a code-only
+    report's is, and ahead of the surface table: the chart is the reading form, the table the audit form.
+    A reading drawn at fewer than two cells has nothing to compare, so it stays in the table alone.
+
+    Args:
+        surface: The decision surface.
+        variant_index: How each cell is labelled.
+        measures: The host's measure registry, which a payload reads.
+
+    Returns:
+        The chart blocks and the disclosures of what they left out.
+    """
+    readings: list[tuple[str, ReadingKind]] = [
+        *((name, "measure") for name, facts in sorted(surface.measures.items()) if _chartable(name, facts, surface)),
+        *((name, "judged") for name in sorted(surface.dimensions)),
+    ]
+    cells = cell_index(surface)
+    labels = cell_arm_labels(surface, list(variant_index))
+    blocks: list[ReportBlock] = []
     for name, reading in readings:
         drawn: list[str] = []
         left_out: list[str] = []
@@ -1417,15 +1502,15 @@ def _measure_chart_blocks(
                     ),
                 )
             )
-        if not drawn:
-            # Every cell that measured it was left out, which the disclosure above already says — or no
-            # cell measured it at all, and there is nothing to chart and nothing withheld.
+        if len(drawn) < 2:
+            # Nothing to compare: every cell that measured it was left out (the disclosure above says so), one
+            # cell drew it (the table states that one figure), or no cell measured it at all.
             continue
         try:
             payload = build_viz_payload(
                 DistributionRef(cells=drawn, measure_id=name, reading=reading),
                 surface,
-                bundle.variant_index,
+                list(variant_index),
                 measures=measures,
             )
             blocks.append(
