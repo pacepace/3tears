@@ -166,9 +166,13 @@ async def test_the_memo_prints_each_findings_evidence_as_one_table_headed_by_rea
     _, analysis, _ = toy
     memo = render_memo_as_written(analysis)
     evidence = memo.split("Evidence:\n\n", 1)[1].split("\n\n", 1)[0].splitlines()
-    assert evidence[:2] == ["| Arm | Measure | Value | n | Spread |", "|---|---|---|---|---|"]
+    assert evidence[:2] == ["| Arm | Measure | Value | Cases | Spread |", "|---|---|---|---|---|"]
     assert len(evidence) == 2 + len(analysis.resolutions[0].evidence) == 4
     assert all(row.split(" | ")[1] == "Turn time" for row in evidence[2:])
+    # The count a reader is shown is cases, never observations: a case run k times is one.
+    rows = analysis.resolutions[0].evidence
+    assert all(row.n_cases is not None and row.n_cases < row.n for row in rows), "the toy repeats each case"
+    assert [line.split(" | ")[3] for line in evidence[2:]] == [str(row.n_cases) for row in rows]
     assert "total_ms" not in memo
 
 

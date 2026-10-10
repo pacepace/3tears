@@ -125,6 +125,11 @@ fed, ``list_campaigns``'s ``status`` filter, is gone with it. ``CampaignDesign.c
 (``held_fixed_reading``): a stored campaign, an analysis's ``design_snapshot`` and a reporter case's frozen bundle
 read the old key under the new name, value unchanged.
 
+**Within v8, not a bump**: ``EvidenceRow.n_cases`` joined as an OPTIONAL field — the distinct test cases behind an
+evidence row's value, which a report's evidence table shows (``n`` counts observations, a case judged k times
+counting k). A row stored before it carries None and reads as not recorded: its table cell is empty, never its
+observation count under the cases heading.
+
 **Within v8, not a bump**: ``RubricDimTombstone`` joined as a new stored type — the record a rubric dim delete
 leaves so the definition seed does not write the key back. A store written before it holds none, which reads as
 "no key was deleted since": a dim deleted before then is still written back at the next seed, as it was then.

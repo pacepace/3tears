@@ -1066,6 +1066,7 @@ def _resolution_of(
                 reading=reading.reading,
                 value=resolved.mean,
                 n=resolved.n,
+                n_cases=resolved.n_cases,
                 dispersion=resolved.dispersion,
                 judged_tier=resolved.judged_tier,
             )
