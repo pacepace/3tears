@@ -314,6 +314,10 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`fold_phase_timings(accumulator: dict[str, float], *, source_tool: str, timings: Any) -> None`
 - **`goal_check_of`** · function · The check a measure name was minted for by `goal_check_measure`, or None.
   <br>`goal_check_of(name: str) -> str | None`
+- **`judge_case_of`** · function · The judge case a test case carries, or `None` when it carries none.
+  <br>`judge_case_of(test_case: EvalTestCase) -> JudgeCase | None`
+- **`judge_trial_of`** · function · The judge trial a result's `kind_payload` carries, or `None` when it carries none this build can read.
+  <br>`judge_trial_of(kind_payload: object) -> JudgeTrial | None`
 - **`list_metrics`** · function · List every measure a host can describe, optionally filtered by family and/or scope.
   <br>`list_metrics(measures: MeasureRegistry, family: MetricFamily | None = None, attribution_scope: AttributionScope | None = None) -> list[MetricDescriptor]`
 - **`materiality`** · function · Whether a difference of `delta` in a measure is large enough to act on.
@@ -417,9 +421,14 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`GuardrailMargin`** · model · How much worse than the control an arm may be on one judged guardrail, and still hold it.
 - **`GuardrailReadings`** · model · Every guardrail, decided for each arm against the control — the pillar kept apart from capability.
 - **`JobStore`** · protocol · The run document's read-modify-write: what the job manager persists a run's status through.
+- **`JudgeCase`** · model · One output and the criterion it is judged on, frozen from a stored result — and what people said about it.
+- **`JudgeCaseLabel`** · model · One person's rating of the frozen output on the case's criterion, as it stood when the case was frozen.
+- **`JudgeCaseSource`** · model · Where a judge case's output came from: the stored result, and what its own judge answered.
 - **`JudgedDimensionFacts`** · model · What one judged dimension IS, frozen beside its scores — `MeasureFacts`' judged sibling.
 - **`JudgedReading`** · model · One judged dimension's scores in one cell.
 - **`JudgeEvidenceTier`** · model · The evidence tier of one judge's readings on one dimension, and the two measurements that decided it.
+- **`JudgeKindOverlays`** · model · What one arm of a judge campaign turns besides its model: the prompt per criterion, and the temperature.
+- **`JudgeTrial`** · model · What one judge trial recorded: the case it asked about, the judge that answered, and the answer.
 - **`LeverCoordinateError`** · exception · A host's per-observation lever map disagrees with its own registry, in either direction.
 - **`LeverCoverage`** · model · Per-lever coverage summary — a point estimate is invalid without n + dispersion.
 - **`MeasureCollection`** · model · Every measure a set of results carries, with the scopes that carry none named.
@@ -510,6 +519,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`'calibrated'` | `'separation'` | `'incidental'` | `'undetermined'`
 - **`JudgedTierRule`** · literal · The rule a stored analysis's judged tiers were decided by.
   <br>`'interval_lower_bound'`
+- **`JudgeTrialOutcome`** · literal · How a trial ended, as far as its readout is concerned.
+  <br>`'scored'` | `'cannot_tell'` | `'invalid'` | `'no_reply'`
 - **`JudgingState`** · literal · What the judge produced for this result.
   <br>`'scored'` | `'partial'` | `'failed'` | `'not_attempted'`
 - **`Materiality`** · literal · How a difference in a measure reads against the measure's declared materiality threshold.
@@ -567,6 +578,18 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`IDENTITY_VERSION`** · constant (int) · One counter covers both predicates, so a bump on either side re-derives the other's keys — conservative in the safe direction, since re-deriving unchanged inputs reproduces the same digest.
   <br>`= 24`
 - **`INCOMPLETE_STOP_REASONS`** · constant (frozenset) · The `CompletionResult.stop_reason` values meaning the completion was CUT SHORT rather than finished.
+- **`JUDGE_CASE_KEY`** · constant (str) · The key a judge case lives under inside `EvalTestCase.host_payload`.
+  <br>`= 'judge_case'`
+- **`JUDGE_KIND`** · constant (str) · The `candidate_kind` a judge template declares.
+  <br>`= 'judge'`
+- **`JUDGE_KIND_CONTRACT`** · constant (KindContract) · The judge kind's contract: its overlays, and the rig it fills.
+- **`JUDGE_KIND_MEASURES`** · constant (tuple) · The measures a judge trial lands on `host_measures`, for a host to declare on its measure registry.
+- **`JUDGE_KIND_ROLE`** · constant (str) · The role every call a judge trial makes is metered under.
+  <br>`= 'judge'`
+- **`JUDGE_LABEL_AGREEMENT_MEASURE`** · constant (str) · The measure a scored trial of a labelled case lands: the share of the case's person labels the score equals.
+  <br>`= 'judge_label_agreement'`
+- **`JUDGE_PARSE_VALID_MEASURE`** · constant (str) · The measure a trial lands when the judge under test answered: whether its reply kept the protocol — a score on the criterion's scale, or the offered "can't tell" — rather than a reply that could not be read.
+  <br>`= 'judge_parse_valid'`
 - **`JUDGED_TIER_RULE`** · constant (str) · The rule this build decides tiers by.
   <br>`= 'interval_lower_bound'`
 - **`JUDGED_TIERS_WEAKEST_FIRST`** · constant (tuple) · Weakest first, for composing several judged readings into what all of them can bear.
@@ -792,6 +815,8 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`execute_run(host: EvalHost, *, run: EvalRun, template: EvalTemplate, test_cases: list[EvalTestCase], judge_service: JudgeService | None, options: RunnerOptions, callbacks: RunCallbacks | None = None, budget_gate: Callable[[float | None], CapBreach | None] | None = None, on_cost: Callable[[float | None], None] | None = None, cell_sink: list[CellSummary] | None = None) -> list[CellSummary]`
 - **`fold_metered_cell`** · function · Fold one cell's action-seam tally into the external role's rows.
   <br>`fold_metered_cell(external_usage: RoleUsageLedger, cell: MeteredCallTally | None) -> None`
+- **`freeze_judge_cases`** · function · Freeze (output, criterion, labels) cases from stored judged results into a judge template.
+  <br>`freeze_judge_cases(storage: EvalStorage, *, template: EvalTemplate, run_ids: Sequence[str], scope_id: str, dims: Collection[str] | None = None, result_ids: Collection[str] | None = None, case_set: str | None = None) -> JudgeCaseFreezeReport`
 - **`get_judge_config`** · function · Load a judge config by id within a scope.
   <br>`get_judge_config(storage: DefinitionStore, config_id: str, scope_id: str) -> JudgeConfig`
 - **`get_result`** · function · Load one eval result by id within its scope.
@@ -806,10 +831,16 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`get_template(host: EvalHost, template_id: str, scope_id: str) -> EvalTemplate`
 - **`grade_goal_checks`** · function · Grade goal checks against a call ledger, an end state and what fired: the one evaluation every caller uses.
   <br>`grade_goal_checks(expressions: Sequence[str], *, ledger: CallLedger, end_state: Mapping[str, Any], fired: Firings | None, variation: Mapping[str, Any], world: WorldRegistry | None) -> list[GoalStateOutcome]`
+- **`judge_case_labels`** · function · The person ratings a judge case frozen from `result` on `dim` carries as its labels.
+  <br>`judge_case_labels(storage: EvalStorage, scope_id: str, result: EvalResult, dim: str, *, scale: str) -> list[CalibrationRating]`
+- **`judge_kind`** · function · The judge kind for one arm, its configs loaded from the store: what a launcher builds per arm.
+  <br>`judge_kind(storage: EvalStorage, clients: CompletionClients, *, model: str, scope_id: str, failure_describer: ProviderFailureDescriber, overlays: JudgeKindOverlays | None = None) -> JudgeKind`
 - **`launch_as_group`** · async function · Launch one group of runs: admit it, prepare every arm, and start them together — or start none.
   <br>`launch_as_group(host: LaunchHost, n_runs: int, *, settings: LaunchSettings, form: Callable[[], Awaitable[tuple[LaunchGroup, _Formed]]], prepare: Callable[[LaunchGroup, _Formed], Awaitable[list[EvalRun]]], event: str, admission: AdmissionTicket | None = None, attach: Callable[[list[EvalRun]], Awaitable[None]] | None = None, detach: Callable[[list[EvalRun]], Awaitable[None]] | None = None) -> list[EvalRun]`
 - **`launch_run`** · async function · Assemble, stamp, bound and hand over a run — the launch tail every candidate kind shares.
   <br>`launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWiring) -> EvalRun`
+- **`launchable_judge_kind`** · function · The judge kind's entry in a host's launch registry: each arm one judge over the template's frozen cases.
+  <br>`launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKind`
 - **`list_judge_configs`** · function · List judge configs in a scope.
   <br>`list_judge_configs(storage: DefinitionStore, scope_id: str, *, rubric_dim_id: str | None = None, archived: bool = False) -> list[JudgeConfig]`
 - **`list_results`** · function · List every result for one eval run within its scope.
@@ -927,11 +958,15 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`EvalRunCostCap`** · class · In-memory per-run cost cap for a single eval run.
 - **`EveryCellApparatusFailedError`** · exception · Raised by `execute_run` when an apparatus fault excluded every cell of the run.
 - **`FidelityContract`** · dataclass · One shared construction path and the callers required to reach it.
+- **`FrozenJudgeCase`** · model · One case a freeze produced: the test case, the output and criterion it replays, and how many labels it has.
 - **`GoalCheckUnevaluable`** · exception · A goal check raised while being evaluated — a fault of the rig, not a verdict on the candidate.
 - **`InProcessCellExecutor`** · class · The default executor: `width` workers on this event loop, each taking the next cell in order.
 - **`JobTimeoutFactory`** · protocol · Builds the context manager a single job runs inside.
+- **`JudgeCaseFreezeReport`** · model · What a freeze froze, the case set listing it, and what it could not freeze.
+- **`JudgeCaseSkip`** · model · A stored result the freeze could not make a case of, and why.
 - **`JudgeContext`** · dataclass · Everything a single-dim judge call needs about the result under review.
 - **`JudgeInputStore`** · protocol · The reads `reproducible_judge_inputs` makes, and no more.
+- **`JudgeKind`** · class · A judge configuration as a candidate: asks each frozen case's criterion of one judge, and grades the answer by code.
 - **`JudgeOutcome`** · dataclass · Result of one single-dim judge call.
 - **`JudgeRepeatEstimate`** · model · What repeating a run's judge scores would be priced at, against the cap it would be held to — no call made.
 - **`JudgeRepeatReport`** · model · What a repeat did: which results it recorded a repeat on, what it spent, and what it left out.
@@ -953,6 +988,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`MeteredCallLedger`** · class · In-memory per-run ceiling on metered third-party calls.
 - **`MeteredCallTally`** · dataclass · What a run (or one cell's slice of it) metered, kept per provider.
 - **`PlannedJudge`** · dataclass · The judge one arm will be scored by, resolved before anything is built: what `plan_judge` returns.
+- **`PreparedJudge`** · dataclass · One cell's judge: the model it binds, and the cell's tracing windows.
 - **`RatingStore`** · protocol · The two calls a rating makes: read the rated result, write the rating.
 - **`RecheckStore`** · protocol · The reads and the one rewrite a re-check makes, and no more.
 - **`ReproducibleJudgeInputs`** · class · The stored records a result's judge calls are rebuilt from, each the one its run recorded.
@@ -1116,6 +1152,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`judge_evidence_tiers(agreement: JudgeAgreement, self_agreement: JudgeSelfAgreement, judged: Iterable[JudgeKey]) -> list[JudgeEvidenceTier]`
 - **`judge_key`** · function · The judge behind `result`'s score on `dim`, or None when it holds no score there.
   <br>`judge_key(result: EvalResult, dim: str) -> JudgeKey | None`
+- **`judge_kind_readings`** · function · Pool a judge campaign's trials into agreement with the labels, self-agreement and parse validity, per judge and criterion.
+  <br>`judge_kind_readings(results: Iterable[EvalResult]) -> JudgeKindReadings`
 - **`judge_phase_ceiling_s`** · function · The wall-clock ceiling of one cell's judge phase, derived from the ceilings of its requests.
   <br>`judge_phase_ceiling_s(*, judge_dims: int, judge_concurrency: int, judge_call_attempts: int, judge_max_tokens: int, request_s: RequestCeiling) -> float`
 - **`judge_self_agreement`** · function · Pair each repeated score with the first score it repeated, and read agreement the way calibration does.
@@ -1273,6 +1311,9 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`JudgeGrade`** · model · One rubric dimension's score on one answer, with the judge's reason.
 - **`JudgeIdentityLevel`** · model · One judge the member runs were scored by, as each run recorded it at launch, and the runs and arms under it.
 - **`JudgeKey`** · class · Who judged a reading: the dimension, its scale, the model that served the score, the config that asked and the temperature the call was sent at.
+- **`JudgeKindReading`** · model · One judge's three measures on one criterion, over the frozen cases it was asked.
+- **`JudgeKindReadings`** · model · Every judge and criterion a judge campaign's results measured, and every result left out.
+- **`JudgeParseValidity`** · model · How often one judge's replies on one criterion kept the protocol.
 - **`JudgeSelfAgreement`** · model · Every repeated score read, paired with the first score where it can be, and agreement per dimension and judge.
 - **`LabelCriterion`** · model · The rubric criterion a label was written against, frozen as text when its case was frozen.
 - **`LabelReading`** · model · One reader's verdict on a dimension, beside what the judge scored there.
@@ -1335,6 +1376,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`TokenRollup`** · model · Summed token usage across results — visible cost of generation (§Visible Costs).
 - **`UnpairedRating`** · model · A rating with no judge score to set it against, and why.
 - **`UnpairedSecondScore`** · model · A second judge's score with no pair to read, and why.
+- **`UnreadJudgeTrial`** · model · A result the readout left out, and why.
 - **`UnrepeatedScore`** · model · A repeated score with no pair to read, and why.
 - **`Verdict`** · model · One verdict the report states, typed: what a program reads instead of the words printed from it.
 - **`VerdictOrder`** · model · The order verdicts are read in, as the campaign declared it — never as the writer would choose.
@@ -1736,6 +1778,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`job_cancel(host: OpsHost, job_id: str, scope_id: str, *, reason: str | None = None) -> JobStatus`
 - **`job_poll`** · async function · Where a job stands, read from the record its work writes.
   <br>`job_poll(host: OpsHost, job_id: str, scope_id: str) -> JobStatus`
+- **`judge_cases_freeze`** · function · Freeze stored judged outputs, their criteria and their labels into cases of a judge template.
+  <br>`judge_cases_freeze(host: EvalHost, freeze: JudgeCasesFreeze, scope_id: str) -> JudgeCaseFreezeReport`
 - **`judge_drift_check`** · async function · Re-score every judged result of a finished run under a changed judge, and read how far each dimension moved.
   <br>`judge_drift_check(host: OpsHost, run_id: str, scope_id: str, *, judge: SecondJudge, result_ids: list[str] | None = None) -> SecondJudgeRead`
 - **`judge_repeat`** · async function · Repeat a finished run's judge scores — the measurement the `separation` evidence tier reads.
@@ -1825,6 +1869,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`JobHandle`** · model · A started job: the id to poll, and what it is working on.
 - **`JobsStarted`** · model · What starting long work returns: one handle per job, in the order the work was asked for.
 - **`JobStatus`** · model · Where one job stands, read from the record its work writes.
+- **`JudgeCasesFreeze`** · model · What freezing judge cases names: the judge template, the judged runs, and optionally which dims and results.
 - **`LaunchArguments`** · model · What a launch names: the template, the subject, one arm per model, and the run's own limits.
 - **`LaunchEstimate`** · model · What a launch would cost and whether it would launch, priced by the launch's own rule.
 - **`OpsHost`** · dataclass · The host the operations, and the actions over them, work in.
@@ -2477,6 +2522,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `bars_propose` | `read` | `campaign_id` | Propose bars from a single-cell baseline campaign's measured incumbent; registers nothing. |
 | `reporter_case_freeze` | `write` | `template_id`, `campaign_id`, `recorded_analysis_id?`, `labels?`, `supersedes?` | Freeze a campaign's analysis bundle, and the memo it got, into a case of a reporter template. |
 | `reporter_cases_list` | `read` | `template_id`, `include_archived?` | List a reporter template's cases: which each campaign and memo launches, superseded or retired. |
+| `judge_cases_freeze` | `write` | `template_id`, `judged_run_ids`, `criteria?`, `judged_result_ids?`, `into_case_set?` | Freeze stored judged outputs, their criteria and their labels into cases of a judge template. |
 | `scope_pivot` | `read` | `row_factor`, `column_factor`, `metric?`, `weighting?`, `subject_filter?`, `run_status?`, `predicted_cost?`, `launched_run_ids?` | Aggregate one measure over the scope's observations by two coordinates, cell by cell. |
 | `runs_compare` | `read` | `baseline_run_id`, `candidate_run_id` | Compare one run's arm against another's: pass^k, mean composite, their deltas and the test. |
 | `scope_out_of_run_spend` | `read` | `purpose_filter?`, `launch_group_filter?`, `template_filter?` | List what the engine spent outside any run — case generations, rubric proposals and analysis generations — with totals. |
@@ -2525,6 +2571,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `condition_filter` | `'ok'` \| `'candidate_fail'` \| `'infra_exclude'` or `null` | List only results in this condition: ok (delivered, scored), candidate_fail (scored as a hard fail) or infra_exclude (a harness fault, in no aggregate). |
 | `confirm` | `string` | Must echo the id of what is destroyed, exactly. |
 | `control_from_run_id` | `string` or `null` | One of run_ids whose variant becomes the declared control, the cell every other is read against: its variant key is resolved from the run, as designating a control on an existing campaign resolves it. Requires declared_design. |
+| `criteria` | array of `string` or `null` | The criteria to freeze; omitted freezes every dim each result was judged on. |
 | `declared_design` | `object` or `null` | What the campaign sets out to learn, declared before it learns anything: axes (at least one: {axis_id, values: [{content, display}], rationale?}, each axis_id a lever or open-family member this host declares), held_fixed ({stimulus: controlled\|uncontrolled, stimulus_reason (required when uncontrolled), apparatus: commissioned\|witnessed}), and optionally questions ([{id, text, merit_axes?}]), bars ([{measure_id, threshold, direction}], no looser than the registered ones), merit_priority and intended_repetitions. Validated and gated as every campaign declaration is. Optional: omitted, the campaign is exploratory — its report and analysis say once that its readings confirm nothing, and its design is inferred from the runs. Its control is named by control_from_run_id. |
 | `description` | `string` | A longer description of the campaign. |
 | `export_format` | `'csv'` \| `'json'` | The export's form: csv (flat rows, a column per lever) or json (the rows and what was left out). |
@@ -2532,8 +2579,11 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `format` | `'markdown'` \| `'json'` \| `'html'` | The report's form: markdown (the memo), json (the schema's form), html (script-free). |
 | `include_archived` | `boolean` | List archived records too; they are left out by default. |
 | `insight_id` | `string` | An insight's id, as insights_list names it. |
+| `into_case_set` | `string` or `null` | A case set to mint the next version of, listing exactly the frozen cases — what a launch targets. |
 | `job_id` | `string` | A job's id, exactly as the action that started it returned it. |
 | `judge_model` | `string` or `null` | The judge model, where the kind is model-judged. |
+| `judged_result_ids` | array of `string` or `null` | The results to freeze; omitted freezes every result of the runs. |
+| `judged_run_ids` | array of `string` | The judged runs whose stored results to freeze, as runs_list names them. |
 | `k_runs` | `integer` | Repeats of every case, for pass^k. |
 | `labels` | array of `object` | Reader verdicts on the recorded memo, each {dimension, direction, quote, note?}: a dimension the template scores, a direction of low\|low_mid\|mid\|mid_high\|high, and the reader's words verbatim. They need recorded_analysis_id; the freeze stamps each with the template's criterion for its dimension. |
 | `launch_group_filter` | `string` or `null` | Only the calls one launch's case generation made; its runs carry this id. |
