@@ -116,8 +116,10 @@ the control on each reading, under one rig.
 | not separated | the cases could not tell the arms apart | add cases, or declare a margin; never read it as a tie |
 | untested | no test could decide: fewer than two cases on a side, or a gap with no spread (every shared case moved by exactly the same amount, or each side constant) over too few cases for the exact test to reach 0.05; the row says why | fix what it names (usually too few cases) |
 
-`equivalent` needs a declared margin (`MetricDescriptor.materiality_threshold`) and a paired test. Its p
-is corrected in the same Holm family as the separations, with the multiplier capped at the number of
+`equivalent` needs a declared margin (`MetricDescriptor.materiality_threshold`) and a paired test. Where
+every paired difference is one amount there is no t, and the exact one-sided sign-flip test decides: a
+constant difference inside the margin has the TOST p `2^-n`, so two arms identical on five or more shared
+cases can read `equivalent`. Its p is corrected in the same Holm family as the separations, with the multiplier capped at the number of
 compared rows (Shaffer's refinement: a difference cannot be both zero and at least the margin), so the
 chance that any verdict in the family is wrong stays at 5%.
 
@@ -166,7 +168,7 @@ unit of analysis: a case's repeats are averaged first, because they are not inde
 | Interval on a rate (accuracy, precision, recall, any 0/1 measure) | Wilson, on the effective sample size the clustering of repeats leaves, with t on `n_cases − 1` df. F1 has none. |
 | pass^k | Unbiased C(c, k) / C(n, k) per case, averaged over the cases with n ≥ k, pooled across the runs of one cell; its interval is Clopper–Pearson on an effective size. |
 | A contrast against the control | Paired t-test on per-case means over the shared cases (two or more), else Welch's t on Hsu's `min(n_a, n_b) − 1` df; a gap with no spread is read by the exact permutation test, as for scope divergence, with no interval and no g. Effect size Hedges' g (g_z when paired). Holm correction within each family; interval Bonferroni at 1 − α/m. |
-| `equivalent` | Paired TOST against the measure's `materiality_threshold`, in the same Holm family, capped at the number of compared rows (Shaffer). |
+| `equivalent` | Paired TOST against the measure's `materiality_threshold`, in the same Holm family, capped at the number of compared rows (Shaffer); a difference with no spread is read by the exact one-sided sign-flip test (p = 2^-n inside the margin). |
 | A bar | Three-valued: the cell's interval against the threshold less the margin (cleared, missed, undecided). A seeded threshold is the incumbent's mean moved √2 − 1 of its half-width toward the permissive end. |
 | A guardrail | Non-inferiority: the 95% interval on arm − control against zero change less the margin. |
 | Scope divergence, mechanism checks | The difference tested directly, paired or Welch as for a contrast; a gap with no spread is read by an exact permutation test, which can reach 0.05 only from six shared cases, or unshared where 2 / C(n_a + n_b, n_a) ≤ 0.05 (four a side, or three against five). |
