@@ -4027,7 +4027,9 @@ def _measure_summary(
         numeric = sorted(observed)
         mean = sum(numeric) / len(numeric)
         sem = clustered_standard_error(observed, cases)
-        interval = observed_mean_interval(observed, cases=cases, value_range=descriptor.value_range)
+        interval = observed_mean_interval(
+            observed, cases=cases, value_range=descriptor.value_range, floor=descriptor.interval_floor
+        )
         shape = {
             "mean": mean,
             "p05": _percentile(numeric, 0.05),
@@ -7633,7 +7635,9 @@ def _bar_reading(
         clustered_standard_error(values, cases),
         len(values),
         len(set(cases)),
-        observed_mean_interval(values, cases=cases, value_range=bar.descriptor.value_range),
+        observed_mean_interval(
+            values, cases=cases, value_range=bar.descriptor.value_range, floor=bar.descriptor.interval_floor
+        ),
     )
 
 

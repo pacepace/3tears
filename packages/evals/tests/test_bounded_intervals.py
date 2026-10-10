@@ -6,6 +6,9 @@ payload refused it, and every perfect label's precision and recall chart was dro
 (those figures are now the code-only report's per-label table, held here the same way).
 And ``accuracy``, a 0/1 measure derived from ``match``, took the symmetric t interval, so 8 of 10
 read ``[0.498, 1.102]`` while ``match`` over the same observations read its Wilson ``[0.490, 0.943]``.
+A third: a time, a spend or a count declares no range, so an arm's cost interval read
+``[-0.0002991, 0.000801]`` dollars. Such a measure is declared ``nonnegative``, and its intervals stop at zero;
+an interval on a DIFFERENCE in it does not, since a difference can be negative.
 """
 
 from __future__ import annotations
@@ -19,8 +22,9 @@ import pytest
 from threetears.evals.analysis import campaign_report, report_markdown
 from threetears.evals.analysis.stats import mean_interval, observed_mean_interval, wilson_interval
 from threetears.evals.analysis.viz.payloads import ConfidenceInterval
+from threetears.evals.contracts.metrics import METRIC_DESCRIPTORS, MetricDescriptor
 from threetears.evals.ops import CampaignDefinition, campaign_create
-from threetears.evals.quick import callable_host, run_eval
+from threetears.evals.quick import Answer, callable_host, compare, run_eval
 from threetears.evals.run import list_results
 from packages.evals.tests.bundle_support import one_batch_bundle
 
@@ -100,6 +104,42 @@ def test_continuous_values_on_a_unit_scale_take_the_clipped_t_interval() -> None
     low, high = interval
     assert high == 1.0
     assert low <= sum(values) / len(values) <= high
+
+
+def test_a_mean_interval_with_a_floor_is_clipped_at_its_low_end_only() -> None:
+    unclipped = mean_interval(0.5, 1.0, 4)
+    floored = mean_interval(0.5, 1.0, 4, floor=0.0)
+    assert unclipped is not None and floored is not None
+    assert unclipped[0] < 0.0
+    assert floored == (0.0, unclipped[1])
+
+
+def test_observations_bounded_below_take_the_floored_t_interval() -> None:
+    values = [0.0, 0.0, 0.0, 9.0]
+    interval = observed_mean_interval(values, cases=range(4), floor=0.0)
+    assert interval is not None and interval[0] == 0.0
+
+
+def test_every_core_time_spend_and_count_is_declared_nonnegative() -> None:
+    """Every core measure in such a unit is floored at zero, and none reaching below zero is."""
+    units = {"ms", "usd", "tokens", "tokens/s", "calls", "results", "cases", "turns", "deliveries"}
+    floored = {d.name for d in METRIC_DESCRIPTORS.values() if d.unit in units and d.value_range is None}
+    assert {"total_ms", "cost_usd", "production_replicating_cost", "prompt_tokens", "orchestration_ms"} <= floored
+    assert all(METRIC_DESCRIPTORS[name].nonnegative for name in floored)
+    assert all(d.interval_floor == 0.0 for d in METRIC_DESCRIPTORS.values() if d.nonnegative)
+    assert not METRIC_DESCRIPTORS["hedges_g"].nonnegative
+
+
+def test_a_nonnegative_measure_on_a_range_below_zero_is_refused() -> None:
+    with pytest.raises(ValueError, match="nonnegative"):
+        MetricDescriptor(
+            name="signed",
+            transferability_class="mechanical",
+            attribution_scope="end_to_end",
+            description="A signed reading.",
+            value_range=(-1.0, 1.0),
+            nonnegative=True,
+        )
 
 
 @pytest.mark.parametrize("values", [[], [1.0]], ids=["none", "one"])
@@ -184,3 +224,37 @@ async def test_a_two_classifier_campaign_report_draws_every_interval_inside_its_
     highs = [float(row.split("|")[4]) for row in accuracy_chart.splitlines() if row.startswith("| model=")]
     assert len(highs) == 2
     assert all(high <= 1.0 for high in highs)
+
+
+# =============================================================================
+# End to end: compare → a spend whose interval would reach below zero
+# =============================================================================
+
+
+def _spending(heavy: bool) -> Any:
+    """A candidate whose spend is near zero on every case but one, so a t interval on its mean reaches below zero."""
+
+    async def answer(case: Mapping[str, Any]) -> Answer:
+        cost = 0.003 if heavy and case["text"] == _CASES[0]["text"] else 0.000001
+        return Answer("neutral", model="spender", input_tokens=10, output_tokens=1, cost_usd=cost)
+
+    return answer
+
+
+async def test_a_spend_interval_stops_at_zero_and_a_delta_interval_on_it_does_not() -> None:
+    comparison = await compare(
+        _CASES,
+        {"heavy": _spending(True), "light": _spending(False)},
+        [],
+        expected=_expected,
+        control="heavy",
+        scope_id=SCOPE,
+        k=2,
+    )
+    markdown = comparison.render()
+    chart = markdown.split("**Chart: Production cost (usd)**", 1)[1].split("\n\n- ", 1)[0]
+    lows = [float(row.split("|")[3]) for row in chart.splitlines() if row.startswith("| candidate=")]
+    assert lows and min(lows) == 0.0
+    # A delta on the same measure is a difference, and may run below zero: the light arm spends less.
+    (cost,) = comparison.contrasts("production_replicating_cost")
+    assert cost["delta"] < 0.0

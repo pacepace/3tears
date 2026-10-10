@@ -528,7 +528,12 @@ def case_rate_interval(case_rates: Sequence[float], *, max_effective_n: float) -
 
 
 def mean_interval(
-    mean: float, sem: float, n_cases: int, *, value_range: tuple[float, float] | None = None
+    mean: float,
+    sem: float,
+    n_cases: int,
+    *,
+    value_range: tuple[float, float] | None = None,
+    floor: float | None = None,
 ) -> tuple[float, float] | None:
     """The interval on a mean at :data:`INTERVAL_LEVEL`, kept inside the scale the measure is declared on.
 
@@ -536,13 +541,18 @@ def mean_interval(
     symmetric t interval knows nothing of a bound, so a mean near the top of a bounded scale got an
     upper bound past it — a 0.8 accuracy over ten observations read ``[0.498, 1.102]``, a share above
     all of them. The scale is a fact about every value the mean could take, so no part of the
-    interval beyond it is a value the mean could have.
+    interval beyond it is a value the mean could have. A measure bounded below only — a time, a spend, a
+    count (``MetricDescriptor.nonnegative``) — is clipped at ``floor`` the same way: a cost interval read
+    ``[-0.0002991, 0.000801]`` dollars before it, a spend no arm can have. Only an interval on a mean is
+    clipped; one on a difference of two means never is, since a difference can fall either way.
 
     Args:
         mean: The point estimate.
         sem: Its standard error — :func:`clustered_standard_error` where observations can repeat a case.
         n_cases: Independent cases behind it; see :func:`ci_half_width`.
         value_range: The measure's declared inclusive bounds, or None when it declares none.
+        floor: The lowest value the measure can take where it declares no range
+            (``MetricDescriptor.interval_floor``), or None when nothing bounds it below.
 
     Returns:
         ``(low, high)``, or ``None`` below two cases, where no interval is estimable.
@@ -552,13 +562,19 @@ def mean_interval(
         return None
     low, high = mean - half, mean + half
     if value_range is not None:
-        floor, ceiling = value_range
-        low, high = max(floor, low), min(ceiling, high)
+        bottom, top = value_range
+        low, high = max(bottom, low), min(top, high)
+    elif floor is not None:
+        low = max(floor, low)
     return low, high
 
 
 def observed_mean_interval(
-    values: Sequence[float], *, cases: Sequence[Hashable], value_range: tuple[float, float] | None = None
+    values: Sequence[float],
+    *,
+    cases: Sequence[Hashable],
+    value_range: tuple[float, float] | None = None,
+    floor: float | None = None,
 ) -> tuple[float, float] | None:
     """The interval on the mean of a numeric measure's observations — the ONE rule every numeric summary takes.
 
@@ -568,7 +584,7 @@ def observed_mean_interval(
     and ``match`` over the same observations state one interval rather than two different ones — and
     a perfect score keeps a width instead of the t interval's zero-width point. Every other numeric
     measure takes :func:`mean_interval` on the :func:`clustered_standard_error` over its cases, clipped to
-    its declared scale.
+    its declared scale, or at its floor where it is bounded below only.
 
     Args:
         values: The observations.
@@ -576,6 +592,8 @@ def observed_mean_interval(
             observations are fifteen cases or five cases three times is the difference between two
             interval widths, and nothing in the values says which.
         value_range: The measure's declared inclusive bounds, or None when it declares none.
+        floor: The measure's lower bound where it declares no range (``MetricDescriptor.interval_floor``),
+            or None; see :func:`mean_interval`.
 
     Returns:
         ``(low, high)``, or ``None`` below two observations, where no interval is estimable — the
@@ -595,7 +613,7 @@ def observed_mean_interval(
     sem = clustered_standard_error(values, cases)
     if sem is None:
         return None
-    return mean_interval(sum(values) / n, sem, len(set(cases)), value_range=value_range)
+    return mean_interval(sum(values) / n, sem, len(set(cases)), value_range=value_range, floor=floor)
 
 
 #: How far below its own mean (above, where lower is better) an incumbent's bar is seeded, as a fraction of

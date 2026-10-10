@@ -12,6 +12,8 @@ through the bundle a writer reads and the report a reader reads:
 - **The same measure on a declared range is tested**, and the same arms read ``equivalent``.
 - **The code-only report names the measure once**, with the remedy.
 - **A history step carries the same refusal** on its ``RegressionFlag``, and the history text states it.
+- **A floor is not a range**: a measure declared ``nonnegative`` is bounded at one end only, so it is refused
+  the same way.
 """
 
 from __future__ import annotations
@@ -36,7 +38,7 @@ MEASURE = "extraction_score"
 N = 30
 
 
-def _profile(*, value_range: tuple[float, float] | None) -> HostProfile:
+def _profile(*, value_range: tuple[float, float] | None, nonnegative: bool = False) -> HostProfile:
     """The toy host with a quality measure declaring a margin of 0.3, and the range given."""
     profile = toyhost_profile()
     family = next(d.family for d in TOYHOST_MEASURES if d.name == "field_accuracy")
@@ -52,15 +54,17 @@ def _profile(*, value_range: tuple[float, float] | None) -> HostProfile:
         merit_axis="quality",
         materiality_threshold=0.3,
         value_range=value_range,
+        nonnegative=nonnegative,
     )
     return replace(profile, measures=MeasureRegistry((*TOYHOST_MEASURES, measure), families=profile.measures.families))
 
 
-def _bundle(*, value_range: tuple[float, float] | None) -> AnalysisContextBundle:
+def _bundle(*, value_range: tuple[float, float] | None, nonnegative: bool = False) -> AnalysisContextBundle:
     """Two arms that agree on every case to within a hundredth."""
     control = [{MEASURE: 0.5 + 0.01 * (case % 3)} for case in range(N)]
     contrast = [{MEASURE: 0.5 + 0.01 * ((case + 1) % 3)} for case in range(N)]
-    return two_arm_bundle((), host_measures=(control, contrast), profile=_profile(value_range=value_range))
+    profile = _profile(value_range=value_range, nonnegative=nonnegative)
+    return two_arm_bundle((), host_measures=(control, contrast), profile=profile)
 
 
 def _comparison(bundle: AnalysisContextBundle) -> FamilyComparison:
@@ -76,6 +80,15 @@ def test_with_no_declared_range_close_arms_are_not_equivalent_and_the_reason_nam
     assert comparison.equivalence_p_adjusted is None
     assert comparison.equivalence_untested_reason == EQUIVALENCE_NEEDS_RANGE
     assert comparison.equivalence_untested_reason.startswith("declare value_range")
+
+
+def test_a_nonnegative_measure_has_a_floor_and_no_range_so_it_is_refused_the_same_way() -> None:
+    """``nonnegative`` bounds one end; the bounded test needs both, so it does not switch the test on."""
+    comparison = _comparison(_bundle(value_range=None, nonnegative=True))
+
+    assert comparison.verdict == "not_separated"
+    assert comparison.equivalence_p_raw is None
+    assert comparison.equivalence_untested_reason == EQUIVALENCE_NEEDS_RANGE
 
 
 def test_on_a_declared_range_the_same_arms_are_tested_and_read_equivalent() -> None:
