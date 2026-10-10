@@ -94,7 +94,8 @@ Fields and names fixed before the first public release of the schema and API.
   gains `save_rubric_dim_tombstone` and `query_rubric_dim_tombstones`.
 - **`runs_compare`** (operation and read action) exposes `compare_two_runs`, with each short run's completeness
   sentence and the clock and cassette disclosures beside it (#621). `compare_runs` is deleted (no caller), with
-  `ComparisonColumns`; `bisect_runs` is internal.
+  `ComparisonColumns`. **`runs_bisect`** (operation and read action) exposes `bisect_runs`: which versioned inputs
+  two runs recorded differently, the same, or undecidably, with the same completeness and clock disclosures.
 - **`campaign_create` declares a design** (#685): `declared_design` and `control_from_run_id`, validated, gated and
   stamped as every declaration is; the control is resolved from a run as `set_campaign_control` resolves it.
 - `ConfidenceTier` is the authored `Confidence`, one declaration of the tiers (#644).
