@@ -126,12 +126,12 @@ async def main() -> Comparison:
         print(f"  {case['query']:<18} top_hit was served {dates['top_hit']}, newest_hit {dates['newest_hit']}")
     print(f"identical for every case and repeat: {served['top_hit'] == served['newest_hit']}\n")
 
-    # The verdict: each arm against the control, the difference, its Holm-adjusted p, and whether it separated.
+    # The verdict, each arm against the control, now on the same search results.
     for row in comparison.contrasts():
-        arm, control = row["arm"], comparison.control  # each arm by the key you gave it
-        p = "" if row["p_adjusted"] is None else f" (p={row['p_adjusted']:.2g})"  # none when nothing varied
-        print(f"{arm} vs {control} on {row['reading']}: {row['delta']:+.2g}{p}: {row['verdict']}")
-    print("\nThe full report: comparison.render(), or reports.py to write it to files.")
+        p = "" if row["p_adjusted"] is None else f", Holm-adjusted p {row['p_adjusted']:.2g}"  # none if nothing varied
+        print(f"{row['arm']} vs {comparison.control} on {row['reading']}: delta {row['delta']:+.2f}, ", end="")
+        print(f"interval {row['interval']}{p}: {row['verdict']}")
+    print("\nThe full report: print(comparison.render()), or reports.py to write it to files.")
     return comparison
 
 

@@ -276,12 +276,16 @@ def _scorer_reader_name(name: str) -> str:
     return f"{words[:1].upper()}{words[1:]} score"
 
 
-def scorer_measure(scorer: Scorer) -> MetricDescriptor:
+def scorer_measure(scorer: Scorer, *, margin: float | None = None) -> MetricDescriptor:
     """The measure one scorer function reports: a quality score, higher is better, over scored results.
 
     Args:
         scorer: The scorer. Its ``__name__`` names the measure and the first line of its docstring,
             when it has one, describes it.
+        margin: The measure's declared margin (``materiality_threshold``): the most a difference in it may be and
+            still be too small to act on, so a contrast on it can read ``equivalent``. ``None`` declares none,
+            and no contrast on it can. With a margin, a scorer whose return is annotated ``bool`` is declared on
+            the range 0 to 1, so its equivalence test is the bounded one that holds its error rate at any n.
 
     Returns:
         The descriptor :func:`callable_host` registers for it.
@@ -300,7 +304,50 @@ def scorer_measure(scorer: Scorer) -> MetricDescriptor:
         higher_is_better=True,
         merit_axis="quality",
         population="scored",
+        materiality_threshold=margin,
+        value_range=(0.0, 1.0) if margin is not None and _returns_bool(scorer) else None,
     )
+
+
+def _returns_bool(scorer: Scorer) -> bool:
+    """Whether ``scorer``'s return is annotated ``bool``, under postponed annotations or not."""
+    try:
+        returned = inspect.signature(scorer).return_annotation
+    except TypeError, ValueError:
+        return False
+    return returned is bool or returned == "bool"
+
+
+def refuse_unusable_margins(scorers: Sequence[Scorer], margins: Mapping[str, float]) -> None:
+    """Refuse a margin no scorer's measure could carry, naming the measures that can carry one.
+
+    Args:
+        scorers: The scorers whose measures the margins are declared on.
+        margins: Each margin, by the name of the scorer it is declared on.
+
+    Raises:
+        ValueError: A margin on a name no scorer has (the classifier's accuracy and every engine core measure
+            among them), or one that is not a positive finite number.
+    """
+    names = [_scorer_name(scorer) for scorer in scorers]
+    for name, margin in margins.items():
+        if name in _CLASSIFIER_NAMES or name in METRIC_DESCRIPTORS:
+            raise ValueError(
+                f"a margin on {name!r} cannot be declared: it is an engine core measure, read under the core's own "
+                "description, which declares no margin. To show two arms alike on a classifier's accuracy, grade it "
+                "with a scorer as well (def correct(case, answer) -> bool: return answer == case[...]) and declare "
+                "the margin on that: margins={'correct': 0.05}"
+            )
+        if name not in names:
+            raise ValueError(
+                f"margins= names {name!r}, which no scorer reports; a margin is declared on a scorer's measure, by "
+                f"its def's name: {', '.join(map(repr, names)) or 'none were given'}"
+            )
+        if isinstance(margin, bool) or not isinstance(margin, int | float) or not math.isfinite(margin) or margin <= 0:
+            raise ValueError(
+                f"the margin on {name!r} is a positive number in the measure's own units (0.05 is five points on a "
+                f"pass rate), not {margin!r}"
+            )
 
 
 def callable_kind_contracts(levers: Sequence[str] = ()) -> tuple[KindContract, KindContract]:
@@ -362,7 +409,12 @@ _ARM_SWEEPABLE = Sweepable(
 
 
 def callable_host(
-    scorers: Sequence[Scorer] = (), *, levers: Sequence[str] = (), world: World | None = None, arms: bool = False
+    scorers: Sequence[Scorer] = (),
+    *,
+    levers: Sequence[str] = (),
+    world: World | None = None,
+    arms: bool = False,
+    margins: Mapping[str, float] | None = None,
 ) -> EvalHost:
     """The least host there is: the shared core, one measure per scorer, no world, an in-memory store.
 
@@ -381,22 +433,29 @@ def callable_host(
         arms: Declare :data:`ARM_LEVER`, the lever a single-factor :func:`~threetears.evals.quick.compare`
             names its arms on, so its report reads ``candidate=<name>``; what ``compare`` builds when handed no
             host. A run that states no arm (a ``run_eval`` in this host) is at its candidate model's label.
+        margins: A margin declared on a scorer's measure, by the scorer's name (:func:`scorer_measure`), so a
+            contrast on it can read ``equivalent``; ``None`` declares none. No margin is ever assumed.
 
     Returns:
         The host.
 
     Raises:
         ValueError: A scorer has no usable name, two share one, or one takes a classifier measure's name or
-            any other engine core measure's; or a lever name is unusable or repeated.
+            any other engine core measure's; a lever name is unusable or repeated; or a margin names no scorer
+            or is not a positive number.
     """
     _refuse_unnamed_or_repeated(scorers)
+    margins = dict(margins or {})
+    refuse_unusable_margins(scorers, margins)
     return EvalHost(
         profile=HostProfile(
             host_id=CALLABLE_HOST_ID,
             host_sweepables=SweepableRegistry((*CORE_SWEEPABLES, _ARM_SWEEPABLE), roles=CORE_ROLES)
             if arms
             else SHARED_CORE,
-            measures=MeasureRegistry(scorer_measure(scorer) for scorer in scorers),
+            measures=MeasureRegistry(
+                scorer_measure(scorer, margin=margins.get(_scorer_name(scorer))) for scorer in scorers
+            ),
             kinds=callable_kind_contracts(levers),
             world=None if world is None else world.registry,
             # The world's tools described from their own schemas, so the goal-check gate closes a parameter the
@@ -531,7 +590,8 @@ class CallableKind:
         evidence: JudgeEvidence | None = None
         if self._judge is not None:
             try:
-                evidence = judge_evidence(self._judge, case, answer)
+                expected = test_case.host_payload[_EXPECTED_KEY] if self._classifies else None
+                evidence = judge_evidence(self._judge, case, answer, expected=expected)
             except ValueError as unrenderable:
                 # The judge's material is the rig: the cell is excluded, and with no evidence to read it
                 # stores no answer either, since a judged kind's every stored answer carries its evidence.

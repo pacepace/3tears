@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from threetears.evals.analysis import (
+    AnalysisContextBundle,
     DisclosureBlock,
     Report,
     TableBlock,
@@ -54,7 +55,7 @@ from threetears.evals.analysis import (
     set_campaign_control,
     variant_key_of_run,
 )
-from threetears.evals.contracts import DEFAULT_LAUNCH_K_RUNS, CassetteMode, utc_now_iso
+from threetears.evals.contracts import ACCURACY_MEASURE, DEFAULT_LAUNCH_K_RUNS, CassetteMode, utc_now_iso
 from threetears.evals.contracts.host import CANDIDATE_MODEL_LEVER, EvalHost
 from threetears.evals.ops.summary import CaseResult, EvalSummary, self_judging_text
 from threetears.evals.quick.judged import Judge
@@ -354,6 +355,7 @@ def _declare(
         bundle, measures=host.profile.measures, assembled_at=utc_now_iso(), campaign_name=campaign.name
     )
     report = _with_self_judging_disclosed(report, arms, factors)
+    report = _with_no_margin_disclosed(report, bundle)
     arm_of_variant = {
         variant_key_of_run(list_results(host.storage, summary.run_id, scope_id)): arm for arm, summary in arms.items()
     }
@@ -376,6 +378,42 @@ def _declare(
         ),
         kind=kind,
     )
+
+
+def _with_no_margin_disclosed(report: Report, bundle: AnalysisContextBundle) -> Report:
+    """The report with one line, above its contrasts, naming the measures tested with no margin to be equivalent on.
+
+    ``equivalent`` is the only verdict that says two arms are alike, and it needs a margin declared on the measure;
+    with none, ``not separated`` is the most a contrast can say, and a reader looking for "good enough" should be
+    told why it never appears rather than left to infer it.
+    """
+    catalog = bundle.measure_catalog
+    names = dict.fromkeys(
+        tested.name
+        for family in bundle.multiple_comparisons.families
+        for tested in family.comparisons
+        if tested.name in catalog and catalog[tested.name].materiality_threshold is None
+    )
+    if not names:
+        return report
+    headings = ", ".join(catalog[name].reader_name or name for name in names)
+    disclosure = DisclosureBlock(
+        section="surface",
+        source="comparisons",
+        text=f"No margin is declared on {headings}, so no contrast on {'it' if len(names) == 1 else 'them'} can read "
+        "equivalent, and not separated never means the arms are alike. "
+        + (
+            "Accuracy takes no margin: grade with a scorer too, and declare one on it with compare(margins=...)."
+            if ACCURACY_MEASURE in names
+            else "Declare a scorer's margin with compare(margins=...)."
+        ),
+    )
+    blocks = list(report.blocks)
+    at = next(
+        (i for i, block in enumerate(blocks) if isinstance(block, TableBlock) and block.name == "comparisons"),
+        len(blocks),
+    )
+    return report.model_copy(update={"blocks": [*blocks[:at], disclosure, *blocks[at:]]})
 
 
 def _with_self_judging_disclosed(
@@ -431,6 +469,7 @@ async def compare(
     seed: CaseSeed | None = None,
     goal_checks: Sequence[str] = (),
     max_cost_usd: float | None = None,
+    margins: Mapping[str, float] | None = None,
 ) -> Comparison:
     """Run each candidate over every case ``k`` times as one arm, test every arm against ``control``, and report.
 
@@ -486,6 +525,13 @@ async def compare(
             equal share, as :func:`~threetears.evals.quick.run_eval` caps one. An arm that reaches its share stops
             ``budget_stopped``, and its contrasts read only the cases it finished, the left-out ones disclosed.
             ``None`` (the default) runs every arm uncapped, which each arm's summary states.
+        margins: A margin declared on a scorer's measure, by the scorer's name (``{"correct": 0.05}``): the
+            most the arms may differ on it and still be alike. A contrast on it then reads ``equivalent`` when an
+            equivalence test shows the difference inside it, the only verdict that says two arms are alike — the
+            way "the cheaper model is good enough" is shown. ``None`` declares none and no margin is ever assumed,
+            so no contrast can read ``equivalent``, which the report says in one line. A classifier's accuracy is a
+            core measure and takes none: grade it with a scorer too, and declare the margin on that. With a
+            ``host`` of your own, declare margins on its measures (``materiality_threshold``) instead.
 
     Returns:
         The comparison: every arm's summary, the campaign's id and its report.
@@ -493,7 +539,8 @@ async def compare(
     Raises:
         ValueError: Fewer than two candidates, a blank arm name, an arm key that is not a level of each
             factor, factors without ``model`` or with an unusable or repeated name, a ``control`` that names
-            no arm, a ``max_cost_usd`` that is not a positive number, or anything
+            no arm, a ``max_cost_usd`` that is not a positive number, a margin that names no scorer, is not a
+            positive number or comes with a ``host``, or anything
             :func:`~threetears.evals.quick.run_eval` refuses.
         ValidationFailedError: The launch refused, or the host refuses the campaign's declaration.
     """
@@ -507,9 +554,14 @@ async def compare(
         isinstance(max_cost_usd, bool) or not isinstance(max_cost_usd, int | float) or not max_cost_usd > 0
     ):
         raise ValueError(f"max_cost_usd= is a spend ceiling in US dollars: a positive number, not {max_cost_usd!r}")
+    if margins and host is not None:
+        raise ValueError(
+            "margins= declares margins on the host compare builds; a host of your own declares them on its measures "
+            "(MetricDescriptor.materiality_threshold), so pass one or the other"
+        )
     levers = tuple(factor for factor in named if factor not in _UNPREFIXED)
     if host is None:
-        host = callable_host(scorers, levers=levers, world=world, arms=named == _NAMED_ARMS)
+        host = callable_host(scorers, levers=levers, world=world, arms=named == _NAMED_ARMS, margins=margins)
     coordinates = {arm: _coordinates(arm, named) for arm in arms_given}
     # Every arm in ONE launch, started together, so the arms are measured side by side rather than one after
     # another: what differs between their runs is their settings, not when they ran.

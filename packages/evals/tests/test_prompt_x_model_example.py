@@ -1,12 +1,12 @@
 """``examples/prompt_x_model.py`` runs a 2x2 as a newcomer would, with no API key, and reads both factors.
 
-Offline, the four arms are its keyword stand-ins, chosen so the prompt separates on the older model and
-not on the newer one. The model ids are read from the example, never spelled here.
+Offline, the four arms are its keyword stand-ins, named as stand-ins and chosen so the prompt separates on the
+older model and not on the newer one. The arms are read by their keys, never by the words a report names them by.
+The model ids are read from the example, never spelled here.
 """
 
 from __future__ import annotations
 
-import importlib.util
 import re
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -16,6 +16,7 @@ import pytest
 
 from threetears.evals.contracts.host import CANDIDATE_MODEL_LEVER
 from threetears.evals.quick import Comparison
+from packages.evals.tests.example_loader import load_example
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
 
 #: The example under test.
@@ -23,11 +24,7 @@ EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "prompt_x_model.py"
 
 
 def _load() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("prompt_x_model_example", EXAMPLE)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_example(EXAMPLE.name)
 
 
 async def test_offline_the_example_runs_four_arms_keyed_by_both_factors(
@@ -35,7 +32,7 @@ async def test_offline_the_example_runs_four_arms_keyed_by_both_factors(
 ) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     module = _load()
-    old, new = module.OLD, module.NEW
+    old, new = module.STAND_INS
     comparison = await module.main()
     assert isinstance(comparison, Comparison)
     assert comparison.factors == ("model", "prompt")
@@ -63,34 +60,59 @@ async def test_offline_the_example_runs_four_arms_keyed_by_both_factors(
 
     out = capsys.readouterr().out
     assert out.startswith("ANTHROPIC_API_KEY is not set: running OFFLINE, with keyword stand-ins")
-    # The verdict lines, and a pointer to the full report rather than the report itself.
+    assert "claude" not in out.lower() and "haiku" not in out.lower(), "a stand-in's output reads as a model's"
+    # The verdict lines, each with its interval, and a pointer to the full report rather than the report itself.
     assert comparison.render() not in out
     assert re.search(
-        rf"What v2 changes against v1, on each model:\n  {old}: v2 vs v1 on Accuracy: \+0\.5 \(p=[\d.e-]+\): improved on the control\n"
-        rf"  {new}: v2 vs v1 on Accuracy: \+0\.071 \(p=[\d.e-]+\): not separated from the control\n",
+        rf"\nOn {old}, v2 vs v1 on Accuracy: 0\.50 -> 1\.00, delta \+0\.50, interval \[[\d.]+, [\d.]+\] at [\d.]+%, "
+        rf"Holm-adjusted p [\d.e-]+: improved on the control\n",
         out,
     )
-    assert out.rstrip().endswith("The full report: comparison.render(), or reports.py to write it to files.")
+    assert re.search(
+        rf"\nOn {new}, v2 vs v1 on Accuracy: 0\.93 -> 1\.00, delta \+0\.07, interval \[-[\d.]+, [\d.]+\] at [\d.]+%, "
+        rf"Holm-adjusted p [\d.e-]+: not separated from the control\n"
+        rf"  'Could you add an option to pay by invoice\?' \(feature_request\): v1 said billing, billing; "
+        rf"v2 feature_request, feature_request\n",
+        out,
+    )
+    assert out.rstrip().endswith("The full report: print(comparison.render()), or reports.py to write it to files.")
 
 
 def test_the_example_reaches_the_engine_only_through_public_roots() -> None:
     assert public_root_violations(SOURCE_ROOT, [(EXAMPLE.name, EXAMPLE)], consumer_root=REPO_ROOT) == []
 
 
-async def test_the_claude_candidate_asks_each_model_as_it_accepts(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The older Haiku takes no effort setting; the newer one is asked at low effort. Both get the arm's prompt."""
+async def test_the_claude_candidate_sends_each_arm_s_prompt_to_its_model(monkeypatch: pytest.MonkeyPatch) -> None:
     anthropic = pytest.importorskip("anthropic")
     module = _load()
     sent: list[dict[str, Any]] = []
 
     async def create(**request: Any) -> Any:
         sent.append(request)
-        return SimpleNamespace(content=[SimpleNamespace(type="text", text=" Billing\n")])
+        return anthropic.types.Message.model_validate(
+            {
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "model": request["model"],
+                "content": [{"type": "text", "text": " Billing\n"}],
+                "stop_reason": "end_turn",
+                "stop_sequence": None,
+                "usage": {"input_tokens": 50, "output_tokens": 2},
+            }
+        )
 
-    monkeypatch.setattr(anthropic, "AsyncAnthropic", lambda: SimpleNamespace(messages=SimpleNamespace(create=create)))
+    async def close() -> None:
+        return None
+
+    monkeypatch.setattr(
+        anthropic, "AsyncAnthropic", lambda: SimpleNamespace(messages=SimpleNamespace(create=create), close=close)
+    )
+    older, newer = module.LIVE
     case = module.CASES[0]
-    assert await module.claude_classifier(module.OLD, "v1")(case) == "billing"
-    assert await module.claude_classifier(module.NEW, "v2")(case) == "billing"
-    old, new = sent
-    assert (old["model"], old["system"], "output_config" in old) == (module.OLD, module.PROMPTS["v1"], False)
-    assert (new["model"], new["system"], new["output_config"]) == (module.NEW, module.PROMPTS["v2"], {"effort": "low"})
+    assert await module.claude_classifier(older, "v1")(case) == "billing"
+    assert await module.claude_classifier(newer, "v2")(case) == "billing"
+    assert [(request["model"], request["system"]) for request in sent] == [
+        (older, module.PROMPTS["v1"]),
+        (newer, module.PROMPTS["v2"]),
+    ]

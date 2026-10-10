@@ -71,7 +71,11 @@ class Judge:
             or ``"pass_fail"``. A :class:`RubricDim` states its own.
         context: The namespace a bare dimension name is given: what the dimensions are scored against.
         case_material: Renders what an answer is judged against from its case — a question and the
-            source it must be answered from, say. ``None`` shows the judge the case as JSON.
+            source it must be answered from, say. ``None`` shows the judge the case as JSON, less the answer
+            key: on a classifier run (``run_eval(expected=...)``), every top-level field whose value is the
+            case's expected label is left out, so the judge never grades against the label it is meant to
+            judge without. To grade against a reference answer, render it here: what this returns is sent
+            as it is, the expected label included if it includes it.
     """
 
     client: CompletionClient
@@ -227,14 +231,18 @@ def _takes_temperature(client: CompletionClient) -> bool:
     )
 
 
-def judge_evidence(judge: Judge, case: Mapping[str, Any], answer: Any) -> JudgeEvidence:
+def judge_evidence(judge: Judge, case: Mapping[str, Any], answer: Any, *, expected: str | None = None) -> JudgeEvidence:
     """What the judge reads of one answer: the answer as text, against its case's material.
+
+    The evidence is stored on the cell's trace exactly as sent, so a re-judge sends the same material.
 
     Args:
         judge: The judge, whose ``case_material`` renders the case.
         case: The case the answer was given for.
         answer: The candidate's answer: a string as written, anything else as JSON (its ``repr`` when
             JSON cannot hold it).
+        expected: The case's expected label on a classifier run, ``None`` otherwise. With no
+            ``case_material``, every top-level field holding it is left out of the case shown (the answer key).
 
     Returns:
         The evidence.
@@ -243,7 +251,8 @@ def judge_evidence(judge: Judge, case: Mapping[str, Any], answer: Any) -> JudgeE
         ValueError: ``case_material`` raised, or rendered no text.
     """
     if judge.case_material is None:
-        material = json.dumps(dict(case), indent=2, sort_keys=True, default=repr)
+        shown = {key: value for key, value in case.items() if expected is None or value != expected}
+        material = json.dumps(shown, indent=2, sort_keys=True, default=repr)
     else:
         try:
             material = judge.case_material(case)

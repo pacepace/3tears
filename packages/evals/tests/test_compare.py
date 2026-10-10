@@ -11,17 +11,16 @@ campaign's name, with its id in the byline.
 
 from __future__ import annotations
 
-import importlib.util
 import re
 from collections.abc import Mapping
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 import pytest
 
 from threetears.evals.analysis import DisclosureBlock, TableBlock, report_markdown, variant_key_of_run
 from threetears.evals.quick import ARM_LEVER, SHARED_ARM_MODEL, Comparison, callable_host, compare
+from packages.evals.tests.example_loader import load_example
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
 
 #: The example under test.
@@ -209,20 +208,12 @@ async def test_unusable_arms_are_refused_before_anything_runs(
     assert host.storage.list_campaigns(SCOPE) == []
 
 
-def _load(path: Path) -> ModuleType:
-    spec = importlib.util.spec_from_file_location("compare_two_prompts_example", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 async def test_the_example_runs_offline_and_prints_the_verdict(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """With no API key the example takes its keyword stand-ins, says so, and ends on the contrast's verdict."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    comparison = await _load(EXAMPLE).main()
+    comparison = await load_example(EXAMPLE.name).main()
     assert isinstance(comparison, Comparison)
     assert comparison.control == "baseline"
     assert all(summary.status == "completed" for summary in comparison.arms.values())
@@ -231,7 +222,14 @@ async def test_the_example_runs_offline_and_prints_the_verdict(
     assert "(offline)" in comparison.name
     accuracy = {row["reading"]: row for row in _comparisons(comparison).rows}["Accuracy"]
     assert (accuracy["contrast"], accuracy["verdict"]) == ("candidate=candidate", "improved on the control")
-    assert re.search(r"\ncandidate vs baseline on Accuracy: \+0\.42 \(p=[\d.e-]+\): improved on the control\n", out)
+    assert re.search(
+        r"\ncandidate vs baseline on Accuracy: 0\.58 -> 1\.00, delta \+0\.42, interval \[[\d.]+, [\d.]+\] at 95%, "
+        r"Holm-adjusted p [\d.e-]+: improved on the control\n",
+        out,
+    )
+    # Where the arms disagree: the tickets the baseline misfiled, each arm's answer on every repeat.
+    assert "  'Do you plan to add a dark mode?', filed under feature_request:\n" in out
+    assert "    baseline said billing, billing; candidate said feature_request, feature_request\n" in out
     assert comparison.render() not in out
 
 

@@ -59,37 +59,42 @@ def _foreign_imports(source: str) -> list[str]:
 
 
 async def test_the_example_runs_and_its_summary_reads_what_it_measured(capsys: pytest.CaptureFixture[str]) -> None:
-    """Five cases, two repeats, a classifier and a scorer: the summary counts every cell and reads both."""
+    """Six cases, two repeats, a classifier and a scorer: the summary counts every cell and reads both."""
     summary = await _load(RUNG_ZERO).main()
     assert isinstance(summary, EvalSummary)
     assert summary.status == "completed"
     assert summary.candidate_model == "classify"
-    assert (summary.n_cases, summary.k_runs, summary.n_results, summary.n_scored) == (5, 2, 10, 10)
+    assert (summary.n_cases, summary.k_runs, summary.n_results, summary.n_scored) == (6, 2, 12, 12)
     assert summary.n_candidate_failed == summary.n_excluded == 0
     by_name = {measure.name: measure for measure in summary.measures}
-    # One case of five is misread ("Not bad at all." comes back neutral), and two of five are neutral.
-    assert by_name["match"].mean == pytest.approx(0.8)
-    assert by_name["decisive"].mean == pytest.approx(0.6)
-    assert by_name["match"].n == by_name["decisive"].n == by_name["confusion_cell"].n == 10
-    # The misread is one direction: a positive case read as neutral, never the reverse.
+    # Two cases of six are misread: "Not bad at all." comes back neutral, and the late-but-loved one negative.
+    assert by_name["match"].mean == pytest.approx(4 / 6)
+    # Only the second is a false alarm: a positive review labelled negative.
+    assert by_name["no_false_alarm"].mean == pytest.approx(5 / 6)
+    assert by_name["match"].n == by_name["no_false_alarm"].n == by_name["confusion_cell"].n == 12
     assert [(cell.expected, cell.predicted, cell.count) for cell in summary.confusion] == [
         ("negative", "negative", 4),
         ("neutral", "neutral", 2),
+        ("positive", "negative", 2),
         ("positive", "neutral", 2),
         ("positive", "positive", 2),
     ]
     labels = {statistics.label: statistics for statistics in summary.labels}
     assert sorted(labels) == ["negative", "neutral", "positive"]
     assert (labels["neutral"].precision, labels["neutral"].recall) == (0.5, 1.0)
-    assert (labels["positive"].precision, labels["positive"].recall) == (1.0, 0.5)
-    assert labels["neutral"].f1 == labels["positive"].f1 == pytest.approx(2 / 3)
-    assert labels["negative"].f1 == 1.0
+    assert labels["positive"].precision == 1.0 and labels["positive"].recall == pytest.approx(1 / 3)
+    assert labels["negative"].precision == pytest.approx(2 / 3) and labels["negative"].recall == 1.0
     assert summary.errors == []
     out = capsys.readouterr().out
     assert summary.render() in out
     assert "positive → neutral: 2" in out
     # k=2: the four neutral predictions are two cases, each answered twice, and the count says so.
     assert "neutral: precision 0.5 (2/4 over 2 cases, 95% CI" in out
+    # The misses are read back, each with every reason it missed: the false alarm misses twice over.
+    misses = summary.misses()
+    assert [(miss.case, miss.repeat) for miss in misses] == [("4", 1), ("4", 2), ("5", 1), ("5", 2)]
+    assert "'It arrived a day late, but I love it.', repeat 1: answered 'negative', expected 'positive'; " in out
+    assert "no_false_alarm gave 0" in out
 
 
 def test_the_example_stays_under_sixty_lines() -> None:
