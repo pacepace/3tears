@@ -3610,6 +3610,35 @@ class TestAFrontierKeepsItsAuthorsOneSentence:
         assert all(layer["encoding"]["shape"]["legend"] is None for layer in shaped)
 
 
+class TestAFrontierNamesEachQuantityOnce:
+    """Each quantity is named on its own axis and nowhere else in the figure (#668).
+
+    The figure title used to be `<quality> against <cost>`, so the quality label sat
+    in two stacked lines: the title, and the flat y-axis title directly beneath it.
+    """
+
+    @pytest.mark.parametrize(
+        ("cost_label", "quality_label"),
+        [("Cost / run ($)", "pass^k"), (None, None)],
+        ids=["labelled", "defaults"],
+    )
+    def test_the_title_restates_neither_quantity(self, cost_label, quality_label):
+        payload = FRONTIER | {"cost_label": cost_label, "quality_label": quality_label}
+        spec = compile_chart("frontier", payload).spec
+        cost, quality = cost_label or "Cost", quality_label or "Quality"
+        title = _title_text(spec).lower()
+        assert cost.lower() not in title and quality.lower() not in title, title
+        axis_titles = {
+            channel: {
+                layer["encoding"][channel]["axis"]["title"]
+                for layer in _mark_layers(spec)
+                if channel in layer.get("encoding", {}) and "axis" in layer["encoding"][channel]
+            }
+            for channel in ("x", "y")
+        }
+        assert axis_titles == {"x": {cost}, "y": {quality}}
+
+
 class TestFrontierDisclosesWhatItCouldNotDraw:
     def test_both_axes_crop_and_neither_restates_what_its_ticks_show(self):
         """Both axes ARE cropped — that half is unchanged and is asserted here.
