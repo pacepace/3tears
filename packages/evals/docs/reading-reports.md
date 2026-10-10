@@ -197,7 +197,7 @@ unit of analysis: a case's repeats are averaged first, because they are not inde
 | A guardrail | Non-inferiority: the 95% interval on arm − control against zero change less the margin. |
 | Scope divergence, mechanism checks | The difference tested directly, paired or Welch as for a contrast; a gap with no spread is read by an exact permutation test, which can reach 0.05 only from six shared cases, or unshared where 2 / C(n_a + n_b, n_a) ≤ 0.05 (four a side, or three against five). |
 | Frontier | Dominance by the contrasts' test, Holm across the subject's pairs; latency ranked on the mean; p95 median-unbiased (Hyndman–Fan type 8) from 13 observations; cost band a lognormal prediction band. |
-| Run history | Paired test per adjacent pair of runs, uncorrected; `equivalent` by TOST against the threshold. |
+| Run history | Paired test per adjacent pair of runs, uncorrected; `equivalent` by the same bounded TOST against the threshold, on the measure's declared range (with none, untested, and each step's flag says why). |
 | Judge agreement and evidence tiers | Cohen's κ, quadratic-weighted on 1–5; tiers decided on a score interval for κ (one-sided 95% lower bound to award, 97.5% upper bound to deny). |
 
 The [simulation suite](measuring-soundly.md) checks each method's error rate against a known truth.
