@@ -18,7 +18,6 @@ from pydantic import ValidationError
 
 from threetears.evals.analysis import reporting
 from threetears.evals.analysis.reporting import (
-    CASSETTE_SPAN_CLAUSE,
     METRIC_COMPOSITE,
     METRIC_COST_USD,
     METRIC_GOAL_STATE,
@@ -32,12 +31,12 @@ from threetears.evals.analysis.reporting import (
     LatencyPartition,
     ScoreProjection,
     ScoreRecord,
-    cassette_mode_disclosure,
     decompose_total_ms,
     dim_judge_model,
     place_results,
     project_score_records,
 )
+from threetears.evals.analysis.cassette_mode import CASSETTE_SPAN_CLAUSE, cassette_mode_disclosure
 from threetears.evals.analysis.lenses.aggregation import WEIGHTING_EQUAL_PER_SCENARIO, WEIGHTING_SAMPLE_WEIGHTED
 from threetears.evals.analysis.lenses.comparison_sets import (
     BADGE_CASE_SET_DIFFERS,

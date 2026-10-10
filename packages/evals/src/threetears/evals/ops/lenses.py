@@ -43,11 +43,8 @@ from threetears.evals.analysis.stats import (
     variance_components,
 )
 
-from threetears.evals.analysis.reporting import (
-    cassette_mode_disclosure,
-    measurement_window,
-    measurement_window_disclosure,
-)
+from threetears.evals.analysis.reporting import measurement_window, measurement_window_disclosure
+from threetears.evals.analysis.cassette_mode import cassette_mode_disclosure
 from threetears.evals.analysis.lenses.cost_estimate import COST_ESTIMATE_MIN_BASIS, compute_estimate_cost
 from threetears.evals.analysis.significance import format_significance
 from threetears.evals.analysis.completeness import completeness_disclosure

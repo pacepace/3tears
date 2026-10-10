@@ -55,7 +55,6 @@ from threetears.evals.kernel.scoring import (
 )
 from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.analysis.reporting import (
-    cassette_mode_disclosure,
     place_results,
     pooled_composite_basis,
     pooled_cost_compositions,
@@ -63,6 +62,7 @@ from threetears.evals.analysis.reporting import (
     ProjectionExclusions,
     ServedModelReading,
 )
+from threetears.evals.analysis.cassette_mode import cassette_mode_disclosure
 from threetears.evals.analysis.lenses.aggregation import _aggregate, WEIGHTING_EQUAL_PER_SCENARIO
 from threetears.evals.analysis.lenses.contestants import (
     _contestant_key,

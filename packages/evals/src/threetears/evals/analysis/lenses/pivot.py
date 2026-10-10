@@ -17,7 +17,6 @@ from threetears.evals.kernel.metrics import MetricDescriptor
 from threetears.evals.schema.models import SCALES
 from threetears.evals.kernel.scoring import CompositeBasis
 from threetears.evals.analysis.reporting import (
-    cassette_mode_disclosure,
     METRIC_COMPOSITE,
     METRIC_COST_USD,
     pooled_composite_basis,
@@ -28,8 +27,8 @@ from threetears.evals.analysis.reporting import (
     SCOPED_METRICS,
     ScoreRecord,
     ServedModelReading,
-    SUBSTITUTING_CASSETTE_MODE,
 )
+from threetears.evals.analysis.cassette_mode import cassette_mode_disclosure, SUBSTITUTING_CASSETTE_MODE
 from threetears.evals.analysis.lenses.aggregation import (
     _aggregate,
     _describe_aggregate,
