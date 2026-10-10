@@ -69,6 +69,11 @@ from threetears.evals.contracts.evidence_tiers import (
     JudgeEvidenceTier,
 )
 from threetears.evals.analysis.arms import arm_names, surface_order
+from threetears.evals.analysis.contention import (
+    contended_latency_sentence,
+    withheld_latency,
+    withhold_contended_latency,
+)
 from threetears.evals.analysis.cells import (
     CELL_MODEL_VERSION,
     ApparatusClass,
@@ -173,6 +178,7 @@ from threetears.evals.contracts.metrics import (
     goal_check_measure,
     Materiality,
     is_code_graded,
+    is_latency_measure,
     materiality,
     partition_components,
     remainder_withheld_reason,
@@ -2306,6 +2312,25 @@ class AnalysisContextBundle(EvalDocumentModel):
         description=(
             "The sentence to quote about `all_failed_cells` — that every result there failed, so there is no cost "
             "or latency to read. None when every cell delivered a result."
+        ),
+    )
+    latency_contended_cells: list[CellCoordinate] = Field(
+        default_factory=list,
+        description=(
+            "Every cell holding a result whose latency was read while other cells or runs executed beside it "
+            "(`execution_mode` `concurrent`: its launch did not declare latency under test, or another run "
+            "executed beside it), ordered by (variant_key, apparatus_class_id). That latency is left out of every "
+            "reading in this bundle — the cell measures, the contrasts and their Holm family, the bars, the "
+            "frontier's latency axis, the mechanism and scope lenses — so a cell's latency, where it has one, is "
+            "read only from its results measured serially. Every other measure of those results stands."
+        ),
+    )
+    latency_contended: str | None = Field(
+        default=None,
+        description=(
+            "The sentence to quote about `latency_contended_cells` — that latency read under concurrency is not "
+            "compared, and how much was left out. None when every latency the campaign holds was read serially, "
+            "or it holds none."
         ),
     )
     held_fixed_reading: HeldFixedReading = Field(
@@ -6956,6 +6981,18 @@ def assemble_context_bundle(
         results_by_run[run.id] = sorted(run_results, key=lambda r: r.id)
     # Before anything reads them: a classifier's failure is a miss in every rate, not absent from them all.
     results_by_run = _failures_as_misses(results_by_run)
+    # Before anything reads them either: latency read under concurrency is left out of every lens, never
+    # compared as if it were clean (#701). Which results lost it is kept for the one line that says so.
+    contended_ids = {
+        result.id
+        for result in withheld_latency(
+            (result for run_results in results_by_run.values() for result in run_results), profile.measures
+        )
+    }
+    results_by_run = {
+        run_id: withhold_contended_latency(run_results, profile.measures)
+        for run_id, run_results in results_by_run.items()
+    }
     results = [result for run in runs for result in results_by_run[run.id]]
 
     # ``archived_run_ids=None`` is true here, not a default: archived members were removed
@@ -7180,6 +7217,7 @@ def assemble_context_bundle(
     # carried here so that staying off it is not read as never having been measured.
     results_by_cell = _results_by_cell(cells, results)
     bundle.cost_unmeasured_cells, bundle.cost_unmeasured = _cost_unmeasured(results_by_cell)
+    bundle.latency_contended_cells, bundle.latency_contended = _latency_contended(results_by_cell, contended_ids)
     bundle.judged_measures = _judged_measures(
         projection.records, results_by_cell, campaign.declared_design, tiers=bundle.judge_evidence_tiers
     )
@@ -7251,6 +7289,9 @@ def assemble_context_bundle(
         observations=mechanisms,
         served=served,
         profile=profile,
+        contended={
+            key for key, members in results_by_cell.items() if any(result.id in contended_ids for result in members)
+        },
     )
     bundle.reading_scope = _reading_scope(campaign.declared_design, bundle.measure_catalog, bundle.judged_measures)
     # Divergences pair measures by unit, which only the catalog knows, so they are derived
@@ -7890,6 +7931,32 @@ def _cost_unmeasured(results_by_cell: dict[_CellKey, list[EvalResult]]) -> tuple
     return unmeasured, f"{sentence} {_HOW_TO_REPORT_SPEND}"
 
 
+def _latency_contended(
+    results_by_cell: dict[_CellKey, list[EvalResult]], contended_ids: Collection[str]
+) -> tuple[list[CellCoordinate], str | None]:
+    """Name every cell whose latency read under concurrency was left out, with the one sentence that says so.
+
+    Args:
+        results_by_cell: Each cell's results, from :func:`_results_by_cell`.
+        contended_ids: The results whose latency :func:`~threetears.evals.analysis.contention.withhold_contended_latency`
+            removed before anything read them.
+
+    Returns:
+        The cells in coordinate order, and the sentence — None when nothing was left out.
+    """
+    cells: list[CellCoordinate] = []
+    withheld = 0
+    total = 0
+    for (variant_key, apparatus_class_id), members in sorted(results_by_cell.items()):
+        total += len(members)
+        here = sum(1 for result in members if result.id in contended_ids)
+        if here:
+            withheld += here
+            cells.append(CellCoordinate(variant_key=variant_key, apparatus_class_id=apparatus_class_id))
+    where = "" if len(cells) == len(results_by_cell) else f" in {len(cells)} of {len(results_by_cell)} cells"
+    return cells, contended_latency_sentence(withheld, total, where=where)
+
+
 def _all_failed(cells: list[CellFacts]) -> tuple[list[CellCoordinate], str | None]:
     """Name every cell where no counted result took a turn, with the one sentence that says so.
 
@@ -8133,6 +8200,7 @@ def _compare(
     threshold: float | None,
     value_range: tuple[float, float] | None = None,
     no_turn: tuple[str, ...] = (),
+    contended: tuple[str, ...] = (),
 ) -> _Tested:
     """Test one contrast against the control on one reading, before correction.
 
@@ -8158,6 +8226,9 @@ def _compare(
             and which bound the interval on the delta; None where it declares none.
         no_turn: Which sides (``"control"``, ``"arm"``) have no turn to read a turn's time or spend over —
             every result there failed with no turn taken — so an untested comparison says that, the reason,
+            rather than that too few cases carried the reading.
+        contended: Which sides of a reading of elapsed time held latency read under concurrency, which the
+            bundle withheld (:mod:`~threetears.evals.analysis.contention`) — so an untested comparison says that,
             rather than that too few cases carried the reading.
 
     Returns:
@@ -8189,6 +8260,11 @@ def _compare(
             untested_reason = (
                 f"every result of the {' and the '.join(no_turn)} failed with no turn taken, so there is no "
                 "turn's time or spend to compare"
+            )
+        elif contended:
+            untested_reason = (
+                f"the {' and the '.join(contended)}'s latency was read while other cells or runs executed beside it, "
+                "so it is withheld and not compared (`latency_contended`)"
             )
         elif len(a) < 2 or len(b) < 2:
             untested_reason = "fewer than two cases carry this reading on a side"
@@ -8354,6 +8430,7 @@ def _multiple_comparisons(
     observations: _MechanismObservations,
     served: _ServedModels,
     profile: HostProfile,
+    contended: Collection[_CellKey] = frozenset(),
 ) -> tuple[MultipleComparisons, GuardrailReadings]:
     """Test each contrast against the control, per live question — or campaign-wide — and decide every guardrail.
 
@@ -8376,6 +8453,8 @@ def _multiple_comparisons(
         observations: The campaign's mechanism observations, read for each contrast between two models.
         served: Which model answered each result's candidate calls, read for every contrast.
         profile: The host whose vocabulary this reads.
+        contended: The cells holding latency read under concurrency, which the bundle withheld — named as the
+            reason a comparison or a guardrail on elapsed time could not be read, where it could not.
 
     Returns:
         One family per live question, in declaration order; one campaign-wide family over every reading when
@@ -8448,6 +8527,7 @@ def _multiple_comparisons(
                         and summary_population(catalog[reading[1]], "scored") == "delivered"
                         and _took_no_turn(results_by_cell[key])
                     ),
+                    contended=_contended_sides(reading, (control_key, contrast_key), catalog, contended),
                 )
                 confounds = pair_confounds[(control_key, contrast_key)]
                 tested.append(
@@ -8460,6 +8540,7 @@ def _multiple_comparisons(
             guardrail_readings[reading],
             (control_key, values[control_key].get(reading, {})),
             (contrast_key, values[contrast_key].get(reading, {})),
+            contended=_contended_sides(reading, (control_key, contrast_key), catalog, contended),
         )
         for reading in sorted(guardrail_readings)
         for control_key, contrast_key in sorted(pairs, key=lambda pair: (pair[0][1], pair[1][0]))
@@ -8531,11 +8612,28 @@ def _guardrail_readings(
     return readings
 
 
+def _contended_sides(
+    reading: tuple[ReadingKind, str],
+    pair: tuple[_CellKey, _CellKey],
+    catalog: Mapping[str, MetricDescriptor],
+    contended: Collection[_CellKey],
+) -> tuple[str, ...]:
+    """Which sides of a comparison on ``reading`` held latency read under concurrency: ``control``, ``arm``, both, none.
+
+    Only a reading of elapsed time can have lost anything to the withholding, so any other reading names none.
+    """
+    if reading[0] != "measure" or reading[1] not in catalog or not is_latency_measure(catalog[reading[1]]):
+        return ()
+    return tuple(side for side, key in zip(("control", "arm"), pair, strict=True) if key in contended)
+
+
 def _guardrail_check(
     reading: tuple[ReadingKind, str],
     guardrail: _Guardrail,
     control: tuple[_CellKey, dict[str, float]],
     contrast: tuple[_CellKey, dict[str, float]],
+    *,
+    contended: tuple[str, ...] = (),
 ) -> GuardrailCheck:
     """Decide one guardrail for one arm against the control under one rig (:func:`~threetears.evals.analysis.stats.guardrail_decision`).
 
@@ -8559,7 +8657,12 @@ def _guardrail_check(
     margin = guardrail.margin or 0.0
     reason = None
     if verdict.decision == "undecided":
-        if not b:
+        if contended and (len(a) < 2 or len(b) < 2):
+            reason = (
+                f"the {' and the '.join(contended)}'s latency was read while other cells or runs executed beside it, "
+                "so it is withheld and the guardrail could not be checked on it (`latency_contended`)"
+            )
+        elif not b:
             reason = "the arm carries no value of it, so it was not checked against the control"
         elif not a:
             reason = "the control carries no value of it, so the arm could not be checked against one"
