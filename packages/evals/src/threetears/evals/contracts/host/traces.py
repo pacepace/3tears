@@ -132,6 +132,11 @@ class TraceSink(Protocol):
     protects is made by the engine, which constructs one :class:`CellIdentity` per cell
     and hands the same object to both. The burden lands where there is one implementation
     rather than on every host.
+
+    **Cells of one run can execute at once** — a run whose launch did not declare latency under
+    test runs several, each in its own task — as cells of two runs always could. So a sink carries
+    the identity on the context (a ``ContextVar``), never in a "current cell" field of its own: two
+    scopes open at once must each see only their own work.
     """
 
     def cell_identity(self, cell: CellIdentity) -> AbstractContextManager[None]:

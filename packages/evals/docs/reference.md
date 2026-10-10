@@ -758,7 +758,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`load_seed_corpus`** · function · Read a corpus off disk, constructing each document through its model in `scope_id`.
   <br>`load_seed_corpus(seed_dir: Path, scope_id: str) -> SeedCorpus`
 - **`metered_cell_tally`** · function · One cell's slice of the run's metered-call tally, or `None` when nothing counted.
-  <br>`metered_cell_tally(ledger: MeteredCallLedger | None, baseline: MeteredCallTally | None) -> MeteredCallTally | None`
+  <br>`metered_cell_tally(ledger: MeteredCallLedger | None, baseline: MeteredCallTally | None = None) -> MeteredCallTally | None`
 - **`no_launcher_for`** · function · The refusal for a template whose kind this host cannot launch — one wording, wherever it fires.
   <br>`no_launcher_for(template_id: str, candidate_kind: str, launchable: Mapping[str, Any]) -> ValidationFailedError`
 - **`plan_judge`** · function · The judges one arm of `template` will be scored by, resolved as `build_judge_service` resolves them — building nothing.
@@ -803,7 +803,7 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`run_blocking(executor: Executor | None, fn: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -> T`
 - **`run_judge_llm`** · async function · Run an LLM judge call against a set of criteria and parse the response.
   <br>`run_judge_llm(client: Any, system_prompt: str, user_prompt: str, criteria_dicts: list[dict[str, Any]], label: str, case_id: str, *, cannot_tell_offered: bool = False, failure_describer: ProviderFailureDescriber | None = None) -> dict[str, Any] | None`
-- **`sample_concurrent_eval_jobs`** · function · Sample how many eval jobs are executing, keeping the busiest observation so far (R4).
+- **`sample_concurrent_eval_jobs`** · function · Sample how much eval work is executing beside this cell, keeping the busiest observation so far (R4).
   <br>`sample_concurrent_eval_jobs(options: RunnerOptions, previous: int | None = None) -> int | None`
 - **`seed_eval_definitions`** · function · Create any corpus definition whose natural key is absent from the corpus's scope.
   <br>`seed_eval_definitions(host: EvalHost, corpus: SeedCorpus, *, require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None]) -> SeedOutcome`
@@ -818,9 +818,9 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`stamp_witnessed_judge`** · function · A witnessed run that names the template its cells are judged against, the judge apparatus that scores them, and the ceiling it is held to.
   <br>`stamp_witnessed_judge(host: EvalHost, run: EvalRun, template: EvalTemplate, *, judge_model: str, judged_artifact: JudgedArtifact, selection: dict[str, str] | None = None, configured_max_cost_usd: float, enforcement_enabled: bool, max_cost_usd: float | None = None) -> EvalRun`
 - **`start_run`** · async function · Refuse what no kind can run, admit the launch, and dispatch each arm to its kind's launcher.
-  <br>`start_run(host: LaunchHost, *, template_id: str, subject_id: str, models: list[str], k_runs: int = 3, n_variations: int = 0, variation_model: str | None = None, judge_model: str | None = None, judge_config_ids: dict[str, str] | None = None, simulator_model: str | None = None, cassette_mode: str | None = 'off', cassette_corpus_id: str | None = None, overlays: Mapping[str, Any] | None = None, apparatus_settings: Mapping[str, Any] | None = None, max_cost_usd: float | None = None, max_metered_calls: int | None = None, scope_id: str, launch_group: LaunchGroup | None = None, admission: AdmissionTicket | None = None) -> list[EvalRun]`
+  <br>`start_run(host: LaunchHost, *, template_id: str, subject_id: str, models: list[str], k_runs: int = 3, n_variations: int = 0, variation_model: str | None = None, judge_model: str | None = None, judge_config_ids: dict[str, str] | None = None, simulator_model: str | None = None, cassette_mode: str | None = 'off', cassette_corpus_id: str | None = None, overlays: Mapping[str, Any] | None = None, apparatus_settings: Mapping[str, Any] | None = None, max_cost_usd: float | None = None, max_metered_calls: int | None = None, scope_id: str, launch_group: LaunchGroup | None = None, admission: AdmissionTicket | None = None, measure_latency: bool = False) -> list[EvalRun]`
 - **`start_universal_battery`** · async function · Launch the operator-curated boundary battery against one subject.
-  <br>`start_universal_battery(host: LaunchHost, subject_id: str, *, scope_id: str, models: list[str], k_runs: int = 3, n_variations: int = 0, variation_model: str | None = None, judge_model: str | None = None, simulator_model: str | None = None, cassette_mode: str | None = 'off', apparatus_settings: Mapping[str, Any] | None = None, max_cost_usd: float | None = None, preflight: BatteryPreflight) -> list[str]`
+  <br>`start_universal_battery(host: LaunchHost, subject_id: str, *, scope_id: str, models: list[str], k_runs: int = 3, n_variations: int = 0, variation_model: str | None = None, judge_model: str | None = None, simulator_model: str | None = None, cassette_mode: str | None = 'off', apparatus_settings: Mapping[str, Any] | None = None, max_cost_usd: float | None = None, preflight: BatteryPreflight, measure_latency: bool = False) -> list[str]`
 - **`sweep_abandoned_runs`** · function · Cancel runs this process cannot own, left non-terminal by a previous one.
   <br>`sweep_abandoned_runs(storage: RunRecordStore, scopes: Iterable[str], *, job_manager: EvalJobManager | None) -> AbandonedRunSweepReport`
 - **`update_judge_config`** · function · Re-author a judge config via archive-and-recreate (immutable versioning).
@@ -846,6 +846,8 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`CapBreach`** · dataclass · The numbers that justify a graceful budget stop.
 - **`CeilingRaisedError`** · exception · A launch named a per-run ceiling ABOVE the host's configured one.
 - **`CellContext`** · dataclass · What the runner knows about one cell when it asks a kind's factory for the cell's kind.
+- **`CellExecutor`** · protocol · Runs a run's cells, at most `width` at once, starting them in the order given.
+- **`CellMeter`** · class · One cell's own slice of its run's metered calls, counted as each call is admitted or refused.
 - **`CheckFlip`** · model · One goal check whose verdict a re-grade changes.
 - **`CurationStore`** · protocol · Everything the curation family reads, writes and destroys — and nothing else.
 - **`ErrorLedger`** · dataclass · Accumulates a cell's errors, categorized candidate-vs-infra at the source.
@@ -855,6 +857,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`EveryCellApparatusFailedError`** · exception · Raised by `execute_run` when an apparatus fault excluded every cell of the run.
 - **`FidelityContract`** · dataclass · One shared construction path and the callers required to reach it.
 - **`GoalCheckUnevaluable`** · exception · A goal check raised while being evaluated — a fault of the rig, not a verdict on the candidate.
+- **`InProcessCellExecutor`** · class · The default executor: `width` workers on this event loop, each taking the next cell in order.
 - **`JobTimeoutFactory`** · protocol · Builds the context manager a single job runs inside.
 - **`JudgeContext`** · dataclass · Everything a single-dim judge call needs about the result under review.
 - **`JudgeInputStore`** · protocol · The reads `reproducible_judge_inputs` makes, and no more.
@@ -899,6 +902,8 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`'admitted'` | `'refused'` | `'unpriced-under-chosen-cap'` | `'uncapped'`
 - **`BatteryPreflight`** · type alias · Prepares a battery's pre-flight for one subject and the battery's models, once, and returns the per-template check.
   <br>`Callable[[str, Sequence[str]], Awaitable[TemplatePreflight]]`
+- **`CellWork`** · type alias · One cell of a run, as the runner hands it to an executor: it runs the cell, records it and reports it.
+  <br>`Callable[[], Awaitable[None]]`
 - **`JudgeClientFactory`** · type alias · Builds a judge LLM client for a `(model, temperature)` pair.
   <br>`Callable[[str | None, float | None], Any]`
 - **`KindLauncher`** · type alias · One kind's launcher: builds that kind's collaborators for one arm and hands `launch_run` its run.
@@ -914,6 +919,8 @@ The engine's run package: launching and executing a run, judging it, metering it
 
 **Constants**
 
+- **`DEFAULT_MAX_CONCURRENT_CELLS`** · constant (int) · The width a run executes its cells at when latency is not under test and the host's settings name none: enough to turn hours of a slow candidate into a fraction of that, few enough that a provider's rate limit is not the first thing a default launch meets.
+  <br>`= 4`
 - **`JUDGE_CALL_ATTEMPTS`** · constant (int) · Calls one judge dimension can make: the first, plus its parse retries.
   <br>`= 2`
 - **`JUDGE_MAX_TOKENS`** · constant (int) · The eval judge's output cap: the reasoning budget plus the answer budget, DERIVED rather than chosen, so it always sits above the ceiling it wraps.
@@ -1429,11 +1436,11 @@ Batteries: run an eval in one call, and drive the engine from a command line.
 - **`callable_kind_contracts`** · function · The contracts of both callable kinds, declaring `levers` as each run's levels beside its model.
   <br>`callable_kind_contracts(levers: Sequence[str] = ()) -> tuple[KindContract, KindContract]`
 - **`compare`** · async function · Run each candidate over every case `k` times as one arm, test every arm against `control`, and report.
-  <br>`compare(cases: Sequence[Mapping[str, Any]], candidates: Mapping[str, Candidate | ToolUsingCandidate | WorldCandidate] | Mapping[tuple[str, ...], Candidate | ToolUsingCandidate | WorldCandidate], scorers: Sequence[Scorer] = (), *, control: ArmKey, scope_id: str, expected: ExpectedLabel | None = None, judge: Judge | None = None, intent: str | None = None, host: EvalHost | None = None, store: DocumentStore | None = None, k: int = 3, name: str | None = None, created_by: str = 'compare', factors: Sequence[str] | None = None, tools: Mapping[str, Tool] | None = None, cassette_mode: CassetteMode = 'off', cassette_corpus_id: str | None = None, world: World | None = None, seed: CaseSeed | None = None, goal_checks: Sequence[str] = (), max_cost_usd: float | None = None, margins: Mapping[str, float] | None = None, ranges: Mapping[str, tuple[float, float]] | None = None, guardrails: Mapping[str, Guardrail] | None = None) -> Comparison`
+  <br>`compare(cases: Sequence[Mapping[str, Any]], candidates: Mapping[str, Candidate | ToolUsingCandidate | WorldCandidate] | Mapping[tuple[str, ...], Candidate | ToolUsingCandidate | WorldCandidate], scorers: Sequence[Scorer] = (), *, control: ArmKey, scope_id: str, expected: ExpectedLabel | None = None, judge: Judge | None = None, intent: str | None = None, host: EvalHost | None = None, store: DocumentStore | None = None, k: int = 3, name: str | None = None, created_by: str = 'compare', factors: Sequence[str] | None = None, tools: Mapping[str, Tool] | None = None, cassette_mode: CassetteMode = 'off', cassette_corpus_id: str | None = None, world: World | None = None, seed: CaseSeed | None = None, goal_checks: Sequence[str] = (), max_cost_usd: float | None = None, margins: Mapping[str, float] | None = None, ranges: Mapping[str, tuple[float, float]] | None = None, guardrails: Mapping[str, Guardrail] | None = None, measure_latency: bool = False) -> Comparison`
 - **`run_cli`** · function · Parse `argv` and carry out the command, printing to stdout and refusals to stderr.
   <br>`run_cli(argv: Sequence[str] | None = None, *, host_factory: HostFactory | None = None, prog: str = 'python -m threetears.evals', commands: Sequence[HostCommand] = ()) -> int`
 - **`run_eval`** · async function · Run `candidate` on every case `k` times, grade each answer with every scorer and the judge, and summarise.
-  <br>`run_eval(cases: Sequence[Mapping[str, Any]], candidate: Candidate | ToolUsingCandidate | WorldCandidate, scorers: Sequence[Scorer] = (), *, scope_id: str, expected: ExpectedLabel | None = None, judge: Judge | None = None, intent: str | None = None, world: World | None = None, seed: CaseSeed | None = None, goal_checks: Sequence[str] = (), host: EvalHost | None = None, store: DocumentStore | None = None, k: int = 3, model: str | None = None, levers: Mapping[str, str] | None = None, tools: Mapping[str, Tool] | None = None, cassette_mode: CassetteMode = 'off', cassette_corpus_id: str | None = None, max_cost_usd: float | None = None) -> EvalSummary`
+  <br>`run_eval(cases: Sequence[Mapping[str, Any]], candidate: Candidate | ToolUsingCandidate | WorldCandidate, scorers: Sequence[Scorer] = (), *, scope_id: str, expected: ExpectedLabel | None = None, judge: Judge | None = None, intent: str | None = None, world: World | None = None, seed: CaseSeed | None = None, goal_checks: Sequence[str] = (), host: EvalHost | None = None, store: DocumentStore | None = None, k: int = 3, model: str | None = None, levers: Mapping[str, str] | None = None, tools: Mapping[str, Tool] | None = None, cassette_mode: CassetteMode = 'off', cassette_corpus_id: str | None = None, max_cost_usd: float | None = None, measure_latency: bool = False) -> EvalSummary`
 - **`summarize_run`** · function · Summarise one stored run and its results.
   <br>`summarize_run(host: EvalHost, run_id: str, scope_id: str, *, case_names: Mapping[str, str] | None = None) -> EvalSummary`
 
@@ -1798,6 +1805,7 @@ The host's launch settings, as one snapshot of values.
 | `max_launch_arms` | `int` | required | How many runs one launch may start together. A group starts every member at once in one job slot, so this is the concurrency one launch adds. |
 | `max_admitted_runs` | `int` | required | How many runs may be admitted and unfinished at once across every launch — the ceiling admission refuses past rather than queueing behind. |
 | `judge_concurrency` | `int` | required | How many judge calls one cell makes at once. |
+| `max_concurrent_cells` | `int` | `4` | How many of a run's cells execute at once when its launch does not declare latency under test (`measure_latency`). A launch that declares it runs its cells one at a time whatever this says. Defaults to `DEFAULT_MAX_CONCURRENT_CELLS`; `1` runs every run serially. |
 | `enforcement_enabled` | `bool` | required | Whether the cost and metered-call ceilings are enforced at all. |
 | `max_cost_usd` | `float` | required | The run cost ceiling a run inherits when its launch names none. |
 | `max_metered_calls` | `int \| None` | required | The metered-call ceiling a run inherits when its launch names none, or `None` for a host that declares it has NO metered tools: its runs record a ceiling of `0` (origin `none_declared`), a metered call on one is refused and counted, and a launch naming a ceiling is refused, since it would bound nothing. |
@@ -1963,6 +1971,8 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `cost_unmeasured` | `str \| None` | `None` | The sentence to quote about `cost_unmeasured_cells` — that cost was not measured there, and why a $0 would mean nothing. |
 | `all_failed_cells` | `list[CellCoordinate]` | `[]` | Every cell where no result the harness did not fault took a turn — the candidate's model refused or errored on every call — ordered by (variant_key, apparatus_class_id). |
 | `all_failed` | `str \| None` | `None` | The sentence to quote about `all_failed_cells` — that every result there failed, so there is no cost or latency to read. |
+| `latency_contended_cells` | `list[CellCoordinate]` | `[]` | Every cell holding a result whose latency was read while other cells or runs executed beside it (`execution_mode` `concurrent`: its launch did not declare latency under test, or another run executed beside it), ordered by (variant_key, apparatus_class_id). |
+| `latency_contended` | `str \| None` | `None` | The sentence to quote about `latency_contended_cells` — that latency read under concurrency is not compared, and how much was left out. |
 | `held_fixed_reading` | `HeldFixedReading` | `HeldFixedReading(declared_stimulus=None, stimulus_reason='', declared_apparatus=None, run_provenance={}, contradicting_run_ids=[], disclosure=None)` | What the campaign declared held fixed beside the provenance every resolved run recorded, compared value for value, with the sentence to quote when they disagree, when runs mix commissioned and witnessed apparatus with nothing declared, or when the stimulus was declared uncontrolled. |
 | `judge_agreement` | `JudgeAgreement` | `JudgeAgreement(ratings_read=0, dimensions=[], unpaired=[])` | How the judge's scores agreed with people's calibration ratings of the same results, per judged dimension, judge model and judge config: n, distinct results, exact agreement, Cohen's kappa and, on 1-5 dimensions, quadratic-weighted kappa, each pooled over people by result — over every resolved member run's results. |
 | `judge_self_agreement` | `JudgeSelfAgreement` | `JudgeSelfAgreement(repeats_read=0, dimensions=[], unpaired=[])` | How the judge's repeated scores agreed with its own first scores of the same evidence, per judged dimension, judge model and judge config, read exactly as `judge_agreement` is (n, distinct results, exact agreement, kappa, weighted kappa, a "can't tell" repeat counted as a disagreement) — over every resolved member run's results. |
@@ -2204,8 +2214,8 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 
 | Action | Class | Parameters | Description |
 |---|---|---|---|
-| `run_launch` | `spend`, job | `template_id`, `subject_id`, `models?`, `k_runs?`, `n_variations?`, `variation_model?`, `overlays?`, `apparatus_settings?`, `max_cost_usd?`, `judge_model?`, `simulator_model?` | Launch a template's runs, one per model, each as a job to poll. |
-| `launch_estimate` | `read` | `template_id`, `subject_id`, `models?`, `k_runs?`, `n_variations?`, `variation_model?`, `overlays?`, `apparatus_settings?`, `max_cost_usd?`, `judge_model?`, `simulator_model?`, `n_test_cases?` | Estimate what a run_launch would cost, from what the scope's runs have spent. |
+| `run_launch` | `spend`, job | `template_id`, `subject_id`, `models?`, `k_runs?`, `n_variations?`, `variation_model?`, `overlays?`, `apparatus_settings?`, `max_cost_usd?`, `judge_model?`, `simulator_model?`, `measure_latency?` | Launch a template's runs, one per model, each as a job to poll. |
+| `launch_estimate` | `read` | `template_id`, `subject_id`, `models?`, `k_runs?`, `n_variations?`, `variation_model?`, `overlays?`, `apparatus_settings?`, `max_cost_usd?`, `judge_model?`, `simulator_model?`, `measure_latency?`, `n_test_cases?` | Estimate what a run_launch would cost, from what the scope's runs have spent. |
 | `job_poll` | `read` | `job_id` | Read where a job stands — a launched run or an analysis generation. |
 | `job_cancel` | `write` | `job_id`, `reason?` | Ask a running job to stop; poll to see it land as cancelled. |
 | `run_get` | `read` | `run_id` | Summarise one run: how it ended, how its results came out, each measure's mean. |
@@ -2272,6 +2282,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `launched_run_ids` | array of `string` or `null` | The runs the estimated launch made (the run ids its jobs name), with predicted_cost: each predicted cell then says how many of its observations came from other runs. |
 | `limit` | `integer` | The most rows to return, up to 200. |
 | `max_cost_usd` | `number` or `null` | A per-run cost cap in dollars, at or below the host's ceiling; it can only lower that ceiling, and a value above it is refused. |
+| `measure_latency` | `boolean` | Declare latency under test: each run executes its cases one at a time, with no other run beside it. False runs several cases at once — far faster — and the latency then recorded is marked read under concurrency and never compared. |
 | `metric` | `string` or `null` | The measure to read; omitted reads the composite score. |
 | `min_absolute_change` | `number` | The smallest move a regression flag counts, in the measure's unit; 0 lets the test decide. |
 | `min_relative_change` | `number` | The smallest move from the baseline a flag counts, as a fraction; 0 lets the test decide. |
@@ -2325,6 +2336,7 @@ usage: python -m threetears.evals run [-h] --host MODULE:FACTORY --scope SCOPE -
                                       [--max-cost-usd DOLLARS] [--judge-model MODEL]
                                       [--simulator-model MODEL] [--n-variations N]
                                       [--variation-model MODEL] [--apparatus-settings JSON]
+                                      [--measure-latency]
 
 Launch a template's runs, wait for them, and print each run's summary.
 
@@ -2355,6 +2367,8 @@ options:
                         host-declared apparatus values to set the runs' rig up with, as a JSON
                         object keyed by apparatus dimension, e.g. '{"adjudicator_seat":
                         "model:m"}' (as run_launch's apparatus_settings)
+  --measure-latency     latency is under test: run each run's cells one at a time (as run_launch's
+                        measure_latency)
 ```
 
 ### `ls`
@@ -2461,7 +2475,7 @@ The engine's own measures (`METRIC_DESCRIPTORS`), grouped by family in the order
 | `refused_tool_attaches` | — | — | requests | How many times the candidate asked to attach a tool outside the run's tools_allowed and the harness refused. |
 | `truncated_rounds` | lower | — | rounds | How many of the candidate's LLM rounds the provider cut off at its output cap (its output reached the cap, or the provider reported finish_reason=length) — the turn's silence or half-answer is the cap's, not the model's decision, so every quality measure on the cell is confounded by it; a reasoning model that spends the cap thinking shows here with reasoning_ratio near 1. |
 | `turns_ended_by_budget` | lower | — | turns | How many of the candidate's turns outlived the host's per-turn budget — the bound the host runs every turn under in production — and were ended by it. |
-| `execution_mode` | — | — | — | Whether the observation was made while other eval jobs were executing — a condition, not a result. |
+| `execution_mode` | — | — | — | Whether the observation was made while other eval work was executing — another run holding a concurrency slot (never one queued for it), or other cells of its own run, which executes its cells concurrently when its launch did not declare latency under test. |
 | `n_results` | — | — | results | How many results the group aggregates — the denominator behind its means. |
 | `n_total_ms` | — | — | results | How many results contributed a measured total_ms — the denominator behind mean/median/p95/max total_ms, which can be smaller than n_results because latency components are nulled independently. |
 | `n_llm_ms` | — | — | results | How many results contributed a measured llm_ms — the denominator behind mean_llm_ms. |
