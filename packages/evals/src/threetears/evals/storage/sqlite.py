@@ -299,7 +299,7 @@ class SqliteDocumentStore:
         """
         scope_id, doc_id = document["scope_id"], document["id"]
         body = json.dumps(document)
-        etag = uuid.uuid4().hex
+        etag = uuid.uuid7().hex
         with self._lock:
             if if_match is not None:
                 written = self._db.execute(
@@ -350,7 +350,7 @@ class SqliteDocumentStore:
                 document.update(fields)
                 self._db.execute(
                     "UPDATE documents SET etag = ?, body = ? WHERE scope_id = ? AND id = ?",
-                    (uuid.uuid4().hex, json.dumps(document), scope_id, doc_id),
+                    (uuid.uuid7().hex, json.dumps(document), scope_id, doc_id),
                 )
                 self._db.execute("COMMIT")
             except BaseException:
