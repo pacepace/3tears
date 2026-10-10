@@ -21,6 +21,8 @@ import statistics
 
 from pydantic import Field
 
+from threetears.evals.analysis.numbers import format_number
+from threetears.evals.analysis.summary import dollars_text
 from threetears.evals.analysis.agreement import JudgeSelfAgreement, self_agreement_of_repeats
 from threetears.evals.kernel.judge_temperature import (
     TEMPERATURE_SETTINGS,
@@ -144,13 +146,13 @@ class JudgeTemperatureComparison(EvalBaseModel):
 
     def render(self) -> str:
         """The comparison as text: what was asked and spent, then each dimension's two settings side by side."""
-        cost = "unpriced" if self.cost_usd is None else f"${self.cost_usd:.4f}"
+        cost = "unpriced" if self.cost_usd is None else dollars_text(self.cost_usd)
         requested = {read.setting: read for read in self.settings}
         pinned = requested["pinned"].requested
         lines = [
             f"judge temperature comparison on run {self.run_id} (judge {self.judge_model}): {self.cases} "
             f"{self.selection} case(s) over {self.results} result(s), {self.repeats} repeat(s) at temperature "
-            f"{pinned:g} and at the provider default; {self.calls_made} call(s), {cost} — measurement cost, "
+            f"{format_number(pinned)} and at the provider default; {self.calls_made} call(s), {cost} — measurement cost, "
             "ledgered under judge, never the candidate's",
         ]
         if not self.comparable:
@@ -165,14 +167,9 @@ class JudgeTemperatureComparison(EvalBaseModel):
         )
         for row in self.dimensions:
             lines.append(f"- {row.rubric_dim} ({row.scale})")
-            lines.append(f"    temperature {pinned:g}:      {_side_text(row.pinned)}")
+            lines.append(f"    temperature {format_number(pinned)}:      {_side_text(row.pinned)}")
             lines.append(f"    provider default:   {_side_text(row.provider_default)}")
         return "\n".join(lines)
-
-
-def _figure(value: float | None, spec: str = ".3g") -> str:
-    """A figure, or ``n/a`` where there is none."""
-    return "n/a" if value is None else format(value, spec)
 
 
 def _side_text(side: TemperatureSide) -> str:
@@ -180,8 +177,8 @@ def _side_text(side: TemperatureSide) -> str:
     agreement = "n/a" if side.exact_agreement is None else f"{side.exact_agreement:.0%}"
     kappa = side.weighted_kappa if side.weighted_kappa is not None else side.kappa
     return (
-        f"{side.cases} case(s), variance {_figure(side.mean_variance)} / {_figure(side.max_variance)}, "
-        f"{side.unstable_cases} unstable, exact agreement {agreement}, kappa {_figure(kappa)}"
+        f"{side.cases} case(s), variance {format_number(side.mean_variance)} / {format_number(side.max_variance)}, "
+        f"{side.unstable_cases} unstable, exact agreement {agreement}, kappa {format_number(kappa)}"
     )
 
 
@@ -189,7 +186,7 @@ def _recorded_text(temperature: JudgeTemperature | None) -> str:
     """A recorded temperature as the report spells it."""
     if temperature is None:
         return "unrecorded"
-    return temperature if isinstance(temperature, str) else f"{temperature:g}"
+    return temperature if isinstance(temperature, str) else format_number(temperature)
 
 
 def _case(answered: TemperatureCaseAnswers, expected: JudgeTemperature) -> tuple[TemperatureCase, set[str]]:
