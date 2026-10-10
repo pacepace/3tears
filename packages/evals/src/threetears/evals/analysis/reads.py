@@ -20,9 +20,13 @@ load-or-refuse-a-missing-id: a template (``load_template``, whose load also refu
 presuming world state the host no longer declares) and a run read the way a listing reads it
 (``load_run_listed``, which leaves out the payload paths the host's listing elides — the run
 package's rule). What a host adds to an answer arrives as a callable too: per-group columns on a run
-summary (:data:`RowColumns`), keys about a set of compared runs (:data:`ComparisonColumns`), a run's
-subject detail for the config diff, and how many cases a launch of a template would run, which
-depends on where the host's kinds take their cases from.
+summary (:data:`RowColumns`), a run's subject detail for the config diff, and how many cases a launch
+of a template would run, which depends on where the host's kinds take their cases from.
+
+**Two runs are compared by :func:`compare_two_runs`**, which the ``runs_compare`` operation exposes with
+the completeness, clock and cassette disclosures every comparison carries.
+:func:`bisect_runs` (which versioned inputs differ between two runs) is internal: the bundle's confound
+scan and ``runs_compare``'s disclosures answer its question on the public surface, and nothing exposes it.
 
 The scope a run lives in is ``scope_id`` here — the engine's word for a partition it never
 interprets. The host chooses what a scope is and passes it through.
@@ -47,7 +51,6 @@ from threetears.evals.analysis.reporting import (
     PivotError,
     PivotTable,
     ScoreExport,
-    cassette_mode_disclosure,
     completeness_disclosure,
     compute_comparison_sets,
     compute_frontier,
@@ -56,23 +59,24 @@ from threetears.evals.analysis.reporting import (
     compute_pivot,
     compute_program_budget,
     cross_subject_disclosure,
-    measurement_window,
-    measurement_window_disclosure,
     export_projection,
     normalize_bar,
+    pooled_composite_basis,
     project_score_records,
 )
-from threetears.evals.analysis.stats import composite_significance
+from threetears.evals.analysis.stats import INTERVAL_LEVEL, composite_significance, difference_interval
 from threetears.evals.contracts.arguments import normalize_blank
 from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
 from threetears.evals.contracts.host.profile import HostProfile
 from threetears.evals.contracts.scoring import (
     compute_composite_summary,
+    compute_async_delivery_summary,
     compute_cost_summary,
     compute_dimension_summary,
     compute_latency_summary,
-    compute_pass_k,
+    compute_pass_hat_k,
     compute_per_case_composites,
+    pass_hat_k_at,
 )
 from threetears.evals.contracts.status_filter import StatusFilterError, normalize_status_filter
 from threetears.observe import get_logger
@@ -95,10 +99,6 @@ RunLister = Callable[..., "list[EvalRun]"]
 #: The host's own columns for each ``(model, run_id)`` group of a run's results, laid over a
 #: :func:`run_summary` row after the engine's aggregates. A group the host has nothing for is absent.
 RowColumns = Callable[["list[EvalResult]"], Mapping[tuple[str, str], Mapping[str, Any]]]
-
-#: The host's own keys about a set of compared runs, placed in :func:`compare_runs`'s answer after
-#: ``completeness_disclosures``. Called once, with the runs in the order they were asked for.
-ComparisonColumns = Callable[["list[EvalRun]"], Mapping[str, Any]]
 
 #: What a bisection reports for an input the OTHER run carried and this one did not — an
 #: open family's members are whatever a given run overlaid, so the two runs' name sets are
@@ -735,7 +735,7 @@ def export_results(
 
     all_runs, cohort, archived_run_ids = _corpus_and_cohort(list_runs, scope_id)
     # An explicitly named id is selected from the CORPUS, not the cohort: naming a run
-    # is deliberate, and every other by-id surface (get_run, run_summary, compare_runs,
+    # is deliberate, and every other by-id surface (get_run, run_summary, compare_two_runs,
     # bisect_runs) reads an archived run regardless. Narrowing through the cohort here
     # would answer a run the caller asked for by name with an empty CSV — and CSV
     # carries no exclusion channel to say why. The archive filter still applies to the
@@ -786,14 +786,16 @@ def run_summary(
     *,
     load_run_listed: Callable[[str, str], EvalRun],
     row_columns: RowColumns,
+    profile: HostProfile,
     rubric_threshold: int = 3,
 ) -> dict[str, Any]:
     """Compose a run's verdict numbers — pass^k, latency, cost — per model.
 
     Loads the run (404 if missing) plus its results, then composes the
-    three query-time aggregators
-    (:func:`~threetears.evals.contracts.scoring.compute_pass_k`,
+    query-time aggregators
+    (:func:`~threetears.evals.contracts.scoring.compute_pass_hat_k`,
     :func:`~threetears.evals.contracts.scoring.compute_latency_summary`,
+    :func:`~threetears.evals.contracts.scoring.compute_async_delivery_summary`,
     :func:`~threetears.evals.contracts.scoring.compute_cost_summary`) into one
     JSON-serializable structure. The aggregators key on the
     ``(model, eval_run_id)`` tuple, which is not JSON-safe — so the
@@ -810,32 +812,34 @@ def run_summary(
         load_run_listed: Loads one run the way a listing does (its scalars, not its host
             payload), raising ``NotFoundError`` for an unknown id.
         row_columns: The host's per-group columns (:data:`RowColumns`).
+        profile: The host whose sweepable declarations say which inputs the run moved off the
+            subject's production configuration — the disclosure every prod-cost row carries.
         rubric_threshold: Minimum rubric score counted as a pass (default 3).
 
     Returns:
         ``{"run_id", "status", "candidate_kind", "candidate_model", "k_runs", "rubric_threshold",
-        "rows": [{"model", "run_id", "pass_at_k", "n_test_cases", "k",
-        "fully_passing_cases", "scored_iterations_min",
-        "scored_iterations_max", "n_cannot_tell_excluded", "mean_total_ms", "median_total_ms",
-        "p95_total_ms", "mean_llm_ms", "mean_tool_ms", "n_total_ms",
+        "rows": [{"model", "run_id", "pass_hat_k", "k", "n_cases_at_k", "pass_hat_k_curve",
+        "n_test_cases", "n_cannot_tell_excluded", "mean_total_ms", "median_total_ms",
+        "p95_total_ms", "max_total_ms", "mean_llm_ms", "mean_tool_ms", "n_total_ms",
         "n_llm_ms", "n_tool_ms", "total_cost_usd",
         "mean_cost_usd", "n_cost_usd", "total_prod_cost_usd",
         "mean_prod_cost_usd",
-        "n_prod_cost_usd", "n_results", ...host columns}, ...],
+        "n_prod_cost_usd", "prod_cost_footing", "n_results", "async_deliveries", "async_deliveries_substituted",
+        "async_delivery_mean_elapsed_ms", "async_delivery_median_elapsed_ms",
+        "async_delivery_p95_elapsed_ms", "async_delivery_elapsed_n", ...host columns}, ...],
         "dimension_rows": [{"model", "run_id", "dim", "mean_score",
         "min_score", "max_score", "n"}, ...]}``.
         Each row's engine keys are the ones named above; the host's ``row_columns`` for the
         row's group are merged over them last, so a host passing none adds none; which keys a
         host adds, and when each is absent, is that host's to document.
-        ``scored_iterations_min`` / ``scored_iterations_max`` are the fewest
-        and the most scored iterations any counted case contributed — the
-        depths ``pass_at_k`` was computed over, and the pair to read before
-        comparing two rows' pass^k. They are equal exactly when every case was
-        measured to the same depth; a partial run leaves an arbitrary subset
-        of the matrix rather than a k-ordered prefix, so its pass^k is a
-        mixture that flatters the cases measured shallowly. Both are distinct
-        from ``k``, which is the deepest iteration *attempted* and counts
-        cells excluded as harness failures. Latency keys are absent on
+        ``pass_hat_k`` is pass^k — the chance that ``k`` attempts at a case all
+        pass, estimated without bias per case and averaged over the
+        ``n_cases_at_k`` cases scored at least ``k`` times
+        (:func:`~threetears.evals.contracts.scoring.compute_pass_hat_k`); ``k`` is
+        the deepest iteration *attempted*. ``pass_hat_k_curve`` is every depth
+        from 1 to the deepest scored case, each point with its own case count,
+        so two rows at different ``k`` are compared at a depth both reached
+        rather than headline against headline. Latency keys are absent on
         rows whose group had no measured latency, and absent individually
         when only that component went unmeasured — each mean travels with
         its own denominator (``n_total_ms`` / ``n_llm_ms`` / ``n_tool_ms``),
@@ -850,7 +854,19 @@ def run_summary(
         measured a production-replicating cost, and ``n_prod_cost_usd`` is
         the denominator ``mean_prod_cost_usd`` was computed over — a result
         that observed no production-role cost is omitted from it rather than
-        counted as a zero. ``completeness`` and ``completeness_disclosure``
+        counted as a zero, and so is one that took no turn: a result the harness
+        faulted, or a call the model refused straight away. The program-cost pair
+        keeps both, because those dollars were spent. ``prod_cost_footing`` travels with the
+        prod-cost keys and is absent with them: which inputs the run held away from the subject's
+        production configuration (``moved``), which could not be checked (``unchecked``), which held
+        (``held``), ``moved_nothing`` and the ``sentence`` to print beside the figure — read off the host's
+        declarations (:meth:`~threetears.evals.contracts.host.sweepables.SweepableRegistry.production_footing`),
+        since the figure is what production spends only for a run that moved nothing (#571). The six
+        async-delivery keys are the engine's rollup of each result's ``async_deliveries``
+        (:func:`~threetears.evals.contracts.scoring.compute_async_delivery_summary`): absent together on a
+        group none of whose results watched for background work, the durations absent when no real
+        delivery measured one, and the 95th percentile absent below 13 durations.
+        ``completeness`` and ``completeness_disclosure``
         are both null when the run carries no completeness record (it has not
         reached a terminal state), and the disclosure alone is null when the
         run delivered its whole matrix — it is the sentence to render when a
@@ -865,9 +881,19 @@ def run_summary(
     run = load_run_listed(run_id, scope_id)
     results = storage.query_eval_results_by_run(run_id, scope_id)
 
-    pass_k = compute_pass_k(results, rubric_threshold=rubric_threshold)
+    pass_hat = compute_pass_hat_k(results, rubric_threshold=rubric_threshold)
     latency = compute_latency_summary(results)
+    deliveries = compute_async_delivery_summary(results)
     cost = compute_cost_summary(results)
+    # Read off the WHOLE run: the listed copy elides host payload, and a payload-carried lever read
+    # off it would report as the subject's own setting.
+    whole = run if not run.elided_payload_paths else storage.load_eval_run(run_id, scope_id)
+    footing = profile.sweepables.production_footing(whole, results) if whole is not None else None
+    footing_disclosure = (
+        {**footing.model_dump(), "moved_nothing": footing.moved_nothing, "sentence": footing.sentence()}
+        if footing is not None
+        else None
+    )
     dimensions = compute_dimension_summary(results)
     host_columns = row_columns(results)
 
@@ -878,14 +904,17 @@ def run_summary(
     for key in sorted(cost.keys()):
         model, group_run_id = key
         row: dict[str, Any] = {"model": model, "run_id": group_run_id}
-        row.update(pass_k.get(key, {}))
+        row.update(pass_hat.get(key, {}))
         if key in latency:
             row.update(latency[key])
+        row.update(deliveries.get(key, {}))
         # Cost lands after latency deliberately: both emit `n_results`, and
         # cost's is the one that means "results in this group". Latency's
         # per-component denominators travel as n_total_ms / n_llm_ms /
         # n_tool_ms precisely so this overwrite costs no information.
         row.update(cost[key])
+        if "mean_prod_cost_usd" in row:
+            row["prod_cost_footing"] = footing_disclosure
         row.update(host_columns.get(key, {}))
         rows.append(row)
 
@@ -926,224 +955,6 @@ def run_summary(
         "completeness_disclosure": completeness_disclosure(run.completeness),
         "rows": rows,
         "dimension_rows": dimension_rows,
-    }
-
-
-def compare_runs(
-    storage: LensStore,
-    run_ids: list[str],
-    scope_id: str,
-    *,
-    load_run_listed: Callable[[str, str], EvalRun],
-    row_columns: RowColumns,
-    comparison_columns: ComparisonColumns,
-    rubric_threshold: int = 3,
-    full_windows: bool = False,
-    profile: HostProfile,
-) -> dict[str, Any]:
-    """Compose several runs into a side-by-side per-``(run, model)`` comparison.
-
-    Each run's :func:`run_summary` rows are flattened into one comparison
-    row per ``(run_id, model)`` slice, carrying the frontier numbers the
-    Phase-3 verdict consumes (pass^k, latency, cost). When every supplied
-    run shares a ``template_id``, the comparison is reported against the
-    intersection of their frozen ``test_case_ids`` (the same-denominator
-    property that makes run-vs-run subtraction honest); otherwise the runs
-    are independent and no shared test-case set is reported.
-
-    **A time confound is disclosed, never corrected — and only as far as it was
-    observed.** The condition is EXISTENTIAL: ``measurement_window_disclosure``
-    appears as soon as *any pair* of the compared runs occupied non-overlapping
-    spans of wall-clock time, which on a four-arm sweep is routinely three pairs
-    of six while the other three overlap. So it states the quantifier it can
-    defend — the universal sentence only when every pair really is disjoint,
-    otherwise a count of how many of the pairs were, with the remainder named as
-    overlapping — and it names each disjoint pair with the gap between them,
-    widest first. No number in ``rows`` is
-    adjusted, no threshold decides how far apart is too far, and nothing here
-    assigns a severity — how much a gap matters depends on what else moved in
-    it, which this method cannot see and the operator can. The spans come from
-    the results' ``scored_at``, for the reason
-    :class:`~threetears.evals.analysis.reporting.MeasurementWindow` records: a run is
-    stamped ``created_at`` when it is *enqueued*, so arms enqueued seconds
-    apart and executed hours apart can never read as disjoint on that basis.
-
-    Args:
-        storage: Where the runs and their results are read (:class:`LensStore`).
-        run_ids: At least two run ids to compare, all in ``scope_id``.
-        scope_id: Partition key — the scope the runs live in.
-        load_run_listed: Loads one run the way a listing does, for :func:`run_summary`.
-        row_columns: The host's per-group columns, for :func:`run_summary`.
-        comparison_columns: The host's per-comparison keys (:data:`ComparisonColumns`), placed
-            after ``completeness_disclosures``.
-        rubric_threshold: Minimum rubric score counted as a pass (default 3).
-        full_windows: List every measurement span rather than summarising above
-            :data:`~threetears.evals.analysis.reporting.MAX_INLINE_MEASUREMENT_WINDOWS`. A
-            pairwise comparison is under the threshold and unaffected; this exists
-            for the multi-run compare, where the summary would otherwise be the
-            only form available.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        ``{"run_ids", "rubric_threshold", "comparison_basis",
-        "shared_test_case_ids", "measurement_window_disclosure",
-        "rows": [{"run_id", "model", "pass_at_k",
-        "scored_iterations_min", "scored_iterations_max",
-        "mean_total_ms", "total_cost_usd", "mean_cost_usd", "n_cost_usd",
-        "total_prod_cost_usd", "mean_prod_cost_usd", "n_prod_cost_usd",
-        "n_results"},
-        ...]}``. The program-cost pair is ``None`` for a row whose group had no
-        priced result, and ``n_cost_usd`` is its denominator. The prod-cost trio is ``None`` for a row whose group
-        measured no production-replicating cost, and ``n_prod_cost_usd`` is
-        ``mean_prod_cost_usd``'s denominator — compare two rows' prod cost
-        only after reading it. The scored-iteration pair is the depth
-        ``pass_at_k`` was computed over; read it before comparing two rows'
-        pass^k, since a partial run leaves its cases at uneven depths and a
-        case measured once clears "passed every attempt" more easily than one
-        measured three times. ``comparison_basis`` is
-        ``"shared-template-intersection"``
-        when all runs share a template, else ``"independent"`` (and
-        ``shared_test_case_ids`` is empty). ``measurement_window_disclosure``
-        is ``None`` when EVERY pair of the runs' measurement spans overlaps, or
-        when fewer than two of them produced a result to derive a span from;
-        present as soon as one pair does not, saying how many pairs that was.
-        ``cassette_mode_disclosure`` is the sentence naming what each run
-        RECORDED as its cassette mode, present only when they did not all
-        record one — a replayed arm re-served a recording rather than
-        measuring the third party, which confounds this comparison's quality
-        as well as its cost. ``None`` when every run recorded the same mode,
-        two replayed arms included: the substitution is then on both sides and
-        the delta between them is honest.
-        ``completeness_disclosures`` maps run id → the DEGRADED sentence for
-        each run that delivered less than its matrix, and is EMPTY when every
-        run is whole — this is the surface that sentence is written for, since
-        "reading it beside a complete run compares two different populations"
-        is a claim about a comparison. A run absent from the map is not
-        asserted complete: one with no completeness record has nothing to
-        disclose either way.
-        The host's ``comparison_columns`` follow, keys the host documents.
-        ``judge_roles_by_run`` maps run id -> that run's
-        :meth:`~threetears.evals.contracts.host.sweepables.SweepableRegistry.read_role_pins` values: the judge
-        pin, which dims departed from it, the versioned judge configs that
-        scored the results, and the simulator pin. Read through the same
-        declared readers ``bisect_runs`` uses, so the two surfaces cannot
-        answer differently about one pair. EVERY compared run appears,
-        including one that recorded nothing -- a caller deciding whether the
-        arms were judged alike must be able to see that an arm cannot say,
-        which is a third answer rather than silence. Nothing here is
-        collapsed: whether a difference is worth a caveat is the renderer's
-        call, made with
-        :meth:`~threetears.evals.contracts.host.sweepables.SweepableRegistry.comparability`.
-        ``levers_by_run`` maps run id -> that run's levers as the host's registry resolves them
-        (:meth:`~threetears.evals.contracts.host.sweepables.SweepableRegistry.resolve_levers`): every fixed
-        lever and every open-family member the run carried, a kind's overlays among them. JSON-safe.
-
-    Raises:
-        ValidationFailedError: Fewer than two run ids supplied.
-        NotFoundError: Any run id is missing in the scope.
-    """
-    if not run_ids or len(run_ids) < 2:
-        raise ValidationFailedError("compare_runs needs at least 2 run ids")
-
-    # Load runs first (NotFound propagates) so the shared-template basis
-    # is decided before the heavier per-run summary composition.
-    runs = [_load_run(storage, run_id, scope_id) for run_id in run_ids]
-
-    template_ids = {run.template_id for run in runs}
-    all_share_template = len(template_ids) == 1 and None not in template_ids
-    if all_share_template:
-        comparison_basis = "shared-template-intersection"
-        shared_test_case_ids = sorted(set.intersection(*(set(run.test_case_ids) for run in runs)))
-    else:
-        comparison_basis = "independent"
-        shared_test_case_ids = []
-
-    # Windows come from the results, one read per run. Only the runs that
-    # RESOLVED a span contribute: a run that produced nothing cannot say when
-    # it was measured, and letting that absence count would report a
-    # difference on the strength of what one run could not say.
-    # One read per run, held rather than consumed in place: the measurement windows and
-    # the role disclosure below are both derived from these results, and reading them
-    # twice would let the two disclosures above one table describe different result sets.
-    results_by_run = {run.id: storage.query_eval_results_by_run(run.id, scope_id) for run in runs}
-    windows = [window for run in runs if (window := measurement_window(run.id, results_by_run[run.id])) is not None]
-    window_disclosure = measurement_window_disclosure(windows, full=full_windows)
-
-    rows: list[dict[str, Any]] = []
-    # Keyed by run rather than repeated per row: the shortfall is a property of
-    # the run, and copying it onto each of that run's model rows invites a
-    # reader to count it once per model. Only short runs appear, so an empty
-    # map is the ordinary case rather than a wall of "this one is fine".
-    completeness_disclosures: dict[str, str] = {}
-    for run_id in run_ids:
-        summary = run_summary(
-            storage,
-            run_id,
-            scope_id,
-            load_run_listed=load_run_listed,
-            row_columns=row_columns,
-            rubric_threshold=rubric_threshold,
-        )
-        if summary.get("completeness_disclosure"):
-            completeness_disclosures[run_id] = summary["completeness_disclosure"]
-        for src in summary["rows"]:
-            rows.append(
-                {
-                    "run_id": run_id,
-                    "model": src["model"],
-                    "pass_at_k": src.get("pass_at_k"),
-                    # The depth behind pass^k, carried with it rather than left
-                    # to be assumed equal to the run's planned k.
-                    "scored_iterations_min": src.get("scored_iterations_min"),
-                    "scored_iterations_max": src.get("scored_iterations_max"),
-                    "mean_total_ms": src.get("mean_total_ms"),
-                    "total_cost_usd": src.get("total_cost_usd"),
-                    "mean_cost_usd": src.get("mean_cost_usd"),
-                    "n_cost_usd": src.get("n_cost_usd"),
-                    "total_prod_cost_usd": src.get("total_prod_cost_usd"),
-                    "mean_prod_cost_usd": src.get("mean_prod_cost_usd"),
-                    "n_prod_cost_usd": src.get("n_prod_cost_usd"),
-                    "n_results": src.get("n_results"),
-                }
-            )
-
-    return {
-        "run_ids": list(run_ids),
-        "rubric_threshold": rubric_threshold,
-        "comparison_basis": comparison_basis,
-        "shared_test_case_ids": shared_test_case_ids,
-        "measurement_window_disclosure": window_disclosure,
-        # One sentence rather than a per-run map, deliberately: the sentence already
-        # names each run and what it recorded, and a map beside it would give the web
-        # comparison page a second source for one statement. Built by the same function `comparison_sets` calls, so the two
-        # surfaces cannot answer differently about one set of runs.
-        "cassette_mode_disclosure": cassette_mode_disclosure({run.id: run.cassette_mode for run in runs}),
-        "completeness_disclosures": completeness_disclosures,
-        # The host's own keys about the compared runs, in this position of the answer.
-        **comparison_columns(runs),
-        # Keyed by run, on the same reasoning as ``completeness_disclosures`` above — a pinned
-        # role is a property of the RUN, not of a candidate model row.
-        #
-        # Read through ``read_role_pins`` rather than off the run fields here, and that
-        # is the whole point of carrying it: ``bisect_runs`` already answers "were these
-        # runs judged differently" and this surface answered it not at all, so the fix
-        # had to be a SHARED reading rather than a second one. Both call the same
-        # declared readers, so the two cannot come to disagree about one pair of runs —
-        # which is exactly how this surface would otherwise drift back out of step, the
-        # way a per-run map of the host's own had to be introduced when the tool-overrides
-        # column proved unable to speak for a run that inherited a role's model.
-        #
-        # Every compared run appears, including one recording nothing: a renderer
-        # deciding whether the arms were judged alike has to be able to see that an arm
-        # cannot say, which is a third answer and not silence.
-        "judge_roles_by_run": {run.id: profile.sweepables.read_role_pins(run, results_by_run[run.id]) for run in runs},
-        # What each run swept, read through the host's registry — its fixed levers and the members
-        # of every open family the run carried, a kind's overlays among them — rather than off any
-        # one host's fields. Keyed by run, because a lever's level is a property of the run.
-        "levers_by_run": {
-            run.id: profile.sweepables.resolve_levers(run, results_by_run[run.id]).values for run in runs
-        },
-        "rows": rows,
     }
 
 
@@ -1266,7 +1077,7 @@ def compare_two_runs(
     emitted with it.** Pairing needs the two runs to have actually scored the
     same frozen ``test_case_id`` s; a shared ``template_id`` only makes that
     possible, and two runs of one template whose case sets do not intersect
-    are compared with Welch's. Deriving pairing from the template — as
+    are compared unpaired (:data:`~threetears.evals.analysis.stats.UNPAIRED_TEST_NAME`). Deriving pairing from the template — as
     ``comparison_basis`` invites — names a test that did not run, so every
     row carries ``paired`` and no surface re-derives it.
 
@@ -1280,8 +1091,7 @@ def compare_two_runs(
     per-run composites stay, to be read separately.
 
     Pure composition over the two run loads + the query-time aggregators; no
-    new storage method. The shared-template basis mirrors
-    :func:`compare_runs`.
+    new storage method.
 
     Args:
         storage: Where the runs and their results are read (:class:`LensStore`).
@@ -1296,16 +1106,22 @@ def compare_two_runs(
 
     Returns:
         ``{"run_id_a", "run_id_b", "comparison_basis",
-        "composite_comparability", "comparison": {"arm": {...},
+        "composite_comparability", "rubric_threshold", "comparison": {"arm": {...},
         "per_template": [...]}, "subject_detail_a",
         "subject_detail_b"}``. ``comparison_basis`` says only whether the
         two runs share a template — it is NOT the significance basis.
         ``composite_comparability`` is the withholding disclosure, or
         ``None`` when the composites are comparable.
-        The ``arm`` row carries ``model_{a,b}``, ``pass_at_k_{a,b,delta}``,
-        ``composite_{a,b,delta}``, ``count_{a,b}``, ``paired``, ``n_pairs``,
-        ``cohens_d``, ``p``, ``significant`` (nulls where a run scored nothing,
+        The ``arm`` row carries ``model_{a,b}``, ``k``, ``pass_hat_k_{a,b,delta}``,
+        ``composite_{a,b,delta}``, ``composite_basis_{a,b}`` (what each composite was meaned over, ragged
+        when its results carried different dimension sets), ``composite_bases_differ``,
+        ``composite_interval`` (at ``interval_level``),
+        ``n_cases_{a,b}``, ``n_left_out_{a,b}``, ``count_{a,b}``, ``paired``, ``n_pairs``,
+        ``hedges_g``, ``p``, ``significant`` (nulls where a run scored nothing,
         a test is undefined, or the composites are not comparable).
+        ``composite_{a,b}`` and the delta are over the cases the test read —
+        when paired, only those both runs scored, which is not a run's own mean
+        when ``n_left_out`` is above 0; ``count_{a,b}`` is each run's own case count.
         JSON-safe.
 
     Raises:
@@ -1316,15 +1132,15 @@ def compare_two_runs(
     results_a = storage.query_eval_results_by_run(run_a_id, scope_id)
     results_b = storage.query_eval_results_by_run(run_b_id, scope_id)
 
-    pass_a = compute_pass_k(results_a, rubric_threshold=rubric_threshold)
-    pass_b = compute_pass_k(results_b, rubric_threshold=rubric_threshold)
+    pass_a = compute_pass_hat_k(results_a, rubric_threshold=rubric_threshold)
+    pass_b = compute_pass_hat_k(results_b, rubric_threshold=rubric_threshold)
     comp_a = compute_composite_summary(results_a)
     comp_b = compute_composite_summary(results_b)
     per_case_a = compute_per_case_composites(results_a)
     per_case_b = compute_per_case_composites(results_b)
 
     # Paired significance is only honest when the runs share a template
-    # (hence shared frozen test cases) — the same basis compare_runs uses.
+    # (hence shared frozen test cases).
     # A shared template makes pairing POSSIBLE; the intersection below is
     # what makes it real, and the two come apart when one template's cases
     # were re-frozen between the runs.
@@ -1344,10 +1160,23 @@ def compare_two_runs(
     model_a, model_b = run_a.candidate_model, run_b.candidate_model
     count_a = comp_a.get((model_a, run_a_id), {}).get("n_cases", 0)
     count_b = comp_b.get((model_b, run_b_id), {}).get("n_cases", 0)
-    pass_at_k_a = pass_a.get((model_a, run_a_id), {}).get("pass_at_k")
-    pass_at_k_b = pass_b.get((model_b, run_b_id), {}).get("pass_at_k")
-    composite_a = comp_a.get((model_a, run_a_id), {}).get("mean_composite")
-    composite_b = comp_b.get((model_b, run_b_id), {}).get("mean_composite")
+    # pass^k on both arms at ONE depth: the shallower of the two arms' own. A delta between one
+    # run's pass^3 and another's pass^1 subtracts two different quantities, and the deeper arm's
+    # curve holds its value at the shallower depth, so nothing is lost by reading it there.
+    entry_a = pass_a.get((model_a, run_a_id))
+    entry_b = pass_b.get((model_b, run_b_id))
+    depths = [entry["k"] for entry in (entry_a, entry_b) if entry is not None]
+    common_k = min(depths) if depths else None
+    pass_hat_k_a = (
+        pass_hat_k_at(entry_a["pass_hat_k_curve"], common_k)["pass_hat_k"]
+        if entry_a is not None and common_k is not None
+        else None
+    )
+    pass_hat_k_b = (
+        pass_hat_k_at(entry_b["pass_hat_k_curve"], common_k)["pass_hat_k"]
+        if entry_b is not None and common_k is not None
+        else None
+    )
     n_pairs: int | None = None
     if shared_cases:
         # Pair only cases scored in BOTH runs.
@@ -1362,28 +1191,72 @@ def compare_two_runs(
         sample_a = [v for (_m, r, _tc), v in per_case_a.items() if r == run_a_id]
         sample_b = [v for (_m, r, _tc), v in per_case_b.items() if r == run_b_id]
         paired = False
+    # The means and the delta are over the cases the test read, so the figures a reader is shown are the
+    # figures the test saw: paired, only the cases both runs scored, and each side says how many of its
+    # own it left out. The same rule a campaign contrast follows (`bundle._compare`).
+    composite_a = sum(sample_a) / len(sample_a) if sample_a else None
+    composite_b = sum(sample_b) / len(sample_b) if sample_b else None
+    # What each composite above was meaned over, read over the same cases (#638): a side pooling results scored on
+    # different dimension sets is ragged, and two sides meaned over different sets differ partly in what was
+    # averaged. Disclosed, not withheld — the sets can differ for a reason the reader knows to be harmless.
+    cases_a = set(paired_cases) if shared_cases else {tc for (_m, r, tc) in per_case_a if r == run_a_id}
+    cases_b = set(paired_cases) if shared_cases else {tc for (_m, r, tc) in per_case_b if r == run_b_id}
+    basis_a = pooled_composite_basis(
+        [r for r in results_a if r.model == model_a and r.test_case_id in cases_a] if sample_a else []
+    )
+    basis_b = pooled_composite_basis(
+        [r for r in results_b if r.model == model_b and r.test_case_id in cases_b] if sample_b else []
+    )
+    n_scored_a = sum(1 for (_m, r, _tc) in per_case_a if r == run_a_id)
+    n_scored_b = sum(1 for (_m, r, _tc) in per_case_b if r == run_b_id)
+    interval: tuple[float, float] | None = None
     if composites_comparable:
-        cohens_d, significant, p_value = composite_significance(sample_a, sample_b, paired=paired)
+        hedges_g, significant, p_value = composite_significance(sample_a, sample_b, paired=paired)
+        interval = difference_interval(sample_a, sample_b, paired=paired)
     else:
         # Not computed and then dropped: a t-test on two subjects'
         # composites has no referent, so there is no number to withhold.
-        cohens_d, significant, p_value = None, None, None
+        hedges_g, significant, p_value = None, None, None
     arm: dict[str, Any] = {
         "model_a": model_a,
         "model_b": model_b,
-        "pass_at_k_a": pass_at_k_a,
-        "pass_at_k_b": pass_at_k_b,
-        "pass_at_k_delta": _score_delta(pass_at_k_a, pass_at_k_b),
+        # The depth both pass^k values below are read at.
+        "k": common_k,
+        "pass_hat_k_a": pass_hat_k_a,
+        "pass_hat_k_b": pass_hat_k_b,
+        "pass_hat_k_delta": _score_delta(pass_hat_k_a, pass_hat_k_b),
+        # Why a side has no pass^k when none of its attempts had a criterion to pass (#688); None otherwise.
+        "pass_hat_k_unmeasured_reason_a": entry_a.get("pass_hat_k_unmeasured_reason") if entry_a else None,
+        "pass_hat_k_unmeasured_reason_b": entry_b.get("pass_hat_k_unmeasured_reason") if entry_b else None,
         "composite_a": composite_a,
         "composite_b": composite_b,
         "composite_delta": _score_delta(composite_a, composite_b) if composites_comparable else None,
+        # What each composite was meaned over (`CompositeBasis` as a dict: dimensions, bases, ragged), and whether
+        # the two sides' dimension sets differ — then the delta is partly a difference in what was averaged.
+        "composite_basis_a": basis_a.model_dump() if basis_a is not None else None,
+        "composite_basis_b": basis_b.model_dump() if basis_b is not None else None,
+        "composite_bases_differ": basis_a is not None
+        and basis_b is not None
+        and (basis_a.ragged or basis_b.ragged or basis_a.bases != basis_b.bases),
+        # The interval on `composite_delta` from the same test as `p`, at the engine's interval level. None
+        # wherever no test ran: too few cases, no spread, or composites that are not comparable.
+        "composite_interval": None if interval is None else list(interval),
+        "interval_level": INTERVAL_LEVEL,
+        # The cases each composite above was read over, and how many of each run's scored cases the test
+        # left out because the other run did not score them.
+        "n_cases_a": len(sample_a),
+        "n_cases_b": len(sample_b),
+        "n_left_out_a": n_scored_a - len(sample_a),
+        "n_left_out_b": n_scored_b - len(sample_b),
         "count_a": count_a,
         "count_b": count_b,
         # How the samples line up, which is what the test that ran on them was:
         # pairing needs cases scored in both runs, not merely one template id in both.
         "paired": paired,
         "n_pairs": n_pairs,
-        "cohens_d": cohens_d,
+        # Hedges' g (g_z when paired): Cohen's d with its small-sample bias removed. Renamed from
+        # `cohens_d` when the estimator changed, so a reader of the old key cannot take the new number for it.
+        "hedges_g": hedges_g,
         "p": p_value,
         "significant": significant,
     }
@@ -1395,12 +1268,14 @@ def compare_two_runs(
     return {
         "run_id_a": run_a.id,
         "run_id_b": run_b.id,
-        # Whether the two runs share a TEMPLATE — nothing more. Mirrors
-        # compare_runs, and is deliberately not the significance basis: a
+        # Whether the two runs share a TEMPLATE — nothing more. It is
+        # deliberately not the significance basis: a
         # shared template with a non-intersecting case set still tests
         # unpaired, so read each row's own `paired` for that.
         "comparison_basis": "shared-template-intersection" if shared_template else "independent",
         "composite_comparability": comparability,
+        # The 1–5 level a criterion had to reach in both pass^k figures (#642).
+        "rubric_threshold": rubric_threshold,
         "comparison": {"arm": arm, "per_template": per_template},
         "subject_detail_a": subject_detail(run_a),
         "subject_detail_b": subject_detail(run_b),
@@ -1436,17 +1311,17 @@ def _compare_per_template(
     for template_id in dict.fromkeys(t for t in (run_a.template_id, run_b.template_id) if t is not None):
         in_a = template_id == run_a.template_id
         in_b = template_id == run_b.template_id
-        pass_a = arm["pass_at_k_a"] if in_a else None
-        pass_b = arm["pass_at_k_b"] if in_b else None
+        pass_a = arm["pass_hat_k_a"] if in_a else None
+        pass_b = arm["pass_hat_k_b"] if in_b else None
         comp_a = arm["composite_a"] if in_a else None
         comp_b = arm["composite_b"] if in_b else None
         rows.append(
             {
                 "template_id": template_id,
                 "template_name": _template_name(load_template, template_id),
-                "pass_at_k_a": pass_a,
-                "pass_at_k_b": pass_b,
-                "pass_at_k_delta": _score_delta(pass_a, pass_b),
+                "pass_hat_k_a": pass_a,
+                "pass_hat_k_b": pass_b,
+                "pass_hat_k_delta": _score_delta(pass_a, pass_b),
                 "composite_a": comp_a,
                 "composite_b": comp_b,
                 "composite_delta": _score_delta(comp_a, comp_b) if composites_comparable else None,
@@ -1475,12 +1350,9 @@ if TYPE_CHECKING:
 
 
 __all__ = [
-    "ComparisonColumns",
     "LensStore",
     "RowColumns",
     "RunLister",
-    "bisect_runs",
-    "compare_runs",
     "compare_two_runs",
     "comparison_sets",
     "export_results",

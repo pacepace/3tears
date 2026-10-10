@@ -28,15 +28,21 @@ A leaf module: the analysis models import it, so it imports neither them nor the
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from pydantic import Field, field_validator, model_validator
 
 from threetears.evals.contracts.analysis_measures import BarAdjudication, MeasureCollection
-from threetears.evals.contracts.metrics import MeasurePopulation, MeritAxis
+from threetears.evals.contracts.metrics import (
+    METRIC_DESCRIPTORS,
+    MeasurePopulation,
+    MeasureScale,
+    MeritAxis,
+    measure_title,
+)
 from threetears.evals.contracts.base import EvalDocumentModel
 from threetears.evals.contracts.evidence_tiers import JudgedEvidenceTier
-from threetears.evals.contracts.models import DimName
+from threetears.evals.contracts.models import DimName, RubricAxis
 
 
 class JudgedReading(EvalDocumentModel):
@@ -49,7 +55,9 @@ class JudgedReading(EvalDocumentModel):
 
     dimension: DimName = Field(min_length=1, description="The dimension, spelled exactly as the judge stamped it.")
     mean: float | None = Field(default=None, description="Mean score on the dimension's own scale. None when n is 0.")
-    sem: float | None = Field(default=None, description="Standard error of that mean. None below n=2.")
+    sem: float | None = Field(
+        default=None, description="Standard error of that mean, over the test cases. None below two cases."
+    )
     n: int = Field(ge=0, description="Scores contributing to the mean — one per scored, non-faulted observation.")
     n_independent: int = Field(ge=0, description="Distinct test cases behind those scores.")
     n_infra_excluded: int = Field(
@@ -78,6 +86,15 @@ class MeasureFacts(EvalDocumentModel):
     against the old description.
     """
 
+    reader_name: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "What a reader calls the measure — what a table header, chart title or axis label prints in place of its "
+            "key. None on a surface frozen before measures had one, and for a measure nothing describes; a surface "
+            "then prints the key."
+        ),
+    )
     unit: str | None = Field(default=None, description="The measure's unit, e.g. 'ms' or 'usd'. None when unitless.")
     merit_axis: MeritAxis | None = Field(
         default=None,
@@ -101,6 +118,20 @@ class MeasureFacts(EvalDocumentModel):
             "it was actually computed over."
         ),
     )
+    scale: MeasureScale | None = Field(
+        default=None,
+        description=(
+            "`interval` when the measure's zero is arbitrary, so a chart states no relative change in it; `ratio` "
+            "when it is none of it; None when undeclared — and on a surface frozen before the field existed."
+        ),
+    )
+    guardrail: bool = Field(
+        default=False,
+        description=(
+            "True when the host declared the measure a guardrail: something the arm must not get worse on, never "
+            "an optimizing reading. False on a surface frozen before the field existed, when no measure was one."
+        ),
+    )
 
 
 class JudgedDimensionFacts(EvalDocumentModel):
@@ -115,6 +146,20 @@ class JudgedDimensionFacts(EvalDocumentModel):
     higher_is_better: bool = Field(default=True, description="Which end of the scale is better.")
     value_range: tuple[float, float] | None = Field(
         default=None, description="The scale the scores are on, when declared."
+    )
+    scale: MeasureScale | None = Field(
+        default=None,
+        description=(
+            "`interval` for a 1-5 score, whose zero is below the scale, so no chart states a relative change in "
+            "it; `ratio` for a pass rate. None on a surface frozen before the field existed."
+        ),
+    )
+    axis: RubricAxis | None = Field(
+        default=None,
+        description=(
+            "`boundary` when any score on the dimension was judged as a boundary dimension — a guardrail, never "
+            "averaged with capability — else `capability`. None on a surface frozen before the field existed."
+        ),
     )
 
 
@@ -424,7 +469,9 @@ class TimePosition(EvalDocumentModel):
     run_ids: list[str] = Field(min_length=1, description="The runs at this position that measured something, sorted.")
     cells: list[CellFacts] = Field(
         min_length=1,
-        description="Every cell measured at this position, ordered by (variant_key, apparatus_class_id).",
+        description=(
+            "Every cell measured at this position, in the decision surface's row order (see `DecisionSurface.cells`)."
+        ),
     )
 
 
@@ -490,6 +537,151 @@ class TimeAxis(EvalDocumentModel):
         return self
 
 
+#: Whether the frontier lens shows a contestant dominated: ``dominated`` — another is shown better on every
+#: axis it measured; ``not_separated`` — tested against at least one other and no domination shown, which says
+#: nothing about whether one exists; ``untested`` — nothing could be tested against it. The lens's own words
+#: (:attr:`threetears.evals.analysis.reporting.FrontierPoint.dominance`), defined here so a frozen surface can
+#: carry them without importing the analysis.
+FrontierDominance = Literal["dominated", "not_separated", "untested"]
+
+
+#: What a guardrail came to for one arm against the control, read off the interval on the difference against
+#: the guardrail's margin (:func:`~threetears.evals.analysis.stats.interval_clears`, three-valued). ``held``: the
+#: arm is shown no worse than the control by more than the margin. ``breached``: shown worse by more than it.
+#: ``undecided``: the interval straddles the line, or no interval exists — neither held nor breached, and never
+#: read as safe.
+GuardrailDecision = Literal["held", "breached", "undecided"]
+
+
+class GuardrailCell(EvalDocumentModel):
+    """One side of a guardrail check: a cell, and the per-case values the check read."""
+
+    variant_key: str = Field(min_length=1, description="The arm's variant — half of the cell.")
+    apparatus_class_id: str = Field(min_length=1, description="The rig — the other half of the cell.")
+    n_cases: int = Field(ge=0, description="Cases read on this side: the shared ones when paired, all otherwise.")
+    mean: float | None = Field(default=None, description="Mean of those per-case values. None when n_cases is 0.")
+
+
+class GuardrailCheck(EvalDocumentModel):
+    """One guardrail, one arm against the control under one rig: held, breached or undecided.
+
+    A guardrail is what the candidate must not get worse on — a boundary judged dimension, or a measure
+    the host declared ``guardrail``. It is never optimized and never traded: it joins no comparison family
+    and no composite, so a capability gain cannot pay for it. Each is decided on its own interval, at
+    95% two-sided (so each one-sided claim errs at most 2.5% of the time), not corrected across
+    guardrails: more guardrails make a false ``breached`` likelier, which errs toward caution.
+    """
+
+    reading: Literal["measure", "judged"] = Field(description="Whether `name` is a measure or a judged dimension.")
+    name: str = Field(min_length=1, description="The guardrail, as the bundle spells it.")
+    higher_is_better: bool = Field(description="Which way is better on it — which way `breached` runs.")
+    control: GuardrailCell = Field(description="The control arm's cell under this rig.")
+    contrast: GuardrailCell = Field(description="The arm checked, under the same rig.")
+    test: Literal["paired", "unpaired"] | None = Field(
+        default=None,
+        description=(
+            "`paired` over the cases both cells ran when they share at least two, `unpaired` (Welch on Hsu's df) "
+            "otherwise; None when neither could run."
+        ),
+    )
+    delta: float | None = Field(
+        default=None, description="Arm mean minus control mean over the cases read. None when a side is empty."
+    )
+    interval: tuple[float, float] | None = Field(
+        default=None,
+        description=(
+            "The 95% interval on `delta` the decision read. None when no interval exists (fewer than two cases a "
+            "side, or a difference with no spread on a reading with no declared range)."
+        ),
+    )
+    interval_basis: Literal["t", "bounded"] | None = Field(
+        default=None,
+        description=(
+            "`t`: the interval the comparison test inverts. `bounded`: every paired case moved by the same amount, "
+            "so a t interval has no width; the interval is the one a bounded reading allows — at most a share "
+            "1 − 0.025^(1/n) of unseen cases could move otherwise, each by at most the scale. None with no interval."
+        ),
+    )
+    margin: float = Field(
+        ge=0.0,
+        description=(
+            "The worsening tolerated before `breached`, in the reading's units: the measure's declared "
+            "`materiality_threshold`, or 0 when it declares none and for every judged dimension (held at zero change)."
+        ),
+    )
+    margin_declared: bool = Field(description="Whether `margin` was declared, rather than 0 for want of one.")
+    decision: GuardrailDecision = Field(
+        description=(
+            "`held` = the interval lies wholly on the good side of −margin (no worse than the margin); `breached` = "
+            "wholly beyond it (worse by more than the margin); `undecided` = it straddles the line or does not exist."
+        )
+    )
+    undecided_reason: str | None = Field(
+        default=None, description="Why the check could not decide, when `decision` is undecided. None otherwise."
+    )
+
+    @model_validator(mode="after")
+    def _undecided_says_why(self) -> GuardrailCheck:
+        """An undecided check says why, and a decided one carries no reason."""
+        if (self.decision == "undecided") != (self.undecided_reason is not None):
+            raise ValueError("a guardrail check carries an undecided_reason exactly when its decision is undecided")
+        return self
+
+
+class ArmGuardrails(NamedTuple):
+    """Where one arm stands on every guardrail checked against the control, under any rig."""
+
+    #: Guardrails shown worse than the control by more than their margin.
+    breached: list[str]
+    #: Guardrails neither shown held nor breached, and not breached anywhere.
+    undecided: list[str]
+    #: Guardrails held under every rig the arm was checked on.
+    held: list[str]
+
+
+class GuardrailReadings(EvalDocumentModel):
+    """Every guardrail, decided for each arm against the control — the pillar kept apart from capability.
+
+    Capability (what the candidate should do well) is compared, corrected and traded across merit axes;
+    a guardrail (what it must never do) is satisficed, not optimized. Read together, a capability gain
+    hides a guardrail loss, so they are read apart: an arm that breaches any guardrail is not adopted
+    whatever it gains, and an undecided guardrail is stated wherever the arm is recommended.
+    """
+
+    measures: list[str] = Field(default_factory=list, description="Measures the host declared guardrails, sorted.")
+    dimensions: list[str] = Field(
+        default_factory=list, description="Judged dimensions scored on the boundary axis, sorted."
+    )
+    checks: list[GuardrailCheck] = Field(
+        default_factory=list, description="One per guardrail, arm and rig, ordered by name, rig and arm."
+    )
+    withheld: str | None = Field(
+        default=None,
+        description=(
+            "Why no guardrail could be checked: no control resolved, so there is no arm to hold an arm against. "
+            "None when checks could run, or when there is no guardrail."
+        ),
+    )
+    unstamped_dimensions: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Judged dimensions carrying scores judged before the rubric axis was stamped, sorted. They are read as "
+            "capability, as they were then; a guardrail among them is not recognised until it is re-judged."
+        ),
+    )
+
+    def of_arm(self, variant_key: str) -> ArmGuardrails:
+        """Where one arm stands: breached anywhere, else undecided anywhere, else held everywhere it was checked."""
+        decisions: dict[str, set[GuardrailDecision]] = {}
+        for check in self.checks:
+            if check.contrast.variant_key == variant_key:
+                decisions.setdefault(check.name, set()).add(check.decision)
+        breached = sorted(name for name, seen in decisions.items() if "breached" in seen)
+        undecided = sorted(name for name, seen in decisions.items() if "undecided" in seen and name not in breached)
+        held = sorted(name for name, seen in decisions.items() if seen == {"held"})
+        return ArmGuardrails(breached=breached, undecided=undecided, held=held)
+
+
 class DecisionSurface(EvalDocumentModel):
     """The campaign's measured cells and the bars they were held to — frozen at generation.
 
@@ -502,7 +694,12 @@ class DecisionSurface(EvalDocumentModel):
         default=None, description="The declared control's variant, or None when the campaign declared none."
     )
     cells: list[CellFacts] = Field(
-        default_factory=list, description="One entry per cell, ordered by (variant_key, apparatus_class_id)."
+        default_factory=list,
+        description=(
+            "One entry per cell: the control's cells first as the reference, then every other arm alphabetically by "
+            "name, each arm's rigs by id. A surface frozen before bundle schema 47 is ordered by (variant_key, "
+            "apparatus_class_id); the surface and strata tables order the cells themselves, so either lays out alike."
+        ),
     )
     bars: list[BarAdjudication] = Field(
         default_factory=list, description="Every bar the campaign is held to, each adjudicated against every cell."
@@ -525,12 +722,68 @@ class DecisionSurface(EvalDocumentModel):
             "build and one day. What a `timeseries` chart draws, and the only thing it can draw."
         ),
     )
+    frontier_dominance: dict[str, FrontierDominance] | None = Field(
+        default=None,
+        description=(
+            "Each arm's standing on the campaign's frontier lens, keyed by variant — the lens's own test of "
+            "domination on pass^k, production-replicating cost and mean latency, copied rather than recomputed so "
+            "a frontier chart and the frontier table cannot disagree. An arm the lens placed as more than one "
+            "contestant (two identity versions, or two subjects) is absent: it has no one standing. None on a "
+            "surface frozen before standings were carried; a chart drawn from one states no domination."
+        ),
+    )
+    rubric_threshold: int = Field(
+        default=3,
+        description=(
+            "The 1–5 level a capability criterion had to reach for an attempt to pass in the pass^k the frontier "
+            "standings were decided on: the behavior's host-declared pass threshold, 3 where it declares none. A "
+            "surface frozen before this was recorded reads 3, the threshold every pass^k was computed at then."
+        ),
+    )
+    guardrails: GuardrailReadings | None = Field(
+        default=None,
+        description=(
+            "Every guardrail decided for each arm against the control, as the bundle decided it. None on a surface "
+            "frozen before guardrails were decided: nothing was checked then, which is not the same as held."
+        ),
+    )
+
+    def measure_heading(self, measure_id: str, reading: str = "measure") -> str:
+        """What a reader calls a reading on this surface — the one spelling every header, title and label prints.
+
+        A measure by its frozen reader-facing name (:attr:`MeasureFacts.reader_name`); on a surface frozen before
+        measures had one, an engine core measure by the core's name, whose meaning the key fixes; and only then
+        the key itself, which is all a surface knows of a host measure frozen without one. A measuring-spend
+        measure says it is one (:func:`~threetears.evals.contracts.metrics.measure_title`). A judged dimension is
+        its rubric's own name, marked judged. The key is never lost: every surface carrying a heading carries the
+        key beside it for a reader who needs to cite it.
+
+        Args:
+            measure_id: The measure's key, or a judged dimension's name.
+            reading: ``judged`` for a judged dimension; anything else reads a measure.
+
+        Returns:
+            The heading.
+        """
+        if reading == "judged":
+            return f"{measure_id} (judged)"
+        facts = self.measures.get(measure_id)
+        named = facts.reader_name if facts is not None else None
+        if named is None and (core := METRIC_DESCRIPTORS.get(measure_id)) is not None:
+            named = core.reader_name
+        return measure_title(measure_id, named)
 
 
 __all__ = [
+    "FrontierDominance",
     "STRATUM_MIN_CASES",
+    "ArmGuardrails",
     "CellFacts",
     "DecisionSurface",
+    "GuardrailCell",
+    "GuardrailCheck",
+    "GuardrailDecision",
+    "GuardrailReadings",
     "JudgedDimensionFacts",
     "JudgedReading",
     "MeasureFacts",

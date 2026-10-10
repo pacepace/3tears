@@ -27,6 +27,7 @@ from threetears.evals.vega.compiler import (
     value_label_layers,
 )
 from threetears.evals.analysis.viz.intent import ChartIntent
+from threetears.evals.contracts.host import ChartFont
 
 #: The axis floor for a relative-change comparison, as a fraction.
 #:
@@ -71,7 +72,7 @@ _POINT_RADIUS = point_radius(_POINT_SIZE)
 _CONNECTOR_HEIGHT = 3
 
 
-def compile_delta_table(intent: ChartIntent) -> dict[str, Any]:
+def compile_delta_table(intent: ChartIntent, *, font: ChartFont | None = None) -> dict[str, Any]:
     """Draw an A-vs-B intent as a dumbbell on one shared relative-change axis.
 
     A is pinned at zero because it is the baseline the comparison runs *from*, so the bar's length is
@@ -80,6 +81,7 @@ def compile_delta_table(intent: ChartIntent) -> dict[str, Any]:
 
     Args:
         intent: The comparison's intent.
+        font: The typeface the chart is laid out in; ``None`` for the packaged face.
 
     Returns:
         The Vega-Lite spec.
@@ -87,7 +89,7 @@ def compile_delta_table(intent: ChartIntent) -> dict[str, Any]:
     plotted = intent.data
     reach = max((abs(_number(entry["change"])) for entry in plotted), default=0.0)
     axis_title = _value_axis(intent, "change").quantity
-    categories = _Categories.of("metric", _identity(intent).order)
+    categories = _Categories.of("metric", _identity(intent).order, font=font)
     width, height = categories.plot_size()
     # Stated, not inferred from the bar lengths: the reader needs to know how wide
     # "the edge of the chart" is before a bar's length means anything. The floor and
@@ -147,9 +149,11 @@ def compile_delta_table(intent: ChartIntent) -> dict[str, Any]:
     return _composed(
         {
             "$schema": VEGA_LITE_SCHEMA,
-            "title": _title_spec(intent.title, categories.figure_width()),
+            "title": _title_spec(intent.title, categories.figure_width(), font=font),
             "data": {"values": categories.labelled(plotted)},
-            "layer": _layers(_zero_rule(value_axis), *layers, *value_label_layers(labels, value_axis, identity)),
+            "layer": _layers(
+                _zero_rule(value_axis), *layers, *value_label_layers(labels, value_axis, identity, font=font)
+            ),
             "width": width,
             "height": height,
         },

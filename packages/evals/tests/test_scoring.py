@@ -33,19 +33,32 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis import assemble_context_bundle
+from threetears.evals.analysis import assemble_context_bundle, run_summary
 from threetears.evals.contracts.campaign import EvalCampaign
-from threetears.evals.contracts.models import TRANSCRIPT_DIM_ID, EvalResult, LatencyMetrics, RoleUsage, RubricScore
+from threetears.evals.contracts.metrics import METRIC_DESCRIPTORS
+from threetears.evals.contracts.models import (
+    TRANSCRIPT_DIM_ID,
+    AsyncDelivery,
+    EvalResult,
+    LatencyMetrics,
+    RoleUsage,
+    RubricScore,
+)
 from threetears.evals.contracts.result_condition import ResultOutcome
 from threetears.evals.contracts.scoring import (
+    NO_PASS_CRITERION_REASON,
     CellSummary,
+    compute_async_delivery_summary,
     compute_composite_summary,
     compute_cost_summary,
     compute_dimension_summary,
     compute_latency_summary,
-    compute_pass_k,
+    compute_pass_hat_k,
     compute_per_case_composites,
+    pass_hat_k_at,
+    pass_hat_k_cell,
     percentile,
+    pool_pass_hat_k,
     result_composite,
     summarize_completeness,
 )
@@ -123,19 +136,19 @@ class TestPercentileIsNearestRank:
         assert percentile([7.0], 50) == 7.0
         assert percentile([7.0], 95) == 7.0
 
-    def test_the_two_percentiles_in_this_package_genuinely_disagree(self):
-        """The reason they are documented rather than unified: same data, different answers.
+    def test_nearest_rank_is_not_the_tail_the_bundle_reports(self):
+        """Same data, different answers, and why the tail is not read nearest-rank.
 
-        Read on each function's own scale, so this is not the scale confusion above — it is the
-        method difference, which is real and intended.
+        Read on each function's own scale, so this is not the scale confusion above. Nearest-rank's
+        95th percentile of five values is their maximum, which is not a 95th percentile; the bundle reads
+        its tail median-unbiased and, at five observations, where no estimate is, reports none.
         """
         bundle_p50, bundle_p95 = _bundle_percentiles(_SORTED)
 
         assert percentile(_SORTED, 50) == 3.0
         assert bundle_p50 == 3.0
-        # p95 is where nearest-rank and interpolation part company on small n.
         assert percentile(_SORTED, 95) == 100.0
-        assert bundle_p95 == pytest.approx(80.8)
+        assert bundle_p95 is None
 
 
 def _bundle_percentiles(costs: list[float]) -> tuple[float, float]:
@@ -304,7 +317,7 @@ def test_the_denominator_comes_from_the_run_not_from_the_cells_it_was_handed():
 
 
 # =============================================================================
-# compute_pass_k
+# compute_pass_hat_k — pass^k, the chance that k attempts at a case all pass
 # =============================================================================
 
 
@@ -315,66 +328,115 @@ def _infra_result(test_case_id="tc1", model="m1", run_id="r1", k=1):
     )
 
 
-def test_compute_pass_k_all_pass_yields_one():
+def _curve(entry: dict[str, Any]) -> list[tuple[int, float | None, int]]:
+    """An entry's pass^k curve as ``(k, value, n_cases)`` triples, for comparing whole."""
+    return [(point["k"], point["pass_hat_k"], point["n_cases"]) for point in entry["pass_hat_k_curve"]]
+
+
+def test_compute_pass_hat_k_all_pass_yields_one():
     results = [make_scored_result(test_case_id=f"tc{i}", k=1) for i in range(3)]
-    out = compute_pass_k(results)
-    assert out[("m1", "r1")]["pass_at_k"] == 1.0
+    out = compute_pass_hat_k(results)
+    assert out[("m1", "r1")]["pass_hat_k"] == 1.0
     assert out[("m1", "r1")]["n_test_cases"] == 3
-    assert out[("m1", "r1")]["fully_passing_cases"] == 3
+    assert out[("m1", "r1")]["n_cases_at_k"] == 3
 
 
-def test_compute_pass_k_partial_pass():
+def test_compute_pass_hat_k_partial_pass():
     results = [
         make_scored_result(test_case_id="tc1", goal_passes=(True,)),
         make_scored_result(test_case_id="tc2", goal_passes=(False,)),
     ]
-    out = compute_pass_k(results)
-    assert out[("m1", "r1")]["pass_at_k"] == 0.5
-    assert out[("m1", "r1")]["fully_passing_cases"] == 1
+    out = compute_pass_hat_k(results)
+    assert out[("m1", "r1")]["pass_hat_k"] == 0.5
+    assert out[("m1", "r1")]["n_cases_at_k"] == 2
 
 
-def test_compute_pass_k_failure_in_any_k_iter_fails_the_case():
-    """For a given test case, ALL k iterations must pass to count."""
+def test_compute_pass_hat_k_failure_in_any_k_iter_fails_the_case_at_that_depth():
+    """At depth k every one of k attempts must pass; one failure of two zeroes pass^2 for the case."""
     results = [
         make_scored_result(test_case_id="tc1", k=1, goal_passes=(True,)),
         make_scored_result(test_case_id="tc1", k=2, goal_passes=(False,)),
     ]
-    out = compute_pass_k(results)
-    assert out[("m1", "r1")]["pass_at_k"] == 0.0
+    entry = compute_pass_hat_k(results)[("m1", "r1")]
+    assert entry["k"] == 2
+    assert entry["pass_hat_k"] == 0.0
+    # ...while one attempt of the two passing is what pass^1 says.
+    assert _curve(entry) == [(1, 0.5, 1), (2, 0.0, 1)]
 
 
-def test_compute_pass_k_respects_rubric_threshold():
+def test_compute_pass_hat_k_is_the_unbiased_per_case_estimate_not_the_all_pass_indicator():
+    """Per case, C(c, k) / C(n, k): the share of the case's k-subsets of attempts that all passed.
+
+    Four attempts, three passed. The all-pass indicator over all four reads 0; pass^2 is
+    C(3, 2) / C(4, 2) = 3 / 6 and pass^3 is C(3, 3) / C(4, 3) = 1 / 4 — the expectations of a case
+    that passes each attempt with probability p are p^2 and p^3, whatever n is.
+    """
+    passes = (True, True, True, False)
+    results = [make_scored_result(k=i + 1, goal_passes=(p,)) for i, p in enumerate(passes)]
+
+    entry = compute_pass_hat_k(results)[("m1", "r1")]
+
+    assert _curve(entry) == [(1, 0.75, 1), (2, 0.5, 1), (3, 0.25, 1), (4, 0.0, 1)]
+
+
+def test_compute_pass_hat_k_pass_1_is_the_per_case_pass_rate_averaged_over_cases():
+    """pass^1 weighs each case once, however many attempts it took: (2/3 + 1/1) / 2, not 3/4."""
+    results = [
+        make_scored_result(test_case_id="tc-a", k=1, goal_passes=(True,)),
+        make_scored_result(test_case_id="tc-a", k=2, goal_passes=(True,)),
+        make_scored_result(test_case_id="tc-a", k=3, goal_passes=(False,)),
+        make_scored_result(test_case_id="tc-b", k=1, goal_passes=(True,)),
+    ]
+
+    point = pass_hat_k_at(compute_pass_hat_k(results)[("m1", "r1")]["pass_hat_k_curve"], 1)
+
+    assert point["pass_hat_k"] == pytest.approx((2 / 3 + 1) / 2)
+    assert point["n_cases"] == 2
+
+
+def test_compute_pass_hat_k_reads_the_headline_at_the_depth_asked():
+    results = [make_scored_result(test_case_id="tc1", k=i, goal_passes=(i != 3,)) for i in (1, 2, 3)]
+    entry = compute_pass_hat_k(results, k=2)[("m1", "r1")]
+    assert (entry["k"], entry["pass_hat_k"], entry["n_cases_at_k"]) == (2, pytest.approx(1 / 3), 1)
+
+
+def test_compute_pass_hat_k_refuses_a_depth_below_one():
+    with pytest.raises(ValueError, match="k >= 1"):
+        compute_pass_hat_k([make_scored_result()], k=0)
+
+
+def test_compute_pass_hat_k_respects_rubric_threshold():
     results = [
         make_scored_result(test_case_id="tc1", rubric_scores=(("x.v", 3),)),
         make_scored_result(test_case_id="tc2", rubric_scores=(("x.v", 2),)),
     ]
-    out = compute_pass_k(results, rubric_threshold=3)
-    assert out[("m1", "r1")]["pass_at_k"] == 0.5
+    out = compute_pass_hat_k(results, rubric_threshold=3)
+    assert out[("m1", "r1")]["pass_hat_k"] == 0.5
 
 
-def test_compute_pass_k_separates_models():
+def test_compute_pass_hat_k_separates_models():
     results = [
         make_scored_result(test_case_id="tc1", model="m1"),
         make_scored_result(test_case_id="tc1", model="m2", goal_passes=(False,)),
     ]
-    out = compute_pass_k(results)
-    assert out[("m1", "r1")]["pass_at_k"] == 1.0
-    assert out[("m2", "r1")]["pass_at_k"] == 0.0
+    out = compute_pass_hat_k(results)
+    assert out[("m1", "r1")]["pass_hat_k"] == 1.0
+    assert out[("m2", "r1")]["pass_hat_k"] == 0.0
 
 
-def test_compute_pass_k_empty_results():
-    assert compute_pass_k([]) == {}
+def test_compute_pass_hat_k_empty_results():
+    assert compute_pass_hat_k([]) == {}
 
 
-def test_compute_pass_k_candidate_error_fails_not_passes():
+def test_compute_pass_hat_k_candidate_error_fails_not_passes():
     """A candidate-error result FAILS (counts, 0.0) — it must not slip through the
     vacuous-result guard as a pass, and it is NOT excluded (a broken candidate fails).
     """
     err_result = make_scored_result(test_case_id="tc1", candidate_error="candidate turn LLM error: 402")
-    out = compute_pass_k([err_result])
+    out = compute_pass_hat_k([err_result])
     assert out[("m1", "r1")]["n_test_cases"] == 1
-    assert out[("m1", "r1")]["pass_at_k"] == 0.0
-    assert out[("m1", "r1")]["fully_passing_cases"] == 0
+    assert out[("m1", "r1")]["pass_hat_k"] == 0.0
+    assert out[("m1", "r1")]["n_cases_at_k"] == 1
 
 
 def _cut_off(result: EvalResult, rounds: float = 1) -> EvalResult:
@@ -391,26 +453,26 @@ class TestTheOutputCapsSilenceFails:
 
     def test_a_cut_off_hold_trial_whose_checks_and_judge_all_passed_fails(self):
         held = make_scored_result(goal_passes=(True, True), rubric_scores=(("reply.restraint", 5),))
-        assert compute_pass_k([held])[("m1", "r1")]["pass_at_k"] == 1.0  # the control: uncut, it passes
-        out = compute_pass_k([_cut_off(held)])
-        assert out[("m1", "r1")]["pass_at_k"] == 0.0
+        assert compute_pass_hat_k([held])[("m1", "r1")]["pass_hat_k"] == 1.0  # the control: uncut, it passes
+        out = compute_pass_hat_k([_cut_off(held)])
+        assert out[("m1", "r1")]["pass_hat_k"] == 0.0
         assert out[("m1", "r1")]["n_test_cases"] == 1  # counted as a fail, not excluded
 
     def test_a_cut_off_act_trial_whose_checks_passed_on_earlier_rounds_fails(self):
         acted = make_scored_result(goal_passes=(True,), rubric_scores=(("reply.thread_fit", 4),))
-        assert compute_pass_k([acted])[("m1", "r1")]["pass_at_k"] == 1.0  # the control: uncut, it passes
-        assert compute_pass_k([_cut_off(acted)])[("m1", "r1")]["pass_at_k"] == 0.0
+        assert compute_pass_hat_k([acted])[("m1", "r1")]["pass_hat_k"] == 1.0  # the control: uncut, it passes
+        assert compute_pass_hat_k([_cut_off(acted)])[("m1", "r1")]["pass_hat_k"] == 0.0
 
     def test_a_cut_off_trial_fails_even_where_the_judge_could_not_tell(self):
         silent = make_scored_result(goal_passes=(True,)).model_copy(
             update={"judge_cannot_tell": {"reply.thread_fit": "nothing was queued"}}
         )
-        out = compute_pass_k([_cut_off(silent)])
-        assert out[("m1", "r1")]["pass_at_k"] == 0.0
+        out = compute_pass_hat_k([_cut_off(silent)])
+        assert out[("m1", "r1")]["pass_hat_k"] == 0.0
         assert out[("m1", "r1")]["n_cannot_tell_excluded"] == 0
 
     def test_a_zero_count_is_an_observation_that_nothing_was_cut(self):
-        assert compute_pass_k([_cut_off(make_scored_result(), rounds=0)])[("m1", "r1")]["pass_at_k"] == 1.0
+        assert compute_pass_hat_k([_cut_off(make_scored_result(), rounds=0)])[("m1", "r1")]["pass_hat_k"] == 1.0
 
 
 class TestAFailedTrialIsNeverExcluded:
@@ -420,26 +482,26 @@ class TestAFailedTrialIsNeverExcluded:
 
     def test_a_failed_goal_check_fails_the_trial_the_judge_could_not_finish(self):
         failed = make_scored_result(goal_passes=(False, True)).model_copy(update=self._UNSCORED)
-        out = compute_pass_k([failed])
+        out = compute_pass_hat_k([failed])
         assert out[("m1", "r1")]["n_test_cases"] == 1
-        assert out[("m1", "r1")]["pass_at_k"] == 0.0
+        assert out[("m1", "r1")]["pass_hat_k"] == 0.0
         assert out[("m1", "r1")]["n_cannot_tell_excluded"] == 0
 
     def test_a_scored_dim_below_the_bar_fails_it_too(self):
         failed = make_scored_result(rubric_scores=(("reply.handoff_spoken", 1),)).model_copy(update=self._UNSCORED)
-        out = compute_pass_k([failed], rubric_threshold=3)
-        assert out[("m1", "r1")]["pass_at_k"] == 0.0
+        out = compute_pass_hat_k([failed], rubric_threshold=3)
+        assert out[("m1", "r1")]["pass_hat_k"] == 0.0
         assert out[("m1", "r1")]["n_cannot_tell_excluded"] == 0
 
     def test_a_trial_the_unscored_dim_would_decide_is_still_left_out(self):
         undecided = make_scored_result(rubric_scores=(("reply.handoff_spoken", 4),)).model_copy(update=self._UNSCORED)
-        out = compute_pass_k([undecided], rubric_threshold=3)
+        out = compute_pass_hat_k([undecided], rubric_threshold=3)
         assert out[("m1", "r1")]["n_test_cases"] == 0
-        assert out[("m1", "r1")]["pass_at_k"] is None
+        assert out[("m1", "r1")]["pass_hat_k"] is None
         assert out[("m1", "r1")]["n_cannot_tell_excluded"] == 1
 
 
-def test_compute_pass_k_infra_iteration_excluded_case_scored_on_the_rest():
+def test_compute_pass_hat_k_infra_iteration_excluded_case_scored_on_the_rest():
     """An infra-error iteration is EXCLUDED — the case is scored on its other
     iterations, not floored to a fail (the candidate/infra split).
     """
@@ -447,39 +509,47 @@ def test_compute_pass_k_infra_iteration_excluded_case_scored_on_the_rest():
         make_scored_result(test_case_id="tc1", k=1, goal_passes=(True,)),  # measured, passes
         _infra_result(test_case_id="tc1", k=2),  # excluded (judge/timeout/factory)
     ]
-    out = compute_pass_k(results)
-    # tc1 passes on its one measured iteration → pass_at_k 1.0 over 1 case.
-    assert out[("m1", "r1")]["n_test_cases"] == 1
-    assert out[("m1", "r1")]["pass_at_k"] == 1.0
-    assert out[("m1", "r1")]["fully_passing_cases"] == 1
+    entry = compute_pass_hat_k(results)[("m1", "r1")]
+    assert entry["n_test_cases"] == 1
+    # One scored attempt, and it passed: pass^1 is 1.0, not floored by the excluded one...
+    assert _curve(entry) == [(1, 1.0, 1)]
+    # ...and pass^2 is unmeasured rather than credited — one attempt cannot speak for two.
+    assert (entry["k"], entry["pass_hat_k"], entry["n_cases_at_k"]) == (2, None, 0)
 
 
-def test_compute_pass_k_all_iterations_excluded_case_drops_from_denominator():
+def test_compute_pass_hat_k_all_iterations_excluded_case_drops_from_denominator():
     """A case whose every iteration is infra-excluded drops from n_test_cases."""
     results = [
         make_scored_result(test_case_id="tc1", goal_passes=(True,)),  # a real, measured case
         _infra_result(test_case_id="tc2", k=1),
         _infra_result(test_case_id="tc2", k=2),  # tc2 entirely unmeasured
     ]
-    out = compute_pass_k(results)
-    assert out[("m1", "r1")]["n_test_cases"] == 1  # tc2 gone
-    assert out[("m1", "r1")]["pass_at_k"] == 1.0
+    entry = compute_pass_hat_k(results)[("m1", "r1")]
+    assert entry["n_test_cases"] == 1  # tc2 gone
+    assert _curve(entry) == [(1, 1.0, 1)]
 
 
-def test_compute_pass_k_all_infra_run_reported_with_zero_measured_cases():
+def test_compute_pass_hat_k_all_infra_run_reported_with_zero_measured_cases():
     """A run whose every result is infra-excluded still appears — as n_test_cases
     0 with no pass rate (nothing measured), not absent, not a floored fail, and not
     a pass rate of zero, which would read as every case failing.
     """
-    out = compute_pass_k([_infra_result(test_case_id="tc1", k=1)])
+    out = compute_pass_hat_k([_infra_result(test_case_id="tc1", k=1)])
     assert ("m1", "r1") in out
     assert out[("m1", "r1")]["n_test_cases"] == 0
-    assert out[("m1", "r1")]["fully_passing_cases"] == 0
-    assert out[("m1", "r1")]["pass_at_k"] is None
+    assert out[("m1", "r1")]["n_cases_at_k"] == 0
+    assert out[("m1", "r1")]["pass_hat_k"] is None
+    assert out[("m1", "r1")]["pass_hat_k_curve"] == []
 
 
-def test_compute_pass_k_empty_score_lists_with_no_error_also_not_passing():
-    """A result with no scoreable outcomes (no goal-state checks, no rubric) cannot pass."""
+@pytest.mark.parametrize("judge_model", [None, "judge-model"])
+def test_compute_pass_hat_k_empty_score_lists_with_no_error_never_pass(judge_model):
+    """A result with no scoreable outcomes cannot pass: unmeasured with no judge (#688), a fail under one.
+
+    With no goal-state check and no judge there is nothing for pass^k to conjoin, so the attempt is left out
+    and the group has no pass^k — never the 0.0 that read as failing every criterion. Under a judge the
+    criteria were asked and nothing was scored, which is the fail it always was.
+    """
     empty = EvalResult(
         scope_id="u",
         eval_run_id="r1",
@@ -495,35 +565,38 @@ def test_compute_pass_k_empty_score_lists_with_no_error_also_not_passing():
         host_measures={},
         variant_key="vk-1",
         identity_version=IDENTITY_VERSION,
+        judge_model=judge_model,
     )
-    out = compute_pass_k([empty])
-    assert out[("m1", "r1")]["pass_at_k"] == 0.0
+    row = compute_pass_hat_k([empty])[("m1", "r1")]
+    if judge_model is None:
+        assert row["pass_hat_k"] is None and row["pass_hat_k_curve"] == []
+        assert row["n_no_criterion_excluded"] == 1
+        assert row["pass_hat_k_unmeasured_reason"] == NO_PASS_CRITERION_REASON
+    else:
+        assert row["pass_hat_k"] == 0.0
+        assert row["n_no_criterion_excluded"] == 0 and row["pass_hat_k_unmeasured_reason"] is None
 
 
 # =============================================================================
-# compute_pass_k over a partial run — the depths the number was computed over
+# compute_pass_hat_k over a partial run — mixed depths, estimated without bias
 #
 # Cells execute in a per-run shuffled order, so a run that stopped early leaves
 # an ARBITRARY SUBSET of its matrix rather than the k-ordered prefix the nested
-# loop used to leave. pass^k folds every surviving iteration of a case into one
-# all() and reports the fraction of cases that cleared it, which means a case the
-# stop left with one observation is held to a weaker bar than its neighbour with
-# three. The number is still reported — withholding it would blank the headline
-# on every in-flight run — so what these pin is that it never travels without the
-# depths behind it.
+# loop used to leave. The all-pass indicator held a case the stop left with one
+# observation to a weaker bar than its neighbour with three, and flattered the
+# run. The estimator leaves a case out of every depth it was not measured to, so
+# each point of the curve is an unbiased mean over the cases that reached it.
 #
 # The case that takes its partial set from the real execution order stays in
 # the runner's suite: its subject is the loop and the aggregator together.
 # =============================================================================
 
 
-def test_compute_pass_k_holds_a_singly_measured_case_to_a_weaker_bar_and_discloses_it():
-    """The mixture made concrete: pass^1 and pass^3 averaged into one number.
+def test_compute_pass_hat_k_leaves_a_shallow_case_out_of_the_depths_it_never_reached():
+    """``tc-shallow`` kept one passed attempt; it informs pass^1 and nothing deeper.
 
-    ``tc-deep`` kept three iterations and failed one of them; ``tc-shallow`` kept
-    the one the stop happened to leave, and passed it. Reported as 0.5, which is
-    the fraction of cases that passed everything they were asked — but the two
-    cases were asked different amounts, and that is exactly what the depths say.
+    The all-pass indicator read this run as 0.5 — the shallow case's one pass standing in
+    for three — where pass^3 rests on the one case measured three times, which failed once.
     """
     results = [
         make_scored_result(test_case_id="tc-deep", k=1, goal_passes=(True,)),
@@ -532,28 +605,22 @@ def test_compute_pass_k_holds_a_singly_measured_case_to_a_weaker_bar_and_disclos
         make_scored_result(test_case_id="tc-shallow", k=2, goal_passes=(True,)),
     ]
 
-    entry = compute_pass_k(results)[("m1", "r1")]
+    entry = compute_pass_hat_k(results)[("m1", "r1")]
 
-    assert entry["pass_at_k"] == 0.5
-    assert entry["fully_passing_cases"] == 1
-    assert (entry["scored_iterations_min"], entry["scored_iterations_max"]) == (1, 3)
+    assert (entry["k"], entry["pass_hat_k"], entry["n_cases_at_k"]) == (3, 0.0, 1)
+    assert _curve(entry) == [(1, pytest.approx((2 / 3 + 1) / 2), 2), (2, pytest.approx(1 / 3), 1), (3, 0.0, 1)]
 
 
-def test_compute_pass_k_depths_are_equal_when_the_run_measured_every_case_alike():
-    """The disclosure fires on the condition, not on every run.
-
-    A complete run's cases all reached the planned depth, so min and max agree and
-    a reader has no spread to interpret — which is what makes an unequal pair
-    informative when it appears.
-    """
+def test_compute_pass_hat_k_every_point_rests_on_every_case_when_the_run_measured_them_alike():
+    """A complete run's cases all reached the planned depth, so no point loses a case."""
     results = [make_scored_result(test_case_id=f"tc{i}", k=k, goal_passes=(True,)) for i in range(3) for k in (1, 2)]
 
-    entry = compute_pass_k(results)[("m1", "r1")]
+    entry = compute_pass_hat_k(results)[("m1", "r1")]
 
-    assert (entry["scored_iterations_min"], entry["scored_iterations_max"]) == (2, 2)
+    assert _curve(entry) == [(1, 1.0, 3), (2, 1.0, 3)]
 
 
-def test_compute_pass_k_reports_the_depth_reached_by_the_model_it_is_keyed_on():
+def test_compute_pass_hat_k_reports_the_depth_reached_by_the_model_it_is_keyed_on():
     """One model's deeper cells must not speak for a model that never got past its first.
 
     A partial run stops mid-permutation, so the arms are not all equally far
@@ -568,40 +635,131 @@ def test_compute_pass_k_reports_the_depth_reached_by_the_model_it_is_keyed_on():
         make_scored_result(test_case_id="tc1", model="m2", k=1, goal_passes=(True,)),
     ]
 
-    out = compute_pass_k(results)
+    out = compute_pass_hat_k(results)
 
     assert out[("m1", "r1")]["k"] == 3
     assert out[("m2", "r1")]["k"] == 1
 
 
-def test_compute_pass_k_depths_count_scored_iterations_not_attempted_ones():
-    """``k`` and the depths answer different questions and must not be conflated.
+def test_compute_pass_hat_k_depth_counts_attempts_and_the_curve_counts_scored_ones():
+    """``k`` and the curve answer different questions and must not be conflated.
 
     An infra-excluded iteration was attempted — it raises ``k`` — and contributed
-    nothing to the all() behind pass^k, so it must not raise the scored depth. A
-    reader comparing the two is reading how much of the attempted work survived.
+    nothing to the estimate, so it must not lengthen the curve. A reader comparing the
+    two is reading how much of the attempted work survived.
     """
     results = [
         make_scored_result(test_case_id="tc1", k=1, goal_passes=(True,)),
         _infra_result(test_case_id="tc1", k=2),
     ]
 
-    entry = compute_pass_k(results)[("m1", "r1")]
+    entry = compute_pass_hat_k(results)[("m1", "r1")]
 
     assert entry["k"] == 2
-    assert (entry["scored_iterations_min"], entry["scored_iterations_max"]) == (1, 1)
+    assert len(entry["pass_hat_k_curve"]) == 1
 
 
-def test_compute_pass_k_reports_no_depth_when_nothing_was_measured():
-    """A run whose every cell was excluded measured no case to any depth.
+def test_pass_hat_k_at_a_depth_the_curve_never_reached_is_unmeasured():
+    assert pass_hat_k_at([], 2) == {"k": 2, "pass_hat_k": None, "n_cases": 0}
+    with pytest.raises(ValueError, match="k >= 1"):
+        pass_hat_k_at([], 0)
 
-    Absent rather than zero or one: the fewest and most iterations over no cases are not
-    numbers at all, on the row whose ``n_test_cases`` already says none was scored.
-    """
-    entry = compute_pass_k([_infra_result(test_case_id="tc1", k=1)])[("m1", "r1")]
 
-    assert entry["n_test_cases"] == 0
-    assert (entry["scored_iterations_min"], entry["scored_iterations_max"]) == (None, None)
+# =============================================================================
+# pool_pass_hat_k — a case's attempts across the runs of one cell
+#
+# A run is one arm, so a per-run grouping can never pool two configurations — and can
+# never pool two RUNS of one configuration either, which is what made a repeat run add
+# a second copy of each case instead of depth. The pool keys a case by its cell
+# (pass_hat_k_cell: the run's context key) as well as its test case.
+# =============================================================================
+
+
+def _pooled_result(run_id: str, k: int, passed: bool, *, test_case_id: str = "tc1", variant_key: str = "vk-1"):
+    """A result of ``run_id`` at iteration ``k`` for one variant, passing or failing its one check."""
+    result = make_scored_result(test_case_id=test_case_id, run_id=run_id, k=k, goal_passes=(passed,))
+    return result.model_copy(update={"variant_key": variant_key})
+
+
+class TestPoolingAcrossRuns:
+    """Repeat runs of one configuration add depth; runs of different configurations never pool."""
+
+    def test_two_runs_of_one_cell_are_more_attempts_at_the_same_case(self):
+        results = [_pooled_result("r1", 1, True), _pooled_result("r2", 1, False)]
+
+        entry = pool_pass_hat_k(results, cell_of_run={"r1": "cell-a", "r2": "cell-a"}, k=2)
+
+        assert entry["n_test_cases"] == 1
+        assert (entry["pass_hat_k"], entry["n_cases_at_k"]) == (0.0, 1)
+        assert _curve(entry) == [(1, 0.5, 1), (2, 0.0, 1)]
+
+    def test_two_cells_keep_one_test_case_as_two_cases(self):
+        results = [_pooled_result("r1", 1, True), _pooled_result("r2", 1, False)]
+
+        entry = pool_pass_hat_k(results, cell_of_run={"r1": "cell-a", "r2": "cell-b"}, k=2)
+
+        assert entry["n_test_cases"] == 2
+        assert (entry["pass_hat_k"], entry["n_cases_at_k"]) == (None, 0)
+        assert _curve(entry) == [(1, 0.5, 2)]
+
+    def test_a_run_the_map_does_not_name_is_its_own_cell(self):
+        results = [_pooled_result("r1", 1, True), _pooled_result("r2", 1, True)]
+
+        entry = pool_pass_hat_k(results, cell_of_run={"r1": "cell-a"}, k=1)
+
+        assert entry["n_test_cases"] == 2
+
+    def test_two_variants_never_pool_even_under_one_cell(self):
+        results = [_pooled_result("r1", 1, True), _pooled_result("r1", 2, True, variant_key="vk-2")]
+
+        entry = pool_pass_hat_k(results, cell_of_run={"r1": "cell-a"}, k=1)
+
+        assert entry["n_test_cases"] == 2
+
+    def test_the_pool_drops_and_counts_exclusions_as_the_per_run_estimate_does(self):
+        unscored = make_scored_result(rubric_scores=(("reply.tone", 4),)).model_copy(
+            update={"judge_cannot_tell": {"reply.fit": "nothing to read"}}
+        )
+        results = [_pooled_result("r1", 1, True), _infra_result(run_id="r1", k=2), unscored]
+
+        entry = pool_pass_hat_k(results, cell_of_run={"r1": "cell-a"}, k=1)
+
+        assert (entry["n_test_cases"], entry["pass_hat_k"], entry["n_cannot_tell_excluded"]) == (1, 1.0, 1)
+
+    def test_a_pool_needs_a_depth(self):
+        with pytest.raises(ValueError, match="k >= 1"):
+            pool_pass_hat_k([], cell_of_run={}, k=0)
+
+
+class TestTheCellARunsAttemptsPoolUnder:
+    """Runs pool only when a recorded context says they held the same conditions fixed."""
+
+    def test_two_runs_sharing_a_context_key_are_one_cell(self):
+        a = make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION)
+        b = make_eval_run(id="r2", context_key="ctx-1", identity_version=IDENTITY_VERSION, k_runs=3)
+        assert pass_hat_k_cell(a) == pass_hat_k_cell(b)
+
+    def test_a_different_context_is_a_different_cell(self):
+        a = make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION)
+        b = make_eval_run(id="r2", context_key="ctx-2", identity_version=IDENTITY_VERSION)
+        assert pass_hat_k_cell(a) != pass_hat_k_cell(b)
+
+    def test_one_key_stamped_under_two_predicates_is_two_cells(self):
+        a = make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION)
+        b = make_eval_run(id="r2", context_key="ctx-1", identity_version=IDENTITY_VERSION - 1)
+        assert pass_hat_k_cell(a) != pass_hat_k_cell(b)
+
+    def test_a_commissioned_and_a_witnessed_run_are_two_cells(self):
+        a = make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION)
+        b = make_eval_run(
+            id="r2", context_key="ctx-1", identity_version=IDENTITY_VERSION, apparatus_provenance="witnessed"
+        )
+        assert pass_hat_k_cell(a) != pass_hat_k_cell(b)
+
+    def test_a_run_with_no_recorded_context_pools_with_nothing(self):
+        a, b = make_eval_run(id="r1"), make_eval_run(id="r2")
+        assert a.context_key is None
+        assert pass_hat_k_cell(a) != pass_hat_k_cell(b)
 
 
 # =============================================================================
@@ -639,11 +797,29 @@ def test_compute_latency_summary_aggregates_per_model_run():
     assert stats["n_results"] == 2
 
 
-def test_compute_latency_summary_median_and_p95_nearest_rank():
+def test_compute_latency_summary_median_and_tail_at_small_n():
     results = [_lat_result(k=i, total=float(t)) for i, t in enumerate([10, 20, 30, 40, 100], start=1)]
     stats = compute_latency_summary(results)[("m1", "r1")]
-    assert stats["median_total_ms"] == 30.0  # nearest-rank p50 of 5 values
-    assert stats["p95_total_ms"] == 100.0  # tail collapses toward max at small n
+    assert stats["median_total_ms"] == 30.0  # the middle of 5 values
+    # Five totals cannot give a 95th percentile; the slowest is reported under its own name, not as one.
+    assert "p95_total_ms" not in stats
+    assert stats["max_total_ms"] == 100.0
+
+
+def test_compute_latency_summary_median_of_an_even_count_is_the_mean_of_the_middle_two():
+    """Nearest-rank took the lower middle value (20); the median of 10, 20, 30, 40 is 25."""
+    results = [_lat_result(k=i, total=float(t)) for i, t in enumerate([40, 10, 30, 20], start=1)]
+    stats = compute_latency_summary(results)[("m1", "r1")]
+    assert stats["median_total_ms"] == 25.0
+
+
+def test_compute_latency_summary_p95_is_type_8_from_thirteen_totals():
+    totals = [float(t) for t in range(10, 210, 10)]  # 20 totals, 10..200
+    results = [_lat_result(k=i, total=t) for i, t in enumerate(totals, start=1)]
+    stats = compute_latency_summary(results)[("m1", "r1")]
+    # h = (20 + 1/3) * 0.95 + 1/3 = 19.65: between the 19th (190) and 20th (200) totals.
+    assert stats["p95_total_ms"] == pytest.approx(190.0 + 0.65 * 10.0)
+    assert stats["max_total_ms"] == 200.0
 
 
 def test_compute_latency_summary_skips_none_latency():
@@ -764,7 +940,7 @@ def test_a_component_nothing_measured_is_absent_not_zero():
     stats = compute_latency_summary(results)[("m1", "r1")]
 
     assert "mean_total_ms" not in stats
-    assert "median_total_ms" not in stats and "p95_total_ms" not in stats
+    assert "median_total_ms" not in stats and "p95_total_ms" not in stats and "max_total_ms" not in stats
     assert "mean_tool_ms" not in stats
     assert stats["mean_llm_ms"] == 60.0
 
@@ -786,6 +962,146 @@ def test_compute_latency_summary_separates_models():
     out = compute_latency_summary(results)
     assert out[("m1", "r1")]["mean_total_ms"] == 100.0
     assert out[("m2", "r1")]["mean_total_ms"] == 300.0
+
+
+# =============================================================================
+# compute_async_delivery_summary — the engine's six async-delivery measures (#573)
+# =============================================================================
+
+#: The six names the engine's catalogue declares for the run-summary rollup.
+_ASYNC_MEASURES = (
+    "async_deliveries",
+    "async_deliveries_substituted",
+    "async_delivery_mean_elapsed_ms",
+    "async_delivery_median_elapsed_ms",
+    "async_delivery_p95_elapsed_ms",
+    "async_delivery_elapsed_n",
+)
+
+
+def _delivery(
+    elapsed_ms: float | None = None, *, substituted: bool = False, status: str = "delivered"
+) -> AsyncDelivery:
+    """One piece of background work; a failed one carries its error, as the model requires."""
+    return AsyncDelivery(
+        tool="scout",
+        status=status,
+        elapsed_ms=elapsed_ms,
+        substituted=substituted,
+        error="boom" if status == "failed" else None,
+    )
+
+
+def _async_result(deliveries: list[AsyncDelivery] | None, *, k: int = 1, **kwargs: Any) -> EvalResult:
+    return make_eval_result(
+        eval_run_id="r1", model="m1", test_case_id=f"tc-{k}", k_iteration=k, async_deliveries=deliveries, **kwargs
+    )
+
+
+def test_async_summary_counts_real_and_substituted_and_times_only_the_real_ones():
+    """A substituted delivery is counted apart and its clock is no duration of the tool."""
+    results = [
+        _async_result([_delivery(100.0), _delivery(300.0, status="failed"), _delivery(5.0, substituted=True)], k=1),
+        _async_result([_delivery(200.0), _delivery(None, status="undelivered")], k=2),
+    ]
+
+    row = compute_async_delivery_summary(results)[("m1", "r1")]
+
+    assert row["async_deliveries"] == 4  # every non-substituted entry, whatever its status
+    assert row["async_deliveries_substituted"] == 1
+    assert row["async_delivery_elapsed_n"] == 3  # the undelivered one measured nothing; the substituted one is out
+    assert row["async_delivery_mean_elapsed_ms"] == pytest.approx(200.0)
+    assert row["async_delivery_median_elapsed_ms"] == pytest.approx(200.0)
+    assert "async_delivery_p95_elapsed_ms" not in row, "three durations cannot give a 95th percentile"
+
+
+def test_async_summary_reads_the_tail_type_8_from_thirteen_durations():
+    durations = [float(t) for t in range(10, 210, 10)]  # 20 durations, 10..200
+    results = [_async_result([_delivery(t)], k=i) for i, t in enumerate(durations, start=1)]
+
+    row = compute_async_delivery_summary(results)[("m1", "r1")]
+
+    # h = (20 + 1/3) * 0.95 + 1/3 = 19.65: between the 19th (190) and 20th (200) durations.
+    assert row["async_delivery_p95_elapsed_ms"] == pytest.approx(190.0 + 0.65 * 10.0)
+    assert row["async_delivery_median_elapsed_ms"] == pytest.approx(105.0)  # the mean of the middle two
+    assert row["async_delivery_elapsed_n"] == 20
+
+
+def test_a_host_with_no_async_tools_gets_the_measures_absent_not_zero():
+    """``async_deliveries=None`` is "nothing watched": no group, so no count of zero that reads as "never called"."""
+    assert compute_async_delivery_summary([_async_result(None)]) == {}
+
+
+def test_watched_with_nothing_started_is_a_real_zero_and_no_duration():
+    row = compute_async_delivery_summary([_async_result([])])[("m1", "r1")]
+
+    assert row == {"async_deliveries": 0, "async_deliveries_substituted": 0}
+
+
+def test_async_summary_drops_an_infra_excluded_cell_as_the_latency_summary_does():
+    results = [
+        _async_result([_delivery(100.0)], k=1),
+        _async_result([_delivery(1.0)], k=2, infra_error="apparatus: cassette miss in replay mode"),
+    ]
+
+    row = compute_async_delivery_summary(results)[("m1", "r1")]
+
+    assert (row["async_deliveries"], row["async_delivery_mean_elapsed_ms"]) == (1, 100.0)
+
+
+def test_a_toy_host_run_summary_carries_all_six_async_measures():
+    """The run summary every host reads carries the engine's rollup, with the values the descriptors state."""
+    run = make_eval_run(status="completed")
+    durations = [float(t) for t in range(10, 140, 10)]  # 13 durations: the fewest a p95 is read from
+    results = [
+        make_eval_result(
+            eval_run_id=run.id,
+            scope_id=run.scope_id,
+            model="m1",
+            test_case_id=f"tc-{i}",
+            async_deliveries=[_delivery(t), _delivery(substituted=True)],
+        )
+        for i, t in enumerate(durations)
+    ]
+    storage = ToyhostStorage([run], {run.id: results})
+
+    summary = run_summary(
+        storage,
+        run.id,
+        run.scope_id,
+        load_run_listed=lambda _id, _scope: run,
+        row_columns=lambda _results: {},
+        profile=toyhost_profile(),
+    )
+
+    [row] = summary["rows"]
+    assert {name: row.get(name) for name in _ASYNC_MEASURES} == {
+        "async_deliveries": 13,
+        "async_deliveries_substituted": 13,
+        "async_delivery_mean_elapsed_ms": pytest.approx(70.0),
+        "async_delivery_median_elapsed_ms": pytest.approx(70.0),
+        # h = (13 + 1/3) * 0.95 + 1/3 = 13.0: the 13th duration.
+        "async_delivery_p95_elapsed_ms": pytest.approx(130.0),
+        "async_delivery_elapsed_n": 13,
+    }
+    assert all(name in METRIC_DESCRIPTORS for name in _ASYNC_MEASURES)
+
+
+def test_a_toy_host_run_with_no_async_tools_carries_none_of_them():
+    run = make_eval_run(status="completed")
+    results = [make_eval_result(eval_run_id=run.id, scope_id=run.scope_id, model="m1")]
+
+    summary = run_summary(
+        ToyhostStorage([run], {run.id: results}),
+        run.id,
+        run.scope_id,
+        load_run_listed=lambda _id, _scope: run,
+        row_columns=lambda _results: {},
+        profile=toyhost_profile(),
+    )
+
+    [row] = summary["rows"]
+    assert not set(_ASYNC_MEASURES) & set(row)
 
 
 # =============================================================================
@@ -963,12 +1279,12 @@ def test_compute_cost_summary_least_measured_config_does_not_rank_cheapest():
 
 
 def test_compute_cost_summary_still_counts_an_infra_excluded_cells_spend():
-    """Cost is the family's deliberate exception, and this pins it as a decision.
+    """Program spend is the family's deliberate exception, and this pins it as a decision.
 
     pass^k, latency, the dimension means and the composite all drop an
     infra-excluded cell, because none of them can read a harness failure as
-    evidence about the candidate. Cost answers a different question — what the
-    program spent — and the tokens a cell burned before its apparatus broke were
+    evidence about the candidate. Program spend answers a different question — what
+    the program spent — and the tokens a cell burned before its apparatus broke were
     still billed. ``run_summary`` also takes its group set from these keys, so
     dropping them would delete an all-excluded model's headline row from the
     report whose whole job is to disclose it.
@@ -982,11 +1298,35 @@ def test_compute_cost_summary_still_counts_an_infra_excluded_cells_spend():
 
     assert row["n_results"] == 2
     assert row["total_cost_usd"] == pytest.approx(0.04)
-    assert row["n_prod_cost_usd"] == 2
 
     # And the group survives even when every one of its cells was excluded.
     all_excluded = compute_cost_summary([_cost_result(k=1, cost=0.02, infra_error="apparatus: seed failed")])
     assert all_excluded[("m1", "r1")]["n_results"] == 1
+
+
+def test_compute_cost_summary_a_faulted_cell_does_not_lower_the_comparison_cost():
+    """#619: the production-replicating axis compares configurations, so a fault-shortened cell is not in it.
+
+    The apparatus broke the second cell after it had spent a fraction of a whole one. Averaged in, the arm's
+    mean prod cost would halve on a fault of the rig; program spend still counts those dollars.
+    """
+    results = [
+        _cost_result(k=1, cost=0.02, prod_cost=0.010),
+        _cost_result(k=2, cost=0.02, prod_cost=0.010),
+        _cost_result(k=3, cost=0.002, prod_cost=0.001, infra_error="apparatus: cassette miss in replay mode"),
+    ]
+
+    row = compute_cost_summary(results)[("m1", "r1")]
+
+    assert row["mean_prod_cost_usd"] == pytest.approx(0.010)
+    assert row["n_prod_cost_usd"] == 2
+    assert row["total_cost_usd"] == pytest.approx(0.042)
+    assert row["n_cost_usd"] == 3
+
+    # A group whose every cell faulted keeps its row and its spend, and measures no comparison cost.
+    faulted = compute_cost_summary([_cost_result(k=1, cost=0.02, prod_cost=0.01, infra_error="apparatus: seed failed")])
+    assert faulted[("m1", "r1")]["total_cost_usd"] == pytest.approx(0.02)
+    assert "mean_prod_cost_usd" not in faulted[("m1", "r1")]
 
 
 def test_compute_cost_summary_empty_results():
@@ -1144,7 +1484,7 @@ def test_compute_dimension_summary_excludes_the_same_cells_pass_k_does():
     ]
 
     dims = compute_dimension_summary(results)
-    passk = compute_pass_k(results)
+    passk = compute_pass_hat_k(results)
 
     assert dims[("m1", "r1", "reply.grounding")]["n"] == passk[("m1", "r1")]["n_test_cases"] == 1
 
@@ -1299,9 +1639,9 @@ class TestAJudgeThatCouldNotTell:
 
     def test_pass_k_counts_the_scored_trial_and_leaves_out_the_other(self):
         told, scored = self._pair()
-        entry = compute_pass_k([told, scored])[("m1", "r1")]
+        entry = compute_pass_hat_k([told, scored])[("m1", "r1")]
         assert entry["n_test_cases"] == 1
-        assert entry["fully_passing_cases"] == 1
+        assert entry["pass_hat_k"] == 1.0
         # Left out, and counted as left out for this reason — never a silent shrink.
         assert entry["n_cannot_tell_excluded"] == 1
 
@@ -1314,12 +1654,12 @@ class TestAJudgeThatCouldNotTell:
         """The transcript and outcome axes are in neither measure, so they cannot exclude from them."""
         result = make_eval_result(judge_cannot_tell={TRANSCRIPT_DIM_ID: "no turns"})
         assert result_composite(result) is not None
-        assert compute_pass_k([result])[("sonnet", "run-1")]["n_test_cases"] == 1
+        assert compute_pass_hat_k([result])[("sonnet", "run-1")]["n_test_cases"] == 1
 
     def test_a_candidate_failure_still_fails_whatever_the_judge_could_not_tell(self):
         failed = make_eval_result(candidate_error="402", judge_cannot_tell={"reply.refusal": "nothing to read"})
-        entry = compute_pass_k([failed])[("sonnet", "run-1")]
-        assert entry["n_test_cases"] == 1 and entry["fully_passing_cases"] == 0
+        entry = compute_pass_hat_k([failed])[("sonnet", "run-1")]
+        assert entry["n_test_cases"] == 1 and entry["pass_hat_k"] == 0.0
 
 
 class TestWhatAJudgedDimCountsAs:

@@ -6,7 +6,7 @@ This module is the read tier's foundation: one projection,
 answers *which of these runs may honestly be compared with each other*.
 
 **Nothing here is stored.** Records are recomputed per query, exactly as
-:func:`~threetears.evals.contracts.scoring.compute_pass_k` is. That keeps the row shape free to
+:func:`~threetears.evals.contracts.scoring.compute_pass_hat_k` is. That keeps the row shape free to
 evolve while the surfaces that consume it are still being learned — a persisted
 projection would freeze it against every future consumer. Aggregation is
 calibrated to a corpus of dozens-to-hundreds of cells (one operator, one
@@ -33,13 +33,24 @@ import csv
 import io
 import json
 import math
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Hashable, Iterable, Mapping, Sequence
 from datetime import datetime
+from fractions import Fraction
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, get_args
 
 from pydantic import Field, model_validator
 
 from threetears.evals.analysis.numbers import format_number
+from threetears.evals.analysis.stats import (
+    SIGNIFICANCE_ALPHA,
+    ChangeLabel,
+    case_rate_interval,
+    exact_decimal,
+    holm_adjust,
+    interval_clears,
+    separation_p,
+)
+from threetears.evals.contracts.analysis_measures import BarDecision
 from threetears.evals.contracts.base import EvalBaseModel, VerbatimText
 from threetears.evals.contracts.hashing import canonical_digest, canonical_json
 from threetears.evals.contracts.host.profile import HostProfile
@@ -55,6 +66,7 @@ from threetears.evals.contracts.models import (
     RubricScale,
     utc_now_iso,
 )
+from threetears.evals.contracts.surface import FrontierDominance
 from threetears.evals.contracts.result_condition import (
     JUDGE_CANNOT_TELL_OUTCOME,
     ResultOutcome,
@@ -63,10 +75,20 @@ from threetears.evals.contracts.result_condition import (
     counted_rubric_scores,
     counted_score,
     delivered_a_turn,
-    harness_faulted,
     trial_exclusion,
 )
-from threetears.evals.contracts.scoring import compute_pass_k, result_composite
+from threetears.evals.contracts.scoring import (
+    CompositeBasis,
+    PassHatPoint,
+    composite_basis,
+    pool_composite_bases,
+    case_pass_hat_k,
+    pass_hat_k_at,
+    pass_hat_k_cell,
+    pool_pass_hat_k,
+    pool_pass_hat_k_attempts,
+    result_composite,
+)
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
@@ -92,6 +114,7 @@ log = get_logger(__name__)
 # the raw per-observation judge score under that exact name — and it still maps to
 # `mean_score` in the aggregation layer, because the mapping is about what a CELL holds,
 # never about whether the row name resolves.
+#: The observation-level measure holding a result's composite quality score.
 METRIC_COMPOSITE = "composite"
 METRIC_COST_USD = "cost_usd"
 
@@ -117,6 +140,7 @@ METRIC_COST_USD = "cost_usd"
 #    meanings. Stated as the direction it is: no dotted dim name exists in the
 #    tree today, and this reason holds the shape open for one rather than
 #    describing one.
+#: The observation-level measure holding one judged rubric dimension's score: one row per dimension.
 METRIC_SCORE = "score"
 
 # The per-result wall-clock, read straight off `EvalResult.latency` rather than
@@ -140,20 +164,22 @@ METRIC_TOTAL_MS = "total_ms"
 # question wants: their DIVERGENCE is what the catalog says separates a worse agent from
 # a changed world, and a divergence between two metrics is one pivot rather than two
 # levels of a coordinate.
+#: The observation-level measure holding the dual-score transcript axis.
 METRIC_TRANSCRIPT = TRANSCRIPT_DIM_ID
+#: The observation-level measure holding the dual-score outcome axis.
 METRIC_OUTCOME = OUTCOME_DIM_ID
 # One row per goal-state check a result evaluated, keyed by `ScoreRecord.goal_check`: 1.0 passed, 0.0 not.
 # A projected metric because this projection is the one producer behind export, pivot and every pooled
 # read, and a code-graded verdict a reader cannot key by check is one they cannot act on.
 METRIC_GOAL_STATE = "goal_state"
 
-# Every measure `project_score_records` can emit. Unlike the factor set, this one
-# is genuinely CLOSED — the projection is the only producer of score records, so
-# a name outside it can only be a typo. That distinction is why an unknown metric
-# is refused while an unknown dotted axis is not: a mistyped axis names a key a
-# run might not have set, but a mistyped metric names nothing that exists, and
-# answering it with an empty grid is indistinguishable from an empty scope.
-# A metric added to the projection adds itself here, in the same edit.
+#: Every measure `project_score_records` can emit. Unlike the factor set, this one
+#: is genuinely CLOSED — the projection is the only producer of score records, so
+#: a name outside it can only be a typo. That distinction is why an unknown metric
+#: is refused while an unknown dotted axis is not: a mistyped axis names a key a
+#: run might not have set, but a mistyped metric names nothing that exists, and
+#: answering it with an empty grid is indistinguishable from an empty scope.
+#: A metric added to the projection adds itself here, in the same edit.
 PROJECTED_METRICS = frozenset(
     {METRIC_COMPOSITE, METRIC_COST_USD, METRIC_SCORE, METRIC_TRANSCRIPT, METRIC_OUTCOME, METRIC_GOAL_STATE}
 )
@@ -171,8 +197,8 @@ SCOPED_METRICS: dict[str, tuple[str, str, str]] = {
     METRIC_GOAL_STATE: ("goal_check", "goal-state check", "check"),
 }
 
-# How each scoped metric must be read, in one sentence per metric, for every surface's help text (REST and MCP
-# alike) — rendered from the table rather than written beside it, so no surface can describe a subset.
+#: How each scoped metric must be read, in one sentence per metric, for every surface's help text (REST and MCP
+#: alike) — rendered from the table rather than written beside it, so no surface can describe a subset.
 SCOPED_METRICS_HELP = " ".join(
     f"'{metric}' has one row per {noun}: put '{field}' on an axis, or each cell pools every {noun}."
     for metric, (field, noun, _row) in SCOPED_METRICS.items()
@@ -285,7 +311,7 @@ def degraded_run_disclosures(runs: Iterable[EvalRun]) -> dict[str, str]:
 
     The seam the *pooling* surfaces read. :func:`completeness_disclosure` answers
     about one run, and the run-scoped surfaces (``get_run``, ``run_summary``,
-    ``compare_runs``) each call it for the run they are about. An aggregator has
+    ``runs_compare``) each call it for the run they are about. An aggregator has
     no such run: it pools dozens into a rate, and every one of them was silently
     admitted because nothing had asked the question over a *set*. This asks it
     once, so ``frontier``, ``results_pivot`` and ``history`` cannot come to
@@ -331,6 +357,11 @@ NOT_TESTED_LABEL = "not tested"
 # is the more persuasive of the two possible errors.
 PAIRED_EFFECT_LABEL = "d_z"
 UNPAIRED_EFFECT_LABEL = "d"
+# The same two, bias-corrected (Hedges' g): what the engine's own tests report since the change from
+# Cohen's d — ``compare_two_runs``' ``hedges_g`` and a regression flag's. A different number from d at the
+# sample sizes an eval runs (0.5 against d's 0.88 at three pairs), so it is never printed under d's name.
+PAIRED_HEDGES_LABEL = "g_z"
+UNPAIRED_HEDGES_LABEL = "g"
 
 
 def significance_read(*, significant: bool | None, p: float | None = None, effect: float | None = None) -> str:
@@ -375,6 +406,7 @@ def format_significance(
     p: float | None = None,
     effect: float | None = None,
     n: int | None = None,
+    hedges: bool = False,
 ) -> str:
     """The read plus the statistics behind it, as one cell a surface prints verbatim.
 
@@ -406,11 +438,16 @@ def format_significance(
         p: The p-value the verdict was thresholded against.
         effect: The effect size.
         n: The sample size the test would have run over.
+        hedges: Whether ``effect`` is Hedges' g (the engine's tests, ``hedges_g``) rather than Cohen's d (a
+            stored delta-table row's historical ``d_z``). Decides the name with ``paired``.
 
     Returns:
         e.g. ``"significant (p=0.0123, d_z=1.42, n=8)"`` or ``"not tested (n=1)"``.
     """
-    effect_label = PAIRED_EFFECT_LABEL if paired else UNPAIRED_EFFECT_LABEL
+    if hedges:
+        effect_label = PAIRED_HEDGES_LABEL if paired else UNPAIRED_HEDGES_LABEL
+    else:
+        effect_label = PAIRED_EFFECT_LABEL if paired else UNPAIRED_EFFECT_LABEL
     # The one number rule, not a fixed spelling of their own. A p-value is not
     # read against a column of its peers the way pass^k is — it is checked
     # against one threshold (α=0.05 vs p=0.04998), which the rule's four
@@ -509,7 +546,7 @@ class LatencyPartition(EvalBaseModel):
 
     **Derived, never stored.** ``orchestration_ms`` is ``total_ms`` minus the two
     parts, recomputed per query exactly as :func:`project_score_records` and
-    :func:`~threetears.evals.contracts.scoring.compute_pass_k` are. A persisted copy would be a
+    :func:`~threetears.evals.contracts.scoring.compute_pass_hat_k` are. A persisted copy would be a
     second answer to a question the three captured components already settle.
 
     **What is deliberately NOT in here.** The drain wait, the judge phase and every
@@ -655,12 +692,14 @@ class ScoreRecord(EvalBaseModel):
     through :func:`_contestant_key` and carry the version in the key — but neither of
     those reads a ``ScoreRecord`` at all. The surface that reads this row is ``pivot``,
     whose axis set is deliberately open: ``_axis_value`` reads any declared coordinate by
-    name, so ``row_factor="variant_key"`` groups the raw digest and pools every predicate
-    version into one cell. That is the same defect one lens over, and it is **not** fixed
-    here, because gating it means deciding that one particular axis implies a partition —
-    which the open-axis design does not currently let this module assert. Tracked
-    rather than papered over; ``variant_identity_version`` is itself a declared coordinate,
-    so a caller can pivot on the pair today.
+    name, so ``row_factor="variant_key"`` groups the raw digest. The pivot does not gate
+    there, because gating means deciding that one particular axis implies a partition,
+    which the open-axis design does not let this module assert; it **discloses** instead
+    (#672). A cell grouped on an identity key that pools more than one version of that
+    key's predicate names the versions (:attr:`PivotCell.identity_versions`), and the
+    table says which cells do (:attr:`PivotTable.identity_pooling_disclosure`).
+    ``variant_identity_version`` is itself a declared coordinate, so pivoting the key
+    against it separates the versions.
 
     The sentence stood here unqualified for some time while nothing did it, which is how
     the wrong merge it forbids reached production on the two lenses that now gate.
@@ -716,9 +755,9 @@ class ScoreRecord(EvalBaseModel):
     # — so a pivot on `judge_model` partitions on the same value the
     # comparability badge reads, and the two surfaces cannot disagree about
     # which runs used the same judge. `None` means the run was not judged (judge) or ran
-    # no simulated user, or recorded none (simulator). Deliberately only these two of
-    # the pinned coordinates: cassette and clean-snapshot provenance stay
-    # in the digest, un-pivotable, until a query needs them.
+    # no simulated user, or recorded none (simulator). Clean-snapshot provenance stays
+    # in the digest, un-pivotable, until a query needs it; cassette mode is carried below,
+    # because a cost pivot needed it.
     #
     # **`judge_model` is the run's PIN and is NOT the model that scored this
     # row's dimension.** Under the judge-model cascade (role default < run pin <
@@ -732,6 +771,21 @@ class ScoreRecord(EvalBaseModel):
     # than one of them being made to mean both things.
     judge_model: str | None = None
     simulator_model: str | None = None
+
+    # The cassette mode the run RECORDED (`off`, `capture` or `replay`), run-level like the
+    # judge pin above. Carried because a replayed result did not spend what a live one does:
+    # a replayed background delivery spent no inner-agent dollars, so its `cost_usd` is
+    # smaller for a reason in the apparatus, not the configuration (#658). A cost pivot reads
+    # it to withhold a cell that pools replayed with live results, the export carries it as a
+    # column, and a caller can pivot on it like any other coordinate. `None` only on a row
+    # built without a run.
+    cassette_mode: str | None = None
+    # How many of this result's async deliveries a harness supplied rather than the candidate's
+    # background work producing them — a replayed capture or a seeded finding
+    # (`count_substituted_deliveries`). The per-result half of the same fact: a seeded finding
+    # substitutes in a run that recorded `off`, so the run's mode alone cannot say which results
+    # spent less. Non-zero is what withholds the result's production-replicating cost.
+    substituted_deliveries: int = 0
 
     created_at: str = ""
 
@@ -849,6 +903,28 @@ class ScoreRecord(EvalBaseModel):
     # --- The measurement ---
     metric: str
     value: float | None = None
+
+    # The roles a `cost_usd` row's dollars were summed over (`EvalResult.cost_roles`), set on
+    # cost rows alone (#625). What the sum covers differs per run — metered third-party spend
+    # enters only for a run whose operator declared a rate — so two equal totals can cover
+    # different things, and a cost pivot reads this to say which compositions each cell pooled
+    # (`pooled_cost_compositions`, the reading every pooled cost surface shares). `None` on every
+    # other row, which measures no dollars.
+    cost_roles: list[str] | None = None
+
+    @model_validator(mode="after")
+    def _only_a_cost_row_names_its_cost_roles(self) -> ScoreRecord:
+        """A cost composition qualifies a cost and nothing else.
+
+        Returns:
+            The validated record.
+
+        Raises:
+            ValueError: A non-cost row carries a cost composition.
+        """
+        if self.metric != METRIC_COST_USD and self.cost_roles is not None:
+            raise ValueError(f"a {self.metric!r} row measures no dollars, so it has no cost composition")
+        return self
 
     # --- The kind's own grade, for a kind whose scoring is code rather than a judge ---
     #
@@ -1042,7 +1118,7 @@ def place_results(
     known_run_ids: set[str] | None,
     *,
     source: str,
-    archived_run_ids: set[str] | None = None,
+    archived_run_ids: set[str] | None,
 ) -> tuple[list[PlacedResult], ProjectionExclusions]:
     """Match each result to its run and resolved subject, accounting for every drop.
 
@@ -1078,7 +1154,9 @@ def place_results(
             ``None`` asserts no archival narrowing was applied, which is correct
             only for a caller whose cohort already includes archived runs; it is
             never a licence to leave archival exclusions attributed to a filter
-            that did not make them.
+            that did not make them. Required with no default, here and on the
+            three surfaces that forward it, so a caller that never thought about
+            archival fails with ``TypeError`` instead of blaming ``status``.
 
     Returns:
         The placed results in input order — each carrying a non-blank
@@ -1124,6 +1202,15 @@ def place_results(
 #: The types :func:`lever_level` renders through ``str()`` rather than as canonical JSON.
 SCALAR_LEVEL_TYPES: tuple[type, ...] = (str, int, float, bool)
 
+#: The level a lever sits at when the launch NAMED it with the value ``null`` — the operator set it
+#: to nothing, which is a level, and is not the inherited ``'—'`` of a run that never named it.
+#: JSON's own spelling, so it is the token the structured branch of :func:`lever_level` already
+#: produced for ``None`` and the pivot and the export (which render every resolved value through
+#: :func:`lever_level`) agree with the coverage map about it. Like every scalar it can collide with a
+#: string level spelled the same (``"1024"`` and ``1024`` share one already); that is the rendering's
+#: accepted limit, not a reason to spell a null as something JSON does not.
+NULL_LEVEL = "null"
+
 
 def lever_level(value: Any) -> str:
     """Render one lever's resolved value as the level a cohort is keyed on.
@@ -1139,12 +1226,18 @@ def lever_level(value: Any) -> str:
     downstream can undo. :attr:`~threetears.evals.contracts.campaign.VariantIndexEntry.levers` carries
     the display beside the content hash for a reader who needs to recognise the level.
 
+    **``None`` is** :data:`NULL_LEVEL`, **deliberately.** A caller hands one in only for a lever the
+    launch named as ``null`` — a reader returning nothing is "the lever does not apply", and the
+    caller skips it before reaching here — so the null is a level the operator set.
+
     Args:
         value: The resolved value, JSON-safe by the host's contract.
 
     Returns:
         The level.
     """
+    if value is None:
+        return NULL_LEVEL
     return str(value) if isinstance(value, SCALAR_LEVEL_TYPES) else canonical_json(value)
 
 
@@ -1237,7 +1330,7 @@ def project_score_records(
     results: list[EvalResult],
     *,
     known_run_ids: set[str] | None = None,
-    archived_run_ids: set[str] | None = None,
+    archived_run_ids: set[str] | None,
     profile: HostProfile,
 ) -> ScoreProjection:
     """Flatten runs + results into one row per (cell, measure).
@@ -1287,6 +1380,8 @@ def project_score_records(
         its own — and emits a single dimensionless null row when the judge scored
         none.
     """
+    from threetears.evals.contracts.usage_capture import count_substituted_deliveries
+
     placed, exclusions = place_results(
         runs, results, known_run_ids, source="project_score_records", archived_run_ids=archived_run_ids
     )
@@ -1311,6 +1406,8 @@ def project_score_records(
             "context_identity_version": run.identity_version,
             "judge_model": run.judge_model,
             "simulator_model": run.simulator_model,
+            "cassette_mode": run.cassette_mode,
+            "substituted_deliveries": count_substituted_deliveries(result),
             "created_at": run.created_at,
             "factors": factors_by_run[run.id],
             "outcome": classify_result(result).value,
@@ -1362,14 +1459,16 @@ def project_score_records(
             ScoreRecord(
                 metric=METRIC_COMPOSITE,
                 value=composite,
-                dimension_basis=sorted({score.dim for score in result.rubric_scores})
-                if composite is not None
-                else None,
+                dimension_basis=composite_basis(result),
                 host_measures=result.host_measures,
                 **composite_coordinates,
             )
         )
-        records.append(ScoreRecord(metric=METRIC_COST_USD, value=result.cost_usd, **coordinates))
+        records.append(
+            ScoreRecord(
+                metric=METRIC_COST_USD, value=result.cost_usd, cost_roles=list(result.cost_roles), **coordinates
+            )
+        )
 
         # One row per judged dimension, carrying the RAW score on the dimension's own scale
         # (1-5, or 1/0 for pass/fail, named by `rubric_scale`) — not the 0-1 composite scale. Read straight off
@@ -2550,9 +2649,12 @@ def compute_comparison_sets(
 # labeled toggle — it is the right answer when the question really is "what did
 # the whole population do", and the cost of the default (a thin scenario gets an
 # equal vote) is exactly what the per-cell `n` is displayed to expose.
+#: Weighting mode: every scenario (case) gets an equal vote in a cell's number, however many observations it has.
 WEIGHTING_EQUAL_PER_SCENARIO = "equal_per_scenario"
+#: Weighting mode: every observation gets an equal vote, so a case with more repeats counts for more.
 WEIGHTING_SAMPLE_WEIGHTED = "sample_weighted"
 WEIGHTINGS = (WEIGHTING_EQUAL_PER_SCENARIO, WEIGHTING_SAMPLE_WEIGHTED)
+#: The weighting a pivot uses when none is named: equal per scenario.
 DEFAULT_WEIGHTING = WEIGHTING_EQUAL_PER_SCENARIO
 
 # A cell's three states, which a renderer must keep visually distinct.
@@ -2570,9 +2672,17 @@ DEFAULT_WEIGHTING = WEIGHTING_EQUAL_PER_SCENARIO
 # instead produced the exact collapse the first paragraph forbids, one state
 # over — the cell fell to the empty-cell branch and claimed nobody tried a
 # combination that was tried and failed in the harness.
+#: A pivot cell state: observations landed here and carried a value for the measure.
 CELL_MEASURED = "measured"
+#: A pivot cell state: no observation landed here — the combination was never run, which is not a zero.
 CELL_NOT_RUN = "not_run"
+#: A pivot cell state: observations landed here, but none carried a value for the measure.
 CELL_UNMEASURED = "unmeasured"
+#: A fourth state, and not a kind of the other three: the cell HAS measured observations, and its
+#: mean is withheld because it would pool two quantities that are not one distribution — today a
+#: cost cell pooling replayed results with live ones (#658). `PivotCell.withheld` says why, and
+#: `n` / `n_cases` / `outcomes` still say what the cell held, so withheld never reads as empty.
+CELL_WITHHELD = "withheld"
 
 # Observation-level metric name -> the registry name of the AGGREGATE that an
 # aggregating surface (`pivot` cell, `history` series point) actually reports.
@@ -2686,7 +2796,7 @@ def _metric_vocabulary(accepted: frozenset[str]) -> str:
 # accepted sets without a gloss fails loudly instead of reaching a help text that never mentions it.
 _METRIC_GLOSS: dict[str, str] = {
     METRIC_COMPOSITE: "0-1 quality",
-    METRIC_COST_USD: "spend in USD",
+    METRIC_COST_USD: "measuring spend in USD: the candidate's and the judge's and simulator's",
     METRIC_SCORE: "the raw judge score: 1-5, or 1/0 on a pass/fail dimension",
     METRIC_TOTAL_MS: "one result's wall-clock",
     METRIC_TRANSCRIPT: "dual-score axis, 1-5 and NOT a dimension",
@@ -2807,6 +2917,43 @@ class PivotCell(EvalBaseModel):
     # Observation counts per scoring outcome, so a cell whose mean rests largely
     # on candidate failures cannot look like one that rests on clean passes.
     outcomes: dict[str, int] = {}
+    #: Why the cell's value is withheld, set exactly when ``status`` is ``withheld``: on a cost pivot,
+    #: the cell pools results from runs that replayed their third party with results from runs that
+    #: ran it live, and a replayed result did not spend what a live one does, so their mean is neither
+    #: one's spend (#658). The counts above still say what the cell held.
+    withheld: str | None = None
+    #: The cassette modes the runs behind the cell's valued observations recorded, sorted. One entry is
+    #: a uniform cell; ``replay`` beside another mode is the mix a cost cell withholds.
+    cassette_modes: list[str] = []
+    #: On a cost pivot, the role sets the cell's dollars were summed over
+    #: (:func:`pooled_cost_compositions`), from the observations that carried a value (#625). More than
+    #: one entry means the cell's own mean pools totals that covered different things; two cells whose
+    #: entries differ are not comparable on cost, which :attr:`PivotTable.cost_compositions_differ`
+    #: flags at the table. Empty on any other metric.
+    cost_compositions: list[list[str]] = []
+    #: On a composite pivot, what the cell's composites were meaned over (:func:`pooled_composite_basis`):
+    #: the union of the observations' bases, and ``ragged`` when they were meaned over different dimension
+    #: sets, so the cell's mean averages different questions (#638). ``None`` on any other metric and on a
+    #: cell with no valued observation.
+    composite_basis: CompositeBasis | None = None
+    #: Of the ``n`` valued observations, how many carried a background delivery a harness supplied — seeded
+    #: or replayed (:func:`~threetears.evals.contracts.usage_capture.count_substituted_deliveries`). Counted on
+    #: every metric, because a substituted delivery is what the candidate read as well as what it did not pay
+    #: for. ``0`` on a cell whose observations ran every delivery live.
+    n_substituted: int = 0
+    #: On a cost pivot, the sentence a cell carries when ``n_substituted`` is above zero: a substituted delivery
+    #: spent none of its dollars, so the cell's spend leaves them out, and a cell built ONLY from such
+    #: observations is no live run's spend at all. ``None`` on any other metric and on a cell with none.
+    #: Stated on the cell rather than left to the export's ``substituted_deliveries`` column, because the cell
+    #: is what is read.
+    substitution_disclosure: str | None = None
+    #: Identity key -> the predicate versions its observations here were stamped at, for each identity
+    #: key (``variant_key``, ``context_key``) the table groups or filters on, and only where the cell
+    #: pools more than one (#672). Two keys stamped at different versions cannot be shown FROM THE STAMP
+    #: ALONE to describe one contestant — the frontier ranks them apart for that reason — so a cell
+    #: pooling them may be averaging two conditions as repeats of one. Disclosed rather than split,
+    #: because the pivot's axes are open and no one axis may imply a partition.
+    identity_versions: dict[str, list[int]] = {}
 
 
 class SimpsonsFlag(EvalBaseModel):
@@ -2866,6 +3013,23 @@ class PivotTable(EvalBaseModel):
     #: How many of ``n_observations`` came from those runs. The weight the caveat
     #: carries: two of two hundred is a footnote and two of four is the answer.
     n_degraded_observations: int = 0
+    #: On a cost pivot, whether the table's valued observations were summed over more than one role set
+    #: (#625) — within one cell or between cells. True means some cost here covered roles another did not,
+    #: so a cheaper cell may only have priced fewer things; each cell's ``cost_compositions`` says which.
+    cost_compositions_differ: bool = False
+    #: On a composite pivot, whether the table's valued composites were meaned over more than one dimension
+    #: set (#638) — within one cell or between cells. True means a difference between two cells may be a
+    #: difference in what was averaged rather than in what was measured; each cell's ``composite_basis`` says
+    #: which sets it pooled.
+    composite_bases_differ: bool = False
+    #: The sentence a comparison carries when its runs recorded different cassette modes
+    #: (:func:`cassette_mode_disclosure`, the words ``runs_compare`` and ``comparison_sets`` use), over the
+    #: runs behind this table's observations, or ``None`` when they all recorded one (#658). It qualifies
+    #: every metric, not only cost: a replayed arm was also measured on the questions its capture asked.
+    cassette_mode_disclosure: str | None = None
+    #: One sentence naming every cell that pools more than one identity version of the key it is grouped
+    #: or filtered on (:attr:`PivotCell.identity_versions`), or ``None`` when none does (#672).
+    identity_pooling_disclosure: str | None = None
     #: Plans the cost estimate made that no cell describes — a model no level of the model axis carries, or a
     #: template no cell at that model holds alone — each as ``model`` or ``model (template)``. Named rather than
     #: dropped, since a prediction with nowhere to sit is still a fact about the plan: an arm that was priced and
@@ -3026,10 +3190,11 @@ def _effective_formula(metric: str, weighting: str, *, scoped: bool = True) -> s
         # over — so claiming the dispersion
         # rides on rows would send an operator reconstructing an interval to `n`
         # instead of the case count and hand them one too narrow by ~sqrt(n/n_cases).
-        # Only `sample_weighted` takes its SEM over the flat observations.
+        # `sample_weighted` averages the flat rows, but its SEM is clustered by test case
+        # (`_aggregate`), so its dispersion does not ride on rows either.
         formula += f"; n and the outcome counts are over (result x {row_noun}) rows here, not results"
         if weighting == WEIGHTING_SAMPLE_WEIGHTED:
-            formula += ", and so is the dispersion"
+            formula += "; the dispersion is clustered by test case, so the rows of one case are not independent draws"
         else:
             formula += "; the dispersion is over test-case means — a BASIS pooling does not change, though the means themselves do"
     return formula
@@ -3044,15 +3209,19 @@ def _aggregate(values_by_case: dict[str, list[float]], weighting: str) -> tuple[
 
     Returns:
         ``(value, sem)``. The SEM is over whatever the value averages, so the
-        two always describe the same estimate.
+        two always describe the same estimate, and it counts cases, not observations:
+        under ``sample_weighted`` the flat mean takes the cluster-robust SEM over the
+        cases (:func:`~threetears.evals.analysis.stats.clustered_standard_error`), since
+        a case's repeats are not independent draws.
     """
-    from threetears.evals.analysis.stats import standard_error_of_mean
+    from threetears.evals.analysis.stats import clustered_standard_error, standard_error_of_mean
 
     if weighting == WEIGHTING_EQUAL_PER_SCENARIO:
         case_means = [sum(vals) / len(vals) for vals in values_by_case.values()]
         return sum(case_means) / len(case_means), standard_error_of_mean(case_means)
     flat = [v for vals in values_by_case.values() for v in vals]
-    return sum(flat) / len(flat), standard_error_of_mean(flat)
+    cases = [case for case, vals in values_by_case.items() for _ in vals]
+    return sum(flat) / len(flat), clustered_standard_error(flat, cases)
 
 
 def _simpsons_flags(
@@ -3122,6 +3291,130 @@ def _simpsons_flags(
     return flags
 
 
+#: Each identity key a pivot can group on, and the coordinate carrying the predicate version that minted it.
+_IDENTITY_KEY_VERSION_FIELDS: dict[str, str] = {
+    "variant_key": "variant_identity_version",
+    "context_key": "context_identity_version",
+}
+
+
+def _pooled_identity_versions(records: Sequence[ScoreRecord], keys: Iterable[str]) -> dict[str, list[int]]:
+    """The identity versions a cell pools, for each identity key it is grouped or filtered on (#672).
+
+    Args:
+        records: The cell's observations.
+        keys: The identity keys among the table's axes and filters.
+
+    Returns:
+        Key -> its versions, ascending, only for a key whose observations here carry more than one.
+    """
+    pooled: dict[str, list[int]] = {}
+    for key in keys:
+        field = _IDENTITY_KEY_VERSION_FIELDS[key]
+        versions = sorted({version for record in records if (version := getattr(record, field)) is not None})
+        if len(versions) > 1:
+            pooled[key] = versions
+    return pooled
+
+
+def _identity_pooling_disclosure(cells: Sequence[PivotCell]) -> str | None:
+    """Name every cell that pools more than one identity version of the key it is grouped on.
+
+    The frontier's reason in the pivot's terms: two keys stamped at different versions cannot be shown from
+    the stamp alone to describe one contestant, so the frontier ranks them apart (:func:`_contestant_key`).
+    The pivot's axes are open, so it does not split; it says which cells pool and how to read them apart.
+
+    Args:
+        cells: The table's cells.
+
+    Returns:
+        The sentence, or ``None`` when no cell pools versions.
+    """
+    pooled = [cell for cell in cells if cell.identity_versions]
+    if not pooled:
+        return None
+    named = "; ".join(
+        f"({cell.row}, {cell.column}): "
+        + ", ".join(
+            f"{key} stamped at {', '.join(f'v{version}' for version in versions)}"
+            for key, versions in cell.identity_versions.items()
+        )
+        for cell in pooled
+    )
+    return (
+        f"{len(pooled)} cell(s) pool observations stamped at more than one identity version of the key they are "
+        f"grouped on — {named}. Two keys stamped at different versions cannot be shown FROM THE STAMP ALONE to "
+        "describe the same contestant (the frontier ranks them apart), so such a cell may average two conditions "
+        "as repeats of one. Pivot the key against its version coordinate (variant_identity_version or "
+        "context_identity_version) to read each version alone."
+    )
+
+
+def _substitution_disclosure(n_substituted: int, n_valued: int) -> str | None:
+    """The sentence a cost cell carries when some of its observations had a delivery a harness supplied.
+
+    Disclosed rather than withheld, for the reason :func:`_cost_withheld` gives: two arms over a seeded
+    template carry the same substitutions, so the comparison between their cells is honest. But a reader of
+    one cell's dollars needs to know they leave the substituted deliveries' spend out — and when every
+    observation substituted, that the figure describes no live run.
+
+    Args:
+        n_substituted: Valued observations carrying at least one substituted delivery.
+        n_valued: Valued observations in the cell.
+
+    Returns:
+        The sentence, or ``None`` when nothing was substituted.
+    """
+    if n_substituted == 0:
+        return None
+    share = "every one" if n_substituted == n_valued else f"{n_substituted}"
+    return (
+        f"{share} of the {n_valued} observation(s) behind this spend carried a background delivery a harness "
+        "supplied (seeded or replayed), which spent none of its dollars, so they are not in this figure"
+        + (": it is no live run's spend." if n_substituted == n_valued else ".")
+    )
+
+
+def _cost_withheld(records: Sequence[ScoreRecord]) -> str | None:
+    """Why a cost mean over these valued observations is withheld, or ``None`` when it is reported (#658).
+
+    **A cost mean that pools replayed with live results is withheld rather than disclosed**, because a
+    caveat beside a number does not stop it being read, and this number is neither population's spend. The
+    observations come from runs that recorded ``replay`` and runs that ran the third party live: a replayed
+    background delivery spent none of its dollars, and a replay serves only the asks its capture made (any
+    other ask stops the cell), so even where nothing was substituted the replayed conversations are a
+    selected population whose spend is not the live one's. A mix of ``off`` and ``capture`` is not withheld:
+    both run the third party live.
+
+    A uniform cell — every observation replayed, or every one live — is reported: its mean is one
+    population's, and :attr:`PivotTable.cassette_mode_disclosure` says when the table's cells differ.
+
+    **A substituted delivery within one mode is not a reason to withhold.** A seeded finding substitutes in
+    a run that recorded ``off``, but it does so on the template's own cases, so two arms over those cases
+    carry the same substitutions and the comparison between their cells is honest; the dollars it did not
+    spend were never measuring spend either. The cell says so (:attr:`PivotCell.substitution_disclosure`), and
+    each row's ``substituted_deliveries`` is an export column. Withholding on it would blank the cost of every
+    arm over a seeded template.
+
+    Args:
+        records: The observations a cost mean would be taken over.
+
+    Returns:
+        The reason, or ``None``.
+    """
+    modes = sorted({record.cassette_mode for record in records if record.cassette_mode is not None})
+    if SUBSTITUTING_CASSETTE_MODE in modes and len(modes) > 1:
+        live = ", ".join(mode for mode in modes if mode != SUBSTITUTING_CASSETTE_MODE)
+        return (
+            f"pools results from runs that recorded cassette mode {SUBSTITUTING_CASSETTE_MODE} with results from "
+            f"runs that recorded {live}. A replayed result re-served a recording rather than running its third "
+            "party: where it replayed a background delivery it spent none of that delivery's dollars, and a "
+            "replay serves only the asks its capture made, so the mean of the two is neither one's spend. Put "
+            "'cassette_mode' on an axis to read each alone."
+        )
+    return None
+
+
 def compute_pivot(
     records: list[ScoreRecord],
     *,
@@ -3159,6 +3452,13 @@ def compute_pivot(
     caveat is carried at the table in ``completeness_disclosures`` rather than marked
     per cell. The predicate is the completeness record, never the run's status.
 
+    **What a cell pools that is not one quantity is said, or its number withheld.** On a cost pivot each
+    cell names the role sets its dollars covered (``cost_compositions``) and the table flags when they
+    differ (#625); a cost cell pooling replayed results with live ones is ``withheld`` with the reason,
+    since a caveat does not stop a mean being read (#658); the table carries the comparison surfaces' cassette-mode sentence when its runs recorded
+    different modes; and a cell grouped or filtered on an identity key that pools more than one version of
+    its predicate names them (#672).
+
     Args:
         records: Rows from :func:`project_score_records`.
         row_factor: Coordinate to use as the row axis.
@@ -3195,8 +3495,8 @@ def compute_pivot(
 
     Returns:
         A :class:`PivotTable` whose every cell carries ``n``, dispersion, and its
-        measured/unmeasured/not-run status, plus the completeness disclosures of
-        the short runs its numbers were pooled from.
+        measured/unmeasured/not-run/withheld status, plus the completeness disclosures of
+        the short runs its numbers were pooled from and the pooling disclosures above.
 
     Raises:
         PivotError: Unknown weighting or metric, an undotted axis or filter the
@@ -3288,6 +3588,10 @@ def compute_pivot(
 
     rows = sorted({row for row, _ in grouped})
     columns = sorted({column for _, column in grouped})
+    # The identity keys this table groups or filters on, each of which must not silently pool versions.
+    identity_keys = sorted(
+        {name for name in (row_factor, column_factor, *(filters or {})) if name in _IDENTITY_KEY_VERSION_FIELDS}
+    )
 
     cells: list[PivotCell] = []
     measured: dict[tuple[str, str], PivotCell] = {}
@@ -3320,6 +3624,7 @@ def compute_pivot(
                     values_by_case.setdefault(record.test_case_id, []).append(record.value)
 
             n_valued = sum(len(v) for v in values_by_case.values())
+            identity_versions = _pooled_identity_versions(at_cell, identity_keys)
             if not values_by_case:
                 cells.append(
                     PivotCell(
@@ -3330,6 +3635,39 @@ def compute_pivot(
                         status=CELL_UNMEASURED,
                         n_unmeasured=len(at_cell),
                         outcomes=outcomes,
+                        identity_versions=identity_versions,
+                    )
+                )
+                continue
+
+            # What the value is drawn over is the valued observations, so the qualifiers below read those.
+            valued = [record for record in at_cell if record.value is not None]
+            n_substituted = sum(1 for record in valued if record.substituted_deliveries > 0)
+            qualifiers: dict[str, Any] = {
+                "cassette_modes": sorted({r.cassette_mode for r in valued if r.cassette_mode is not None}),
+                "cost_compositions": pooled_cost_compositions(valued) if metric == METRIC_COST_USD else [],
+                "composite_basis": pooled_composite_basis(valued) if metric == METRIC_COMPOSITE else None,
+                "identity_versions": identity_versions,
+                "n_substituted": n_substituted,
+                "substitution_disclosure": (
+                    _substitution_disclosure(n_substituted, len(valued)) if metric == METRIC_COST_USD else None
+                ),
+            }
+            withheld = _cost_withheld(valued) if metric == METRIC_COST_USD else None
+            if withheld is not None:
+                cells.append(
+                    PivotCell(
+                        predicted=planned,
+                        n_unplanned=unplanned,
+                        row=row,
+                        column=column,
+                        status=CELL_WITHHELD,
+                        withheld=withheld,
+                        n=n_valued,
+                        n_cases=len(values_by_case),
+                        n_unmeasured=len(at_cell) - n_valued,
+                        outcomes=outcomes,
+                        **qualifiers,
                     )
                 )
                 continue
@@ -3347,6 +3685,7 @@ def compute_pivot(
                 sem=sem,
                 n_unmeasured=len(at_cell) - n_valued,
                 outcomes=outcomes,
+                **qualifiers,
             )
             cells.append(cell)
             measured[(row, column)] = cell
@@ -3355,12 +3694,16 @@ def compute_pivot(
     # when they stop breaking the comparison down. Computed from the observations
     # rather than from the cells above, because the row weighting is the entire
     # mechanism the Simpson's guard exists to catch.
+    # A cost column whose observations the cells' own rule would withhold has no pooled figure either.
     pooled: dict[str, float] = {}
     for column in columns:
+        in_column = [r for r in selected if _axis_value(r, column_factor) == column and r.value is not None]
+        if metric == METRIC_COST_USD and _cost_withheld(in_column) is not None:
+            continue
         by_case: dict[str, list[float]] = {}
-        for record in selected:
-            if _axis_value(record, column_factor) == column and record.value is not None:
-                by_case.setdefault(record.test_case_id, []).append(record.value)
+        for record in in_column:
+            assert record.value is not None
+            by_case.setdefault(record.test_case_id, []).append(record.value)
         if by_case:
             pooled[column], _ = _aggregate(by_case, weighting)
 
@@ -3392,6 +3735,15 @@ def compute_pivot(
             if any(record.run_id == run_id for record in selected)
         },
         n_degraded_observations=sum(1 for record in selected if record.run_id in (completeness_disclosures or {})),
+        cost_compositions_differ=metric == METRIC_COST_USD
+        and len(pooled_cost_compositions([r for r in selected if r.value is not None])) > 1,
+        composite_bases_differ=metric == METRIC_COMPOSITE
+        and (table_basis := pooled_composite_basis([r for r in selected if r.value is not None])) is not None
+        and table_basis.ragged,
+        cassette_mode_disclosure=cassette_mode_disclosure(
+            {record.run_id: record.cassette_mode for record in selected if record.cassette_mode is not None}
+        ),
+        identity_pooling_disclosure=_identity_pooling_disclosure(cells),
         unplaced_predicted_models=sorted({plan.label for plan in predictions} - placed),
     )
 
@@ -3421,10 +3773,10 @@ def _planned_cost_per_observation(
 
     A planned cell's prediction is its sweep's TOTAL (``n_observations`` draws), and a pivot cell's
     value is a mean per observation, so the prediction is divided by the planned observation count —
-    and so is its band. That is not a rescaling of convenience: the total's half-width is
-    ``t * s * sqrt(n + n²/N)`` over ``N`` historical observations, and divided by ``n`` it is
-    ``t * s * sqrt(1/n + 1/N)``, exactly the prediction band for the mean of the ``n`` planned
-    observations. One derivation, read two ways.
+    and so is its band. That is not a rescaling of convenience: the mean of the ``n`` planned
+    observations is their total over ``n``, so the band on the total, divided by ``n``, is exactly the
+    band on that mean, at the same level and on the same assumptions.
+    One prediction, read two ways.
 
     Args:
         estimate: The estimate, or the planned costs, or None.
@@ -3528,9 +3880,17 @@ def _plan_for(
 # gap. `comparison_sets` is where a reader goes to group by template.
 #
 # Domination is over three axes: pass^k (higher better), production-replicating
-# cost (lower better), and total latency (lower better). mean-composite is shown
+# cost (lower better), and mean total latency (lower better). mean-composite is shown
 # beside pass^k as the secondary quality read but is NOT a domination
 # axis — ranking on two correlated quality measures would double-weight quality.
+#
+# Domination is a claim that one contestant is worse, so it is DECIDED, by test, never read off
+# point estimates: two contestants drawn from one distribution differ on every continuous axis,
+# and comparing the numbers flagged one of them dominated about a third of the time. See
+# `_dominance_p` for the rule. Latency is ranked on the MEAN, not a tail, for the same reason:
+# a ranking axis must carry a test, and at the sizes a frontier sees a 95th percentile has
+# none — a 95% interval on a p95 has no upper end below 72 observations — while a mean has a paired test over
+# cases. The tail is read beside it (the run summary's `p95_total_ms` / `max_total_ms`).
 #
 # Cost is restricted to the production-replicating roles (candidate + inner_agent
 # + external). A frontier computed on judge/simulator-inclusive cost ranks a
@@ -3585,19 +3945,21 @@ class TwoPillarDisclosure(EvalBaseModel):
 
     The verdict definition requires clearing the bar on BOTH a capability axis
     and a boundary/robustness axis, so a cheap model that is brittle
-    off-distribution is disqualified rather than crowned cheapest. That second
-    pillar has no data path today — no scored rubric dim resolves to a rubric
-    axis — so it is descoped WITH disclosure rather than silently absent: an
-    operator must never mistake "nothing was disqualified" for "nothing was
-    checked". The frontier gains real disqualification when the axis reaches
-    results; until then this rides on the answer.
+    off-distribution is disqualified rather than crowned cheapest. A scored rubric
+    dim now carries its axis (``RubricScore.axis``), and the frontier's pass^k and
+    composite read capability dims only, so a boundary dim no longer moves them
+    either way. The boundary pillar is decided as guardrails — each arm against a
+    control, in the analysis bundle — and the frontier, which ranks contestants
+    against an absolute bar with no control, does not yet disqualify on it. So it is
+    still descoped WITH disclosure: an operator must never mistake "nothing was
+    disqualified" for "nothing was checked".
     """
 
     boundary_pillar_available: bool = False
-    verdict_rests_on: str = "capability pillar (pass^k) alone"
+    verdict_rests_on: str = "capability pillar (pass^k over capability criteria) alone"
     reason: str = (
-        "no scored rubric dim resolves to a rubric axis (capability|boundary), "
-        "so boundary-axis disqualification cannot be computed"
+        "boundary dimensions are left out of pass^k and the composite and decided as guardrails against a "
+        "control in the analysis bundle; the frontier does not disqualify a contestant on one"
     )
 
 
@@ -3647,7 +4009,7 @@ def _template_span_disclosure(span_entries: Sequence[str]) -> str | None:
     contestant stack — everything that would ship, and nothing about the conditions it was
     measured under. ``template_id`` is one of those conditions: it is hashed into the
     CONTEXT key, and :func:`compute_comparison_sets` groups on it. So every scenario suite a
-    variant was ever entered into pools into this one point, and ``pass_at_k``,
+    variant was ever entered into pools into this one point, and ``pass_hat_k``,
     ``mean_composite`` and ``mean_total_ms`` are each one number over cases drawn from all
     of them.
 
@@ -3697,7 +4059,7 @@ def _template_span_disclosure(span_entries: Sequence[str]) -> str | None:
 
 
 class FrontierDominator(EvalBaseModel):
-    """One contestant that beats another point on every axis, named as a ROW is named.
+    """One contestant shown to beat another point on every axis it measured, named as a ROW is named.
 
     The identity triple of :class:`FrontierPoint`, carried rather than projected down to
     ``model``. A point is one ``(subject, variant, identity version)`` and every surface renders it as
@@ -3725,6 +4087,34 @@ class FrontierDominator(EvalBaseModel):
     #: is not blocked: the gate says these are two contestants, and two contestants beating
     #: each other on measured axes is what a frontier is for. Only the LABEL needed fixing.
     variant_identity_version: int
+    #: The Holm-adjusted p the domination was decided on, below :data:`~threetears.evals.analysis.stats.SIGNIFICANCE_ALPHA`
+    #: (see :func:`_dominance_p`). Carried because a verdict a reader cannot check against its statistic is
+    #: an assertion. ``None`` on a dominator stored before domination was tested: that one was read off
+    #: point estimates.
+    p_value: float | None = None
+
+
+#: How a frontier verdict's pick stands on cost against the other contestants that cleared the bar with a
+#: cost — see :attr:`FrontierVerdict.cost_decision`.
+FrontierCostDecision = Literal["shown_cheapest", "not_separated", "untested", "only_cleared"]
+
+
+class FrontierCostTie(EvalBaseModel):
+    """A contestant that cleared the bar with a cost, which the verdict's pick was NOT shown cheaper than.
+
+    Named as a row is named (the identity triple :class:`FrontierDominator` carries, for its reasons), with
+    the cost it was read at and the p the comparison reached, so a reader can check why it stays in the set.
+    """
+
+    variant_key: str
+    model: str
+    variant_identity_version: int
+    production_replicating_cost: float
+    #: The Holm-adjusted p of the test that the pick costs less than this contestant, at or above
+    #: :data:`~threetears.evals.analysis.stats.SIGNIFICANCE_ALPHA`. ``None`` when no test could decide — fewer
+    #: than two cases carried a cost on a side, or every case differed by one amount over too few cases for the
+    #: exact test to reach α — which is untested, not a tie the data showed.
+    p_value: float | None = None
 
 
 class FrontierPoint(EvalBaseModel):
@@ -3756,21 +4146,54 @@ class FrontierPoint(EvalBaseModel):
 
     # Quality — pass^k is the headline (and the domination axis), mean-composite
     # the secondary read shown alongside it. Both always travel together.
-    # None when no case was scored (every iteration excluded): nothing was measured,
+    # pass^k is the chance that `k` attempts at a case ALL pass (τ-bench; never pass@k, the
+    # chance that at least one does), estimated without bias per case and averaged over the
+    # cases measured at least `k` times — a case's attempts pooled across every run of one
+    # cell (`scoring.pool_pass_hat_k`), so a repeat run adds depth rather than a second copy.
+    # `k` is the subject's: every point is ranked at the same depth (see SubjectFrontier.k).
+    # None when no case was scored that deep: nothing was measured,
     # which is not a pass^k of zero, and an unmeasured axis never wins a domination.
-    pass_at_k: float | None
+    pass_hat_k: float | None
+    #: The depth ``pass_hat_k`` is read at — the subject's, so every point is ranked at one.
+    k: int = 1
+    #: The cases ``pass_hat_k`` averages over: case-within-cell units scored at least ``k`` times.
     n_pass_cases: int = 0
-    fully_passing_cases: int = 0
+    #: pass^1..pass^K for this point, each with its own case count. pass^1 is the per-case pass
+    #: rate; the deeper points show how fast reliability decays with repetition.
+    pass_hat_k_curve: list[PassHatPoint] = []
+    #: The interval on ``pass_hat_k`` at :data:`~threetears.evals.analysis.stats.INTERVAL_LEVEL`, over its
+    #: cases (:func:`~threetears.evals.analysis.stats.case_rate_interval`): the cases are the draws, and each
+    #: case's own estimate is noisy too. ``None`` below two cases, where none is estimable, and on a point
+    #: stored before pass^k carried one.
+    pass_hat_k_ci_low: float | None = None
+    #: The high end of that interval; ``None`` exactly when ``pass_hat_k_ci_low`` is.
+    pass_hat_k_ci_high: float | None = None
+    #: Attempts behind this point with nothing for pass^k to conjoin — no goal-state check and no judge — left
+    #: out of pass^k and its curve rather than read as failures (#688).
+    n_pass_no_criterion: int = 0
+    #: Why ``pass_hat_k`` is None when the reason is that no attempt carried a pass criterion: the point has
+    #: no pass^k, not one of 0, and so no cost per acceptable outcome either. None otherwise.
+    pass_hat_k_unmeasured_reason: str | None = None
+    #: How this point's pass^k reads against the bar, decided by its interval the way every campaign bar is
+    #: (:func:`~threetears.evals.analysis.stats.interval_clears`): ``cleared``, ``missed``, ``undecided`` (the
+    #: interval straddles the bar — neither a pass nor a failure), ``no_interval`` (fewer than two cases, not
+    #: read) or ``no_data``. ``None`` when no bar was supplied.
+    bar_decision: BarDecision | None = None
     mean_composite: float | None = None
     composite_sem: float | None = None
     n_composite_cases: int = 0
+    #: What ``mean_composite`` was meaned over (:func:`pooled_composite_basis`), ``ragged`` when this point's
+    #: results were scored on different dimension sets (#638). ``None`` when no composite was pooled, and on a
+    #: point stored before the basis was carried — which says nothing about whether that pool was ragged.
+    composite_basis: CompositeBasis | None = None
 
     # Cost — production-replicating only. ``None`` (never 0) when no
     # result at this point reported one; ``cost_is_partial`` when some did and some did
     # not — a result contributes nothing here when its production roles observed no cost,
     # when it carries no usage rows at all, or when a substituted delivery withheld the
     # figure (its background dollars were never spent, so the observed sum would understate
-    # production).
+    # production), or when it is no turn the candidate took: a call its model refused, or a cell
+    # the harness faulted, whose shortened spend would let the rig make the point look cheaper.
     production_replicating_cost: float | None = None
     n_cost: int = 0
     cost_is_partial: bool = False
@@ -3779,13 +4202,16 @@ class FrontierPoint(EvalBaseModel):
     #: their costs are not comparable, so ranking one cheaper than the other is ranking a
     #: convention rather than a config. Empty when no result recorded a composition.
     cost_compositions: list[list[str]] = []
-    # cost / pass-probability — the alternate denominator. ``None`` when
-    # cost is unknown or pass^k is zero (dividing by a zero pass rate is undefined,
+    # cost / pass-probability — the alternate denominator. The probability is pass^1, the
+    # chance ONE attempt passes, because the cost is the mean of one attempt: dividing it by
+    # pass^k would price a k-attempt streak at one attempt's cost. ``None`` when
+    # cost is unknown or pass^1 is zero (dividing by a zero pass rate is undefined,
     # not "infinitely expensive").
     cost_per_acceptable_outcome: float | None = None
 
     # Latency — total wall-clock ms, the performance axis. Mean over the turns the candidate took
-    # (`delivered_a_turn`) that harvested a total; ``None`` when none did.
+    # (`delivered_a_turn`) that harvested a total; ``None`` when none did. The mean, not a tail: it is
+    # the latency statistic a domination can be TESTED on at these sizes (see the section comment).
     mean_total_ms: float | None = None
     n_latency: int = 0
     #: Results whose candidate's model refused or errored with no turn taken — failures pass^k counts,
@@ -3807,7 +4233,7 @@ class FrontierPoint(EvalBaseModel):
     #: variant/context identity split as a side effect of a rendering fix and would move
     #: every stored variant's identity with it. It qualifies EVERY axis here, not only
     #: cost: ``cost_is_partial`` already says a replayed arm withheld its cost, and
-    #: ``pass_at_k`` / ``mean_composite`` / ``cost_per_acceptable_outcome`` carry no such
+    #: ``pass_hat_k`` / ``mean_composite`` / ``cost_per_acceptable_outcome`` carry no such
     #: mark while resting on the same mixed pool — the ratio worst of all, since it
     #: divides a partial cost by a confounded pass rate and the two errors do not cancel.
     cassette_mode_disclosure: str | None = None
@@ -3818,7 +4244,7 @@ class FrontierPoint(EvalBaseModel):
     #: ``comparison_sets`` groups on it) while the variant key is the stack that would ship,
     #: so every suite a variant entered pools into this one point — correctly by that design
     #: and silently by this surface's rendering. It qualifies every axis here, not one:
-    #: ``pass_at_k``, ``mean_composite`` and ``mean_total_ms`` are each a weighted average
+    #: ``pass_hat_k``, ``mean_composite`` and ``mean_total_ms`` are each a weighted average
     #: over a mix of suites of unequal difficulty, and ``cost_per_acceptable_outcome``
     #: divides by that same pooled pass rate. Without it, adding an easy suite to a scope
     #: lifts the headline of every variant entered into it, with nothing on the row to show it.
@@ -3840,25 +4266,42 @@ class FrontierPoint(EvalBaseModel):
     #: ``n_pass_cases``, ``n_composite_cases``, ``n_cost``, ``n_latency`` — is partly
     #: made of a matrix that never finished. It moves the verdict rather than only
     #: qualifying it: admitting two truncated runs can take one contestant's
-    #: pass^k from ``(3/3)`` to ``(4/4)``, lower its mean cost by a third,
+    #: pass^k from 1.00 over 3 cases to 1.00 over 4, lower its mean cost by a third,
     #: and flip its rival from *on frontier* to *dominated*.
     completeness_disclosures: dict[str, str] = {}
 
     # Domination — a dominated point is grayed, never dropped: silently removing a
     # cheap-but-brittle variant looks identical to it never having run.
+    #: True only when another point is SHOWN to beat this one (:attr:`dominance` ``dominated``).
+    #: False is not a claim that nothing beats it. On a point stored before domination was tested
+    #: (``dominance`` is ``None``), this was read off point estimates.
     dominated: bool = False
-    #: Every point that beats this one on every axis, each carrying the identity a row
-    #: carries. In the order the points are sorted, which is the order the table prints
-    #: them, so a reader scanning for a named dominator meets them in that order.
+    #: ``dominated`` — some other point is shown better on every axis this one measured, by the test
+    #: :func:`_dominance_p` states; ``not_separated`` — this point was tested against at least one other
+    #: and no domination was shown, which says nothing about whether one exists; ``untested`` — no
+    #: test against any other point could decide (fewer than two cases on an axis, no shared axis, or an axis
+    #: on which every case differed by one amount over too few cases for the exact test to reach α — the
+    #: reading :func:`~threetears.evals.analysis.stats.level_difference` also calls untested).
+    #: ``None`` on a point stored before domination was tested.
+    dominance: FrontierDominance | None = None
+    #: Every point shown to beat this one on every axis, each carrying the identity a row
+    #: carries and the p it was shown at. In the order the points are sorted, which is the order
+    #: the table prints them, so a reader scanning for a named dominator meets them in that order.
     dominated_by: list[FrontierDominator] = []
 
 
 class FrontierVerdict(EvalBaseModel):
-    """The cheapest variant clearing the operator's bar, for one subject.
+    """The cheapest variant clearing the operator's bar for one subject — or, where the data cannot pick
+    one, the set it is among.
 
-    Present only when a bar was supplied AND at least one point both cleared it
-    and reported a production-replicating cost — a pick cannot be named cheapest
-    on a cost nobody observed. ``cost_is_partial`` rides along so a pick made on a
+    Present only when a bar was supplied AND at least one point both cleared it — its pass^k
+    interval wholly at or above the bar, the rule every campaign bar is read by — and reported a
+    production-replicating cost — a pick cannot be named cheapest
+    on a cost nobody observed. "Cheapest" is decided by test, as domination is: the lowest point cost
+    is named the cheapest only when it is shown cheaper than each rival (:attr:`cost_decision`), and
+    otherwise the verdict names it beside every rival it was not shown cheaper than (:attr:`tied_with`).
+    Two contestants drawn from one distribution always differ in point cost, so the lowest one alone
+    would crown one of them every time. ``cost_is_partial`` rides along so a pick made on a
     partially-observed cost basis says so, and ``cassette_mode_disclosure`` for the
     stronger version of the same duty: a verdict is a RECOMMENDATION, so one drawn from
     a pool in which some observations replayed their third-party half has to carry that
@@ -3871,9 +4314,18 @@ class FrontierVerdict(EvalBaseModel):
     runs which never finished their matrix.
     """
 
+    #: The contestant with the lowest point cost among those that cleared the bar with a cost. It is
+    #: named THE cheapest only when :attr:`cost_decision` is ``shown_cheapest`` (or ``only_cleared``);
+    #: otherwise it is one member, listed first, of the set :attr:`tied_with` completes.
     variant_key: str
     model: str
-    pass_at_k: float
+    pass_hat_k: float
+    #: The depth ``pass_hat_k`` was read at — the subject's, the same as every point's.
+    k: int = 1
+    #: The interval the bar was decided on (:attr:`FrontierPoint.pass_hat_k_ci_low`). ``None`` only on a
+    #: verdict stored before the bar read intervals: that one compared the point pass^k with the bar.
+    pass_hat_k_ci_low: float | None = None
+    pass_hat_k_ci_high: float | None = None
     production_replicating_cost: float | None = None
     cost_is_partial: bool = False
     cassette_mode_disclosure: str | None = None
@@ -3892,6 +4344,19 @@ class FrontierVerdict(EvalBaseModel):
     #: renderer using whether the sentence above is set, which are two predicates for one
     #: question and only agree while one producer keeps them in step.
     variant_identity_version: int
+    #: Whether the pick is SHOWN cheaper than every other contestant that cleared the bar with a cost, by the
+    #: separation test the frontier's dominance reads, one comparison per rival, Holm-adjusted together
+    #: (:func:`_cost_ties`). ``shown_cheapest`` — every comparison separated in the pick's favour;
+    #: ``not_separated`` — at least one rival could not be shown dearer, so the data says only that the
+    #: cheapest is among the pick and :attr:`tied_with`, and the verdict names that set rather than a winner;
+    #: ``untested`` — no test against any rival left in the set could decide (too few priced cases, or every
+    #: case differing by one amount over too few cases for the exact test to reach α); ``only_cleared`` — no
+    #: other contestant cleared the bar with a cost. ``None`` on a verdict stored before the pick was tested:
+    #: that one was the lowest point cost, a winner the data may not have shown.
+    cost_decision: FrontierCostDecision | None = None
+    #: The rivals the pick was not shown cheaper than, ordered by point cost. Empty when ``cost_decision``
+    #: is ``shown_cheapest`` or ``only_cleared``.
+    tied_with: list[FrontierCostTie] = []
 
 
 class SubjectFrontier(EvalBaseModel):
@@ -3900,14 +4365,23 @@ class SubjectFrontier(EvalBaseModel):
     Per-subject always: composite quality is derived from the subject's own rubric
     and is not comparable across subjects, so two subjects are two frontiers, never one.
     ``n_cleared_bar`` is carried so an absent verdict distinguishes "no variant cleared
-    the bar" from "some cleared it but none has a known cost to be cheapest by".
+    the bar" from "some cleared it but none has a known cost to be cheapest by", and
+    ``n_undecided_bar`` so "none cleared" distinguishes "shown short" from "too few cases to say".
     """
 
     subject_id: str
     subject_label: str = ""
+    #: The depth every point's ``pass_hat_k`` is read at, the bar applied to and domination
+    #: decided on: the smallest ``k_runs`` among the subject's ranked runs, the depth every run
+    #: here was commissioned to. One depth for the subject because pass^3 and pass^1 are
+    #: different quantities, and ranking one contestant on each ranks the depths. A contestant
+    #: measured deeper keeps its extra depth as precision (and on its curve), not as a harder bar.
+    k: int = 1
     points: list[FrontierPoint] = []
     verdict: FrontierVerdict | None = None
     n_cleared_bar: int = 0
+    #: Points whose pass^k interval straddles the bar: neither cleared nor missed.
+    n_undecided_bar: int = 0
 
 
 class FrontierResult(EvalBaseModel):
@@ -3921,6 +4395,12 @@ class FrontierResult(EvalBaseModel):
     """
 
     bar: float | None = None
+    #: The 1–5 level a capability criterion had to reach for an attempt to pass, in every pass^k here
+    #: (#642): the behavior's declared threshold
+    #: (:meth:`~threetears.evals.contracts.host.BarRegistry.pass_threshold`) where the caller had one, else 3.
+    #: A frontier stored before this was recorded defaults to 3, which is the threshold every pass^k was
+    #: computed at then.
+    rubric_threshold: int = 3
     subjects: list[SubjectFrontier] = []
     two_pillar: TwoPillarDisclosure = TwoPillarDisclosure()
     n_results: int = 0
@@ -4053,16 +4533,18 @@ def _frontier_point(
     results: list[EvalResult],
     *,
     contestant: ContestantKey,
+    k: int,
+    cell_of_run: Mapping[str, Hashable],
     rubric_threshold: int,
     cassette_modes_by_run: Mapping[str, str],
     templates_by_run: Mapping[str, str | None],
     degraded_by_run: Mapping[str, str],
-) -> FrontierPoint:
-    """Aggregate one contestant's results into a single frontier point.
+) -> tuple[FrontierPoint, _ContestantCases]:
+    """Aggregate one contestant's results into a single frontier point, and the per-case values behind it.
 
     Every axis aggregates over its own measured subset — pass^k reuses
-    :func:`~threetears.evals.contracts.scoring.compute_pass_k` (which drops infra-excluded
-    iterations), composite drops the nulls :func:`~threetears.evals.contracts.scoring.result_composite`
+    :func:`~threetears.evals.contracts.scoring.pool_pass_hat_k` (which drops infra-excluded
+    iterations, and pools a case's attempts across the runs of one cell), composite drops the nulls :func:`~threetears.evals.contracts.scoring.result_composite`
     returns for infra-excluded and no-rubric results, cost sums only the
     production-replicating roles per result and means over the results that
     reported one, and latency means over the results that harvested a total. The
@@ -4077,6 +4559,10 @@ def _frontier_point(
             can disagree" structural instead of a claim a later change to the key could
             silently falsify — the same reason the gate lives IN the group key rather than
             beside it.
+        k: The subject's depth, at which ``pass_hat_k`` is read (:attr:`SubjectFrontier.k`).
+        cell_of_run: Run id → the cell its attempts are repeats of
+            (:func:`~threetears.evals.contracts.scoring.pass_hat_k_cell`), so two runs of one
+            configuration pool their attempts at a case and two configurations never do.
         rubric_threshold: Pass threshold forwarded to pass^k.
         cassette_modes_by_run: Every candidate run's recorded ``cassette_mode``, keyed by
             run id; narrowed here to the runs these results came from. **Required and
@@ -4098,9 +4584,10 @@ def _frontier_point(
             caller that forgot it rank a truncated contestant as if it were whole.
 
     Returns:
-        A :class:`FrontierPoint` with quality, cost, latency, and every
-        denominator. Domination is filled by the caller, which needs the subject's
-        other points to compute it.
+        A :class:`FrontierPoint` with quality (and its interval), cost, latency, and every
+        denominator, and the per-case values each axis averages, which a domination test pairs
+        on. Domination and the bar are filled by the caller, which needs the subject's other
+        points and the bar to decide them.
     """
     from threetears.evals.contracts.usage_capture import count_substituted_deliveries, production_replicating_cost
 
@@ -4108,14 +4595,26 @@ def _frontier_point(
     # Unpacked from the group key, never re-derived off a row.
     variant_key, identity_version = contestant
 
-    # pass^k — reuse the canonical aggregator, which drops infra-excluded
-    # iterations and still reports a (model, run) with only failures as 0/0. A
-    # variant can span runs, so sum across the per-run entries: the fraction of
-    # all this contestant's cases that fully passed.
-    per_run = compute_pass_k(results, rubric_threshold=rubric_threshold)
-    n_pass_cases = sum(entry["n_test_cases"] for entry in per_run.values())
-    fully_passing = sum(entry["fully_passing_cases"] for entry in per_run.values())
-    pass_at_k = (fully_passing / n_pass_cases) if n_pass_cases else None
+    # pass^k — the canonical estimator, over this contestant's attempts pooled per case within
+    # each cell: a repeat run of one configuration deepens its cases, while the same case under
+    # another context (a second template, a replayed cassette) stays a case of its own beside it.
+    pooled = pool_pass_hat_k(results, cell_of_run=cell_of_run, k=k, rubric_threshold=rubric_threshold)
+    pass_hat_k = pooled["pass_hat_k"]
+    pass_hat_1 = pass_hat_k_at(pooled["pass_hat_k_curve"], 1)["pass_hat_k"]
+    # The same cases the headline averages, one estimate each: the interval runs over them, and a
+    # domination test pairs two contestants on the test cases both measured.
+    attempts, _ = pool_pass_hat_k_attempts(results, cell_of_run=cell_of_run, rubric_threshold=rubric_threshold)
+    unit_estimates: list[float] = []
+    unit_attempts = 0
+    pass_by_case: dict[str, list[float]] = {}
+    for (_, _, _, _, test_case_id), case_attempts in attempts.items():
+        estimate = case_pass_hat_k(case_attempts, k)
+        if estimate is None:
+            continue
+        unit_estimates.append(estimate)
+        unit_attempts += len(case_attempts)
+        pass_by_case.setdefault(test_case_id, []).append(estimate)
+    pass_interval = case_rate_interval(unit_estimates, max_effective_n=unit_attempts / k) if unit_estimates else None
 
     # composite — case-weighted mean of the 0-1 scores, dropping the nulls that
     # mark infra-excluded and no-rubric results (a candidate failure scores 0.0
@@ -4150,18 +4649,21 @@ def _frontier_point(
     # substituted contestant as cheaper than a live one on a difference in apparatus
     # rather than in configuration. Withholding is what keeps the ranking a comparison.
     #
-    # A call the candidate's model refused or errored on took no turn (`delivered_a_turn`), so its dollars are
-    # no turn's spend, and averaged in they rank a refusing contestant cheap; it is left out here as on every
-    # cost reading. A faulted cell is not: that is the deliberate exception above, whose dollars a turn spent.
-    observed_costs = [
-        c
-        for c in (
-            production_replicating_cost(r.usage, substituted_deliveries=count_substituted_deliveries(r))
+    # The population is the turns the candidate took (`delivered_a_turn`), the one every comparison cost reads
+    # (#619). A call the candidate's model refused or errored on took no turn, so its dollars are no turn's
+    # spend, and averaged in they rank a refusing contestant cheap. A cell an apparatus fault cut short spent
+    # less than a whole one, so averaged in it lets the rig make a contestant look cheaper. Both dollars stay
+    # in program spend (`cost_usd`), which is accounting rather than a comparison.
+    priced = [
+        (r.test_case_id, c)
+        for r, c in (
+            (r, production_replicating_cost(r.usage, substituted_deliveries=count_substituted_deliveries(r)))
             for r in results
-            if delivered_a_turn(r) or harness_faulted(r)
+            if delivered_a_turn(r)
         )
         if c is not None
     ]
+    observed_costs = [c for _, c in priced]
     n_cost = len(observed_costs)
     prod_cost = math.fsum(observed_costs) / n_cost if n_cost else None
     cost_is_partial = 0 < n_cost < len(results)
@@ -4173,28 +4675,28 @@ def _frontier_point(
     cost_compositions = pooled_cost_compositions(results)
 
     # latency — total wall-clock ms over the results that harvested a total, MINUS the cells a
-    # harness failure produced. The same predicate `compute_pass_k` and `compute_dimension_summary`
+    # harness failure produced. The same predicate `compute_pass_hat_k` and `compute_dimension_summary`
     # use, and for the same reason one step further on: this point is RANKED. Domination is
     # decided over pass^k x prod cost x total latency, and an infra-excluded cell carries a real
     # but truncated `LatencyMetrics` (unlike the timeout path, whose `_degraded_capture_fields`
     # leaves latency None), so pooling it here lets an apparatus fault push a contestant into or
-    # out of the dominated set. Cost is the deliberate exception on this point and says so above
-    # — the dollars were really spent. Wall-clock that a cassette miss cut short measures the
-    # harness, not the candidate, so it is not the same case. Nor is a call the model refused or
-    # errored on: it took no turn, and its round trip ranked an all-refusing contestant the fastest
+    # out of the dominated set. Cost drops them too, above. A call the model refused or
+    # errored on is out as well: it took no turn, and its round trip ranked an all-refusing contestant the fastest
     # on the subject, dominating the arms that answered. `delivered_a_turn` is that predicate — the
     # cells' own — and it keeps a turn the budget ended or the deadline struck, which really took
     # that long.
-    totals = [
-        r.latency.total_ms
+    timed = [
+        (r.test_case_id, r.latency.total_ms)
         for r in results
         if r.latency is not None and r.latency.total_ms is not None and delivered_a_turn(r)
     ]
+    totals = [total for _, total in timed]
     n_latency = len(totals)
     mean_total_ms = round(sum(totals) / n_latency, 3) if n_latency else None
 
     # cost / pass-probability — undefined when cost is unknown or nothing passed.
-    cost_per_acceptable_outcome = (prod_cost / pass_at_k) if (prod_cost is not None and pass_at_k) else None
+    # One attempt's mean cost over one attempt's pass probability, pass^1 — see the field.
+    cost_per_acceptable_outcome = (prod_cost / pass_hat_1) if (prod_cost is not None and pass_hat_1) else None
 
     # Does this contestant's pool span cassette modes? Narrowed from the caller's whole
     # map to the runs these results actually came from, so a point can never be qualified
@@ -4218,7 +4720,12 @@ def _frontier_point(
     # disagree; one cannot.
     template_span = _template_span_entries(contributing_templates)
 
-    return FrontierPoint(
+    cases = _ContestantCases(
+        pass_hat_k=_case_means((case, value) for case, values in pass_by_case.items() for value in values),
+        production_replicating_cost=_case_means(priced),
+        mean_total_ms=_case_means(timed),
+    )
+    point = FrontierPoint(
         cassette_mode_disclosure=cassette_mode_disclosure(contributing_modes),
         template_span=template_span,
         template_span_disclosure=_template_span_disclosure(template_span),
@@ -4232,11 +4739,17 @@ def _frontier_point(
         model=model,
         variant_identity_version=identity_version,
         identity_version_disclosure=_identity_version_disclosure(identity_version),
-        pass_at_k=pass_at_k,
-        n_pass_cases=n_pass_cases,
-        fully_passing_cases=fully_passing,
+        pass_hat_k=pass_hat_k,
+        k=k,
+        n_pass_cases=pooled["n_cases_at_k"],
+        pass_hat_k_curve=pooled["pass_hat_k_curve"],
+        pass_hat_k_ci_low=None if pass_interval is None else pass_interval[0],
+        pass_hat_k_ci_high=None if pass_interval is None else pass_interval[1],
+        n_pass_no_criterion=pooled["n_no_criterion_excluded"],
+        pass_hat_k_unmeasured_reason=pooled["pass_hat_k_unmeasured_reason"],
         mean_composite=mean_composite,
         composite_sem=composite_sem,
+        composite_basis=pooled_composite_basis(results) if mean_composite is not None else None,
         n_composite_cases=len(values_by_case),
         production_replicating_cost=prod_cost,
         n_cost=n_cost,
@@ -4251,55 +4764,251 @@ def _frontier_point(
         n_results=len(results),
         n_cases=len({r.test_case_id for r in results}),
     )
+    return point, cases
 
 
-def _dominates(a: FrontierPoint, b: FrontierPoint) -> bool:
-    """Whether point ``a`` Pareto-dominates point ``b``.
+class _ContestantCases(NamedTuple):
+    """One contestant's per-test-case value on each domination axis: what a test between two pairs on.
 
-    ``a`` dominates ``b`` iff it is no worse on every axis both define and
-    strictly better on at least one, with a deliberate asymmetry in how a missing
-    axis is treated:
+    Keyed by ``test_case_id``, each the mean of the contestant's values at that case — its unit pass^k
+    estimates (one per cell the case was measured under), or its observations' cost or total latency. An
+    axis the contestant never measured is empty.
+    """
 
-    - **If ``b`` defines an axis ``a`` does not, ``a`` cannot dominate** — ``a``'s
-      unknown value there could be worse, so a point missing latency never
-      dominates one that measured it, and an unmeasured axis is never silently
-      treated as the winning "fastest" or "cheapest".
-    - **The reverse does NOT block.** When ``a`` defines an axis ``b`` does not,
-      that axis is simply skipped, so ``a`` may still dominate on the axes they
-      share. This is what lets a working variant dominate one that failed
-      everywhere — its quality is strictly worse (its pass^k is defined, as it is whenever a case was scored) and
-      its unmeasured cost/latency cannot rescue a zero-quality contestant. The
-      trade-off is that a decent point whose cost nothing observed (real quality,
-      no cost) can be grayed by a higher-quality measured one; domination only
-      grays, never drops, and the verdict still refuses any point without an
-      observed cost, so the honest cheap option is never picked *or* hidden.
+    pass_hat_k: dict[str, Fraction]
+    production_replicating_cost: dict[str, Fraction]
+    mean_total_ms: dict[str, Fraction]
+
+
+#: The domination axes, each a :class:`FrontierPoint` headline with its :class:`_ContestantCases` field of
+#: the same name, and whether higher is better on it.
+_DOMINATION_AXES: tuple[tuple[Literal["pass_hat_k", "production_replicating_cost", "mean_total_ms"], bool], ...] = (
+    ("pass_hat_k", True),
+    ("production_replicating_cost", False),
+    ("mean_total_ms", False),
+)
+
+
+def _case_means(pairs: Iterable[tuple[str, float]]) -> dict[str, Fraction]:
+    """The mean value at each case, from ``(case, value)`` pairs, exactly.
+
+    Each value is read as the decimal it is written as (:func:`~threetears.evals.analysis.stats.exact_decimal`)
+    and averaged over rationals — the arithmetic :func:`~threetears.evals.analysis.stats.level_difference`
+    reads — so a constant per-case shift between two contestants stays a constant the separation test reads
+    exactly, rather than acquiring a float residue its t-test would read as a tiny, perfectly consistent
+    spread.
+    """
+    grouped: dict[str, list[Fraction]] = {}
+    for case, value in pairs:
+        grouped.setdefault(case, []).append(exact_decimal(value))
+    return {case: sum(values, Fraction(0)) / len(values) for case, values in grouped.items()}
+
+
+def _dominance_p(
+    a: FrontierPoint, a_cases: _ContestantCases, b: FrontierPoint, b_cases: _ContestantCases
+) -> float | None:
+    """The p of the test that point ``a`` dominates point ``b``, or ``None`` where none can run.
+
+    ``a`` dominates ``b`` when it is SHOWN better on every axis ``b`` measured — an intersection–union
+    test (Berger 1982): each axis is tested on its own, and the claim stands only if every one rejects, so
+    its p is the largest of theirs. Requiring every axis is what makes the conjunction a level-α test with
+    no correction across axes; correcting across them would only make it stricter than α.
+
+    Each axis is the engine's separation test (:func:`~threetears.evals.analysis.stats.separation_p`):
+    paired over the test cases both contestants measured where they share at least two, Welch over each
+    side's cases otherwise, two-sided, and counting only in ``a``'s favour — so on one axis a false call
+    of "better" happens at most α/2 of the time.
+
+    **"Better or equal" collapses to "better".** Showing a contestant no worse than another by at most a
+    margin is an equivalence test, and these axes declare no margin; showing it no worse by zero is
+    showing it better. So a tie on an axis — two contestants that each passed every case — blocks the
+    claim rather than satisfying it: the data cannot say which is better there, and absence of evidence
+    is not a claim.
+
+    The missing-axis rule is the one point estimates were held to. If ``b`` measured an axis ``a`` did not,
+    ``a`` cannot dominate: its unknown value there could be worse, and an unmeasured axis is never the
+    winning "fastest" or "cheapest". The reverse does not block: an axis only ``a`` measured is skipped,
+    which is what lets a working variant dominate one that failed everywhere (measured pass^k, no turn
+    taken, so no cost or latency to rescue it).
 
     Args:
         a: The candidate dominator.
+        a_cases: Its per-case values.
         b: The point tested for being dominated.
+        b_cases: Its per-case values.
 
     Returns:
-        ``True`` when ``a`` dominates ``b``.
+        The p: below α only when every axis ``b`` measured separates in ``a``'s favour, and 1.0 when an
+        axis was tested and did not — a tie, a separation the other way, or no separation. ``None`` when
+        no test could decide: ``b`` measured no axis, ``a`` lacks one ``b`` measured, or an axis has no test
+        that can decide (:func:`_axis_p`).
     """
-    # (value_a, value_b, higher_is_better)
-    axes = (
-        (a.pass_at_k, b.pass_at_k, True),
-        (a.production_replicating_cost, b.production_replicating_cost, False),
-        (a.mean_total_ms, b.mean_total_ms, False),
+    measured = [(axis, higher) for axis, higher in _DOMINATION_AXES if getattr(b, axis) is not None]
+    if not measured:
+        return None
+    largest = 0.0
+    for axis, higher_is_better in measured:
+        if getattr(a, axis) is None:
+            return None
+        p = _axis_p(getattr(a_cases, axis), getattr(b_cases, axis), higher_is_better=higher_is_better)
+        if p is None:
+            return None
+        largest = max(largest, p)
+    return largest
+
+
+def _axis_p(
+    a_values: Mapping[str, Fraction], b_values: Mapping[str, Fraction], *, higher_is_better: bool
+) -> float | None:
+    """The p of the test that ``a`` is better than ``b`` on one axis, counting only in ``a``'s favour.
+
+    The engine's separation test (:func:`~threetears.evals.analysis.stats.separation_p`): paired over the
+    test cases both sides measured where they share at least two, Welch over each side's cases otherwise,
+    two-sided. Read in one direction: where the tested means do not favour ``a`` the p is 1.0, so a false
+    call of "better" happens at most α/2 of the time. The one axis test both :func:`_dominance_p` and the
+    verdict's cost comparison (:func:`_cost_ties`) read.
+
+    Args:
+        a_values: ``a``'s per-case values on the axis.
+        b_values: ``b``'s.
+        higher_is_better: Which way is better on the axis.
+
+    Returns:
+        The p, or ``None`` where no test can decide: fewer than two cases on a side, or no spread over too few
+        cases for the exact test to reach α (:func:`~threetears.evals.analysis.stats.separation_p`).
+    """
+    if len(a_values) < 2 or len(b_values) < 2:
+        return None
+    shared = sorted(set(a_values) & set(b_values))
+    paired = len(shared) >= 2
+    a_side = [a_values[case] for case in shared] if paired else list(a_values.values())
+    b_side = [b_values[case] for case in shared] if paired else list(b_values.values())
+    p = separation_p(a_side, b_side, paired=paired)
+    if p is None:
+        return None
+    gap = sum(a_side, Fraction(0)) / len(a_side) - sum(b_side, Fraction(0)) / len(b_side)
+    a_better = gap > 0 if higher_is_better else gap < 0
+    return p if a_better else 1.0
+
+
+def _decide_dominance(points: list[FrontierPoint], cases: list[_ContestantCases]) -> None:
+    """Fill every point's ``dominance``, ``dominated`` and ``dominated_by``, by test.
+
+    Every pair of contestants in the subject is one comparison, with the smaller p of its two directions
+    (:func:`_dominance_p`). Each direction's p is built from two-sided axis tests read in one direction
+    only, so it errs at most α/2; the two directions are disjoint claims, so the smaller of the two is the
+    pair's two-sided p, as the engine's every separation test is. The pairs are one family, Holm-adjusted together
+    (:func:`~threetears.evals.analysis.stats.holm_adjust`), so the chance that ANY point in the subject is
+    flagged dominated when it is not stays within α — the rule every family of between-arm claims in
+    the engine is read by. A domination is shown when its pair's adjusted p is below α in that direction.
+
+    Args:
+        points: The subject's points, in display order. Mutated.
+        cases: Each point's per-case values, aligned with ``points``.
+    """
+    family: list[tuple[int, int, float]] = []
+    tested: set[int] = set()
+    for i in range(len(points)):
+        for j in range(i + 1, len(points)):
+            forward = _dominance_p(points[i], cases[i], points[j], cases[j])
+            backward = _dominance_p(points[j], cases[j], points[i], cases[i])
+            if forward is not None:
+                tested.add(j)
+            if backward is not None:
+                tested.add(i)
+            if forward is None and backward is None:
+                continue
+            if backward is None or (forward is not None and forward <= backward):
+                family.append((i, j, forward if forward is not None else 1.0))
+            else:
+                family.append((j, i, backward))
+    adjusted = holm_adjust([p for _, _, p in family])
+    dominators: dict[int, list[tuple[int, float]]] = {}
+    for (winner, loser, _), p_adjusted in zip(family, adjusted, strict=True):
+        if p_adjusted < SIGNIFICANCE_ALPHA:
+            dominators.setdefault(loser, []).append((winner, p_adjusted))
+    for index, point in enumerate(points):
+        # Built by walking the sorted points rather than by collecting a SET of names: a set over
+        # `model` alone silently merges two variants of one model and leaves behind the dominated
+        # row's own model name, which reads as a row dominating itself.
+        found = sorted(dominators.get(index, []))
+        point.dominated_by = [
+            FrontierDominator(
+                variant_key=points[winner].variant_key,
+                model=points[winner].model,
+                variant_identity_version=points[winner].variant_identity_version,
+                p_value=p_adjusted,
+            )
+            for winner, p_adjusted in found
+        ]
+        point.dominated = bool(found)
+        point.dominance = "dominated" if found else "not_separated" if index in tested else "untested"
+
+
+def _cost_ties(
+    pick: int, rivals: Sequence[int], points: Sequence[FrontierPoint], cases: Sequence[_ContestantCases]
+) -> tuple[FrontierCostDecision, list[FrontierCostTie]]:
+    """Whether the pick is shown cheaper than each rival, and the rivals it is not.
+
+    One comparison per rival, each the frontier's own axis test on production-replicating cost
+    (:func:`_axis_p`, counting only in the pick's favour), Holm-adjusted together
+    (:func:`~threetears.evals.analysis.stats.holm_adjust`): dropping a rival from the set is a claim that it
+    is dearer, and the claims are one family. The pick is the lowest point cost, so on identical
+    contestants every comparison already leans its way; requiring each to separate is what keeps a
+    "cheapest" named on noise near α.
+
+    Args:
+        pick: The index of the lowest point cost among the cleared, priced points.
+        rivals: The other cleared, priced points' indices, ordered by point cost.
+        points: The subject's points.
+        cases: Each point's per-case values, aligned with ``points``.
+
+    Returns:
+        The decision and the rivals left in the set, each with its adjusted p (``None`` where untested).
+    """
+    if not rivals:
+        return "only_cleared", []
+    raw = [
+        _axis_p(
+            cases[pick].production_replicating_cost, cases[rival].production_replicating_cost, higher_is_better=False
+        )
+        for rival in rivals
+    ]
+    tested = [p for p in raw if p is not None]
+    adjusted = iter(holm_adjust(tested))
+    ties: list[FrontierCostTie] = []
+    for rival, p in zip(rivals, raw, strict=True):
+        p_adjusted = None if p is None else next(adjusted)
+        if p_adjusted is not None and p_adjusted < SIGNIFICANCE_ALPHA:
+            continue
+        point = points[rival]
+        assert point.production_replicating_cost is not None  # Only priced points are rivals.
+        ties.append(
+            FrontierCostTie(
+                variant_key=point.variant_key,
+                model=point.model,
+                variant_identity_version=point.variant_identity_version,
+                production_replicating_cost=point.production_replicating_cost,
+                p_value=p_adjusted,
+            )
+        )
+    if not ties:
+        return "shown_cheapest", []
+    if all(tie.p_value is None for tie in ties):
+        return "untested", ties
+    return "not_separated", ties
+
+
+def _bar_decision(point: FrontierPoint, bar: float) -> BarDecision:
+    """How a point's pass^k reads against the frontier's bar — the five words a campaign bar's verdict uses."""
+    if point.pass_hat_k is None:
+        return "no_data"
+    if point.pass_hat_k_ci_low is None or point.pass_hat_k_ci_high is None:
+        return "no_interval"
+    cleared = interval_clears(
+        (point.pass_hat_k_ci_low, point.pass_hat_k_ci_high), bar, margin=None, higher_is_better=True
     )
-    strictly_better = False
-    for value_a, value_b, higher_is_better in axes:
-        if value_b is not None and value_a is None:
-            return False
-        if value_a is None or value_b is None:
-            continue
-        if value_a == value_b:
-            continue
-        better = value_a > value_b if higher_is_better else value_a < value_b
-        if not better:
-            return False
-        strictly_better = True
-    return strictly_better
+    return "undecided" if cleared is None else "cleared" if cleared else "missed"
 
 
 def compute_frontier(
@@ -4310,7 +5019,7 @@ def compute_frontier(
     subject_id: str | None = None,
     rubric_threshold: int = 3,
     known_run_ids: set[str] | None = None,
-    archived_run_ids: set[str] | None = None,
+    archived_run_ids: set[str] | None,
 ) -> FrontierResult:
     """Rank each subject's variants on quality x cost x latency and pick the cheapest above bar.
 
@@ -4334,11 +5043,28 @@ def compute_frontier(
     still a real number about the variant — it is just not a score on any one suite, which
     is exactly what the disclosure says.
 
-    When ``bar`` is supplied it gates pass^k, and the cheapest above-bar variant
-    with a known cost is named as the verdict; an unsupplied bar yields the full
-    frontier with no verdict, because inventing a quality threshold would
-    editorialize. Two-pillar disqualification is descoped with disclosure —
-    see :class:`TwoPillarDisclosure`.
+    **One depth per subject.** Every point's pass^k is read at :attr:`SubjectFrontier.k`, the
+    shallowest ``k_runs`` among the subject's ranked runs, and estimated without bias from each
+    case's attempts pooled across the runs of one cell
+    (:func:`~threetears.evals.contracts.scoring.pool_pass_hat_k`): two runs of one variant under
+    one ``context_key`` are more attempts at the same cases, while the same case measured under
+    another context is a separate case beside it. So a repeat run sharpens a contestant's estimate
+    rather than doubling its case count, and no contestant is ranked on a different depth than
+    its rivals.
+
+    When ``bar`` is supplied it gates pass^k, read by each point's pass^k interval the way every
+    campaign bar is read (:attr:`FrontierPoint.bar_decision`): cleared only when the whole interval is at
+    or above the bar, undecided when it straddles it. The cleared variant with the lowest known cost is
+    the verdict's pick, and it is named the cheapest only when it is shown cheaper than every other cleared,
+    priced variant by the dominance test's own cost comparison, Holm-adjusted over them; otherwise the
+    verdict names the set the data cannot order (:attr:`FrontierVerdict.cost_decision`). An unsupplied bar
+    yields the full frontier with no verdict, because inventing a quality threshold would editorialize.
+
+    **Domination is decided by test, never read off point estimates** (:func:`_dominance_p`): a point is
+    flagged dominated only when another is shown better on every axis it measured, the subject's pairs
+    Holm-adjusted together, and otherwise reads ``not_separated`` or ``untested``. pass^k and the composite read
+    capability dims only; boundary-pillar disqualification is descoped with disclosure — see
+    :class:`TwoPillarDisclosure`.
 
     The two skips :func:`project_score_records` makes — a result whose run is
     absent, and one whose run captured no subject — are mirrored here and returned
@@ -4363,7 +5089,9 @@ def compute_frontier(
         subject_id: When set, restrict to this subject; other subjects' results
             are counted as ``n_filtered_out`` rather than dropped silently.
         rubric_threshold: Forwarded to pass^k — a rubric score at or above it
-            counts as a passing dimension.
+            counts as a passing dimension — and recorded on the answer
+            (:attr:`FrontierResult.rubric_threshold`). A campaign's bundle passes its
+            behavior's declared threshold.
         known_run_ids: Every run id in the corpus, so a result excluded by the
             caller's own run filter (in ``known_run_ids`` but not ``runs``) is
             counted as filtered-on-request rather than unplaceable. See
@@ -4383,7 +5111,7 @@ def compute_frontier(
             surfaces refuse identically rather than one clamping it.
     """
     if bar is not None and not (0.0 <= bar <= 1.0):
-        raise FrontierError(f"bar {bar!r} is outside the pass^k range [0, 1] — pass^k is a fraction of cases")
+        raise FrontierError(f"bar {bar!r} is outside the pass^k range [0, 1] — pass^k is a probability")
 
     placed, exclusions = place_results(
         runs, results, known_run_ids, source="frontier", archived_run_ids=archived_run_ids
@@ -4416,6 +5144,13 @@ def compute_frontier(
     # filter keeps the span from naming a predicate no row in this answer was keyed under
     # — the same rule the cassette-mode and template maps below follow.
     considered: list[EvalResult] = []
+    # Which configuration each run measured, so a contestant's repeat runs pool their attempts at
+    # a case (more depth) and runs under different conditions never do. Collected on the same seam
+    # as the maps above: a point is built from RESULTS and the measurement context lives on the RUN.
+    cell_of_run: dict[str, Hashable] = {}
+    # The depth each subject is ranked at: the shallowest k any of its ranked runs was
+    # commissioned to (see SubjectFrontier.k).
+    k_by_subject: dict[str, int] = {}
 
     for run, result, resolved in placed:
         if subject_id is not None and resolved != subject_id:
@@ -4428,6 +5163,8 @@ def compute_frontier(
         subject_labels[resolved] = run.subject_snapshot.subject_label
         cassette_modes_by_run[run.id] = run.cassette_mode
         templates_by_run[run.id] = run.template_id
+        cell_of_run[run.id] = pass_hat_k_cell(run)
+        k_by_subject[resolved] = min(k_by_subject.get(resolved, run.k_runs), run.k_runs)
         if (short := completeness_disclosure(run.completeness)) is not None:
             degraded_by_run[run.id] = short
             n_degraded_observations += 1
@@ -4435,10 +5172,13 @@ def compute_frontier(
     subjects: list[SubjectFrontier] = []
     for resolved in sorted(by_subject):
         groups = by_subject[resolved]
-        points = [
+        subject_k = k_by_subject[resolved]
+        built = [
             _frontier_point(
                 groups[key],
                 contestant=key,
+                k=subject_k,
+                cell_of_run=cell_of_run,
                 rubric_threshold=rubric_threshold,
                 cassette_modes_by_run=cassette_modes_by_run,
                 templates_by_run=templates_by_run,
@@ -4450,41 +5190,48 @@ def compute_frontier(
         # reachable: two points can share a model and a key and differ only in predicate.
         # Sort stability alone would have made that order deterministic but arbitrary —
         # and the two rows sit adjacent, which is where an unexplained order reads as noise.
-        points.sort(key=lambda p: (p.model, p.variant_key, p.variant_identity_version))
-
-        for point in points:
-            # Built by walking the already-sorted points rather than by collecting a SET
-            # of names: a set over `model` alone silently merges two variants of one model
-            # and leaves behind the dominated row's own model name, which reads as a row
-            # dominating itself.
-            dominators = [
-                FrontierDominator(
-                    variant_key=other.variant_key,
-                    model=other.model,
-                    variant_identity_version=other.variant_identity_version,
-                )
-                for other in points
-                if other is not point and _dominates(other, point)
-            ]
-            point.dominated = bool(dominators)
-            point.dominated_by = dominators
+        built.sort(key=lambda pair: (pair[0].model, pair[0].variant_key, pair[0].variant_identity_version))
+        points = [point for point, _ in built]
+        point_cases = [cases for _, cases in built]
+        _decide_dominance(points, point_cases)
 
         verdict: FrontierVerdict | None = None
         n_cleared_bar = 0
+        n_undecided_bar = 0
         if bar is not None:
-            cleared = [p for p in points if p.pass_at_k is not None and p.pass_at_k >= bar]
+            # The bar is read by the point's pass^k INTERVAL, the rule every campaign bar is read by
+            # (`stats.interval_clears`): cleared only when the whole interval is at or above it, and a
+            # straddle is undecided — neither a pass nor a failure, and never the cheapest pick.
+            for point in points:
+                point.bar_decision = _bar_decision(point, bar)
+            cleared = [p for p in points if p.bar_decision == "cleared"]
             n_cleared_bar = len(cleared)
-            costed = [
-                (p, p.production_replicating_cost, p.pass_at_k)
-                for p in cleared
-                if p.production_replicating_cost is not None and p.pass_at_k is not None
-            ]
+            n_undecided_bar = sum(1 for p in points if p.bar_decision == "undecided")
+            # The cleared, priced points by point cost. The lowest is the pick, and it is named THE cheapest
+            # only when it is shown cheaper than each of the rest (`_cost_ties`); otherwise the verdict names
+            # it beside every rival it could not be shown cheaper than.
+            costed = sorted(
+                (
+                    index
+                    for index, p in enumerate(points)
+                    if p.bar_decision == "cleared"
+                    and p.production_replicating_cost is not None
+                    and p.pass_hat_k is not None
+                ),
+                key=lambda i: (points[i].production_replicating_cost, -(points[i].pass_hat_k or 0.0), points[i].model),
+            )
             if costed:
-                pick, pick_cost, pick_pass_at_k = min(costed, key=lambda c: (c[1], -c[2], c[0].model))
+                pick = points[costed[0]]
+                pick_cost, pick_pass_hat_k = pick.production_replicating_cost, pick.pass_hat_k
+                assert pick_pass_hat_k is not None  # Only points with a pass^k are costed.
+                cost_decision, tied_with = _cost_ties(costed[0], costed[1:], points, point_cases)
                 verdict = FrontierVerdict(
                     variant_key=pick.variant_key,
                     model=pick.model,
-                    pass_at_k=pick_pass_at_k,
+                    pass_hat_k=pick_pass_hat_k,
+                    k=subject_k,
+                    pass_hat_k_ci_low=pick.pass_hat_k_ci_low,
+                    pass_hat_k_ci_high=pick.pass_hat_k_ci_high,
                     production_replicating_cost=pick_cost,
                     cost_is_partial=pick.cost_is_partial,
                     # Carried from the picked point rather than re-derived: one predicate,
@@ -4504,15 +5251,19 @@ def compute_frontier(
                     # predicate minted the key this recommendation is addressed by.
                     identity_version_disclosure=pick.identity_version_disclosure,
                     variant_identity_version=pick.variant_identity_version,
+                    cost_decision=cost_decision,
+                    tied_with=tied_with,
                 )
 
         subjects.append(
             SubjectFrontier(
                 subject_id=resolved,
                 subject_label=subject_labels.get(resolved, ""),
+                k=subject_k,
                 points=points,
                 verdict=verdict,
                 n_cleared_bar=n_cleared_bar,
+                n_undecided_bar=n_undecided_bar,
             )
         )
 
@@ -4520,6 +5271,7 @@ def compute_frontier(
 
     return FrontierResult(
         bar=bar,
+        rubric_threshold=rubric_threshold,
         subjects=subjects,
         n_results=n_considered,
         n_filtered_out=n_filtered_out,
@@ -4549,6 +5301,7 @@ def compute_frontier(
 # `PROJECTED_METRICS` that stay refused are the SCOPED ones (`SCOPED_METRICS`): each row is one
 # dimension or one check, so there is no single per-run value to plot, while each axis above is
 # one value per result.
+#: The measures `history` can series; any other is refused rather than answered with an empty series.
 HISTORY_METRICS = frozenset({METRIC_COMPOSITE, METRIC_COST_USD, METRIC_TOTAL_MS, METRIC_TRANSCRIPT, METRIC_OUTCOME})
 
 if set(_METRIC_GLOSS) != PROJECTED_METRICS | HISTORY_METRICS:  # pragma: no cover - import-time invariant
@@ -4665,9 +5418,14 @@ class RegressionFlag(EvalBaseModel):
     Descriptive, never an alert: it discloses the ``test`` it ran and the
     thresholds it applied, so the label can never be read as a calibrated
     judgement — automated alerting stays gated behind judge calibration. ``label``
-    is one of ``regressed`` / ``improved`` / ``flat`` / ``inconclusive``, and a
-    move earns a directional label only when it is both statistically significant
-    and over a magnitude threshold (a joint gate).
+    is one of ``regressed`` / ``improved`` / ``equivalent`` / ``below_threshold`` /
+    ``not_separated`` / ``untested`` (:class:`~threetears.evals.analysis.stats.ChangeVerdict`
+    defines each). A move earns a directional label only when it is both
+    statistically significant and over a magnitude threshold (a joint gate). A move
+    that misses significance reads ``not_separated``, never "no change": the one label
+    claiming no meaningful change is ``equivalent``, and it needs an equivalence test
+    against the measure's declared margin (``equivalence_margin``) to pass. With no
+    margin declared, no step can read ``equivalent``.
 
     ``crosses_epoch`` warns that the two runs span a suite-version boundary: the
     paired test then rests only on the cases the two still share, and the
@@ -4691,17 +5449,26 @@ class RegressionFlag(EvalBaseModel):
     it would be the reading this flag exists to prevent.
     """
 
-    label: str
+    label: ChangeLabel
     delta: float | None = None
     relative_delta: float | None = None
     significant: bool | None = None
     exceeds_threshold: bool | None = None
-    cohens_d: float | None = None
-    #: The p ``significant`` was thresholded against; ``None`` wherever no t-test
-    #: was evaluated. Carried for the same reason ``cohens_d`` is: a verdict
-    #: whose statistic is absent cannot be checked, and a reader must be able to
-    #: tell a label a test produced from one reasoned around an undefined test.
+    #: Hedges' g_z of the paired move — bias-corrected, so not comparable with a Cohen's d.
+    hedges_g: float | None = None
+    #: The p ``significant`` was thresholded against — the paired t's, or the exact
+    #: sign-flip p where every case moved by one amount — and ``None`` on an
+    #: ``untested`` step. Carried for the same reason ``hedges_g`` is: a verdict
+    #: whose statistic is absent cannot be checked.
     p: float | None = None
+    #: The TOST p an ``equivalent`` label was thresholded against — the larger of the
+    #: two one-sided p's — or ``None`` wherever no equivalence test ran: no margin
+    #: declared, too few pairs, or on a measure with no declared range a difference
+    #: with no spread (:func:`~threetears.evals.analysis.stats.paired_equivalence`).
+    equivalence_p: float | None = None
+    #: The margin that test ran against, in the measure's units: the measure's declared
+    #: materiality threshold, or ``None`` when it declares none.
+    equivalence_margin: float | None = None
     n_pairs: int = 0
     crosses_epoch: bool = False
     crosses_cassette_mode: bool = False
@@ -4751,6 +5518,11 @@ class SeriesPoint(EvalBaseModel):
     #: the point can tell the two apart. Empty on every non-cost measure, which have no
     #: composition.
     cost_compositions: list[list[str]] = []
+    #: On a COMPOSITE series only: what this point's composites were meaned over (#638), ``ragged`` when the
+    #: run's results carried different dimension sets. Per point for the reason ``cost_compositions`` is: a
+    #: step between two points meaned over different sets is a change in what was averaged, not a regression.
+    #: ``None`` on every other measure and on a point with no composite.
+    composite_basis: CompositeBasis | None = None
     #: This point's run's RECORDED cassette mode. Carried per point rather than once per
     #: series because it can move BETWEEN points — which is the whole defect: cassette
     #: mode is outside the variant key, so a capture run and a replay run of one
@@ -4763,7 +5535,7 @@ class SeriesPoint(EvalBaseModel):
     #: this one can attribute the shortfall exactly — and it needs to most: the point
     #: sits on a time series beside complete runs and is handed a regression verdict
     #: against its neighbour, so a run that measured 2 of its 4 cells contributes a
-    #: ``flat`` or ``regressed`` label computed over a denominator the comparison does
+    #: ``not_separated`` or ``regressed`` label computed over a denominator the comparison does
     #: not share. Derived from the run's completeness record rather than its status: a
     #: ``completed`` run with an infra-excluded cell is short too.
     completeness_disclosure: str | None = None
@@ -4807,7 +5579,9 @@ class HistoryResult(EvalBaseModel):
     carries the measure's direction so a reader knows which way is a regression.
     ``min_absolute_change`` / ``min_relative_change`` echo the caller's regression
     gate (the thresholds are the caller's, disclosed, never invented), and the
-    per-flag ``test`` names the statistic. ``attribution_disclosure`` is the same
+    per-flag ``test`` names the statistic. ``equivalence_margin`` is the host's
+    declared margin on the measure, the only thing that lets a step read
+    ``equivalent``; ``None`` when it declares none. ``attribution_disclosure`` is the same
     obligation one rung up: on a measure whose verdicts cannot name a cause, it says so
     once for the answer. ``exclusions`` and the ``n_*`` counts keep
     an all-excluded corpus from rendering as an empty one, exactly as
@@ -4821,6 +5595,7 @@ class HistoryResult(EvalBaseModel):
     higher_is_better: bool | None = None
     min_absolute_change: float
     min_relative_change: float
+    equivalence_margin: float | None = None
     series: list[MeasureSeries] = []
     n_results: int = 0
     n_filtered_out: int = 0
@@ -4868,9 +5643,13 @@ def _history_value_of(metric: str) -> Callable[[EvalResult], float | None]:
     if metric == METRIC_COMPOSITE:
         return result_composite
     if metric == METRIC_COST_USD:
-        # Whole but for a call the model refused or errored on, which took no turn and spent no turn's
-        # dollars — the frontier's cost rule, so the two surfaces read one spend.
-        return lambda result: result.cost_usd if delivered_a_turn(result) or harness_faulted(result) else None
+        # Measuring spend, so every dollar the program spent: the population program spend keeps on every
+        # surface that reads it — the cost pivot, a run summary's `mean_cost_usd`
+        # (:func:`~threetears.evals.contracts.scoring.compute_cost_summary`) and the budget view. A call the
+        # model refused before any turn was still billed, and a cell the harness faulted spent what it spent.
+        # Leaving the refusal out while the pivot kept it gave one corpus two figures for one quantity. What an
+        # arm COSTS reads only the turns taken, and is `production_replicating_cost`, which no series offers.
+        return lambda result: result.cost_usd
     if metric == METRIC_TOTAL_MS:
         # Infra-excluded cells are withheld here for the reason they are on the frontier's
         # latency: an apparatus fault produces a REAL but truncated `LatencyMetrics`, and this
@@ -4878,8 +5657,8 @@ def _history_value_of(metric: str) -> Callable[[EvalResult], float | None]:
         # returning None), so leaving latency in made the two metrics on one surface answer
         # different questions — and a cassette miss could post a "faster" step that describes the
         # harness. A call the model refused or errored on took no turn, and is withheld for the frontier's
-        # reason: `delivered_a_turn`, the one predicate every latency reading uses. Cost keeps a faulted
-        # cell's dollars, which were spent (see METRIC_COST_USD above).
+        # reason: `delivered_a_turn`, the one predicate every latency reading uses. Measuring spend keeps
+        # both, because those dollars were spent (see METRIC_COST_USD above).
         return lambda result: (
             result.latency.total_ms
             if result.latency is not None and result.latency.total_ms is not None and delivered_a_turn(result)
@@ -4991,7 +5770,7 @@ def compute_history(
     min_relative_change: float = 0.0,
     subject_id: str | None = None,
     known_run_ids: set[str] | None = None,
-    archived_run_ids: set[str] | None = None,
+    archived_run_ids: set[str] | None,
     profile: HostProfile,
 ) -> HistoryResult:
     """Series one measure over time per contestant, flagging real regressions.
@@ -5003,8 +5782,9 @@ def compute_history(
     reads as an epoch boundary rather than a mysterious jump. Between adjacent
     points the change is classified by a paired test on the cases they share plus
     ``min_*_change`` magnitude thresholds (:func:`~threetears.evals.analysis.stats.paired_change`),
-    and the test and thresholds ride on every flag — descriptive, never an alert,
-    until judge calibration lands.
+    and, where the measure declares a materiality threshold, an equivalence test
+    against it; the tests and thresholds ride on every flag — descriptive, never an
+    alert, until judge calibration lands.
 
     **On a scenario-bound measure the flag fires and withholds attribution.** Its value
     is defined by the scenario, whose externals no series can hold still between runs, so
@@ -5060,7 +5840,12 @@ def compute_history(
             before any row is read, so a typo cannot return an empty series that
             reads like a measure nobody recorded.
     """
-    from threetears.evals.analysis.stats import PAIRED_TEST_NAME, paired_change, standard_error_of_mean
+    from threetears.evals.analysis.stats import (
+        EQUIVALENCE_TEST_NAME,
+        PAIRED_TEST_NAME,
+        paired_change,
+        standard_error_of_mean,
+    )
 
     # A series point is a mean over cases, so the catalog name for what this returns
     # is `mean_composite` / `mean_cost_usd` / `mean_total_ms` — accepted here beside
@@ -5082,6 +5867,10 @@ def compute_history(
     # series still says what its verdicts would have withheld — the empty-guard swallow the
     # sibling disclosures on this surface are already assembled ahead of.
     attribution_withheld = _attribution_withheld(descriptor)
+    # The host's declared margin on the measure — the one margin a bar is read against too. Only it
+    # licenses an `equivalent` step; the caller's gate never does.
+    margin = descriptor.materiality_threshold
+    flag_test = PAIRED_TEST_NAME if margin is None else f"{PAIRED_TEST_NAME}; {EQUIVALENCE_TEST_NAME}"
 
     placed, exclusions = place_results(
         runs, results, known_run_ids, source="history", archived_run_ids=archived_run_ids
@@ -5152,6 +5941,8 @@ def compute_history(
                     min_absolute_change=min_absolute_change,
                     min_relative_change=min_relative_change,
                     higher_is_better=direction,
+                    equivalence_margin=margin,
+                    value_range=descriptor.value_range,
                 )
                 regression = RegressionFlag(
                     label=verdict.label,
@@ -5159,8 +5950,10 @@ def compute_history(
                     relative_delta=verdict.relative_delta,
                     significant=verdict.significant,
                     exceeds_threshold=verdict.exceeds_threshold,
-                    cohens_d=verdict.cohens_d,
+                    hedges_g=verdict.hedges_g,
                     p=verdict.p_value,
+                    equivalence_p=verdict.equivalence_p,
+                    equivalence_margin=verdict.equivalence_margin,
                     n_pairs=verdict.n_pairs,
                     crosses_epoch=boundary,
                     crosses_cassette_mode=crosses_cassette,
@@ -5168,7 +5961,7 @@ def compute_history(
                     # pair — and carried per flag for the reason `test` and the thresholds
                     # beside it are: a verdict read on its own must declare its own posture.
                     attribution_withheld=attribution_withheld,
-                    test=PAIRED_TEST_NAME,
+                    test=flag_test,
                     min_absolute_change=min_absolute_change,
                     min_relative_change=min_relative_change,
                 )
@@ -5196,6 +5989,11 @@ def compute_history(
                     # not an answer to.
                     cost_compositions=(
                         pooled_cost_compositions(rows_by_run[run_id]) if metric == METRIC_COST_USD else []
+                    ),
+                    composite_basis=(
+                        pooled_composite_basis(rows_by_run[run_id])
+                        if metric == METRIC_COMPOSITE and value is not None
+                        else None
                     ),
                     # On every measure, not only cost: a replayed run's LATENCY and QUALITY
                     # are as substituted as its dollars, and this is the series where a
@@ -5248,6 +6046,7 @@ def compute_history(
         higher_is_better=descriptor.higher_is_better,
         min_absolute_change=min_absolute_change,
         min_relative_change=min_relative_change,
+        equivalence_margin=margin,
         series=series,
         n_results=n_considered,
         n_filtered_out=n_filtered_out,
@@ -5281,7 +6080,30 @@ def compute_history(
 _QUALITY_INCLUDED_STATUS = "completed"
 
 
-def pooled_cost_compositions(results: Sequence[EvalResult]) -> list[list[str]]:
+def pooled_composite_basis(results: Sequence[EvalResult] | Sequence[ScoreRecord]) -> CompositeBasis | None:
+    """Say what a pooled composite was meaned over, and whether the pool is ragged (#638).
+
+    Every surface that means composites across results pools numbers each meaned over whatever dimensions
+    its result carried, so two pools that read alike can average different questions. Shared, as
+    :func:`pooled_cost_compositions` is, so every surface reads one predicate
+    (:func:`~threetears.evals.contracts.scoring.pool_composite_bases`).
+
+    Args:
+        results: The results whose composites the caller pooled, or the composite rows a pivot cell pooled
+            (:attr:`ScoreRecord.dimension_basis`). A row that is not a composite row contributes nothing.
+
+    Returns:
+        The pooled basis, or None when nothing pooled carried a composite.
+    """
+    return pool_composite_bases(
+        (result.dimension_basis if result.metric == METRIC_COMPOSITE else None)
+        if isinstance(result, ScoreRecord)
+        else composite_basis(result)
+        for result in results
+    )
+
+
+def pooled_cost_compositions(results: Sequence[EvalResult] | Sequence[ScoreRecord]) -> list[list[str]]:
     """Say what a pooled cost total is made of.
 
     Every surface that adds ``cost_usd`` across results is adding numbers whose composition
@@ -5292,12 +6114,14 @@ def pooled_cost_compositions(results: Sequence[EvalResult]) -> list[list[str]]:
     total covers.
 
     Args:
-        results: The results whose ``cost_usd`` the caller pooled.
+        results: The results whose ``cost_usd`` the caller pooled, or the cost rows a pivot cell
+            pooled (:attr:`ScoreRecord.cost_roles`, which carries the result's composition
+            verbatim). A row carrying no composition — any row but a cost row — contributes none.
 
     Returns:
         The distinct compositions, sorted.
     """
-    return sorted(list(c) for c in {tuple(result.cost_roles) for result in results})
+    return sorted(list(c) for c in {tuple(result.cost_roles) for result in results if result.cost_roles is not None})
 
 
 class BudgetRun(EvalBaseModel):
@@ -5630,10 +6454,10 @@ def compute_orphaned_runs(
 # Export — the projection's flat rows, as CSV or JSON
 # =============================================================================
 
-# The two on-demand serializations. Parquet is deferred: pyarrow is not a current
-# dependency and the dependency-manifest rule governs — CSV covers DuckDB/pandas
-# ingestion, which is the stated need. A format outside this set is refused rather
-# than defaulted, so a typo'd `format=jsom` is a visible error, not a silent CSV.
+#: The two on-demand serializations. Parquet is deferred: pyarrow is not a current
+#: dependency and the dependency-manifest rule governs — CSV covers DuckDB/pandas
+#: ingestion, which is the stated need. A format outside this set is refused rather
+#: than defaulted, so a typo'd `format=jsom` is a visible error, not a silent CSV.
 ExportFormat = Literal["csv", "json"]
 
 #: :data:`ExportFormat`'s values, in the order a refusal lists them.
@@ -5848,12 +6672,13 @@ def export_projection(projection: ScoreProjection, *, fmt: str) -> ScoreExport:
 # +/-2.4% band off a two-observation basis, and a sweep can then land well outside that
 # band — in either direction, since nothing in that arithmetic prefers over-prediction.
 #
-# The half-width therefore carries both terms: the uncertainty in the mean
-# (n_obs^2 * s^2 / n) and the variation the sweep's own observations will show
-# (n_obs * s^2), on Student's t at n-1 degrees of freedom rather than the large-sample
-# 1.96 — the reasoning `stats.t_critical_two_sided` already carries for every other
-# interval in this tier, applied here at last.
-_COST_ESTIMATE_CONFIDENCE = 0.95
+# The band carries both terms: the uncertainty in where the history's distribution sits, and
+# the variation the sweep's own observations will show. It is read on the LOG scale
+# (`stats.lognormal_sum_prediction_band`), because costs are positive and right-skewed: a few
+# long conversations cost several times the median. The normal-theory band it replaced,
+# `t * s * sqrt(n_obs + n_obs^2 / n)`, covered a lognormal sweep's total (log-SD 1.0, five
+# past observations) 82% of the time against its stated 95%. That band is kept only for a
+# history holding a cost of zero or less, which the log scale cannot read.
 
 # Smallest historical basis that gets a published band at all. Two observations yield
 # exactly ONE difference: whatever spread they show is a single accident with nothing to
@@ -5864,30 +6689,62 @@ _COST_ESTIMATE_CONFIDENCE = 0.95
 # Below this the cell reports its point estimate and no band, and the surfaces say in
 # words why; three observations is the smallest sample whose spread rests on more than one
 # difference.
+#: The fewest past observations a cost estimate publishes a band from; below it, the point estimate alone.
 COST_ESTIMATE_MIN_BASIS = 3
 
+#: What every band assumes about its observations, stated on each band (:attr:`CostEstimateCell.band_basis`).
+_COST_BAND_INDEPENDENCE = (
+    "Each past observation and each planned one is treated as an independent draw; repeats of one case are not, "
+    "so where cases differ in cost the band is narrower than it should be."
+)
 
-def _cost_band_half_width(*, sem: float, n_historical: int, n_observations: int) -> float:
-    """Half-width of the ~95% prediction band for a sweep of ``n_observations``.
 
-    Predicts the *total* of ``n_observations`` future draws, so it sums the variance
-    of those draws (``n_obs * s^2``) with the uncertainty in the mean they are drawn
-    around (``n_obs^2 * s^2 / n``), on Student's t at ``n_historical - 1`` df.
+def _cost_band(history: Sequence[float], n_observations: int) -> tuple[float, float, str]:
+    """The ~95% prediction band for the total of a sweep of ``n_observations``, and what it assumes.
+
+    Log-scale (:func:`~threetears.evals.analysis.stats.lognormal_sum_prediction_band`) wherever every
+    past cost is positive. A history with a zero or negative cost cannot be read on the log scale, and
+    takes the normal-theory band ``t(0.95, n-1) * s * sqrt(m + m^2/n)`` around ``m`` times its mean, floored
+    at zero — which assumes symmetric costs and says so.
 
     Args:
-        sem: Standard error of the historical per-observation costs (``s / sqrt(n)``).
-        n_historical: How many historical observations the basis rests on; must be at
-            least :data:`COST_ESTIMATE_MIN_BASIS`, so ``df >= 2``.
+        history: The past per-observation costs, at least :data:`COST_ESTIMATE_MIN_BASIS` of them.
         n_observations: How many observations the proposed sweep would run.
 
     Returns:
-        The band's half-width in dollars.
+        ``(low, high, basis)``: the band in dollars and the sentence stating its method and assumptions.
     """
-    from threetears.evals.analysis.stats import t_critical_two_sided
+    from threetears.evals.analysis.stats import (
+        INTERVAL_LEVEL,
+        lognormal_sum_prediction_band,
+        standard_error_of_mean,
+        t_critical_two_sided,
+    )
 
-    sample_sd = sem * math.sqrt(n_historical)
-    multiplier = t_critical_two_sided(_COST_ESTIMATE_CONFIDENCE, n_historical - 1)
-    return multiplier * sample_sd * math.sqrt(n_observations + n_observations**2 / n_historical)
+    n = len(history)
+    log_band = lognormal_sum_prediction_band(history, n_observations)
+    if log_band is not None:
+        return (
+            log_band[0],
+            log_band[1],
+            f"{INTERVAL_LEVEL:.0%} prediction band for the sweep's total from a lognormal fit to {n} past "
+            f"observations, the fit's own uncertainty included. {_COST_BAND_INDEPENDENCE}",
+        )
+    sem = standard_error_of_mean(list(history)) or 0.0
+    centre = n_observations * math.fsum(history) / n
+    half = (
+        t_critical_two_sided(INTERVAL_LEVEL, n - 1)
+        * sem
+        * math.sqrt(n)
+        * math.sqrt(n_observations + n_observations**2 / n)
+    )
+    return (
+        max(0.0, centre - half),
+        centre + half,
+        f"{INTERVAL_LEVEL:.0%} normal-theory prediction band for the sweep's total from {n} past observations — "
+        "some cost nothing, which the log scale cannot read, so this band assumes symmetric costs and is narrow "
+        f"on the high side when a few cost far more than the rest. {_COST_BAND_INDEPENDENCE}",
+    )
 
 
 class CostEstimateError(ValueError):
@@ -5939,7 +6796,8 @@ class CostEstimateCell(EvalBaseModel):
     ``predicted.value`` is ``mean_cost_per_observation × n_observations``.
     ``predicted.interval_low`` / ``interval_high`` are the ~95% **prediction** band for what
     the proposed sweep will cost — not a confidence interval on the historical
-    mean, which is a narrower claim than any caller of this surface is making.
+    mean, which is a narrower claim than any caller of this surface is making — and
+    ``band_basis`` says how it was drawn and what it assumes.
 
     The band is ``None`` when ``n_historical`` is below :data:`COST_ESTIMATE_MIN_BASIS`. At one observation the spread is
     *unknown*, not zero — the same rule the pivot applies to an n=1 cell. At two it
@@ -5961,6 +6819,11 @@ class CostEstimateCell(EvalBaseModel):
     mean_cost_per_observation: float | None = None
     predicted: PredictedValue | None = None
     basis: Literal["historical", "no_history"]
+    #: What the band assumes, in words: how ``predicted.interval_low`` / ``interval_high`` were drawn and what
+    #: they leave out — among them that every observation is treated as independent. ``None`` with no band, or
+    #: on an estimate stored before bands stated it: those were the normal-theory t band, which assumed
+    #: symmetric costs and covered a skewed sweep's total well short of its 95%.
+    band_basis: str | None = None
     #: Matching historical results whose spend could not be priced, and so are not in the basis:
     #: a mean drawn only from the priced ones prices a model that partly runs unpriced as if it
     #: never did. Counted rather than folded in as zeros, which would pull the estimate down.
@@ -6092,13 +6955,16 @@ def compute_estimate_cost(
     corpus and **filtered to the proposed cassette mode** — gives a mean, scaled
     by the proposed observation count, and a ~95% **prediction** band around it.
 
-    **The band predicts the sweep, not the history's mean.** It is
-    ``t(0.95, n-1) * s * sqrt(n_obs + n_obs^2/n)``: the variation the sweep's own
-    observations will show, plus the uncertainty in the mean they are drawn around,
-    on Student's t rather than the large-sample 1.96. A confidence interval on the
-    mean — the previous construction — answers a narrower question and shrinks as
-    history accumulates, which is why it could publish a +/-2.4% band from two
-    observations and then miss the sweep it priced by 12%.
+    **The band predicts the sweep, not the history's mean**: the variation the sweep's own
+    observations will show, plus the uncertainty in where the history's distribution sits. It is
+    read on the log scale, because costs are positive and right-skewed
+    (:func:`~threetears.evals.analysis.stats.lognormal_sum_prediction_band`); a history holding a zero
+    cost takes the normal-theory ``t(0.95, n-1) * s * sqrt(n_obs + n_obs^2/n)`` instead and says so.
+    Each band states its method and assumptions in the cell's ``band_basis`` — among them that every
+    observation is treated as independent, which repeats of one case are not. A confidence interval on
+    the mean — the construction before either — answers a narrower question and shrinks as history
+    accumulates, which is why it could publish a +/-2.4% band from two observations and then miss the
+    sweep it priced by 12%.
 
     **Below :data:`COST_ESTIMATE_MIN_BASIS` historical observations there is no band at all**, only the point
     estimate. Two observations give one difference; a width computed from it is an
@@ -6157,8 +7023,6 @@ def compute_estimate_cost(
         CostEstimateError: The proposal is malformed — no models, or a
             non-positive grid.
     """
-    from threetears.evals.analysis.stats import standard_error_of_mean
-
     if not models:
         raise CostEstimateError("no models proposed — nothing to estimate")
     if k_runs < 1 or n_test_cases < 1 or n_settings < 1:
@@ -6219,22 +7083,22 @@ def compute_estimate_cost(
 
         any_covered = True
         mean = sum(history) / len(history)
-        sem = standard_error_of_mean(history)
         estimate = n_observations * mean
         total_estimate += estimate
 
-        if sem is None or len(history) < COST_ESTIMATE_MIN_BASIS:
+        low: float | None
+        high: float | None
+        band_basis: str | None
+        if len(history) < COST_ESTIMATE_MIN_BASIS:
             # Too thin for a band. At n=1 the spread is unknown, not zero; at n=2 it is
             # one difference, which is an accident rather than a dispersion — and one
             # that prints narrow exactly when the pair lands close. The point estimate
             # stands and the absence is stated, never rendered as a false ± 0 and never
             # as a width the sample cannot support.
-            low = high = None
+            low = high = band_basis = None
             total_bandable = False
         else:
-            half_width = _cost_band_half_width(sem=sem, n_historical=len(history), n_observations=n_observations)
-            low = max(0.0, estimate - half_width)
-            high = estimate + half_width
+            low, high, band_basis = _cost_band(history, n_observations)
             total_low += low
             total_high += high
 
@@ -6252,6 +7116,7 @@ def compute_estimate_cost(
                     method_id=COST_PREDICTION_METHOD,
                     computed_at=stamp,
                 ),
+                band_basis=band_basis,
                 basis="historical",
                 n_unpriced_historical=unpriced_by_model.get(model, 0),
                 basis_cost_compositions=basis_compositions,
@@ -6306,6 +7171,7 @@ __all__ = [
     "CELL_MEASURED",
     "CELL_NOT_RUN",
     "CELL_UNMEASURED",
+    "CELL_WITHHELD",
     "COST_PREDICTION_METHOD",
     "DECLARED_INPUT_ORIGIN",
     "DEFAULT_WEIGHTING",
@@ -6324,7 +7190,9 @@ __all__ = [
     "METRIC_TRANSCRIPT",
     "NOT_SIGNIFICANT_LABEL",
     "NOT_TESTED_LABEL",
+    "NULL_LEVEL",
     "PAIRED_EFFECT_LABEL",
+    "PAIRED_HEDGES_LABEL",
     "PARTITION_TOLERANCE_MS",
     "PROJECTED_METRICS",
     "RECONSTRUCTED_COUNTS_CLAUSE",
@@ -6335,6 +7203,7 @@ __all__ = [
     "SUBSTITUTING_CASSETTE_MODE",
     "UNCOMPUTABLE_GAP_CLAUSE",
     "UNPAIRED_EFFECT_LABEL",
+    "UNPAIRED_HEDGES_LABEL",
     "WEIGHTINGS",
     "WEIGHTING_EQUAL_PER_SCENARIO",
     "WEIGHTING_SAMPLE_WEIGHTED",
@@ -6351,6 +7220,9 @@ __all__ = [
     "CostEstimateError",
     "ExportError",
     "ExportFormat",
+    "FrontierCostDecision",
+    "FrontierCostTie",
+    "FrontierDominance",
     "FrontierDominator",
     "FrontierError",
     "FrontierPoint",
@@ -6409,6 +7281,7 @@ __all__ = [
     "metric_help",
     "normalize_bar",
     "place_results",
+    "pooled_composite_basis",
     "pooled_cost_compositions",
     "project_score_records",
     "resolve_measure_name",

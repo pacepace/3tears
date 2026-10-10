@@ -40,7 +40,7 @@ remainder is only "unattributed" where the part EXHAUSTS the whole. ``total_ms``
 into three components, so differencing one of them leaves the other two's movement — which
 this catalog names, and is therefore attributed.
 
-``family`` does not determine ``transferability_class``. Both ``pass_at_k`` and
+``family`` does not determine ``transferability_class``. Both ``pass_hat_k`` and
 ``mean_composite`` are ``composite`` family, but pass^k is scenario-defined while the
 composite is judge-mediated — which is exactly why the class is recorded rather than
 inferred.
@@ -91,7 +91,7 @@ the system produces" — the second is not true and is not the goal.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import Field, model_validator
@@ -112,6 +112,7 @@ __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why th
     "OUTCOME_DIM_ID",
     "TRANSCRIPT_DIM_ID",
     "METRIC_DESCRIPTORS",
+    "HOST_PRODUCED_MEASURES",
     "CODE_GRADED_FAMILIES",
     "CLASSIFIER_FAMILY",
     "CLASSIFIER_LABEL_MEASURE_PREFIX",
@@ -119,7 +120,9 @@ __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why th
     "ACCURACY_MEASURE",
     "CONFUSION_CELL_MEASURE",
     "CONFUSION_SEPARATOR",
+    "CLASSIFIER_TRACK_MEASURES",
     "DUAL_AXIS_FAMILY",
+    "FRONTIER_RANKING_MEASURE",
     "ENGINE_FAMILIES",
     "GOAL_STATE_FAMILY",
     "MATCH_MEASURE",
@@ -129,7 +132,11 @@ __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why th
     "GradedBy",
     "MeasureFamily",
     "MeasurePopulation",
+    "MeasureScale",
     "DELIVERED_AXES",
+    "MEASURING_SPEND_MEASURES",
+    "measure_title",
+    "reader_name_defects",
     "reads_turns",
     "summary_population",
     "Materiality",
@@ -137,6 +144,8 @@ __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why th
     "classifier_label_of",
     "confusion_cell",
     "confusion_of",
+    "undeclarable_host_measures",
+    "engine_owned_names",
     "describe_classifier_label",
     "is_code_graded",
     "materiality",
@@ -192,8 +201,12 @@ GradedBy = Literal["code", "judge"]
 
 _FAMILY_NAME_PATTERN = r"^[a-z][a-z0-9_]*$"
 
+#: How far a measure's meaning carries, loosest to strictest: ``mechanical`` is measured the same way everywhere,
+#: ``judge_mediated`` is comparable only under the same judge configuration, ``scenario_bound`` means nothing
+#: outside its scenario.
 TransferabilityClass = Literal["mechanical", "judge_mediated", "scenario_bound"]
 
+#: Whether a measure isolates one ``subsystem`` or reflects the whole ``end_to_end`` run.
 AttributionScope = Literal["subsystem", "end_to_end"]
 
 #: The merit axes a measure can serve. **Engine-owned and closed**; which axis a given measure
@@ -223,23 +236,60 @@ MeritAxis = Literal["quality", "cost", "latency", "reliability"]
 #: population is read over this one (:func:`summary_population`).
 MeasurePopulation = Literal["scored", "all_observed", "delivered"]
 
+#: What a difference in a measure's values means. ``ratio``: zero is "none of it" — milliseconds, dollars,
+#: tokens, a share — so a ratio of two values is a fact, and "25% slower" says something. ``interval``: zero
+#: is an arbitrary point below the scale — a 1–5 judged score — so only a difference is a fact: one point up
+#: reads +50% from 2 to 3 and +25% from 4 to 5, and relabelling 1–5 as 0–4 turns the first into +100%. A
+#: relative change is stated only for a ``ratio`` measure.
+MeasureScale = Literal["ratio", "interval"]
+
 #: The merit axes whose readings describe a turn the candidate took — what taking it cost, and how long it
 #: took — and are therefore read over ``delivered`` unless the measure declares otherwise.
 DELIVERED_AXES: frozenset[MeritAxis] = frozenset({"cost", "latency"})
 
-#: The engine's blended spend, read over ``delivered`` like a cost-axis measure though it serves no axis. It
-#: serves none only because it sums the judge's spend beside the candidate's — what it cost to MEASURE a
-#: result, not what the candidate costs — and that does not make a refused call's spend a turn's.
-_DELIVERED_SPEND = "cost_usd"
+#: The engine's blended spend: what it cost to MEASURE a result, the judge's and simulator's spend beside the
+#: candidate's. It is measuring spend, not a turn's, so it is read over every result (``all_observed``) on every
+#: surface — the cells, bars and comparisons alike, as the pivot, the history series and a run summary's program
+#: total read it — because a refused call and a faulted cell were still billed. What an arm COSTS is
+#: ``production_replicating_cost``, a cost-axis measure read over the turns taken (#619).
+_BLENDED_SPEND = "cost_usd"
+
+#: The engine's spend measures that sum every role — the judge's and simulator's beside the candidate's: what it
+#: cost to MEASURE an arm, never what the arm costs. The candidate's own spend is ``production_replicating_cost``,
+#: the cost axis's measure (see ``docs/cost-and-budgets.md``).
+MEASURING_SPEND_MEASURES: frozenset[str] = frozenset({_BLENDED_SPEND, "program_cost"})
+
+
+def measure_title(name: str, reader_name: str | None = None) -> str:
+    """A measure as a chart or column heads it: by its reader-facing name, and a measuring-spend measure says it is one.
+
+    The reader-facing name (:attr:`MetricDescriptor.reader_name`) when the measure has one, and the key only when
+    it has none — a descriptor stored before the field existed, or a name nothing describes. ``cost_usd`` titled
+    bare beside an arm reads as what the arm costs, and in a judged run it is that plus what the judge cost. So
+    wherever it is shown at all it is labelled measuring spend, apart from the candidate's own.
+
+    Args:
+        name: The measure's key.
+        reader_name: Its reader-facing name, when it has one.
+
+    Returns:
+        The reader-facing name, else the key, with ``, measuring spend`` after it for a
+        :data:`MEASURING_SPEND_MEASURES` member whose title does not already say so.
+    """
+    title = reader_name or name
+    if name in MEASURING_SPEND_MEASURES and "measuring spend" not in title.casefold():
+        return f"{title}, measuring spend"
+    return title
 
 
 def reads_turns(descriptor: MetricDescriptor) -> bool:
-    """Whether a measure describes a turn's time or spend — a cost or latency axis, or ``cost_usd``.
+    """Whether a measure describes a turn's time or spend — a cost or latency axis.
 
     The one membership test for the measures ``delivered`` is for: :func:`summary_population` reads them over
-    it, and :class:`MetricDescriptor` refuses ``delivered`` declared on any other.
+    it, and :class:`MetricDescriptor` refuses ``delivered`` declared on any other. ``cost_usd`` is not one: it is
+    measuring spend, which every surface reads over every result (:data:`_BLENDED_SPEND`).
     """
-    return descriptor.merit_axis in DELIVERED_AXES or descriptor.name == _DELIVERED_SPEND
+    return descriptor.merit_axis in DELIVERED_AXES
 
 
 # Loosest to strictest. `strictest_class` relies on this ordering, and the lint that
@@ -296,6 +346,17 @@ class MetricDescriptor(EvalBaseModel):
     """What a single measure is, independent of any particular value of it."""
 
     name: str = Field(min_length=1, description="The measure's key as it appears on results and summaries.")
+    reader_name: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "What a reader calls the measure — a few words a table header, a chart title or an axis label prints in "
+            "place of the key ('Output speed', not 'candidate_output_tokens_per_s'). REQUIRED of every measure a "
+            "host registers (`MeasureRegistry` refuses one without it) and supplied by the engine for every core "
+            "measure and every one it describes by construction. None only on a descriptor stored before the field "
+            "existed, and on a name nothing describes; a surface then prints the key, which is all it has."
+        ),
+    )
     data_type: MetricDataType | None = Field(
         default=None,
         description="None when the measure has never been described, so its type is genuinely unknown rather than assumed numeric.",
@@ -331,9 +392,12 @@ class MetricDescriptor(EvalBaseModel):
         ge=0.0,
         description=(
             "The magnitude, in this measure's own units, below which a difference in it is too small to act on. "
-            "A difference below it is labelled immaterial wherever the engine states one (`materiality`). None "
-            "means the host declared none, and every difference is then material — silence stays conservative, "
-            "and the cost of not declaring one is paid in attention rather than banked as a permanent banner."
+            "A difference below it is labelled immaterial wherever the engine states one (`materiality`). It is "
+            "also the measure's one declared margin: a bar on it is read against its threshold less this, and a "
+            "run-history step reads `equivalent` only when an equivalence test shows the move inside it. None "
+            "means the host declared none, and every difference is then material — a bar is held at its "
+            "threshold and no step can read `equivalent`. Silence stays conservative, and the cost of not "
+            "declaring one is paid in attention rather than banked as a permanent banner."
         ),
     )
     formula: str | None = Field(
@@ -368,6 +432,15 @@ class MetricDescriptor(EvalBaseModel):
             "measure."
         ),
     )
+    scale: MeasureScale | None = Field(
+        default=None,
+        description=(
+            "What a difference in this measure means: `ratio` when zero is none of it (ms, usd, a share), so a "
+            "relative change is meaningful; `interval` when zero is an arbitrary point (a 1-5 judged score), so "
+            "only the difference is, and no surface states a percent change. None when undeclared; a surface then "
+            "treats the measure as it always has, so a host whose measure is a rating scale declares `interval`."
+        ),
+    )
     contained_by: str | None = Field(
         default=None,
         description=(
@@ -388,6 +461,38 @@ class MetricDescriptor(EvalBaseModel):
             "direction is exactly what would let a ranking read the diagnostic as a merit."
         ),
     )
+
+    guardrail: bool = Field(
+        default=False,
+        description=(
+            "True for a measure the candidate must not get worse on — a destructive call, a leak, a policy "
+            "breach counted per result — as opposed to one it should get better on. A guardrail is never "
+            "optimized: it serves no merit axis, joins no comparison family and no composite, and the bundle "
+            "decides it on its own for each arm against the control (`guardrails`): held, breached or "
+            "undecided against its `materiality_threshold` as the margin, or at zero change when it declares "
+            "none. Requires a better end, since 'worse' needs a direction, and no merit axis."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _a_guardrail_is_satisficed_not_optimized(self) -> MetricDescriptor:
+        """Refuse a guardrail with no better end, or one on a merit axis.
+
+        A guardrail is held or breached, which needs a direction. And a merit axis is what every optimizing
+        surface reads — a comparison family, a frontier, a merit tier — so a guardrail on one would be traded
+        against the axis's other measures exactly where it must be held on its own.
+        """
+        if self.guardrail and self.higher_is_better is None:
+            raise ValueError(
+                f"{self.name} is declared a guardrail with no better end: a guardrail is held or breached, "
+                "which needs higher_is_better"
+            )
+        if self.guardrail and self.merit_axis is not None:
+            raise ValueError(
+                f"{self.name} is declared a guardrail on the {self.merit_axis} merit axis: a guardrail is held, "
+                "never optimized, and a merit axis is what the optimizing surfaces read; drop one of the two"
+            )
+        return self
 
     @model_validator(mode="after")
     def _delivered_is_for_a_turns_time_or_spend(self) -> MetricDescriptor:
@@ -496,6 +601,7 @@ def _compare_trio(base: str, label: str, cls: TransferabilityClass) -> tuple[Met
     side = tuple(
         MetricDescriptor(
             name=f"{base}_{suffix}",
+            reader_name=f"{label}, run {run}",
             data_type="numeric",
             family="composite",
             transferability_class=cls,
@@ -508,6 +614,7 @@ def _compare_trio(base: str, label: str, cls: TransferabilityClass) -> tuple[Met
     )
     delta = MetricDescriptor(
         name=f"{base}_delta",
+        reader_name=f"Change in {label[0].lower()}{label[1:]}",
         data_type="numeric",
         family="composite",
         transferability_class=cls,
@@ -530,6 +637,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     # the candidate, and the drain wait is disjoint from the turns by construction.
     _d(
         name="total_ms",
+        reader_name="Turn time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -547,6 +655,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="llm_ms",
+        reader_name="Time in model calls",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -559,6 +668,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="tool_ms",
+        reader_name="Time in tools",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -571,6 +681,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="orchestration_ms",
+        reader_name="Orchestration time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -596,6 +707,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="async_wait_ms",
+        reader_name="Wait on background work",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -613,6 +725,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="judge_ms",
+        reader_name="Judging time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -636,12 +749,16 @@ _SEED: tuple[MetricDescriptor, ...] = (
     # MEASURE the candidate, not what the candidate costs.
     _d(
         name="cost_usd",
+        reader_name="Measuring spend, all roles",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
         attribution_scope="end_to_end",
         higher_is_better=False,
         unit="usd",
+        # Measuring spend keeps every dollar billed, a refused call's and a faulted cell's included: the rule the
+        # pivot, the history series and a run summary's program total read it by (see _BLENDED_SPEND).
+        population="all_observed",
         description=(
             "Blended program spend for the result. Authoritative for spend; the per-role rows decompose "
             "it but never re-total it. WHAT IT SUMS VARIES: metered third-party spend is included only for a "
@@ -653,6 +770,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="production_replicating_cost",
+        reader_name="Production cost",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -677,6 +795,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="program_cost",
+        reader_name="Program measuring spend",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -693,6 +812,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     # ---- Tokens (raw counts: no better direction) ---------------------------
     _d(
         name="prompt_tokens",
+        reader_name="Input tokens",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -702,6 +822,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="completion_tokens",
+        reader_name="Output tokens",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -711,6 +832,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="reasoning_tokens",
+        reader_name="Reasoning tokens",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -720,6 +842,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="call_count",
+        reader_name="Calls",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -732,6 +855,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="provider_units",
+        reader_name="Provider units",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -751,6 +875,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="context_tokens_in",
+        reader_name="Context carried",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -761,6 +886,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="reasoning_ratio",
+        reader_name="Reasoning share of output",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -771,6 +897,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="candidate_output_tokens_per_s",
+        reader_name="Output speed",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -796,6 +923,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="dropped_tool_calls",
+        reader_name="Dropped tool calls",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -811,6 +939,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="refused_tool_attaches",
+        reader_name="Refused tool attaches",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -827,6 +956,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="truncated_rounds",
+        reader_name="Rounds cut at the output cap",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -845,6 +975,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="turns_ended_by_budget",
+        reader_name="Turns that ran over budget",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -863,12 +994,18 @@ _SEED: tuple[MetricDescriptor, ...] = (
     # ---- Conditions (categorical covariates) --------------------------------
     _d(
         name="execution_mode",
+        reader_name="Execution mode",
         data_type="categorical",
         family="mechanical",
         transferability_class="mechanical",
         attribution_scope="end_to_end",
         categories=("serial", "concurrent"),
-        description="Whether the observation was made while other eval jobs were running — a condition, not a result.",
+        description=(
+            "Whether the observation was made while other eval jobs were executing — a condition, not a result. "
+            "Counts runs holding a concurrency slot, never runs queued for one. Results stored by 3tears-evals "
+            "0.66.0 and earlier counted queued runs too, so a stored `serial` from then is trustworthy and a "
+            "stored `concurrent` is only an upper bound: nothing recorded which counted runs were waiting."
+        ),
     ),
     # ---- Run-summary aggregates (RunSummaryRow / DimensionSummaryRow) -------
     # These are the names the run-summary surfaces actually publish. They are
@@ -877,6 +1014,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     # emits is classified) failing in the one place it is most visible.
     _d(
         name="n_results",
+        reader_name="Results",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -886,18 +1024,20 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="n_total_ms",
+        reader_name="Results with a turn time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
         attribution_scope="end_to_end",
         unit="results",
         description=(
-            "How many results contributed a measured total_ms — the denominator behind mean/median/p95 total_ms, "
+            "How many results contributed a measured total_ms — the denominator behind mean/median/p95/max total_ms, "
             "which can be smaller than n_results because latency components are nulled independently."
         ),
     ),
     _d(
         name="n_llm_ms",
+        reader_name="Results with a model-call time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -907,6 +1047,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="n_tool_ms",
+        reader_name="Results with a tool time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -916,6 +1057,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="n_cost_usd",
+        reader_name="Priced results",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -929,6 +1071,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="n_prod_cost_usd",
+        reader_name="Results with a production cost",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -936,12 +1079,14 @@ _SEED: tuple[MetricDescriptor, ...] = (
         unit="results",
         description=(
             "How many results measured a production-replicating cost — the denominator behind "
-            "mean_prod_cost_usd. Smaller than n_results by however many contributed nothing, which is the "
-            "number to read before comparing two configs' prod cost."
+            "mean_prod_cost_usd. Smaller than n_results by however many contributed nothing (no usage "
+            "decomposition, a substituted delivery, a call the model refused with no turn taken, or a cell the "
+            "harness faulted), which is the number to read before comparing two configs' prod cost."
         ),
     ),
     _d(
         name="n_test_cases",
+        reader_name="Test cases",
         data_type="numeric",
         family="mechanical",
         transferability_class="scenario_bound",
@@ -951,45 +1096,22 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="k",
+        reader_name="Pass^k depth",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
         attribution_scope="end_to_end",
         unit="iterations",
         description=(
-            "The deepest iteration this model attempted in this run — the k in pass^k on a run that "
-            "finished its matrix. It counts cells excluded as harness failures, so on a partial run it is "
-            "what was attempted rather than what was scored; read scored_iterations_min/max for that."
-        ),
-    ),
-    _d(
-        name="scored_iterations_min",
-        data_type="numeric",
-        family="mechanical",
-        transferability_class="mechanical",
-        attribution_scope="end_to_end",
-        unit="iterations",
-        description=(
-            "The fewest scored iterations any counted test case contributed to pass^k. Equal to "
-            "scored_iterations_max when every case was measured to the same depth."
-        ),
-    ),
-    _d(
-        name="scored_iterations_max",
-        data_type="numeric",
-        family="mechanical",
-        transferability_class="mechanical",
-        attribution_scope="end_to_end",
-        unit="iterations",
-        description=(
-            "The most scored iterations any counted test case contributed to pass^k. A gap to "
-            "scored_iterations_min means the run's cases were measured to uneven depths — cells execute in "
-            "a per-run shuffled order, so a run that stopped part-way leaves an arbitrary subset of its "
-            "matrix — and pass^k over uneven depths is a mixture that flatters the shallower cases."
+            "The depth the headline pass_hat_k is read at. On a run summary it is the deepest iteration this "
+            "model attempted in the run (the run's planned k once its matrix finished), counting cells excluded "
+            "as harness failures; a comparison reads every side at one shared depth. The cases actually scored "
+            "that deep are n_cases_at_k."
         ),
     ),
     _d(
         name="n_cannot_tell_excluded",
+        reader_name="Iterations the judge could not score",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1002,17 +1124,47 @@ _SEED: tuple[MetricDescriptor, ...] = (
         ),
     ),
     _d(
-        name="fully_passing_cases",
+        name="n_no_criterion_excluded",
+        reader_name="Iterations with no pass criterion",
         data_type="numeric",
-        family="composite",
+        family="mechanical",
+        transferability_class="mechanical",
+        attribution_scope="end_to_end",
+        unit="iterations",
+        description=(
+            "Iterations left out of pass^k because they carried nothing for it to conjoin: no goal-state check "
+            "and no judge, as a classifier scored only against its expected label. Unmeasured, never a fail; "
+            "where every iteration is one, pass_hat_k is null and pass_hat_k_unmeasured_reason says why."
+        ),
+    ),
+    _d(
+        name="pass_hat_k_unmeasured_reason",
+        reader_name="Why pass^k is unmeasured",
+        data_type="text",
+        family="mechanical",
+        transferability_class="mechanical",
+        attribution_scope="end_to_end",
+        description=(
+            "Why pass_hat_k is null when the reason is that no iteration carried a pass criterion; null otherwise."
+        ),
+    ),
+    _d(
+        name="n_cases_at_k",
+        reader_name="Cases scored k times",
+        data_type="numeric",
+        family="mechanical",
         transferability_class="scenario_bound",
         attribution_scope="end_to_end",
-        higher_is_better=True,
         unit="cases",
-        description="Cases that passed on every non-excluded iteration — the numerator of pass^k.",
+        description=(
+            "The cases pass_hat_k averages over: those scored at least k times. The estimator is undefined "
+            "for a case measured fewer times, so a run stopped part-way leaves its shallow cases out of the "
+            "deep points rather than letting one passed attempt stand in for k."
+        ),
     ),
     _d(
         name="mean_total_ms",
+        reader_name="Mean turn time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1030,34 +1182,63 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="median_total_ms",
+        reader_name="Median turn time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
         attribution_scope="end_to_end",
         higher_is_better=False,
         unit="ms",
-        formula="nearest-rank median of total_ms, excluding cells a harness failure produced",
+        formula=(
+            "median of total_ms (the middle value, or the mean of the two middle values at an even count; Hyndman-Fan "
+            "type 8 at 0.5), excluding cells a harness failure produced"
+        ),
         description=(
             "Typical end-to-end wall-clock, less sensitive to one slow outlier than the mean. Over the same "
-            "candidate-measuring population as mean_total_ms: a cell an apparatus fault produced is excluded."
+            "candidate-measuring population as mean_total_ms: a cell an apparatus fault produced is excluded. A "
+            "figure computed before this rule was nearest-rank, the lower middle value at an even count."
         ),
     ),
     _d(
         name="p95_total_ms",
+        reader_name="95th-percentile turn time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
         attribution_scope="end_to_end",
         higher_is_better=False,
         unit="ms",
-        formula="nearest-rank 95th percentile of total_ms, excluding cells a harness failure produced",
+        formula=(
+            "median-unbiased (Hyndman-Fan type 8) 95th percentile of total_ms, excluding cells a harness failure "
+            "produced; absent below 13 measured totals"
+        ),
         description=(
-            "Tail end-to-end wall-clock. Nearest-rank, so on small n it is an actual observed value. Over the same "
+            "Tail end-to-end wall-clock: as likely above the true 95th percentile as below it. Absent below 13 "
+            "measured totals, where no estimate of a 95th percentile is — the slowest of 5 falls below the true one "
+            "77% of the time — and max_total_ms is the tail figure there. A row stored before this rule was "
+            "nearest-rank, the sample maximum at every n up to 19. Over the same candidate-measuring population as "
+            "mean_total_ms: a cell an apparatus fault produced is excluded."
+        ),
+    ),
+    _d(
+        name="max_total_ms",
+        reader_name="Slowest turn time",
+        data_type="numeric",
+        family="mechanical",
+        transferability_class="mechanical",
+        attribution_scope="end_to_end",
+        higher_is_better=False,
+        unit="ms",
+        formula="largest total_ms, excluding cells a harness failure produced",
+        description=(
+            "The slowest measured turn: the worst case seen, never a percentile. Below 13 measured totals it is the "
+            "only tail figure a run has, and it understates the 95th percentile most of the time there. Over the same "
             "candidate-measuring population as mean_total_ms: a cell an apparatus fault produced is excluded."
         ),
     ),
     _d(
         name="mean_llm_ms",
+        reader_name="Mean time in model calls",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1074,6 +1255,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="mean_tool_ms",
+        reader_name="Mean time in tools",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1088,6 +1270,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="total_cost_usd",
+        reader_name="Total measuring spend",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1105,6 +1288,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="mean_cost_usd",
+        reader_name="Mean measuring spend per result",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1115,11 +1299,13 @@ _SEED: tuple[MetricDescriptor, ...] = (
         description=(
             "Average program spend per PRICED result (blended, incl. judge + simulator). Its denominator is "
             "n_cost_usd, not n_results: a result whose spend went unpriced is absent from this mean rather than "
-            "dragging it toward a zero nobody paid."
+            "dragging it toward a zero nobody paid. Accounting, not a comparison: a result the harness faulted "
+            "keeps its dollars here, because they were spent."
         ),
     ),
     _d(
         name="total_prod_cost_usd",
+        reader_name="Total production cost",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1135,11 +1321,14 @@ _SEED: tuple[MetricDescriptor, ...] = (
             "a knob production does not. The gap has no reliable sign, so this is not a floor either. A "
             "result with no usage decomposition, or one carrying a substituted delivery, is OMITTED rather "
             "than counted as zero — read n_prod_cost_usd for how many results this sums over; absent "
-            "entirely when none did."
+            "entirely when none did. A comparison figure, so a call the model refused with no turn taken and a "
+            "cell the harness faulted are left out too: a fault-shortened cell spends less, and keeping it would "
+            "let the rig make a config look cheaper. Program spend (total_cost_usd) keeps both."
         ),
     ),
     _d(
         name="mean_prod_cost_usd",
+        reader_name="Mean production cost per result",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1151,11 +1340,14 @@ _SEED: tuple[MetricDescriptor, ...] = (
             "Average production-replicating spend per MEASURED result — the reporting default (what a config "
             "costs to run). Its denominator is n_prod_cost_usd, not n_results: a result with no usage "
             "decomposition is absent from this mean rather than dragging it toward a zero nobody observed, "
-            "which would rank the least-measured config cheapest."
+            "which would rank the least-measured config cheapest. Read over the turns the candidate took: a "
+            "result the harness faulted, or a call the model refused with no turn taken, is absent too, where "
+            "mean_cost_usd (program spend) keeps both."
         ),
     ),
     _d(
         name="score",
+        reader_name="Judged score",
         data_type="numeric",
         family="rubric",
         transferability_class="judge_mediated",
@@ -1170,7 +1362,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
             "export_results and accepted as a pivot metric. Its dimension is a COORDINATE "
             "(rubric_dim), never part of the name, so pivoting it without rubric_dim on an axis pools "
             "every dimension into one number: two dims that disagree average to a score neither was "
-            f"given. NOT the composite, which rescales it to 0-1 ({_NORMALISED}) and averages across dims "
+            f"given. NOT the composite, which rescales it to 0-1 ({_NORMALISED}) and averages across capability dims "
             "on 0-1 — a 4 here is not a 4 there. And not a history measure: a series carries one "
             "value per contestant per run, and this is per dimension, so history series mean_composite "
             "instead."
@@ -1178,6 +1370,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="mean_score",
+        reader_name="Mean judged score",
         data_type="numeric",
         family="rubric",
         transferability_class="judge_mediated",
@@ -1195,6 +1388,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="min_score",
+        reader_name="Lowest judged score",
         data_type="numeric",
         family="rubric",
         transferability_class="judge_mediated",
@@ -1205,6 +1399,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="max_score",
+        reader_name="Highest judged score",
         data_type="numeric",
         family="rubric",
         transferability_class="judge_mediated",
@@ -1215,6 +1410,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="n",
+        reader_name="Judged scores",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1227,8 +1423,12 @@ _SEED: tuple[MetricDescriptor, ...] = (
     # many there were, how many of those a harness stood in for, and how long they took. What a
     # delivery's OUTCOMES are called — concluded cleanly, salvaged, timed out — is the tool's own
     # taxonomy, so the host declares those in its own catalogue and this module never sees them.
+    # The engine produces all six itself (scoring.compute_async_delivery_summary, read into every
+    # run_summary row) from EvalResult.async_deliveries, over the results its latency summary keeps;
+    # a group none of whose results watched for background work carries none of them.
     _d(
         name="async_deliveries",
+        reader_name="Background deliveries",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1244,6 +1444,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="async_deliveries_substituted",
+        reader_name="Substituted deliveries",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1264,58 +1465,83 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="async_delivery_mean_elapsed_ms",
+        reader_name="Mean delivery time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
         attribution_scope="subsystem",
         higher_is_better=False,
         unit="ms",
-        formula="mean of each delivery's elapsed_ms, over the deliveries that measured one",
+        formula="mean of each non-substituted delivery's elapsed_ms, over the deliveries that measured one",
         description="Average async delivery duration. A statistic over deliveries, NOT a phase timing.",
     ),
     _d(
         name="async_delivery_median_elapsed_ms",
+        reader_name="Median delivery time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
         attribution_scope="subsystem",
         higher_is_better=False,
         unit="ms",
-        formula="nearest-rank median of each delivery's elapsed_ms",
-        description="Typical async delivery duration.",
+        formula=(
+            "median of each non-substituted delivery's elapsed_ms (Hyndman-Fan type 8 at 0.5: the middle value, "
+            "or the mean of the two middle values)"
+        ),
+        description="Typical async delivery duration. Absent when no delivery measured one.",
     ),
     _d(
         name="async_delivery_p95_elapsed_ms",
+        reader_name="95th-percentile delivery time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
         attribution_scope="subsystem",
         higher_is_better=False,
         unit="ms",
-        formula="nearest-rank 95th percentile of each delivery's elapsed_ms",
-        description="Tail async delivery duration.",
+        formula=(
+            "median-unbiased 95th percentile (Hyndman-Fan type 8) of each non-substituted delivery's elapsed_ms, "
+            "from 13 durations"
+        ),
+        description=(
+            "Tail async delivery duration. Absent below 13 measured durations, where the only candidate is the "
+            "slowest delivery, which is not a 95th percentile."
+        ),
     ),
     _d(
         name="async_delivery_elapsed_n",
+        reader_name="Deliveries with a measured time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
         attribution_scope="subsystem",
         unit="deliveries",
-        description="How many deliveries had a measured duration — absent rather than zero when none did.",
+        description=(
+            "How many non-substituted deliveries had a measured duration — the denominator behind the mean, "
+            "median and p95. Absent rather than zero when none did."
+        ),
     ),
     # ---- Significance (stats.py) --------------------------------------------
     _d(
-        name="cohens_d",
+        name="hedges_g",
+        reader_name="Effect size (Hedges' g)",
         data_type="numeric",
         family="composite",
         transferability_class="judge_mediated",
         attribution_scope="end_to_end",
-        formula="paired mean(diff)/sd(diff), else pooled-SD Cohen's d; signed B minus A",
-        description="Effect size of a composite difference between two runs. Unbounded and signed; None when undefined.",
+        formula=(
+            "J(df) x paired mean(diff)/sd(diff) (g_z, df = pairs - 1), else J(df) x pooled-SD standardized difference "
+            "(g, df = n_a + n_b - 2); J is Hedges' small-sample factor; signed B minus A"
+        ),
+        description=(
+            "Effect size of a composite difference between two runs: Hedges' g, Cohen's d with its small-sample "
+            "upward bias removed. Unbounded and signed; None when undefined, including at two pairs, where no "
+            "unbiased estimate exists."
+        ),
     ),
     _d(
         name="significant",
+        reader_name="Significant at p < 0.05",
         data_type="boolean",
         family="composite",
         transferability_class="judge_mediated",
@@ -1324,6 +1550,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="p",
+        reader_name="p-value",
         data_type="numeric",
         family="composite",
         transferability_class="judge_mediated",
@@ -1334,6 +1561,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="paired",
+        reader_name="Paired test",
         data_type="boolean",
         family="mechanical",
         transferability_class="mechanical",
@@ -1342,6 +1570,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="n_pairs",
+        reader_name="Cases scored in both runs",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1351,6 +1580,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="n_cases",
+        reader_name="Cases with a composite",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1360,28 +1590,39 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     # ---- Composites ---------------------------------------------------------
     _d(
-        name="pass_at_k",
+        name="pass_hat_k",
+        reader_name="Reliability (pass^k)",
         data_type="numeric",
         family="composite",
         transferability_class="scenario_bound",
         attribution_scope="end_to_end",
         higher_is_better=True,
         value_range=(0.0, 1.0),
-        formula="test cases passing every non-excluded k-iteration / test cases run",
+        formula="mean over cases scored at least k times of C(c, k) / C(n, k), n scored attempts and c passes",
         description=(
-            "Reliability, not average quality: a case counts only if every attempt cleared every rubric "
-            "dimension and every goal-state check. Infra-excluded iterations leave both sides of the ratio."
+            "pass^k (τ-bench): the chance that k attempts at a case ALL pass — never pass@k, the chance that at "
+            "least one does. An attempt passes only if it cleared every capability rubric dimension and every "
+            "goal-state check; a boundary dimension is a guardrail and is decided apart. A 1-5 criterion clears at "
+            "or above the pass threshold recorded beside the figure (`rubric_threshold`): the behavior's "
+            "host-declared threshold (`PassThreshold`, registered with its bars), 3 where it declares none; a "
+            "pass/fail criterion clears on its pass. An attempt with no goal-state check and no judge has nothing to "
+            "conjoin and is left out (n_no_criterion_excluded), never failed; with none measurable there is no "
+            "pass^k. Unbiased at any depth; infra-excluded attempts count toward no case's n."
         ),
     ),
     _d(
         name="mean_composite",
+        reader_name="Mean composite quality",
         data_type="numeric",
         family="composite",
         transferability_class="judge_mediated",
         attribution_scope="end_to_end",
         higher_is_better=True,
         value_range=(0.0, 1.0),
-        formula=f"mean over cases of the per-case mean, across the result's rubric dims, of each score normalised to 0-1 ({_NORMALISED})",
+        formula=(
+            f"mean over cases of the per-case mean, across the result's capability rubric dims (a boundary dim is a "
+            f"guardrail and is never averaged in), of each score normalised to 0-1 ({_NORMALISED})"
+        ),
         description=(
             "Average judged quality, threshold-free — a regression often shows here before cases start "
             "failing pass^k. Comparable only across runs judged the same way."
@@ -1390,12 +1631,14 @@ _SEED: tuple[MetricDescriptor, ...] = (
     # ---- Dual-score axes -------------------------------------------------------
     _d(
         name=TRANSCRIPT_DIM_ID,
+        reader_name="Decision quality",
         data_type="numeric",
         family="dual_axis",
         transferability_class="judge_mediated",
         attribution_scope="end_to_end",
         higher_is_better=True,
         value_range=(1.0, 5.0),
+        scale="interval",
         description=(
             "Decision quality given the context the candidate actually had. Stable when the outside world "
             "drifts, so a fall here is the candidate's own."
@@ -1403,6 +1646,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name=OUTCOME_DIM_ID,
+        reader_name="Intent satisfaction",
         data_type="numeric",
         family="dual_axis",
         # Judge-produced AND scenario-defined; strictest wins.
@@ -1410,6 +1654,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
         attribution_scope="end_to_end",
         higher_is_better=True,
         value_range=(1.0, 5.0),
+        scale="interval",
         description=(
             "Whether the final state satisfied the scenario's intent. Drifts when externals drift — its "
             "divergence from the transcript axis is what separates a worse agent from a changed world."
@@ -1417,12 +1662,14 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="mean_transcript_score",
+        reader_name="Mean decision quality",
         data_type="numeric",
         family="dual_axis",
         transferability_class="judge_mediated",
         attribution_scope="end_to_end",
         higher_is_better=True,
         value_range=(1.0, 5.0),
+        scale="interval",
         formula="mean of the counted 1-5 transcript-axis scores (the floor where the candidate failed; a harness fault excluded)",
         description=(
             "Average decision quality given the context the candidate actually had — the aggregate an "
@@ -1433,6 +1680,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="mean_outcome_score",
+        reader_name="Mean intent satisfaction",
         data_type="numeric",
         # Judge-produced AND scenario-defined, as the per-observation axis is; strictest wins.
         family="dual_axis",
@@ -1440,6 +1688,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
         attribution_scope="end_to_end",
         higher_is_better=True,
         value_range=(1.0, 5.0),
+        scale="interval",
         formula="mean of the counted 1-5 outcome-axis scores (the floor where the candidate failed; a harness fault excluded)",
         description=(
             "Average intent satisfaction — the aggregate an aggregating surface reports over __outcome__ "
@@ -1453,6 +1702,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     # expression would be the violation; seeding the observation and its aggregate is not.
     _d(
         name="goal_state",
+        reader_name="Goal check passed",
         data_type="boolean",
         family="goal_state",
         transferability_class="scenario_bound",
@@ -1466,6 +1716,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="goal_state_pass_rate",
+        reader_name="Goal-check pass rate",
         data_type="numeric",
         family="goal_state",
         transferability_class="scenario_bound",
@@ -1482,6 +1733,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     # ---- Classifier track ---------------------------------------------------
     _d(
         name="accuracy",  # ACCURACY_MEASURE, derived from MATCH_MEASURE — see the pair's definition below
+        reader_name="Accuracy",
         data_type="numeric",
         family="classifier",
         transferability_class="scenario_bound",
@@ -1499,6 +1751,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="precision",
+        reader_name="Precision",
         data_type="numeric",
         family="classifier",
         transferability_class="scenario_bound",
@@ -1510,6 +1763,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="recall",
+        reader_name="Recall",
         data_type="numeric",
         family="classifier",
         transferability_class="scenario_bound",
@@ -1521,6 +1775,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="f1",
+        reader_name="F1",
         data_type="numeric",
         family="classifier",
         transferability_class="scenario_bound",
@@ -1531,16 +1786,8 @@ _SEED: tuple[MetricDescriptor, ...] = (
         description="Harmonic mean of precision and recall for a class.",
     ),
     _d(
-        name="support",
-        data_type="numeric",
-        family="classifier",
-        transferability_class="scenario_bound",
-        attribution_scope="end_to_end",
-        unit="cases",
-        description="How many cases carried this expected label — the denominator behind its precision and recall.",
-    ),
-    _d(
         name="match",  # MATCH_MEASURE
+        reader_name="Label matched",
         data_type="boolean",
         family="classifier",
         transferability_class="scenario_bound",
@@ -1553,6 +1800,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="confusion_cell",  # CONFUSION_CELL_MEASURE, defined below beside the cell's format
+        reader_name="Confusion-matrix cell",
         data_type="categorical",
         family="classifier",
         transferability_class="scenario_bound",
@@ -1569,6 +1817,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     # carried on ``EvalResult.kind_payload`` and described, if anywhere, in the host's catalogue.
     _d(
         name="status",
+        reader_name="Background work status",
         data_type="categorical",
         family="mechanical",
         transferability_class="mechanical",
@@ -1581,6 +1830,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="acknowledged_turn",
+        reader_name="Turn acknowledged on",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1590,6 +1840,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="delivered_turn",
+        reader_name="Turn delivered on",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1599,6 +1850,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="elapsed_ms",
+        reader_name="Background work time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1609,6 +1861,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="delivered_items",
+        reader_name="Items delivered",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1619,6 +1872,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="substituted",
+        reader_name="Payload substituted",
         data_type="categorical",
         family="mechanical",
         transferability_class="mechanical",
@@ -1634,6 +1888,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     # ---- Run-comparison surface (ResultsCompareArmRow / PerTemplateRow) -
     _d(
         name="count_a",
+        reader_name="Cases in run A",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1643,6 +1898,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="count_b",
+        reader_name="Cases in run B",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1652,6 +1908,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="comparison_basis",
+        reader_name="Comparison basis",
         data_type="categorical",
         family="mechanical",
         transferability_class="mechanical",
@@ -1661,15 +1918,66 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
 )
 
-_SEED = _SEED + _compare_trio("pass_at_k", "Reliability (pass^k)", "scenario_bound")
+_SEED = _SEED + _compare_trio(
+    "pass_hat_k",
+    "Reliability (pass^k at the shared depth k, each 1-5 criterion at or above the compare's recorded "
+    "rubric_threshold of 5)",
+    "scenario_bound",
+)
 _SEED = _SEED + _compare_trio("composite", "Mean composite quality", "judge_mediated")
 
+#: The engine's own measures, each one's descriptor keyed by its name.
 METRIC_DESCRIPTORS: dict[str, MetricDescriptor] = {d.name: d for d in _SEED}
 
 # Guard against a copy-paste duplicate silently winning the dict comprehension above.
 if len(METRIC_DESCRIPTORS) != len(_SEED):  # pragma: no cover - import-time invariant
     _dupes = sorted({d.name for d in _SEED if sum(1 for o in _SEED if o.name == d.name) > 1})
     raise RuntimeError(f"Duplicate measure name(s) in the metric seed: {_dupes}")
+
+#: The core measures the ENGINE declares and a host's candidate kind writes: a classifier kind lands
+#: ``match`` and ``confusion_cell`` on each result's ``host_measures``, and the engine only reads them.
+#: Every other name in :data:`METRIC_DESCRIPTORS` has an engine producer, which a test holds: a core
+#: measure that is neither produced by the engine nor named here is a descriptor that renders and is
+#: never filled, so it fails that test rather than sitting empty in every host's catalogue.
+HOST_PRODUCED_MEASURES: frozenset[str] = frozenset({"match", "confusion_cell"})
+
+
+def reader_name_defects(descriptors: Iterable[MetricDescriptor]) -> list[str]:
+    """Say which descriptors a reader could not tell apart, or would see only by key.
+
+    The one rule over :attr:`MetricDescriptor.reader_name`, applied to the engine's seed at import and to a
+    host's catalogue (with the seed) where it registers: every measure has one, and no two share one, compared
+    without case — two columns headed alike are one column to a reader, and a chart naming both twice refuses
+    to draw.
+
+    Args:
+        descriptors: The descriptors to check, together.
+
+    Returns:
+        Human-readable defects, empty when every descriptor names itself and no two names collide.
+    """
+    listed = list(descriptors)
+    defects = [
+        f"{d.name} has no reader_name — a header, title or axis label would print its key; give it the words a "
+        "reader calls it"
+        for d in listed
+        if d.reader_name is None
+    ]
+    owners: dict[str, list[str]] = {}
+    for d in listed:
+        if d.reader_name is not None:
+            owners.setdefault(d.reader_name.casefold(), []).append(d.name)
+    defects.extend(
+        f"{', '.join(sorted(names))} share the reader_name {next(d.reader_name for d in listed if d.name == names[0])!r} "
+        "— a reader could not tell them apart"
+        for names in owners.values()
+        if len(names) > 1
+    )
+    return defects
+
+
+if _unnamed := reader_name_defects(_SEED):  # pragma: no cover - import-time invariant
+    raise RuntimeError(f"Unsound reader names in the metric seed: {_unnamed}")
 
 
 #: The ENGINE's measure families a code path grades, with no judge between the candidate and the
@@ -1873,12 +2181,16 @@ def describe_rubric_dim(name: str, *, scale: RubricScale) -> MetricDescriptor:
         return seeded
     return MetricDescriptor(
         name=name,
+        # The dimension's name is the operator's own word for it — there is no other to give.
+        reader_name=name,
         data_type="numeric",
         family="rubric",
         transferability_class="judge_mediated",
         attribution_scope="end_to_end",
         higher_is_better=True,
         value_range=SCALES[scale].value_range,
+        # A pass rate's zero is none passing; a 1-5 score's zero is below the scale.
+        scale="ratio" if scale == "pass_fail" else "interval",
         description=f"Judged rubric dimension {name!r}, {SCALES[scale].reads_as}.",
     )
 
@@ -1898,6 +2210,7 @@ def describe_goal_state(expression: str) -> MetricDescriptor:
     _require_name(expression)
     return MetricDescriptor(
         name=expression,
+        reader_name=f"Check {expression}",
         data_type="boolean",
         family="goal_state",
         transferability_class="scenario_bound",
@@ -1981,6 +2294,7 @@ def describe_goal_check_rate(expression: str) -> MetricDescriptor:
     """
     return MetricDescriptor(
         name=goal_check_measure(expression),
+        reader_name=f"Pass rate of {expression}",
         data_type="numeric",
         family="goal_state",
         transferability_class="scenario_bound",
@@ -1999,6 +2313,11 @@ def describe_goal_check_rate(expression: str) -> MetricDescriptor:
 
 #: The core measure a classification's confusion-matrix cell is reported under.
 CONFUSION_CELL_MEASURE = "confusion_cell"
+
+#: The measure the frontier ranks contestants on, and so the one measure a campaign bar is passed to the frontier
+#: on. No single result carries it, so no cell verdict is given on a bar naming it: the frontier reads that bar
+#: on each contestant's pass^k interval instead (``FrontierPoint.bar_decision``).
+FRONTIER_RANKING_MEASURE = "pass_hat_k"
 
 #: The core measure one classification's verdict is reported under — the one a classifier kind lands on
 #: ``host_measures``, a bool.
@@ -2167,11 +2486,60 @@ def describe_classifier_label(statistic: ClassifierStatistic, label: str) -> Met
     return core.model_copy(
         update={
             "name": classifier_label_measure(statistic, label),
+            "reader_name": f"{core.reader_name} of {label}",
             "description": f"{core.description} For the label {label!r}.",
             "reader_prose": f"the {statistic} of the label {label!r}",
             "merit_axis": "quality",
         }
     )
+
+
+#: The core measures a kind lands on ``host_measures`` itself: a classifier kind's verdict and its
+#: confusion cell. They are the classifier track's, read under the core's descriptors by design — every
+#: other core-named key on ``host_measures`` is one no host could have declared.
+CLASSIFIER_TRACK_MEASURES = frozenset({MATCH_MEASURE, CONFUSION_CELL_MEASURE})
+
+
+def engine_owned_names(names: Iterable[str], *, written_by_the_engine: frozenset[str]) -> list[str]:
+    """The names among ``names`` that only the engine measures, less the ones the engine itself writes there, sorted.
+
+    Engine-owned is a core measure (:data:`METRIC_DESCRIPTORS`) or a name in a namespace the engine mints — a goal
+    check's ``goal_state:…``, a classifier label's ``classifier:…``. A host cannot declare one, so a value under
+    such a name in an open map reads under the core's meaning and pools into the engine's own distribution of it,
+    ``n`` inflated. ``written_by_the_engine`` names the keys the map legitimately carries under core names.
+
+    Args:
+        names: The keys an open map carries.
+        written_by_the_engine: The core-named keys that map's own writer lands there.
+
+    Returns:
+        The engine-owned keys, less those.
+    """
+    return sorted(
+        name
+        for name in names
+        if name not in written_by_the_engine
+        and (
+            name in METRIC_DESCRIPTORS
+            or name.startswith(GOAL_CHECK_MEASURE_PREFIX)
+            or name.startswith(CLASSIFIER_LABEL_MEASURE_PREFIX)
+        )
+    )
+
+
+def undeclarable_host_measures(names: Iterable[str]) -> list[str]:
+    """The keys of a kind's ``host_measures`` that name a measure only the engine measures, sorted.
+
+    :func:`engine_owned_names` over ``host_measures``, whose one legitimate core-named write is the classifier
+    track's own (:data:`CLASSIFIER_TRACK_MEASURES`).
+
+    Args:
+        names: The keys a kind landed.
+
+    Returns:
+        The engine-owned keys among them, the classifier track's excepted.
+    """
+    return engine_owned_names(names, written_by_the_engine=CLASSIFIER_TRACK_MEASURES)
 
 
 def partition_components(whole: str, *extra: dict[str, MetricDescriptor], measures: MeasureRegistry) -> list[str]:
@@ -2311,6 +2679,7 @@ def describe_phase_timing(key: str) -> MetricDescriptor:
     phase = key.removesuffix("_ms")
     return MetricDescriptor(
         name=key,
+        reader_name=f"Time in the {phase.replace('_', ' ')} phase",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -2346,9 +2715,10 @@ def _describable_measures(measures: MeasureRegistry) -> dict[str, MetricDescript
     """Every measure a host can describe: the engine core plus the host's own.
 
     The core is applied last so it wins a tie, matching :func:`describe_measure`'s resolution
-    order. A collision cannot arise from a well-formed host — the profile refuses one at
-    registration — so this is the same rule stated where it can be read rather than a second
-    defence.
+    order. No registry can hold a tie: :class:`~threetears.evals.contracts.host.measures.MeasureRegistry`
+    refuses a host descriptor named like a core measure at construction, and :func:`run_eval
+    <threetears.evals.quick.run_eval>` refuses a scorer so named before anything runs. The order
+    here is that rule stated where it can be read, not a second defence.
 
     Args:
         measures: The host's measure registry.

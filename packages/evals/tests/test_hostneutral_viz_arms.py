@@ -181,6 +181,10 @@ class TestEachArmDisclosesOneIdeaPerLine:
     def test_sweep_ranking_names_columns_spread_ramp_and_inference_apart(self):
         assert chart_intent("sweep_ranking", SWEEP_RANKING).disclosures == [
             "Columns, left to right: chunk_size, extractor_model.",
+            (
+                "Rows are ordered by their point value of field_accuracy; the order is not a tested ranking, and "
+                "neighbouring rows may not differ beyond their noise."
+            ),
             "cost per invoice runs from 0.009 usd to 0.015 usd and is not held — the ranking is not controlled for it.",
             "chunk_size draws as a light-to-dark ramp.",
             "Whether chunk_size, extractor_model are ordered was inferred from the levels rather than declared.",
@@ -264,3 +268,30 @@ class TestAMalformedPayloadNamesEveryOffendingField:
             _Invoice.model_validate({"total": "lots"})
         described = describe_validation(failed.value)
         assert "total" in described and "currency" in described, described
+
+
+class TestFrontierClassesAreTheLensVerdict:
+    """No point is "on the frontier" by default: a class is the lens's three-valued verdict, or not tested."""
+
+    @staticmethod
+    def _statuses(points):
+        rows = chart_intent("frontier", {"points": points}).rows
+        return {row["label"]: row["status"] for row in rows}
+
+    def test_each_verdict_has_its_own_class(self):
+        statuses = self._statuses(
+            [
+                {"label": "a", "cost": 0.01, "quality": 0.4, "dominance": "not_separated"},
+                {"label": "b", "cost": 0.02, "quality": 0.3, "dominance": "untested"},
+                {"label": "c", "cost": 0.03, "quality": 0.2, "dominated": True, "dominance": "dominated"},
+            ]
+        )
+        assert statuses == {"a": "Not shown dominated", "b": "Dominance not tested", "c": "Dominated"}
+
+    def test_a_point_with_no_recorded_verdict_is_not_tested_and_says_so(self):
+        intent = chart_intent(
+            "frontier",
+            {"points": [{"label": "a", "cost": 0.01, "quality": 0.4}, {"label": "b", "cost": 0.02, "quality": 0.3}]},
+        )
+        assert {row["status"] for row in intent.rows} == {"Dominance not tested"}
+        assert "No domination test was recorded for these contestants." in intent.disclosures

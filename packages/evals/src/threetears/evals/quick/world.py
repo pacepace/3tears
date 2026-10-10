@@ -69,7 +69,12 @@ from threetears.evals.contracts.host import (
     check_seed,
     schema_violations,
 )
-from threetears.evals.run import CellContext, GoalCheckUnevaluable, evaluate_goal_state
+from threetears.evals.run import CellContext, GoalCheckUnevaluable, evaluate_goal_state, grade_goal_checks
+from threetears.evals.run.check_controls import idle_end_state
+from threetears.observe import get_logger
+
+
+log = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -190,7 +195,9 @@ class World:
             return lambda: copy.deepcopy(state.get(dim))
 
         def view(*, surfaces: Sequence[str]) -> dict[str, Any]:
-            return copy.deepcopy(state) if _VIEW in surfaces else {}
+            # One entry per surface asked for, the registry's convention: the conformance kit reads each
+            # surface's rendering by its name, and found nothing when this returned the state itself.
+            return {_VIEW: copy.deepcopy(state)} if _VIEW in surfaces else {}
 
         table: dict[str, Callable[..., Any]] = {f"{self.name}.{_VIEW}": view}
         for dim in self.dimension_names:
@@ -202,11 +209,15 @@ class World:
         """A case's starting state as the engine's seed: every value under this world's carrier."""
         return WorldSeed(namespaces={self.name: dict(values)})
 
-    def refuse_unseedable(self, values: Any, *, case: int) -> dict[str, Any]:
+    def refuse_unseedable(self, values: Any, *, case: int | str) -> dict[str, Any]:
         """The case's starting state, refused unless it sets every dimension to a value its schema admits.
 
         Every dimension, because a dimension a case leaves unset would read back as ``None`` — a value
         nobody seeded, which a goal check would grade as though one had.
+
+        Args:
+            values: The state ``seed=`` gave the case.
+            case: What the refusal calls the case: its name, or its position.
 
         Raises:
             ValueError: The state is not a mapping, leaves a dimension unset, or the seed walk refuses it.
@@ -220,6 +231,82 @@ class World:
         except SeedRefused as refused:
             raise ValueError(f"seed= gave case {case} a starting state the world refuses: {refused}") from refused
         return dict(values)
+
+    def did_nothing_passes(
+        self, checks: Sequence[str], cases: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]]
+    ) -> dict[str, int]:
+        """For each goal check, in how many cases a candidate that did nothing would pass it.
+
+        The authoring gate's do-nothing control (:func:`~threetears.evals.run.check_controls.idle_end_state`),
+        laid over each case's own starting state, since here the starting state is the case's: the seed untouched,
+        no call made, nothing fired. A check this passes in every case does not beat doing nothing, whatever the
+        candidate scores on it.
+
+        Each check is graded on its own, so one that cannot be evaluated against a starting state costs only its own
+        baseline. A check with no baseline is left out, never counted as passed or failed: its summary line then
+        states no do-nothing figure, and the warning logged here names the check and why.
+
+        Args:
+            checks: The goal checks.
+            cases: Per case, its starting state and its variation parameters (``variation.*``).
+
+        Returns:
+            Check -> cases passed, for every check evaluable against every case's starting state.
+        """
+        passes = dict.fromkeys(checks, 0)
+        idles = [(idle_end_state(self.seed_of(seed), world=self.registry), variation) for seed, variation in cases]
+        for check in list(passes):
+            for idle, variation in idles:
+                try:
+                    outcomes = grade_goal_checks(
+                        [check],
+                        ledger=idle.ledger,
+                        end_state=idle.end_state,
+                        fired=idle.fired,
+                        variation=variation,
+                        world=self.registry,
+                    )
+                except GoalCheckUnevaluable as unevaluable:
+                    log.warning(
+                        "eval.run_eval goal check %r has no do-nothing baseline: %s; its pass rate is shown without one",
+                        check,
+                        unevaluable,
+                    )
+                    del passes[check]
+                    break
+                passes[check] += sum(outcome.passed for outcome in outcomes)
+        return passes
+
+    def action_parameters(self, tool: str, action: str) -> Mapping[str, Any] | None:
+        """The parameter schema the candidate is shown for ``<tool>.<action>``, or None for a call this world lacks.
+
+        The host's :attr:`~threetears.evals.contracts.host.HostProfile.action_parameters` reader for a quick world,
+        so the goal-check gate reads a tool's parameters from the very schema each call is held to: a comparison
+        over an ``enum``-, ``const``- or ``pattern``-closed parameter is a check of structure, and one over a free
+        string is a reading of what the model wrote, refused as authoring refuses it.
+
+        Args:
+            tool: The carrier a check names, this world's name for one of its tools.
+            action: The tool's name.
+
+        Returns:
+            The tool's ``input_schema``, or None.
+        """
+        declared = self.tools.get(action) if tool == self.name else None
+        return None if declared is None else declared.input_schema
+
+    def tool_actions(self, tool: str) -> frozenset[str]:
+        """The actions ``tool`` offers: this world's tools under its own name, none under any other.
+
+        The host's :attr:`~threetears.evals.contracts.host.HostProfile.tool_actions` reader for a quick world.
+
+        Args:
+            tool: The carrier a check names.
+
+        Returns:
+            The tools' names; empty for a carrier that is not this world.
+        """
+        return frozenset(self.tools) if tool == self.name else frozenset()
 
     def refuse_unreadable(self, checks: Sequence[str]) -> None:
         """Refuse a goal check reading state this world does not declare or calling a tool it does not have.
@@ -286,7 +373,8 @@ class WorldTools(Mapping[str, Callable[..., Awaitable[Any]]]):
         """The world as the candidate sees it now, through the registry's subject view."""
         handle = self.session.registry.subject_view
         assert handle is not None
-        seen: dict[str, Any] = await self.session.registry.call(handle, surfaces=(_VIEW,))
+        rendered: dict[str, Any] = await self.session.registry.call(handle, surfaces=(_VIEW,))
+        seen: dict[str, Any] = rendered[_VIEW]
         return seen
 
     async def call(self, tool: str, /, **params: Any) -> Any:

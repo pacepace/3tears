@@ -109,6 +109,7 @@ FIELD_ACCURACY = "field_accuracy"
 COURIER_MEASURES = (
     MetricDescriptor(
         name=ON_TIME_RATE,
+        reader_name="On-time rate",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -122,6 +123,7 @@ COURIER_MEASURES = (
     ),
     MetricDescriptor(
         name=DETOUR_KM,
+        reader_name="Detour",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -135,6 +137,7 @@ COURIER_MEASURES = (
     ),
     MetricDescriptor(
         name=FIELD_ACCURACY,
+        reader_name="Arrival-time miss",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",

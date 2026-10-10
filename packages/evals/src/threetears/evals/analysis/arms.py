@@ -43,16 +43,25 @@ log = get_logger(__name__)
 
 #: Where an arm stands, according to this analysis.
 #:
-#: Four states, and the fourth is not a failure: a campaign that swept an arm and reached no
+#: Five states. ``unresolved`` is not a failure: a campaign that swept an arm and reached no
 #: verdict on it has said something, and rendering that arm as though it had been ruled out
-#: would be the analysis claiming a result it did not reach.
-ArmStatus = Literal["winner", "ruled_out", "replaced_incumbent", "unresolved"]
+#: would be the analysis claiming a result it did not reach. ``contradicted`` is an arm one
+#: decision adopts and another rejects: generation refuses that memo, so only an analysis stored
+#: before the refusal carries one, and neither verdict is shown as standing.
+ArmStatus = Literal["winner", "contradicted", "ruled_out", "replaced_incumbent", "unresolved"]
 
-#: Render order — a reader wants the answer, then what it beat, then what it replaced.
+#: Render order — a reader wants the answer, then any verdict the memo contradicts, then what it
+#: beat, then what it replaced.
 #:
 #: An ordering rather than a sort key on the row, because the order is a rendering decision and
 #: rendering decisions are not persisted.
-_STATUS_ORDER: dict[ArmStatus, int] = {"winner": 0, "ruled_out": 1, "replaced_incumbent": 2, "unresolved": 3}
+_STATUS_ORDER: dict[ArmStatus, int] = {
+    "winner": 0,
+    "contradicted": 1,
+    "ruled_out": 2,
+    "replaced_incumbent": 3,
+    "unresolved": 4,
+}
 
 
 class ArmLevel(EvalDocumentModel):
@@ -176,7 +185,7 @@ class ArmTable(EvalDocumentModel):
     rows: list[ArmRow] = Field(
         default_factory=list,
         description=(
-            "The arms, ordered winner → ruled out → replaced incumbent → unresolved. Empty when the "
+            "The arms, ordered winner → contradicted → ruled out → replaced incumbent → unresolved. Empty when the "
             "analysis carries no variant index and declared no control — which is not the same fact as a "
             "campaign with no arms. `EvalAnalysis.variant_index` names what produces an empty index; read "
             "an empty table through that field rather than through a second account here."
@@ -538,6 +547,34 @@ def arm_label(variant_key: str, names: Mapping[str, str], *, rig: str | None = N
     return f"{name} @ rig {rig}" if rig else name
 
 
+def surface_order(cells: Iterable[CellFacts], *, control: str | None, names: Mapping[str, str]) -> list[CellFacts]:
+    """The cells in the decision surface's one row order — the reference, then every other arm by name.
+
+    The control's cells come first because every other arm is read against them: they are the
+    reference, never the pick. The other arms follow in alphabetical order of the names a reader sees
+    (:func:`arm_label` over ``names``, case-folded), each arm's rigs by id, the variant key breaking a
+    tie. Alphabetical because it is checkable on the page and says nothing about the evidence: an order
+    by a raw score would read as a ranking the comparisons may not support, and an order by digest
+    would be one nobody can state. Every surface that lays out the decision surface — the report's
+    table and its strata, and the writer's ``cell_measures`` — orders its cells here, and the table
+    states the rule (:data:`~threetears.evals.analysis.surface_table.SURFACE_ORDER`).
+
+    Args:
+        cells: The cells to order.
+        control: The declared control's variant key, or None.
+        names: The analysis's :func:`arm_names`.
+
+    Returns:
+        The cells, in that order.
+    """
+
+    def key(cell: CellFacts) -> tuple[bool, str, str, str, str]:
+        label = arm_label(cell.variant_key, names)
+        return (cell.variant_key != control, label.casefold(), label, cell.variant_key, cell.apparatus_class_id)
+
+    return sorted(cells, key=key)
+
+
 def cell_label(
     variant_key: str,
     apparatus_class_id: str,
@@ -576,20 +613,58 @@ def _status_and_why(
     out; a declared control is replaced when some other arm won. Everything else is unresolved —
     including an arm only a deferred decision names, since deferring is not a verdict.
 
+    **An arm both adopted and rejected is contradicted, never the winner.** Generation refuses such a
+    memo (:func:`contradicted_arms`), so only an analysis stored before that refusal carries one, and
+    settling it by which disposition is looked at first would show a winner the memo also rules out.
+    Its findings are those of the first adopting and the first rejecting decision, in that order.
+
     Returns:
         ``(status, finding_ids)`` — where the arm stands, and the positions of the findings the
         deciding decision rests on.
     """
+    first: dict[str, Decision] = {}
+    for decision in decisions:
+        if decision.disposition in ("adopted", "rejected") and any(
+            variant_of_cell_ref(cell) == variant_key for cell in decision.cells
+        ):
+            first.setdefault(decision.disposition, decision)
+    if "adopted" in first and "rejected" in first:
+        rests_on = [*first["adopted"].rests_on, *first["rejected"].rests_on]
+        return "contradicted", [str(position) for position in dict.fromkeys(rests_on)]
     rulings: tuple[tuple[str, ArmStatus], ...] = (("adopted", "winner"), ("rejected", "ruled_out"))
     for disposition, status in rulings:
-        for decision in decisions:
-            if decision.disposition == disposition and any(
-                variant_of_cell_ref(cell) == variant_key for cell in decision.cells
-            ):
-                return status, [str(position) for position in decision.rests_on]
+        if disposition in first:
+            return status, [str(position) for position in first[disposition].rests_on]
     if is_control and a_winner_exists:
         return "replaced_incumbent", []
     return "unresolved", []
+
+
+def contradicted_arms(decisions: Sequence[Decision]) -> list[tuple[str, int, int]]:
+    """Every arm one decision adopts and another rejects — a memo contradicting itself.
+
+    Structural: read off each decision's disposition and the variants of the cells it names
+    (:func:`~threetears.evals.analysis.cells.variant_of_cell_ref`, as the arm table reads them), never
+    its prose. A cell that names no variant names no arm, and a deferred decision is no verdict.
+
+    Args:
+        decisions: The analysis's decisions, in document order.
+
+    Returns:
+        ``(variant_key, adopting position, rejecting position)`` per contradicted arm — the first
+        decision of each disposition naming it — in the order the arms are first adopted.
+    """
+    adopted: dict[str, int] = {}
+    rejected: dict[str, int] = {}
+    for position, decision in enumerate(decisions):
+        if decision.disposition not in ("adopted", "rejected"):
+            continue
+        seen = adopted if decision.disposition == "adopted" else rejected
+        for cell in decision.cells:
+            variant = variant_of_cell_ref(cell)
+            if variant is not None:
+                seen.setdefault(variant, position)
+    return [(variant, at, rejected[variant]) for variant, at in adopted.items() if variant in rejected]
 
 
 def _measurements(
@@ -734,10 +809,12 @@ __all__ = [
     "arm_table",
     "arm_table_of",
     "cell_label",
+    "contradicted_arms",
     "distinguishing_axes",
     "elide_level",
     "multi_rig_variants",
     "naming_levels",
     "short_digest",
+    "surface_order",
     "writer_arms",
 ]

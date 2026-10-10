@@ -4,6 +4,15 @@ A bar is the incumbent standard for one behavior on one measure: *field accuracy
 0.92*. Registering it makes "did this clear the bar" a question with an answer, rather than a
 judgement each reader makes from the number.
 
+**A bar is read by the interval, never the mean, and three ways.** Against the threshold less the
+measure's declared margin (its materiality threshold), a cell clears when its whole interval is on the
+good side, misses when its whole interval is on the bad side, and is undecided when the interval
+straddles the line — neither a pass nor a failure. A proposal seeds the threshold at the incumbent's
+mean moved by the share of its interval its own error accounts for — see
+:func:`~threetears.evals.analysis.stats.interval_clears` and
+:func:`~threetears.evals.analysis.stats.bar_seed`. A threshold at the incumbent's mean, read against a
+cell's mean, failed an unchanged incumbent about half the time.
+
 **The ratchet is the whole point, and it only tightens.** A campaign may declare a bar stricter
 than the registry's; one looser is refused, quoting the registered value. A standard that can be
 lowered by the run being measured against it is not a standard.
@@ -21,6 +30,13 @@ standard every value clears records the current state instead of setting one. Th
 tell a deliberate low bar from an accidental one, so it does not try: it marks the seed and leaves
 adoption to a person, which is structural rather than promised since this registry has no
 mutation API at all.
+
+**The pass threshold is declared here too, per behavior.** pass^k passes an attempt only when every
+goal-state check passed and every capability criterion cleared a threshold on its 1–5 scale (a pass/fail
+criterion clears on its pass). That threshold is a standard of the same kind as a bar — what counts as
+good enough for this behavior — so a host declares it beside its bars (:class:`PassThreshold`), and
+:meth:`BarRegistry.pass_threshold` answers it, :data:`DEFAULT_PASS_THRESHOLD` where none is declared.
+Every stored pass^k figure records the threshold it was computed at.
 """
 
 from __future__ import annotations
@@ -34,6 +50,49 @@ from threetears.evals.contracts.host.attribution import HostAttributed
 if TYPE_CHECKING:
     from threetears.evals.contracts.host.measures import MeasureRegistry
     from threetears.evals.contracts.metrics import MetricDescriptor
+
+
+#: The 1–5 level a criterion must reach for pass^k where the behavior declares no threshold of its own.
+DEFAULT_PASS_THRESHOLD = 3
+
+#: The ordinal scale a pass threshold is a level on.
+_SCALE_TOP = 5
+
+
+def pass_threshold_label(k: int | None, threshold: int) -> str:
+    """How every surface names pass^k: its depth and the bar a criterion had to clear, e.g. ``pass^k (k=3, criterion >= 4 of 5)``.
+
+    One spelling, so no surface can print a pass^k without the threshold it was computed at.
+
+    Args:
+        k: The depth the figure is read at, or None where no depth was reached.
+        threshold: The 1–5 level a criterion had to reach.
+
+    Returns:
+        The label.
+    """
+    depth = "k=?" if k is None else f"k={k}"
+    return f"pass^k ({depth}, criterion >= {threshold} of {_SCALE_TOP})"
+
+
+@dataclass(frozen=True)
+class PassThreshold:
+    """The 1–5 level a capability criterion must reach for an attempt to pass, for one behavior.
+
+    pass^k conjoins every goal-state check with every capability criterion at this level (a pass/fail
+    criterion's bar is its pass, whatever this says). A behavior whose quality only counts at "good" sets 4;
+    one where "acceptable" is enough keeps the default 3.
+    """
+
+    behavior: str
+    """The behavior this threshold governs — host vocabulary the engine never interprets."""
+
+    threshold: int
+    """The level a criterion must reach, from 2 to 5. 1 is refused: every score clears it, so it would drop
+    every criterion from pass^k while the figure still read as a conjunction over them."""
+
+    rationale: str
+    """Why this is the level. A threshold with no reason can only be obeyed."""
 
 
 class BarRegistrationError(ValueError):
@@ -51,7 +110,7 @@ class Bar:
     """The measure the bar is read on. Must be a measure the host's registry declares."""
 
     threshold: float
-    """The value the measure must reach."""
+    """The value the measure must reach — read against a cell's interval and the measure's margin, never its mean."""
 
     higher_is_better: bool
     """Whether clearing means at-or-above the threshold.
@@ -79,7 +138,11 @@ class Bar:
     """True when the incumbent was failing at the moment this was seeded — flagged, never silently adopted."""
 
     def clears(self, value: float) -> bool:
-        """Whether ``value`` meets this bar.
+        """Whether one value is at or beyond this bar — a point, for a value that is exactly known.
+
+        Asked of a measure's declared range end, which is certain. A cell's verdict is never this: a
+        measured mean is uncertain, and :func:`~threetears.evals.analysis.stats.interval_clears` decides
+        it by the interval.
 
         Args:
             value: The observed measure value.
@@ -135,21 +198,24 @@ class BarProposal:
 class BarRegistry(HostAttributed):
     """One host's registered bars, keyed by ``(behavior, measure)`` and validated at construction."""
 
-    def __init__(self, bars: Iterable[Bar] = ()) -> None:
-        """Validate and store one host's bars.
+    def __init__(self, bars: Iterable[Bar] = (), *, pass_thresholds: Iterable[PassThreshold] = ()) -> None:
+        """Validate and store one host's bars and per-behavior pass thresholds.
 
         Args:
             bars: The registered incumbents. A host with no standards yet registers none, which
                 is a well-formed empty registry rather than an error.
+            pass_thresholds: The behaviors whose pass^k threshold is not :data:`DEFAULT_PASS_THRESHOLD`.
 
         Raises:
             BarRegistrationError: The declaration set is unsound.
         """
         self._init_attribution()
         self._bars: tuple[Bar, ...] = tuple(bars)
+        self._pass_thresholds: tuple[PassThreshold, ...] = tuple(pass_thresholds)
         if defects := self._defects():
             raise BarRegistrationError("bar declaration is unsound: " + "; ".join(defects))
         self._by_key: dict[tuple[str, str], Bar] = {(b.behavior, b.measure): b for b in self._bars}
+        self._threshold_by_behavior = {t.behavior: t.threshold for t in self._pass_thresholds}
 
     def _defects(self) -> list[str]:
         """Name every way the declaration set contradicts what this registry promises."""
@@ -166,7 +232,43 @@ class BarRegistry(HostAttributed):
                 defects.append(
                     f"{bar.behavior}/{bar.measure} states no rationale — a threshold with no reason can only be obeyed"
                 )
+        behaviors: set[str] = set()
+        for declared in self._pass_thresholds:
+            if declared.behavior in behaviors:
+                defects.append(f"{declared.behavior}'s pass threshold is declared twice — one would shadow the other")
+            behaviors.add(declared.behavior)
+            if isinstance(declared.threshold, bool) or not isinstance(declared.threshold, int):
+                defects.append(f"{declared.behavior}'s pass threshold must be a whole level of the 1-5 scale")
+            elif not 2 <= declared.threshold <= _SCALE_TOP:
+                defects.append(
+                    f"{declared.behavior}'s pass threshold is {declared.threshold}, outside 2-{_SCALE_TOP} — at 1 every "
+                    "score clears it, so pass^k would conjoin no criterion while reading as though it did"
+                )
+            if not declared.rationale.strip():
+                defects.append(
+                    f"{declared.behavior}'s pass threshold states no rationale — a threshold with no reason can only "
+                    "be obeyed"
+                )
         return defects
+
+    @property
+    def pass_thresholds(self) -> tuple[PassThreshold, ...]:
+        """Every declared pass threshold, in declaration order."""
+        return self._pass_thresholds
+
+    def pass_threshold(self, behavior: str | None) -> int:
+        """The 1–5 level a criterion must reach for pass^k on ``behavior``.
+
+        Args:
+            behavior: The behavior a figure is computed for, or None where no behavior applies (a lens over a
+                scope's runs, which belong to no one behavior).
+
+        Returns:
+            The declared threshold, or :data:`DEFAULT_PASS_THRESHOLD` when none is declared.
+        """
+        if behavior is None:
+            return DEFAULT_PASS_THRESHOLD
+        return self._threshold_by_behavior.get(behavior, DEFAULT_PASS_THRESHOLD)
 
     @property
     def bars(self) -> tuple[Bar, ...]:
@@ -228,7 +330,9 @@ class BarRegistry(HostAttributed):
             behavior: The behavior the bar would govern.
             measure: The measure it is read on. Must be one this host declares — a proposal on a
                 measure nobody can see is a standard nobody can check.
-            observed: The incumbent configuration's measured baseline.
+            observed: The incumbent configuration's measured baseline — its mean moved toward the
+                permissive end of its interval (:func:`~threetears.evals.analysis.stats.bar_seed`), as
+                :func:`~threetears.evals.analysis.propose_bars` passes it.
             measures: The host's measure registry, which owns the better-direction and the range.
             rationale: Why this is the standard. Required for the same reason
                 :meth:`__init__` refuses a bar without one.
@@ -283,7 +387,7 @@ class BarRegistry(HostAttributed):
             permissive = floor if proposed.higher_is_better else ceiling
             if proposed.clears(permissive):
                 return (
-                    f"the incumbent measured {proposed.threshold} on {proposed.measure}, whose declared range is "
+                    f"the incumbent's measured baseline is {proposed.threshold} on {proposed.measure}, whose declared range is "
                     f"[{floor}, {ceiling}] — a bar there is cleared by every value the measure can take, so it "
                     "records the current state as the standard rather than setting one"
                 )
@@ -414,4 +518,13 @@ def no_better_end(descriptor: MetricDescriptor) -> str | None:
             assert_never(unreachable)
 
 
-__all__ = ["Bar", "BarProposal", "BarRegistrationError", "BarRegistry", "contradicts_descriptor"]
+__all__ = [
+    "DEFAULT_PASS_THRESHOLD",
+    "Bar",
+    "BarProposal",
+    "BarRegistrationError",
+    "BarRegistry",
+    "PassThreshold",
+    "contradicts_descriptor",
+    "pass_threshold_label",
+]

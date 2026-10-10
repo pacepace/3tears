@@ -31,25 +31,22 @@ this whole layer exists to avoid — the slot is shared, the word is not.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Collection, Iterator, Mapping
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
-from typing import TYPE_CHECKING, Any, Literal, get_args, get_origin
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
 
 from pydantic import BaseModel, Field, TypeAdapter, field_validator, model_validator
 
 from threetears.evals.contracts.base import EvalDocumentModel
 from threetears.evals.contracts.covariates import (
-    DROPPED_TOOL_CALLS_KEY,
-    REASONING_RATIO_KEY,
-    REFUSED_TOOL_ATTACHES_KEY,
-    TRUNCATED_ROUNDS_KEY,
-    TURN_BUDGET_ENDED_KEY,
+    COVARIATE_KEYS,
 )
 from threetears.evals.contracts.host.bars import Bar, BarRegistrationError, contradicts_descriptor, no_better_end
 from threetears.evals.contracts.host.values import Scale, SweepableValue
 from threetears.evals.contracts.metrics import (
     DERIVED_PER_RESULT_MEASURES,
+    FRONTIER_RANKING_MEASURE,
     METRIC_DESCRIPTORS,
     MeritAxis,
     MetricDescriptor,
@@ -210,7 +207,10 @@ class BarOverride(EvalDocumentModel):
             "declares, or a reserved dual-score axis), or a goal-state check the template declares, spelled "
             "exactly as the template writes it. Anything else — a run-level statistic, a judge-mediated "
             "summary, a composite, a categorical or directionless measure, an undescribed name — is refused "
-            "at authoring time, because no verdict could ever be given on it."
+            "at authoring time, because no verdict could ever be given on it. The one composite admitted is "
+            "`pass_hat_k`, the measure the frontier ranks on, with a threshold in [0, 1]: no cell carries it, and "
+            "the analysis bundle passes the bar to the frontier, which reads it on each contestant's pass^k "
+            "interval."
         ),
     )
     threshold: float = Field(description="The value the measure must reach for this campaign.")
@@ -283,6 +283,48 @@ class Question(EvalDocumentModel):
     )
 
 
+#: The merit axis a judged dimension serves. A judge scores how good an output is, so a capability dimension is
+#: always a quality reading; a boundary dimension is a guardrail and serves no axis.
+JUDGED_MERIT_AXIS: MeritAxis = "quality"
+
+
+def axis_in_question_scope(axis: MeritAxis | None, question_axes: Sequence[MeritAxis]) -> bool:
+    """Whether a reading on ``axis`` is one a question naming ``question_axes`` asks about.
+
+    The one rule for which readings a declared question covers: a reading on one of the axes it names, or on
+    any axis when it names none (an unscoped question asks about every axis — every axis, not every reading).
+    A reading on no axis — a guardrail, a diagnostic, the rig's own figures — is asked about by no question.
+    The bundle's comparison families read it, and so does the exploratory label, so the two cannot disagree
+    about which readings a question covers.
+
+    Args:
+        axis: The reading's merit axis, or None when it serves none.
+        question_axes: The axes the question names; empty for an unscoped question.
+
+    Returns:
+        True when the question covers the reading.
+    """
+    return axis is not None and (not question_axes or axis in question_axes)
+
+
+def exploratory_reading(axis: MeritAxis | None, questions: Sequence[Question]) -> bool:
+    """Whether a reading on ``axis`` lies outside every one of ``questions`` — exploratory, not confirmatory.
+
+    Only meaningful where the campaign declares questions: with none, every reading is exploratory, and that
+    is said once for the campaign rather than on every row (a label that fires on every row is one readers
+    learn to skip). A guardrail is never exploratory: it is held because it was declared one, not because
+    something happened to move.
+
+    Args:
+        axis: The reading's merit axis, or None when it serves none.
+        questions: The campaign's live questions.
+
+    Returns:
+        True when no question covers the reading.
+    """
+    return not any(axis_in_question_scope(axis, question.merit_axes) for question in questions)
+
+
 class ControlDeclaration(EvalDocumentModel):
     """What held still, stated — because an absent control is a fact, not a null.
 
@@ -305,7 +347,7 @@ class ControlDeclaration(EvalDocumentModel):
             "commissioned = these observations were gathered deliberately under a declared rig. "
             "witnessed = they were found. The difference between an experiment and a log, and cells "
             "never pool across it. The same words every run records (`EvalRun.apparatus_provenance`), so the "
-            "bundle compares this declaration with what the runs say value for value (`controls_reading`)."
+            "bundle compares this declaration with what the runs say value for value (`held_fixed_reading`)."
         )
     )
 
@@ -338,7 +380,13 @@ class CampaignDesign(EvalDocumentModel):
     ``control`` is a **variant key**, not a run id. Curating the control *run* out of a campaign
     no longer destroys the design if another observation carries the same variant — a state that
     previously needed its own field because it was a live failure.
+
+    ``held_fixed`` says what held still while the campaign ran. It was named ``controls`` until it
+    was renamed within schema v8, because one letter apart from ``control`` it named a different
+    thing; a stored campaign or analysis carrying ``controls`` reads it as ``held_fixed``.
     """
+
+    __retired_fields__: ClassVar[dict[str, str | None]] = {"controls": "held_fixed"}
 
     axes: list[SweptAxis] = Field(
         min_length=1,
@@ -370,13 +418,12 @@ class CampaignDesign(EvalDocumentModel):
         description=(
             "The variant key every other cell is read against — the reference point, not a run id. "
             "A 64-hex digest over the resolved contestant stack, which is why it is ADDRESSED from an "
-            "observation rather than typed: `campaign_set_control` takes a run (and a candidate model "
-            "where the run carries more than one) and resolves the key here, the same shape a swept "
-            "level is authored in. None = no control declared, and the analysis says so rather than "
+            "observation rather than typed: `set_campaign_control` (or `control_from_run_id` on "
+            "campaign_create) takes a run and resolves the key here, the same shape a swept level is "
+            "authored in. None = no control declared, and the analysis says so rather than "
             "electing one. NOT 'baseline', which is temporal: a control is contemporaneous, same "
-            "apparatus and same campaign. **Not the singular of `controls` below**, which is a "
-            "different concept sharing a root noun: this is WHICH CELL is the reference; that is "
-            "WHAT HELD STILL while the campaign ran."
+            "apparatus and same campaign. Not `held_fixed` below: this is WHICH CELL is the "
+            "reference; that is WHAT HELD STILL while the campaign ran."
         ),
     )
     intended_repetitions: int | None = Field(
@@ -391,14 +438,13 @@ class CampaignDesign(EvalDocumentModel):
             "which makes a shortfall undetectable rather than zero."
         ),
     )
-    controls: ControlDeclaration = Field(
+    held_fixed: ControlDeclaration = Field(
         description=(
             "What held still while the campaign ran — the stimulus, stated `controlled` or "
             "`uncontrolled`, and the apparatus, stated `commissioned` or `witnessed`; the two take "
             "different words and neither takes all four. Declared because an absent control is a fact "
-            "rather than a null. **Not the plural of `control` above**, which is a different concept sharing a root "
-            "noun: that names WHICH CELL is the reference point; this names WHAT WAS HELD STILL. A "
-            "campaign can declare either without the other."
+            "rather than a null. Not `control` above, which names WHICH CELL is the reference point; "
+            "this names WHAT WAS HELD STILL. A campaign can declare either without the other."
         )
     )
     merit_priority: list[MeritAxis] = Field(
@@ -463,8 +509,8 @@ class CampaignDesign(EvalDocumentModel):
             raise ValueError(
                 f"`control` is a variant key — a {_VARIANT_KEY_LENGTH}-character lowercase hex digest over the "
                 f"resolved contestant stack — and '{value}' is not one. A run id is not a control any more: use "
-                "`campaign_set_control` with the run (and its candidate model, where it carries more than one) "
-                "and the key is resolved for you"
+                "`set_campaign_control` with the run, or `control_from_run_id` on campaign_create, and the key "
+                "is resolved for you"
             )
         return value
 
@@ -503,6 +549,21 @@ class CampaignDesign(EvalDocumentModel):
                 "axes, and an axis ranked twice puts its bars in two tiers; name each axis once"
             )
         return self
+
+    def question_words(self, question_id: str) -> str:
+        """A declared question as a reader reads it: its text, or — for an id this design does not hold — the id.
+
+        A memo resolves a question by id, which is a uuid for a question an operator declared; a reader needs the
+        words that were asked. The id stands in only where nothing here says what it asked, so a reference that
+        no longer resolves stays citable rather than going blank.
+
+        Args:
+            question_id: The id an answer or a comparison family names.
+
+        Returns:
+            The question's text, else the id.
+        """
+        return next((question.text for question in self.questions if question.id == question_id), question_id)
 
     def live_questions(self) -> list[Question]:
         """The questions a future analysis still owes a resolution for.
@@ -602,19 +663,8 @@ BarNameKind = Literal["measure", "judged", "goal_state"]
 BarNameRefusal = Literal["not_numeric", "no_better_end", "not_carried"]
 
 #: The covariate keys a result can carry — every key ``derive_covariates`` writes. A covariate is a
-#: per-result observation keyed by a described name, so a bar may name one; a test reads the
-#: writer's own assignments and fails when this set and they disagree.
-_COVARIATE_MEASURES: frozenset[str] = frozenset(
-    {
-        "execution_mode",
-        DROPPED_TOOL_CALLS_KEY,
-        REFUSED_TOOL_ATTACHES_KEY,
-        TRUNCATED_ROUNDS_KEY,
-        TURN_BUDGET_ENDED_KEY,
-        "context_tokens_in",
-        REASONING_RATIO_KEY,
-    }
-)
+#: per-result observation keyed by a described name, so a bar may name one.
+_COVARIATE_MEASURES: frozenset[str] = COVARIATE_KEYS
 
 
 @dataclass(frozen=True)
@@ -787,7 +837,7 @@ def resolve_bar_name(
        for it (:func:`~threetears.evals.contracts.metrics.goal_check_measure`), which reads as the check.
 
     Anything else is ``not_carried``, and the reason says what the name IS where anything describes
-    it: a judge-mediated summary such as ``mean_score``, a composite such as ``pass_at_k``, or a
+    it: a judge-mediated summary such as ``mean_score``, a composite such as ``pass_hat_k``, or a
     run-level statistic such as ``mean_total_ms`` is described and still never lands on a result.
 
     Args:
@@ -882,7 +932,11 @@ def refuse_an_undeclarable_design(
     every name a bar may carry is enumerable and this can refuse rather than guess. A name the
     registry describes is still refused when no result carries it with a direction: a run-level
     statistic (``mean_total_ms``), a judge-mediated summary (``mean_score``), a composite
-    (``pass_at_k``), a categorical, a raw count or a diagnostic. A phase-timing key is carried too,
+    (``mean_composite``), a categorical, a raw count or a diagnostic. **The one exception is**
+    :data:`~threetears.evals.contracts.metrics.FRONTIER_RANKING_MEASURE` (``pass_hat_k``): no cell
+    carries it, but the bundle passes a bar on it to the frontier, which reads it on each contestant's
+    pass^k interval, so it is admitted with a threshold in pass^k's range ``[0, 1]`` and its direction
+    checked against the engine's descriptor. A phase-timing key is carried too,
     but no catalogue describes one, so a bar on it has no descriptor to be read against and is
     refused with the rest. **What the gate cannot see**: a host measure is admitted on the host's
     declaration alone, since nothing in a descriptor says whether the host's kind lands it on a
@@ -955,11 +1009,25 @@ def refuse_an_undeclarable_design(
     # Before either bar-against-a-standard check, because both presume the bar names something:
     # a threshold on a name no result carries is never compared with anything, and the campaign
     # reads as held to a standard it cannot be held to.
+    # A bar on the frontier's ranking measure is the one bar no cell carries and something still reads: the
+    # bundle passes it to the frontier, which decides each contestant's pass^k interval against it. It is held
+    # to pass^k's own range here, since the frontier refuses a threshold outside it.
     unreadable = [
         (override, reading)
         for override in design.bars
-        if isinstance(reading := resolved[override.measure_id], UnreadableBarName)
+        if override.measure_id != FRONTIER_RANKING_MEASURE
+        and isinstance(reading := resolved[override.measure_id], UnreadableBarName)
     ]
+    out_of_range = [
+        override.threshold
+        for override in design.bars
+        if override.measure_id == FRONTIER_RANKING_MEASURE and not 0.0 <= override.threshold <= 1.0
+    ]
+    if out_of_range:
+        raise ValueError(
+            f"a bar on {FRONTIER_RANKING_MEASURE} is read by the frontier against pass^k, a probability, so its "
+            f"threshold must lie in [0, 1]; this campaign declares {', '.join(repr(t) for t in out_of_range)}"
+        )
     if unreadable:
         # The author's own declared value, echoed as written: a refusal quotes its input rather than
         # restating it under the reader-facing number rule, which lives outside the contracts set.
@@ -989,7 +1057,7 @@ def refuse_an_undeclarable_design(
             f"a bar must name something this campaign's results will carry and a verdict can be given on — "
             f"{named}. {minted}. Reserved judged axes: {', '.join(sorted(RESERVED_DIM_IDS))}. "
             f"Measures a result carries with a direction (the engine's core and host '{profile.host_id}''s "
-            f"catalogue): {', '.join(readable)}"
+            f"catalogue): {', '.join(readable)}. And {FRONTIER_RANKING_MEASURE}, which the frontier reads"
         )
 
     for override in design.bars:
@@ -1050,6 +1118,14 @@ def refuse_an_undeclarable_design(
         if isinstance(reading := resolved[override.measure_id], BarName)
         and contradicts_descriptor(reading.descriptor, override.direction == "higher_is_better")
     ]
+    contradicted.extend(
+        f"{FRONTIER_RANKING_MEASURE} is declared higher-is-better by the engine and this campaign declares the opposite"
+        for override in design.bars
+        if override.measure_id == FRONTIER_RANKING_MEASURE
+        and contradicts_descriptor(
+            METRIC_DESCRIPTORS[FRONTIER_RANKING_MEASURE], override.direction == "higher_is_better"
+        )
+    )
     if contradicted:
         raise ValueError(
             f"host '{profile.host_id}' describes these measures differently from the bars this campaign "
@@ -1068,6 +1144,9 @@ __all__ = [
     "Question",
     "SweptAxis",
     "UnreadableBarName",
+    "JUDGED_MERIT_AXIS",
+    "axis_in_question_scope",
+    "exploratory_reading",
     "mechanism_measure_names",
     "reconcile_question_edits",
     "refuse_an_undeclarable_design",

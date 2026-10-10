@@ -39,11 +39,18 @@ and so are inverted ones, which say the check grades the opposite of what its in
 
 **Graded by the run's own rule.** Both controls go through
 :func:`~threetears.evals.run.runner.grade_goal_checks`, the function a finished cell's checks go
-through, so a check is proven under the evaluation it will be scored by.
+through, so a check is proven under the evaluation it will be scored by — and under the parameters' stored
+types: a case stores every variation parameter as one string, so a control's are read as strings too
+(:func:`~threetears.evals.contracts.models.stored_variation`), and a control stating any other type is refused,
+since a check proven on a number or a list would pass its control and fail every case.
 
 **Controls are authoring data.** Nothing that runs a cell reads them: the candidate is seeded from
 ``world_seed``, the simulated user from the ``conversation`` block, and the judge from the intent
 and the evidence the kind renders. A control reaching the candidate would be a hint about the answer.
+What a run DOES record is the verdict: a launch freezes whether each check is proven
+(:func:`goal_check_proofs`, ``EvalRun.goal_check_proofs``), and the run summary, the analysis bundle and
+the report mark every check that is not, so a pass rate a candidate that did nothing would also score is
+never shown as a measurement of the behaviour.
 
 **What the do-nothing control does not model.** It is the seed as written, not as a host's carriers read it back after
 a cell: a field the host's read adds with a default (a flag reading ``false``) is absent here — a check reading it is
@@ -57,8 +64,8 @@ to the subject's own state) resolves to empty, as it does for a run with no subj
 
 **Which writes it binds** — see :func:`refuse_non_discriminating_checks`. A template written past
 authoring (saved straight to the store) with no controls is not refused where it is read or run; its checks are
-shown as unproven wherever a template is rendered, and the first write that authors its checks must
-prove them.
+recorded as unproven when it is launched and marked so wherever their pass rates are shown, and the first write
+that authors its checks must prove them.
 """
 
 from __future__ import annotations
@@ -73,7 +80,15 @@ from threetears.evals.contracts.errors import ValidationFailedError
 from threetears.evals.contracts.host.profile import HostProfile
 from threetears.evals.contracts.host.world import Triggered, WorldRegistry
 from threetears.evals.contracts.host.world_schema import schema_violations
-from threetears.evals.contracts.models import ControlEndState, EvalTemplate, GoalCheckIntent, GoalStateOutcome
+from threetears.evals.contracts.models import (
+    ControlEndState,
+    EvalTemplate,
+    GoalCheckIntent,
+    GoalCheckProof,
+    GoalStateOutcome,
+    WorldSeed,
+    stored_variation,
+)
 from threetears.evals.contracts.world_events import Firings
 from threetears.evals.run.runner import GoalCheckUnevaluable, grade_goal_checks
 
@@ -225,7 +240,26 @@ def do_nothing_end_state(template: EvalTemplate, *, world: WorldRegistry | None)
     Raises:
         ValueError: The seed states something the registry does not declare.
     """
-    seeded = _named(world, template.world_seed.namespaces)
+    return idle_end_state(template.world_seed, world=world)
+
+
+def idle_end_state(seed: WorldSeed, *, world: WorldRegistry | None) -> ControlEnd:
+    """The do-nothing control over ``seed``: :func:`do_nothing_end_state` for a starting state held outside a template.
+
+    A quick world's cases each carry their own starting state (:mod:`threetears.evals.quick.world`), so the
+    do-nothing control is laid over each case's seed rather than the template's.
+
+    Args:
+        seed: The starting state.
+        world: The host's world registry, which names each seeded value's dimension.
+
+    Returns:
+        A fresh end state.
+
+    Raises:
+        ValueError: The seed states something the registry does not declare.
+    """
+    seeded = _named(world, seed.namespaces)
     clock = _clock_driven(world)
     # A triggered dimension's seed ARMS it rather than setting it: a candidate that did nothing never met an event's
     # or a person's condition, so the value never arrived — known absent, ``None``. Naming its seeded value here would
@@ -320,13 +354,15 @@ def check_discriminations(template: EvalTemplate, *, profile: HostProfile) -> li
     results: list[CheckDiscrimination] = []
     for entry in controls.checks:
         end_state = controls.end_states[entry.control]
+        # Read as a case stores its parameters — strings — so a check is never proven on a type no case holds.
+        variation = stored_variation(end_state.variation)
         nothing = do_nothing_end_state(template, world=profile.world)
         (idle,) = grade_goal_checks(
             [entry.check],
             ledger=nothing.ledger,
             end_state=nothing.end_state,
             fired=nothing.fired,
-            variation=end_state.variation,
+            variation=variation,
             world=profile.world,
         )
         stated = control_end_state(template, end_state, world=profile.world)
@@ -335,7 +371,7 @@ def check_discriminations(template: EvalTemplate, *, profile: HostProfile) -> li
             ledger=stated.ledger,
             end_state=stated.end_state,
             fired=stated.fired,
-            variation=end_state.variation,
+            variation=variation,
             world=profile.world,
         )
         results.append(
@@ -372,7 +408,8 @@ def refuse_non_discriminating_checks(
     Raises:
         ValidationFailedError: A declared check has no control; a control names a check the template
             does not declare; a control end state names world state or a call this host does not
-            define, or a value its dimension's schema refuses; a check cannot be evaluated against a
+            define, a value its dimension's schema refuses, or a variation parameter that is not a string;
+            a check cannot be evaluated against a
             control; or a check gives the same verdict on both controls, or the verdicts its intent
             forbids. Every defect is named at once.
     """
@@ -433,6 +470,40 @@ def refuse_non_discriminating_checks(
             + "; ".join(refusals)
             + " — correct the check so it reads what the behaviour changes, correct its intent, or correct the control"
         )
+
+
+def goal_check_proofs(template: EvalTemplate, *, profile: HostProfile) -> dict[str, GoalCheckProof]:
+    """Whether each of the template's goal checks is shown to tell its outcomes apart — what a run freezes at launch.
+
+    The authoring gate's own evaluation (:func:`check_discriminations`, and the end-state checks
+    :func:`refuse_non_discriminating_checks` applies), read as a state per check rather than a refusal, so a
+    template written past authoring is launched and its checks marked rather than refused.
+
+    Args:
+        template: The template being launched.
+        profile: The host, whose world a check's paths are read through.
+
+    Returns:
+        Each goal check -> ``proven`` (its control discriminates), ``unproven`` (the template names no control for
+        it) or ``refuted`` (its control does not discriminate, states what this host could not hold, or the check
+        cannot be evaluated against it). Empty for a template with no goal checks.
+    """
+    proofs: dict[str, GoalCheckProof] = {check: "unproven" for check in template.goal_state_checks}
+    controls = template.goal_check_controls
+    if controls is None or not proofs:
+        return proofs
+    controlled = [entry for entry in controls.checks if entry.check in proofs]
+    try:
+        armed = _armed_by_seed(template, profile.world)
+        broken = {name for name, end in controls.end_states.items() if _end_state_defects(end, profile, armed=armed)}
+        discriminations = {d.check: d for d in check_discriminations(template, profile=profile)}
+    except GoalCheckUnevaluable, ValueError:
+        return {**proofs, **{entry.check: "refuted" for entry in controlled}}
+    for entry in controlled:
+        discrimination = discriminations.get(entry.check)
+        shown = entry.control not in broken and discrimination is not None and discrimination.discriminates
+        proofs[entry.check] = "proven" if shown else "refuted"
+    return proofs
 
 
 def _armed_by_seed(template: EvalTemplate, world: WorldRegistry | None) -> frozenset[str]:
@@ -519,6 +590,14 @@ def _end_state_defects(end_state: ControlEndState, profile: HostProfile, *, arme
             for name in end_state.fired_armed
             if undefined_fired_dimension(name, world) is None
         )
+    # A case stores every variation parameter as a string, so a control stating any other type states
+    # parameters no case could carry: a check proven under them would grade differently on every case.
+    defects.extend(
+        f"it states variation.{name} as a {type(value).__name__} ({value!r}), and a case stores every variation "
+        "parameter as one string — state it as the string a case carries"
+        for name, value in end_state.variation.items()
+        if not isinstance(value, str)
+    )
     for call in end_state.calls:
         if (undefined := undefined_action(call.tool, call.action, profile.tool_actions)) is not None:
             defects.append(undefined)
@@ -540,5 +619,7 @@ __all__ = [
     "check_discriminations",
     "control_end_state",
     "do_nothing_end_state",
+    "goal_check_proofs",
+    "idle_end_state",
     "refuse_non_discriminating_checks",
 ]

@@ -65,6 +65,7 @@ from threetears.evals.contracts import (
     CONFUSION_CELL_MEASURE,
     DEFAULT_LAUNCH_K_RUNS,
     MATCH_MEASURE,
+    METRIC_DESCRIPTORS,
     CandidateOutput,
     CandidateTelemetry,
     CassetteMode,
@@ -85,6 +86,7 @@ from threetears.evals.contracts import (
     confusion_cell,
     withhold_failure_detail,
 )
+from threetears.evals.contracts.models import stored_variation
 from threetears.evals.contracts.host import (
     SHARED_CORE,
     ApparatusError,
@@ -92,12 +94,17 @@ from threetears.evals.contracts.host import (
     HostProfile,
     KindContract,
     MeasureRegistry,
+    NominalScale,
     SubjectSnapshot,
+    Sweepable,
+    SweepableRegistry,
+    SweepableValue,
     WorldPlacement,
     WorldRegistry,
     default_cell_timeout,
 )
-from threetears.evals.ops.summary import EvalSummary, summarize_run
+from threetears.evals.contracts.host.sweepables import CORE_ROLES, CORE_SWEEPABLES
+from threetears.evals.ops.summary import CaseResult, EvalSummary, summarize_run
 from threetears.evals.run import (
     CellContext,
     KindFactory,
@@ -111,10 +118,14 @@ from threetears.evals.run import (
     RunJudge,
     build_judge_service,
     default_job_timeout,
+    get_result_trace,
     launch_as_group,
     launch_run,
+    list_results,
     start_run,
 )
+from threetears.evals.run.authoring import refuse_unsupplied_world
+from threetears.evals.contracts.errors import ValidationFailedError
 from threetears.evals.quick.answer import unwrap_answer
 from threetears.evals.quick.judged import Judge, judge_evidence
 from threetears.evals.quick.levers import CallableLevers, levers_model
@@ -122,11 +133,13 @@ from threetears.evals.quick.tools import CellTools, Tool, ToolUsingCandidate, re
 from threetears.evals.quick.world import CaseSeed, World, WorldCandidate, WorldCellKind, world_case_payload
 from threetears.evals.storage import InMemoryDocumentStore
 
-#: The candidate under test: an async callable taking one case and returning its answer.
-Candidate = Callable[[Mapping[str, Any]], Awaitable[Any]]
+#: The candidate under test: a callable taking one case and returning its answer — usually ``async def``; a
+#: plain ``def`` is called in a worker thread (:func:`run_eval`), and a callable returning an awaitable has it awaited.
+Candidate = Callable[[Mapping[str, Any]], Awaitable[Any] | Any]
 
 #: One grade: takes the case and the candidate's answer, returns a number (``True``/``False`` count
-#: as 1 and 0). Its ``__name__`` is the measure's name, and higher is better.
+#: as 1 and 0). Its ``__name__`` is the measure's name, and higher is better. No scorer may take the name
+#: of an engine core measure (``score``, ``f1``, ``cost_usd`` and the rest of ``METRIC_DESCRIPTORS``).
 Scorer = Callable[[Mapping[str, Any], Any], float | bool]
 
 #: A classifier's expected label for one case: takes the case, returns the label a correct answer gives.
@@ -151,6 +164,18 @@ JUDGED_CALLABLE_KIND = "callable-judged"
 #: The host :func:`callable_host` builds, by the id the engine prints in its logs and errors.
 CALLABLE_HOST_ID = "run_eval"
 
+#: The lever a single-factor :func:`~threetears.evals.quick.compare` names its arms on, declared by
+#: ``callable_host(arms=True)``: each arm's run states its name as its level, so the report calls the arm
+#: ``candidate=<name>`` rather than calling the name a model.
+ARM_LEVER = "candidate"
+
+#: The candidate model every arm of a single-factor :func:`~threetears.evals.quick.compare` shares when its arms
+#: are named on :data:`ARM_LEVER`: the arms' names are not models, and a lever every arm shares splits none of them.
+SHARED_ARM_MODEL = "callable"
+
+#: Where a named arm's run carries its name, on its ``host_payload``, for the host's lever reader.
+_ARM_PAYLOAD_KEY = "arm"
+
 #: Where a case rides on its stored test case: verbatim, for the candidate to be handed back.
 _CASE_KEY = "case"
 
@@ -165,10 +190,13 @@ _EXPECTED_KEY = "expected"
 #: that does not (:data:`CALLABLE_UNSEATED`).
 CALLABLE_KIND_CONTRACT = KindContract(CALLABLE_KIND, seats=frozenset())
 
-#: What a ``run_eval`` run never has, whatever host it runs in, so a callable-kind contract may seat none of
-#: it: the engine's judge and simulator (by role or by any pinned dimension) — the callable kind is unjudged
-#: and simulates nobody — and the spend ceiling, which the one-call launch leaves off. A seat here would make
-#: every blank such dimension an unrecoverable level, and every comparison of two ``run_eval`` runs ``undecided``.
+#: What a ``run_eval`` run never has as a level of its rig, whatever host it runs in, so a callable-kind contract
+#: may seat none of it: the engine's judge and simulator (by role or by any pinned dimension) — the callable kind
+#: is unjudged and simulates nobody — and the spend ceiling, which is off unless a call caps it
+#: (``max_cost_usd=``) and is then a condition stated beside the run: a run it stopped says so by its status, and
+#: two runs under different caps measured the same candidate the same way until one stopped. A seat here would
+#: make every blank such dimension an unrecoverable level, and every comparison of two ``run_eval`` runs
+#: ``undecided``.
 CALLABLE_UNSEATED: frozenset[str] = frozenset(
     {
         *(name for role in SHARED_CORE.roles for name in (role.name, *role.pins)),
@@ -184,8 +212,9 @@ CALLABLE_UNSEATED: frozenset[str] = frozenset(
 #: contract is a kind's, and the unjudged kind's empty seats are what keep its runs comparable.
 JUDGED_CALLABLE_KIND_CONTRACT = KindContract(JUDGED_CALLABLE_KIND, seats=frozenset({"judge"}))
 
-#: What a judged ``run_eval`` run never has: the simulator (by role or by any pinned dimension) and the spend
-#: ceiling. The judge is not here — it is the one seat the judged kind fills.
+#: What a judged ``run_eval`` run never has as a level of its rig: the simulator (by role or by any pinned
+#: dimension) and the spend ceiling, a condition beside the run as :data:`CALLABLE_UNSEATED` says. The judge is
+#: not here — it is the one seat the judged kind fills.
 JUDGED_CALLABLE_UNSEATED: frozenset[str] = frozenset(
     {
         *(name for role in SHARED_CORE.roles if role.name != "judge" for name in (role.name, *role.pins)),
@@ -197,27 +226,54 @@ JUDGED_CALLABLE_UNSEATED: frozenset[str] = frozenset(
 _JUDGE_SEATS = next(role for role in SHARED_CORE.roles if role.name == "judge")
 
 
-def _launch_settings(arms: int = 1) -> LaunchSettings:
-    """The launch settings of the one-call path, for a launch of ``arms`` arms.
+def _launch_settings(arms: int = 1, max_cost_usd: float | None = None) -> LaunchSettings:
+    """The launch settings of the one-call path, for a launch of ``arms`` arms, capped at ``max_cost_usd`` a run.
 
     Every arm of the launch admitted and started together (:func:`run_eval` launches one,
-    :func:`~threetears.evals.quick.compare` one per arm), and the cost and metered-call ceilings off: the
-    candidate is an opaque callable whose spend the engine sees only after the fact, and only when it
-    reports it (an :class:`~threetears.evals.quick.answer.Answer`), so a ceiling could neither price an arm
-    before it runs nor bind a candidate that reports nothing. A judge scores one dimension at a time. The
-    ceiling values are required by the settings model and, with enforcement off, recorded as absent
-    on the run rather than as caps; the out-of-run one binds nothing either, since the callable kind
-    declines ``n_variations`` and so never generates.
+    :func:`~threetears.evals.quick.compare` one per arm). With no cap, ceiling enforcement is off and every run
+    records that it ran uncapped (``max_cost_usd_origin == "uncapped"``), which its summary says: the candidate
+    is an opaque callable whose spend the engine sees only after the fact, and only when it reports it (an
+    :class:`~threetears.evals.quick.answer.Answer`), so no ceiling is imposed that nobody asked for. With one,
+    enforcement is on and each run's own cost cap (:class:`~threetears.evals.run.EvalRunCostCap`) counts every
+    result's reported spend — the candidate's and the judge's — and stops the run ``budget_stopped`` between
+    cells once it is over, or at the first result whose spend went unpriced. The cap is also the configured
+    ceiling, so the launch, which names it (:func:`~threetears.evals.run.start_run`'s ``max_cost_usd``), may
+    not exceed it, and the run records it as ``chosen``. The out-of-run ceiling binds nothing, since the
+    callable kind declines ``n_variations`` and so never generates; no metered tools are declared
+    (``max_metered_calls=None``). A judge scores one dimension at a time.
     """
     return LaunchSettings(
         max_launch_arms=arms,
         max_admitted_runs=arms,
         judge_concurrency=1,
-        enforcement_enabled=False,
-        max_cost_usd=1.0,
-        max_metered_calls=1,
-        max_out_of_run_cost_usd=1.0,
+        enforcement_enabled=max_cost_usd is not None,
+        max_cost_usd=1.0 if max_cost_usd is None else max_cost_usd,
+        max_metered_calls=None,
+        max_out_of_run_cost_usd=1.0 if max_cost_usd is None else max_cost_usd,
     )
+
+
+def _refuse_an_unusable_cap(max_cost_usd: float | None) -> None:
+    if max_cost_usd is not None and (
+        isinstance(max_cost_usd, bool)
+        or not isinstance(max_cost_usd, int | float)
+        or not math.isfinite(max_cost_usd)
+        or max_cost_usd <= 0
+    ):
+        raise ValueError(f"max_cost_usd= is a spend ceiling in US dollars: a positive number, not {max_cost_usd!r}")
+
+
+def _scorer_reader_name(name: str) -> str:
+    """What a reader calls a scorer's measure: its def's name in words, as a score — ``exact_match`` is "Exact match score".
+
+    Args:
+        name: The scorer's ``__name__``.
+
+    Returns:
+        The reader-facing name its descriptor carries.
+    """
+    words = " ".join(name.replace("_", " ").split())
+    return f"{words[:1].upper()}{words[1:]} score"
 
 
 def scorer_measure(scorer: Scorer) -> MetricDescriptor:
@@ -234,6 +290,8 @@ def scorer_measure(scorer: Scorer) -> MetricDescriptor:
     doc = inspect.getdoc(scorer)
     return MetricDescriptor(
         name=name,
+        # The def's own name in words, marked a score so it never heads a column alike with an engine measure.
+        reader_name=_scorer_reader_name(name),
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -273,8 +331,38 @@ def callable_kind_contracts(levers: Sequence[str] = ()) -> tuple[KindContract, K
     )
 
 
+def _arm_payload(arm: str | None) -> dict[str, str]:
+    """The ``host_payload`` a named arm's run carries: its name, under this module's own key; nothing for an unnamed arm."""
+    if arm is None:
+        return {}
+    return {_ARM_PAYLOAD_KEY: arm}
+
+
+def _arm_of_run(run: EvalRun) -> str:
+    """The arm a run is, by name: what its launch stated, else its candidate model's label."""
+    named = (run.host_payload or {}).get(_ARM_PAYLOAD_KEY)
+    return named if isinstance(named, str) and named else run.candidate_model
+
+
+def _arm_levels(run: EvalRun) -> dict[str, SweepableValue]:
+    """A run's level of :data:`ARM_LEVER`, the host's one lever of its own, keyed into its variant."""
+    arm = _arm_of_run(run)
+    return {ARM_LEVER: SweepableValue.of(arm, display=arm, scale=NominalScale())}
+
+
+#: The arm lever as ``callable_host(arms=True)`` declares it.
+_ARM_SWEEPABLE = Sweepable(
+    name=ARM_LEVER,
+    role="lever",
+    read=lambda run, _results: _arm_of_run(run),
+    reader_prose="the arm of a comparison the run is, by the name the comparison gave it",
+    # Which candidate the run is, not a setting it ran at: the arm moves nothing off its own footing.
+    departs_production=lambda _run, _results: False,
+)
+
+
 def callable_host(
-    scorers: Sequence[Scorer] = (), *, levers: Sequence[str] = (), world: World | None = None
+    scorers: Sequence[Scorer] = (), *, levers: Sequence[str] = (), world: World | None = None, arms: bool = False
 ) -> EvalHost:
     """The least host there is: the shared core, one measure per scorer, no world, an in-memory store.
 
@@ -290,22 +378,32 @@ def callable_host(
             (:func:`callable_kind_contracts`), each handed to :func:`run_eval` as ``levers=``.
         world: The world a world run seeds (:class:`~threetears.evals.quick.world.World`), declared on the
             profile; ``None`` declares none.
+        arms: Declare :data:`ARM_LEVER`, the lever a single-factor :func:`~threetears.evals.quick.compare`
+            names its arms on, so its report reads ``candidate=<name>``; what ``compare`` builds when handed no
+            host. A run that states no arm (a ``run_eval`` in this host) is at its candidate model's label.
 
     Returns:
         The host.
 
     Raises:
-        ValueError: A scorer has no usable name, two share one, or one takes a classifier measure's name;
-            or a lever name is unusable or repeated.
+        ValueError: A scorer has no usable name, two share one, or one takes a classifier measure's name or
+            any other engine core measure's; or a lever name is unusable or repeated.
     """
     _refuse_unnamed_or_repeated(scorers)
     return EvalHost(
         profile=HostProfile(
             host_id=CALLABLE_HOST_ID,
-            host_sweepables=SHARED_CORE,
+            host_sweepables=SweepableRegistry((*CORE_SWEEPABLES, _ARM_SWEEPABLE), roles=CORE_ROLES)
+            if arms
+            else SHARED_CORE,
             measures=MeasureRegistry(scorer_measure(scorer) for scorer in scorers),
             kinds=callable_kind_contracts(levers),
             world=None if world is None else world.registry,
+            # The world's tools described from their own schemas, so the goal-check gate closes a parameter the
+            # way the candidate's calls are held to: an enum-closed one may be compared, a free string may not.
+            action_parameters=None if world is None else world.action_parameters,
+            tool_actions=None if world is None else world.tool_actions,
+            variant_levers=_arm_levels if arms else None,
         ),
         storage=EvalStorage(InMemoryDocumentStore()),
         failure_describer=withhold_failure_detail,
@@ -324,7 +422,7 @@ class _Prepared:
 
 
 class CallableKind:
-    """The candidate-kind seam over a plain async callable and its scorer functions.
+    """The candidate-kind seam over a plain callable and its scorer functions.
 
     ``invoke`` calls the candidate with the case it was given and each scorer with that case and the
     answer, and reports the scores as host measures, and an :class:`~threetears.evals.quick.answer.Answer`'s
@@ -354,7 +452,7 @@ class CallableKind:
         """Bind the candidate and its scorers.
 
         Args:
-            candidate: The async callable under test.
+            candidate: The callable under test.
             scorers: The grades, each reported under its own name.
             classifies: Whether the candidate is a classifier, whose every case carries its expected label.
             judge: The judge whose evidence each answer carries, or ``None`` for an unjudged kind.
@@ -490,11 +588,18 @@ def _missed(expected: str) -> dict[str, bool | float | str]:
 async def _call_candidate(candidate: Candidate | ToolUsingCandidate, case: Any, tools: CellTools | None) -> Any:
     """Call the candidate on one case — with its tools, when it declares any — and surface a rig fault it met.
 
+    A candidate handed no tools may be synchronous: it is called in a worker thread, so a blocking call does
+    not stall the event loop the run's other arms and its timeouts run on, and whatever it returns is awaited
+    when it is awaitable. Cells within one run are serial, so it is never called beside itself in one arm.
+
     Raises:
         ApparatusError: A tool call met a rig fault, re-raised here even when the candidate caught it.
     """
     if tools is None:
-        return await cast(Candidate, candidate)(case)
+        if _is_async_callable(candidate):
+            return await cast(Candidate, candidate)(case)
+        returned = await asyncio.to_thread(cast(Callable[[Any], Any], candidate), case)
+        return await returned if inspect.isawaitable(returned) else returned
     try:
         answer = await cast(ToolUsingCandidate, candidate)(case, tools.for_candidate())
     except Exception:
@@ -502,6 +607,42 @@ async def _call_candidate(candidate: Candidate | ToolUsingCandidate, case: Any, 
         raise
     tools.raise_any_fault()
     return answer
+
+
+def _is_async_callable(candidate: object) -> bool:
+    """Whether calling ``candidate`` returns a coroutine: an ``async def``, a partial of one, or an object with one as its ``__call__``.
+
+    Args:
+        candidate: The callable.
+
+    Returns:
+        ``True`` for an async callable; ``False`` for a plain function, which a call runs to its end.
+    """
+    if inspect.iscoroutinefunction(candidate):
+        return True
+    call = getattr(type(candidate), "__call__", None)
+    return not inspect.isroutine(candidate) and inspect.iscoroutinefunction(call)
+
+
+def _refuse_a_sync_candidate_handed_tools(arms: Sequence[CallableArm], *, why: str | None) -> None:
+    """Refuse, before anything runs, a synchronous candidate that would be handed async tools it cannot await.
+
+    Args:
+        arms: The arms.
+        why: What the candidates are handed (``"tools"``, ``"a world's tools"``), or ``None`` when nothing is,
+            and a synchronous candidate is called in a thread.
+    """
+    if why is None:
+        return
+    if sync := [
+        getattr(arm.candidate, "__name__", None) or repr(arm.candidate)
+        for arm in arms
+        if not _is_async_callable(arm.candidate)
+    ]:
+        raise ValueError(
+            f"{', '.join(sync)} is not an async function, and a candidate handed {why} must be one: its tools are "
+            "async functions it awaits. Declare it `async def candidate(case, tools): ...` and await each tool call"
+        )
 
 
 def _as_stored(answer: Any) -> dict[str, Any]:
@@ -534,12 +675,18 @@ def _refuse_unnamed_or_repeated(scorers: Sequence[Scorer]) -> None:
             f"a scorer named {', '.join(taken)} takes a measure the classifier track owns; to grade a classifier, "
             "pass run_eval its expected label (expected=), and name any other scorer something else"
         )
+    if core := sorted(set(names) & set(METRIC_DESCRIPTORS)):
+        raise ValueError(
+            f"a scorer named {', '.join(core)} takes the name of an engine core measure, so its grades would be read "
+            "under the core's meaning, direction and range and pooled into the engine's own observations of it; "
+            "rename the scorer's def (for example, " + ", ".join(f"{name}_grade" for name in core) + ")"
+        )
 
 
-def _expected_labels(cases: list[dict[str, Any]], expected: ExpectedLabel) -> list[str]:
+def _expected_labels(cases: list[dict[str, Any]], expected: ExpectedLabel, names: list[str]) -> list[str]:
     """Each case's expected label, refusing a case whose label no confusion matrix could hold."""
     labels: list[str] = []
-    for index, case in enumerate(cases):
+    for index, case in zip(names, cases, strict=True):
         try:
             label = expected(case)
         # prawduct:ok-broad-except — expected= is the caller's code: what it raises on a case is refused with that case named
@@ -584,7 +731,11 @@ def _refuse_an_undeclared_callable_contract(host: EvalHost, *, judged: bool) -> 
             f"the apparatus it never has and every comparison of two would read undecided; {remedy}"
         )
     if seated := sorted(contract.seats & unseated):
-        never = "simulates nobody and runs uncapped" if judged else "is unjudged, simulates nobody and runs uncapped"
+        never = (
+            "simulates nobody, and its spend ceiling is a condition beside the run"
+            if judged
+            else "is unjudged, simulates nobody, and its spend ceiling is a condition beside the run"
+        )
         raise ValueError(
             f"host {profile.host_id!r} seats {', '.join(seated)} for the {kind!r} kind, which a run_eval run never "
             f"has — it {never}; {remedy}"
@@ -611,6 +762,32 @@ def _refuse_undeclared_measures(host: EvalHost, scorers: Sequence[Scorer]) -> No
             f"host {host.profile.host_id!r} declares no measure named {', '.join(undeclared)}; a host's scorers "
             "report into measures it declares, so register them on its profile's measures"
         )
+
+
+def _case_names(cases: list[dict[str, Any]]) -> list[str]:
+    """What each case is called in its results and in every error line: its own ``id``, else its position.
+
+    Raises:
+        ValueError: An ``id`` that is not a non-blank string or an int, or two cases called alike.
+    """
+    names: list[str] = []
+    for index, case in enumerate(cases):
+        if "id" not in case:
+            names.append(str(index))
+            continue
+        given = case["id"]
+        if isinstance(given, bool) or not isinstance(given, str | int) or not str(given).strip():
+            raise ValueError(
+                f"case {index}'s id is {given!r}; a case's id names it in its results and errors, so it is a "
+                "non-blank string or an int"
+            )
+        names.append(str(given))
+    if repeated := sorted({name for name in names if names.count(name) > 1}):
+        raise ValueError(
+            f"more than one case is called {', '.join(map(repr, repeated))}; a case is called by its id, or by its "
+            "position in the list when it has none, and each name must be one case's"
+        )
+    return names
 
 
 def _plain_cases(cases: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -669,11 +846,6 @@ def _case_payload(case: dict[str, Any], label: str | None, seed: dict[str, Any] 
     return {_CASE_KEY: case, **labelled, **seeded}
 
 
-def _flat(value: Any) -> str:
-    """One case field as the engine's flat-string view of what varies."""
-    return value if isinstance(value, str) else json.dumps(value, sort_keys=True)
-
-
 @dataclass(frozen=True)
 class CallableArm:
     """One arm a one-call launch runs: the candidate, the model its run is labelled by, and its other levers.
@@ -682,11 +854,14 @@ class CallableArm:
         candidate: The candidate under test.
         model: The arm's label, stored as its run's candidate model; ``None`` takes the candidate's ``__name__``.
         levers: The arm's level of every other lever, by name, or ``None`` for none.
+        arm: The arm's name, stated on its run as its level of :data:`ARM_LEVER` (and as its subject), for a
+            host that declares that lever (``callable_host(arms=True)``); ``None`` names no arm.
     """
 
     candidate: Candidate | ToolUsingCandidate | WorldCandidate
     model: str | None = None
     levers: Mapping[str, str] | None = None
+    arm: str | None = None
 
 
 @dataclass(frozen=True)
@@ -696,6 +871,12 @@ class _WiredArm:
     model: str
     levers: dict[str, Any]
     kind_factory: KindFactory
+    arm: str | None = None
+
+    @property
+    def subject(self) -> str:
+        """The run's subject: the arm's name when it has one, else its model."""
+        return self.arm if self.arm is not None else self.model
 
 
 def _launch_host(
@@ -706,6 +887,7 @@ def _launch_host(
     world: World | None = None,
     *,
     calls_tools: bool = False,
+    max_cost_usd: float | None = None,
 ) -> LaunchHost:
     """``host`` as a launching host whose one kind runs each arm's kind over ``cases``, judged by ``judge`` when given.
 
@@ -733,7 +915,7 @@ def _launch_host(
     def arm_of(request: LaunchRequest) -> _WiredArm:
         levels = {} if request.overlays is None else request.overlays.model_dump(mode="json")
         for arm in arms:
-            if arm.model == request.candidate_model and arm.levers == levels:
+            if arm.model == request.candidate_model and arm.levers == levels and arm.subject == request.subject_id:
                 return arm
         raise ValueError(f"no arm of this launch runs model {request.candidate_model!r} at levers {levels!r}")
 
@@ -747,11 +929,17 @@ def _launch_host(
                 judge.model,
                 judged_artifact=JudgedArtifact.DOCUMENT,
             )
-        subject = SubjectSnapshot(subject_id=arm.model, subject_label=arm.model, state={})
+        subject = SubjectSnapshot(subject_id=arm.subject, subject_label=arm.subject, state={})
         return await launch_run(
             launch_host,
             request,
-            KindWiring(kind_factory=arm.kind_factory, subject=subject, test_cases=cases, judge=run_judge),
+            KindWiring(
+                kind_factory=arm.kind_factory,
+                subject=subject,
+                test_cases=cases,
+                judge=run_judge,
+                payload=_arm_payload(arm.arm),
+            ),
         )
 
     # The judge pin is the one launch argument a judged kind honours: run_eval names its judge's model. A
@@ -764,7 +952,7 @@ def _launch_host(
     launch_host = LaunchHost(
         eval_host=host,
         kinds={kind_name: LaunchableKind(launch=launch, unhonoured_launch_arguments=frozenset(unhonoured))},
-        settings=partial(_launch_settings, len(arms)),
+        settings=partial(_launch_settings, len(arms), max_cost_usd),
         job_timeout_factory=default_job_timeout,
         world_placements=place if declared is not None else None,
     )
@@ -777,6 +965,7 @@ def _world_seeds(
     seed: CaseSeed | None,
     goal_checks: Sequence[str],
     host: EvalHost | None,
+    names: list[str],
 ) -> list[dict[str, Any]] | None:
     """Each case's starting state for a world run, or ``None`` for a world-less one, refusing an incoherent request."""
     if world is None:
@@ -792,7 +981,7 @@ def _world_seeds(
         )
     world.refuse_unreadable(goal_checks)
     seeds: list[dict[str, Any]] = []
-    for index, case in enumerate(cases):
+    for index, case in zip(names, cases, strict=True):
         try:
             values = seed(case)
         # prawduct:ok-broad-except — seed= is the caller's code: what it raises on a case is refused with that case named
@@ -846,16 +1035,21 @@ async def run_eval(
     tools: Mapping[str, Tool] | None = None,
     cassette_mode: CassetteMode = "off",
     cassette_corpus_id: str | None = None,
+    max_cost_usd: float | None = None,
 ) -> EvalSummary:
     """Run ``candidate`` on every case ``k`` times, grade each answer with every scorer and the judge, and summarise.
 
     Args:
-        cases: The cases, each a JSON object; the candidate and the scorers receive each one as given.
-        candidate: The async callable under test, called once per case and repeat: with the case, or with
+        cases: The cases, each a JSON object; the candidate and the scorers receive each one as given. A case's
+            ``id``, when it has one (a non-blank string or an int, each case's its own), is what its results and
+            error lines call it; a case with none is called by its position in the list, from ``0``.
+        candidate: The callable under test, called once per case and repeat: with the case, or with
             the case and its tools when ``tools`` is given (:data:`~threetears.evals.quick.tools.ToolUsingCandidate`).
             Returning an :class:`~threetears.evals.quick.answer.Answer` reports what producing the answer
             spent, which the summary and every result's ``cost_usd`` then carry; any other return value is
-            the answer itself. For a world run, ``candidate(case, tools)`` with the
+            the answer itself. Usually ``async def``; a plain ``def`` is called in a worker thread, so a
+            blocking call stalls nothing else. A candidate handed tools, or a world's, must be async, since it
+            awaits them. For a world run, ``candidate(case, tools)`` with the
             :class:`~threetears.evals.quick.world.WorldTools` on its cell's world.
         scorers: The grades. Each is reported as a measure named by its ``__name__``; ``True`` and
             ``False`` count as 1 and 0, and higher is better. None is needed when ``expected`` or
@@ -869,7 +1063,10 @@ async def run_eval(
         judge: A model grading each answer on a rubric (:class:`~threetears.evals.quick.judged.Judge`): one
             call per dimension per answer, through the engine's judge service. Each dimension's scores
             are summarised beside the measures, and the judge's spend as its client priced it. A judge
-            that fails or cannot tell on a dimension excludes that cell, as any fault of the rig does.
+            call that fails excludes that cell, as any fault of the rig does. A "can't tell" is an answer,
+            not a fault: it is recorded on its dimension, counted there (``cannot_tell`` in the summary's
+            dimension line), and leaves the cell out of that dimension's mean alone — every other dimension
+            and measure still counts the cell.
         intent: What every case asks of the candidate, in one sentence: the template's intent, which the
             judge reads beside each answer (as ``**Intent:**`` in its prompt) and so can move its scores.
             ``None`` takes the first line of the candidate's docstring, or, with no docstring, a generic
@@ -904,15 +1101,28 @@ async def run_eval(
             Required with ``world``.
         goal_checks: Goal-state checks over the world the candidate left and the calls it made
             (``state.<dimension>``, ``calls("<world>.<tool>")``), each reported as passed or failed per cell.
-            Requires ``world``.
+            Requires ``world``. Held to the gate a template's authoring applies, before anything runs: a
+            string comparison over a tool parameter is accepted only where the tool's schema closes it
+            (``enum``, ``const`` or ``pattern``), since a free string is what the model wrote.
+        max_cost_usd: The most the run may spend, in US dollars, counted from what each result reports: the
+            candidate's :class:`~threetears.evals.quick.answer.Answer` spend and the judge's. Once the total
+            passes it, or a result's spend goes unpriced, the run stops between cases with status
+            ``budget_stopped``, keeps what it delivered, and the summary says why (``stopped_because``). A
+            candidate that reports no spend is invisible to it, and the summary says so. ``None`` (the default)
+            runs uncapped, which the summary states.
 
     Returns:
-        The finished run's summary, read back from the store.
+        The finished run's summary, read back from the store. It carries every result
+        (:meth:`~threetears.evals.ops.summary.EvalSummary.results`, :meth:`~threetears.evals.ops.summary.EvalSummary.misses`),
+        so the answers can be read after this call returns whatever store the run used.
 
     Raises:
-        ValueError: No cases, a case that is not a JSON object with string keys, no scorer, ``expected``
+        ValueError: No cases, a case that is not a JSON object with string keys, a case ``id`` that is not a
+            non-blank string or an int or that two cases share, a ``max_cost_usd`` that is not a positive
+            number, a synchronous candidate handed tools or a world, no scorer, ``expected``
             or ``judge``, an ``intent`` that is not a non-blank string, a scorer with no name, a repeated one or
-            one named ``match``, ``confusion_cell`` or ``accuracy``, an ``expected`` that raises or gives a case a blank, non-string or
+            one named after an engine core measure (``match``, ``confusion_cell``, ``accuracy``, ``score``,
+            ``cost_usd`` or any other name in ``METRIC_DESCRIPTORS``), an ``expected`` that raises or gives a case a blank, non-string or
             :data:`UNUSABLE_ANSWER` label, a given host that declares no callable-kind contract
             (or one with no seats, a seat in :data:`CALLABLE_UNSEATED`, overlays or a spec), a judged call on
             a given host whose judged-kind contract is missing or seats too much or no judge, a scorer
@@ -944,6 +1154,7 @@ async def run_eval(
         tools=tools,
         cassette_mode=cassette_mode,
         cassette_corpus_id=cassette_corpus_id,
+        max_cost_usd=max_cost_usd,
     )
     return summary
 
@@ -991,6 +1202,7 @@ async def run_arms(
     tools: Mapping[str, Tool] | None = None,
     cassette_mode: CassetteMode = "off",
     cassette_corpus_id: str | None = None,
+    max_cost_usd: float | None = None,
 ) -> list[EvalSummary]:
     """Run every arm over every case ``k`` times as ONE launch, and summarise each arm's run, in arm order.
 
@@ -1002,13 +1214,17 @@ async def run_arms(
     :func:`~threetears.evals.run.start_run` call into that group, because ``start_run`` launches every run
     it starts at one set of overlays and the arms of a factorial differ in theirs.
 
-    Args and Raises as :func:`run_eval`, every argument but the arms the same for every arm. The arms
-    are distinct — no two at one model and one level of every lever — which the caller holds.
+    Args and Raises as :func:`run_eval`, every argument but the arms the same for every arm — one judge, so
+    every arm is judged by the same model, rubric and judge configs, and one ``max_cost_usd``, each arm's
+    run's own cap. The arms are distinct — no two at one model and one level of every lever — which the
+    caller holds.
 
     Returns:
         Each arm's finished run's summary, read back from the store, in arm order.
     """
     plain_cases = _plain_cases(cases)
+    names = _case_names(plain_cases)
+    _refuse_an_unusable_cap(max_cost_usd)
     goal_checks = list(goal_checks)
     if not scorers and expected is None and judge is None and not goal_checks:
         raise ValueError(
@@ -1027,8 +1243,11 @@ async def run_arms(
             "cassette_mode, since a replayed world tool would leave the state it should have changed untouched"
         )
     refuse_unusable_tools(tools, cassette_mode)
-    labels = None if expected is None else _expected_labels(plain_cases, expected)
-    seeds = _world_seeds(plain_cases, world, seed, goal_checks, host)
+    _refuse_a_sync_candidate_handed_tools(
+        arms, why="a world's tools" if world is not None else "tools" if tools is not None else None
+    )
+    labels = None if expected is None else _expected_labels(plain_cases, expected, names)
+    seeds = _world_seeds(plain_cases, world, seed, goal_checks, host, names)
     if host is None:
         host = callable_host(scorers, levers=tuple(arms[0].levers or ()), world=world)
     else:
@@ -1061,13 +1280,21 @@ async def run_arms(
             id=f"{template_id}-{index}",
             scope_id=scope_id,
             template_id=template_id,
-            variation_params={key: _flat(value) for key, value in case.items()},
+            variation_params=stored_variation(case),
             host_payload=_case_payload(
                 case, None if labels is None else labels[index], None if seeds is None else seeds[index]
             ),
         )
         for index, case in enumerate(plain_cases)
     ]
+    if world is not None:
+        # The authoring gate itself, before anything is stored or run: the grammar, the paths, a string match
+        # over model prose, a text comparison over a call parameter its schema does not close, and calls or
+        # firings the world cannot produce. A quick run is authored here, so it is held to what authoring holds.
+        try:
+            refuse_unsupplied_world(template, profile=host.profile)
+        except ValidationFailedError as refused:
+            raise ValueError(refused.message) from refused
     host.storage.save_template(template)
     for test_case in test_cases:
         host.storage.save_test_case(test_case)
@@ -1078,10 +1305,13 @@ async def run_arms(
             kind_factory=_kind_factory(
                 arm.candidate, scorers, classifies=labels is not None, judge=judge, world=world, tools=tools
             ),
+            arm=arm.arm,
         )
         for arm, model in zip(arms, models, strict=True)
     ]
-    launch_host = _launch_host(host, wired, test_cases, judge, world, calls_tools=tools is not None)
+    launch_host = _launch_host(
+        host, wired, test_cases, judge, world, calls_tools=tools is not None, max_cost_usd=max_cost_usd
+    )
 
     async def form() -> tuple[LaunchGroup, None]:
         # Every arm's model is a candidate of the launch, which is what its judge is chosen against.
@@ -1093,7 +1323,7 @@ async def run_arms(
             prepared += await start_run(
                 launch_host,
                 template_id=template_id,
-                subject_id=model,
+                subject_id=model if arm.arm is None else arm.arm,
                 models=[model],
                 k_runs=k,
                 scope_id=scope_id,
@@ -1101,6 +1331,7 @@ async def run_arms(
                 overlays=dict(arm.levers) if arm.levers else None,
                 cassette_mode=cassette_mode,
                 cassette_corpus_id=cassette_corpus_id,
+                max_cost_usd=max_cost_usd,
                 launch_group=group,
             )
         return prepared
@@ -1120,15 +1351,85 @@ async def run_arms(
         # leaving pending ones behind in a store that outlives it.
         await launch_host.job_manager.shutdown()
         raise
-    summaries = [summarize_run(host, run.id, scope_id) for run in runs]
+    by_id = {test_case.id: name for test_case, name in zip(test_cases, names, strict=True)}
+    summaries = [
+        _with_case_results(host, summarize_run(host, run.id, scope_id, case_names=by_id), test_cases, names)
+        for run in runs
+    ]
+    # What a candidate that did nothing would pass, from each case's own starting state: a quick world's template
+    # names no controls, so every check is unproven, and this is the baseline its pass rate is read against.
+    idle = (
+        world.did_nothing_passes(goal_checks, [(seeds[i], tc.variation_params) for i, tc in enumerate(test_cases)])
+        if world is not None and seeds is not None and goal_checks
+        else None
+    )
     # The store keeps the intent but not where it came from; a judged run's summary carries both.
     return [
-        summary.model_copy(update={"intent_source": intent_source}) if summary.intent is not None else summary
-        for summary in summaries
+        _with_baseline(summary, idle, len(test_cases), intent_source).model_copy(update={"arm": arm.arm})
+        for summary, arm in zip(summaries, arms, strict=True)
     ]
 
 
+def _with_case_results(
+    host: EvalHost, summary: EvalSummary, test_cases: list[EvalTestCase], names: list[str]
+) -> EvalSummary:
+    """The summary carrying every result read for a person, so they outlive the store the run was in.
+
+    Kept on the summary, a value, rather than by keeping the store alive behind it: the default store is the
+    call's own and in memory, and a summary that held it would hold every run, trace and template of it for
+    as long as anyone kept the summary, and could not be serialised. What a person reads of a result is small
+    — the case, the answer, the grades and the reasons — so it is copied out here, once, as the store has it.
+    """
+    order = {test_case.id: index for index, test_case in enumerate(test_cases)}
+    stored = sorted(
+        list_results(host.storage, summary.run_id, summary.scope_id),
+        key=lambda result: (order.get(result.test_case_id, len(order)), result.k_iteration),
+    )
+    payloads = {test_case.id: test_case.host_payload for test_case in test_cases}
+    case_results = []
+    for result in stored:
+        payload = payloads.get(result.test_case_id, {})
+        index = order.get(result.test_case_id)
+        trace = get_result_trace(host.storage, result) if result.has_trace else None
+        case_results.append(
+            CaseResult.of(
+                result,
+                case=names[index] if index is not None else result.test_case_id,
+                given=payload.get(_CASE_KEY),
+                expected=payload.get(_EXPECTED_KEY),
+                answer=_stored_answer(trace.trace if trace is not None else []),
+            )
+        )
+    return summary.model_copy(update={"case_results": case_results})
+
+
+def _stored_answer(trace: list[dict[str, Any]]) -> Any:
+    """The answer a cell stored (:func:`_as_stored`): its value, or the ``repr`` JSON could not hold; ``None`` for none."""
+    if len(trace) != 1:
+        return None
+    (stored,) = trace
+    return stored.get("value", stored.get("repr"))
+
+
+def _with_baseline(
+    summary: EvalSummary, idle: Mapping[str, int] | None, cases: int, intent_source: str | None
+) -> EvalSummary:
+    """The summary with the intent's source, and each goal check's do-nothing baseline where there is one."""
+    update: dict[str, Any] = {}
+    if summary.intent is not None:
+        update["intent_source"] = intent_source
+    if idle is not None:
+        update["goal_checks"] = [
+            goal.model_copy(update={"did_nothing_passed": idle[goal.check], "did_nothing_cases": cases})
+            if goal.check in idle
+            else goal
+            for goal in summary.goal_checks
+        ]
+    return summary.model_copy(update=update) if update else summary
+
+
 __all__ = [
+    "ARM_LEVER",
     "CALLABLE_HOST_ID",
     "CALLABLE_KIND",
     "CALLABLE_KIND_CONTRACT",
@@ -1136,6 +1437,7 @@ __all__ = [
     "JUDGED_CALLABLE_KIND",
     "JUDGED_CALLABLE_KIND_CONTRACT",
     "JUDGED_CALLABLE_UNSEATED",
+    "SHARED_ARM_MODEL",
     "UNUSABLE_ANSWER",
     "CallableKind",
     "Candidate",

@@ -7,9 +7,10 @@ marks. So it takes the point-plot geometry rather than the row-based figure widt
 and both of its axes are positions, which means both may crop — and their labelled
 ticks are what disclose it, since there is no crop footnote.
 
-**Dominance rides on shape and recession, never hue.** An on-frontier contestant
-draws a circle, a dominated one a diamond, a disqualified one a cross, and the
-recessive classes are additionally drawn in the neutral that carries no identity.
+**Dominance rides on shape and recession, never hue.** A contestant not shown
+dominated draws a circle, one never tested a square, a dominated one a diamond, a
+disqualified one a cross, and the recessive classes are additionally drawn in the
+neutral that carries no identity.
 Two reasons the shape is load-bearing rather than decorative: identity may not ride
 on hue, since the palette recycles and an axis does not; and a distinction drawn
 only in weight is one a reader with low contrast vision does not receive, which is
@@ -18,8 +19,8 @@ why the recession is the second channel and never the only one.
 **The recession is asked for by NAME, not stated as an opacity.** The recessive
 marks are their own layer wearing the ``chart-context`` style, so each renderer
 decides what receding looks like on the surface it is painting — the same alpha is
-not the same recession on obsidian and on pearl, and this one spec is drawn onto
-both.
+not the same recession on a near-black surface and on a near-white one, and this
+one spec is drawn onto both.
 """
 
 from __future__ import annotations
@@ -36,15 +37,15 @@ from threetears.evals.vega.compiler import (
     point_radius,
 )
 from threetears.evals.analysis.viz.intent import ChartIntent
-from threetears.evals.analysis.viz.intents.frontier import CLASS_FIELD, CLASS_SHAPES, DISPLAY_FIELD
+from threetears.evals.analysis.viz.intents.frontier import CLASS_FIELD, CLASS_SHAPES, DISPLAY_FIELD, EMPHATIC_CLASSES
+from threetears.evals.contracts.host import ChartFont
 from threetears.evals.vega.palette import CONTEXT_STYLE, font_weights, geometry
 
 #: The classes drawn in the context neutral rather than in the chart's own ink.
 #:
-#: Derived from the class order rather than listed again, so a fourth class cannot be
-#: added and silently draw at full weight. The head of that order is the class a reader
-#: is being pointed AT; everything after it is there for comparison.
-_RECESSIVE_CLASSES: tuple[str, ...] = tuple(name for name, _ in CLASS_SHAPES[1:])
+#: Every class but the emphatic ones the intent names, so a class added later cannot
+#: silently draw at full weight.
+_RECESSIVE_CLASSES: tuple[str, ...] = tuple(name for name, _ in CLASS_SHAPES if name not in EMPHATIC_CLASSES)
 
 #: How far a contestant's name sits to the right of its mark's EDGE, in px.
 #:
@@ -77,7 +78,7 @@ def _by_weight(drawn: list[dict[str, Any]]) -> list[tuple[bool, list[str]]]:
     Two layers at most, and only the ones with something in them: an empty layer
     is a filter matching nothing, which Vega draws as an invisible mark and a
     reader never sees — but it still joins the scale resolution, and a figure whose
-    every contestant is on the frontier should not carry a recessive layer at all.
+    no contestant recedes should not carry a recessive layer at all.
 
     Args:
         drawn: The plotted rows, each carrying its contention class.
@@ -95,11 +96,13 @@ def _by_weight(drawn: list[dict[str, Any]]) -> list[tuple[bool, list[str]]]:
     return partitions
 
 
-def compile_frontier(intent: ChartIntent) -> dict[str, Any]:
+def compile_frontier(intent: ChartIntent, *, font: ChartFont | None = None) -> dict[str, Any]:
     """Draw a cost-against-quality intent as a point plot.
 
     Args:
         intent: The frontier's intent.
+        font: The typeface the chart is laid out in; ``None`` for the packaged face. Its one measured
+            layout decision is where the title wraps.
 
     Returns:
         The Vega-Lite spec.
@@ -194,7 +197,7 @@ def compile_frontier(intent: ChartIntent) -> dict[str, Any]:
     # way a reader of a point plot consults: the labelled ticks.
     return {
         "$schema": VEGA_LITE_SCHEMA,
-        "title": _title_spec(intent.title, width),
+        "title": _title_spec(intent.title, width, font=font),
         "data": {"values": drawn},
         "layer": layers,
         "width": width,

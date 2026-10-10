@@ -27,7 +27,7 @@ from threetears.evals.contracts.models import (
     RubricScore,
 )
 from threetears.evals.contracts.provider import withhold_failure_detail
-from threetears.evals.contracts.scoring import compute_dimension_summary, compute_pass_k, result_composite
+from threetears.evals.contracts.scoring import compute_dimension_summary, compute_pass_hat_k, result_composite
 from threetears.evals.run.judge import SCALE_READERS, run_judge_llm
 from threetears.evals.run.judge_service import JudgeContext, JudgeService
 from packages.evals.tests.factories import make_eval_result, make_eval_run
@@ -172,7 +172,7 @@ class TestTheJudgeService:
             client_factory=lambda m, t: judge, failure_describer=withhold_failure_detail
         ).score_dimension(dim, _context())
 
-        assert outcome.score == RubricScore(dim="x.arc", scale="pass_fail", score=1, reasoning="r")
+        assert outcome.score == RubricScore(dim="x.arc", scale="pass_fail", axis="capability", score=1, reasoning="r")
         (system,) = judge.systems
         assert "Answer pass or fail." in system and "1 (worst) to 5 (best)" not in system
         assert "  pass: P" in system and "  fail: F" in system
@@ -183,7 +183,7 @@ class TestTheJudgeService:
             client_factory=lambda m, t: judge, failure_describer=withhold_failure_detail
         ).score_dimension(RubricDim(name="x.arc", description="d", scale="ordinal"), _context())
 
-        assert outcome.score == RubricScore(dim="x.arc", score=4, reasoning="r", scale="ordinal")
+        assert outcome.score == RubricScore(dim="x.arc", score=4, reasoning="r", scale="ordinal", axis="capability")
         assert "1 (worst) to 5 (best)" in judge.systems[0]
 
     async def test_a_number_given_to_a_pass_fail_dimension_scores_nothing(self):
@@ -215,9 +215,9 @@ class TestAggregation:
         passed = _result(rubric_scores=[RubricScore(dim="x.a", scale="pass_fail", score=1)])
         failed = _result(test_case_id="tc-2", rubric_scores=[RubricScore(dim="x.a", scale="pass_fail", score=0)])
 
-        [row] = compute_pass_k([passed, failed], rubric_threshold=5).values()
+        [row] = compute_pass_hat_k([passed, failed], rubric_threshold=5).values()
 
-        assert row["n_test_cases"] == 2 and row["pass_at_k"] == 0.5
+        assert row["n_test_cases"] == 2 and row["pass_hat_k"] == 0.5
 
     def test_a_dimension_summary_names_its_scale_and_its_mean_is_the_pass_rate(self):
         results = [
@@ -241,7 +241,7 @@ class TestTheProjection:
         """Project through the toy host: the projection reads the installed host's levers."""
         run = make_eval_run(id="run-1", **run_overrides)
         profile = toyhost_profile()
-        return project_score_records([run], results, profile=profile).records
+        return project_score_records([run], results, profile=profile, archived_run_ids=None).records
 
     def test_a_score_row_carries_its_scale(self):
         records = self._project([_result(rubric_scores=[RubricScore(dim="x.a", scale="pass_fail", score=0)])])

@@ -19,6 +19,7 @@ Pinned here, each in both directions:
 from __future__ import annotations
 
 import copy
+import json
 from dataclasses import dataclass
 from typing import Any, get_args
 
@@ -36,12 +37,12 @@ from threetears.evals.analysis.viz import (
     table_disagreements,
 )
 from threetears.evals.contracts.campaign import VizType
-from threetears.evals.contracts.host import StyleProfile
-from threetears.evals.vega import CompiledChart, VegaRenderer, packaged_palette, vega_config
+from threetears.evals.contracts.host import StyleError, StyleProfile
+from threetears.evals.vega import CompiledChart, VegaRenderer, packaged_font, packaged_palette, vega_config
 from threetears.evals.vega.arms import ARMS
 from threetears.evals.vega.palette import series_slots, validated_slots
 from packages.evals.tests.chart_examples import EVERY_TYPE
-from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_PALETTE, toyhost_profile
+from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_FONT, TOYHOST_PALETTE, toyhost_profile
 from packages.evals.tests.test_vega_compiler import ATTRIBUTION_EARNED, ATTRIBUTION_WITHHELD, BINNED
 
 #: Every intent the renderer is held to: one per type, plus the shapes a type draws by another path.
@@ -373,6 +374,76 @@ def test_a_host_that_declares_no_palette_is_drawn_in_the_packaged_one(theme: Any
 
     assert renderer.palette == packaged_palette(theme)
     assert renderer.config() == vega_config(packaged_palette(theme))
+
+
+# =============================================================================
+# The host's font reaches the renderer, with the metrics its layout is taken from
+# =============================================================================
+
+#: Every config key that names a typeface.
+_FONT_KEYS = (
+    ("font",),
+    ("title", "font"),
+    ("title", "subtitleFont"),
+    ("axis", "labelFont"),
+    ("axis", "titleFont"),
+    ("header", "labelFont"),
+    ("legend", "labelFont"),
+    ("text", "font"),
+)
+
+
+def _families(config: dict[str, Any]) -> set[str]:
+    """Every typeface a config names."""
+    found = set()
+    for path in _FONT_KEYS:
+        node: Any = config
+        for key in path:
+            node = node[key]
+        found.add(node)
+    return found
+
+
+def test_a_host_that_declares_a_font_is_set_in_it() -> None:
+    """#635: a declared font is the family every text role is configured in."""
+    renderer = VegaRenderer.for_style(toyhost_profile().style)
+
+    assert renderer.font == TOYHOST_FONT
+    assert _families(renderer.config()) == {TOYHOST_FONT.family}
+
+
+def test_a_host_that_declares_a_font_is_laid_out_in_its_metrics() -> None:
+    """The layout is measured in the declared face, not the packaged one.
+
+    Names that fit the gutter at the packaged face's widths and not at the toy face's: drawn by the
+    host's renderer they move above their marks, and by the packaged renderer they stay in the gutter.
+    A renderer that set the host's family but measured the packaged table would keep them in the gutter
+    and draw them in a face they do not fit.
+    """
+    payload = copy.deepcopy(EVERY_TYPE["breakdown"])
+    for index, part in enumerate(payload["parts"]):
+        part["label"] = f"stopping_reason_{index:02d}"
+    intent = chart_intent("breakdown", payload)
+
+    hosted = VegaRenderer.for_style(toyhost_profile().style).draw(intent).spec
+    packaged = VegaRenderer.packaged().draw(intent).spec
+
+    assert '"baseline": "bottom"' not in json.dumps(packaged), "the packaged face fits these names in the gutter"
+    assert '"baseline": "bottom"' in json.dumps(hosted), "the toy face does not, so its names go above"
+
+
+def test_a_host_that_declares_no_font_is_set_in_the_packaged_face() -> None:
+    renderer = VegaRenderer.for_style(StyleProfile())
+
+    assert renderer.font == packaged_font()
+    assert _families(renderer.config()) == {packaged_font().family}
+
+
+@pytest.mark.parametrize("bare", ["Inter", "Inter, sans-serif", None])
+def test_a_font_without_metrics_is_refused_by_the_renderer(bare: Any) -> None:
+    """A typeface handed over as a name is refused rather than laid out against another face's widths."""
+    with pytest.raises(StyleError, match="declared without metrics"):
+        VegaRenderer(palette=packaged_palette("dark"), font=bare)
 
 
 def test_a_host_palette_and_the_packaged_one_build_the_same_config_keys() -> None:

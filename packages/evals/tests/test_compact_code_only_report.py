@@ -59,8 +59,8 @@ CASES = [
     {"text": "an oak", "label": "plant"},
 ]
 
-CONTROL_ARM = "model=control (control)"
-CANDIDATE_ARM = "model=candidate"
+CONTROL_ARM = "candidate=control (control)"
+CANDIDATE_ARM = "candidate=candidate"
 
 
 def _expected(case: Mapping[str, Any]) -> str:
@@ -87,15 +87,17 @@ def _table(report: Report, name: str) -> TableBlock | None:
 
 
 def _figure(summary: MeasureSummary) -> str:
-    """A per-label figure as the table states it: the rate with its interval, or F1's value, with its n."""
+    """A per-label figure as the table states it: the rate with its interval, or F1's value, with its n.
+
+    The n names the cases it is over where they repeat — k=2 here — since those are the draws the interval counts.
+    """
+    cases = summary.n_independent
+    n = f"(n={summary.n} over {cases} case{'' if cases == 1 else 's'})" if 0 < cases < summary.n else f"(n={summary.n})"
     if summary.rate is not None:
         assert summary.ci_low is not None and summary.ci_high is not None
-        return (
-            f"{format_number(summary.rate)} [{format_number(summary.ci_low)}, {format_number(summary.ci_high)}] "
-            f"(n={summary.n})"
-        )
+        return f"{format_number(summary.rate)} [{format_number(summary.ci_low)}, {format_number(summary.ci_high)}] {n}"
     assert summary.mean is not None
-    return f"{format_number(summary.mean)} (n={summary.n})"
+    return f"{format_number(summary.mean)} {n}"
 
 
 class TestPerLabelStatisticsAreOneTable:
@@ -140,7 +142,7 @@ class TestPerLabelStatisticsAreOneTable:
         (never_said,) = [row for row in table.rows if (row["label"], row["arm"]) == ("animal", CANDIDATE_ARM)]
         # Never predicted: no precision, and so no F1; recall is 0 of the 4 animals it met.
         assert never_said["precision"] is None and never_said["f1"] is None
-        assert str(never_said["recall"]).startswith("0 [") and str(never_said["recall"]).endswith("(n=4)")
+        assert str(never_said["recall"]).startswith("0 [") and str(never_said["recall"]).endswith("(n=4 over 2 cases)")
 
         (said,) = [
             block.text
@@ -148,19 +150,20 @@ class TestPerLabelStatisticsAreOneTable:
             if isinstance(block, DisclosureBlock) and block.text.startswith("Precision is counted over")
         ]
         assert "95% Wilson interval" in said and "F1 has no interval by construction" in said
-        # k=2 repeats each case: the interval is over observations, so it says it is narrower than that supports.
-        assert "repeats of one case counted as independent" in said
+        # k=2 repeats each case: the interval is over the cases, and says so.
+        assert "Wilson interval over the cell's cases" in said
+        assert "a case's repeats are not counted as independent" in said
         assert "A label an arm never predicted has no precision" in said
 
         markdown = report_markdown(comparison.report)
         assert "**Per-label precision, recall and F1**" in markdown
-        assert "| animal | model=candidate | — | 0 [" in markdown
+        assert "| animal | candidate=candidate | — | 0 [" in markdown
 
     async def test_no_per_label_chart_and_no_notice_for_one(self) -> None:
         report = (await _classifier()).report
         charts = [block for block in report.blocks if isinstance(block, ChartBlock)]
         titles = [chart.intent.title for chart in charts if chart.intent is not None]
-        assert titles == ["accuracy"], "a single reading keeps its distribution chart; per-label ones are the table's"
+        assert titles == ["Accuracy"], "a single reading keeps its distribution chart; per-label ones are the table's"
         assert not [
             block for block in report.blocks if isinstance(block, DisclosureBlock) and "classifier:" in block.text
         ]
@@ -244,7 +247,7 @@ class TestTheArmsTableHasNoColumnNothingFilled:
         arms = _table(report, "arms")
         assert arms is not None
         assert [column.key for column in arms.columns] == ["arm", "levers"]
-        assert [row["arm"] for row in arms.rows] == ["model=candidate", CONTROL_ARM]
+        assert [row["arm"] for row in arms.rows] == ["candidate=candidate", CONTROL_ARM]
         # With no status to order by, the caption names the order the rows are in, not one by status.
         assert arms.order == "by arm"
 
@@ -254,14 +257,14 @@ class TestTheArmsTableHasNoColumnNothingFilled:
         page = report_html(report)
         assert '<th scope="col">Arm</th><th scope="col">Every lever it ran</th>' in page
         assert '<th scope="col">Status</th>' not in page and "Rests on finding" not in page
-        assert "winner, then ruled out" not in markdown + page
+        assert "winner, then" not in markdown + page
 
     def test_an_analysis_report_whose_arms_have_verdicts_keeps_both_columns(self) -> None:
         report = build_report(analysis(two_arm_surface()))
         arms = _table(report, "arms")
         assert arms is not None
         assert [column.key for column in arms.columns] == ["arm", "status", "findings", "levers"]
-        assert arms.order == "winner, then ruled out, then replaced incumbent, then unresolved"
+        assert arms.order == "winner, then contradicted, then ruled out, then replaced incumbent, then unresolved"
         by_status = {row["status"]: row["findings"] for row in arms.rows}
         # The winner rests on the decision's finding; the incumbent it replaced rests on none, a dash.
         assert by_status == {"winner": "1", "replaced incumbent": None}

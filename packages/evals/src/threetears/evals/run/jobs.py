@@ -43,7 +43,10 @@ log = get_logger(__name__)
 # above) still gets a bounded value rather than an unbounded one; a host that ships its own
 # default pins the two equal in its own tests.
 MAX_CONCURRENT_JOBS = 2
-DEFAULT_JOB_TIMEOUT_S = 3600  # 1 hour — fixed fallback for deferred jobs (no matrix to size against)
+# The manager's budget for a launch-group member that carries no timeout of its own. A launched run
+# always carries one sized to its matrix (``adaptive_job_timeout_s``), so this binds only a caller that
+# passes ``None``, and a manager built without an explicit ``job_timeout_s``.
+DEFAULT_JOB_TIMEOUT_S = 3600  # 1 hour
 # How long :meth:`EvalJobManager.shutdown` waits for cancelled jobs to write their terminal status.
 # A host with its own configured value passes it; this is the default for a caller that does not.
 SHUTDOWN_SETTLE_TIMEOUT_S = 5.0
@@ -97,9 +100,9 @@ def adaptive_job_timeout_s(
     return max(floor_s, min(cap_s, raw))
 
 
-# Work function: async fn(progress_callback) -> None
-# The progress callback is async fn(dict) -> None
+#: The progress callback a job's work reports through: async, handed a dict.
 ProgressFn = Callable[[dict[str, Any]], Awaitable[None]]
+#: A job's work: an async function handed its progress callback.
 WorkFn = Callable[[ProgressFn], Awaitable[None]]
 
 
@@ -107,10 +110,11 @@ class EvalJobTimeout(Exception):
     """A job outlived the wall-clock budget its timeout context was enforcing.
 
     Engine-owned on purpose. The manager needs one type to branch on, so that a
-    breached budget records ``failed`` with a timeout message instead of falling
-    through to the boundary that catches everything — and the context manager
-    enforcing the budget comes from the host. A type the host owned would make
-    the engine name a module it cannot be installed without.
+    breached budget records the designed ``budget_stopped`` with :attr:`stop_reason`
+    instead of falling through to the boundary that catches everything and
+    records ``failed`` — and the context manager enforcing the budget comes from
+    the host. A type the host owned would make the engine name a module it cannot
+    be installed without.
 
     Attributes:
         budget_s: The budget that was breached, in seconds.
@@ -128,6 +132,19 @@ class EvalJobTimeout(Exception):
         self.budget_s = budget_s
         self.elapsed_s = elapsed_s
         self.attribution = attribution
+
+    @property
+    def stop_reason(self) -> str:
+        """Why the run stopped, as ``EvalRun.budget_stop_reason`` records it.
+
+        Opens with ``wall-clock budget`` so a reader tells it from the cost cap's reason, which names
+        dollars, without a second field: both are a budget the run was launched under doing its job.
+        """
+        named = f"; the host named {self.attribution!r} as running when it fired" if self.attribution else ""
+        return (
+            f"wall-clock budget reached — the run's {self.budget_s:.0f}s time budget ran out after "
+            f"{self.elapsed_s:.0f}s{named}; the cells it delivered are kept and its completeness record counts them"
+        )
 
 
 class JobTimeoutFactory(Protocol):
@@ -151,7 +168,7 @@ class JobTimeoutFactory(Protocol):
       its work function started, and a budget rejected after the body had begun
       would make that derivation lie.
     * Raise :class:`EvalJobTimeout` when the budget is breached, so the manager
-      records a timeout rather than a generic failure.
+      records the designed ``budget_stopped`` rather than a generic failure.
     * Let everything else through untouched, cancellation included — an operator
       cancelling a job is not a timeout and must reach its own branch.
 
@@ -363,10 +380,9 @@ class AdmissionTicket:
 class EvalJobManager:
     """Manages background async eval jobs.
 
-    ``start_group`` runs evals (one run per arm); ``start_job_deferred`` has no production caller
-    and is due for deletion;
+    ``start_group`` runs evals (one run per arm), each saved before its task starts;
     state lives in the database, and one task pool and one concurrency
-    semaphore serve both. ``start_task`` runs detached work that records its own
+    semaphore serve them. ``start_task`` runs detached work that records its own
     ending (an analysis generation), outside that semaphore and outside run admission.
 
     **A launching host does not build one.** :class:`~threetears.evals.run.launch.LaunchHost` builds
@@ -411,8 +427,10 @@ class EvalJobManager:
             on_progress: Optional ``(job_id, progress_dict)`` callback fired
                 on every progress update — typically wired to a WebSocket
                 broadcast.
-            job_timeout_s: Per-job wall-clock timeout in seconds; jobs
-                that exceed it are cancelled and recorded as failed.
+            job_timeout_s: The wall-clock budget, in seconds, for a launch-group
+                member that carries none of its own; a job that exceeds its
+                budget is cancelled and recorded ``budget_stopped``, its reason
+                naming the clock.
             job_timeout_factory: Builds the context manager each job runs
                 inside, called with that job's resolved budget. Defaults to
                 :func:`default_job_timeout`, which is asyncio and nothing else;
@@ -449,6 +467,9 @@ class EvalJobManager:
         # see _set_status, which derives the empty-matrix stamp from this rather
         # than taking it from each except-branch.
         self._work_ran: dict[str, bool] = {}
+        # Runs inside a concurrency slot right now, as against queued for one. A launch group's
+        # members share one slot and execute side by side inside it, so each member counts.
+        self._executing: set[str] = set()
         # Runs admitted by a launch that has not yet handed them over — see AdmissionTicket.
         self._reserved = 0
         # Detached tasks (start_task), kept apart from ``_tasks`` because everything that reads
@@ -477,8 +498,25 @@ class EvalJobManager:
 
     @property
     def active_count(self) -> int:
-        """Number of currently active (not done) jobs."""
+        """Runs whose task is not done: queued for a concurrency slot or executing in one.
+
+        This is queue depth plus contention, which is what admission bounds. It is NOT how many
+        runs are executing: under a cap of one, a run executing alone with two queued behind it
+        reads 3 here. A measurement condition reads :attr:`executing_count`.
+        """
         return sum(1 for t in self._tasks.values() if not t.done())
+
+    @property
+    def executing_count(self) -> int:
+        """Runs executing right now: inside a concurrency slot, never queued for one.
+
+        What the ``execution_mode`` covariate's probe reads. A run waiting at the semaphore makes
+        no provider calls and contends with nothing, so counting it, as :attr:`active_count` does,
+        stamped a deliberately serial baseline ``concurrent`` whenever another run was queued
+        behind it. A launch group's members execute side by side inside their one shared slot, so
+        each member counts: two arms of one launch are concurrent with each other.
+        """
+        return len(self._executing)
 
     @property
     def admitted_count(self) -> int:
@@ -572,10 +610,8 @@ class EvalJobManager:
             job_id: Run id to cancel.
             reason: Optional operator-facing reason recorded on the terminal
                 status write, always to ``EvalRun.cancellation_reason`` and never
-                to ``error_details``. A deferred job whose run document does not
-                exist yet has nothing to write it to and the reason is dropped —
-                this used to claim such a job filed it under ``error``, which no
-                branch has ever done.
+                to ``error_details``. Every run :meth:`start_group` starts is saved
+                before its task exists, so there is always a document to write it to.
 
         Returns:
             True if cancellation was requested, False if the job
@@ -847,29 +883,6 @@ class EvalJobManager:
             except ConflictError, StorageError:
                 log.exception("eval.start_group run=%s left pending: its cancellation could not be saved", run.id)
 
-    async def start_job_deferred(self, run_id: str, scope_id: str, work: WorkFn) -> str:
-        """Start a job where the EvalRun is created by the work function.
-
-        Unlike :meth:`start_group`, the EvalRun document does not need to exist
-        in storage at start time — the work function creates it during execution.
-        Progress broadcasts still work via WebSocket; storage updates are skipped
-        until the document exists.
-
-        Args:
-            run_id: Pre-generated run ID for tracking.
-            scope_id: Scope the run is stored under.
-            work: Async callable(progress_fn) that performs the work.
-
-        Returns:
-            The run ID.
-        """
-        task = asyncio.create_task(
-            self._run_job(run_id, scope_id, work),
-            name=f"eval-{run_id[:8]}",
-        )
-        self._tasks[run_id] = task
-        return run_id
-
     async def _run_job(
         self,
         run_id: str,
@@ -882,8 +895,7 @@ class EvalJobManager:
         """Execute a job with lifecycle management and timeout.
 
         ``job_timeout_s`` is the resolved per-job budget; ``None`` falls back to
-        the manager-level default (deferred jobs, which have no matrix
-        to size against). ``slot`` is the launch group's shared slot, taken in
+        the manager-level default. ``slot`` is the launch group's shared slot, taken in
         place of one of the manager's own.
         """
         from threetears.evals.run.budget import AccountExhaustedError, BudgetStoppedError
@@ -899,15 +911,22 @@ class EvalJobManager:
         self._work_ran[run_id] = False
         try:
             async with slot.hold() if slot is not None else self._semaphore:
-                await self._set_status(run_id, scope_id, "running")
+                # Counted as executing only while it holds the slot, and uncounted as it leaves,
+                # before any terminal write outside it: a run queued behind this one may start the
+                # moment the slot is released, and must not see this one as still running.
+                self._executing.add(run_id)
+                try:
+                    await self._set_status(run_id, scope_id, "running")
 
-                async def progress_fn(progress: dict[str, Any]) -> None:
-                    await self._update_progress(run_id, scope_id, progress)
+                    async def progress_fn(progress: dict[str, Any]) -> None:
+                        await self._update_progress(run_id, scope_id, progress)
 
-                async with self._job_timeout_factory(budget_s):
-                    self._work_ran[run_id] = True
-                    await work(progress_fn)
-                await self._set_status(run_id, scope_id, "completed")
+                    async with self._job_timeout_factory(budget_s):
+                        self._work_ran[run_id] = True
+                        await work(progress_fn)
+                    await self._set_status(run_id, scope_id, "completed")
+                finally:
+                    self._executing.discard(run_id)
 
         except asyncio.CancelledError:
             # The reason goes to its own channel, not to ``error_details``: a human
@@ -947,16 +966,28 @@ class EvalJobManager:
             log.warning("Job %s stopped: %s", run_id, exhausted)
             await self._set_status(run_id, scope_id, "exhausted", error=str(exhausted))
         except EvalJobTimeout as timed_out:
+            # A designed stop, on the cost cap's terms: the budget is sized to the run's matrix
+            # (``adaptive_job_timeout_s``, clamped to a cap an operator sets), and when it binds the
+            # run measured what it could inside a bound someone chose. Filed as ``failed`` it read as
+            # a broken rig, and its partial matrix was easy to discard as noise. So it takes the same
+            # status and channel as the cost cap — ``budget_stopped``, with the reason naming the
+            # clock — and ``error_details`` stays the count of faults. Completeness is recorded as
+            # for any stop: the work function's ``finally`` writes the loop's tally as the timeout
+            # unwinds it, and ``_set_status`` stamps an empty matrix when the work never started.
+            #
             # Keyed `attribution=` and not `inner_op=`, which is what every other timeout line in
             # this app emits. The value here is "the innermost operation the host's timeout
             # layer could name, falling back to the operation that fired" — those emitters'
             # `inner_op` is empty in exactly the case this one reads `eval_job`, so borrowing the
             # key would answer their grep with a value none of them can produce. Nothing is lost:
             # a host whose layer logs its own breach line has already emitted one.
-            log.error(
-                "Job %s timed out after %.0fs (attribution=%s)", run_id, timed_out.elapsed_s, timed_out.attribution
+            log.warning(
+                "Job %s timed out: its wall-clock budget stopped it after %.0fs (attribution=%s)",
+                run_id,
+                timed_out.elapsed_s,
+                timed_out.attribution,
             )
-            await self._set_status(run_id, scope_id, "failed", error=f"Job timed out after {timed_out.budget_s:.0f}s")
+            await self._set_status(run_id, scope_id, "budget_stopped", budget_stop_reason=timed_out.stop_reason)
         except (
             Exception
         ) as exc:  # prawduct:ok-broad-except — top-level job boundary; must catch all to set failed status
@@ -981,7 +1012,8 @@ class EvalJobManager:
         ``error``, ``cancellation_reason`` and ``budget_stop_reason`` are separate
         channels and the caller picks one, at the boundary where it knows which
         outcome it is handling: a harness failure is an error, an operator's cancel
-        is not, a cost cap doing its configured job is not either, and a single
+        is not, a cost cap or a wall-clock budget doing its configured job is not
+        either, and a single
         parameter routed by status would put that decision here — away from the
         `except` clause that actually knows. The two designed stops therefore leave
         ``error_details`` empty, which is what makes its length a count worth
@@ -1091,8 +1123,9 @@ class EvalJobManager:
             )
             return
         if outcome == "missing":
-            # Run may not exist yet (deferred creation). Broadcast only.
-            log.info("Job %s: EvalRun not found (may be deferred), broadcasting status=%s", run_id, status)
+            # Every run is saved before its task starts, so this is a document deleted from under a
+            # live job. Nothing to write to; broadcast only.
+            log.warning("Job %s: EvalRun not found (deleted while running?), broadcasting status=%s", run_id, status)
             self._safe_broadcast(run_id, {"status": status, **({"error": error} if error else {})})
             return
         if outcome == "refused":
@@ -1164,10 +1197,9 @@ class EvalJobManager:
 
         Returns:
             ``"saved"``, or ``"refused"`` when the conditional write lost its race or
-            failed — a tick is not retried, since the next one supersedes it; ``None`` when there is no document
-            to write to yet — a deferred job whose work function has not created
-            it; or ``"declined"`` when the run has already reached a terminal
-            status, which no progress tick may reopen. Neither ``None`` nor
+            failed — a tick is not retried, since the next one supersedes it; ``None`` when there is no
+            document to write to — one deleted from under the live job; or ``"declined"`` when the run has
+            already reached a terminal status, which no progress tick may reopen. Neither ``None`` nor
             ``"declined"`` is a refusal and neither is logged as one.
         """
         run, etag = self._storage.load_eval_run_with_etag(run_id, scope_id)

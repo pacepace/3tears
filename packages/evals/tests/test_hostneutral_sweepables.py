@@ -147,6 +147,38 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
     # candidate failures, and the bundle names the cells where no result delivered a turn; the apparatus
     # partition is unchanged.
     ((44, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
+    # 45/10: the frontier's pass^k is renamed `pass_hat_k`, estimated without bias and carried with its curve
+    # and subject depth (#591); the apparatus partition is unchanged.
+    ((45, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
+    # 46/10: guardrails (boundary judged dimensions and measures declared one) are decided apart from every
+    # comparison family, and the readings no declared question asks about are labelled exploratory; the apparatus
+    # partition is unchanged.
+    ((46, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
+    # 47/11: one bundle bump and one cell-model bump for everything this release changed. The decision surface's
+    # cells are laid out control first, as the reference, then every other arm alphabetically by name (#645); the
+    # declaration's `controls` is renamed `held_fixed`, and the bundle's `controls_reading` with it
+    # (`held_fixed_reading`); the bundle names the candidate's served model per arm and as a confound where one
+    # requested id was answered by more than one model (#684); the frontier takes the campaign's bar on pass^k and a
+    # judged bar's verdict carries its judges' evidence tier (#679). The temperature each judge call was actually sent
+    # at joins the judge's apparatus (#633), so the cell model moves: an observation that recorded one no longer
+    # pools with one that did not. A cell whose runs recorded none keeps the id it had (CELL_ID_NEUTRAL), so a
+    # stored analysis's cell references still resolve. Each run summary carries its production footing, the
+    # inputs it moved off the subject's production configuration beside its production-replicating cost (#571).
+    # The bundle also carries the host declarations digest (#575), and bounds its prior insights, refused merges
+    # and next experiments, each with an omitted count (#614, #572). Every measure in the catalog carries a
+    # reader-facing name (#627), and a level the campaign declared a name for is displayed by it in the variant
+    # index (#581); neither moves a key. Each frontier point names what its composite was meaned over and marks a
+    # ragged pool (#638), every pass^k records the behavior's declared pass threshold it was computed at (#642),
+    # and an attempt with nothing for pass^k to conjoin is left out as unmeasured rather than read as a fail (#688).
+    # A lever the launch named as null is the level `null`, stamped overridden, or a recovery where the lever has a
+    # recovery rule — never a lever missing from the run's config, so a stored campaign with a null overlay
+    # re-assembles with a config entry and a `null` level where it had none (#574). A declared axis on an input the
+    # host cannot vary carries the host's reason on its coverage row as `cannot_be_an_arm` (#675), and every declared
+    # axis row names each declared level as ran, not_run or undetermined in `declared_levels` (#690).
+    # An equivalence on a measure that declares a value range is decided by the bounded-mean betting test, and a
+    # paired difference with no spread by the exact one-sided sign-flip test, so stored equivalence p values move
+    # over unchanged evidence (#693).
+    ((47, 11), _CORE_V24 | {"judge_request_settings", "simulator_request_settings", "judge_temperature"}),
 )
 
 

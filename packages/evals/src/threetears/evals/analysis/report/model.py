@@ -69,19 +69,28 @@ from threetears.evals.contracts.prose import ModelProse
 #: carries; the ``surface`` table's ``notes`` column is present only when some row has a run note, and the ``arms``
 #: table's ``status`` column only when some arm's status is other than unresolved and its ``findings`` column only
 #: when some arm rests on a finding.
-REPORT_VERSION: Literal[4] = 4
+#:
+#: 5: the ``guardrails`` section and its ``guardrails`` table (each guardrail, held, breached or undecided for each
+#: arm against the control) and the ``guardrails`` disclosure source; the ``scope`` disclosure source (readings no
+#: declared question asked about, or the one sentence that a campaign declaring none is exploratory throughout);
+#: a finding's ``Scope`` fact, present only on a finding resting wholly on exploratory readings, and an adopted
+#: decision's ``Guardrails`` fact, present only when a guardrail on its arm is not held.
+REPORT_VERSION: Literal[5] = 5
 
 #: What a report is of: a generated analysis, or the campaign's evidence alone with no analysis.
 ReportBasis = Literal["analysis", "code_only"]
 
 #: Where a block sits, in reading order.
-ReportSection = Literal["summary", "questions", "decisions", "findings", "arms", "surface", "next", "methods"]
+ReportSection = Literal[
+    "summary", "questions", "decisions", "guardrails", "findings", "arms", "surface", "next", "methods"
+]
 
 #: Each section's heading, in reading order — the order every serializer lays the sections out in.
 SECTION_TITLES: dict[str, str] = {
     "summary": "Summary",
     "questions": "Declared questions",
     "decisions": "Decisions",
+    "guardrails": "Guardrails",
     "findings": "Findings",
     "arms": "Arms",
     "surface": "Decision surface",
@@ -106,9 +115,21 @@ TextRole = Literal[
 #: Who a disclosure speaks for. ``runs``: member runs left out, unfinished or short. ``measurement``: how
 #: and when the runs were launched and measured. ``apparatus``: the rig — controls, confounds, cells that
 #: did not pool. ``comparisons``: how the contrasts against the control were tested and corrected.
-#: ``strata``: a stratum of cases too small to be read on its own.
+#: ``strata``: a stratum of cases too small to be read on its own. ``guardrails``: how the guardrails were decided,
+#: or why none could be. ``scope``: which readings no declared question asked about — exploratory.
 DisclosureSource = Literal[
-    "chart", "arms", "surface", "time_axis", "generation", "runs", "measurement", "apparatus", "comparisons", "strata"
+    "chart",
+    "arms",
+    "surface",
+    "time_axis",
+    "generation",
+    "runs",
+    "measurement",
+    "apparatus",
+    "comparisons",
+    "strata",
+    "guardrails",
+    "scope",
 ]
 
 
@@ -155,7 +176,7 @@ class TextBlock(_Block):
         }
     )
 
-    kind: Literal["text"] = "text"
+    kind: Literal["text"] = Field(default="text", description="Which kind of block this is.")
     role: TextRole = Field(description="What the author wrote it as.")
     body: ModelProse = Field(
         description="The author's words, Markdown allowed; empty where the author left a required field blank."
@@ -195,7 +216,7 @@ class TableColumn(EvalBaseModel):
 class TableBlock(_Block):
     """A table code laid out — its columns, its rows in their stated order, and how much of it is shown."""
 
-    kind: Literal["table"] = "table"
+    kind: Literal["table"] = Field(default="table", description="Which kind of block this is.")
     name: str = Field(
         min_length=1,
         description=(
@@ -254,7 +275,7 @@ class ChartBlock(_Block):
         }
     )
 
-    kind: Literal["chart"] = "chart"
+    kind: Literal["chart"] = Field(default="chart", description="Which kind of block this is.")
     viz_type: ChartType = Field(description="The chart type the finding carries.")
     intent: ChartIntent | None = Field(
         default=None, description="What the chart draws and must say; None when it cannot be drawn."
@@ -284,7 +305,7 @@ class ChartBlock(_Block):
 class DisclosureBlock(_Block):
     """Something code must tell the reader that no author wrote — one idea."""
 
-    kind: Literal["disclosure"] = "disclosure"
+    kind: Literal["disclosure"] = Field(default="disclosure", description="Which kind of block this is.")
     source: DisclosureSource = Field(description="What the disclosure speaks for.")
     text: str = Field(min_length=1, description="The disclosure, one sentence or a few.")
 
@@ -382,7 +403,7 @@ class Report(EvalBaseModel):
         }
     )
 
-    report_version: Literal[4] = Field(default=REPORT_VERSION, description="This shape's version.")
+    report_version: Literal[5] = Field(default=REPORT_VERSION, description="This shape's version.")
     basis: ReportBasis = Field(
         description=(
             "`analysis` when the report renders a generated analysis; `code_only` when no analysis exists and the "

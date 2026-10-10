@@ -51,7 +51,15 @@ from threetears.evals.vega.palette import (
 from threetears.evals.analysis.viz.payloads import PayloadError
 from threetears.evals.vega.spec_policy import RANKING_SPEC_NAME, check_spec
 from threetears.evals.vega.render import render_svg
-from threetears.evals.vega.text_metrics import fits, text_width
+from threetears.evals.vega.text_metrics import (
+    TextMetricsError,
+    fits,
+    load_chart_font,
+    packaged_font,
+    text_width,
+    write_font_metrics,
+)
+from threetears.evals.contracts.host import CHART_FONT_CHARACTERS, ChartFont
 from packages.evals.tests.chart_examples import (
     DELTA_TABLE,
     DISTRIBUTION,
@@ -446,6 +454,16 @@ class TestFigureGeometry:
         spec = compile_chart(viz_type, EVERY_TYPE[viz_type]).spec
         sizes = geometry()
         widths = set(_sizes(spec, "width"))
+        if viz_type == "sweep_ranking":
+            # The one figure whose gutter-width glyph is followed by a gutter-width NAME column (#659): the
+            # names' width comes out of the value plot, never the glyph. What survives of the rule is the edge
+            # the figures share: the panels and their token gaps end exactly where every other value plot ends.
+            *columns, ranking = spec["hconcat"]
+            assert [column["width"] for column in columns] == [sizes["gutter_left"]] * len(columns)
+            drawn = sum(panel["width"] for panel in spec["hconcat"]) + spec["spacing"] * len(columns)
+            assert drawn == sizes["gutter_left"] + sizes["plot_width"], "the value plot's right edge moved"
+            assert spec["spacing"] == sizes["panel_gap"]
+            return
         assert sizes["plot_width"] in widths, f"{viz_type} draws no plot at the column width"
         assert widths <= {sizes["plot_width"], sizes["gutter_left"]}, (
             f"{viz_type} declares a width that is neither the plot nor the gutter: {sorted(widths)}"
@@ -858,6 +876,118 @@ class TestDistributionIsOnePanelWithAMarginal:
         assert svg.count('aria-label="X-axis') == 1, "one x axis for the whole figure"
 
 
+def _edged(*bins: tuple[str, float, float, int]) -> list[dict]:
+    """Recorded bins carrying numeric edges, as ``(label, low, high, count)``."""
+    return [{"range": label, "low": low, "high": high, "count": count} for label, low, high, count in bins]
+
+
+class TestEdgedBucketsArePlacedOnTheValueAxis:
+    """#616: a pre-binned cohort whose bins state numeric edges is drawn beside the sampled ones."""
+
+    #: One cohort recorded as samples, one as edged bins, in ms — large enough to restate to seconds.
+    PAYLOAD = {
+        "groups": [
+            {
+                "label": "sampled",
+                "samples": [41000.0, 47000.0, 52000.0, 49500.0, 56000.0, 60500.0],
+                "ci": {"low": 45000.0, "high": 55000.0, "mean": 51000.0, "level": 0.95, "variability": "across 6 runs"},
+                "n": 6,
+            },
+            {
+                "label": "binned",
+                "buckets": _edged(
+                    ("40–45k", 40000, 45000, 2),
+                    ("45–50k", 45000, 50000, 4),
+                    ("50–55k", 50000, 55000, 6),
+                    ("55–65k", 55000, 65000, 3),
+                ),
+                "ci": {
+                    "low": 48000.0,
+                    "high": 54000.0,
+                    "mean": 52000.0,
+                    "level": 0.95,
+                    "variability": "across 15 runs",
+                },
+                "n": 15,
+            },
+        ],
+        "unit": "ms",
+        "x_label": "latency",
+    }
+
+    def test_both_cohorts_draw_on_one_value_axis_with_no_unplaceable_footnote(self):
+        chart = compile_chart("distribution", self.PAYLOAD)
+        spec = chart.spec
+        assert "facet" in spec, "one faceted panel, not a counts panel beside it"
+        recorded = [row for row in _frame_rows(spec) if row[KIND_FIELD] == "recorded-bin"]
+        assert {row[DISPLAY_FIELD] for row in recorded} == {"binned"}
+        assert [(row["bin_low"], row["bin_high"]) for row in recorded] == [(40, 45), (45, 50), (50, 55), (55, 65)], (
+            "placed by the stated edges, restated with every other value"
+        )
+        assert any(row[KIND_FIELD] == "rug" and row[DISPLAY_FIELD] == "sampled" for row in _frame_rows(spec))
+        domains = {
+            tuple(encoding["scale"]["domain"]) for encoding in _value_encodings(spec) if encoding["field"] != RISE_FIELD
+        }
+        assert len(domains) == 1, f"the cohorts are read against {len(domains)} rulers"
+        assert "Individual runs not drawn" not in _subtitle(spec)
+        assert "recorded bins" in spec["description"], "a bin span says what it is, as the gate asks of a span"
+        assert check_spec(spec) == []
+
+    def test_a_wide_bin_is_drawn_by_its_count_per_unit_width(self):
+        """A 10s bin of 3 must not claim the area of two 5s bins of 3."""
+        spec = compile_chart("distribution", self.PAYLOAD).spec
+        rise = {row["bin_low"]: row[RISE_FIELD] for row in _frame_rows(spec) if row[KIND_FIELD] == "recorded-bin"}
+        # Counts 2, 6 and 3 over widths 5, 5 and 10: densities 0.4, 1.2 and 0.3.
+        assert rise[50] == pytest.approx(3 * rise[40])
+        assert rise[55] == pytest.approx(rise[50] / 4), "3 over 10s is a quarter of 6 over 5s, not half"
+
+    def test_a_label_only_group_beside_them_is_still_footnoted(self):
+        payload = copy.deepcopy(self.PAYLOAD)
+        payload["groups"].append(
+            {"label": "coarse", "buckets": [{"range": "45–50k", "count": 4}, {"range": "50–55k", "count": 6}], "n": 10}
+        )
+        chart = compile_chart("distribution", payload)
+        assert "Individual runs not drawn for coarse: recorded" in _subtitle(chart.spec), "only the label-only group"
+        assert "45–50k" not in json.dumps(chart.spec), "a label is never placed"
+
+    def test_a_restated_row_states_its_bins_and_its_mean_in_one_unit(self):
+        """The values table's mixed-unit row: a `45–50k` bin beside a `Mean (s)` of 52."""
+        chart = compile_chart("distribution", self.PAYLOAD)
+        headers = {column["key"]: column["header"] for column in chart.columns}
+        assert headers["mean"] == "Mean (s)"
+        row = next(row for row in chart.rows if row["label"] == "binned")
+        assert row["mean"] == pytest.approx(52.0)
+        assert row["shape"] == "40–45: 2; 45–50: 4; 50–55: 6; 55–65: 3 (s)"
+
+    def test_a_restated_label_only_row_names_the_unit_its_bins_were_recorded_in(self):
+        payload = copy.deepcopy(self.PAYLOAD)
+        for bucket in payload["groups"][1]["buckets"]:
+            del bucket["low"], bucket["high"]
+        row = next(row for row in compile_chart("distribution", payload).rows if row["label"] == "binned")
+        assert row["shape"] == "40–45k: 2; 45–50k: 4; 50–55k: 6; 55–65k: 3 (bins in ms)"
+
+    def test_an_edged_buckets_only_payload_is_drawn_on_the_value_axis(self):
+        payload = {"groups": [{"label": "only", "buckets": _edged(("0–1", 0, 1, 3), ("1–2", 1, 2, 5))}], "unit": "s"}
+        spec = compile_chart("distribution", payload).spec
+        assert "facet" in spec and "vconcat" not in spec
+        assert check_spec(spec) == []
+
+    @pytest.mark.parametrize(
+        "buckets",
+        [
+            pytest.param([{"range": "a", "count": 1, "low": 0.0}], id="one-edge"),
+            pytest.param([{"range": "a", "count": 1, "low": 2.0, "high": 1.0}], id="inverted"),
+            pytest.param([{"range": "a", "count": 1, "low": 1.0, "high": 1.0}], id="zero-width"),
+            pytest.param(_edged(("a", 0, 1, 1)) + [{"range": "b", "count": 2}], id="mixed-in-one-group"),
+            pytest.param(_edged(("a", 0, 2, 1), ("b", 1, 3, 2)), id="overlapping"),
+        ],
+    )
+    def test_a_bin_that_does_not_locate_itself_is_refused(self, buckets):
+        payload = {"groups": [{"label": "g", "buckets": buckets}], "unit": "s"}
+        with pytest.raises(PayloadError):
+            compile_chart("distribution", payload)
+
+
 class TestDistributionSpec:
     def test_the_shape_is_drawn_from_the_values_not_from_the_interval(self):
         """Shape comes from values: recovering a distribution from two endpoints assumes one nobody stated."""
@@ -882,17 +1012,18 @@ class TestDistributionSpec:
         }
         assert compile_chart("distribution", payload).rows[0]["shape"] == "unknown — interval only"
 
-    def test_pre_binned_buckets_never_reach_the_value_axis(self):
+    def test_label_only_buckets_never_reach_the_value_axis(self):
         """Their bins are label strings; placing them would invent edges the payload
         never gave, and drawing them against bin NAMES is the second ruler the marginal rule
         removes. So the shape is absent from the picture — and stated as absent."""
         chart = compile_chart("distribution", DISTRIBUTION)
-        assert "0-1s" not in json.dumps(chart.spec), "no bin name is drawn anywhere"
+        assert "1000-1500" not in json.dumps(chart.spec), "no bin name is drawn anywhere"
         # Named by what the reader would have SEEN — the per-run ticks — rather than
         # by "shape", which is this module's internal word for the distribution and
         # could equally mean the mark, the interval, or the row.
         assert "Individual runs not drawn for deepseek" in _subtitle(chart.spec)
-        assert chart.rows[1]["shape"] == "0-1s: 2; 1-2s: 7", "the counts stay exact in the values table"
+        # The chart restated ms to s and a label cannot be restated, so the cell names the unit its bins are in.
+        assert chart.rows[1]["shape"] == "1000-1500: 2; 1500-2000: 7 (bins in ms)", "the counts stay exact"
 
     def test_a_buckets_only_payload_still_draws_its_counts(self):
         """Nothing places on the value axis, so there is no axis for a marginal to be
@@ -1345,8 +1476,9 @@ class TestTheDumbbellIsAPointOnAConnector:
     def test_a_value_label_never_asks_for_the_knockout_here(self):
         """What this arm draws at a value is a 3px connector and a point, so there is no fill.
 
-        The knockout IS the chart surface, so a label taking it inward of these marks
-        is painted on the background in the background's own colour. It is reachable on
+        The on-fill ink is chosen against a fill, not the surface — in the packaged dark
+        palette it IS the surface colour — so a label taking it inward of these marks
+        can be painted on the background in the background's own colour. It is reachable on
         every chart of this type: the row that decides the axis has only the point's
         radius beyond it, which is far short of the label clearance, so its number is
         always the one pushed inward.
@@ -2684,6 +2816,81 @@ class TestValuesAreWrittenOnTheMarks:
         }
         assert placed == {row["label"]: format_number(row["mean"]) for row in chart.rows}
 
+    #: Three arms, so the plot's row count rather than its floor decides its height.
+    THREE_ARM_NULL = {
+        "groups": [
+            {
+                "label": f"arm{index}",
+                "ci": {
+                    "low": 14.4 + index,
+                    "high": 19.96 + index,
+                    "mean": 17.18 + index,
+                    "variability": "across the 12 cases",
+                    "level": 0.95,
+                },
+                "n": 12,
+            }
+            for index in range(3)
+        ],
+        "metric": "score",
+        "mechanism": "The batch never fills before the deadline at any setting.",
+    }
+
+    def _null_labels(self, chart):
+        """``display -> (anchor, text, mark)`` for every value label a null result writes."""
+        return {
+            row[DISPLAY_FIELD]: (row[ANCHOR_FIELD], row[VALUE_TEXT_FIELD], layer["mark"])
+            for layer in _mark_layers(chart.spec, "text")
+            for row in _layer_rows(chart.spec, layer)
+            if VALUE_TEXT_FIELD in row
+        }
+
+    def test_a_null_result_writes_each_arm_at_the_mean_it_names(self):
+        """#618: the label sat at the interval's HIGH end while printing the mean.
+
+        An arm with mean 17.18 over a 14.4-19.96 interval printed "17.18" beside
+        x≈19.96, so a reader mapped each number to a value it does not state.
+        """
+        chart = compile_chart("null_result", self.THREE_ARM_NULL)
+        labels = self._null_labels(chart)
+        assert labels.keys() == {group["label"] for group in self.THREE_ARM_NULL["groups"]}
+        for group in self.THREE_ARM_NULL["groups"]:
+            anchor, text, _ = labels[group["label"]]
+            assert text == format_number(group["ci"]["mean"])
+            assert anchor == pytest.approx(group["ci"]["mean"]), "the label is anchored at the mean it prints"
+            assert anchor != pytest.approx(group["ci"]["high"]), "and not at the interval's upper bound"
+
+    def test_a_null_results_label_is_lifted_clear_of_its_point_and_rule(self):
+        """Anchored at the mean, the label sits where the point and the rule are, so it is
+        lifted onto its own line: its lower edge clears the point's top by the value-label gap."""
+        chart = compile_chart("null_result", self.THREE_ARM_NULL)
+        size = font_sizes()["value"]
+        for _, _, mark in self._null_labels(chart).values():
+            assert mark["baseline"] == "middle"
+            lower_edge = -mark["dy"] - size / 2
+            assert lower_edge >= point_radius(70) + VALUE_LABEL_OFFSET - 1e-9, (
+                f"the label's lower edge is {lower_edge:.1f}px above the row's centre, on its own point"
+            )
+
+    def test_a_null_results_rows_grow_to_hold_the_value_line(self):
+        """The value's own line above the mark takes the taller row step, so it stays inside its row."""
+        chart = compile_chart("null_result", self.THREE_ARM_NULL)
+        sizes = geometry()
+        assert chart.spec["height"] == max(3 * sizes["row_step_label_above"], sizes["plot_min_height"])
+        size = font_sizes()["value"]
+        for _, _, mark in self._null_labels(chart).values():
+            assert -mark["dy"] + size / 2 <= sizes["row_step_label_above"] / 2, "the value line leaves its row"
+
+    def test_a_null_results_names_above_their_marks_stack_above_the_value_line(self):
+        """With the names moved out of the gutter, each name is set clear of the value line under it."""
+        chart = compile_chart("null_result", _renamed("null_result", _wide_names))
+        size = font_sizes()["value"]
+        [value_dy] = {mark["dy"] for _, _, mark in self._null_labels(chart).values()}
+        names = [layer for layer in _mark_layers(chart.spec, "text") if layer["mark"]["baseline"] == "bottom"]
+        assert names, "this fixture must put the names above their marks"
+        for layer in names:
+            assert -layer["mark"]["dy"] >= -value_dy + size / 2, "a name is drawn through the value line"
+
     def _probe(self, room):
         """A two-bar breakdown whose second bar leaves exactly `room` px clear."""
         top = 100.0
@@ -2740,13 +2947,12 @@ class TestValuesAreWrittenOnTheMarks:
         assert not _mark_layers(compile_chart("breakdown", over).spec, "text")
 
     def test_a_mark_that_paints_no_fill_never_asks_for_the_knockout(self):
-        """The knockout IS the chart surface, so on an unfilled mark it is invisible.
+        """The on-fill ink is chosen for a fill, so on an unfilled mark it can be invisible.
 
         A point or a bare interval rule has nothing under an inward label but the
-        plot background — and `chart.fg-on-fill` resolves to exactly that background
-        (dark `#140a29` is the dark surface; light `#ffffff` is the light one). So a
-        label that took the knockout there would be painted on the background in the
-        background's own colour: 1:1, gone.
+        plot background — and the packaged dark palette's `on_fill` is exactly that
+        background (`#1a1a19`). So a label that took the on-fill ink there would be
+        painted on the background in the background's own colour: 1:1, gone.
 
         Reachable, not theoretical: on a cropped position axis the outermost mark sits
         about 57px from the edge, `needed` is at least the 56px clearance, and
@@ -2768,7 +2974,7 @@ class TestValuesAreWrittenOnTheMarks:
         `filled` defaults True so the length arms — breakdown and attribution — do not
         each restate the obvious. That default is load-bearing in a way a
         false-only test cannot see: if it ever flipped, every bar's inside label would
-        quietly take chart ink again at 2.53:1 and no test naming `filled=False` would
+        quietly take chart ink again, under 4.5:1 over slot 1, and no test naming `filled=False` would
         notice.
         """
         axis = ValueAxis.magnitude("m", [100.0], geometry()["plot_width"])
@@ -2781,7 +2987,7 @@ class TestValuesAreWrittenOnTheMarks:
         `null_result` draws a rule and a point; `sweep_ranking`'s ranking panel draws
         points; `delta_table` draws a 3px connector and a point. None has a fill under
         an inward label, and the flag is what the placement decision reads — a default
-        that quietly reverted would put the knockout back on the chart surface.
+        that quietly reverted would put the on-fill ink back on the chart surface.
         """
         for viz_type, payload in (
             ("null_result", NULL_RESULT),
@@ -2800,10 +3006,10 @@ class TestValuesAreWrittenOnTheMarks:
         raise AssertionError(f"no value label for {display}")
 
     def test_a_value_on_the_fill_asks_for_the_knockout_ink(self):
-        """Chart ink over the mark's own fill is 2.53:1 in dark and 3.36:1 in light.
+        """Chart ink over the mark's own fill is under 4.5:1 (packaged: 4.46:1 light, 3.64:1 dark).
 
-        The palette admits a third chart ink for exactly this case, so the label asks for it by NAME — the spec still carries no colour, and
-        what a knockout resolves to stays the renderer's to decide.
+        The palette carries a third text ink for exactly this case, so the label asks for it by NAME — the spec still carries no colour, and
+        what that ink resolves to stays the renderer's to decide.
         """
         clearance = geometry()["value_label_clearance"]
         assert self._style_of(self._probe(clearance - 1), "probe") == VALUE_ON_FILL_STYLE
@@ -3112,7 +3318,7 @@ class TestACompiledSpecStatesNoAppearanceValue:
     def test_a_receding_mark_asks_by_name_rather_than_stating_an_opacity(self, viz_type):
         """Recession is a per-THEME decision, so the compiler may not take it.
 
-        The same alpha is not the same recession on obsidian and on pearl, so a
+        The same alpha is not the same recession on near-black and on near-white, so a
         compiled `0.35` is right on at most one of the two surfaces this one
         artifact is drawn on. `chart-context` is how a mark says "I carry no
         identity" and lets the renderer decide what that looks like.
@@ -3179,7 +3385,7 @@ class TestFrontierCarriesDominanceOnShapeAndWeightRatherThanHue:
     def test_the_contention_classes_are_separated_by_shape(self):
         primary, *_ = _point_layers(compile_chart("frontier", FRONTIER).spec)
         shape = primary["encoding"]["shape"]
-        assert shape["scale"]["domain"] == ["On frontier", "Dominated"]
+        assert shape["scale"]["domain"] == ["Not shown dominated", "Dominated"]
         assert shape["scale"]["range"] == ["circle", "diamond"]
 
     def test_every_weight_shares_one_shape_scale_so_the_key_stays_whole(self):
@@ -3198,7 +3404,7 @@ class TestFrontierCarriesDominanceOnShapeAndWeightRatherThanHue:
         """Which is what lets this channel exist at all: identity may not ride on hue."""
         for layer in _point_layers(compile_chart("frontier", FRONTIER).spec):
             assert "color" not in layer["encoding"]
-            assert set(layer["encoding"]["shape"]["scale"]["range"]) <= {"circle", "diamond", "cross"}
+            assert set(layer["encoding"]["shape"]["scale"]["range"]) <= {"circle", "square", "diamond", "cross"}
 
     def test_the_recession_is_the_second_channel_and_not_the_only_one(self):
         spec = compile_chart("frontier", FRONTIER).spec
@@ -3207,7 +3413,7 @@ class TestFrontierCarriesDominanceOnShapeAndWeightRatherThanHue:
         assert recessive["mark"]["style"] == CONTEXT_STYLE
         # The dominated contestant is in the receding layer and the frontier one is not...
         assert recessive["transform"][0]["filter"]["oneOf"] == ["Dominated"]
-        assert primary["transform"][0]["filter"]["oneOf"] == ["On frontier"]
+        assert primary["transform"][0]["filter"]["oneOf"] == ["Not shown dominated"]
         # ...and the same pair is already separated without consulting the weight at all.
         by_label = {row["label"]: row for row in compile_chart("frontier", FRONTIER).rows}
         assert by_label["model-b"]["status"] != by_label["model-a-3.5-fast-lite"]["status"]
@@ -3281,9 +3487,9 @@ class TestAFrontierKeepsItsAuthorsOneSentence:
         "cost_label": "Cost (USD)",
         "quality_label": "Accuracy",
         "points": [
-            {"label": "model=model-a", "cost": 0.003, "quality": 0.85},
-            {"label": "model=model-b", "cost": 0.045, "quality": 0.85, "dominated": True},
-            {"label": "model=model-c", "cost": 0.08, "quality": 0.88},
+            {"label": "model=model-a", "cost": 0.003, "quality": 0.85, "dominance": "not_separated"},
+            {"label": "model=model-b", "cost": 0.045, "quality": 0.85, "dominated": True, "dominance": "dominated"},
+            {"label": "model=model-c", "cost": 0.08, "quality": 0.88, "dominance": "not_separated"},
             {
                 "label": "model=model-d",
                 "quality": 0.0,
@@ -3305,7 +3511,11 @@ class TestAFrontierKeepsItsAuthorsOneSentence:
     def test_the_compilers_disclosures_arrive_as_their_own_lines(self):
         """The key, then who is out and why, then who is missing, then the bar — nothing dropped."""
         assert compile_chart("frontier", self.PAYLOAD).disclosures == [
-            "circle = on frontier, diamond = dominated.",
+            "circle = not shown dominated, diamond = dominated.",
+            (
+                "Domination is the frontier lens's test on pass^k, production-replicating cost and mean latency, "
+                "not a reading of the two quantities drawn; not shown dominated is not on the frontier."
+            ),
             "model=model-d and model=model-e are disqualified: no usable answer was returned.",
             (
                 "Not drawn — no production-replicating cost was recorded for model=model-d and "
@@ -3493,7 +3703,7 @@ class TestSweepRankingRanksAndNeverManufacturesItsFinding:
         # The layers share one sort list, so reverse by object identity — reversing
         # "each layer" would reverse the same list twice and restore the original.
         seen: set[int] = set()
-        for layer in broken["hconcat"][1]["layer"]:
+        for layer in broken["hconcat"][-1]["layer"]:
             order = (layer.get("encoding") or {}).get("y", {}).get("sort")
             if isinstance(order, list) and id(order) not in seen:
                 seen.add(id(order))
@@ -3558,6 +3768,29 @@ class TestSweepRankingRanksAndNeverManufacturesItsFinding:
         cells = set(re.findall(r'fill="(rgb\([^)]*\)|#[0-9a-fA-F]{6})"', svg))
         assert len(cells) >= stops + 2, f"{stops + 2} levels drew only {len(cells)} distinct inks"
 
+    def test_neighbouring_columns_never_fuse_into_one_block(self):
+        """An ordered cell beside a categorical one read as one block where their inks met — and they can be equal.
+
+        The premise is pinned so the boundary cannot outlive its reason unnoticed: the light ramp's middle stop is
+        categorical slot 1. The boundary is structural, a few px of surface between every two columns, solved from
+        the panel width so it holds whatever the column count; cells down a column stay fused.
+        """
+        from threetears.evals.vega.palette import series_colors
+
+        assert sequential_colors("light")[2] == series_colors("light")[0], "the collision the gap exists for"
+        barcode = compile_chart("sweep_ranking", SWEEP_RANKING).spec["hconcat"][0]
+        columns = {
+            (layer["encoding"]["x"]["field"], json.dumps(layer["encoding"]["x"]["scale"], sort_keys=True))
+            for layer in barcode["layer"]
+        }
+        assert len(columns) == 1, "every layer must lay its cells on one column scale"
+        scale = barcode["layer"][0]["encoding"]["x"]["scale"]
+        n = len({mark["dimension"] for mark in barcode["data"]["values"]})
+        width = barcode["width"]
+        step = width / (n - scale["paddingInner"] + 2 * scale["paddingOuter"])
+        assert n > 1 and scale["paddingInner"] * step == pytest.approx(4.0), "a visible gap between columns"
+        assert "padding" not in barcode["layer"][0]["encoding"]["y"].get("scale", {}), "rows stay fused"
+
     def test_the_two_ink_vocabularies_never_share_a_scale(self):
         """A concurrency rank and a model name are not values of one thing.
 
@@ -3585,6 +3818,52 @@ class TestSweepRankingRanksAndNeverManufacturesItsFinding:
         """
         spec = compile_chart("sweep_ranking", SWEEP_RANKING).spec
         assert spec["resolve"]["scale"]["y"] == "shared"
+
+
+class TestSweepRankingNamesEveryRowInTheFigure:
+    """#659: a row must be identifiable from the drawn figure alone, and the layout comes from tokens."""
+
+    @staticmethod
+    def _width(spec: dict) -> float:
+        """The drawn width of the concatenated panels: every panel plus the spacing between them."""
+        panels = spec["hconcat"]
+        return sum(panel["width"] for panel in panels) + spec["spacing"] * (len(panels) - 1)
+
+    def test_a_label_column_names_every_configuration_and_the_figure_stays_in_its_width(self):
+        spec = compile_chart("sweep_ranking", SWEEP_RANKING).spec
+        barcode, names, ranking = spec["hconcat"]
+        assert names["mark"]["type"] == "text"
+        assert names["encoding"]["text"]["field"] == names["encoding"]["y"]["field"]
+        drawn = [entry[names["encoding"]["text"]["field"]] for entry in names["data"]["values"]]
+        ranked = [entry[ranking["layer"][0]["encoding"]["y"]["field"]] for entry in ranking["data"]["values"]]
+        assert drawn == ranked == names["encoding"]["y"]["sort"], "one name per drawn row, in the drawn order"
+        assert all(" · " in name for name in drawn), "the name is the configuration's identity, not an index"
+        assert names["width"] == geometry()["gutter_left"], "a fixed column, the bound the names were measured at"
+        assert barcode["width"] == geometry()["gutter_left"], "the column's width comes out of the ranking"
+        sizes = geometry()
+        assert self._width(spec) + sizes["gutter_right"] <= sizes["figure_width"]
+        assert check_spec(spec) == []
+
+    def test_the_panel_spacing_is_the_panel_gap_token(self):
+        assert compile_chart("sweep_ranking", SWEEP_RANKING).spec["spacing"] == geometry()["panel_gap"]
+
+    def test_a_name_too_long_for_the_column_rides_above_its_mark_whole(self):
+        """Never truncated, never shrunk: the column gives its width back and the name takes its own line."""
+        payload = copy.deepcopy(SWEEP_RANKING)
+        for row in payload["rows"]:
+            row["config"]["model"] = f"anthropic/claude-a-very-long-build-identifier-{row['config']['model']}"
+        spec = compile_chart("sweep_ranking", payload).spec
+        barcode, ranking = spec["hconcat"]
+        [names] = [
+            layer
+            for layer in ranking["layer"]
+            if (layer.get("mark") or {}).get("type") == "text"
+            and layer["encoding"]["text"]["field"] == layer["encoding"]["y"]["field"]
+        ]
+        assert all("very-long-build" in entry[names["encoding"]["text"]["field"]] for entry in names["data"]["values"])
+        sizes = geometry()
+        assert self._width(spec) + sizes["gutter_right"] == sizes["figure_width"]
+        assert check_spec(spec) == []
 
 
 def _passes(transforms: list[dict], mark: dict) -> bool:
@@ -3646,7 +3925,7 @@ class TestSweepRankingStatesWhatTheBarcodeCannotSay:
         # Drawn from the sweep the slice was taken from, so the reader can read off
         # the secondary values WHY nothing qualified rather than facing a blank frame.
         assert len(chart.rows) == len(SWEEP_RANKING["rows"])
-        assert chart.spec["hconcat"][1]["data"]["values"], "an empty frame is the bug this branch exists to avoid"
+        assert chart.spec["hconcat"][-1]["data"]["values"], "an empty frame is the bug this branch exists to avoid"
 
     def test_an_inferred_orderedness_is_admitted_rather_than_presented_as_fact(self):
         chart = compile_chart("sweep_ranking", SWEEP_RANKING)
@@ -3723,10 +4002,10 @@ class TestSweepRankingStatesWhatTheBarcodeCannotSay:
 
         Nothing asserted it, so a reversed scale domain would have drawn every
         ordered column backwards with a full suite green and a caption still
-        saying "light-to-dark". The direction is not arbitrary: `chart.seq` is
-        authored lightest at stop 1 through darkest at stop 5, and `chart.context`
-        — the neutral for a level a configuration never set — is pale, so a
-        lightest-is-most ramp would draw the highest level and an absence alike.
+        saying "light-to-dark". The direction is not arbitrary: a palette's
+        `sequential` ramp is authored lightest at stop 1 through darkest at its last
+        stop, and the reader takes the strongest tone for "most", so a
+        lightest-is-most ramp would read every ordered column upside down.
 
         Asserted through the rank, which is what the scale actually reads: rank 0
         is the lowest level and must land on `domain[0]`, the range's first and
@@ -3796,12 +4075,12 @@ class TestSweepRankingNeverTruncatesSilently:
 
     def test_a_sweep_at_the_bound_draws_every_configuration(self):
         chart = compile_chart("sweep_ranking", self._wide(12))
-        assert len(chart.spec["hconcat"][1]["data"]["values"]) == 12
+        assert len(chart.spec["hconcat"][-1]["data"]["values"]) == 12
         assert "not drawn" not in _disclosed(chart)
 
     def test_a_sweep_past_the_bound_keeps_the_top_ten_and_says_what_it_dropped(self):
         chart = compile_chart("sweep_ranking", self._wide(13))
-        assert len(chart.spec["hconcat"][1]["data"]["values"]) == 10
+        assert len(chart.spec["hconcat"][-1]["data"]["values"]) == 10
         assert "3 further configurations ranked between" in _disclosed(chart)
         # The band is stated, not just the count — a reader needs to know whether
         # what was dropped could have changed the verdict.
@@ -3983,3 +4262,65 @@ class TestSweepRankingStatesItsOmissionInTheUnitTheAxisUses:
         """Non-vacuity: if the ladder stopped moving, both assertions above pass trivially."""
         chart = compile_chart("sweep_ranking", self.RESTATED)
         assert chart.unit == "s", f"the ranked measure was not restated, so the band's unit is untested: {chart.unit}"
+
+
+#: A face far wider than any real one, so every measured layout decision comes out differently in it:
+#: every name leaves the gutter, every multi-word title wraps, every value label needs more room.
+_HUGE = ChartFont(family="Huge Test Face", advances=dict.fromkeys(CHART_FONT_CHARACTERS, 5.0), fallback_advance=5.0)
+
+
+class TestEveryArmLaysOutInTheFontItIsGiven:
+    """#635: the layout is measured in the declared face, in every arm.
+
+    An arm that dropped the font on the floor would measure the packaged face's widths and be drawn in
+    the host's — labels measured to fit that do not. Compiled in a face five times an em wide, every arm
+    must lay out differently from the packaged face.
+    """
+
+    @pytest.mark.parametrize("viz_type", sorted(EVERY_TYPE))
+    def test_the_layout_follows_the_font(self, viz_type):
+        packaged = compile_chart(viz_type, EVERY_TYPE[viz_type]).spec
+        huge = compile_chart(viz_type, EVERY_TYPE[viz_type], font=_HUGE).spec
+        assert huge != packaged, f"{viz_type} laid out identically in a face five times wider"
+
+    def test_no_font_is_the_packaged_face(self):
+        for viz_type, payload in EVERY_TYPE.items():
+            assert compile_chart(viz_type, payload).spec == compile_chart(viz_type, payload, font=packaged_font()).spec
+
+
+class TestAHostMeasuresItsOwnFace:
+    """The measuring tool's output is what a host declares: written, read back, and refused when empty."""
+
+    def _measured(self) -> dict:
+        return {
+            "advances": dict.fromkeys(CHART_FONT_CHARACTERS, 0.6),
+            "fallback_advance": 0.6,
+            "worst_label": "WWWW",
+            "worst_ratio": 1.0,
+            "font": "Host Face, sans-serif",
+            "measured_with": "vl-convert-python test",
+            "probe_size": 1000,
+            "weights": [400, 600],
+        }
+
+    def test_a_written_table_reads_back_as_the_font(self, tmp_path):
+        path = write_font_metrics(**self._measured(), path=tmp_path / "host.json")
+        font = load_chart_font(path)
+        assert font.family == "Host Face, sans-serif"
+        assert text_width("abc", 10, font) == pytest.approx(18.0)
+
+    def test_a_table_with_no_advances_is_refused_rather_than_written(self, tmp_path):
+        with pytest.raises(TextMetricsError, match="declares no metrics"):
+            write_font_metrics(**(self._measured() | {"advances": {}}), path=tmp_path / "host.json")
+        assert not (tmp_path / "host.json").exists()
+
+    def test_a_metrics_file_with_no_advances_is_refused_on_load(self, tmp_path):
+        path = tmp_path / "host.json"
+        path.write_text(json.dumps({"font": "Host Face", "advances": {}, "fallback_advance": 1.0}), encoding="utf-8")
+        with pytest.raises(TextMetricsError, match="declares no metrics"):
+            load_chart_font(path)
+
+    def test_the_packaged_table_is_a_font(self):
+        """The packaged artifact passes the contract every host table is held to."""
+        assert isinstance(packaged_font(), ChartFont)
+        assert packaged_font().family.startswith("Liberation Sans")

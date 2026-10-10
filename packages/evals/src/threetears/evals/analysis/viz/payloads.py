@@ -29,7 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from threetears.evals.contracts.host.style import SERIES_SLOTS, VALIDATED_SLOTS
 from threetears.evals.contracts.prose import ModelProse
-from threetears.evals.contracts.metrics import Materiality
+from threetears.evals.contracts.metrics import Materiality, MeasureScale
 
 
 #: How far a breakdown's parts may miss the `total` they claim to make up, as a
@@ -278,14 +278,56 @@ class ConfidenceInterval(BaseModel):
 
 
 class HistogramBucket(BaseModel):
-    """One pre-binned count — a shape recorded coarsely, when raw values were not kept."""
+    """One pre-binned count — a shape recorded coarsely, when raw values were not kept.
+
+    **A bin with edges can be placed; a bin with only a label cannot.** ``range`` is prose and is never
+    parsed: reading ``45–50k`` as the numbers 45000 and 50000 would mean guessing a unit, a separator
+    and a suffix the payload never stated. So a bin reaches the shared value axis only when its producer
+    states ``low`` and ``high`` in the payload's ``unit``, and a group whose bins carry only labels is
+    named as unplaceable and kept, exact, in the values table.
+    """
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     range: str = Field(
-        min_length=1, description="The bin's human range label, e.g. '0.6–0.7'. A label, not a number pair."
+        min_length=1,
+        description=(
+            "The bin's human range label in the payload's `unit`, e.g. '0.6–0.7'. A label, not a number pair: "
+            "it is never parsed, so a bin is placed on the value axis only by `low` and `high`."
+        ),
     )
     count: int = Field(ge=0, description="Observations that fell in the bin.")
+    low: float | None = Field(
+        default=None,
+        description=(
+            "The bin's lower edge, in the payload's `unit`. Given together with `high` or not at all; a bin "
+            "with edges is drawn on the shared value axis, one with only its label is not."
+        ),
+    )
+    high: float | None = Field(
+        default=None, description="The bin's upper edge, in the payload's `unit`, above `low`. Given with `low`."
+    )
+
+    @model_validator(mode="after")
+    def _edges_are_a_bin(self) -> HistogramBucket:
+        """Reject half a bin, an edge that is not a number, and a bin of no width.
+
+        One edge alone does not locate a bin, and the missing one would have to be invented from the
+        label — the inference this field exists to make unnecessary.
+        """
+        if (self.low is None) != (self.high is None):
+            raise ValueError(f"bin {self.range!r} states one edge — give both `low` and `high`, or neither")
+        if self.low is not None and self.high is not None:
+            if not (math.isfinite(self.low) and math.isfinite(self.high)):
+                raise ValueError(f"bin {self.range!r} has an edge that is not a finite number")
+            if not self.low < self.high:
+                raise ValueError(f"bin {self.range!r} has `low` {self.low} not below `high` {self.high}")
+        return self
+
+    @property
+    def edged(self) -> bool:
+        """Whether the bin states numeric edges, and so can be placed on a value axis."""
+        return self.low is not None
 
 
 class DistributionGroup(BaseModel):
@@ -336,6 +378,25 @@ class DistributionGroup(BaseModel):
         """
         if not self.samples and not self.buckets and self.ci is None:
             raise ValueError(f"group {self.label!r} carries no samples, buckets or ci — there is no spread to draw")
+        buckets = self.buckets or []
+        if any(bucket.edged for bucket in buckets) and not all(bucket.edged for bucket in buckets):
+            # A group is placed whole or not at all: drawing the edged bins and dropping the rest would show a
+            # shape with a hole where the label-only bins' counts went.
+            raise ValueError(
+                f"group {self.label!r} gives edges for some bins and not others — give every bin `low` and `high`, "
+                "or none"
+            )
+        edged = sorted(
+            (bucket.low, bucket.high, bucket.range)
+            for bucket in buckets
+            if bucket.low is not None and bucket.high is not None
+        )
+        for (_, high, name), (low, _, following) in zip(edged, edged[1:], strict=False):
+            if low < high:
+                raise ValueError(
+                    f"group {self.label!r} has bins {name!r} and {following!r} that overlap — an observation "
+                    "would be counted in both"
+                )
         if self.ci is None and not self.buckets and len(self.samples or []) < 2:
             raise ValueError(
                 f"group {self.label!r} carries a single sample and no ci or buckets — a distribution is a spread, "
@@ -463,9 +524,22 @@ class DeltaRow(BaseModel):
             "its threshold must not be read as one too small to matter."
         ),
     )
+    scale: MeasureScale | None = Field(
+        default=None,
+        description=(
+            "`interval` when the measure's zero is arbitrary (a 1-5 judged score): the row states its change in "
+            "points and is not drawn on the relative axis. `ratio`, or None — unstated, as on a payload compiled "
+            "before the field existed — draws it as relative change."
+        ),
+    )
     d_z: float | None = Field(
         default=None,
-        description="The effect size the comparison reported. `paired` says WHICH one it is — Cohen's d_z or Cohen's d — never this field's name, which is historical.",
+        description=(
+            "A Cohen's d the comparison reported, printed as `d_z` when `paired` and `d` when not — `paired` says "
+            "which, never this field's name, which is historical. The engine's own tests now report Hedges' g "
+            "(`hedges_g`), a different number at eval sizes (0.5 against d's 0.88 at three pairs), and compile no "
+            "effect into this row; a g placed here would print under d's name. A stored row's value is a Cohen's d."
+        ),
     )
     p: float | None = Field(default=None, description="p-value of the significance test, when one was run.")
     n: int | None = Field(
@@ -618,9 +692,9 @@ class AttributionMovement(BaseModel):
 class AttributionPayload(_VizPayload):
     """A whole-run movement the part under test does not account for.
 
-    The "movement we cannot place" shape: end-to-end latency moves while the
-    subsystem being tuned does not, or the subsystem swings by ~100s while the
-    whole run stays flat. Both statements are individually true — each is a real
+    The "movement we cannot place" shape: end-to-end latency moves by far more
+    than the subsystem being tuned, or the subsystem swings by ~100s that never
+    reaches the whole run. Both statements are individually true — each is a real
     measurement over its own population — and the question the chart has to
     answer honestly is what, if anything, may be said about the difference.
 
@@ -782,7 +856,19 @@ class FrontierVizPoint(BaseModel):
     latency_ms: float | None = Field(default=None, description="The secondary read, in ms. Never a second y-axis.")
     dominated: bool = Field(
         default=False,
-        description="Beaten on both axes by some other point, per the frontier lens. Kept and flagged, never dropped.",
+        description=(
+            "Shown dominated by the frontier lens's test — another point shown better on every axis it measured. "
+            "Kept and flagged, never dropped. False is not a claim that nothing beats it."
+        ),
+    )
+    dominance: Literal["dominated", "not_separated", "untested"] | None = Field(
+        default=None,
+        description=(
+            "The frontier lens's verdict on this point, copied rather than decided from the drawn means: "
+            "`dominated`; `not_separated` — tested and not shown dominated, which says nothing about whether it is; "
+            "`untested` — no test could decide (too few cases, or no spread over too few cases for an exact test to "
+            "reach α). None where the producer recorded none, which the chart states as not tested."
+        ),
     )
     disqualified: bool = Field(
         default=False, description="Failed a two-pillar / safety bar, so it is out of contention on any axis."
@@ -811,6 +897,17 @@ class FrontierVizPoint(BaseModel):
         return value
 
     @model_validator(mode="after")
+    def _the_flag_is_the_verdict(self) -> FrontierVizPoint:
+        """Reject a flag that disagrees with the verdict it is read from.
+
+        The shape is drawn from the verdict and the flag is what older readers key on; a point carrying
+        both must say one thing, or the chart and the table it stands beside say two.
+        """
+        if self.dominance is not None and self.dominated != (self.dominance == "dominated"):
+            raise ValueError(f"dominated is {self.dominated} but dominance is {self.dominance!r}")
+        return self
+
+    @model_validator(mode="after")
     def _a_reason_needs_the_flag(self) -> FrontierVizPoint:
         """Reject a stated disqualification the flag does not carry.
 
@@ -831,8 +928,8 @@ class FrontierPayload(_VizPayload):
 
     Drawn as a point plot, which is the one type here whose identity axis is
     quantitative on both sides. Dominance reaches the reader through **shape and
-    weight, never hue** — an on-frontier point is a circle, a dominated one a
-    diamond, a disqualified one a cross — because a compiled spec carries no
+    weight, never hue** — a point not shown dominated is a circle, one never tested a
+    square, a dominated one a diamond, a disqualified one a cross — because a compiled spec carries no
     colour, and because a distinction drawn only in opacity is one a reader with
     low contrast vision does not receive at all.
     """

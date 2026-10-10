@@ -445,6 +445,30 @@ async def test_a_scorer_taking_a_classifier_measures_name_is_refused(name: str, 
         callable_host([grade])
 
 
+@pytest.mark.parametrize("name", ["score", "f1", "cost_usd", "mean_score"])
+@pytest.mark.parametrize("given_host", [False, True], ids=["run_eval builds the host", "a host is given"])
+async def test_a_scorer_taking_a_core_measures_name_is_refused(name: str, given_host: bool) -> None:
+    """A core name would be read under the core's meaning, direction and range, and pool with the engine's own."""
+
+    def grade(case: Mapping[str, Any], answer: Any) -> bool:
+        return True
+
+    grade.__name__ = name
+    host = callable_host()
+    ran: list[Mapping[str, Any]] = []
+
+    async def candidate(case: Mapping[str, Any]) -> str:
+        ran.append(case)
+        return "answer"
+
+    with pytest.raises(ValueError, match=f"a scorer named {name} takes the name of an engine core measure"):
+        await run_eval(LABELLED, candidate, [grade], scope_id=SCOPE, host=host if given_host else None)
+    assert ran == [], "the candidate ran before the scorer's name was refused"
+    assert list_templates(host.storage, SCOPE) == []
+    with pytest.raises(ValueError, match=f"rename the scorer's def \\(for example, {name}_grade\\)"):
+        callable_host([grade])
+
+
 def _raises(case: Mapping[str, Any]) -> str:
     raise KeyError("label")
 

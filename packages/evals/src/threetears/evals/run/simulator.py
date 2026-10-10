@@ -272,10 +272,15 @@ class SimulatorTurn:
 
 @dataclass
 class CandidateTurn:
-    """One candidate-side response captured by the kind and fed back into the simulator."""
+    """One candidate-side response captured by the kind and fed back into the simulator.
+
+    It carries the reply's words and nothing else, because the words are all the simulator reads:
+    an actor answers what the candidate said. What the candidate DID — its tool calls — reaches the
+    engine through the cell's call ledger and world session, which the goal checks read; a second copy
+    here would be a channel nothing reads.
+    """
 
     content: str
-    actions: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -615,14 +620,7 @@ class TurnDriver:
 
 def _call_usage(response: Any) -> CallUsage:
     """The spend one simulator-role response reports; a field the client did not report stays ``None``."""
-    return CallUsage(
-        model=getattr(response, "model", None) or None,
-        input_tokens=getattr(response, "input_tokens", None),
-        output_tokens=getattr(response, "output_tokens", None),
-        reasoning_tokens=getattr(response, "reasoning_tokens", None),
-        cost_usd=getattr(response, "cost_usd", None),
-        price_source=getattr(response, "price_source", None),
-    )
+    return CallUsage.of(response)
 
 
 # =============================================================================

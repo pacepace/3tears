@@ -1,8 +1,8 @@
 # Concepts: the nouns of 3tears-evals, and how they fit together
 
-Read this when a word in the README or a guide stops you. It draws one picture of how the pieces relate,
-then defines every term of art the docs use, in plain words, with one running example. Nothing here
-assumes you have built an eval before. Why the pieces are shaped this way is in
+**For** anyone stopped by a word in the README or a guide. **Answers:** how the pieces relate (one picture),
+and what every term of art means, in plain words with one running example. Nothing here assumes you have
+built an eval before. Why the pieces are shaped this way is in
 [Design rationale](design-rationale.md) and [The world model](world-model.md).
 
 **The running example.** You own a support-ticket triage classifier: it reads a ticket's subject and body
@@ -112,7 +112,7 @@ and its **spec**, plus which **seats** of the rig its runs fill. *Example:*
 
 #### Overlay
 A knob a launch may turn for one kind's runs: a field of the kind's overlay model. Each field becomes a
-lever named `<kind>.<field>`, is frozen onto the run, and enters the variant key. *Example:*
+lever named `<prefix>.<field>` (the prefix is the kind's name unless its contract sets `prefix`), is frozen onto the run, and enters the variant key. *Example:*
 `ticket_router.prompt_version`, set to `"v2"` for one launch.
 
 #### Spec (kind spec)
@@ -124,9 +124,8 @@ measurement context, not the variant. *Example:* the label set `["billing", "bug
 A stateful environment the subject acts in, declared on the profile (`WorldRegistry`) and handed to each
 cell as a `WorldSession`. Seeded before the first turn and read back after the last. A classifier has none.
 *Example:* for a support *agent* (not the classifier), a ticketing system whose open tickets it can close.
-In `run_eval`, a `World` of `Dimension`s and `WorldTool`s, each case's starting state (`seed=`) and
-goal-state checks (`goal_checks=`): see `examples/world.py`. Why a subject runs in a seeded world at all:
-[The world model](world-model.md).
+In `run_eval`, `world=`, `seed=` and `goal_checks=` (`examples/world.py`). Why a subject runs in a seeded
+world at all: [The world model](world-model.md).
 
 ### What you vary, and what must hold still
 
@@ -140,8 +139,8 @@ A sweepable you deliberately change to see what it does (role `lever`). The engi
 itself, the candidate model (`model`) and the candidate kind (`candidate_kind`); your kind's overlays add
 more. *Example:* `model` and `ticket_router.prompt_version`.
 With no host of your own, `run_eval(..., levers={"prompt": "v2"})` states one beside the model, as
-`callable.prompt`, and `compare(..., factors=("model", "prompt"))` keys each arm by its level of both, so a
-2×2 of prompts and models is four arms on two declared axes (`examples/prompt_x_model.py`).
+`callable.prompt` (`callable-judged.prompt` on a judged run), and `compare(..., factors=("model", "prompt"))`
+keys each arm by its level of both (`examples/prompt_x_model.py`).
 
 #### Label (sweepable role)
 A sweepable that identifies a run without determining its score (role `label`), so a difference in it is
@@ -161,8 +160,8 @@ arm adds observations to the same arm rather than creating a new one. *Example:*
 #### Apparatus, rig
 The **rig** is the measuring setup around the thing under test; each of its inputs is an **apparatus**
 sweepable (role `apparatus`). It is supposed to hold still, and when it moves, a comparison stops being
-about the lever. The engine's own: the judge model and its settings, the judge configs, the simulator model
-and its settings, and the per-run cost ceiling (`max_cost_usd`). *Example:* the v1 runs were judged by
+about the lever. The engine's own: the judge model and its settings, which judge each dimension was actually
+scored by (`judge_dim_divergence`), the temperature each judge call was sent at, the judge configs, the simulator model and its settings, and the per-run cost ceiling (`max_cost_usd`). *Example:* the v1 runs were judged by
 judge-a and the v2 runs by judge-b: the rig moved, so the report will not pool them as one condition.
 
 #### Apparatus class
@@ -178,7 +177,8 @@ of them and compared. *Example:* who sits in an adjudicator's seat: `{"adjudicat
 A place in the rig a kind's runs actually fill (`KindContract.seats`): a pinned role such as `judge` or
 `simulator`, or one apparatus dimension. A dimension a kind does not seat does not apply to its runs, so
 its blank there is not a confound. `None`, the default, holds the kind to every dimension. *Example:* the
-callable kind `run_eval` builds seats none of the judge, simulator or spend ceiling (`CALLABLE_UNSEATED`).
+callable kind `run_eval` builds seats none of the judge, simulator or spend ceiling (`CALLABLE_UNSEATED`); its
+judged kind, `callable-judged`, seats the judge and nothing else (`JUDGED_CALLABLE_UNSEATED`).
 
 #### Measurement context
 Everything pinned around a run that is not the variant: the subject and its state, the frozen case set, the
@@ -235,9 +235,7 @@ The universal templates, run as one pre-flighted set (`start_universal_battery`)
 #### Cassette
 A recording of what a candidate's tools answered. A run in `cassette_mode="capture"` records one; a run in
 `"replay"` is served that recording instead of calling the tools live, so two arms can face exactly the
-same tool answers. It records the tools only, never the candidate. On the quick path a candidate declares its
-tools to `run_eval` or `compare` (`tools=`) and is handed them beside each case; `examples/cassettes.py`
-captures once and replays the recording to two arms.
+same tool answers. It records the tools only, never the candidate (`examples/cassettes.py`).
 
 #### Simulator
 The engine's simulated user: the other side of a conversation a conversing kind holds
@@ -253,16 +251,23 @@ Long work started by an operation (a launch, an analysis generation), answered b
 A number code computes about a result, declared in your host's measure registry with its unit, direction
 (is higher better?) and family. `run_eval` makes one per scorer, named by the scorer's `__name__`. A
 classifier lands two core measures, `match` and `confusion_cell`, and the analysis derives `accuracy` from
-`match`. *Example:* `match` is 1 when ticket 17 went to `billing`, else 0.
+`match`. A host may not declare a measure named like a core one (`score`, `f1`, `cost_usd` and the rest), whose
+readings would pool with the engine's own; the runner likewise refuses a kind that lands a core-named key on
+`host_measures` (other than the classifier's `match` and `confusion_cell`), and a result stored before that
+refusal has the key dropped on read. A result's covariates are held to the same rule. *Example:* `match` is 1 when ticket 17 went to `billing`, else 0.
 
 #### Scorer
 In `run_eval`, a plain function `(case, answer) -> bool | number` that becomes one measure, named by its
-`__name__` and described by its docstring's first line. A scorer that raises excludes the cell (it is part of
-the rig, not the candidate).
+`__name__` (never a core measure's name) and described by its docstring's first line. A scorer that raises
+excludes the cell: it is part of the rig, not the candidate.
 
 #### Goal-state check
 A code check over a cell's end state (`state.<dimension>`), the calls the candidate made (`calls(...)`) and
-what fired in the world (`fired(...)`), written in the goal-state language. Objective, so no judge.
+what fired in the world (`fired(...)`), written in the goal-state language. Objective, so no judge. Its pass
+rate measures the behaviour only when a control proves the check beats doing nothing; otherwise every surface
+marks it `unproven` or `refuted`. A case parameter (`variation.<name>`) is one string, as the case stores it:
+compare it or look for it (`contains(state.tags, variation.category)`), and write a set of values as a list
+literal (`intersects(state.tags, ["toys", "games"])`). Reading a parameter as a collection is refused.
 
 #### Judge
 A model the engine asks to score a result against a rubric, reading only the evidence the kind rendered
@@ -271,24 +276,41 @@ A model the engine asks to score a result against a rubric, reading only the evi
 #### Judged dimension (rubric dimension)
 One subjective quality a judge scores (`RubricDim`): a name, a description and a scoring guide. *Example:*
 "does the auto-reply sound polite", for a variant that also drafts a reply. A **judge config**
-(`JudgeConfig`) is a versioned prompt, model and settings for one dimension.
+(`JudgeConfig`) is a versioned prompt, model and settings for one dimension. Every judge call is requested at
+temperature 0 (`DEFAULT_JUDGE_TEMPERATURE`) unless a config states another, whether or not the dimension has a
+config; a model that refuses a temperature is sent none, and each score records what was sent.
+
+#### Guardrail
+Something the candidate must not do: leak data, take a destructive action, break policy. A judged dimension
+on the `boundary` axis (`RubricDim.axis`, which the judge stamps on every score and every "can't tell") or a
+measure the host declares `guardrail=True` is one. Guardrails never join the composite, pass^k or a comparison
+family, so a "can't tell" on one leaves the trial in both; the bundle decides each one for every arm against
+the control as `held`, `breached` or `undecided`. A catalog dim's `axis` is its embedded dim's, so copying a
+boundary catalog dim into a template keeps it a guardrail. *Example:*
+`boundary.correct`, "declined the unsafe ask", held at no change while a new prompt raises task success.
 
 #### Evidence tier
 How far a judged score can be leaned on, decided by code from how reliable the judge was measured to be:
-`calibrated` (agrees with people), `separation` (agrees with itself), `incidental` (measured, and missed
-both), `undetermined` (too little evidence). See [reading reports](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers).
+`calibrated` (agrees with people), `separation` (agrees with itself), `incidental` (measured, and shown
+below both bars), `undetermined` (not shown either way). Each is decided on confidence bounds for the
+agreement, never its point estimate, and an undecided one says how many more results it needs. See [reading reports](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers).
 
 ### Comparing and reading
 
 #### Campaign
 A curated set of runs under one subject and behaviour, the hub an analysis attaches to (`EvalCampaign`).
 Membership is chosen, not queried; a run may sit in several campaigns. Its declared design names a
-**control**, which is a variant key, not a run. *Example:* "triage v1 vs v2", control = the v1 variant.
+**control**, which is a variant key, not a run, and what it **held fixed** (`held_fixed`: the stimulus,
+controlled or not, and the apparatus, commissioned or witnessed). *Example:* "triage v1 vs v2", control =
+the v1 variant, held fixed = one case battery on a commissioned rig. Which design to declare for a question:
+[Choosing a campaign design](choosing-a-design.md).
 
 #### Analysis bundle
 Everything code computed about a campaign, assembled once and fingerprinted (`AnalysisContextBundle`), so
 two analysis prompts run over the same fingerprint are comparable. Nothing is fetched while an analysis is
-written: the bundle is the whole context. The CLI's `bundle` prints it.
+written: the bundle is the whole context. The CLI's `bundle` prints it inside a `BundleInspection` wrapper
+(campaign, scope, fingerprint, and the bundle as its `bundle` field); save the bundle alone with
+`bundle.to_json()`.
 
 #### Analysis
 Findings a model wrote over a bundle (`EvalAnalysis`): a headline, findings, decisions and next steps, with
@@ -319,8 +341,8 @@ read as data. Everything they read is below, with the way to state it outright i
 
 | What | Which part | Who reads it | To state it instead |
 |---|---|---|---|
-| A candidate's docstring | its first line | The [template](#template)'s intent. A [judge](#judge) reads it beside every answer (`**Intent:**` in its prompt), so rewording it can move judged scores. Unjudged (and `compare` seats no judge), nothing that grades reads it; a listing of templates shows it. With several arms, it is read only when every arm's docstring has the same first line; otherwise a generic sentence stands in. | `intent=` on `run_eval` or `compare`. A judged run's `summary.render()` prints the intent and where it came from: `intent (from answer's docstring): ...`, or `intent: ...` when stated. |
-| A candidate's `__name__` | the whole name | The arm's label: the run's candidate model, keyed into its variant. | `model=` on `run_eval`; `compare` labels each arm by its key. |
+| A candidate's docstring | its first line | The [template](#template)'s intent, which a [judge](#judge) reads beside every answer, so rewording it can move judged scores. With several arms, it is read only when every arm's docstring shares that first line. | `intent=` on `run_eval` or `compare`; a judged run's `summary.render()` prints the intent and where it came from. |
+| A candidate's `__name__` | the whole name | The arm's label: the run's candidate model, keyed into its variant. | `model=` on `run_eval`. `compare` names each arm by its key on the `candidate` lever, every arm at one model; with `factors=("model",)` the key is the model. |
 | A scorer's `__name__` | the whole name | The [measure](#measure)'s name, in the summary, reports and the analysis bundle. | Rename the function. |
 | A scorer's docstring | its first line | The measure's description, in the analysis bundle's `measure_catalog`, which a model writing an [analysis](#analysis) reads for what the measure means. | Declare the measure, with its description, on a [host](#host) of your own (`host=`). |
 | A `WorldTool`'s function: `__name__` and docstring | the name, and the docstring's first line | The tool's name and description, which the model is shown, as in any tool-use API. | None: the function's name and docstring are the tool's. |

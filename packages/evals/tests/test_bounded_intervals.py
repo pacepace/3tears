@@ -83,19 +83,19 @@ def test_a_mean_interval_with_no_declared_scale_is_the_symmetric_t_interval() ->
 
 def test_zero_one_observations_on_a_unit_scale_take_the_proportions_wilson_interval() -> None:
     values = [1.0] * 8 + [0.0] * 2
-    assert observed_mean_interval(values, value_range=(0.0, 1.0)) == wilson_interval(8, 10)
+    assert observed_mean_interval(values, cases=range(10), value_range=(0.0, 1.0)) == wilson_interval(8, 10)
 
 
 def test_zero_one_observations_on_no_declared_scale_keep_the_t_interval() -> None:
     """Only a declared unit scale makes 0/1 values trials; an undeclared measure is not read as a proportion."""
-    interval = observed_mean_interval([1.0] * 8 + [0.0] * 2)
+    interval = observed_mean_interval([1.0] * 8 + [0.0] * 2, cases=range(10))
     assert interval is not None
     assert interval[1] > 1.0
 
 
 def test_continuous_values_on_a_unit_scale_take_the_clipped_t_interval() -> None:
     values = [1.0, 1.0, 0.9, 1.0, 0.95]
-    interval = observed_mean_interval(values, value_range=(0.0, 1.0))
+    interval = observed_mean_interval(values, cases=range(len(values)), value_range=(0.0, 1.0))
     assert interval is not None
     low, high = interval
     assert high == 1.0
@@ -104,7 +104,7 @@ def test_continuous_values_on_a_unit_scale_take_the_clipped_t_interval() -> None
 
 @pytest.mark.parametrize("values", [[], [1.0]], ids=["none", "one"])
 def test_below_two_observations_a_numeric_mean_has_no_interval(values: list[float]) -> None:
-    assert observed_mean_interval(values, value_range=(0.0, 1.0)) is None
+    assert observed_mean_interval(values, cases=range(len(values)), value_range=(0.0, 1.0)) is None
 
 
 # =============================================================================
@@ -167,13 +167,20 @@ async def test_a_two_classifier_campaign_report_draws_every_interval_inside_its_
 
     assert "cannot be drawn" not in markdown
     # Every label's precision and recall is in the per-label table with its interval, each inside [0, 1] and
-    # around its own rate — a perfect label's included.
+    # around its own rate — a perfect label's included. An interval is over the cases: the loose arm gave
+    # `negative` only on the two repeats of one case, which have no between-case spread, so that precision
+    # has none, where a Wilson interval over the two repeats would have counted one case as two.
     per_label = markdown.split("**Per-label precision, recall and F1**", 1)[1].split("\n\n>", 1)[0]
-    negative = [row.split("|") for row in per_label.splitlines() if row.startswith("| negative |")]
-    assert len(negative) == 2 and all("[" in row[3] and "[" in row[4] for row in negative)
+    negative = {
+        row.split("|")[2].strip(): row.split("|") for row in per_label.splitlines() if row.startswith("| negative |")
+    }
+    assert sorted(negative) == ["model=_loose", "model=_strict"]
+    assert "[" in negative["model=_strict"][3] and "[" in negative["model=_strict"][4]
+    assert negative["model=_loose"][3].strip() == "1 (n=2 over 1 case)" and "[" in negative["model=_loose"][4]
+    assert "A rate counted over the repeats of a single case has no interval" in markdown
     figures = re.findall(r"([\d.]+) \[([\d.]+), ([\d.]+)\]", per_label)
     assert figures and all(0.0 <= float(low) <= float(rate) <= float(high) <= 1.0 for rate, low, high in figures)
-    accuracy_chart = markdown.split("**Chart: accuracy**", 1)[1].split("**Per-label", 1)[0]
+    accuracy_chart = markdown.split("**Chart: Accuracy**", 1)[1].split("**Per-label", 1)[0]
     highs = [float(row.split("|")[4]) for row in accuracy_chart.splitlines() if row.startswith("| model=")]
     assert len(highs) == 2
     assert all(high <= 1.0 for high in highs)

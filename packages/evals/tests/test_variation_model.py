@@ -948,6 +948,24 @@ async def test_an_arm_its_launcher_runs_on_another_model_than_its_plan_is_refuse
     assert host.job_manager.admitted_count == 0
 
 
+async def test_a_run_records_whether_its_launch_named_the_candidate_model_or_ran_the_kinds_default():
+    """#571: the one record of whether a production-replicating cost was measured off the subject's own model."""
+    template = _template(ENUM_AXIS)
+    host, _storage, _clients, _handed = _generating_host(
+        template, plan_model="kind-default", default_model="kind-default"
+    )
+
+    (defaulted,) = await _launch(host, template, models=[], n_variations=2)
+    await _settled(host, [defaulted.id])
+    named_host, _s, _c, _h = _generating_host(template)
+    named = await _launch(named_host, template, n_variations=2)
+    await _settled(named_host, [run.id for run in named])
+
+    assert defaulted.candidate_model == "kind-default"
+    assert (defaulted.model_role_provenance or {}).get("candidate") == "inherited"
+    assert named and all((run.model_role_provenance or {}).get("candidate") == "chosen" for run in named)
+
+
 class _MovingSettings:
     """The host's settings as a hot reload moves them: every read after the first declares no metered tools."""
 
@@ -1030,7 +1048,9 @@ def _quote(**overrides: Any) -> ArmQuote:
 def test_the_history_pricer_bounds_an_arm_by_the_upper_band_of_its_template_and_models_past_results():
     """The launch holds this figure to the cap, so it is the band's upper end, not the centre."""
     host, storage = _priced_host()
-    _history(storage, template_id="tpl-priced", model="m-priced", costs=[0.10, 0.20, 0.30])
+    # Close together, so the band's upper end sits well under the other template's $9 an observation: three
+    # observations as spread as 0.10/0.20/0.30 put it near $37 on the log scale, which says nothing here.
+    _history(storage, template_id="tpl-priced", model="m-priced", costs=[0.18, 0.20, 0.22])
     _history(storage, template_id="another-template", model="m-priced", costs=[9.0, 9.0, 9.0])
 
     price = history_launch_pricer(host)(_quote())

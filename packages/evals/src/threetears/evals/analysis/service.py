@@ -32,7 +32,12 @@ import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
-from threetears.evals.analysis.bundle import BundleInspection, CampaignReadStore, assemble_context_bundle
+from threetears.evals.analysis.bundle import (
+    BundleInspection,
+    CampaignReadStore,
+    assemble_context_bundle,
+    superseding_insights,
+)
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal
 from threetears.evals.analysis.generator import MAX_GENERATION_CALLS, GenerationTally, build_user_message, first_request
 from threetears.evals.analysis.generator import generate_analysis as _generate_analysis
@@ -741,6 +746,25 @@ async def run_analysis_generation(
             f"(the generation cost ${format_number(analysis.generation.token_cost)} was already incurred)"
         ) from e
     cancelled = await record("stored", analysis_id=analysis.id) or cancelled
+    # A restated claim replaces the live insight that states it rather than adding a row beside it, so
+    # regenerating over the same evidence leaves the ledger its size. Read now, not at assembly: the ledger
+    # the bundle read is capped, and another generation may have written since.
+    written: list[list[EvalInsight]] = []
+
+    def supersede() -> None:
+        ledger = storage.query_insights(scope_id, subject_id=analysis.subject_id)
+        written.append(
+            superseding_insights(insights, ledger, lambda source: storage.analysis_archived(source, scope_id))
+        )
+
+    try:
+        cancelled = await _offloaded(executor, supersede) or cancelled
+    except StorageError as e:
+        raise StorageError(
+            f"failed to read the insight ledger before writing analysis '{analysis.id}''s insights — the analysis "
+            f"itself was stored, but none of its insights were"
+        ) from e
+    insights = written[0]
     for insight in insights:
         try:
             cancelled = await _offloaded(executor, storage.save_insight, insight) or cancelled
@@ -888,7 +912,7 @@ def inspect_campaign_bundle(
     """Assemble a campaign's context bundle and return it, without generating.
 
     The dry run: what a generation launched right now would read. This is the
-    surface an operator checks a design against — ``campaign_set_control``
+    surface an operator checks a design against — ``set_campaign_control``
     designates a control, but whether the derivation produced a
     one-factor-at-a-time shape, and which lever each cell moved, was previously
     observable only by paying for a generation.
@@ -936,12 +960,13 @@ def inspect_analysis_bundle(
     instant the generation's bundle was assembled (``generation.bundle_assembled_at``),
     so an insight minted afterwards — including the ones this analysis minted itself,
     and one another analysis minted while this generation's provider call ran — does
-    not move it. **Two causes reach that
-    mismatch and this surface cannot separate them:** the evidence moved (a member
-    archived, results deleted, an insight the generation read since deleted, or the
-    analysis that minted one archived — which retracts it from every re-assembly), or
-    the bundle SHAPE moved under unchanged evidence. No stored analysis records the
-    schema version it ran over, so nothing here can say which. The scope cannot be a third
+    not move it. **Three causes reach that mismatch, and the inspection's
+    ``mismatch_cause`` names which:** the package's bundle SHAPE moved (the recorded
+    ``bundle_schema_version`` differs), the host's declarations moved (the recorded
+    ``host_declarations_digest`` differs), or neither did and the evidence moved (a member
+    archived, results deleted, an insight the generation read since deleted or superseded, or
+    the analysis that minted one archived — which retracts it from every re-assembly). An
+    analysis stored before both were recorded reads ``cannot_say``. The scope cannot be a fourth
     cause: an analysis lives in its campaign's scope, which is the only scope its member runs
     can live in, so the re-assembly reads exactly the partition the generation read.
 
@@ -978,6 +1003,8 @@ def inspect_analysis_bundle(
         bundle,
         analysis_id=analysis.id,
         recorded_fingerprint=analysis.generation.bundle_fingerprint,
+        recorded_schema_version=analysis.generation.bundle_schema_version,
+        recorded_host_declarations_digest=analysis.generation.host_declarations_digest,
     )
 
 

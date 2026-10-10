@@ -14,7 +14,16 @@ from __future__ import annotations
 from dataclasses import replace
 
 from threetears.evals.contracts import MeasureFamily, MetricDescriptor
-from threetears.evals.contracts.host import Bar, BarRegistry, ChartPalette, HostProfile, MeasureRegistry, StyleProfile
+from threetears.evals.contracts.host import (
+    CHART_FONT_CHARACTERS,
+    Bar,
+    BarRegistry,
+    ChartFont,
+    ChartPalette,
+    HostProfile,
+    MeasureRegistry,
+    StyleProfile,
+)
 from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRACT
 from packages.evals.tests.fixtures.toyhost.kind import FIELD_COUNT_ERROR
 from packages.evals.tests.fixtures.toyhost.sweepables import (
@@ -39,6 +48,7 @@ TOYHOST_EXTRACTION_FAMILY = MeasureFamily(
 TOYHOST_MEASURES: tuple[MetricDescriptor, ...] = (
     MetricDescriptor(
         name="field_accuracy",
+        reader_name="Field accuracy",
         data_type="numeric",
         family=TOYHOST_EXTRACTION_FAMILY.name,
         transferability_class="mechanical",
@@ -52,6 +62,7 @@ TOYHOST_MEASURES: tuple[MetricDescriptor, ...] = (
     ),
     MetricDescriptor(
         name="cost_per_document_usd",
+        reader_name="Cost per document",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -71,6 +82,7 @@ TOYHOST_MEASURES: tuple[MetricDescriptor, ...] = (
     ),
     MetricDescriptor(
         name="p95_extract_ms",
+        reader_name="95th-percentile extraction time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -84,6 +96,7 @@ TOYHOST_MEASURES: tuple[MetricDescriptor, ...] = (
     ),
     MetricDescriptor(
         name="manual_review_rate",
+        reader_name="Manual review rate",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -100,6 +113,7 @@ TOYHOST_MEASURES: tuple[MetricDescriptor, ...] = (
     # without complaint. This fixture makes one unavoidable.
     MetricDescriptor(
         name="fields_stripped",
+        reader_name="Fields stripped",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -116,6 +130,7 @@ TOYHOST_MEASURES: tuple[MetricDescriptor, ...] = (
     # out as a raw count. The host-side twin of the engine's own provider-rate diagnostic.
     MetricDescriptor(
         name=FIELD_COUNT_ERROR,
+        reader_name="Field count error",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -153,7 +168,7 @@ TOYHOST_BARS: tuple[Bar, ...] = (
 )
 
 #: A style deliberately unlike the default on every axis, so the prompt-purity test is asserting
-#: something: a different register, a different locale, and a palette of its own. If host style
+#: something: a different register, a palette and a font of its own. If host style
 #: could leak into the prompt, this profile is what would show it — and the palette is what a renderer
 #: built for this host draws in, so it is a palette no packaged one shares a colour with.
 TOYHOST_PALETTE = ChartPalette(
@@ -168,7 +183,18 @@ TOYHOST_PALETTE = ChartPalette(
     on_fill="#0b1021",
 )
 
-TOYHOST_STYLE = StyleProfile(tone_register="executive", locale="en-GB", chart_palette=TOYHOST_PALETTE)
+#: The toy host's own chart face, declared with its metrics as every host font must be. A uniform
+#: table, wider than the packaged face's lowercase, so a layout taken from it differs visibly from one
+#: taken from the packaged table — which is what lets a test tell which table a chart was laid out in.
+#: The family is no real face, so a raster falls through to the generic family; a real host measures
+#: its face with ``packages/evals/scripts/measure_font_metrics.py`` and ships the directory beside it.
+TOYHOST_FONT = ChartFont(
+    family="Toyface Grotesk, sans-serif",
+    advances=dict.fromkeys(CHART_FONT_CHARACTERS, 0.7),
+    fallback_advance=0.7,
+)
+
+TOYHOST_STYLE = StyleProfile(tone_register="executive", chart_palette=TOYHOST_PALETTE, chart_font=TOYHOST_FONT)
 
 #: A caveat kind the ENGINE does not own, registered for the reason the two opposite-direction
 #: bars are registered: the four engine kinds were derived from one product's caveats, and a
@@ -228,6 +254,7 @@ def toyhost_profile(
 __all__ = [
     "TOYHOST_BARS",
     "TOYHOST_EXTRACTION_FAMILY",
+    "TOYHOST_FONT",
     "TOYHOST_CAVEAT_KINDS",
     "TOYHOST_ID",
     "TOYHOST_MEASURES",

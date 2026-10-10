@@ -33,7 +33,10 @@ Each call resolves a versioned :class:`JudgeConfig` (pre-resolved per dim at run
 start, keyed by ``rubric_dim_id``); when one exists its ``prompt_template`` is
 used as the judging instructions and its ``model`` / ``temperature`` select the
 client. With no config, a built-in default prompt + the default judge client
-are used. The fixed JSON-format instruction is appended to **both** so the
+are used, at :data:`~threetears.evals.contracts.models.DEFAULT_JUDGE_TEMPERATURE` —
+the same temperature a config defaults to, so configuring a dim's prompt never
+changes how it is sampled (#633). Every score records the temperature its call
+was actually sent at. The fixed JSON-format instruction is appended to **both** so the
 response stays parseable regardless of an operator's prompt wording.
 
 The multi-dim composite prompt builder (``judge_prompts.build_rubric_prompt``)
@@ -49,6 +52,7 @@ from dataclasses import dataclass
 from typing import Any, NamedTuple, Self
 
 from threetears.evals.contracts.models import (
+    DEFAULT_JUDGE_TEMPERATURE,
     OUTCOME_DIM_ID,
     SCALE_LEVELS,
     TRANSCRIPT_DIM_ID,
@@ -58,6 +62,7 @@ from threetears.evals.contracts.models import (
     JudgeEvidence,
     RoleUsage,
     RubricDim,
+    RubricAxis,
     RubricScale,
     RubricScore,
     UsageRole,
@@ -73,7 +78,10 @@ log = get_logger(__name__)
 #: Builds a judge LLM client for a ``(model, temperature)`` pair. ``model`` is
 #: ``None`` when this dim states no model of its own — what the factory
 #: substitutes is the caller's business, and the run-scoped one supplies the
-#: run's judge pin. ``temperature`` is ``None`` for the provider default. The
+#: run's judge pin. ``temperature`` is what the call is requested at: the dim's
+#: config's, else :data:`~threetears.evals.contracts.models.DEFAULT_JUDGE_TEMPERATURE`
+#: — the service never asks for the provider default, and a client whose model
+#: refuses a temperature sends none and reports that on its completion. The
 #: service caches the result so identical configs reuse one client.
 JudgeClientFactory = Callable[[str | None, float | None], Any]
 
@@ -316,6 +324,8 @@ class JudgeRequest(NamedTuple):
     label: str
     #: Whether the evidence carries the goal-state outcomes (the transcript axis's does not).
     include_goal_outcomes: bool
+    #: The dimension's rubric axis, stamped onto its score: a boundary dimension is a guardrail.
+    axis: RubricAxis = "capability"
 
 
 def _request(
@@ -328,6 +338,7 @@ def _request(
     scale: RubricScale,
     include_goal_outcomes: bool,
     document: bool = False,
+    axis: RubricAxis = "capability",
 ) -> JudgeRequest:
     """Compose one call's system prompt from its instructions and the JSON-format contract.
 
@@ -356,6 +367,7 @@ def _request(
         scale=scale,
         label=label,
         include_goal_outcomes=include_goal_outcomes,
+        axis=axis,
     )
 
 
@@ -519,6 +531,7 @@ class JudgeService:
             scale=dim.scale,
             include_goal_outcomes=True,
             document=document,
+            axis=dim.axis,
         )
 
     # ------------------------------------------------------------------
@@ -572,6 +585,7 @@ class JudgeService:
             score=RubricScore(
                 dim=dim_id,
                 scale=request.scale,
+                axis=request.axis,
                 score=score_int,
                 # A string by the time it gets here: ``run_judge_llm`` refuses a reply whose
                 # reasoning is not one as a parse failure, so it cannot fail this construction
@@ -580,6 +594,9 @@ class JudgeService:
                 # Who scored it, as the provider said — not the client's model, which is the
                 # request and may be a floating alias.
                 served_model=result.get("judge_served_model"),
+                # What the call was sent at, as the client reported it — not what was asked for, since
+                # a model that refuses a temperature is sent none.
+                judge_temperature=result.get("judge_temperature"),
             ),
             config_id=config_id,
             usage=usage,
@@ -605,7 +622,9 @@ class JudgeService:
         together at teardown, so it is a footprint rather than a leak.
         """
         if config is None:
-            key: tuple[str | None, float | None] = (None, None)
+            # The same temperature a config defaults to — never the provider's default, which made a dim's
+            # sampling depend on whether anyone had written it a config (#633).
+            key: tuple[str | None, float | None] = (None, DEFAULT_JUDGE_TEMPERATURE)
         else:
             key = (config.model or None, config.temperature)
         if key not in self._client_cache:

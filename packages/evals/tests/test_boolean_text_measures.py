@@ -37,6 +37,7 @@ from packages.evals.tests.factories import make_eval_result
 def _measure(name: str, data_type: str, **extra: object) -> MetricDescriptor:
     return MetricDescriptor(
         name=name,
+        reader_name=f"{name} reading",
         data_type=data_type,  # type: ignore[arg-type]
         family="mechanical",
         transferability_class="mechanical",
@@ -266,6 +267,59 @@ def test_a_confusion_cell_that_does_not_split_is_dropped_and_reported() -> None:
     collection = _collection([_result("c1", confusion_cell="attack->move")])
     assert "confusion_cell" in collection.unreported_observations
     assert not any(summary.name.startswith("classifier:") for summary in collection.measures)
+
+
+def test_an_engine_owned_key_a_host_kind_stored_is_dropped_and_named_never_pooled() -> None:
+    """A stored result from before the runner refused it: the core name keeps the engine's own reading alone."""
+    smuggled = {"cost_usd": 99.0, "goal_state:state.done": 1.0, "classifier:recall:a": 1.0}
+    results = [_result("c1", match=True, **smuggled), _result("c2", match=False, **smuggled)]
+
+    collection = _collection(results)
+    summaries = {summary.name: summary for summary in collection.measures}
+
+    assert "cost_usd" not in summaries or 99.0 not in {summaries["cost_usd"].maximum, summaries["cost_usd"].mean}
+    assert not {"goal_state:state.done", "classifier:recall:a"} & set(summaries)
+    assert summaries["match"].rate == 0.5, "the classifier track's own key still pools"
+    dropped = [entry for entry in collection.unreported_observations if "host_measures" in entry]
+    assert [entry.split(" ")[0] for entry in dropped] == sorted(smuggled)
+
+
+def test_a_core_named_covariate_no_writer_lands_is_dropped_and_named_never_pooled() -> None:
+    """The host-measure rule, carried to covariates: only the covariate writer's own keys are read."""
+    results = [
+        make_eval_result(
+            test_case_id=f"c{i}",
+            covariates={"cost_usd": 99.0, "execution_mode": "serial"},
+            host_measures={},
+            rubric_scores=[],
+            goal_state_outcomes=[],
+        )
+        for i in range(2)
+    ]
+
+    collection = _collection(results)
+    summaries = {summary.name: summary for summary in collection.measures}
+
+    assert "cost_usd" not in summaries or 99.0 not in {summaries["cost_usd"].maximum, summaries["cost_usd"].mean}
+    assert "execution_mode" in summaries, "a covariate the writer lands is read as before"
+    (dropped,) = [entry for entry in collection.unreported_observations if "covariate" in entry]
+    assert dropped.startswith("cost_usd ")
+
+
+def test_the_covariate_writer_writes_exactly_the_covariate_keys() -> None:
+    from threetears.evals.contracts import RoleUsage
+    from threetears.evals.contracts.covariates import COVARIATE_KEYS, derive_covariates, undeclarable_covariates
+
+    written = derive_covariates(
+        usage=[RoleUsage(role="candidate", model="m", prompt_tokens=10, completion_tokens=5, reasoning_tokens=1)],
+        concurrent_eval_jobs=1,
+        dropped_tool_calls=0,
+        refused_tool_attaches=0,
+        truncated_rounds=0,
+        turns_ended_by_budget=0,
+    )
+    assert set(written) == COVARIATE_KEYS
+    assert undeclarable_covariates(["execution_mode", "my_host_condition", "cost_usd"]) == ["cost_usd"]
 
 
 # --- population ----------------------------------------------------------------------------------------

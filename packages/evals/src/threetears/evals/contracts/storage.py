@@ -54,6 +54,8 @@ from threetears.evals.contracts.models import (
     EvalTestCase,
     EvalTrace,
     JudgeConfig,
+    RubricDimTombstone,
+    JudgeConfigTombstone,
     eval_trace_doc_id,
 )
 from threetears.evals.contracts.out_of_run import OutOfRunPurpose, OutOfRunSpend, OutOfRunSpendStore
@@ -103,6 +105,8 @@ EVAL_DOC_TYPES = (
     "eval_template",
     "judge_config",
     "rubric_dim",
+    "rubric_dim_tombstone",
+    "judge_config_tombstone",
     "eval_campaign",
     "eval_analysis",
     "eval_analysis_attempt",
@@ -366,6 +370,14 @@ class DefinitionStore(Protocol):
         """See :meth:`EvalStorage.delete_rubric_dim`."""
         ...
 
+    def save_rubric_dim_tombstone(self, tombstone: RubricDimTombstone, /) -> None:
+        """See :meth:`EvalStorage.save_rubric_dim_tombstone`."""
+        ...
+
+    def query_rubric_dim_tombstones(self, scope_id: str, /) -> list[RubricDimTombstone]:
+        """See :meth:`EvalStorage.query_rubric_dim_tombstones`."""
+        ...
+
     def save_judge_config(self, config: JudgeConfig, /) -> None:
         """See :meth:`EvalStorage.save_judge_config`."""
         ...
@@ -391,6 +403,14 @@ class DefinitionStore(Protocol):
 
     def delete_judge_config(self, config_id: str, scope_id: str, /) -> bool:
         """See :meth:`EvalStorage.delete_judge_config`."""
+        ...
+
+    def save_judge_config_tombstone(self, tombstone: JudgeConfigTombstone, /) -> None:
+        """See :meth:`EvalStorage.save_judge_config_tombstone`."""
+        ...
+
+    def query_judge_config_tombstones(self, scope_id: str, /) -> list[JudgeConfigTombstone]:
+        """See :meth:`EvalStorage.query_judge_config_tombstones`."""
         ...
 
 
@@ -603,6 +623,17 @@ class EvalStorage:
         """Delete a judge config by id within a scope."""
         return self._store.delete(config_id, scope_id)
 
+    def save_judge_config_tombstone(self, tombstone: JudgeConfigTombstone) -> None:
+        """Persist the record that a judge config slot was deleted, in the scope it names."""
+        self._save(tombstone.to_dict())
+
+    def query_judge_config_tombstones(self, scope_id: str) -> list[JudgeConfigTombstone]:
+        """Every judge config tombstone in a scope, newest first — the slots a seed must not write back."""
+        return self._hydrate_all(
+            JudgeConfigTombstone,
+            self._store.by_doc_type("judge_config_tombstone", scope_id, order_by="deleted_at", descending=True),
+        )
+
     # =========================================================================
     # CatalogRubricDim — shared, versioned, reusable rubric dimensions
     # =========================================================================
@@ -665,6 +696,17 @@ class EvalStorage:
         """Delete a catalog rubric dim by id within a scope."""
         return self._store.delete(dim_id, scope_id)
 
+    def save_rubric_dim_tombstone(self, tombstone: RubricDimTombstone) -> None:
+        """Persist the record that a rubric dim key was deleted, in the scope it names."""
+        self._save(tombstone.to_dict())
+
+    def query_rubric_dim_tombstones(self, scope_id: str) -> list[RubricDimTombstone]:
+        """Every rubric dim tombstone in a scope, newest first — the keys a seed must not write back."""
+        return self._hydrate_all(
+            RubricDimTombstone,
+            self._store.by_doc_type("rubric_dim_tombstone", scope_id, order_by="deleted_at", descending=True),
+        )
+
     # =========================================================================
     # EvalCampaign — the analysis hub
     # =========================================================================
@@ -683,12 +725,11 @@ class EvalStorage:
         *,
         subject_id: str | None = None,
         behavior: str | None = None,
-        status: str | None = None,
         archived: bool | None = None,
     ) -> list[EvalCampaign]:
         """Query campaigns in a scope, newest first.
 
-        ``subject_id`` / ``behavior`` / ``status`` / ``archived`` are optional
+        ``subject_id`` / ``behavior`` / ``archived`` are optional
         equality filters; all ``None`` returns every campaign in the scope.
         """
         field_eq: dict[str, Any] = {}
@@ -696,8 +737,6 @@ class EvalStorage:
             field_eq["subject_id"] = subject_id
         if behavior is not None:
             field_eq["behavior"] = behavior
-        if status is not None:
-            field_eq["status"] = status
         if archived is not None:
             field_eq["archived"] = archived
         items = self._store.by_doc_type("eval_campaign", scope_id, order_by="created_at", descending=True, **field_eq)
@@ -1307,15 +1346,61 @@ class EvalStorage:
         return field_eq
 
     def delete_eval_result(self, result_id: str, scope_id: str) -> bool:
-        """Delete an eval result and its trace sibling.
+        """Delete an eval result and its trace sibling, refusing to orphan the trace.
 
-        The trace is deleted first and its outcome deliberately ignored: it may not
-        exist (a cell that produced none writes no document), and a trace surviving
-        its result would be unreachable — nothing queries these by anything but a
-        result id. Reporting only the result's delete keeps this method's contract
-        the one every caller already branches on.
+        The trace is deleted first, and the result's own ``has_trace`` decides what that
+        delete's outcome means. ``save_eval_result`` stamps the marker from the trace
+        write's outcome, so it is the stored record of whether a trace document should be
+        there:
+
+        - ``has_trace`` false (or a document predating the marker, which reads as
+          false): no trace was written, a trace delete that removes nothing is the
+          expected case, and the result is deleted as before.
+        - ``has_trace`` true and the trace delete removed nothing: the trace is read
+          back. Still there means the delete did not take, and deleting the result
+          would leave the largest row a result has unreachable for good (nothing finds
+          a trace but its result's id), so the result is **kept** and this raises.
+          Gone means the marker already disagreed with storage (the ``missing`` state
+          :func:`~threetears.evals.run.reads.get_result_trace` logs); there is nothing
+          to orphan, so the result is deleted and the disagreement logged, rather than
+          leaving a result no delete can ever remove.
+
+        An id naming no result deletes nothing of another type and returns ``False``; a
+        stray trace under it is still removed. A raising trace delete or read propagates
+        before the result is touched.
+
+        Returns:
+            ``True`` when the result was deleted; ``False`` when there was no result.
+
+        Raises:
+            StorageError: The result says it has a trace, and the trace survived its
+                delete. The result was not deleted; a retry is safe.
         """
-        self._store.delete(eval_trace_doc_id(result_id), scope_id)
+        stored = self._of_type(EvalResult, self._store.get(result_id, scope_id))
+        has_trace = bool(stored.get("has_trace")) if stored is not None else False
+        trace_id = eval_trace_doc_id(result_id)
+        if not self._store.delete(trace_id, scope_id) and has_trace:
+            if self._store.get(trace_id, scope_id) is not None:
+                log.error(
+                    "eval_result %s (scope %s) left intact: it is stamped has_trace=True and its "
+                    "trace %s survived the delete, so deleting the result would orphan the trace",
+                    result_id,
+                    scope_id,
+                    trace_id,
+                )
+                raise StorageError(
+                    f"result '{result_id}' left intact: its trace '{trace_id}' could not be deleted, and "
+                    f"deleting the result alone would leave the trace unreachable — retry the delete"
+                )
+            log.warning(
+                "eval_result %s (scope %s) is stamped has_trace=True but has no trace document; "
+                "deleting the result (nothing to orphan)",
+                result_id,
+                scope_id,
+            )
+        if stored is None:
+            # The id names no result here; a document of another type under it is not ours to delete.
+            return False
         return self._store.delete(result_id, scope_id)
 
     # =========================================================================

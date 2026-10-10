@@ -32,7 +32,7 @@ cleanly — which is why they are mechanical here rather than left to review:
 2. **One unit per quantity.** A quantity drawn without its unit stated, or one
    axis carrying two of them, makes the reader supply the missing half.
 3. **Fixed-order palette that never refuses to draw.** Slots 1-4 are validated, 5-8
-   are the derived second tier, and a domain wider than the palette recycles with a
+   are the second tier, and a domain wider than the palette recycles with a
    warning rather than being rejected — refusing to render legitimate data is the one
    outcome the palette rules out. What IS refused is a palette that cannot say
    which slot a category took: an absent domain, or an interpolated scheme.
@@ -179,21 +179,18 @@ def _palette_slots() -> int:
 
     Read from the artifact, never written here. Distinct from
     :func:`~threetears.evals.vega.palette.validated_slots`, which marks where *validated
-    separation* ends: 1-4 are the validated hues and 5-8 the derived second tier.
+    separation* ends: 1-4 are the validated hues and 5-8 the second tier.
     Passing this width is a warning, not a refusal — a palette that will not draw
     legitimate data has answered the wrong question: the palette never refuses to draw.
 
-    A literal here was a third copy of a number the kit and the palette module both
-    already bind, and the drift it would produce is silent: the tier the palette
-    gained this cycle would have left the warning firing at the wrong count and
-    naming the wrong series, with every suite green — so the one fact the palette
-    amendment requires be admitted would go unsaid.
+    A literal here would be a third copy of a number the contract and the palette
+    module both already bind, and the drift it would produce is silent: a palette
+    widened later would leave the warning firing at the wrong count and naming the
+    wrong series, with every suite green.
 
-    It measured ``len(series_colors("dark"))`` until the width gained a home of its
-    own — the token build now COUNTS the ``chart.N`` tokens and writes the result into
-    the artifact. Measuring one mode's array and reading the counted key give the same
-    answer, which is precisely why the two should not both be in the codebase: two ways
-    to ask one question is the shape this item exists to remove.
+    It reads the artifact's ``series_slots`` rather than measuring
+    ``len(series_colors("dark"))``: the two give the same answer, which is precisely
+    why both should not be in the codebase.
     """
     return series_slots()
 
@@ -576,7 +573,7 @@ def _check_palette(unit: dict[str, Any]) -> list[str]:
 
     The palette does not refuse to draw past the validated slots: the number of series is a
     property of the data, and refusing to render legitimate data is the one outcome that is never acceptable. Slots 1-4 are the
-    validated categorical hues, 5-8 are the derived second tier, and a domain wider than the
+    validated categorical hues, 5-8 are the second tier, and a domain wider than the
     palette is warned about rather than rejected.
 
     What remains a violation is a palette that cannot state which slot a category took —
@@ -621,8 +618,7 @@ def _check_palette(unit: dict[str, Any]) -> list[str]:
             f"{kind} colour encoding uses a scheme — the palette is a fixed validated set, not an interpolated one"
         )
     if isinstance(scale.get("range"), list):
-        # The rule the amendment's clause 3 states: a range given as a list IS a colour
-        # literal, and a literal in a spec draws one theme's ink into the other's render.
+        # A range given as a list IS a colour literal, and a literal in a spec draws one theme's ink into the other's render.
         violations.append(
             f"{kind} colour encoding states its own range — a spec carries no colour value, so name a config range instead"
         )
@@ -662,24 +658,24 @@ def _check_palette(unit: dict[str, Any]) -> list[str]:
 def _check_knockout_ink(unit: dict[str, Any], *, coloured: bool) -> list[str]:
     """The on-fill knockout may only be asked for by a text mark, and never beside a colour encoding.
 
-    **The bound was prose, and prose is not a gate.** The two-contrast-levels rule's amendment
-    admits a third chart ink for a value drawn on a mark's fill, and bounds it to slot
-    1 — the single-series mark colour it was measured against. Against the tier-2 slots
-    the same ink inverts: the dark knockout over slot 5 reaches 2.99:1, which is worse
-    than the 2.53:1 the amendment exists to fix. So a chart that colours its marks from
-    the categorical range and writes a value on one of them would be granted an ink
-    measured for a fill it is not drawn on.
+    **The bound was prose, and prose is not a gate.** A palette carries a third text ink
+    for a value drawn on a mark's fill, bounded to slot 1 — the single-series mark colour
+    it is measured against. Over other slots the same ink can fall short: in the packaged
+    palette it reaches 3.52:1 over slot 2 in dark and 2.45:1 over slot 7 in light, under
+    the 4.5:1 it exists to clear. So a chart that colours its marks from the categorical
+    range and writes a value on one of them would be granted an ink measured for a fill
+    it is not drawn on.
 
     Two refusals, both structural:
 
-    * a **non-text** mark asking for the style, which is a mark asking to be PAINTED
-      the chart surface — that is a hole in the figure, not a knockout;
+    * a **non-text** mark asking for the style, which is a mark asking to be PAINTED in
+      a text ink — in the packaged dark palette, the chart surface itself, a hole in the
+      figure;
     * a text mark asking for it in a frame that carries a **colour encoding**, which is
       the only way a mark's fill reaches past slot 1 today.
 
     Nothing in the repo trips either. That is the point of adding it while nothing
-    does: the amendment's own record says a future arm writing a value onto a coloured
-    fill reopens the measurement, and this is what makes that reopening a failure
+    does: a future arm writing a value onto a coloured fill reopens the measurement, and this is what makes that reopening a failure
     rather than a silent contrast regression.
 
     Args:
@@ -699,16 +695,17 @@ def _check_knockout_ink(unit: dict[str, Any], *, coloured: bool) -> list[str]:
     if _mark_type(unit) != "text":
         return [
             (
-                f"a {_mark_type(unit) or 'non-text'} mark asks for the `{VALUE_ON_FILL_STYLE}` style — that ink is the chart "
-                "surface, so painting a mark with it draws a hole rather than a knockout; it is for a VALUE written on a fill"
+                f"a {_mark_type(unit) or 'non-text'} mark asks for the `{VALUE_ON_FILL_STYLE}` style — that is a text ink "
+                "chosen against slot 1's fill (in the packaged dark palette, the chart surface itself), so painting a mark "
+                "with it draws a hole; it is for a VALUE written on a fill"
             )
         ]
     if coloured:
         return [
             (
-                f"a value label asks for `{VALUE_ON_FILL_STYLE}` in a frame that carries a colour encoding — the knockout was "
-                "measured against slot 1 only, and it inverts over the tier-2 slots (2.99:1 in dark over slot 5). Re-measure "
-                "the ink per slot before drawing a value on a mark whose fill came from the categorical range"
+                f"a value label asks for `{VALUE_ON_FILL_STYLE}` in a frame that carries a colour encoding — the on-fill "
+                "ink is measured against slot 1 only, and over other slots it can fall under 4.5:1. Re-measure the ink "
+                "per slot before drawing a value on a mark whose fill came from the categorical range"
             )
         ]
     return []
@@ -718,7 +715,7 @@ def _check_direct_labels(view: _View) -> list[str]:
     """Identity never rides on colour alone, and past the validated hues not at all.
 
     The palette's never-refuse rule permits it — past four
-    hues a chart takes a derived second tier, past eight it recycles — and the
+    hues a chart takes a second tier, past eight it recycles — and the
     thing that makes that honest is not a colour. It is that **a direct label on
     every mark becomes mandatory at five series**, one slot before validated
     separation ends: identity has left the hue channel before the hue channel
@@ -771,7 +768,7 @@ def _check_direct_labels(view: _View) -> list[str]:
         if isinstance(domain, list) and len(domain) > validated_slots() and not labelled:
             violations.append(
                 f"{_subject(view.label)} colours {len(domain)} categories — past the {validated_slots()} validated hues — "
-                "with no label on the marks; the derived second tier is only legitimate behind a direct label on every "
+                "with no label on the marks; the second tier is only legitimate behind a direct label on every "
                 "mark, which is the safeguard that lets the palette draw past validated separation at all"
             )
         # Independent, not `elif`. A five-series chart with neither labels nor a

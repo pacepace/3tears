@@ -19,7 +19,7 @@ def _design(questions: list[Question]) -> CampaignDesign:
     return CampaignDesign(
         axes=[SweptAxis(axis_id="chunk_tokens", values=[SweepableValue.of(256, display="256")], rationale="width")],
         questions=questions,
-        controls=ControlDeclaration(stimulus="controlled", apparatus="commissioned"),
+        held_fixed=ControlDeclaration(stimulus="controlled", apparatus="commissioned"),
     )
 
 

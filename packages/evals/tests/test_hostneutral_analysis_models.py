@@ -134,7 +134,7 @@ def _analysis(*, confidence: Any = "high", decision: Decision | None = None, **f
         design_snapshot=CampaignDesign(
             axes=[SweptAxis(axis_id=AXIS, values=[_level("model-a"), _level("model-b")])],
             control=BASELINE,
-            controls=ControlDeclaration(stimulus="controlled", apparatus="commissioned"),
+            held_fixed=ControlDeclaration(stimulus="controlled", apparatus="commissioned"),
         ),
         **{"decision_surface": DecisionSurface(), **fields},
     )

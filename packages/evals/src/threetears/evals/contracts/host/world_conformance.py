@@ -55,7 +55,9 @@ world, or beside a sibling at every value the dimension can take — is a ``fail
 the coupling, never an ``unavailable`` one. ``unavailable`` keeps meaning what the shape forces.
 
 **Two conventions the kit fixes, because a generic caller needs them fixed.** A ``subject_view``
-binding is called with one keyword, ``surfaces``, holding the surface names to render; and a
+binding is called with one keyword, ``surfaces``, holding the surface names to render, and returns a
+mapping with one entry per surface name, that surface's rendering (a surface missing from it reads as
+rendering nothing); and a
 ``seed``, ``perturb`` or ``fire`` binding is called with the value as its single positional
 argument, ``fire`` with none. A triggered dimension's ``seed`` binding ARMS an event and returns the
 host's identity of it — a non-empty string, which a cell's world session keeps so a firing of the
@@ -108,8 +110,8 @@ Outcome = Literal["passed", "failed", "unavailable"]
 #: * ``not_instantiable_unattended`` — the condition is a person doing something. An answer about
 #:   representability, not a failed declaration.
 #: * ``no_perturbation_binding`` — the proof needed the host to move state no run controls, and
-#:   this host cannot. samsung-frame-art-loader will carry this one forever: a brightness sensor, a
-#:   heartbeat and a human with a remote all move its world.
+#:   this host cannot. A host driving a physical device can carry this one forever: an ambient-light
+#:   sensor, a heartbeat and a person with a remote control all move its world.
 #: * ``nothing_to_observe`` — there is no surface for the check to watch: no dimension here is
 #:   perceived, or (for stillness) the dimension is perceived by every surface the registry names, or
 #:   every other surface also perceives a sibling that moved with it. Recorded rather than passed,

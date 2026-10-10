@@ -11,7 +11,7 @@ in that host's adapter rather than here, and without it
 that absence reads as an oversight.
 
 So: what a single result scored (:func:`result_composite`), what a set scored together
-(:func:`compute_pass_k`, :func:`compute_composite_summary`, :func:`compute_dimension_summary`),
+(:func:`compute_pass_hat_k`, :func:`compute_composite_summary`, :func:`compute_dimension_summary`),
 whether the loop delivered the matrix its run promised (:func:`summarize_completeness`,
 :func:`reconstruct_completeness`), and what a set of results cost and how long it took
 (:func:`compute_cost_summary`, :func:`compute_latency_summary`). Every one is a pure function
@@ -39,16 +39,27 @@ know no eval model at all.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypedDict
 
-from threetears.evals.contracts.models import CellTermination, EvalResult, EvalRun, LatencyMetrics, RunCompleteness
+from threetears.evals.contracts.base import EvalBaseModel
+from threetears.evals.contracts.models import (
+    AsyncDelivery,
+    CellTermination,
+    EvalResult,
+    EvalRun,
+    LatencyMetrics,
+    RubricDim,
+    RubricScore,
+    RunCompleteness,
+)
 from threetears.evals.contracts.result_condition import (
     ResultOutcome,
     candidate_failure_cause,
     classify_result,
     counted_rubric_scores,
+    delivered_a_turn,
     trial_exclusion,
 )
 from threetears.evals.contracts.usage_capture import production_replicating_cost, resolve_result_usage
@@ -183,14 +194,42 @@ def reconstruct_completeness(run: EvalRun, results: Sequence[EvalResult]) -> Run
     )
 
 
-def result_composite(result: EvalResult) -> float | None:
-    """Normalize one result's rubric dims to a single 0–1 quality score.
+def capability_scores(result: EvalResult) -> list[RubricScore]:
+    """The result's rubric scores on the capability axis — the ones a composite or pass^k may combine.
 
-    Composite = mean of the result's ``rubric_scores``, each put on 0–1 by
-    :attr:`~threetears.evals.contracts.models.RubricScore.normalized`: ``(score - 1) / 4`` for a 1–5 dim, the
-    1 or 0 itself for a pass/fail one. Rubric dims only — the reserved
-    ``transcript_score`` / ``outcome_score`` axes are excluded, mirroring
-    :func:`~threetears.evals.contracts.scoring.compute_dimension_summary`.
+    A boundary dimension (:data:`~threetears.evals.contracts.models.RubricAxis`) is a guardrail: something the
+    candidate must not do. Averaged with capability it lets a gain on one pay for a loss on the other, so
+    every whole-trial measure reads this list and the boundary scores are decided on their own
+    (:attr:`~threetears.evals.analysis.bundle.AnalysisContextBundle.guardrails`). A score judged before the
+    axis was stamped (``axis`` None) is read as capability, which is how it was read then.
+    """
+    return [score for score in result.rubric_scores if score.axis != "boundary"]
+
+
+def boundary_dim_names(rubric: Iterable[RubricDim]) -> frozenset[str]:
+    """The names of a rubric's boundary (guardrail) dims — what a judge stamps a can't-tell's axis from.
+
+    A score carries its axis on itself; a can't-tell carries no score, so the judge phase reads the axis
+    off the definition here and records the boundary ones on the result
+    (:attr:`~threetears.evals.contracts.models.EvalResult.judge_cannot_tell_boundary`).
+
+    Args:
+        rubric: The template's rubric dims.
+
+    Returns:
+        The boundary dims' names.
+    """
+    return frozenset(dim.name for dim in rubric if dim.axis == "boundary")
+
+
+def result_composite(result: EvalResult) -> float | None:
+    """Normalize one result's capability rubric dims to a single 0–1 quality score.
+
+    Composite = mean of the result's capability ``rubric_scores`` (:func:`capability_scores`), each put on
+    0–1 by :attr:`~threetears.evals.contracts.models.RubricScore.normalized`: ``(score - 1) / 4`` for a 1–5
+    dim, the 1 or 0 itself for a pass/fail one. Capability rubric dims only — a boundary dim is a guardrail
+    and is never averaged in, and the reserved ``transcript_score`` / ``outcome_score`` axes are excluded,
+    mirroring :func:`~threetears.evals.contracts.scoring.compute_dimension_summary`.
 
     Three-way by error category (candidate vs infra):
       * **infra-excluded** (``infra_error`` / ``judge_error``) → ``None``. This
@@ -221,16 +260,87 @@ def result_composite(result: EvalResult) -> float | None:
         return None
     if outcome is ResultOutcome.CANDIDATE_FAIL:
         return 0.0
-    if not result.rubric_scores or trial_exclusion(result) is not None:
+    scores = capability_scores(result)
+    if not scores or trial_exclusion(result) is not None:
         return None
-    return sum(s.normalized for s in result.rubric_scores) / len(result.rubric_scores)
+    return sum(s.normalized for s in scores) / len(scores)
+
+
+def composite_basis(result: EvalResult) -> list[str] | None:
+    """The dimensions one result's composite was meaned over, sorted — None exactly when it has no composite.
+
+    Read off the same scores :func:`result_composite` means (:func:`capability_scores`), so the basis names
+    what the arithmetic used rather than what the template declares. ``[]`` is a composite meaned over
+    nothing: a candidate failure's ``0.0`` is a score by policy, not an average of any dimension.
+
+    Args:
+        result: The eval result.
+
+    Returns:
+        The sorted dimension names, ``[]`` for a composite set by policy, or None when there is no composite.
+    """
+    if result_composite(result) is None:
+        return None
+    return sorted({score.dim for score in capability_scores(result)})
+
+
+class CompositeBasis(EvalBaseModel):
+    """What a pooled composite was meaned over: the union of its members' bases, and whether they agreed.
+
+    A composite is a mean across whatever capability dimensions each result carried, so two results scored on
+    different dimension sets each give a number on 0-1 whose mean is arithmetic over two different questions.
+    ``ragged`` marks that pool where the number is shown; ``bases`` names each distinct set so a reader can see
+    what was pooled. A member meaned over nothing — a candidate failure's ``0.0``, set by policy — names no set
+    and does not make a pool ragged: it is a floor on the same scale, not a mean over other dimensions.
+    """
+
+    #: Every dimension any pooled composite was meaned over, sorted.
+    dimensions: list[str]
+    #: The distinct non-empty dimension sets the pooled composites were meaned over, sorted.
+    bases: list[list[str]]
+    #: True when the pool's members were meaned over more than one dimension set.
+    ragged: bool
+
+    def disclosure(self) -> str | None:
+        """The sentence a ragged pool carries where its number is shown, or None when the bases agree."""
+        if not self.ragged:
+            return None
+        sets = " | ".join("{" + ", ".join(basis) + "}" for basis in self.bases)
+        return (
+            f"ragged composite: pooled over {len(self.bases)} different dimension sets ({sets}), so the mean "
+            "averages different questions and is not one measurement"
+        )
+
+
+def pool_composite_bases(bases: Iterable[Sequence[str] | None]) -> CompositeBasis | None:
+    """The basis of a composite pooled from members with these bases — the one reading every pooled surface uses.
+
+    Args:
+        bases: Each pooled member's basis (:func:`composite_basis`, or
+            :attr:`~threetears.evals.analysis.reporting.ScoreRecord.dimension_basis` on a composite row); None
+            for a member with no composite, which pooled nothing.
+
+    Returns:
+        The pooled basis, or None when no member carried a composite.
+    """
+    present = [tuple(basis) for basis in bases if basis is not None]
+    if not present:
+        return None
+    distinct = sorted({basis for basis in present if basis})
+    return CompositeBasis(
+        dimensions=sorted({dim for basis in distinct for dim in basis}),
+        bases=[list(basis) for basis in distinct],
+        ragged=len(distinct) > 1,
+    )
 
 
 def _result_passes(result: EvalResult, *, rubric_threshold: int) -> bool:
-    """A result passes iff every goal-state and every rubric dim cleared the bar.
+    """A result passes iff every goal-state and every capability rubric dim cleared the bar.
+
+    A boundary dim is a guardrail, decided on its own, and takes no part (:func:`capability_scores`).
 
     Only decides pass/fail for a result that is not infra-excluded — callers
-    (:func:`compute_pass_k`) drop ``INFRA_EXCLUDE`` before calling this, so a
+    (:func:`compute_pass_hat_k`) drop ``INFRA_EXCLUDE`` before calling this, so a
     judge/timeout/factory infra failure never reaches here to be floored (that
     would score infra as candidate quality).
 
@@ -246,11 +356,12 @@ def _result_passes(result: EvalResult, *, rubric_threshold: int) -> bool:
     """
     if candidate_failure_cause(result) is not None:
         return False
-    if not result.goal_state_outcomes and not result.rubric_scores:
+    scores = capability_scores(result)
+    if not result.goal_state_outcomes and not scores:
         return False
     if any(not o.passed for o in result.goal_state_outcomes):
         return False
-    if any(not s.clears(rubric_threshold) for s in result.rubric_scores):
+    if any(not s.clears(rubric_threshold) for s in scores):
         return False
     return True
 
@@ -265,125 +376,377 @@ def _already_failed(result: EvalResult, *, rubric_threshold: int) -> bool:
     """
     if any(not o.passed for o in result.goal_state_outcomes):
         return True
-    return any(not s.clears(rubric_threshold) for s in result.rubric_scores)
+    return any(not s.clears(rubric_threshold) for s in capability_scores(result))
 
 
-def compute_pass_k(
-    results: list[EvalResult],
-    *,
-    rubric_threshold: int = 3,
-) -> dict[tuple[str, str], dict[str, Any]]:
-    """Compute pass^k aggregated by (template-implied via run, model).
+class PassHatPoint(TypedDict):
+    """One point of the pass^k curve: the estimate at one depth, and how many cases it rests on."""
 
-    A result *passes* when every ``goal_state_outcomes`` entry passed AND
-    every ``rubric_scores`` entry clears the bar: at or above ``rubric_threshold`` on a 1–5
-    dimension, a pass on a pass/fail one.
+    #: The depth: the number of attempts that must ALL pass.
+    k: int
+    #: The mean, over the cases measured at least ``k`` times, of each case's unbiased
+    #: ``C(c, k) / C(n, k)``. ``None`` when no case was measured that deep — nothing was
+    #: measured at this depth, which is not a rate of zero.
+    pass_hat_k: float | None
+    #: The cases this point averages over: those with at least ``k`` scored attempts.
+    n_cases: int
 
-    pass^k = (results passing for every k-iteration of a given test case)
-             / (test cases run)
 
-    **The depth is reported, because it is not uniform.** Cells are executed in a
-    per-run shuffled order, so a run that stopped early — a budget cap, a crash, a
-    still-running job — leaves an arbitrary subset of its matrix rather than a
-    k-ordered prefix: one case may have three scored iterations while its
-    neighbour has one. pass^k over such a set is a *mixture* of pass^1, pass^2 and
-    pass^3, and it flatters the shallow cases, since "passed every attempt" is
-    easier to clear on one attempt than on three. That is disclosed rather than
-    corrected. Withholding the number would blank the headline on every in-flight
-    run, and re-weighting it would invent a statistic nobody asked for; what the
-    reader needs is the number plus the depths behind it, so
-    ``scored_iterations_min`` / ``scored_iterations_max`` travel with it and are
-    equal exactly when the depth *is* uniform.
+def _case_pass_hat_k(n: int, c: int, k: int) -> float:
+    """The unbiased per-case estimate of pass^k from ``c`` passes in ``n >= k`` scored attempts.
+
+    ``C(c, k) / C(n, k)`` is the share of the ``k``-subsets of the case's attempts in which every
+    attempt passed (Yao et al. 2024, τ-bench). Its expectation over the case's attempts is ``p^k``
+    for a case that passes each attempt with probability ``p``, whatever ``n`` is — which is what
+    lets cases measured to different depths be averaged without the shallow ones flattering the
+    mean, and lets extra attempts sharpen the estimate instead of making it harder to clear.
+    """
+    return math.comb(c, k) / math.comb(n, k)
+
+
+def _pass_hat_k_curve(attempts_by_case: Iterable[Sequence[bool]]) -> list[PassHatPoint]:
+    """The pass^1..pass^K curve over every case's scored attempts, ``K`` the deepest case's count.
+
+    Each point averages only the cases measured at least ``k`` times: the estimator is undefined
+    below that depth, and a case cannot stand in for a depth it was not measured at. pass^1 is
+    therefore the per-case pass rate averaged over cases.
+    """
+    cases = [(len(attempts), sum(attempts)) for attempts in attempts_by_case if attempts]
+    deepest = max((n for n, _ in cases), default=0)
+    curve: list[PassHatPoint] = []
+    for k in range(1, deepest + 1):
+        estimates = [_case_pass_hat_k(n, c, k) for n, c in cases if n >= k]
+        curve.append(
+            {
+                "k": k,
+                "pass_hat_k": math.fsum(estimates) / len(estimates) if estimates else None,
+                "n_cases": len(estimates),
+            }
+        )
+    return curve
+
+
+def pass_hat_k_at(curve: Sequence[PassHatPoint], k: int) -> PassHatPoint:
+    """Read one depth off a pass^k curve, as an unmeasured point when the curve never reached it.
+
+    Args:
+        curve: A curve from :func:`compute_pass_hat_k` or :func:`pool_pass_hat_k`.
+        k: The depth wanted, at least 1.
 
     Returns:
-        ``{(model, eval_run_id): {"pass_at_k": float | None, "n_test_cases": int,
-                                  "k": int, "fully_passing_cases": int,
-                                  "scored_iterations_min": int | None,
-                                  "scored_iterations_max": int | None,
-                                  "n_cannot_tell_excluded": int}}``.
-        ``pass_at_k`` is ``None`` when no case was scored — nothing was measured,
-        which is not a pass rate of zero.
+        The curve's point at ``k``, or ``{"k": k, "pass_hat_k": None, "n_cases": 0}`` when no
+        case was measured that deep.
 
-        ``k`` is the highest ``k_iteration`` observed for that ``(model, run)`` —
-        not necessarily ``EvalRun.k_runs``, and not the run's highest either: a
-        value reported under a per-model key describes that model, and pooling the
-        run's models let one model's deeper cells speak for a model that never got
-        past its first. It counts infra-excluded cells, so it is the deepest
-        iteration *attempted*.
-
-        ``scored_iterations_min`` / ``scored_iterations_max`` are the fewest and
-        the most scored iterations any counted case contributed — the depths
-        ``pass_at_k`` was actually computed over, which is a different quantity
-        from ``k`` because an infra-excluded iteration raises ``k`` and contributes
-        no scored observation. Both are ``None`` when nothing was measured.
+    Raises:
+        ValueError: ``k`` is below 1, where pass^k has no meaning.
     """
-    # Group by (model, eval_run_id, test_case_id). Infra-excluded iterations
-    # (judge_error, a cell timeout charged to the rig — runner._DEADLINE_CHARGE —,
-    # factory/simulator/delivery infra) are dropped
-    # here — never appended — so they don't count toward the case's k-iterations;
-    # a case whose every iteration is excluded therefore vanishes from its run's
-    # denominator (n_test_cases). Candidate failures append False (they fail).
-    # k_observed and all_run_keys are computed over ALL results (including
-    # excluded ones) so a (model, run) with only infra failures still appears in
-    # the output — as pass_at_k None / n_test_cases 0 (nothing measured), not
-    # absent. The observed k still reflects the highest iteration attempted.
-    grouped: dict[tuple[str, str, str], list[bool]] = {}
+    if k < 1:
+        raise ValueError(f"pass^k needs k >= 1, got {k}")
+    for point in curve:
+        if point["k"] == k:
+            return point
+    return {"k": k, "pass_hat_k": None, "n_cases": 0}
+
+
+#: Why a pass^k has no value when every attempt behind it had nothing to pass (#688).
+NO_PASS_CRITERION_REASON = (
+    "no attempt carried a pass criterion — no goal-state check and no judge — so there is nothing for pass^k to "
+    "conjoin: it is unmeasured, not 0; read the arm's own grade (its host measures, e.g. accuracy) instead"
+)
+
+
+def has_pass_criterion(result: EvalResult) -> bool:
+    """Whether pass^k has anything to conjoin on this result: a goal-state check, a capability criterion, or a judge.
+
+    A result with none — a classifier scored only against its expected label, no goal check and no judge — is
+    not a failed attempt: pass^k cannot ask it anything, so it is left out of pass^k (#688) rather than read as
+    failing every criterion it never had. A result whose run pinned a judge (``judge_model``) is in, scored or
+    not: its criteria were asked, so a judged arm whose candidate failed before the judge ran still fails.
+
+    Args:
+        result: The eval result.
+
+    Returns:
+        True when pass^k can decide the attempt.
+    """
+    capability_cannot_tell = set(result.judge_cannot_tell) - set(result.judge_cannot_tell_boundary)
+    return bool(
+        result.goal_state_outcomes
+        or capability_scores(result)
+        or capability_cannot_tell
+        or result.judge_model is not None
+    )
+
+
+def _trial_pass(result: EvalResult, *, rubric_threshold: int) -> tuple[bool | None, bool]:
+    """Whether one attempt passed, ``None`` when it is left out — and whether it left as cannot-tell.
+
+    Infra-excluded attempts (judge_error, a cell timeout charged to the rig —
+    runner._DEADLINE_CHARGE —, factory/simulator/delivery infra) are left out, so they count
+    toward no case's depth; a case whose every attempt is excluded vanishes from the denominator.
+    A judge that could not tell on a dim the pass needs leaves the attempt out too, unless a failed
+    check or a sub-bar dim has already decided it — then it is the fail it is. Candidate failures
+    are attempts that failed.
+    """
+    exclusion = trial_exclusion(result)
+    if exclusion == "judge_cannot_tell" and _already_failed(result, rubric_threshold=rubric_threshold):
+        # The unscored dim cannot rescue a trial a failed check or a sub-bar dim has already
+        # decided, so it counts as the fail it is rather than vanishing from the denominator.
+        exclusion = None
+    if exclusion is not None:
+        return None, exclusion == "judge_cannot_tell"
+    if not has_pass_criterion(result):
+        # Nothing to conjoin: unmeasured for pass^k, never a fail (#688). Counted by the callers.
+        return None, False
+    return classify_result(result) is ResultOutcome.OK and _result_passes(
+        result, rubric_threshold=rubric_threshold
+    ), False
+
+
+def _no_criterion_count(results: Iterable[EvalResult]) -> int:
+    """The attempts pass^k leaves out because they carry no pass criterion (:func:`has_pass_criterion`).
+
+    Only those it would otherwise have read: an attempt left out for a fault or a judge's can't-tell is counted
+    there, not here.
+    """
+    return sum(1 for r in results if trial_exclusion(r) is None and not has_pass_criterion(r))
+
+
+def _pass_hat_k_entry(
+    attempts_by_case: Mapping[Any, list[bool]], *, k: int, n_cannot_tell: int, n_no_criterion: int = 0
+) -> dict[str, Any]:
+    """The one row shape both pass^k producers return, so the two cannot describe a pool differently."""
+    curve = _pass_hat_k_curve(attempts_by_case.values())
+    headline = pass_hat_k_at(curve, k)
+    scored = any(attempts_by_case.values())
+    return {
+        "pass_hat_k": headline["pass_hat_k"],
+        "k": k,
+        "n_cases_at_k": headline["n_cases"],
+        "pass_hat_k_curve": curve,
+        # Counts stay counts: zero scored cases is a true zero, and the rate beside it is None.
+        "n_test_cases": sum(1 for attempts in attempts_by_case.values() if attempts),
+        # Iterations left out because the judge could not tell on a rubric dim — the one exclusion
+        # that is not a fault, so it is counted on its own rather than vanishing.
+        "n_cannot_tell_excluded": n_cannot_tell,
+        # Attempts with nothing for pass^k to conjoin — no goal check, no judge (#688): left out, never failed.
+        "n_no_criterion_excluded": n_no_criterion,
+        # Why pass^k has no value at all, where the reason is that nothing had a criterion; None otherwise.
+        "pass_hat_k_unmeasured_reason": NO_PASS_CRITERION_REASON if n_no_criterion and not scored else None,
+    }
+
+
+def compute_pass_hat_k(
+    results: Sequence[EvalResult],
+    *,
+    rubric_threshold: int = 3,
+    k: int | None = None,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Estimate pass^k per ``(model, eval_run_id)`` — the chance that k attempts at a case ALL pass.
+
+    A result *passes* when every ``goal_state_outcomes`` entry passed AND every capability
+    ``rubric_scores`` entry clears the bar: at or above ``rubric_threshold`` on a 1–5 dimension, a pass
+    on a pass/fail one. A boundary dimension is a guardrail and is not part of pass^k
+    (:func:`capability_scores`).
+
+    **pass^k, not pass@k.** pass@k (Chen et al. 2021) is the chance that AT LEAST ONE of k attempts
+    passes; pass^k (Yao et al. 2024, τ-bench) is the chance that ALL k do — the opposite end, and
+    the one a reliability claim needs. The field is ``pass_hat_k`` so it cannot be read as the other.
+
+    **The estimator is unbiased at any depth.** Per case with ``n`` scored attempts and ``c``
+    passes, pass^k is ``C(c, k) / C(n, k)``, defined only where ``n >= k``; the reported value is the
+    mean over the cases that qualify. A run stopped part-way (cells execute in a per-run shuffled
+    order, so it leaves an arbitrary subset of its matrix) therefore leaves its shallow cases out
+    of the deep points rather than letting "passed its one attempt" stand in for "passed all
+    three". The full curve pass^1..pass^K travels with the headline, each point carrying the cases
+    it was computed over; pass^1 is the per-case pass rate averaged over cases.
+
+    One run is one arm (one variant under one measurement context), so grouping by run never
+    pools two configurations. Repeats across RUNS of one configuration are pooled by
+    :func:`pool_pass_hat_k`, which is what a cross-run surface calls.
+
+    Args:
+        results: The results to score.
+        rubric_threshold: The 1–5 score a rubric dimension must reach to pass.
+        k: The depth of the headline ``pass_hat_k``. ``None`` takes each group's deepest
+            ``k_iteration`` attempted — the run's planned k on a run that finished its matrix.
+
+    Returns:
+        ``{(model, eval_run_id): {"pass_hat_k": float | None, "k": int, "n_cases_at_k": int,
+        "pass_hat_k_curve": [{"k", "pass_hat_k", "n_cases"}, ...], "n_test_cases": int,
+        "n_cannot_tell_excluded": int, "n_no_criterion_excluded": int,
+        "pass_hat_k_unmeasured_reason": str | None}}``.
+
+        An attempt with nothing to conjoin — no goal-state check and no judge (:func:`has_pass_criterion`)
+        — is left out and counted in ``n_no_criterion_excluded``, never read as a fail (#688); where no
+        attempt had one, ``pass_hat_k`` is None and ``pass_hat_k_unmeasured_reason`` says why.
+
+        ``pass_hat_k`` is the curve's value at ``k`` and ``n_cases_at_k`` the cases it averages:
+        ``None`` and 0 when no case was scored that deep — nothing was measured there, which is
+        not a pass rate of zero. The curve runs from 1 to the deepest scored case and is empty
+        when nothing was scored. ``n_test_cases`` counts the cases with at least one scored
+        attempt. A ``(model, run)`` whose every result was excluded still appears, with zero
+        cases, rather than vanishing.
+
+        The default ``k`` counts infra-excluded attempts, so it is the deepest iteration
+        *attempted*, and it is per ``(model, run)``: pooling the run's models would let one
+        model's deeper cells set the depth for a model that never got past its first.
+
+    Raises:
+        ValueError: ``k`` is below 1.
+    """
+    if k is not None and k < 1:
+        raise ValueError(f"pass^k needs k >= 1, got {k}")
+    attempts: dict[tuple[str, str], dict[Hashable, list[bool]]] = {}
     cannot_tell: dict[tuple[str, str], int] = {}
     k_observed: dict[tuple[str, str], int] = {}
-    all_run_keys: set[tuple[str, str]] = set()
     for r in results:
-        run_key = (r.model, r.eval_run_id)
-        all_run_keys.add(run_key)
-        k_observed[run_key] = max(k_observed.get(run_key, 0), r.k_iteration)
-        exclusion = trial_exclusion(r)
-        if exclusion == "judge_cannot_tell" and _already_failed(r, rubric_threshold=rubric_threshold):
-            # The unscored dim cannot rescue a trial a failed check or a sub-bar dim has already
-            # decided, so it counts as the fail it is rather than vanishing from the denominator.
-            exclusion = None
-        if exclusion == "judge_cannot_tell":
-            # Unmeasured on a dim the pass needs: left out, never passed on the rest — and counted.
-            cannot_tell[run_key] = cannot_tell.get(run_key, 0) + 1
-        if exclusion is not None:
+        group = (r.model, r.eval_run_id)
+        # Registered before the exclusion check, so a group with only infra failures still
+        # reports — as nothing measured, not as absent.
+        cases = attempts.setdefault(group, {})
+        k_observed[group] = max(k_observed.get(group, 0), r.k_iteration)
+        passed, was_cannot_tell = _trial_pass(r, rubric_threshold=rubric_threshold)
+        if was_cannot_tell:
+            cannot_tell[group] = cannot_tell.get(group, 0) + 1
+        if passed is None:
             continue
-        passed = classify_result(r) is ResultOutcome.OK and _result_passes(r, rubric_threshold=rubric_threshold)
-        case_key = (r.model, r.eval_run_id, r.test_case_id)
-        grouped.setdefault(case_key, []).append(passed)
+        cases.setdefault(r.test_case_id, []).append(passed)
 
-    # Aggregate to (model, eval_run_id): pass^k = case passed all its (non-excluded) k-iters
-    out: dict[tuple[str, str], dict[str, Any]] = {}
-    cases_by_run: dict[tuple[str, str], int] = {}
-    fully_passing: dict[tuple[str, str], int] = {}
-    # Per-case scored depth, kept as the spread rather than a mean: the reader's
-    # question is whether the cases were measured to the SAME depth, and an
-    # average of 2 hides the difference between two-and-two and one-and-three.
-    depth_min: dict[tuple[str, str], int] = {}
-    depth_max: dict[tuple[str, str], int] = {}
-    for (model, run_id, _tc_id), passes in grouped.items():
-        key = (model, run_id)
-        cases_by_run[key] = cases_by_run.get(key, 0) + 1
-        depth = len(passes)
-        depth_min[key] = min(depth_min.get(key, depth), depth)
-        depth_max[key] = max(depth_max.get(key, depth), depth)
-        if passes and all(passes):
-            fully_passing[key] = fully_passing.get(key, 0) + 1
+    no_criterion: dict[tuple[str, str], int] = {}
+    for r in results:
+        group = (r.model, r.eval_run_id)
+        no_criterion[group] = no_criterion.get(group, 0) + _no_criterion_count([r])
+    return {
+        group: _pass_hat_k_entry(
+            cases,
+            k=k if k is not None else k_observed.get(group, 1),
+            n_cannot_tell=cannot_tell.get(group, 0),
+            n_no_criterion=no_criterion.get(group, 0),
+        )
+        for group, cases in attempts.items()
+    }
 
-    for key in all_run_keys:
-        n = cases_by_run.get(key, 0)
-        passing = fully_passing.get(key, 0)
-        # A rate and a depth over zero scored cases are not zero, they are unmeasured; the
-        # counts beside them stay counts, and zero is a true count.
-        out[key] = {
-            "pass_at_k": (passing / n) if n else None,
-            "n_test_cases": n,
-            "k": k_observed.get(key, 1),
-            "fully_passing_cases": passing,
-            "scored_iterations_min": depth_min.get(key),
-            "scored_iterations_max": depth_max.get(key),
-            # Iterations left out because the judge could not tell on a rubric dim — the one
-            # exclusion that is not a fault, so it is counted on its own rather than vanishing.
-            "n_cannot_tell_excluded": cannot_tell.get(key, 0),
-        }
-    return out
+
+def pass_hat_k_cell(run: EvalRun) -> tuple[str, ...]:
+    """The configuration a run's attempts are repeats of, for pooling pass^k across runs.
+
+    A cell is a variant under one measurement context (:mod:`threetears.evals.contracts.identity`).
+    The variant is stamped per result; the context is the run's ``context_key``, the digest of
+    every condition a comparison must hold fixed (case basis, judges and their configs, simulator,
+    cassette, seeded world, subject state, tool permissions) — and NOT ``k_runs``, which is how
+    many repeats were taken under a condition rather than a condition. Two runs sharing it, at one
+    identity version and one apparatus provenance, measured one configuration, so their attempts
+    at a case are more attempts at that case.
+
+    A run that carries no ``context_key`` (its host assembled it without the launch) is its own
+    cell: nothing recorded says what it held fixed, and pooling it would be a merge nothing
+    downstream can undo. Refusing costs only depth.
+
+    Args:
+        run: The run whose cell is wanted.
+
+    Returns:
+        A hashable cell id; equal for two runs exactly when their attempts may pool.
+    """
+    if run.context_key is None:
+        return ("run", run.id)
+    return ("context", run.context_key, str(run.identity_version), run.apparatus_provenance)
+
+
+def pool_pass_hat_k_attempts(
+    results: Sequence[EvalResult],
+    *,
+    cell_of_run: Mapping[str, Hashable],
+    rubric_threshold: int = 3,
+) -> tuple[dict[tuple[Hashable, str, int, str, str], list[bool]], int]:
+    """Each case's scored attempts in one pool, keyed as :func:`pool_pass_hat_k` keys them.
+
+    The grouping behind :func:`pool_pass_hat_k`, public so a surface that needs the cases themselves — an
+    interval over them, or a test pairing two contestants on the cases both ran — reads them through the
+    one keying that produced the headline rather than re-deriving it.
+
+    Args:
+        results: The pool.
+        cell_of_run: Run id → its cell, from :func:`pass_hat_k_cell`; a run absent from it is its own cell.
+        rubric_threshold: The 1–5 score a rubric dimension must reach to pass.
+
+    Returns:
+        ``(attempts, n_cannot_tell)``: each ``(cell, variant_key, identity_version, model, test_case_id)``
+        unit's scored attempts in result order, and the attempts left out because a judge could not tell.
+        A unit whose every attempt was left out is absent.
+    """
+    cases: dict[tuple[Hashable, str, int, str, str], list[bool]] = {}
+    n_cannot_tell = 0
+    for r in results:
+        passed, was_cannot_tell = _trial_pass(r, rubric_threshold=rubric_threshold)
+        n_cannot_tell += was_cannot_tell
+        if passed is None:
+            continue
+        cell = cell_of_run.get(r.eval_run_id, ("run", r.eval_run_id))
+        cases.setdefault((cell, r.variant_key, r.identity_version, r.model, r.test_case_id), []).append(passed)
+    return cases, n_cannot_tell
+
+
+def case_pass_hat_k(attempts: Sequence[bool], k: int) -> float | None:
+    """One case's unbiased pass^k estimate from its scored attempts, ``None`` below ``k`` of them.
+
+    ``C(c, k) / C(n, k)`` (see :func:`compute_pass_hat_k`): the per-case value every pass^k headline
+    averages, public so an interval or a paired test over cases reads the same number the headline does.
+
+    Args:
+        attempts: The case's scored attempts.
+        k: The depth, at least 1.
+
+    Returns:
+        The estimate, or ``None`` when the case has fewer than ``k`` scored attempts — it cannot stand in
+        for a depth it was not measured at.
+
+    Raises:
+        ValueError: ``k`` is below 1.
+    """
+    if k < 1:
+        raise ValueError(f"pass^k needs k >= 1, got {k}")
+    if len(attempts) < k:
+        return None
+    return _case_pass_hat_k(len(attempts), sum(attempts), k)
+
+
+def pool_pass_hat_k(
+    results: Sequence[EvalResult],
+    *,
+    cell_of_run: Mapping[str, Hashable],
+    k: int,
+    rubric_threshold: int = 3,
+) -> dict[str, Any]:
+    """Estimate pass^k over one pool of results, pooling a case's attempts across runs of one cell.
+
+    The cross-run sibling of :func:`compute_pass_hat_k`, with the same estimator and the same row.
+    A *case* here is a test case within one cell: its attempts from every run of that cell pool
+    into one ``(n, c)``, so a repeat run of a configuration adds depth to its cases instead of
+    adding a second copy of each. Attempts are keyed by ``(cell, variant_key, identity_version,
+    model, test_case_id)``, so a caller handing in a mixed pool still never pools two variants,
+    and the same test case measured under two cells stays two cases, averaged side by side.
+
+    Args:
+        results: The pool — typically one contestant's results across runs.
+        cell_of_run: Run id → its cell, from :func:`pass_hat_k_cell`. A run absent from the map is
+            its own cell, which is the direction that cannot produce a wrong merge.
+        k: The depth of the headline ``pass_hat_k``. Required: a pool spans runs, whose
+            ``k_iteration`` counters restart, so no depth can be read off the attempts.
+        rubric_threshold: The 1–5 score a rubric dimension must reach to pass.
+
+    Returns:
+        One entry in :func:`compute_pass_hat_k`'s row shape, ``n_test_cases`` counting
+        case-within-cell units.
+
+    Raises:
+        ValueError: ``k`` is below 1.
+    """
+    if k < 1:
+        raise ValueError(f"pass^k needs k >= 1, got {k}")
+    cases, n_cannot_tell = pool_pass_hat_k_attempts(results, cell_of_run=cell_of_run, rubric_threshold=rubric_threshold)
+    return _pass_hat_k_entry(cases, k=k, n_cannot_tell=n_cannot_tell, n_no_criterion=_no_criterion_count(results))
 
 
 # =============================================================================
@@ -394,18 +757,15 @@ def compute_pass_k(
 def percentile(sorted_values: list[float], pct: float) -> float:
     """Nearest-rank percentile of an already-sorted, non-empty list.
 
-    **Nearest-rank, not interpolated**: rank = ceil(pct/100 * n), 1-indexed. Chosen over
-    interpolation because eval runs have small n (a handful of test cases × k) where
-    interpolating between two samples is more misleading than picking the rank-nearest observed
-    value. ``pct=95`` on small n collapses toward the max, which is the intended tail signal.
+    **Nearest-rank, not interpolated**: rank = ceil(pct/100 * n), 1-indexed — an observed value. No engine
+    surface reads it: at ``pct=50`` it is the lower middle value at an even count, not the median, which the
+    run summary reads with :func:`median_unbiased_quantile` at 0.5. **It is not the engine's tail estimator**: at ``pct=95`` it is the
+    sample maximum for every ``n <= 19``, which falls below the true 95th percentile most of the time at
+    the sizes a run has, so a tail is read with :func:`median_unbiased_quantile` instead.
 
-    **There is a second percentile in this package and it differs on TWO axes.**
-    :mod:`threetears.evals.analysis.bundle`'s ``_percentile`` interpolates linearly between
-    neighbouring ranks, and it takes its quantile on the **[0, 1] scale** where this one takes
-    **0-100**. The method difference is a judgement call and both are defensible — this one
-    summarises a run's own handful of cells, where an interpolated value is a number nothing
-    observed, while the bundle's summarises a campaign-scale distribution, where interpolation is
-    the standard reading — so they are deliberately not unified.
+    **There is a second percentile in this module and it differs on TWO axes.**
+    :func:`median_unbiased_quantile` interpolates (Hyndman–Fan type 8) and takes its quantile on the
+    **[0, 1] scale** where this one takes **0-100**.
 
     **The scale difference is the dangerous one and is why this raises.** Handed ``0.95`` by
     someone carrying the bundle's habit across, nearest-rank would compute rank 1 and return the
@@ -441,7 +801,7 @@ def percentile(sorted_values: list[float], pct: float) -> float:
     if 0 < pct <= 1:
         raise ValueError(
             f"pct={pct} is on the [0, 1] scale; this function takes 0-100 "
-            "(threetears.evals.analysis.bundle's _percentile is the [0, 1] one). "
+            "(median_unbiased_quantile, which the analysis bundle reads its percentiles with, is the [0, 1] one). "
             "For the maximum, pass 100 — on this scale 1.0 is the FIRST percentile and "
             "resolves to the minimum."
         )
@@ -451,12 +811,80 @@ def percentile(sorted_values: list[float], pct: float) -> float:
     return sorted_values[idx]
 
 
+#: Hyndman and Fan's type 8 plotting position, ``h = (n + 1/3) q + 1/3``: the one rule both the run summary
+#: and the analysis bundle read a percentile with.
+_TYPE_8_OFFSET = 1.0 / 3.0
+
+
+def median_unbiased_quantile_min_n(q: float) -> int:
+    """The fewest observations at which :func:`median_unbiased_quantile` gives the ``q`` quantile at all.
+
+    Type 8's position ``h = (n + 1/3) q + 1/3`` must fall inside the sample, ``1 <= h <= n``: past either
+    end the estimate would be the extreme observation, whose median sits short of the quantile it is
+    labelled. For the 95th percentile (and the 5th) that is 13 observations: the largest of 13 falls below
+    the true 95th percentile ``0.95^13 = 0.51`` of the time, the largest of 5 ``0.95^5 = 0.77`` of it.
+
+    Args:
+        q: The quantile, in ``(0, 1)``.
+
+    Returns:
+        The smallest ``n`` with ``1 <= h <= n``.
+
+    Raises:
+        ValueError: ``q`` is outside ``(0, 1)``.
+    """
+    if not 0.0 < q < 1.0:
+        raise ValueError(f"a quantile needs 0 < q < 1, got {q}")
+    n = 1
+    while not 1.0 <= (n + _TYPE_8_OFFSET) * q + _TYPE_8_OFFSET <= n:
+        n += 1
+    return n
+
+
+def median_unbiased_quantile(sorted_values: Sequence[float], q: float) -> float | None:
+    """The ``q`` quantile of an ascending sample, read so it is as likely above the truth as below it.
+
+    Hyndman and Fan's (1996) type 8, the estimator they recommend: interpolation between the order
+    statistics at position ``h = (n + 1/3) q + 1/3``, which is approximately median-unbiased whatever the
+    distribution — the figure falls below the population quantile about half the time. The two rules this
+    replaced both fall short of a tail: nearest-rank is the sample maximum for every ``n <= 19`` (below the
+    true 95th percentile 0.77 of the time at five observations), and linear interpolation (numpy's
+    default, type 7) still sat below it 0.68 of the time at thirty.
+
+    **Below :func:`median_unbiased_quantile_min_n` observations it answers ``None``**, because no order
+    statistic, nor any interpolation between two, is median-unbiased there: the position falls outside
+    the sample, and the only figure left is the extreme observation, which is a different statistic
+    with a different name. A caller reports the maximum (or minimum) under that name instead.
+
+    Args:
+        sorted_values: The observations, ascending.
+        q: The quantile, in ``(0, 1)`` — on the [0, 1] scale, not :func:`percentile`'s 0–100.
+
+    Returns:
+        The estimate, or ``None`` when the sample is too small to give one.
+
+    Raises:
+        ValueError: ``q`` is outside ``(0, 1)``.
+    """
+    if not 0.0 < q < 1.0:
+        raise ValueError(f"a quantile needs 0 < q < 1, got {q}")
+    n = len(sorted_values)
+    position = (n + _TYPE_8_OFFSET) * q + _TYPE_8_OFFSET
+    if not 1.0 <= position <= n:
+        return None
+    lower = math.floor(position)
+    fraction = position - lower
+    if fraction == 0.0:
+        return float(sorted_values[lower - 1])
+    return float(sorted_values[lower - 1] + fraction * (sorted_values[lower] - sorted_values[lower - 1]))
+
+
 def compute_latency_summary(
     results: list[EvalResult],
 ) -> dict[tuple[str, str], dict[str, Any]]:
     """Aggregate per-result :class:`LatencyMetrics` by ``(model, eval_run_id)``.
 
-    Mirrors :func:`compute_pass_k`: latency aggregates are derived at query
+    Mirrors :func:`compute_pass_hat_k`: latency aggregates are derived at query
     time, never stored on :class:`EvalRun`, and **infra-excluded results are
     dropped** by the same :func:`~threetears.evals.contracts.result_condition.classify_result`
     predicate. Feeds the price/performance frontier and the comparison
@@ -492,11 +920,23 @@ def compute_latency_summary(
     is still a different answer from the omission above, where no result
     reached the harvest at all.
 
+    **The median is the standard one**, read by the same rule as the tail —
+    :func:`median_unbiased_quantile` at 0.5, whose position ``(n + 1) / 2`` is the middle value, or the mean of
+    the two middle values at an even count — so it agrees with the bundle's ``p50``. A figure computed before
+    this rule read nearest-rank, which took the lower of the two middle values at an even count.
+
+    **The tail is the 95th percentile only where one can be estimated.** ``p95_total_ms`` is
+    :func:`median_unbiased_quantile` (Hyndman–Fan type 8), present from 13 measured totals, and absent below:
+    there the only figure a sample offers for its tail is its slowest observation, which is not a 95th
+    percentile — at five totals it falls below the true one 77% of the time — so it is reported as
+    ``max_total_ms``, under its own name, at every size. A row stored before this rule read its ``p95_total_ms``
+    nearest-rank, which is that same maximum for every ``n <= 19``.
+
     Returns:
         ``{(model, eval_run_id): {"mean_total_ms", "median_total_ms",
-        "p95_total_ms", "mean_llm_ms", "mean_tool_ms", "n_total_ms",
+        "p95_total_ms", "max_total_ms", "mean_llm_ms", "mean_tool_ms", "n_total_ms",
         "n_llm_ms", "n_tool_ms", "n_results"}}``, with a component and its
-        count both absent when nothing measured it. ``n_results`` counts the
+        count both absent when nothing measured it, and ``p95_total_ms`` absent below 13 totals. ``n_results`` counts the
         results carrying a :class:`LatencyMetrics` at all; each ``n_<field>``
         is the denominator its own mean was computed over, and they can
         legitimately disagree.
@@ -507,7 +947,7 @@ def compute_latency_summary(
     """
     grouped: dict[tuple[str, str], list[LatencyMetrics]] = {}
     for r in results:
-        # Dropped before the null check, and on the same predicate compute_pass_k
+        # Dropped before the null check, and on the same predicate compute_pass_hat_k
         # uses: a harness failure's timings are a measurement of the harness.
         if classify_result(r) is ResultOutcome.INFRA_EXCLUDE:
             continue
@@ -528,8 +968,16 @@ def compute_latency_summary(
         # measured one — moved up a level from the value to its evidence.
         if totals:
             row["mean_total_ms"] = sum(totals) / len(totals)
-            row["median_total_ms"] = percentile(totals, 50)
-            row["p95_total_ms"] = percentile(totals, 95)
+            # The standard median — the middle value, or the mean of the two middle values at an even count —
+            # which is what type 8 gives at 0.5 at every n. Nearest-rank took the lower middle value.
+            row["median_total_ms"] = median_unbiased_quantile(totals, 0.5)
+            # The tail, median-unbiased, and ABSENT below the 13 observations at which any estimate of a
+            # 95th percentile can be: under that the only candidate is the slowest observation, which falls
+            # below the true p95 most of the time and is reported under its own name, never this one.
+            tail = median_unbiased_quantile(totals, 0.95)
+            if tail is not None:
+                row["p95_total_ms"] = tail
+            row["max_total_ms"] = totals[-1]
             row["n_total_ms"] = len(totals)
         if llms:
             row["mean_llm_ms"] = sum(llms) / len(llms)
@@ -537,6 +985,80 @@ def compute_latency_summary(
         if tools:
             row["mean_tool_ms"] = sum(tools) / len(tools)
             row["n_tool_ms"] = len(tools)
+        out[key] = row
+    return out
+
+
+# =============================================================================
+# Async-delivery aggregates — computed at query time, not stored
+# =============================================================================
+
+
+def compute_async_delivery_summary(
+    results: list[EvalResult],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Roll each ``(model, eval_run_id)`` group's background work up into the six async-delivery measures.
+
+    Read from :attr:`~threetears.evals.contracts.models.EvalResult.async_deliveries`, the engine's own
+    record of the work a candidate started and was told about later, so every host gets the same rollup
+    without writing one. What a delivery's outcomes are CALLED is a tool's taxonomy and stays the host's;
+    these six are the generic half: how many deliveries there were, how many a harness stood in for, and
+    how long the real ones took.
+
+    **The population is the latency summary's.** A result :func:`compute_latency_summary` drops — an
+    infra-excluded one, whose cell a harness fault cut short — is dropped here too, by the same
+    :func:`~threetears.evals.contracts.result_condition.classify_result` predicate: background work cut off
+    by the rig is a measurement of the rig, and its truncated clock would make a tool look fast.
+
+    **Absent, never zero, where nothing was watched.** A result whose ``async_deliveries`` is ``None``
+    started no background work the engine was told about (its kind has no async tool), so a group made
+    only of such results is omitted entirely: a host with no async tools gets no async measures, rather
+    than a count of zero that reads as "the tool was never called". A group with at least one result that
+    watched (an empty list is "watched, nothing started") carries both counts, zero included.
+
+    - ``async_deliveries``: entries that are NOT ``substituted``, of every status — the work that describes
+      a real run of the tool, and the denominator a host's outcome rates are taken against.
+    - ``async_deliveries_substituted``: entries a harness supplied (a seed or a replayed capture). The two
+      counts summed are every entry the group recorded.
+    - ``async_delivery_mean_elapsed_ms`` / ``async_delivery_median_elapsed_ms`` /
+      ``async_delivery_p95_elapsed_ms`` / ``async_delivery_elapsed_n``: over the NON-substituted entries
+      that measured an ``elapsed_ms``. A substituted entry's clock times the harness serving a payload, not
+      the tool producing one, so it is no duration of the tool. All four are absent when no entry measured
+      one. The median and the tail are read the way :func:`compute_latency_summary` reads ``total_ms``:
+      :func:`median_unbiased_quantile` at 0.5 and at 0.95, the tail absent below the 13 durations at which
+      a 95th percentile can be estimated at all (below that the only candidate is the slowest delivery,
+      which is not a 95th percentile).
+
+    Returns:
+        ``{(model, eval_run_id): {"async_deliveries", "async_deliveries_substituted",
+        "async_delivery_mean_elapsed_ms", "async_delivery_median_elapsed_ms", "async_delivery_p95_elapsed_ms",
+        "async_delivery_elapsed_n"}}``, a group present only when one of its results watched for background
+        work, the duration keys absent when no real delivery measured one and the tail absent below 13.
+    """
+    grouped: dict[tuple[str, str], list[AsyncDelivery]] = {}
+    for r in results:
+        # The latency summary's population: a harness fault's clock is a measurement of the harness.
+        if classify_result(r) is ResultOutcome.INFRA_EXCLUDE:
+            continue
+        if r.async_deliveries is None:
+            continue
+        grouped.setdefault((r.model, r.eval_run_id), []).extend(r.async_deliveries)
+
+    out: dict[tuple[str, str], dict[str, Any]] = {}
+    for key, deliveries in grouped.items():
+        real = [entry for entry in deliveries if not entry.substituted]
+        row: dict[str, Any] = {
+            "async_deliveries": len(real),
+            "async_deliveries_substituted": len(deliveries) - len(real),
+        }
+        elapsed = sorted(entry.elapsed_ms for entry in real if entry.elapsed_ms is not None)
+        if elapsed:
+            row["async_delivery_mean_elapsed_ms"] = sum(elapsed) / len(elapsed)
+            row["async_delivery_median_elapsed_ms"] = median_unbiased_quantile(elapsed, 0.5)
+            tail = median_unbiased_quantile(elapsed, 0.95)
+            if tail is not None:
+                row["async_delivery_p95_elapsed_ms"] = tail
+            row["async_delivery_elapsed_n"] = len(elapsed)
         out[key] = row
     return out
 
@@ -551,7 +1073,7 @@ def compute_cost_summary(
 ) -> dict[tuple[str, str], dict[str, Any]]:
     """Aggregate per-result ``cost_usd`` by ``(model, eval_run_id)``.
 
-    Mirrors :func:`compute_pass_k` and :func:`compute_latency_summary`: cost
+    Mirrors :func:`compute_pass_hat_k` and :func:`compute_latency_summary`: cost
     aggregates are derived at query time, never stored on :class:`EvalRun`.
     Feeds the price/performance frontier and the comparison views
     alongside latency.
@@ -560,24 +1082,30 @@ def compute_cost_summary(
     ``n_results`` counts them all — a group never disappears for want of a
     measurement.
 
-    **This aggregate deliberately does NOT drop infra-excluded results**, and is
-    the one place the family diverges: :func:`~threetears.evals.contracts.scoring.compute_pass_k`,
-    :func:`compute_latency_summary`, :func:`compute_dimension_summary` and
-    :func:`compute_composite_summary` all drop them, because each answers "how
-    good / how fast is this configuration" and a harness failure is no evidence
-    either way. Cost answers a different question — what the program spent — and
-    the tokens burned by a cell that later died in the apparatus were still
-    billed. Dropping them would under-report the run's spend and, because
-    ``run_summary`` takes its group set from this function's keys, would delete
-    an all-excluded model's headline row from the report that exists to disclose
-    it. ``n_prod_cost_usd`` carries how well evidenced the prod figure is; the
-    exclusion state of a cell is recorded on the cell.
-
     Two cost axes are aggregated: the program spend (blended ``cost_usd``, incl.
     judge + simulator) and the ``production_replicating_cost`` (candidate +
     inner_agent + external only — what the subject would cost in prod), so a
     reporting view can lead with the prod-replicating number (what a config
     costs to *run*) while keeping program spend for the cost-management lens.
+
+    **The two axes keep different populations, because they answer different questions.**
+
+    - **Program spend keeps every result, infra-excluded ones included**, and is the one
+      place the family diverges: :func:`~threetears.evals.contracts.scoring.compute_pass_hat_k`,
+      :func:`compute_latency_summary`, :func:`compute_dimension_summary` and
+      :func:`compute_composite_summary` all drop them, because each answers "how good / how
+      fast is this configuration" and a harness failure is no evidence either way. Program
+      spend answers what the program spent, and the tokens burned by a cell that later died
+      in the apparatus were still billed. Dropping them would under-report the run's spend
+      and, because ``run_summary`` takes its group set from this function's keys, would
+      delete an all-excluded model's headline row from the report that exists to disclose it.
+    - **The production-replicating axis is a comparison axis, and reads only the turns the
+      candidate took** (:func:`~threetears.evals.contracts.result_condition.delivered_a_turn`),
+      the population every comparison cost in the engine reads (the frontier, the analysis
+      bundle's measure walk and run summaries). A cell an apparatus fault cut short spent
+      less than a whole one, so keeping it would let the rig make an arm look cheaper; a
+      call the candidate's model refused straight away took no turn, so its dollars are no
+      turn's spend. Both stay in program spend. (#619)
 
     **Both axes leave a result they cannot price out of their dollars, and count it.**
 
@@ -589,7 +1117,8 @@ def compute_cost_summary(
     (``termination`` says which results stop short), so the total is a floor for those.
 
     ``production_replicating_cost`` returns ``None`` when no production role
-    observed a cost (or a delivery was substituted), which is a real unmeasured
+    observed a cost (or a delivery was substituted), or the result is outside the
+    delivered population above, which is a real unmeasured
     marker — so the prod axis honours it the way :func:`compute_latency_summary`
     honours a null component. Such a result is **absent from the prod mean rather
     than counted as a zero**, ``n_prod_cost_usd`` carries the denominator that mean
@@ -614,7 +1143,11 @@ def compute_cost_summary(
         # The canonical resolution, so this aggregate answers "does this result have a
         # prod cost" the same way the single-result surfaces do.
         resolved_r = resolve_result_usage(r)
-        prod = production_replicating_cost(resolved_r.usage, substituted_deliveries=resolved_r.substituted_deliveries)
+        prod = (
+            production_replicating_cost(resolved_r.usage, substituted_deliveries=resolved_r.substituted_deliveries)
+            if delivered_a_turn(r)
+            else None
+        )
         grouped.setdefault((r.model, r.eval_run_id), []).append((r.cost_usd, prod))
 
     out: dict[tuple[str, str], dict[str, Any]] = {}
@@ -646,7 +1179,7 @@ def compute_dimension_summary(
 ) -> dict[tuple[str, str, str], dict[str, Any]]:
     """Aggregate per-result ``rubric_scores`` by ``(model, eval_run_id, dim)``.
 
-    Derived at query time and never stored, as :func:`~threetears.evals.contracts.scoring.compute_pass_k`,
+    Derived at query time and never stored, as :func:`~threetears.evals.contracts.scoring.compute_pass_hat_k`,
     :func:`compute_latency_summary` and :func:`compute_cost_summary` are. Feeds
     the per-dimension breakdown view — where pass^k answers *whether*
     a model cleared the bar, this answers *which dimension* it cleared or
@@ -654,7 +1187,7 @@ def compute_dimension_summary(
 
     **Infra-excluded results are dropped**, through the same
     :func:`~threetears.evals.contracts.result_condition.classify_result` predicate
-    :func:`~threetears.evals.contracts.scoring.compute_pass_k` and :func:`_group_case_composites` use — one notion of
+    :func:`~threetears.evals.contracts.scoring.compute_pass_hat_k` and :func:`_group_case_composites` use — one notion of
     exclusion, so the three cannot drift apart. Such a result usually *does* carry
     rubric scores: the judge reads whatever transcript survived and the runner
     stores that reading, deliberately, for forensics. Averaging it is the defect.
@@ -666,9 +1199,10 @@ def compute_dimension_summary(
     configuration delivered no turn, so the judge's reading of what it left — silence
     scored as restraint — is not what the end user got.
 
-    :func:`compute_cost_summary` is the family's deliberate exception — it counts
-    every result, because program spend is accounting rather than a measurement
-    of the candidate: money spent on a cell the harness broke was still spent.
+    :func:`compute_cost_summary`'s program spend is the family's deliberate exception — it
+    counts every result, because program spend is accounting rather than a measurement
+    of the candidate: money spent on a cell the harness broke was still spent. Its
+    production-replicating axis compares configurations, and drops them like this does.
 
     Only the template rubric dimensions are aggregated: ``EvalResult.rubric_scores``
     holds the judge-scored template dims (the run loop assembles it from
@@ -761,17 +1295,21 @@ def _group_case_composites(
     composite is undefined there, not zero.
 
     Returns:
-        ``{(model, run_id): {"has_rubric": bool, "per_case": {tc_id: float}}}``.
+        ``{(model, run_id): {"has_rubric": bool, "per_case": {tc_id: float}, "basis": CompositeBasis | None}}``
+        — ``basis`` is what the group's composites were meaned over (:func:`pool_composite_bases`), None when
+        the group has no composite.
     """
     raw: dict[tuple[str, str], dict[str, list[float | None]]] = {}
     has_rubric: dict[tuple[str, str], bool] = {}
+    bases: dict[tuple[str, str], list[list[str] | None]] = {}
     for r in results:
         key = (r.model, r.eval_run_id)
         has_rubric.setdefault(key, False)  # register the group even if all-excluded
         if trial_exclusion(r) is not None:
             continue  # a fault, or the judge could not tell on a dim the composite needs — unmeasured, not zero
-        has_rubric[key] = has_rubric[key] or bool(r.rubric_scores)
+        has_rubric[key] = has_rubric[key] or bool(capability_scores(r))
         raw.setdefault(key, {}).setdefault(r.test_case_id, []).append(result_composite(r))
+        bases.setdefault(key, []).append(composite_basis(r))
 
     out: dict[tuple[str, str], dict[str, Any]] = {}
     for key, rubric in has_rubric.items():
@@ -781,7 +1319,11 @@ def _group_case_composites(
             for tc_id, comps in cases.items():
                 vals = [c if c is not None else 0.0 for c in comps]
                 per_case[tc_id] = sum(vals) / len(vals)
-        out[key] = {"has_rubric": rubric, "per_case": per_case}
+        out[key] = {
+            "has_rubric": rubric,
+            "per_case": per_case,
+            "basis": pool_composite_bases(bases.get(key, [])) if per_case else None,
+        }
     return out
 
 
@@ -795,22 +1337,30 @@ def compute_composite_summary(
     case weighs equally, matching pass^k's per-case denominator). Query-time,
     never stored; reused by an analytics tier.
 
+    **The pool says what it was meaned over** (#638). Each result's composite is a mean over the dimensions
+    that result carries, so a group whose results carried different dimension sets pools means of different
+    questions. ``composite_basis`` carries the union of the bases and marks that pool ragged
+    (:class:`CompositeBasis`), so the number cannot be read without it.
+
     Returns:
-        ``{(model, run_id): {"mean_composite": float | None, "n_cases": int}}``.
+        ``{(model, run_id): {"mean_composite": float | None, "n_cases": int, "composite_basis": dict | None}}``.
         ``mean_composite`` is ``None`` for goal-only groups (no rubric dims);
         ``n_cases`` is the number of cases contributing to the composite (0 when
-        undefined).
+        undefined); ``composite_basis`` is the :class:`CompositeBasis` as a dict
+        (``dimensions``, ``bases``, ``ragged``), ``None`` exactly when ``mean_composite`` is.
     """
     out: dict[tuple[str, str], dict[str, Any]] = {}
     for key, info in _group_case_composites(results).items():
         per_case: dict[str, float] = info["per_case"]
+        basis: CompositeBasis | None = info["basis"]
         if info["has_rubric"] and per_case:
             out[key] = {
                 "mean_composite": sum(per_case.values()) / len(per_case),
                 "n_cases": len(per_case),
+                "composite_basis": basis.model_dump() if basis is not None else None,
             }
         else:
-            out[key] = {"mean_composite": None, "n_cases": 0}
+            out[key] = {"mean_composite": None, "n_cases": 0, "composite_basis": None}
     return out
 
 
@@ -834,14 +1384,29 @@ def compute_per_case_composites(
 
 
 __all__ = [
+    "NO_PASS_CRITERION_REASON",
     "CellSummary",
+    "CompositeBasis",
+    "capability_scores",
+    "composite_basis",
+    "compute_async_delivery_summary",
     "compute_composite_summary",
     "compute_cost_summary",
     "compute_dimension_summary",
     "compute_latency_summary",
-    "compute_pass_k",
+    "compute_pass_hat_k",
     "compute_per_case_composites",
+    "has_pass_criterion",
+    "case_pass_hat_k",
+    "median_unbiased_quantile",
+    "median_unbiased_quantile_min_n",
+    "pass_hat_k_at",
+    "pass_hat_k_cell",
+    "PassHatPoint",
     "percentile",
+    "pool_composite_bases",
+    "pool_pass_hat_k",
+    "pool_pass_hat_k_attempts",
     "reconstruct_completeness",
     "result_composite",
     "summarize_completeness",

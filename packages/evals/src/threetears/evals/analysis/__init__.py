@@ -27,7 +27,7 @@ not here. The pipeline:
   inspecting bundles, reading an analysis as its report, the insight ledger, and the reporter cases.
 - ``reads`` — the read lenses over runs that already exist: comparison sets, pivot, frontier,
   history, the program budget, orphaned runs, export, the cost estimate, the run summary and the
-  run comparisons.
+  two-run comparison (``compare_two_runs``, which ``ops.runs_compare`` exposes).
 
 **This module is the package's public root.** A host imports from here and from no module below
 it, and only the names in ``__all__``; ``tests/test_package_matrix.py`` holds that, and
@@ -60,9 +60,12 @@ from threetears.evals.analysis.bar_proposals import BaselineBarProposals, propos
 from threetears.evals.analysis.bundle import (
     AnalysisContextBundle,
     BundleInspection,
+    GoalCheckProofReading,
     InsightStanding,
     assemble_context_bundle,
+    component_carrier,
     insight_standing,
+    measure_movement,
     variant_key_of_run,
 )
 from threetears.evals.analysis.campaigns import (
@@ -89,8 +92,6 @@ from threetears.evals.analysis.generator import (
 )
 from threetears.evals.analysis.numbers import ABSENT, format_number, format_signed
 from threetears.evals.analysis.reads import (
-    bisect_runs,
-    compare_runs,
     compare_two_runs,
     comparison_sets,
     export_results,
@@ -123,6 +124,7 @@ from threetears.evals.analysis.reporter_kind import (
 from threetears.evals.analysis.reporting import (
     CELL_MEASURED,
     CELL_NOT_RUN,
+    CELL_WITHHELD,
     COST_ESTIMATE_MIN_BASIS,
     COST_PREDICTION_METHOD,
     DECLARED_INPUT_ORIGIN,
@@ -186,18 +188,20 @@ from threetears.evals.analysis.service import (
     reporter_case_bank,
     run_analysis_generation,
 )
-from threetears.evals.analysis.stats import PAIRED_TEST_NAME
+from threetears.evals.analysis.stats import EQUIVALENCE_TEST_NAME, PAIRED_TEST_NAME, ChangeLabel
 from threetears.evals.analysis.surface_table import SurfaceTable
 from threetears.evals.analysis.arms import ArmLevel, ArmMeasurement, ArmRow, ArmStatus
 from threetears.evals.analysis.bundle import (
     ArmMechanismReading,
+    ArmServedModel,
     CampaignReadStore,
     CellCoordinate,
     ComparedCell,
     ComparisonFamily,
     ComparisonVerdict,
     Confound,
-    ControlsReading,
+    HeldFixedReading,
+    DeclaredLevelCoverage,
     DesignArm,
     FamilyComparison,
     JudgedArm,
@@ -209,6 +213,7 @@ from threetears.evals.analysis.bundle import (
     MeritTier,
     MultipleComparisons,
     QuestionScope,
+    ReadingScope,
     RealizedDesign,
     RunSummary,
     ScopeDivergence,
@@ -221,7 +226,7 @@ from threetears.evals.analysis.campaigns import CampaignStore, OpenAxisFamily
 from threetears.evals.analysis.cells import Cell, NextExperiment, RefusedMerge, SubjectKeyInstability
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal
 from threetears.evals.analysis.generator import GenerationTally
-from threetears.evals.analysis.reads import ComparisonColumns, LensStore, RowColumns, RunLister
+from threetears.evals.analysis.reads import LensStore, RowColumns, RunLister
 from threetears.evals.analysis.reporter_bank import (
     CalibrationCase,
     CalibrationCell,
@@ -244,6 +249,9 @@ from threetears.evals.analysis.reporting import (
     CostEstimate,
     CostEstimateCell,
     ExportFormat,
+    FrontierCostDecision,
+    FrontierCostTie,
+    FrontierDominance,
     FrontierDominator,
     FrontierPoint,
     FrontierResult,
@@ -301,10 +309,12 @@ __all__ = [
     "AS_RECORDED_MODEL",
     "CELL_MEASURED",
     "CELL_NOT_RUN",
+    "CELL_WITHHELD",
     "COST_ESTIMATE_MIN_BASIS",
     "COST_PREDICTION_METHOD",
     "DECLARED_INPUT_ORIGIN",
     "DEFAULT_WEIGHTING",
+    "EQUIVALENCE_TEST_NAME",
     "EVAL_ANALYSIS_GEN_DEFAULT",
     "HISTORY_METRICS",
     "LABEL_BANDS",
@@ -324,6 +334,7 @@ __all__ = [
     "ArmMeasurement",
     "ArmMechanismReading",
     "ArmRow",
+    "ArmServedModel",
     "ArmStatus",
     "ArmTable",
     "AsRecordedReporterKind",
@@ -336,21 +347,25 @@ __all__ = [
     "CaseSetIdentity",
     "Cell",
     "CellCoordinate",
+    "ChangeLabel",
     "ComparedCell",
-    "ComparisonColumns",
     "ComparisonFamily",
     "ComparisonSet",
     "ComparisonSetsResult",
     "ComparisonVerdict",
     "Confound",
     "ConfusionCount",
-    "ControlsReading",
+    "HeldFixedReading",
     "CriterionDrift",
     "DeclarableAxes",
+    "DeclaredLevelCoverage",
     "DesignArm",
     "DimensionAgreement",
     "DimensionReading",
     "FamilyComparison",
+    "FrontierCostDecision",
+    "FrontierCostTie",
+    "FrontierDominance",
     "FrontierDominator",
     "FrontierPoint",
     "FrontierResult",
@@ -358,6 +373,7 @@ __all__ = [
     "FrozenReporterCase",
     "GenerationError",
     "GenerationTally",
+    "GoalCheckProofReading",
     "InsightStanding",
     "JudgeAgreement",
     "JudgeKey",
@@ -399,6 +415,7 @@ __all__ = [
     "PreparedReporter",
     "ProjectionExclusions",
     "QuestionScope",
+    "ReadingScope",
     "RealizedDesign",
     "RefusedMerge",
     "ReporterCalibration",
@@ -438,11 +455,10 @@ __all__ = [
     "campaign_report",
     "analysis_gen_request_settings_for",
     "assemble_context_bundle",
-    "bisect_runs",
     "cell_label",
-    "compare_runs",
     "compare_two_runs",
     "comparison_sets",
+    "component_carrier",
     "completeness_disclosure",  # debt: retires when the English moves to one renderer
     "create_campaign",
     "declarable_axes",
@@ -475,6 +491,7 @@ __all__ = [
     "list_analysis_attempts",
     "list_campaigns",
     "list_insights",
+    "measure_movement",
     "metric_help",  # debt: retires when the English moves to one renderer
     "multi_rig_variants",
     "orphaned_runs",

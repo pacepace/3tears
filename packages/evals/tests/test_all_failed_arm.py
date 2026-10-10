@@ -107,6 +107,7 @@ _TURN_COST = "turn_cost_usd"
 def _host_cost(**update: Any) -> MetricDescriptor:
     fields: dict[str, Any] = dict(
         name=_TURN_COST,
+        reader_name="Turn cost",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -279,7 +280,7 @@ def _row(table: TableBlock, model: str, **match: str) -> dict[str, Any]:
 
 
 def _column(table: TableBlock, measure: str) -> str:
-    """The key of the column a measure is shown under — its header leads with the measure's name."""
+    """The key of the column a measure is shown under — its header leads with what a reader calls the measure."""
     return next(column.key for column in table.columns if column.header.startswith(measure))
 
 
@@ -381,13 +382,26 @@ class TestCostAndLatencyAreReadOverTurnsTaken:
         # The 53 ms refusals are not turns: the latency is the two answered turns', not (2×400 + 2×53) / 4.
         latency = summaries["total_ms"]
         assert (latency.mean, latency.n, latency.population) == (400.0, 2, "delivered")
-        # The billed refusals observed spend, and are still no turn's cost.
-        for spend in ("cost_usd", _TURN_COST):
-            assert (summaries[spend].mean, summaries[spend].n, summaries[spend].population) == (
-                0.002,
-                2,
-                "delivered",
-            )
+        # The billed refusals observed spend, and are still no turn's cost on the cost axis.
+        turn = summaries[_TURN_COST]
+        assert (turn.mean, turn.n, turn.population) == (0.002, 2, "delivered")
+        # `cost_usd` is measuring spend, so every dollar billed counts — the refusals' too, as the pivot, the
+        # history series and a run summary's program total read it.
+        spend = summaries["cost_usd"]
+        assert (spend.mean, spend.n, spend.population) == (
+            pytest.approx((2 * 0.002 + 2 * 0.0001) / 4),
+            4,
+            "all_observed",
+        )
+
+    def test_a_cell_s_measuring_spend_is_the_run_summary_s_program_mean(self) -> None:
+        """One population for `cost_usd` on every surface: the cell, the run summary, the pivot and history."""
+        from threetears.evals.contracts.scoring import compute_cost_summary
+
+        arms = _three_arms()
+        spend = _summaries(_cell(_bundle(arms), _FLAKY))["cost_usd"]
+        (program,) = compute_cost_summary(arms[_FLAKY]).values()
+        assert (spend.mean, spend.n) == (pytest.approx(program["mean_cost_usd"]), program["n_cost_usd"])
 
     def test_the_failures_still_count_against_the_arm_in_its_pass_rate(self) -> None:
         rate = _summaries(_cell(_bundle(), _FLAKY))[_CHECK_RATE]
@@ -441,7 +455,9 @@ class TestATurnTheBudgetEndedStaysInCostAndLatency:
         assert summaries["total_ms"].mean > 30_000
         assert summaries["cost_usd"].mean == pytest.approx((4 * 0.20 + 4 * 0.005) / 8)
 
-    @pytest.mark.parametrize("reading", ["total_ms", "cost_usd", _TURN_COST])
+    # The candidate's spend is contrasted as production_replicating_cost: cost_usd, which would also sum a
+    # judge's spend, is on no merit axis and enters no family.
+    @pytest.mark.parametrize("reading", ["total_ms", "production_replicating_cost", _TURN_COST])
     def test_it_never_reads_faster_or_cheaper_than_the_control(self, reading: str) -> None:
         comparison = _comparison(_budget_campaign(), reading, _FLAKY)
         assert comparison.verdict != "improved"
@@ -488,7 +504,7 @@ class TestAModelFailureAfterDeliveredTurnsStaysInCostAndLatency:
         latency = _summaries(cell)["total_ms"]
         assert latency.n == 12 and latency.mean is not None and latency.mean > 15_000
 
-    @pytest.mark.parametrize("reading", ["total_ms", "cost_usd"])
+    @pytest.mark.parametrize("reading", ["total_ms", "production_replicating_cost"])
     def test_it_never_reads_faster_or_cheaper_than_the_control(self, reading: str) -> None:
         comparison = _comparison(_late_failure_campaign(), reading, "late")
         assert comparison.verdict != "improved"
@@ -499,6 +515,14 @@ class TestAModelFailureAfterDeliveredTurnsStaysInCostAndLatency:
         late = _frontier_point(bundle, "late")
         assert late.n_latency == 12 and late.n_no_turn == 0
         assert [dominator.model for dominator in late.dominated_by] == ["control"]
+
+    def test_the_frozen_surface_carries_the_lens_standing_a_frontier_chart_draws(self) -> None:
+        """Copied off the lens, so the chart's dominated mark and the frontier table cannot disagree."""
+        bundle = _late_failure_campaign()
+        standings = bundle_decision_surface(bundle).frontier_dominance
+        points = [point for subject in bundle.frontier.subjects for point in subject.points]
+        assert standings == {point.variant_key: point.dominance for point in points}
+        assert standings[_frontier_point(bundle, "late").variant_key] == "dominated"
 
 
 # =============================================================================
@@ -534,7 +558,7 @@ class TestAnArmWhereNoResultTookATurn:
         table = _table(report, "surface")
         refusing, steady = _row(table, _REFUSING), _row(table, _STEADY)
 
-        for measure in ("total_ms", _TURN_COST):
+        for measure in ("Turn time", "Turn cost"):
             assert refusing[_column(table, measure)] == NO_SUCCESSFUL_RESULTS
             assert steady[_column(table, measure)] not in (None, NO_SUCCESSFUL_RESULTS)
         assert "4 failed by the candidate (4 with no turn taken" in str(refusing["replication"])
@@ -556,7 +580,7 @@ class TestAnArmWhereNoResultTookATurn:
 
         report = build_report(loaded)
         table = _table(report, "surface")
-        assert _row(table, _REFUSING)[_column(table, "total_ms")] == NO_SUCCESSFUL_RESULTS
+        assert _row(table, _REFUSING)[_column(table, "Turn time")] == NO_SUCCESSFUL_RESULTS
         assert len(_all_failed_disclosures(report)) == 1
         jsonschema.Draft202012Validator(published_report_schema()).validate(json.loads(report.to_canonical_json()))
 
@@ -635,7 +659,7 @@ class TestAnArmWhereNoResultTookATurn:
         assert (strata["hard"].n_candidate_failed, strata["hard"].n_no_turn) == (2, 2)
 
         table = _table(_code_only(bundle), "strata")
-        latency = _row(table, _FLAKY, reading="total_ms (ms)")
+        latency = _row(table, _FLAKY, reading="Turn time (ms)")
         assert latency[_column(table, "hard")] == NO_SUCCESSFUL_RESULTS
         assert latency[_column(table, "easy")] not in (None, NO_SUCCESSFUL_RESULTS)
 
@@ -757,7 +781,7 @@ class TestAQuickClassifierLandsItsRefusalAsAMiss:
 
     async def test_its_accuracy_contrast_is_tested_not_untested(self) -> None:
         comparison = await self._comparison()
-        (row,) = [row for row in comparison.contrasts() if row["reading"] == "accuracy"]
+        (row,) = [row for row in comparison.contrasts() if row["reading"] == "Accuracy"]
         assert row["p_adjusted"] is not None and row["delta"] == -0.5
         assert not str(row["verdict"]).startswith("untested")
 
@@ -780,7 +804,9 @@ class TestUnmeasuredCostIsReadOverTurnsTaken:
         bundle = _bundle(arms)
         flaky = _cell(bundle, _FLAKY)
         assert [cell.variant_key for cell in bundle.cost_unmeasured_cells] == [flaky.variant_key]
-        assert "cost_usd" not in _summaries(flaky)
+        # Measuring spend states what was billed and over how many: the two refusals, never the unpriced turns.
+        spend = _summaries(flaky)["cost_usd"]
+        assert (spend.mean, spend.n) == (pytest.approx(0.0001), 2)
 
 
 # =============================================================================

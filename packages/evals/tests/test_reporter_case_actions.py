@@ -406,7 +406,8 @@ async def test_a_memo_refused_after_its_billed_calls_returned_keeps_their_cost()
     (cell,) = bundle.cell_measures
     assert (cell.n_candidate_failed, cell.n_no_turn, cell.all_failed) == (1, 0, False)
     cost = next(summary for summary in cell.measures.measures if summary.name == "cost_usd")
-    assert (cost.mean, cost.n, cost.population) == (pytest.approx(0.30), 1, "delivered")
+    # Measuring spend, read over every result billed (the pivot's, the history's and a run summary's rule).
+    assert (cost.mean, cost.n, cost.population) == (pytest.approx(0.30), 1, "all_observed")
 
 
 async def test_a_memo_whose_first_call_was_refused_delivered_no_turn() -> None:

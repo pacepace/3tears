@@ -21,8 +21,13 @@ from pydantic import ValidationError
 
 from threetears.evals.analysis.arms import arm_table
 from threetears.evals.analysis.cells import cell_ref
+from threetears.evals.analysis.report import build_report, report_markdown
+from threetears.evals.analysis.report.model import TableBlock
 from threetears.evals.analysis.surface_table import (
     NO_CELLS,
+    REFERENCE_MARK,
+    SURFACE_ORDER,
+    SURFACE_ORDER_NO_CONTROL,
     SURFACE_PROVENANCE,
     SurfaceColumn,
     SurfaceRow,
@@ -46,6 +51,8 @@ RIG = "a" * 64
 RIG_B = "b" * 64
 COST = "production_replicating_cost"
 LATENCY = "total_ms"
+#: What a reader calls each — the words a column is headed by, where the key is what it is read on.
+COST_HEADING, LATENCY_HEADING, DELIVERED_HEADING = "Production cost", "Turn time", "Items delivered"
 
 
 def level(model: str) -> SweepableValue:
@@ -86,8 +93,11 @@ def cell(model: str | None = None, *, variant: str | None = None, rig: str = RIG
     return CellFacts(**{**defaults, **overrides})
 
 
-def verdict(of: CellFacts, value: float | None, sem: float | None, cleared: bool | None) -> BarVerdict:
-    """A bar verdict on the cell ``of``."""
+def verdict(
+    of: CellFacts, value: float | None, sem: float | None, cleared: bool | None, *, interval: bool = True
+) -> BarVerdict:
+    """A bar verdict on the cell ``of`` — decided on an interval around the value, unless ``interval`` is False."""
+    bounds = value is not None and interval
     return BarVerdict(
         variant_key=of.variant_key,
         apparatus_class_id=of.apparatus_class_id,
@@ -96,6 +106,8 @@ def verdict(of: CellFacts, value: float | None, sem: float | None, cleared: bool
         sem=sem,
         n=0 if value is None else 6,
         n_independent=0 if value is None else 2,
+        ci_low=value - 1.0 if bounds and value is not None else None,
+        ci_high=value + 1.0 if bounds and value is not None else None,
         cleared=cleared,
     )
 
@@ -194,7 +206,7 @@ def analysis(surface: DecisionSurface, **overrides) -> EvalAnalysis:
         "design_snapshot": CampaignDesign(
             axes=[SweptAxis(axis_id=AXIS, values=[level(CANDIDATE), level(INCUMBENT)])],
             control=key(INCUMBENT),
-            controls=ControlDeclaration(stimulus="controlled", apparatus="commissioned"),
+            held_fixed=ControlDeclaration(stimulus="controlled", apparatus="commissioned"),
         ),
         "variant_index": [entry(CANDIDATE), entry(INCUMBENT)],
         "decision_surface": surface,
@@ -249,8 +261,62 @@ class TestTheProvenanceSentence:
         assert served["provenance"] == SURFACE_PROVENANCE
 
 
+def _four_arm_analysis(*, control: str | None = "model-z-incumbent") -> EvalAnalysis:
+    """Four arms whose raw score, key and name orders all disagree, the control's name sorting last.
+
+    The bar's raw values rank ``model-q`` first and ``model-c`` last, which is exactly the order a reader
+    must not be handed as a ranking: nothing here says any arm separated from the control.
+    """
+    models = ["model-q", "model-c", "model-z-incumbent", "model-g"]
+    raw = {"model-q": 4.0, "model-g": 3.0, "model-z-incumbent": 2.5, "model-c": 1.0}
+    cells = [cell(model) for model in models]
+    bar = BarAdjudication(
+        measure_id="delivered_items",
+        threshold=3,
+        direction="higher_is_better",
+        source="declared",
+        state="adjudicated",
+        verdicts=[verdict(c, raw[m], 0.5, None) for m, c in zip(models, cells, strict=True)],
+    )
+    surface = DecisionSurface(
+        control_variant_key=key(control) if control else None, cells=cells, bars=[bar], measures=measures()
+    )
+    design = CampaignDesign(
+        axes=[SweptAxis(axis_id=AXIS, values=[level(model) for model in models])],
+        control=key(control) if control else None,
+        held_fixed=ControlDeclaration(stimulus="controlled", apparatus="commissioned"),
+    )
+    return analysis(surface, design_snapshot=design, variant_index=[entry(model) for model in models])
+
+
+def _models(table: SurfaceTable) -> list[str]:
+    return [row.levels[0].display for row in table.rows]
+
+
 class TestRowOrder:
-    """The control's cells first, then every other by (variant_key, apparatus_class_id)."""
+    """The control first, as the reference; then every other arm alphabetically by name; stated on the table (#645)."""
+
+    def test_the_reference_leads_then_the_arms_by_name_never_by_score_or_key(self) -> None:
+        subject = _four_arm_analysis()
+        by_key = [m for m in sorted(["model-q", "model-c", "model-g"], key=key)]
+        assert by_key != ["model-c", "model-g", "model-q"], "the fixture must tell a name order from a key order"
+
+        table = build_surface_table(subject)
+
+        assert _models(table) == ["model-z-incumbent", "model-c", "model-g", "model-q"]
+        assert [row.is_control for row in table.rows] == [True, False, False, False]
+
+    def test_the_order_is_stated_on_the_table_and_says_it_is_not_a_ranking(self) -> None:
+        table = build_surface_table(_four_arm_analysis())
+        assert table.order == SURFACE_ORDER
+        assert "the reference" in table.order and "Row order is not a ranking." in table.order
+        assert table.model_dump(mode="json")["order"] == SURFACE_ORDER, "served, so every surface prints one rule"
+
+    def test_without_a_control_row_no_row_is_called_the_reference(self) -> None:
+        table = build_surface_table(_four_arm_analysis(control=None))
+        assert _models(table) == ["model-c", "model-g", "model-q", "model-z-incumbent"]
+        assert not any(row.is_control for row in table.rows)
+        assert table.order == SURFACE_ORDER_NO_CONTROL
 
     def test_the_control_leads_even_when_its_key_sorts_last(self) -> None:
         # Only exercised when the control's key sorts LAST — a deriver that merely sorted by key
@@ -262,18 +328,17 @@ class TestRowOrder:
         assert [row.variant_key for row in table.rows] == [key(last), key(first)]
         assert [row.is_control for row in table.rows] == [True, False]
 
-    def test_without_a_control_the_rows_follow_the_cell_key(self) -> None:
-        surface = two_arm_surface()
-        surface.control_variant_key = None
-        surface.cells.reverse()
-        table = build_surface_table(analysis(surface))
-        assert [row.variant_key for row in table.rows] == sorted(key(m) for m in (CANDIDATE, INCUMBENT))
-        assert not any(row.is_control for row in table.rows)
-
     def test_two_rigs_of_one_arm_order_by_rig(self) -> None:
         surface = DecisionSurface(cells=[cell(CANDIDATE, rig=RIG_B), cell(CANDIDATE, rig=RIG)], measures=measures())
         table = build_surface_table(analysis(surface))
         assert [row.apparatus_class_id for row in table.rows] == [RIG, RIG_B]
+
+    def test_the_report_prints_the_rule_and_marks_the_reference_row(self) -> None:
+        report = build_report(_four_arm_analysis())
+        (surface,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "surface"]
+        assert surface.order == SURFACE_ORDER
+        assert surface.rows[0]["arm"] == f"{AXIS}=model-z-incumbent {REFERENCE_MARK}"
+        assert f"**Decision surface** ({SURFACE_ORDER})" in report_markdown(report)
 
 
 class TestWhatARowCarriesForItsLabel:
@@ -398,7 +463,7 @@ class TestBarColumns:
             3,
             "",
         )
-        assert bar.header == "delivered_items ≥ 3"
+        assert bar.header == f"{DELIVERED_HEADING} ≥ 3"
 
     def test_a_registered_lower_is_better_bar_states_its_threshold_on_the_columns_ruler(self) -> None:
         surface = two_arm_surface()
@@ -415,7 +480,7 @@ class TestBarColumns:
         table = build_surface_table(analysis(surface))
         bar = next(column for column in table.columns if column.kind == "bar" and column.measure_id == LATENCY)
         # 45000 ms is 45 s, and the cells under it are restated in seconds with it.
-        assert (bar.threshold, bar.unit, bar.header) == (45, "s", f"{LATENCY} ≤ 45 s (registered)")
+        assert (bar.threshold, bar.unit, bar.header) == (45, "s", f"{LATENCY_HEADING} ≤ 45 s (registered)")
         index = table.columns.index(bar)
         served = table.rows[0].values[index]
         assert (served.value, served.sem, served.text) == (41.25, 0.9, "41.25 ± 0.9 (n=6)")
@@ -435,7 +500,7 @@ class TestBarColumns:
             )
         ]
         table = build_surface_table(analysis(surface))
-        assert table.columns[0].header == f"{LATENCY} ≤ 1.5 s"
+        assert table.columns[0].header == f"{LATENCY_HEADING} ≤ 1.5 s"
         assert table.rows[0].values[0].text == "0.9 (n=6)"
 
     @pytest.mark.parametrize(
@@ -449,6 +514,43 @@ class TestBarColumns:
         assert value.verdict == word
         assert value.verdict_word == said
         assert value.model_dump(mode="json")["verdict_word"] == said
+
+    def test_an_interval_straddling_the_bar_reads_undecided_never_clears(self) -> None:
+        """An interval across the line is neither a pass nor a failure, and the word says so (#593)."""
+        surface = two_arm_surface()
+        surface.bars[0].verdicts = [verdict(c, 3.5, 0.25, None) for c in surface.cells]
+        value = build_surface_table(analysis(surface)).rows[0].values[0]
+        assert (value.verdict, value.verdict_word) == ("undecided", "undecided")
+
+    def test_a_value_with_no_interval_is_not_read_and_not_no_data(self) -> None:
+        """One observation has a value and no interval: the bar read nothing, and says which nothing (#593)."""
+        surface = two_arm_surface()
+        surface.bars[0].verdicts = [verdict(c, 3.5, None, None, interval=False) for c in surface.cells]
+        value = build_surface_table(analysis(surface)).rows[0].values[0]
+        assert (value.verdict, value.verdict_word) == ("no_interval", "no interval")
+
+    def test_a_verdict_stored_before_intervals_says_it_was_decided_on_the_mean(self) -> None:
+        """An analysis frozen before bars read intervals keeps its word and is marked as the point comparison it was."""
+        surface = two_arm_surface()
+        surface.bars[0].verdicts = [verdict(c, 3.5, 0.25, True, interval=False) for c in surface.cells]
+        value = build_surface_table(analysis(surface)).rows[0].values[0]
+        assert value.verdict == "clears"
+        assert value.text == "3.5 ± 0.25 (n=6), decided on the mean"
+
+    def test_a_judged_bars_verdict_states_its_judges_tier_beside_it(self) -> None:
+        """A judged bar is as trustworthy as the judges behind it, and the cell says which tier they stand on (#679)."""
+        surface = two_arm_surface()
+        surface.bars[0].verdicts = [
+            verdict(c, 3.5, 0.25, True).model_copy(update={"judge_evidence_tier": "separation"}) for c in surface.cells
+        ]
+        value = build_surface_table(analysis(surface)).rows[0].values[0]
+        assert value.text == "3.5 ± 0.25 (n=6), judge tier separation"
+
+    def test_a_measured_bars_verdict_names_no_tier(self) -> None:
+        surface = two_arm_surface()
+        surface.bars[0].verdicts = [verdict(c, 3.5, 0.25, True) for c in surface.cells]
+        value = build_surface_table(analysis(surface)).rows[0].values[0]
+        assert value.text == "3.5 ± 0.25 (n=6)"
 
     def test_a_merit_value_carries_no_verdict_word(self) -> None:
         table = build_surface_table(analysis(two_arm_surface()))
@@ -509,9 +611,9 @@ class TestCostAndLatencyColumns:
     def test_cost_then_latency_after_the_bars_each_with_its_unit_once(self) -> None:
         table = build_surface_table(analysis(two_arm_surface()))
         assert [(c.kind, c.measure_id, c.axis, c.unit, c.header) for c in table.columns] == [
-            ("bar", "delivered_items", None, "", "delivered_items ≥ 3"),
-            ("merit", COST, "cost", "usd", f"{COST} (usd)"),
-            ("merit", LATENCY, "latency", "s", f"{LATENCY} (s)"),
+            ("bar", "delivered_items", None, "", f"{DELIVERED_HEADING} ≥ 3"),
+            ("merit", COST, "cost", "usd", f"{COST_HEADING} (usd)"),
+            ("merit", LATENCY, "latency", "s", f"{LATENCY_HEADING} (s)"),
         ]
         row = table.rows[0]
         # No sem below n=2 in the fixture's summaries, so no "±" — but the sample is always stated.
@@ -563,7 +665,7 @@ class TestCostAndLatencyColumns:
             c.measures = MeasureCollection(measures=[summary(LATENCY, mean, sem=mean / 10)])
         table = build_surface_table(analysis(surface))
         latency = next(column for column in table.columns if column.measure_id == LATENCY)
-        assert (latency.unit, latency.header) == (unit, f"{LATENCY} ({unit})")
+        assert (latency.unit, latency.header) == (unit, f"{LATENCY_HEADING} ({unit})")
         values = [_value(table, row, LATENCY) for row in table.rows]
         assert sorted(v.text.split(" ± ")[0] for v in values) == shown
         # The spread rides the same ruler as the mean it qualifies.

@@ -11,12 +11,14 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 - ``_multiple_comparisons``: reading the verdict off ``p_raw`` instead of ``p_adjusted``; correcting
   over each comparison alone (``holm_adjust([p])``); dropping the control-variant filter on pairs.
 - ``build_user_message``: removing the ``p_raw`` deletion.
-- ``_compare``: disabling the paired no-spread branch, so a deterministic gap is named as a
-  shortage of cases.
+- ``_compare`` (through the bundle): disabling the paired no-spread branch, so a deterministic gap is named as a
+  shortage of cases; reading the gap by the t-test's refusal instead of ``separation_p``, so a constant
+  shift over twelve cases reads untested.
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import replace
 
@@ -29,8 +31,9 @@ from threetears.evals.analysis import (
     assemble_context_bundle,
 )
 from threetears.evals.analysis.generator import build_user_message
-from threetears.evals.analysis.stats import composite_significance, holm_adjust
+from threetears.evals.analysis.stats import composite_significance, holm_adjust, paired_equivalence, separation_p
 from threetears.evals.contracts import EvalCampaign, EvalResult, Question, RubricScore
+from threetears.evals.contracts.models import LatencyMetrics
 from threetears.evals.contracts.host import HostProfile, MeasureRegistry
 from threetears.evals.contracts.metrics import MeritAxis
 from packages.evals.tests.factories import fixture_variant_key, make_eval_result, make_eval_run, minimal_declaration
@@ -66,13 +69,20 @@ def _bundle(
     accuracy: tuple[Sequence[float], Sequence[float]] | None = None,
     profile: HostProfile | None = None,
     rigs: Sequence[str] = ("",),
+    contrast_cases: Sequence[int] | None = None,
+    unpaired: int | None = None,
+    apparatus: bool = False,
 ) -> AnalysisContextBundle:
     """A control and one contrast, scored on one judged dimension per entry of ``differences``, on each of ``rigs``.
 
     The control scores 3 on every dimension of every case; the contrast scores ``3 + difference``.
     Results carry no goal check and no cost, so the judged dimensions are the whole family — unless
     ``matched`` gives each side's per-case classifier verdicts, landed as ``match``, or ``accuracy`` each side's
-    per-case ``field_accuracy``.
+    per-case ``field_accuracy``. ``contrast_cases`` names the cases the contrast ran (default: all of them);
+    ``unpaired`` instead gives the contrast that many cases of its own, none shared with the control, so the
+    comparison is unpaired.
+    ``apparatus`` gives every result a judge phase and a blended spend that differ sharply between the arms —
+    the rig's own readings, which no family may test.
     """
     dims = _dims(len(differences))
     runs = []
@@ -88,9 +98,14 @@ def _bundle(
                 eval_run_id=run.id,
                 scope_id=run.scope_id,
                 model=model,
-                test_case_id=f"tc-{case:02d}",
+                test_case_id=f"tc-u{case:02d}" if unpaired is not None and model == CONTRAST else f"tc-{case:02d}",
                 goal_state_outcomes=[],
-                cost_usd=None,
+                cost_usd=(0.5 if model == CONTRAST else 0.1) + 0.01 * case if apparatus else None,
+                latency=(
+                    LatencyMetrics(judge_ms=(9000.0 if model == CONTRAST else 1000.0) + 10.0 * case)
+                    if apparatus
+                    else None
+                ),
                 host_measures=(
                     {"match": matched[model == CONTRAST][case]}
                     if matched is not None
@@ -103,7 +118,8 @@ def _bundle(
                     for dim, diffs in zip(dims, differences, strict=True)
                 ],
             )
-            for case in range(cases)
+            for case in range(cases if unpaired is None or model == CONTROL else unpaired)
+            if model == CONTROL or contrast_cases is None or case in contrast_cases
         ]
     declaration = minimal_declaration(control=fixture_variant_key(control) if control else None)
     if questions:
@@ -155,6 +171,14 @@ class TestHolm:
     def test_a_value_that_is_not_a_probability_is_refused(self, stray: float) -> None:
         with pytest.raises(ValueError, match="must lie in"):
             holm_adjust([0.01, stray])
+
+    def test_a_cap_on_the_true_hypotheses_caps_the_multiplier(self) -> None:
+        """Shaffer's refinement: with at most two of four hypotheses true, no p is multiplied by more than two."""
+        # Sorted: 0.01×min(4,2)=0.02, 0.02×min(3,2)=0.04, 0.5×2=1.0, 0.6×1=0.6 → raised to 1.0 by monotonicity.
+        assert holm_adjust([0.5, 0.01, 0.6, 0.02], max_true=2) == pytest.approx([1.0, 0.02, 1.0, 0.04])
+        assert holm_adjust([0.01, 0.04, 0.03, 0.005], max_true=4) == holm_adjust([0.01, 0.04, 0.03, 0.005])
+        with pytest.raises(ValueError, match="max_true"):
+            holm_adjust([0.01], max_true=0)
 
 
 # --- the bundle --------------------------------------------------------------------------------------
@@ -219,11 +243,13 @@ class TestVerdicts:
         assert decline.verdict == "regressed"
 
     def test_an_untested_comparison_says_which_refusal_it_hit(self) -> None:
-        # Every case moved by exactly +1: the paired differences have no spread, so no t exists.
-        gap = _family(_bundle([(1,) * 12]))
+        # Every one of five cases moved by exactly +1: the exact sign-flip p is 2^-4 at best, above α.
+        gap = _family(_bundle([(1,) * 5], cases=5))
         (moved,) = gap.comparisons
-        assert (moved.verdict, moved.p_raw, moved.test) == ("untested", None, None)
-        assert moved.untested_reason is not None and "same amount" in moved.untested_reason
+        assert (moved.verdict, moved.p_raw, moved.test, moved.hedges_g) == ("untested", None, None, None)
+        assert moved.untested_reason is not None
+        assert "same amount" in moved.untested_reason and "0.0625" in moved.untested_reason
+        assert "needs 6 shared cases" in moved.untested_reason
         assert gap.family_size == 0 and gap.n_untested == 1
 
         # One case: too few on a side for any test.
@@ -231,6 +257,47 @@ class TestVerdicts:
         (single,) = thin.comparisons
         assert single.verdict == "untested"
         assert single.untested_reason is not None and "fewer than two" in single.untested_reason
+
+    @pytest.mark.parametrize("cases", [6, 12])
+    def test_a_constant_shift_is_separated_by_the_exact_sign_flip_p(self, cases: int) -> None:
+        """Every shared case moved by +1: the frontier, the mechanism reads and history call that separated, so here too."""
+        family = _family(_bundle([(1,) * cases], cases=cases))
+        (moved,) = family.comparisons
+        assert (moved.test, moved.p_raw) == ("paired", 2.0 ** (1 - cases))
+        assert moved.p_raw == separation_p([3.0] * cases, [4.0] * cases, paired=True)
+        assert moved.verdict == "improved" and family.family_size == 1
+        assert moved.hedges_g is None, "no spread, so no finite effect size"
+        assert moved.interval is None, "the exact test has no interval to invert"
+
+    def test_identical_values_are_tested_and_not_separated(self) -> None:
+        (same,) = _family(_bundle([(0,) * 12])).comparisons
+        assert (same.verdict, same.test, same.p_raw, same.hedges_g) == ("not_separated", "paired", 1.0, None)
+
+    @pytest.mark.parametrize(("n_control", "n_contrast"), [(4, 4), (3, 5)])
+    def test_two_constant_sides_unpaired_are_tested_by_the_exact_permutation_p(
+        self, n_control: int, n_contrast: int
+    ) -> None:
+        (comparison,) = _family(
+            _bundle([(1,) * max(n_control, n_contrast)], cases=n_control, unpaired=n_contrast)
+        ).comparisons
+        assert comparison.test == "unpaired"
+        assert comparison.p_raw == pytest.approx(2 / math.comb(n_control + n_contrast, n_control))
+        assert comparison.p_raw is not None and comparison.p_raw < 0.05
+        assert comparison.hedges_g is None and comparison.untested_reason is None
+
+    def test_two_constant_sides_too_few_for_the_exact_p_read_untested_and_say_why(self) -> None:
+        family = _family(_bundle([(1,) * 4], cases=3, unpaired=4))
+        (comparison,) = family.comparisons
+        assert (comparison.verdict, comparison.test, comparison.p_raw, comparison.p_adjusted) == (
+            "untested",
+            None,
+            None,
+            None,
+        )
+        assert family.n_untested == 1, "an untested comparison is counted as untested, not corrected over"
+        assert comparison.untested_reason is not None
+        assert "each side's values are constant" in comparison.untested_reason
+        assert "3 and 4 cases" in comparison.untested_reason and "0.05714" in comparison.untested_reason
 
     def test_comparisons_are_against_the_control_only(self) -> None:
         family = _family(_bundle([CLEAR]))
@@ -286,7 +353,7 @@ class TestWhatAFamilyCovers:
             "Where the bundle carries no family (`multiple_comparisons.withheld` says why), no comparison between arms is separated"
             in (EVAL_ANALYSIS_GEN_DEFAULT)
         )
-        assert "in a campaign that declares no question, on every reading, as one campaign-wide family" in (
+        assert "with no question declared, on every merit-axis reading as one campaign-wide family" in (
             EVAL_ANALYSIS_GEN_DEFAULT
         )
 
@@ -360,9 +427,119 @@ def test_the_report_and_the_writer_see_an_immaterial_verdict_labelled() -> None:
     bundle = _bundle([], accuracy=_ACCURACY, profile=profile)
     report = build_code_only_report(bundle, measures=profile.measures, assembled_at="2026-10-06T00:00:00Z")
     (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
-    (row,) = [row for row in table.rows if row["reading"] == "field_accuracy"]  # type: ignore[attr-defined]
+    (row,) = [row for row in table.rows if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
 
     assert (
-        row["verdict"].startswith("improved") and "immaterial: below the host's materiality threshold" in row["verdict"]
+        row["verdict"].startswith("improved")
+        and "immaterial: the observed delta is below the host's materiality threshold" in row["verdict"]
     )
     assert '"materiality":"immaterial"' in build_user_message(bundle).replace(" ", "")
+
+
+# --- what a contrast states beside its verdict: interval, effect size, equivalence, the cases it read ---------
+
+
+def test_a_contrast_carries_its_interval_and_effect_size_at_the_family_level() -> None:
+    """Two readings, so each interval is at 1 − α/2 = 97.5%, from the same paired test as the p."""
+    from threetears.evals.analysis.stats import difference_interval
+
+    family = _family(_bundle([CLEAR, NOISE]))
+    assert family.interval_level == pytest.approx(0.975)
+    clear = next(c for c in family.comparisons if c.name == "extraction.d0")
+    assert clear.interval == pytest.approx(
+        difference_interval([3.0] * 12, [3.0 + d for d in CLEAR], paired=True, confidence=0.975)
+    )
+    assert clear.interval is not None and clear.interval[0] > 0, "a separation this clear excludes zero"
+    assert clear.hedges_g == composite_significance([3.0] * 12, [3.0 + d for d in CLEAR], paired=True).hedges_g
+    assert "97.5%" in family.disclosure
+
+
+#: Two arms within a point of each other on each of 24 cases: shown inside a 25-point margin. The test reads
+#: ``field_accuracy``'s declared 0-1 range, so no fewer cases could show it: one case in four might have dropped
+#: the full range unseen at the margin, and a dozen agreeing cases are needed just to make that unlikely.
+_ALIKE = ([0.80, 0.81, 0.79, 0.80] * 6, [0.80, 0.80, 0.80, 0.81] * 6)
+
+
+@pytest.mark.parametrize(("threshold", "expected"), [(0.25, "equivalent"), (None, "not_separated")])
+def test_equivalent_is_claimed_only_by_the_equivalence_test_against_a_declared_margin(
+    threshold: float | None, expected: str
+) -> None:
+    """With no margin a move that does not separate says nothing either way; with one, TOST can show it inside."""
+    family = _family(_bundle([], accuracy=_ALIKE, cases=24, profile=_accuracy_threshold(threshold)))
+    (comparison,) = [c for c in family.comparisons if c.name == "field_accuracy"]
+
+    assert comparison.verdict == expected
+    assert comparison.equivalence_margin == threshold
+    assert family.n_equivalence_tests == (1 if threshold else 0)
+    if threshold:
+        assert comparison.equivalence_p_raw is not None and comparison.equivalence_p_adjusted is not None
+        assert comparison.equivalence_p_adjusted < 0.05
+        assert (
+            comparison.interval is not None and -threshold < comparison.interval[0] < comparison.interval[1] < threshold
+        )
+        assert "equivalence_p_raw" not in build_user_message(
+            _bundle([], accuracy=_ALIKE, cases=24, profile=_accuracy_threshold(threshold))
+        )
+    else:
+        assert comparison.equivalence_p_raw is None and comparison.equivalence_p_adjusted is None
+
+
+@pytest.mark.parametrize(("cases", "expected"), [(11, "not_separated"), (12, "equivalent")])
+def test_two_arms_alike_on_every_case_are_tested_on_the_measures_range(cases: int, expected: str) -> None:
+    """No spread, so no t: the bounded test on the declared 0-1 range decides, and its p joins the Holm family.
+
+    Agreeing cases show equivalence only once they rule out a regression that dropped one case in four by the
+    whole range — which leaves ``n`` agreeing cases ``0.75 ** n`` of the time, so no valid test's p is smaller.
+    The exact sign-flip reading this replaced said ``2 ** -n`` and claimed equivalence from five cases, which on
+    pass/fail data at the margin was false up to three times in four (#693).
+    """
+    alike = ([0.8] * cases, [0.8] * cases)
+    family = _family(_bundle([], accuracy=alike, cases=cases, profile=_accuracy_threshold(0.25)))
+    (comparison,) = [c for c in family.comparisons if c.name == "field_accuracy"]
+
+    assert (comparison.test, comparison.p_raw) == ("paired", 1.0)
+    assert comparison.equivalence_p_raw == paired_equivalence([0.0] * cases, 0.25, value_range=(0.0, 1.0))[1]
+    assert comparison.equivalence_p_raw >= 0.75**cases
+    assert family.n_equivalence_tests == 1
+    assert comparison.verdict == expected
+
+
+def test_the_means_and_counts_are_over_the_cases_the_test_read_and_the_dropped_ones_are_counted() -> None:
+    """The contrast ran nine of the control's twelve cases: the test pairs over nine, and so do its means."""
+    accuracy = ([0.5] * 9 + [0.9] * 3, [0.6, 0.62, 0.61, 0.6, 0.63, 0.6, 0.61, 0.62, 0.6] + [0.0] * 3)
+    family = _family(_bundle([], accuracy=accuracy, contrast_cases=range(9)))
+    (comparison,) = [c for c in family.comparisons if c.name == "field_accuracy"]
+
+    assert comparison.test == "paired"
+    assert (comparison.control.n_cases, comparison.contrast.n_cases) == (9, 9)
+    assert (comparison.control.n_left_out, comparison.contrast.n_left_out) == (3, 0)
+    assert comparison.control.mean == pytest.approx(0.5), "the control's own mean over twelve cases is 0.6"
+    assert comparison.delta == pytest.approx(sum(accuracy[1][:9]) / 9 - 0.5)
+
+
+def test_the_campaign_wide_family_leaves_out_the_rig_s_own_readings() -> None:
+    """With no question, every reading on a merit axis is tested — and judge_ms and cost_usd sit on none.
+
+    A judged A/B once reported "judge_ms … improved on the control": the judge phase's time and the blended
+    spend that includes the judge's are what it cost to MEASURE an arm, not anything the arm did.
+    """
+    family = _family(_bundle([CLEAR], questions=False, apparatus=True))
+    names = {c.name for c in family.comparisons}
+    assert "extraction.d0" in names
+    assert not names & {"judge_ms", "cost_usd", "program_cost", "async_wait_ms"}
+
+
+def test_the_report_states_each_contrast_s_means_cases_interval_and_effect_size() -> None:
+    from threetears.evals.analysis.report.build import build_code_only_report
+
+    profile = _accuracy_threshold(None)
+    accuracy = ([0.5] * 9 + [0.9] * 3, [0.6, 0.62, 0.61, 0.6, 0.63, 0.6, 0.61, 0.62, 0.6] + [0.0] * 3)
+    bundle = _bundle([], accuracy=accuracy, contrast_cases=range(9), profile=profile)
+    report = build_code_only_report(bundle, measures=profile.measures, assembled_at="2026-10-06T00:00:00Z")
+    (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
+    (row,) = [row for row in table.rows if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
+
+    assert row["control_mean"] == pytest.approx(0.5)
+    assert row["cases"] == "9 paired; 3 of the control's left out, not run by the other side"
+    assert isinstance(row["interval"], str) and row["interval"].endswith("at 95%")
+    assert row["hedges_g"] is not None and row["hedges_g"] > 0

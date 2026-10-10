@@ -10,10 +10,11 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, computed_field, model_validator
 
 from threetears.evals.contracts.metrics import AttributionScope, MeasurePopulation, MeritAxis
 from threetears.evals.contracts.base import EvalDocumentModel
+from threetears.evals.contracts.evidence_tiers import JudgedEvidenceTier
 
 
 class MeasureSummary(EvalDocumentModel):
@@ -32,8 +33,8 @@ class MeasureSummary(EvalDocumentModel):
 
     - **numeric** — the distribution fields populated;
     - **categorical** — ``categories`` populated with counts;
-    - **boolean** — ``rate`` and ``n_true``, with ``ci_low``/``ci_high`` the Wilson interval on the
-      rate. A condition is counted, never averaged into a percentile;
+    - **boolean** — ``rate`` and ``n_true``, with ``ci_low``/``ci_high`` the interval on the rate
+      over its cases (Wilson's, where every case was observed once). A condition is counted, never averaged into a percentile;
     - **text** — ``texts``, every observation listed as evidence in observation order. Never
       aggregated: no mean, no mode, no count of distinct values stands in for what was said.
 
@@ -66,11 +67,10 @@ class MeasureSummary(EvalDocumentModel):
         default=0,
         ge=0,
         description=(
-            "Distinct TEST CASES behind those observations. When it is below `n`, the "
-            "observations are CLUSTERED (k repeats of the same case) and are NOT independent "
-            "draws: `sem`, `ci_low` and `ci_high` here are computed over `n` and are therefore "
-            "NARROWER than the clustering supports. Treat `n_independent` as the sample size "
-            "any claim of separation rests on."
+            "Distinct TEST CASES behind those observations — the independent draws. When it is below "
+            "`n`, the observations are CLUSTERED (k repeats of the same case), and `sem`, `ci_low` and "
+            "`ci_high` are computed over the cases, not the observations, so they already carry it. Treat "
+            "`n_independent` as the sample size any claim of separation rests on."
         ),
     )
     n_zero: int | None = Field(
@@ -86,24 +86,49 @@ class MeasureSummary(EvalDocumentModel):
     )
     mean: float | None = Field(default=None, description="Arithmetic mean (numeric only).")
     p05: float | None = Field(
-        default=None, description="5th percentile — the bad tail when higher is better (numeric only)."
+        default=None,
+        description=(
+            "5th percentile — the bad tail when higher is better (numeric only). Median-unbiased (Hyndman-Fan "
+            "type 8): as likely above the true 5th percentile as below. None below 13 observations, where no "
+            "estimate of it is: the smallest observation sits above the true one most of the time there."
+        ),
     )
-    p50: float | None = Field(default=None, description="Median, linear-interpolation percentile (numeric only).")
+    p50: float | None = Field(default=None, description="Median, interpolated between the middle two (numeric only).")
     p95: float | None = Field(
-        default=None, description="95th percentile — the bad tail when lower is better (numeric only)."
+        default=None,
+        description=(
+            "95th percentile — the bad tail when lower is better (numeric only). Median-unbiased (Hyndman-Fan "
+            "type 8): as likely above the true 95th percentile as below. None below 13 observations, where no "
+            "estimate of it is — the largest of 5 falls below the true p95 77% of the time — so read `max` there, "
+            "as the worst case seen and never as a percentile. A summary stored before this rule interpolated "
+            "linearly, which understates the tail at every size a cell has."
+        ),
     )
-    max: float | None = Field(default=None, description="Largest observed value (numeric only).")
+    max: float | None = Field(
+        default=None,
+        description="Largest observed value (numeric only): the worst case seen where lower is better.",
+    )
     sem: float | None = Field(
         default=None,
-        description="Standard error of the mean (the dispersion requirement). None below n=2, where it is unestimable.",
+        description=(
+            "Standard error of the mean (the dispersion requirement), over the test cases: cluster-robust, so a "
+            "case's repeats are not counted as independent draws. None below n=2, or when every observation "
+            "repeats one case, where it is unestimable."
+        ),
     )
     ci_low: float | None = Field(
         default=None,
-        description="Low bound of the 95% interval on the MEAN (t-based, so honest at small n). None below n=2.",
+        description=(
+            "Low bound of the 95% interval on the MEAN (t on `n_independent - 1` degrees of freedom, so honest "
+            "at small n). None below n=2, or over a single case."
+        ),
     )
     ci_high: float | None = Field(
         default=None,
-        description="High bound of the 95% interval on the MEAN (t-based, so honest at small n). None below n=2.",
+        description=(
+            "High bound of the 95% interval on the MEAN (t on `n_independent - 1` degrees of freedom, so honest "
+            "at small n). None below n=2, or over a single case."
+        ),
     )
     categories: dict[str, int] = Field(
         default_factory=dict, description="Value counts for a categorical measure; empty for a numeric one."
@@ -114,7 +139,7 @@ class MeasureSummary(EvalDocumentModel):
         le=1.0,
         description=(
             "A boolean measure's share of observations that held (`n_true / n`), with `ci_low`/`ci_high` its "
-            "Wilson interval. None on every other shape."
+            "interval over the cases — Wilson's where every case was observed once. None on every other shape."
         ),
     )
     n_true: int | None = Field(
@@ -137,7 +162,8 @@ class MeasureSummary(EvalDocumentModel):
 
         Returns:
             p05 when higher is better, p95 when lower is better, None for a categorical
-            measure or one with no declared direction.
+            measure, one with no declared direction, or one with too few observations to
+            estimate that tail (below 13).
         """
         if self.higher_is_better is None:
             return None
@@ -208,6 +234,10 @@ class MeasureCollection(EvalDocumentModel):
     )
 
 
+#: What a bar's verdict on one cell came to — see :attr:`BarVerdict.decision`.
+BarDecision = Literal["cleared", "missed", "undecided", "no_interval", "no_data"]
+
+
 class BarVerdict(EvalDocumentModel):
     """Whether one cell cleared one bar — computed here, never by the reader.
 
@@ -222,6 +252,13 @@ class BarVerdict(EvalDocumentModel):
     in neither its value nor its ``n``. Its ``n_infra_excluded`` still counts only the faults; the
     failures left out are the cell's ``n_no_turn``. A cell where no result took a turn carries no value,
     and its verdict is ``no data``, never a clearance on a refusal's round trip.
+
+    **The verdict is decided by the interval against the measure's declared margin, never the mean**
+    (:func:`~threetears.evals.analysis.stats.interval_clears`), and it has three outcomes: cleared (the
+    whole interval on the good side of the threshold less the margin), missed (the whole interval on the
+    bad side), and undecided (the interval straddles it). Undecided is neither a pass nor a failure. A
+    cell with a value but no interval (fewer than two observations) is not read at all. ``decision``
+    names which of these, or the two absences, a verdict is.
     """
 
     variant_key: str = Field(
@@ -246,7 +283,10 @@ class BarVerdict(EvalDocumentModel):
         ),
     )
     sem: float | None = Field(
-        default=None, description="Standard error of that mean, so a margin inside the noise can be said to be one."
+        default=None,
+        description=(
+            "Standard error of that mean, over the test cases, so a margin inside the noise can be said to be one."
+        ),
     )
     n: int = Field(ge=0, description="Observations behind the value — the cell's non-faulted results only.")
     n_independent: int = Field(ge=0, description="Distinct test cases behind them.")
@@ -266,10 +306,79 @@ class BarVerdict(EvalDocumentModel):
             "it — left out of the value, and not a fault. Zero for every other bar."
         ),
     )
+    ci_low: float | None = Field(
+        default=None,
+        description=(
+            "Low bound of the interval on `value` the verdict was decided on — the cell's own interval on the "
+            "measure, as its summary states it. None below two observations, and on a verdict stored before bars "
+            "read intervals."
+        ),
+    )
+    ci_high: float | None = Field(
+        default=None, description="High bound of that interval. None exactly when `ci_low` is."
+    )
+    margin: float | None = Field(
+        default=None,
+        description=(
+            "The measure's declared margin the bar was read with, in its units — its materiality threshold, the "
+            "difference too small to act on. None when it declares none: the bar is then held at the threshold "
+            "itself."
+        ),
+    )
     cleared: bool | None = Field(
         default=None,
-        description="Whether the value reaches the threshold in the bar's direction. None when the cell carries no observation — unknown, never failed.",
+        description=(
+            "True — cleared: the whole interval lies on the good side of the threshold less the margin, so the "
+            "cell is shown no worse than the bar by more than the margin. False — missed: the whole interval lies "
+            "on the bad side, so it is shown to fall short by more than the margin. None — no decision: the "
+            "interval straddles the line (undecided), the cell has a value but no interval (fewer than two "
+            "observations), or no observation. `decision` says which; none of the three is a pass or a failure. "
+            "A stored verdict with `cleared` set and no interval predates interval verdicts: it was the cell's "
+            "mean against the threshold, with no margin — read it as that point comparison "
+            "(`decided_on_the_mean`)."
+        ),
     )
+
+    judge_evidence_tier: JudgedEvidenceTier | None = Field(
+        default=None,
+        description=(
+            "For a bar on a judged dimension, what the scores behind `value` can bear: the weakest "
+            "`judge_evidence_tiers` tier among the judges that served them — `undetermined` when none was counted "
+            "or the evidence decides no tier. The verdict is the interval's either way; this says how far a judged "
+            "clearance or miss is the judge's word rather than a measurement, and is stated beside it. None — not "
+            "applicable — for a bar on a measured quantity or a goal-state check, which no judge scored; also None "
+            "on a verdict stored before the tier was recorded (every bundle shape before 47)."
+        ),
+    )
+
+    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
+        description=(
+            "The verdict as one word: `cleared`, `missed`, `undecided` (the interval straddles the threshold "
+            "less the margin — neither a pass nor a failure), `no_interval` (a value from fewer than two "
+            "observations, which is not read) or `no_data` (no observation). Derived from `cleared`, `value` and "
+            "the interval, so it cannot disagree with them."
+        )
+    )
+    @property
+    def decision(self) -> BarDecision:
+        """Which of the five a verdict is — the word every render branches on, never ``cleared`` alone."""
+        if self.cleared is not None:
+            return "cleared" if self.cleared else "missed"
+        if self.value is None:
+            return "no_data"
+        if self.ci_low is None or self.ci_high is None:
+            return "no_interval"
+        return "undecided"
+
+    @property
+    def decided_on_the_mean(self) -> bool:
+        """Whether this is a stored verdict from before bars read intervals: decided, with no interval.
+
+        Every verdict decided now is decided on an interval, so a decision with none can only have been
+        the old point comparison — the cell's mean against the threshold. Read structurally rather than
+        from a stored flag, so an analysis frozen before the change needs no migration to say so.
+        """
+        return self.cleared is not None and (self.ci_low is None or self.ci_high is None)
 
 
 class BarAdjudication(EvalDocumentModel):
@@ -280,6 +389,12 @@ class BarAdjudication(EvalDocumentModel):
     and the frontier's own clearing count kept its default of zero because no bar was ever passed to
     it — which a memo then quoted as "no arm cleared the bar". A reader now finds the comparison made,
     per cell, or the reason it could not be.
+
+    **A bar on the frontier's ranking measure is the one read elsewhere.** pass^k
+    (:data:`~threetears.evals.contracts.metrics.FRONTIER_RANKING_MEASURE`) is a rate over a contestant's
+    cases that no single result carries, so no cell verdict is given on it here: its adjudication reads
+    ``names_no_stored_measure`` and its ``reason`` says where it was read instead — the bundle passes it to
+    the frontier, which decides each contestant's pass^k interval against it, by the same three-valued rule.
     """
 
     measure_id: str = Field(min_length=1, description="What the bar is read on, as the bar names it.")
@@ -297,7 +412,8 @@ class BarAdjudication(EvalDocumentModel):
             "`names_no_stored_measure` — no non-faulted member result carries a readable value under this "
             "name, so the bar was never read and no verdict exists; a bar nobody could clear or fail, never "
             "one every arm failed. `reason` says why: nothing carried it, or the name is one no result can "
-            "carry with a direction. `not_numeric` — the measure is categorical or boolean, so a threshold "
+            "carry with a direction — or, for a bar on `pass_hat_k`, that the frontier read it instead (each "
+            "point's `bar_decision`). `not_numeric` — the measure is categorical or boolean, so a threshold "
             "has nothing to compare."
         )
     )
@@ -321,6 +437,7 @@ class BarAdjudication(EvalDocumentModel):
 
 __all__ = [
     "BarAdjudication",
+    "BarDecision",
     "BarVerdict",
     "MeasureCollection",
     "MeasureSummary",

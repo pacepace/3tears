@@ -89,7 +89,7 @@ from threetears.evals.contracts.host.subject import SubjectSnapshot
 from threetears.evals.contracts.host.timeouts import EvalCellTimeout
 from threetears.evals.contracts.host.traces import CellIdentity, CellTrace, TraceSink
 from threetears.evals.contracts.identity import DerivedVariantIdentity, resolve_variant_identity
-from threetears.evals.contracts.metrics import ACCURACY_MEASURE, MATCH_MEASURE
+from threetears.evals.contracts.metrics import ACCURACY_MEASURE, MATCH_MEASURE, undeclarable_host_measures
 from threetears.evals.contracts.models import (
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
@@ -112,7 +112,7 @@ from threetears.evals.contracts.models import (
     scored_dim_ids,
     utc_now_iso,
 )
-from threetears.evals.contracts.scoring import CellSummary
+from threetears.evals.contracts.scoring import CellSummary, boundary_dim_names
 from threetears.evals.contracts.call_ledger import CallLedger
 from threetears.evals.contracts.world_events import Firings, WorldEvent
 from threetears.evals.contracts.world_session import WorldSession
@@ -474,6 +474,8 @@ class _JudgePhase:
     judged_artifact: JudgedArtifact
     evidence: JudgeEvidence
     dims: tuple[str, ...]
+    #: The asked dims on the boundary axis (guardrails), stamped onto a can't-tell as a score's axis is.
+    boundary_dims: frozenset[str] = frozenset()
 
 
 class _JudgeRecord(NamedTuple):
@@ -488,6 +490,8 @@ class _JudgeRecord(NamedTuple):
     #: ``"<dim>: <error>"`` for each dim that failed or did not finish, joined; ``None`` when none.
     judge_error: str | None
     judge_cannot_tell: dict[str, str]
+    #: The can't-tell dims on the boundary axis, sorted.
+    judge_cannot_tell_boundary: list[str]
     #: The judge role's rows, for the calls that returned — what the result's cost reads them from.
     usage: list[RoleUsage]
 
@@ -540,6 +544,7 @@ def _judge_record(
         judge_config_ids=folded.config_ids,
         judge_error="; ".join(f"{dim}: {error}" for dim, error in errors) or None,
         judge_cannot_tell=folded.cannot_tell,
+        judge_cannot_tell_boundary=sorted(dim for dim in folded.cannot_tell if dim in phase.boundary_dims),
         usage=folded.usage,
     )
 
@@ -1114,8 +1119,12 @@ async def run_one_result(
     # Commissioned whatever the run's stamp: the runner IS the rig, and the seed it applies through this
     # session is what arms the cell's events. A host grading a cell it witnessed builds its own session
     # with ``provenance="witnessed"``.
+    # A template that declares preconditions has them asserted by the engine against the world at t=0 — read back
+    # the moment the seed settles, before any turn (see below, after ``prepare``).
     world_session = (
-        WorldSession(host.profile.world, provenance="commissioned") if host.profile.world is not None else None
+        WorldSession(host.profile.world, provenance="commissioned", read_at_seed=bool(template.preconditions))
+        if host.profile.world is not None
+        else None
     )
     sink.world = world_session
     try:
@@ -1154,6 +1163,15 @@ async def run_one_result(
             f"{cell_cassettes.mode} run and did not wire them; a kind wires its candidate's CassetteSeams "
             "through prepare's cassettes before returning, or the run launches with cassette_mode='off'"
         )
+    if template.preconditions:
+        # The engine asserts the template's presumptions itself, at t=0, for every kind — so a host whose kind forgets
+        # cannot score a world that never held what the probe presumes as the subject's failure. A kind that asserts
+        # them in ``prepare`` still may: a failure there excluded the cell above, and a pass is asked again here over
+        # the same t=0 reading, which gives the same answer.
+        failed = _failed_preconditions(template, test_case, world_session, world=host.profile.world)
+        if failed is not None:
+            error, outcomes = failed
+            return _excluded_cell(error=error, termination="precondition_failed", preconditions=outcomes)
     # The candidate is what the cell now waits on; a kind refines this through the sink as its
     # work alternates with other components' — the conversational kind's with the simulator and the rig.
     sink.waiting_on("candidate")
@@ -1288,6 +1306,7 @@ async def run_one_result(
             judged_artifact=judged_artifact,
             evidence=judge_evidence,
             dims=tuple(scored_dim_ids([dim.name for dim in template.rubric], judged_artifact)),
+            boundary_dims=boundary_dim_names(template.rubric),
         )
         sink.begin_judging(phase)
         judged, judge_ms = await _run_judge_phase(
@@ -1432,6 +1451,7 @@ async def judge_witnessed_output(
         judged_artifact=judged_artifact,
         evidence=output.judge_evidence,
         dims=tuple(scored_dim_ids([dim.name for dim in template.rubric], judged_artifact)),
+        boundary_dims=boundary_dim_names(template.rubric),
     )
     return await _run_judge_phase(
         phase,
@@ -1583,17 +1603,33 @@ def refuse_engine_derived_host_measures(host_measures: Mapping[str, bool | float
     on the walk's precedence rather than on what was measured. Called by the runner before its judge
     phase pays for anything, and by the assembly every completed cell takes, a witnessed one included.
 
+    **Every other engine-owned name is refused too**
+    (:func:`~threetears.evals.contracts.metrics.undeclarable_host_measures`): a core measure (``cost_usd``,
+    ``score`` …) or a name in a namespace the engine mints (``goal_state:…``, ``classifier:…``). A host
+    cannot declare one, so a kind landing it reports a value no host described, and the analysis walk would pool it into the engine's own
+    observations of that name with ``n`` inflated. Refused rather than dropped: a kind's measures are its own
+    code, so every cell would carry the same key, and a run whose numbers silently lost a measure the kind
+    meant to report is worse than one that stops before paying for a judge. The classifier track's own keys
+    (``match``, ``confusion_cell``) are the one legitimate core-named write. A result stored before this
+    refusal is held to the same rule where it is read: the walk drops the key and names it as unreported.
+
     Args:
         host_measures: What the kind measured, by name.
 
     Raises:
-        ValueError: ``host_measures`` names ``accuracy``.
+        ValueError: ``host_measures`` names ``accuracy`` or any other engine-owned measure.
     """
     if ACCURACY_MEASURE in host_measures:
         raise ValueError(
             f"a candidate kind landed {ACCURACY_MEASURE!r} on host_measures, which the engine derives from each "
             f"observation's {MATCH_MEASURE!r}; land the bool {MATCH_MEASURE!r} and the engine reports "
             f"{ACCURACY_MEASURE!r} from it"
+        )
+    if taken := undeclarable_host_measures(host_measures):
+        raise ValueError(
+            f"a candidate kind landed {', '.join(repr(name) for name in taken)} on host_measures, which only the "
+            "engine measures — a host cannot declare a measure so named, and its values would pool into the "
+            "engine's own observations of it; declare the host's measure under a name of its own"
         )
 
 
@@ -1613,6 +1649,7 @@ def _unjudged_record() -> _JudgeRecord:
         judge_config_ids={},
         judge_error=None,
         judge_cannot_tell={},
+        judge_cannot_tell_boundary=[],
         usage=[],
     )
 
@@ -1795,6 +1832,7 @@ def assemble_completed_cell(
         infra_error=errors.infra_error,
         judge_error=judged.judge_error,
         judge_cannot_tell=judged.judge_cannot_tell,
+        judge_cannot_tell_boundary=judged.judge_cannot_tell_boundary,
         variant_key=variant.variant_key,
         identity_version=variant.identity_version,
         # Reached the end of the cell. Stated on the success path too, and not only on the
@@ -2314,11 +2352,13 @@ def assert_preconditions(
     does not hold either**, negated or not: the DSL keeps an unknown unknown through ``not``, so
     ``not state.x == "y"`` over a world holding no ``x`` is not a presumption the world satisfied.
 
-    **Engine API, for every kind that seeds a world.**
-    ``EvalTemplate.preconditions`` is a field of the engine's own template, evaluated by the
-    engine's DSL against the engine's world state, so any kind that seeds a world has the same
-    presumptions to check and should check them the same way. Moving this beside one kind would
-    leave every other world-bearing kind to re-derive what "a presumption did not hold" means.
+    **The engine calls it for every cell** (:func:`run_one_result`), after ``prepare`` returns and before
+    the first turn, against the world its session read back when the seed settled — so no kind has to
+    remember to, and a failed presumption is excluded rather than scored as the subject's failure. It
+    stays engine API for a kind that wants to refuse earlier, inside its own ``prepare``
+    (:exc:`~threetears.evals.contracts.candidate_kind.CandidatePreparationFailed` with
+    ``termination="precondition_failed"``): the assertion is pure over the t=0 world, so asking it twice
+    gives one answer.
 
     Args:
         template: The template whose presumptions these are.
@@ -2353,6 +2393,44 @@ def assert_preconditions(
             )
         )
     return outcomes if any(not outcome.held for outcome in outcomes) else []
+
+
+def _failed_preconditions(
+    template: EvalTemplate,
+    test_case: EvalTestCase,
+    session: WorldSession | None,
+    *,
+    world: WorldRegistry | None,
+) -> tuple[str, list[PreconditionOutcome]] | None:
+    """The engine's own t=0 assertion of a template's preconditions: the exclusion it makes, or None when they held.
+
+    Asserted against the world the cell's session read back the moment its seed settled
+    (:attr:`~threetears.evals.contracts.world_session.WorldSession.seeded_state`). A cell whose kind never seeded
+    through its session has no t=0 world the engine saw, so its presumptions are asserted against an empty one,
+    where none is established — excluded rather than scored, since a presumption nobody checked is not one that
+    held (:func:`assert_preconditions`).
+
+    Args:
+        template: The template whose presumptions to assert.
+        test_case: The case, for its variation parameters.
+        session: The cell's world session, or None for a host that declares no world.
+        world: The host's world registry.
+
+    Returns:
+        ``(runner_error, outcomes)`` for an excluded cell, or None when every presumption held.
+    """
+    opened = session is not None and session.opened
+    seeded = session.seeded_state if session is not None and opened else None
+    outcomes = assert_preconditions(template, test_case, seeded or {}, world=world)
+    if not outcomes:
+        return None
+    error = f"precondition: {precondition_failure_text(outcomes)}"
+    if not opened:
+        error += (
+            " — the cell's world was never seeded through the engine's world session, so the engine had no world at "
+            "t=0 to assert the template's preconditions against"
+        )
+    return error, outcomes
 
 
 def precondition_failure_text(outcomes: Sequence[PreconditionOutcome]) -> str:
@@ -2493,6 +2571,29 @@ def grade_goal_checks(
             raise GoalCheckUnevaluable(expr, e) from e
         outcomes.append(GoalStateOutcome(expression=expr, passed=passed, detail=detail))
     return outcomes
+
+
+def template_as_graded(template: EvalTemplate, refused: Mapping[str, str] | None) -> EvalTemplate:
+    """The template a run's cells are graded on: its goal checks less the ones the grammar refused at launch.
+
+    A template stored before a grammar rule can carry a check the rule now refuses, and grading it raises in
+    every cell — each then a rig fault, with the check's reason buried in a generic apparatus error and every
+    other measure of the cell lost with it. The launch freezes the refused checks on the run
+    (:func:`~threetears.evals.contracts.models.refused_goal_checks`); the cells grade the rest, and every surface
+    counts the refused check as excluded, with its reason.
+
+    Args:
+        template: The template as stored.
+        refused: The run's refused checks, or None when it recorded none.
+
+    Returns:
+        ``template`` itself when nothing was refused, else a copy without the refused checks.
+    """
+    if not refused:
+        return template
+    return template.model_copy(
+        update={"goal_state_checks": [check for check in template.goal_state_checks if check not in refused]}
+    )
 
 
 def _unevaluated_goal_checks(template: EvalTemplate, *, waiting_on: str) -> list[GoalStateOutcome]:
@@ -2832,6 +2933,9 @@ async def execute_run(
             "scores with, or pass no judge service."
         )
 
+    # A check the grammar refused at launch is graded on no cell, so a template stored before a grammar rule
+    # does not turn every cell into a rig fault; the run names the check and why (`EvalRun.refused_goal_checks`).
+    template = template_as_graded(template, run.refused_goal_checks)
     callbacks = callbacks or RunCallbacks()
     total = len(test_cases) * run.k_runs
     done = 0
@@ -3101,6 +3205,7 @@ __all__ = [
     "ErrorLedger",
     "EveryCellApparatusFailedError",
     "GoalCheckUnevaluable",
+    "template_as_graded",
     "KindFactory",
     "RunCallbacks",
     "RunnerOptions",

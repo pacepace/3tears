@@ -49,6 +49,7 @@ from threetears.evals.ops import (
     RunDeleted,
     RunLine,
     RunListing,
+    RunsCompared,
     ScoreExport,
     TemplateListing,
     analyses_list,
@@ -73,6 +74,7 @@ from threetears.evals.ops import (
     run_delete,
     run_get,
     run_launch,
+    runs_compare,
     runs_list,
     scope_export,
     scope_history,
@@ -268,13 +270,15 @@ class CampaignsListParams(EvalBaseModel):
 
 
 class CampaignCreateParams(EvalBaseModel):
-    """``campaign_create``."""
+    """``campaign_create`` — the operation's own definition, declared design and control run included."""
 
     name: Name
     subject_id: SubjectId
     behavior: Behavior
     description: Description = ""
     run_ids: RunIds = Field(default_factory=list)
+    declared_design: Annotated[dict[str, Any] | None, CampaignDefinition.model_fields["declared_design"]] = None
+    control_from_run_id: Annotated[str | None, CampaignDefinition.model_fields["control_from_run_id"]] = None
 
 
 class CampaignArchiveParams(EvalBaseModel):
@@ -352,6 +356,17 @@ class ScopePivotParams(EvalBaseModel):
             "predicted cell then says how many of its observations came from other runs."
         ),
     ] = None
+
+
+class RunsCompareParams(EvalBaseModel):
+    """``runs_compare``."""
+
+    baseline_run_id: Annotated[
+        str, Field(min_length=1, description="The run read as the baseline (A), as runs_list names it.")
+    ]
+    candidate_run_id: Annotated[
+        str, Field(min_length=1, description="The run read against the baseline (B), as runs_list names it.")
+    ]
 
 
 class ScopeHistoryParams(EvalBaseModel):
@@ -609,6 +624,18 @@ async def _scope_pivot(host: OpsHost, caller: Caller, params: ScopePivotParams) 
         status=params.run_status,
         predicted_cost=params.predicted_cost,
         launched_run_ids=params.launched_run_ids or (),
+    )
+
+
+async def _runs_compare(host: OpsHost, caller: Caller, params: RunsCompareParams) -> RunsCompared:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor,
+        runs_compare,
+        eval_host,
+        params.baseline_run_id,
+        params.candidate_run_id,
+        caller.scope_id,
     )
 
 
@@ -875,7 +902,32 @@ def engine_actions() -> tuple[Action, ...]:
             result=CampaignLine,
             handler=_campaign_create,
             render=render.render_campaign,
-            example={"name": "model bake-off", "subject_id": "subject-1", "behavior": "accuracy", "run_ids": [run_id]},
+            example={
+                "name": "model bake-off",
+                "subject_id": "subject-1",
+                "behavior": "accuracy",
+                "run_ids": [run_id],
+                "declared_design": {
+                    "axes": [
+                        {
+                            "axis_id": "model",
+                            "values": [
+                                {"content": "model-a", "display": "model-a"},
+                                {"content": "model-b", "display": "model-b"},
+                            ],
+                        }
+                    ],
+                    "held_fixed": {"stimulus": "controlled", "apparatus": "commissioned"},
+                },
+                "control_from_run_id": run_id,
+            },
+            detail=(
+                "declared_design states what the campaign sets out to learn — its axes and what it held fixed, and "
+                "optionally its questions, bars and merit priority — and is refused, naming why, when this host "
+                "cannot honour it: an axis it does not declare, a bar looser than the registered one. control_from_run_id "
+                "names the run whose variant every other cell is read against. Omit both and the campaign is "
+                "undeclared, and its analysis infers the design from the runs."
+            ),
         ),
         Action(
             name="analysis_generate",
@@ -995,6 +1047,25 @@ def engine_actions() -> tuple[Action, ...]:
             ),
         ),
         Action(
+            name="runs_compare",
+            summary="Compare one run's arm against another's: pass^k, mean composite, their deltas and the test.",
+            workflow=ANALYSE,
+            permission="read",
+            params=RunsCompareParams,
+            result=RunsCompared,
+            handler=_runs_compare,
+            render=render.render_runs_compared,
+            example={"baseline_run_id": run_id, "candidate_run_id": "0193a1b2-run-b"},
+            detail=(
+                "pass^k is read on both arms at the shallower arm's depth. The composite is tested paired over the "
+                "cases both runs scored, else unpaired, and the answer says which; a miss reads not significant, "
+                "never no difference. Composites of two different subjects are not compared. Each run that "
+                "delivered less than its matrix carries its sentence, and the answer says when the two were "
+                "measured over spans that do not overlap or recorded different cassette modes. A run not in the "
+                "caller's scope is not found."
+            ),
+        ),
+        Action(
             name="scope_out_of_run_spend",
             summary=(
                 "List what the engine spent outside any run — case generations, rubric proposals and analysis "
@@ -1029,7 +1100,9 @@ def engine_actions() -> tuple[Action, ...]:
             detail=(
                 "A contestant is one resolved configuration within a subject, so a step is a re-run of the same "
                 "thing. Each step against the previous point carries a verdict and the test it rests on; a step "
-                "where the suite changed is marked so a new denominator does not read as a regression."
+                "where the suite changed is marked so a new denominator does not read as a regression. A step that "
+                "misses significance reads not_separated, never no change; only an equivalence test against the "
+                "measure's declared materiality threshold reads equivalent."
             ),
         ),
         Action(

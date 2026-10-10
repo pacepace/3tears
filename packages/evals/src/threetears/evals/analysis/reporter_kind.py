@@ -33,7 +33,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -47,13 +47,20 @@ from threetears.evals.analysis.generator import (
     refuse_an_undescribable_arm_table,
     user_message_digest,
 )
-from threetears.evals.analysis.numbers import format_number
-from threetears.evals.analysis.report.words import CONFIDENCE_WORDS, EVIDENCE_TIER_WORDS, arm_namer, positions
+from threetears.evals.analysis.report.serialize_md import markdown_table
+from threetears.evals.analysis.report.words import (
+    CONFIDENCE_WORDS,
+    EVIDENCE_COLUMNS,
+    arm_namer,
+    evidence_rows,
+    positions,
+    stands_on_words,
+)
 from threetears.evals.contracts.authored import NO_CHART
+from threetears.evals.contracts.base import EvalDocumentModel
 from threetears.evals.contracts.campaign import (
     ConfidenceTier,
     EvalAnalysis,
-    EvidenceRow,
     FindingResolution,
 )
 from threetears.evals.contracts.candidate_kind import (
@@ -75,7 +82,7 @@ from threetears.evals.contracts.provider import (
     describe_failure,
     log_provider_failure,
 )
-from threetears.evals.contracts.usage_capture import RoleUsageLedger
+from threetears.evals.contracts.usage_capture import CallUsage, RoleUsageLedger
 from threetears.observe import get_logger
 
 log = get_logger(__name__)
@@ -167,6 +174,7 @@ def reporter_cell_timeout_s(
     return generation_s + judging_s
 
 
+#: Where a person reading a memo places it on a rubric dimension, low to high.
 LabelDirection = Literal["low", "low_mid", "mid", "mid_high", "high"]
 
 #: The 1-5 judge scores each label direction agrees with, inclusive. A calibration read counts a
@@ -400,33 +408,58 @@ def reporter_case_of(test_case: EvalTestCase) -> ReporterCase | None:
     return ReporterCase.model_validate(payload[REPORTER_CASE_KEY])
 
 
-def _losses(frozen: Any, rebuilt: Any, path: str, added: list[str]) -> list[str]:
+def _renamed_keys() -> dict[str, str]:
+    """Every key a document model renamed within the current schema version: old name → new name.
+
+    Read off the models' own ``__retired_fields__``, so a frozen bundle's renamed key is followed by the
+    same declaration its stored read follows. Renames only: a key removed outright is a frozen value the
+    rebuild does not carry, and stays a loss here.
+    """
+    renamed: dict[str, str] = {}
+    pending: list[type[EvalDocumentModel]] = [EvalDocumentModel]
+    while pending:
+        model = pending.pop()
+        pending.extend(model.__subclasses__())
+        renamed.update({old: new for old, new in model.__retired_fields__.items() if new is not None})
+    return renamed
+
+
+def _losses(frozen: Any, rebuilt: Any, path: str, added: list[str], renamed: dict[str, str] | None = None) -> list[str]:
     """Name every frozen value the rebuild dropped or changed, collecting the keys it only ADDED.
+
+    A frozen key a model renamed within the schema version (``__retired_fields__``) is compared with the
+    rebuilt value under its new name: the stored read moved it there, so it was carried, not dropped.
 
     Args:
         frozen: A node of the frozen document.
         rebuilt: The same node of the rebuilt bundle's ``to_dict()``.
         path: Where the node sits, for the message.
         added: Receives the path of every key the rebuild has and the frozen document lacks.
+        renamed: Old key → new key for every rename; read once from the models when omitted.
 
     Returns:
         One entry per lost or changed value; empty when every frozen value survived.
     """
+    renames = _renamed_keys() if renamed is None else renamed
     if isinstance(frozen, dict) and isinstance(rebuilt, dict):
         losses: list[str] = []
+        moved: set[str] = set()
         for key, value in frozen.items():
-            if key not in rebuilt:
-                losses.append(f"{path}.{key} dropped")
+            if key in rebuilt:
+                losses.extend(_losses(value, rebuilt[key], f"{path}.{key}", added, renames))
+            elif (renamed_to := renames.get(key)) is not None and renamed_to in rebuilt and renamed_to not in frozen:
+                moved.add(renamed_to)
+                losses.extend(_losses(value, rebuilt[renamed_to], f"{path}.{renamed_to}", added, renames))
             else:
-                losses.extend(_losses(value, rebuilt[key], f"{path}.{key}", added))
-        added.extend(f"{path}.{key}" for key in rebuilt if key not in frozen)
+                losses.append(f"{path}.{key} dropped")
+        added.extend(f"{path}.{key}" for key in rebuilt if key not in frozen and key not in moved)
         return losses
     if isinstance(frozen, list) and isinstance(rebuilt, list):
         if len(frozen) != len(rebuilt):
             return [f"{path} held {len(frozen)} items and rebuilds with {len(rebuilt)}"]
         losses = []
         for index, (old, new) in enumerate(zip(frozen, rebuilt, strict=True)):
-            losses.extend(_losses(old, new, f"{path}[{index}]", added))
+            losses.extend(_losses(old, new, f"{path}[{index}]", added, renames))
         return losses
     return [] if frozen == rebuilt else [f"{path} changed from {_clipped(frozen)} to {_clipped(rebuilt)}"]
 
@@ -447,7 +480,8 @@ def rebuild_bundle(case: ReporterCase) -> AnalysisContextBundle:
       holds the bundle it says it holds;
     - it must validate strictly — a field the bundle model no longer declares is refused, as on
       every stored read;
-    - every frozen value must survive the rebuild unchanged — none altered by validation.
+    - every frozen value must survive the rebuild unchanged — none altered by validation. A value under
+      a key renamed within the schema version (``__retired_fields__``) survives under its new name.
 
     **A field the bundle model gained after the freeze is NOT a loss, and that tolerance is
     deliberate** — the one place a read here accepts an older shape. The frozen bundle is the
@@ -566,25 +600,9 @@ def _one_line(text: str) -> str:
     return " ".join(text.splitlines())
 
 
-def _reading(measure_id: str, reading: str) -> str:
-    """A measure, marked when it is a judged dimension rather than a measure."""
-    return f"{measure_id} (judged)" if reading == "judged" else measure_id
-
-
 def _confidence(confidence: ConfidenceTier) -> str:
     """A confidence tier in words."""
     return CONFIDENCE_WORDS[confidence]
-
-
-def _evidence_row(row: EvidenceRow, arm: Callable[[str], str]) -> str:
-    """One measurement: where it was read, what, and the number with its basis.
-
-    Located by the arm its cell names.
-    """
-    where = arm(row.cell_ref) if row.cell_ref is not None else "a cell this analysis cannot read"
-    return (
-        f"- {where} — {_reading(row.measure_id, row.reading)}: {format_number(row.value)}, n={row.n}, {row.dispersion}"
-    )
 
 
 def _read_case(test_case: EvalTestCase) -> ReporterCase | str:
@@ -704,14 +722,10 @@ class _RecordingClient:
         """
         ledger = RoleUsageLedger(role="candidate")
         for result in self.results:
-            ledger.add(
-                model=getattr(result, "model", None) or bound_model,
-                prompt_tokens=getattr(result, "input_tokens", None),
-                completion_tokens=getattr(result, "output_tokens", None),
-                reasoning_tokens=getattr(result, "reasoning_tokens", None),
-                cost_usd=getattr(result, "cost_usd", None),
-                price_source=getattr(result, "price_source", None),
-            )
+            read = CallUsage.of(result)
+            # The bound model stands in for an unnamed ``model`` only, which attributes spend; the
+            # served model stays what the response said, unrecorded when it said nothing.
+            ledger.add_llm_result(replace(read, model=read.model or bound_model))
         return CandidateTelemetry(usage=ledger.rows(), turns_delivered=len(self.results))
 
     def progress(self, bound_model: str) -> Callable[[], CandidateOutput]:
@@ -941,7 +955,12 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
         questions = ["## Declared questions", ""]
         for answer in document.questions:
             rests = f" (rests on finding {positions(answer.rests_on)})" if answer.rests_on else ""
-            questions.append(f"- {answer.question_id} — {answer.resolution}: {_one_line(answer.answer)}{rests}")
+            asked = (
+                analysis.design_snapshot.question_words(answer.question_id)
+                if analysis.design_snapshot is not None
+                else answer.question_id
+            )
+            questions.append(f"- {_one_line(asked)} — {answer.resolution}: {_one_line(answer.answer)}{rests}")
         sections.append(questions)
 
     if document.decisions:
@@ -962,7 +981,7 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
             findings += ["", f"### {position + 1}. {_one_line(finding.title)}", ""]
             facts = [f"Confidence: {_confidence(finding.confidence)}."]
             if resolution is not None:
-                facts.append(f"Stands on: {EVIDENCE_TIER_WORDS[resolution.evidence_tier]}.")
+                facts.append(f"Stands on: {stands_on_words(analysis, resolution.evidence_tier)}.")
             if finding.axes:
                 facts.append(f"About: {', '.join(finding.axes)}.")
             if finding.invalidates:
@@ -971,7 +990,12 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
             if finding.body.strip():
                 findings += ["", finding.body.strip()]
             if resolution is not None and resolution.evidence:
-                findings += ["", "Evidence:", *(_evidence_row(row, arm) for row in resolution.evidence)]
+                rows = evidence_rows(analysis, resolution.evidence, arm)
+                table = markdown_table(
+                    [header for _, header in EVIDENCE_COLUMNS],
+                    [[row[key] for key, _ in EVIDENCE_COLUMNS] for row in rows],
+                )
+                findings += ["", "Evidence:", "", *table]
             if finding.chart.type != NO_CHART:
                 if resolution is not None and resolution.chart_note:
                     findings += ["", resolution.chart_note]

@@ -274,6 +274,21 @@ class TestALeverIsCheckedAgainstTheMechanismItDeclares:
         ).mechanism
         assert mechanism.state == "moved"
 
+    @pytest.mark.parametrize(("n_cases", "reading"), [(5, ("unchecked", "too_few_observations")), (6, ("moved", None))])
+    def test_a_constant_gap_is_moved_only_over_enough_cases_for_an_exact_test(
+        self, n_cases: int, reading: tuple[str, str | None]
+    ) -> None:
+        """Every case shifted alike has exact p 2^(1-n): under α from six cases, too few to tell below that."""
+        documents = TOYHOST_DOCUMENTS[:n_cases]
+        bundle = _bundle(
+            [
+                _Arm(_chunk_batch(256), _per_document(_CONTEXT, 3000.0, 40.0), documents=documents),
+                _Arm(_chunk_batch(1024), _per_document(_CONTEXT, 3001.0, 40.0), documents=documents),
+            ]
+        )
+        mechanism = _row(bundle, "chunk_tokens").mechanism
+        assert (mechanism.state, mechanism.reason) == reading
+
     def test_one_case_a_level_is_too_few_to_test(self) -> None:
         bundle = _bundle(
             [
@@ -321,6 +336,7 @@ def _retrieve_profile(population: MeasurePopulation | None) -> HostProfile:
     """The toy profile, with ``chunk_tokens`` acting on a host latency measure declaring ``population``."""
     descriptor = MetricDescriptor(
         name=_RETRIEVE_MS,
+        reader_name="Retrieval time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -665,7 +681,7 @@ def _three_model_design() -> CampaignDesign:
             )
         ],
         control=control,
-        controls=ControlDeclaration(stimulus="controlled", apparatus="witnessed"),
+        held_fixed=ControlDeclaration(stimulus="controlled", apparatus="witnessed"),
         declared_at="2026-03-14T09:30:00+00:00",
     )
 

@@ -23,13 +23,13 @@ so it can never drift from the runs it summarises.
 from __future__ import annotations
 
 import uuid
-from typing import Annotated, Any, Literal, Self, TypeVar
+from typing import Annotated, Any, ClassVar, Literal, Self, TypeVar, get_args
 
 from pydantic import BeforeValidator, Field, ValidationInfo, computed_field, field_validator, model_validator
 
-from threetears.evals.contracts.authored import AuthoredAnalysis
+from threetears.evals.contracts.authored import AuthoredAnalysis, Confidence
 from threetears.evals.contracts.declaration import CampaignDesign
-from threetears.evals.contracts.evidence_tiers import JudgedEvidenceTier, weakest_judged_tier
+from threetears.evals.contracts.evidence_tiers import JudgedEvidenceTier, JudgedTierRule, weakest_judged_tier
 from threetears.evals.contracts.host.values import SweepableValue
 from threetears.evals.contracts.identity import compute_variant_key
 from threetears.evals.contracts.base import EvalDocumentModel
@@ -82,7 +82,8 @@ def _coerce_null_list(value: Any, info: ValidationInfo) -> Any:
 
 _LLMList = Annotated[list[_T], BeforeValidator(_coerce_null_list)]
 
-#: How firmly the evidence settles a claim, as a qualitative tier.
+#: How firmly the evidence settles a claim, as a qualitative tier — the tier a stored finding or
+#: decision carries.
 #:
 #: A tier, not a probability: the reporter is a language model with no calibration behind a
 #: number, and a "0.72" typed by one reads with the authority of a computed figure while nothing
@@ -90,10 +91,14 @@ _LLMList = Annotated[list[_T], BeforeValidator(_coerce_null_list)]
 #: direction the evidence supports, never asserted at a sub-coin-toss confidence. The tiers
 #: name four affirmative bands (``very_high`` ≈ firm, ``high`` ≈ leaning, ``medium`` ≈ tentative,
 #: ``low`` ≈ doubtful).
-ConfidenceTier = Literal["very_high", "high", "medium", "low"]
+#:
+#: The SAME declaration the writer authors against (:data:`~threetears.evals.contracts.authored.Confidence`),
+#: not a second one: what the writer may author and what a stored analysis may hold are one set, so a
+#: tier added to one is a tier of the other.
+ConfidenceTier = Confidence
 
 #: The tiers, strongest first — the order a surface ranks by.
-CONFIDENCE_TIERS: tuple[ConfidenceTier, ...] = ("very_high", "high", "medium", "low")
+CONFIDENCE_TIERS: tuple[ConfidenceTier, ...] = get_args(Confidence)
 
 
 _CONFIDENCE_TIER_DESCRIPTION = "How firmly the evidence settles the claim: very_high | high | medium | low."
@@ -156,6 +161,12 @@ class CampaignWindow(EvalDocumentModel):
 class EvalCampaign(EvalDocumentModel):
     """A curated set of eval runs under one subject×behavior — the analysis hub.
 
+    A campaign has no open/closed status. ``status`` was retired within schema v8: nothing could
+    change it after creation and nothing enforced it — runs were added to, and analyses generated
+    over, a ``closed`` campaign alike — so it was a label that read as frozen membership while
+    freezing nothing. A stored campaign carrying it loads with it discarded. ``archived`` is the
+    lifecycle a campaign has.
+
     Lives in one ``scope_id``, and so do its member runs: a run in another scope is
     refused at attachment (:mod:`threetears.evals.analysis.campaigns`), because every
     read of a campaign's members is a read within one scope. Membership (``run_ids``)
@@ -186,6 +197,8 @@ class EvalCampaign(EvalDocumentModel):
     resolves through whichever observation carries it — and nothing on this model is
     a pointer at a run whose deletion could dangle it.
     """
+
+    __retired_fields__: ClassVar[dict[str, str | None]] = {"status": None}
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["eval_campaign"] = "eval_campaign"
@@ -226,7 +239,6 @@ class EvalCampaign(EvalDocumentModel):
             "that declared nothing are still analysable."
         ),
     )
-    status: Literal["open", "closed"] = Field(default="open")
     archived: bool = Field(default=False)
     created_at: str = Field(default_factory=utc_now_iso)
     created_by: str = Field(
@@ -332,7 +344,9 @@ class GenerationProvenance(EvalDocumentModel):
     artifact as one accepted first time, and an operator comparing generator models has to
     be able to see which needed one — a silent repair would hide exactly the defect rate
     the comparison exists to measure. A ``0``/``None`` pair reads as "accepted as emitted".
-    Every field is required: the generator states each one, so none is ever assumed.
+    Every field is required but two: the generator states each one, so none is ever assumed.
+    ``bundle_schema_version`` and ``host_declarations_digest`` joined within schema v8, so an
+    analysis stored before them carries None — read as "not recorded", never as "the same as now".
     """
 
     prompt_id: str = Field(description="Id of the prompt template used to generate the analysis.")
@@ -385,6 +399,25 @@ class GenerationProvenance(EvalDocumentModel):
             "comparable on n, on k, or on any per-cell number."
         ),
     )
+    bundle_schema_version: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "The ``AnalysisContextBundle.schema_version`` the generation ran over — the package's bundle shape. "
+            "With ``host_declarations_digest`` it is what lets a re-assembly that no longer reproduces "
+            "``bundle_fingerprint`` say whether the package's shape, the host's declarations or the evidence "
+            "moved. None on an analysis stored before it was recorded: that analysis cannot say, and is never read "
+            "as having run over the current version."
+        ),
+    )
+    host_declarations_digest: str | None = Field(
+        default=None,
+        description=(
+            "The ``AnalysisContextBundle.host_declarations_digest`` the generation ran over: a digest of the "
+            "host's declared sweepables and world dimensions, derived from its registries at assembly. None on an "
+            "analysis stored before it was recorded, which cannot say."
+        ),
+    )
     user_message_digest: str = Field(
         min_length=1,
         description=(
@@ -403,7 +436,15 @@ class LeverCoverage(EvalDocumentModel):
     ``n`` and ``dispersion`` are REQUIRED (no default): a point estimate rendered
     without its sample size and spread is a rendering bug, so the model
     refuses to construct one that omits them.
+
+    It carries no confidence. ``confidence`` was retired within schema v8: it was a fixed lookup on
+    ``status`` (measured → high, thin → medium, unswept → low), so it said nothing ``status`` does not,
+    while reading as a confidence in the lever's estimate — an unswept lever, which nothing measured, read
+    as "low confidence" in a measurement that does not exist. How firmly a reading stands is the evidence
+    tier on the reading itself. A stored analysis carrying the key reads with it discarded.
     """
+
+    __retired_fields__: ClassVar[dict[str, str | None]] = {"confidence": None}
 
     name: str = Field(min_length=1, description="Lever name, as its host declares it, e.g. 'search.model'.")
     cells: int = Field(ge=0, description="Number of matrix cells measured for this lever.")
@@ -419,7 +460,6 @@ class LeverCoverage(EvalDocumentModel):
     n: int = Field(ge=0, description="Total samples behind the estimate (REQUIRED — no point estimate without it).")
     dispersion: str = Field(description="Spread of the estimate (REQUIRED — no point estimate without it).")
     status: Literal["measured", "thin", "unswept"] = Field(description="Coverage status for this lever.")
-    confidence: ConfidenceTier = Field(description=_CONFIDENCE_TIER_DESCRIPTION)
 
 
 class CoverageLens(EvalDocumentModel):
@@ -795,6 +835,17 @@ class EvalAnalysis(EvalDocumentModel):
     document: AuthoredAnalysis = Field(
         description="What the generator authored, as written, with each figure reference in its prose rendered by code."
     )
+    judged_tier_rule: JudgedTierRule | None = Field(
+        default=None,
+        description=(
+            "The rule the judged evidence tiers in `resolutions` and `decision_surface` were decided by. "
+            "`interval_lower_bound`: each criterion on confidence bounds for its agreement against the bar. None on an "
+            "analysis stored before that rule, whose tiers were the point estimate against the bar — which awarded "
+            "`calibrated` to a judge below the bar as much as a third of the time; every surface rendering such a "
+            "tier says it was decided on the point estimate. Optional within v8 for that reason: requiring it "
+            "would drop every stored analysis to learn a fact the old ones never had."
+        ),
+    )
     resolutions: list[FindingResolution] = Field(
         default_factory=list,
         description="What code filled for each finding, by position in `document.findings`: its numbers and its chart.",
@@ -1045,7 +1096,8 @@ class EvalInsight(EvalDocumentModel):
 
     Lives in the ``scope_id`` of the analysis that minted it. Traces back to the analysis that minted it
     via ``source_campaign_id`` / ``source_analysis_id``; ``invalidation_trigger``
-    records the condition under which the insight should be re-checked.
+    states the two rules that retire it — its analysis archived, or a later analysis restating it
+    (:func:`~threetears.evals.analysis.bundle.superseding_insights`).
     """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
@@ -1068,7 +1120,14 @@ class EvalInsight(EvalDocumentModel):
     evidence_result_ids: _LLMList[str] = Field(default_factory=list, description="Result ids the insight rests on.")
     observed_at: str = Field(default_factory=utc_now_iso)
     model_versions: dict[str, str] = Field(default_factory=dict, description="Model ids in play when observed.")
-    invalidation_trigger: _LLMProse = Field(default="", description="Condition under which to re-check the insight.")
+    invalidation_trigger: _LLMProse = Field(
+        default="",
+        description=(
+            "What retires the insight, as the engine carries it out: written at mint, naming the analysis whose "
+            "archive retracts it and that a later analysis of the subject restating the claim replaces it in "
+            "place. Blank on an insight minted before it was written, which the same two rules retire."
+        ),
+    )
     source_campaign_id: str = Field(default="", description="Campaign that produced the analysis this came from.")
     source_analysis_id: str = Field(default="", description="Analysis that minted this insight.")
 

@@ -79,6 +79,9 @@ def _verdict(cell: CellFacts, value: float | None, cleared: bool | None) -> BarV
         sem=None if value is None else 250.4,
         n=0 if value is None else 6,
         n_independent=0 if value is None else 2,
+        # A decided verdict is decided on an interval; the bounds only need to exist here.
+        ci_low=None if value is None or cleared is None else value - 500.0,
+        ci_high=None if value is None or cleared is None else value + 500.0,
         cleared=cleared,
     )
 
@@ -170,7 +173,7 @@ def analysis_over(surface: DecisionSurface, *, index: list[VariantIndexEntry] | 
         design_snapshot=CampaignDesign(
             axes=[SweptAxis(axis_id=AXIS, values=[_level(BASELINE), _level(CHALLENGER)])],
             control=_key(BASELINE),
-            controls=ControlDeclaration(stimulus="controlled", apparatus="commissioned"),
+            held_fixed=ControlDeclaration(stimulus="controlled", apparatus="commissioned"),
         ),
         variant_index=index if index is not None else [_entry(BASELINE), _entry(CHALLENGER)],
         decision_surface=surface,

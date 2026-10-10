@@ -27,6 +27,7 @@ from threetears.evals.vega.compiler import (
     value_label_layers,
 )
 from threetears.evals.analysis.viz.intent import ChartIntent
+from threetears.evals.contracts.host import ChartFont
 from threetears.evals.analysis.viz.intents.attribution import REMAINDER_SCOPE
 from threetears.evals.analysis.viz.quantities import signed_with_unit
 
@@ -37,7 +38,7 @@ from threetears.evals.analysis.viz.quantities import signed_with_unit
 _NOT_PLACEABLE = "not placeable"
 
 
-def compile_attribution(intent: ChartIntent) -> dict[str, Any]:
+def compile_attribution(intent: ChartIntent, *, font: ChartFont | None = None) -> dict[str, Any]:
     """Draw a whole-vs-part intent onto one shared signed axis.
 
     **Two bars side by side, never stacked, and never a waterfall.** A waterfall lays the part
@@ -53,6 +54,7 @@ def compile_attribution(intent: ChartIntent) -> dict[str, Any]:
 
     Args:
         intent: The attribution's intent.
+        font: The typeface the chart is laid out in; ``None`` for the packaged face.
 
     Returns:
         The Vega-Lite spec.
@@ -60,7 +62,7 @@ def compile_attribution(intent: ChartIntent) -> dict[str, Any]:
     plotted = intent.data
     quantified = any(row["scope"] == REMAINDER_SCOPE for row in plotted)
     axis_title = _value_axis(intent, "change").quantity
-    categories = _Categories.of("scope", _identity(intent).order)
+    categories = _Categories.of("scope", _identity(intent).order, font=font)
     width, height = categories.plot_size()
     value_axis = ValueAxis.magnitude(axis_title, [_number(row["delta"]) for row in plotted], width)
     identity = categories.axis(domain=not value_axis.marks_form_the_edge())
@@ -123,9 +125,12 @@ def compile_attribution(intent: ChartIntent) -> dict[str, Any]:
     return _composed(
         {
             "$schema": VEGA_LITE_SCHEMA,
-            "title": _title_spec(intent.title, categories.figure_width()),
+            "title": _title_spec(intent.title, categories.figure_width(), font=font),
             "layer": _layers(
-                _zero_rule(value_axis), bars, not_placeable, *value_label_layers(labels, value_axis, identity)
+                _zero_rule(value_axis),
+                bars,
+                not_placeable,
+                *value_label_layers(labels, value_axis, identity, font=font),
             ),
             "width": width,
             "height": height,

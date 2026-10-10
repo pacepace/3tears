@@ -68,7 +68,9 @@ from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, TOYHOST_SUBJ
 
 #: The model the priced history is for, and the costs its three results record.
 PRICED_MODEL = "extractor-v2"
-PRICED_COSTS = (0.10, 0.20, 0.30)
+#: Close together, so three of them bound a small arm under the fixture's cap: the band is read on the log scale,
+#: where three observations as spread as 0.10/0.20/0.30 put a three-observation sweep's upper end near $9.
+PRICED_COSTS = (0.18, 0.20, 0.22)
 #: The cases the toy kind plans every arm at.
 CASES = len(toyhost_test_cases(toyhost_template()))
 
@@ -143,7 +145,8 @@ async def test_scope_pivot_returns_the_lens_table(evals: MountedTool) -> None:
     assert outcome.structured == direct.model_dump(mode="json")
     table = PivotTable.model_validate(outcome.structured)
     assert table.cells and table.n_observations == sum(cell.n for cell in table.cells)
-    assert outcome.text.startswith("pivot of cost_usd by test_case_id (rows) x model (columns)")
+    # cost_usd sums the judge's spend beside the candidate's, so the text labels it measuring spend.
+    assert outcome.text.startswith("pivot of cost_usd, measuring spend by test_case_id (rows) x model (columns)")
     assert "- doc-01 / extractor-v2: " in outcome.text
 
 

@@ -539,7 +539,9 @@ class WorldRegistry(HostAttributed):
                 synchronous or return an awaitable; :meth:`call` awaits uniformly, so both kinds
                 of consumer use one design with no migration between them.
             subject_view: HANDLE rendering what a subject perceives of this world, given the
-                surfaces attached for that subject. Required before any dimension may declare
+                surfaces attached for that subject: called with ``surfaces=``, it returns a mapping of
+                each attached surface's name to that surface's rendering — one entry per surface, so
+                the conformance kit can hold each surface to the dimensions it names. Required before any dimension may declare
                 ``perceived_by``, because perception the kit cannot vary against is an
                 unverifiable claim.
             perturb_ambient: OPTIONAL HANDLE moving state this registry declares no dimension

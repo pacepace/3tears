@@ -169,8 +169,9 @@ lists each, and how to set it explicitly instead.
 **Classifier details.** An answer that isn't a non-blank string (`None`, `""`, a number) counts under its
 own predicted label, `UNUSABLE_ANSWER`, and never matches. Any other string is compared exactly, so
 `"positive "` is not `"positive"`. The summary carries the confusion matrix as `summary.confusion` and each
-label's statistics as `summary.labels`. Scores may run beside `expected=`, except ones named `match`,
-`confusion_cell` or `accuracy`.
+label's statistics as `summary.labels`. Scores may run beside `expected=`. No score may take the name of
+an engine core measure (`match`, `accuracy`, `score`, `f1`, `cost_usd` and the rest): `run_eval` refuses it
+and asks you to rename the function.
 
 **Keeping runs to compare.** Pass `host=callable_host(scorers)` (`callable_host()` when there are no
 scorers) and reuse it, so several runs share one store. Your own host must declare a measure per scorer and
@@ -231,13 +232,41 @@ result = await compare(
     scope_id="dev",
     k=2,
 )
-print(result.render())  # "Contrasts against the control": the difference, a Holm-adjusted p, and a verdict
+print(result.render())  # "Contrasts against the control": each difference, its interval, a Holm-adjusted p, a verdict
 ```
 
-Each contrast's verdict reads "improved on the control", "regressed from the control" or "not separated
-from the control". The last one means the cases could not tell the arms apart, not that they are equal:
-add cases (above all hard ones) before you read it as a tie. `result.arms["candidate"]` is that arm's
-`EvalSummary`, and `result.campaign_id` names the campaign holding every run.
+The report names each arm `candidate=<name>`, and each row of `result.contrasts()` carries your key as `arm`.
+When the arms are models, pass `factors=("model",)` and each name becomes its run's model (`model=<name>`).
+
+Each row of that table is one arm against the control on one reading, and says:
+
+- **Delta**: the arm's mean minus the control's, over the cases the test read. The test is a **paired
+  t-test on per-case means** (each case's repeats averaged first) over the cases both arms ran; when they
+  share fewer than two, Welch's t statistic on the conservative `min(n) − 1` degrees of freedom. A case only
+  one arm ran is left out of a paired test, and "Cases tested" says how many.
+- **Interval on delta**: where the true difference plausibly lies, widened for the number of rows tested
+  together so that all of them hold at once, 95% of the time.
+- **Hedges' g**: the difference in standard deviations, corrected for small samples.
+- **p (Holm-adjusted)**: corrected over every row in its family: one per declared question, or, when none
+  is declared, every reading on a merit axis across the campaign. Use only this p, never a raw one.
+
+The verdict is one of five:
+
+- **improved on the control** / **regressed from the control**: the adjusted p is below 0.05. If it says
+  *immaterial*, the move is real but smaller than the measure's declared margin. Don't act on it.
+- **equivalent to the control**: an equivalence test (TOST) shows the difference inside the measure's
+  declared margin. This is the only verdict that says two arms are alike, so it is how "the cheaper model is
+  good enough" gets shown. It needs a margin (`materiality_threshold`) on the measure. On a pass rate or a
+  1–5 score the test holds its 5% error rate exactly, so a small margin takes many cases: identical arms
+  show a pass rate within 0.25 from 12 cases, within 0.1 from 33.
+- **not separated from the control**: the cases could not tell the arms apart. It does not mean they are
+  equal. Add cases (above all hard ones), or declare a margin so equivalence can be tested.
+- **untested**: no test could decide (fewer than two cases on a side, or no spread over too few cases for an
+  exact test to reach 0.05). The row says why.
+
+[Reading a comparison](docs/reading-reports.md#reading-a-comparison) has the details.
+`result.arms["candidate"]` is that arm's `EvalSummary`, and `result.campaign_id` names the campaign holding
+every run.
 
 Example: [`examples/compare_two_prompts.py`](examples/compare_two_prompts.py).
 
@@ -246,7 +275,8 @@ Example: [`examples/compare_two_prompts.py`](examples/compare_two_prompts.py).
 Asking whether a cheaper model is good enough means weighing what each gets right against what it
 costs. The engine cannot see what a plain candidate spends, so have the candidate return an `Answer`:
 the label plus the call's tokens and dollars. Each arm's summary then prints its `candidate spend`, and
-the report tests the arms' `cost_usd` against the control the same way it tests their accuracy.
+the report tests the arms' spend (`production_replicating_cost`, the candidate's own) against the control
+the same way it tests their accuracy.
 
 ```python
 from threetears.evals.quick import Answer, compare
@@ -258,7 +288,7 @@ async def classify_cheaper(case: dict) -> Answer:
 
 result = await compare(CASES, {"current": classify_current, "cheaper": classify_cheaper},
                        expected=lambda case: case["label"], control="current", scope_id="dev", k=2)
-print(result.render())  # verdicts on accuracy and on cost_usd
+print(result.render())  # verdicts on accuracy and on spend
 ```
 
 A field left `None` is unreported, not zero. A candidate that returns a plain value still works, and
@@ -292,7 +322,9 @@ all of its levels (`callable.prompt=v2, model=...`) and tests each one against t
 `against(arm)` re-reads the same runs against any other combination, and each reading corrects its own
 contrasts. Two things aren't tested yet: a factor's effect pooled over all the others (a main effect), and
 whether factors interact. The pivot read (`ops.scope_pivot`) averages a scope's results over any two
-factors, without a significance test. Whether a lever actually took effect, rather than just being set, is a
+factors, without a significance test. It says what a cell pools that is not one quantity: a cost cell names
+the role sets its dollars covered, a cost cell that pools replayed results with live ones is withheld, and a
+cell grouped on `variant_key` that spans an identity-version bump names the versions. Whether a lever actually took effect, rather than just being set, is a
 [mechanism check](docs/reading-reports.md#did-a-lever-take-effect-mechanism-checks-and-observed-mechanisms).
 
 Example: [`examples/prompt_x_model.py`](examples/prompt_x_model.py).
@@ -417,7 +449,7 @@ bundle.
 | `threetears.evals.gen` | case and rubric generation |
 | `threetears.evals.analysis` | the analysis bundle, report generation and charts |
 | `threetears.evals.storage` | the storage adapters the engine ships: the in-memory reference store |
-| `threetears.evals.testing` | conformance kits an app runs in its own test suite: the store kit |
+| `threetears.evals.testing` | conformance kits an app runs in its own test suite: the store and reader kits, and the completion-type check |
 | `threetears.evals.quick` | the batteries: `run_eval` in one call, and the `python -m threetears.evals` command line |
 | `threetears.evals.ops` | typed operations over a host, and one job contract for long work |
 | `threetears.evals.actions` | the action catalogue every transport mounts: `evals` and `evals_admin` |
@@ -433,6 +465,7 @@ receive, an exception you catch, a literal you annotate with — is exported fro
 |---|---|
 | look up a term, or see how the pieces fit | [Concepts](docs/concepts.md) |
 | build a good classifier eval set: the labels, the kinds of case a set needs (boundaries, lookalikes, contrast pairs, context), how many, and how to read the results. Start here if you have not built an eval before | [Designing a classifier eval set](docs/designing-classifier-evals.md) |
+| choose a campaign's design before spending on it: which arms answer your question (an A/B, a grid, a cost frontier), the control, and how many cases and repeats | [Choosing a campaign design](docs/choosing-a-design.md) |
 | run evals from a terminal, or under your own CLI | [The command line](docs/command-line.md) |
 | wire the engine into your app: host, store, kind, launcher, worlds, cassettes | [Adopting the engine](docs/adopting-a-host.md) |
 | know what a launch will cost, and what stops it | [Cost and budgets](docs/cost-and-budgets.md) |

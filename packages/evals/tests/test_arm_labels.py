@@ -1,6 +1,6 @@
 """An arm is named by what tells it from the other arms of its report — and by nothing else (#567).
 
-A seven-run persona campaign whose runs shared every lever and differed only in their rig printed every
+A seven-run assistant campaign whose runs shared every lever and differed only in their rig printed every
 lever it carried, ``name=value`` joined, as each arm's name: about 1,700 characters, in sixty places,
 the levers of other kinds included (``classifier_prompt=(not a classifier run)``). A reader needs the
 difference, so the rule is:
@@ -79,12 +79,12 @@ def _entry(**levers: SweepableValue) -> VariantIndexEntry:
     return VariantIndexEntry(variant_key=compute_variant_key(named), levers=named)
 
 
-#: What a persona arm of #567 shared with every other: a long description, directives, a model and its kind.
+#: What an assistant arm of #567 shared with every other: a long description, directives, a model and its kind.
 _SHARED: dict[str, SweepableValue] = {
-    "candidate_kind": _value("persona"),
+    "candidate_kind": _value("assistant"),
     "model": _value("openai/gpt-5-mini"),
-    "backstory": _value("A late-night DJ who " + "talks between tracks about the records she loves " * 20),
-    "directives": _value("Keep the room moving; never talk over a vocal."),
+    "backstory": _value("A support agent who " + "walks each customer through the fix one step at a time " * 20),
+    "directives": _value("Answer in the customer's language; never guess an order number."),
 }
 
 
@@ -92,7 +92,7 @@ class TestAnArmIsNamedByWhatTellsItApart:
     def test_the_only_arm_of_a_report_is_named_by_its_kind_and_model(self) -> None:
         """One arm differs from nothing, so no lever names it — its kind and model say what ran."""
         (entry,) = index = [_entry(**_SHARED)]
-        assert arm_names(index) == {entry.variant_key: "candidate_kind=persona, model=openai/gpt-5-mini"}
+        assert arm_names(index) == {entry.variant_key: "candidate_kind=assistant, model=openai/gpt-5-mini"}
 
     def test_a_described_arm_with_neither_a_difference_nor_a_model_says_it_moved_nothing(self) -> None:
         (entry,) = index = [_entry(temperature=_value(0.2))]
@@ -107,49 +107,49 @@ class TestAnArmIsNamedByWhatTellsItApart:
         control, swept = index = [_entry(**_SHARED), _entry(**_SHARED, temperature=_value(0.7))]
         names = arm_names(index)
         assert names[swept.variant_key] == "temperature=0.7"
-        assert names[control.variant_key] == "candidate_kind=persona, model=openai/gpt-5-mini"
+        assert names[control.variant_key] == "candidate_kind=assistant, model=openai/gpt-5-mini"
 
 
 class TestALeverThatDoesNotApplyIsNeverNamed:
     def _mixed(self, *prompts: str) -> tuple[VariantIndexEntry, list[VariantIndexEntry]]:
-        """A persona arm and one classifier arm per prompt, each carrying the other kind's levers as the
+        """An assistant arm and one classifier arm per prompt, each carrying the other kind's levers as the
         engine resolves them: at that kind's "not a run of this kind" level."""
-        persona = _entry(**_SHARED, classifier__prompt=SweepableValue.not_this_kind("classifier"))
-        not_persona = SweepableValue.not_this_kind("persona")
+        assistant = _entry(**_SHARED, classifier__prompt=SweepableValue.not_this_kind("classifier"))
+        not_assistant = SweepableValue.not_this_kind("assistant")
         classifiers = [
             _entry(
                 candidate_kind=_value("classifier"),
                 model=_value("openai/gpt-5-mini"),
-                backstory=not_persona,
-                directives=not_persona,
+                backstory=not_assistant,
+                directives=not_assistant,
                 classifier__prompt=_value(prompt),
             )
             for prompt in prompts
         ]
-        return persona, classifiers
+        return assistant, classifiers
 
     def test_across_kinds_the_kind_names_the_arm_and_nothing_inapplicable_does(self) -> None:
-        """A persona arm and a classifier arm differ by kind; each one's own levers do not set it apart
+        """An assistant arm and a classifier arm differ by kind; each one's own levers do not set it apart
         from an arm they do not apply to."""
-        persona, (classifier,) = self._mixed("Label the request.")
-        names = arm_names([persona, classifier])
+        assistant, (classifier,) = self._mixed("Label the request.")
+        names = arm_names([assistant, classifier])
         assert names == {
-            persona.variant_key: "candidate_kind=persona",
+            assistant.variant_key: "candidate_kind=assistant",
             classifier.variant_key: "candidate_kind=classifier",
         }
 
     def test_a_lever_that_differs_among_the_arms_it_applies_to_names_only_those(self) -> None:
-        persona, classifiers = self._mixed("Label the request.", "Label the request in one word.")
-        names = arm_names([persona, *classifiers])
-        assert names[persona.variant_key] == "candidate_kind=persona"
+        assistant, classifiers = self._mixed("Label the request.", "Label the request in one word.")
+        names = arm_names([assistant, *classifiers])
+        assert names[assistant.variant_key] == "candidate_kind=assistant"
         assert sorted(names[arm.variant_key] for arm in classifiers) == [
             "candidate_kind=classifier, classifier.prompt=Label the request in one word.",
             "candidate_kind=classifier, classifier.prompt=Label the request.",
         ]
 
     def test_what_an_arm_ran_leaves_out_what_does_not_apply_to_it(self) -> None:
-        persona, (classifier,) = self._mixed("Label the request.")
-        assert {level.axis_id for level in arm_settings(persona)} == {
+        assistant, (classifier,) = self._mixed("Label the request.")
+        assert {level.axis_id for level in arm_settings(assistant)} == {
             "backstory",
             "candidate_kind",
             "directives",
@@ -158,11 +158,11 @@ class TestALeverThatDoesNotApplyIsNeverNamed:
         assert {level.axis_id for level in arm_settings(classifier)} == {"candidate_kind", "classifier.prompt", "model"}
 
     def test_the_writer_is_never_handed_a_lever_that_does_not_apply(self) -> None:
-        persona, (classifier,) = self._mixed("Label the request.")
-        view = writer_arms([persona, classifier])
+        assistant, (classifier,) = self._mixed("Label the request.")
+        view = writer_arms([assistant, classifier])
         assert view["shared_levels"] == {"model": "openai/gpt-5-mini"}
         levels = {arm["variant_key"]: arm["levels"] for arm in view["arms"]}  # type: ignore[attr-defined]
-        assert set(levels[persona.variant_key]) == {"backstory", "candidate_kind", "directives"}
+        assert set(levels[assistant.variant_key]) == {"backstory", "candidate_kind", "directives"}
         assert set(levels[classifier.variant_key]) == {"candidate_kind", "classifier.prompt"}
         assert "(not a" not in repr(view)
 
@@ -417,24 +417,24 @@ class TestTheCutNeverMergesTwoArms:
 _RIG_C = "c" * 64
 
 #: What only the shared lever set holds — a reader meets it once, in the Arms table, or the label leaked it.
-_LEVER_DUMP_MARK = "A late-night DJ who"
+_LEVER_DUMP_MARK = "A support agent who"
 
 
 def _rig_only_index() -> list[VariantIndexEntry]:
-    """#567's campaign: one persona stack, carrying another kind's lever, measured under three rigs."""
+    """#567's campaign: one assistant stack, carrying another kind's lever, measured under three rigs."""
     return [_entry(**_SHARED, classifier__prompt=SweepableValue.not_this_kind("classifier"))]
 
 
 def _mixed_index() -> list[VariantIndexEntry]:
-    """A persona arm and a classifier arm, each carrying the other kind's levers as the engine resolves them."""
-    not_persona = SweepableValue.not_this_kind("persona")
+    """An assistant arm and a classifier arm, each carrying the other kind's levers as the engine resolves them."""
+    not_assistant = SweepableValue.not_this_kind("assistant")
     return [
         _entry(**_SHARED, classifier__prompt=SweepableValue.not_this_kind("classifier")),
         _entry(
             candidate_kind=_value("classifier"),
             model=_value("openai/gpt-5-mini"),
-            backstory=not_persona,
-            directives=not_persona,
+            backstory=not_assistant,
+            directives=not_assistant,
             classifier__prompt=_value("Label the request."),
         ),
     ]
@@ -449,7 +449,7 @@ def _analysis_naming(cells: list[tuple[str, str]], index: list[VariantIndexEntry
     ]
     document = AuthoredAnalysis.model_validate(
         {
-            "headline": "Keep the current persona prompt.",
+            "headline": "Keep the current assistant prompt.",
             "summary": "",
             "findings": [
                 {
@@ -466,12 +466,12 @@ def _analysis_naming(cells: list[tuple[str, str]], index: list[VariantIndexEntry
             ],
             "decisions": [
                 {
-                    "proposal": "Keep the current persona prompt.",
+                    "proposal": "Keep the current assistant prompt.",
                     "disposition": "deferred",
                     "cells": refs,
                     "confidence": "high",
                     "rests_on": [0],
-                    "revisit_when": "a second persona is measured",
+                    "revisit_when": "a second assistant is measured",
                 }
             ],
             "questions": [],
@@ -500,15 +500,15 @@ def _analysis_naming(cells: list[tuple[str, str]], index: list[VariantIndexEntry
 def _rig_only_analysis() -> tuple[EvalAnalysis, list[str]]:
     (arm,) = _rig_only_index()
     rigs = [RIG, RIG_B, _RIG_C]
-    names = [f"candidate_kind=persona, model=openai/gpt-5-mini @ rig {rig[:12]}" for rig in rigs]
+    names = [f"candidate_kind=assistant, model=openai/gpt-5-mini @ rig {rig[:12]}" for rig in rigs]
     return _analysis_naming([(arm.variant_key, rig) for rig in rigs], [arm]), names
 
 
 def _mixed_analysis() -> tuple[EvalAnalysis, list[str]]:
-    persona, classifier = index = _mixed_index()
+    assistant, classifier = index = _mixed_index()
     return (
-        _analysis_naming([(persona.variant_key, RIG), (classifier.variant_key, RIG)], index),
-        ["candidate_kind=persona", "candidate_kind=classifier"],
+        _analysis_naming([(assistant.variant_key, RIG), (classifier.variant_key, RIG)], index),
+        ["candidate_kind=assistant", "candidate_kind=classifier"],
     )
 
 
@@ -526,7 +526,7 @@ class TestAnAnalysisReportNamesArmsByTheRule:
         assert {fact.name: fact.value for fact in decision.facts}["Arms"] == "; ".join(names)
         line = next(line for line in report_markdown(report).splitlines() if "Disposition: deferred" in line)
         assert line == (
-            "- **Keep the current persona prompt.** — Disposition: deferred · Confidence: high · Arms: "
+            "- **Keep the current assistant prompt.** — Disposition: deferred · Confidence: high · Arms: "
             + "; ".join(names)
             + ". Rests on finding 1."
         )
@@ -570,7 +570,9 @@ def _sweep_configs(index: list[VariantIndexEntry]) -> list[dict[str, str]]:
             sem=mean * 0.05,
         )
 
-    readings = MeasureCollection(measures=[reading("cost_usd", 0.01, False), reading("pass_rate", 0.8, True)])
+    readings = MeasureCollection(
+        measures=[reading("production_replicating_cost", 0.01, False), reading("pass_rate", 0.8, True)]
+    )
     cells = [cell(variant=entry.variant_key, measures=readings) for entry in index]
     return [row["config"] for row in build(VALID["sweep_ranking"], surface(cells, timed=False), index)["rows"]]
 

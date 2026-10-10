@@ -10,10 +10,11 @@ answerable across a restart.
 The operations are named as the actions over them are (``noun_verb``), so a name in the action
 catalogue (:mod:`threetears.evals.actions`) is the operation it calls.
 
-The read lenses — :func:`scope_pivot`, :func:`scope_history`, :func:`scope_export` and
+The read lenses — :func:`scope_pivot`, :func:`scope_history`, :func:`scope_export`, :func:`runs_compare` and
 :func:`launch_estimate` — return their result models (the first three the analysis package's own,
-re-exported here because they are what these operations hand back; the estimate its own
-:class:`LaunchEstimate`, priced by the launch's rule), with the text a surface shows for each (:func:`pivot_text`
+re-exported here because they are what these operations hand back; the comparison its own
+:class:`RunsCompared`, the two-run lens's answer with the disclosures every comparison carries; the
+estimate its own :class:`LaunchEstimate`, priced by the launch's rule), with the text a surface shows for each (:func:`pivot_text`
 and its siblings) beside them, so a command line and an agent read one rendering.
 :func:`scope_out_of_run_spend` reads the out-of-run ledger — the spend no run's results carry — into an
 :class:`OutOfRunSpendReport` of its own, with :func:`out_of_run_spend_text` beside it.
@@ -83,6 +84,9 @@ from threetears.evals.ops.lenses import (
     launch_estimate,
     out_of_run_spend_text,
     pivot_text,
+    RunsCompared,
+    runs_compare,
+    runs_compared_text,
     scope_export,
     scope_history,
     scope_out_of_run_spend,
@@ -128,7 +132,15 @@ from threetears.evals.ops.runs import (
     runs_list,
     templates_list,
 )
-from threetears.evals.ops.summary import DimensionSummary, EvalSummary, MeasureSummary, dollars_text, summarize_run
+from threetears.evals.ops.summary import (
+    CaseResult,
+    DimensionSummary,
+    EvalSummary,
+    JudgeGrade,
+    MeasureSummary,
+    dollars_text,
+    summarize_run,
+)
 
 __all__ = [
     "ANALYSIS_JOB_PREFIX",
@@ -144,6 +156,7 @@ __all__ = [
     "CampaignDefinition",
     "CampaignLine",
     "CampaignListing",
+    "CaseResult",
     "CostEstimate",
     "DimensionSummary",
     "EvalSummary",
@@ -154,6 +167,7 @@ __all__ = [
     "JobState",
     "JobStatus",
     "JobsStarted",
+    "JudgeGrade",
     "LaunchArguments",
     "LaunchEstimate",
     "MeasureSummary",
@@ -174,6 +188,7 @@ __all__ = [
     "RunDeleted",
     "RunLine",
     "RunListing",
+    "RunsCompared",
     "ScoreExport",
     "TemplateLine",
     "TemplateListing",
@@ -215,6 +230,8 @@ __all__ = [
     "run_get",
     "run_job_id",
     "run_launch",
+    "runs_compare",
+    "runs_compared_text",
     "runs_list",
     "scope_export",
     "scope_history",

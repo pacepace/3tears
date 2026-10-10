@@ -162,13 +162,14 @@ class _JudgedKind:
 
 
 async def _judged_and_stored(
-    judged_artifact: JudgedArtifact, judge: _ScriptedJudge, **run_fields: Any
+    judged_artifact: JudgedArtifact, judge: _ScriptedJudge, rubric: list[RubricDim] | None = None, **run_fields: Any
 ) -> tuple[EvalHost, EvalResult]:
     """Run one judged cell through the real runner, judge it with ``judge``, and store it as a run would.
 
     Args:
         judged_artifact: The kind's declaration.
         judge: The judge the cell's judge phase calls, and the host's client for a re-judge.
+        rubric: The template's rubric, :data:`_DIM` alone when omitted.
         **run_fields: Fields the run records beyond the defaults below.
 
     Returns:
@@ -180,7 +181,7 @@ async def _judged_and_stored(
         name="rejudge",
         intent="run a fair encounter",
         candidate_kind=_KIND,
-        rubric=[RubricDim(name=_DIM, description="the GM rules what the dice say", scale="ordinal")],
+        rubric=rubric or [RubricDim(name=_DIM, description="the GM rules what the dice say", scale="ordinal")],
     )
     case = EvalTestCase(template_id=template.id, scope_id=_SCOPE, variation_params={"party": "two"})
     host.storage.save_template(template)
@@ -301,6 +302,52 @@ async def test_a_rejudge_asks_only_the_dims_that_errored_and_keeps_a_recorded_ca
     assert rejudged.judge_cannot_tell == recorded
     assert [score.dim for score in rejudged.rubric_scores] == []
     assert rejudged.judge_rescores[-1].dims == [OUTCOME_DIM_ID]
+
+
+_GUARDRAIL = "doc.no_leak"
+
+_WITH_A_GUARDRAIL = [
+    RubricDim(name=_DIM, description="the GM rules what the dice say", scale="ordinal"),
+    RubricDim(name=_GUARDRAIL, description="never reveals a GM-only fact", scale="ordinal", axis="boundary"),
+]
+
+
+async def test_a_cannot_tell_on_a_guardrail_leaves_the_trial_in_the_capability_measures():
+    """The guardrail is in neither pass^k nor the composite, so a can't-tell on it must not drop the trial."""
+    from threetears.evals.contracts.result_condition import trial_exclusion
+    from threetears.evals.contracts.scoring import result_composite
+
+    judge = _ScriptedJudge(cannot_tell={_GUARDRAIL})
+    _, result = await _judged_and_stored(JudgedArtifact.DOCUMENT, judge, rubric=_WITH_A_GUARDRAIL)
+
+    assert set(result.judge_cannot_tell) == {_GUARDRAIL}
+    assert result.judge_cannot_tell_boundary == [_GUARDRAIL], "stamped from the dim's definition, as a score is"
+    assert trial_exclusion(result) is None
+    assert result_composite(result) == 0.75
+
+
+async def test_a_cannot_tell_on_a_capability_dim_still_drops_the_trial():
+    from threetears.evals.contracts.result_condition import trial_exclusion
+
+    judge = _ScriptedJudge(cannot_tell={_DIM})
+    _, result = await _judged_and_stored(JudgedArtifact.DOCUMENT, judge, rubric=_WITH_A_GUARDRAIL)
+
+    assert result.judge_cannot_tell_boundary == []
+    assert trial_exclusion(result) == "judge_cannot_tell"
+
+
+async def test_a_rejudge_stamps_a_guardrail_s_cannot_tell_too():
+    from threetears.evals.contracts.result_condition import trial_exclusion
+
+    judge = _ScriptedJudge(failing={_GUARDRAIL})
+    host, result = await _judged_and_stored(JudgedArtifact.DOCUMENT, judge, rubric=_WITH_A_GUARDRAIL)
+    judge.failing.clear()
+    judge.cannot_tell = {_GUARDRAIL}
+
+    rejudged = await rejudge_result(host, result.id, _SCOPE)
+
+    assert rejudged.judge_cannot_tell_boundary == [_GUARDRAIL]
+    assert trial_exclusion(rejudged) is None
 
 
 async def test_a_launch_attributes_a_judge_only_to_the_dims_the_kinds_judge_is_asked():

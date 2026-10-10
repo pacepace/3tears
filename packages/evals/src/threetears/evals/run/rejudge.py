@@ -21,7 +21,9 @@ from collections.abc import Collection
 from typing import TYPE_CHECKING, Literal, NamedTuple, Protocol
 
 from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
+from threetears.evals.contracts.scoring import boundary_dim_names
 from threetears.evals.contracts.models import (
+    DEFAULT_JUDGE_TEMPERATURE,
     NON_TERMINAL_RUN_STATUSES,
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
@@ -182,7 +184,8 @@ def recorded_judge_pins(run: EvalRun, *, request_settings: RequestSettingsPolicy
 
     Raises:
         ValidationFailedError: The run names no judge, recorded no attribution, no config set or no
-            request settings, or (``"today"``) recorded settings other than the ones a call sends now.
+            request settings, or (``"today"``) recorded settings, or a judge temperature, other than the ones
+            a call sends now.
     """
     if run.judge_model is None:
         raise ValidationFailedError(f"run '{run.id}' was not judged, so there is no judgement to reproduce")
@@ -202,6 +205,19 @@ def recorded_judge_pins(run: EvalRun, *, request_settings: RequestSettingsPolicy
         raise ValidationFailedError(
             f"run '{run.id}' was judged with request settings {run.judge_request_settings!r} and the judge client "
             f"now sends {JUDGE_REQUEST_SETTINGS!r}; a new call would be asked differently from the rest of the run"
+        )
+    # The judge service asks every dim with no config for DEFAULT_JUDGE_TEMPERATURE. A run that recorded
+    # another — or none, which is a run launched when such dims were sampled at the provider's default —
+    # would have its new scores sampled by a different judge from the rest of it (#633).
+    if request_settings == "today" and run.judge_temperature != DEFAULT_JUDGE_TEMPERATURE:
+        recorded = (
+            "recorded no judge temperature (its dims without a config were sampled at the provider's default)"
+            if run.judge_temperature is None
+            else f"was judged at temperature {run.judge_temperature}"
+        )
+        raise ValidationFailedError(
+            f"run '{run.id}' {recorded} and a judge call now asks for {DEFAULT_JUDGE_TEMPERATURE}; a new score "
+            "would be sampled differently from the rest of the run"
         )
     return run.judge_model
 
@@ -408,6 +424,12 @@ def apply_rejudge(
             # A recorded can't-tell is never re-asked (``failed_judge_dims``), so it stands; a dim
             # that failed before and is now answered "can't tell" leaves the errors and joins it.
             "judge_cannot_tell": {**result.judge_cannot_tell, **folded.cannot_tell},
+            # Stamped from the template's definitions, as the phase stamps them, so a guardrail's can't-tell
+            # never drops the trial from the capability measures.
+            "judge_cannot_tell_boundary": sorted(
+                set(result.judge_cannot_tell_boundary)
+                | {dim for dim in folded.cannot_tell if dim in boundary_dim_names(template.rubric)}
+            ),
             "judge_rescores": [*result.judge_rescores, rescore],
         }
     )

@@ -6,6 +6,11 @@ A classifier lands one ``confusion_cell`` per observation (``expected → predic
 (:func:`label_statistics`). The analysis bundle and the run summary both read them from here, so a
 label's precision is one computation wherever it is printed.
 
+**A label's interval is over cases.** The statistics are counted from the observations, each beside
+its test case, because a case classified k times is one draw repeated, not k draws: precision and
+recall take :func:`~threetears.evals.analysis.stats.proportion_interval`, which is the Wilson
+interval wherever every case was classified once.
+
 **Labels are kept exactly as given.** These models do not strip their strings, unlike every model
 on :class:`~threetears.evals.contracts.base.EvalBaseModel`: a label is free text, and ``"positive "``
 stripped to ``"positive"`` would count a wrong answer as a right one.
@@ -13,11 +18,11 @@ stripped to ``"positive"`` would count a wrong answer as a right one.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict
 
-from threetears.evals.analysis.stats import wilson_interval
+from threetears.evals.analysis.stats import proportion_interval
 from threetears.evals.contracts.metrics import confusion_of
 
 
@@ -47,12 +52,15 @@ class LabelStatistics(BaseModel):
     Attributes:
         label: The label.
         expected: Observations whose case expected this label: its support, recall's denominator.
+        expected_cases: Distinct cases behind ``expected`` — the independent draws recall rests on. Below
+            ``expected`` when cases were repeated.
         predicted: Observations the classifier gave this label: precision's denominator.
+        predicted_cases: Distinct cases behind ``predicted`` — the independent draws precision rests on.
         correct: Observations both expected and given this label.
         precision: ``correct / predicted``.
-        precision_interval: The Wilson interval on ``precision``.
+        precision_interval: The interval on ``precision``, over the cases behind it.
         recall: ``correct / expected``.
-        recall_interval: The Wilson interval on ``recall``.
+        recall_interval: The interval on ``recall``, over the cases behind it.
         f1: The harmonic mean of precision and recall, ``2 * correct / (predicted + expected)``. It is
             not a proportion of anything, so it has no interval: read the two it comes from.
     """
@@ -62,7 +70,9 @@ class LabelStatistics(BaseModel):
 
     label: str
     expected: int
+    expected_cases: int
     predicted: int
+    predicted_cases: int
     correct: int
     precision: float | None
     precision_interval: tuple[float, float] | None
@@ -91,38 +101,50 @@ def confusion_matrix(cells: Mapping[str, int]) -> list[ConfusionCount]:
     ]
 
 
-def label_statistics(matrix: Iterable[ConfusionCount]) -> list[LabelStatistics]:
-    """Each label's precision, recall and F1, counted from a confusion matrix, ordered by label.
+def label_statistics(observations: Iterable[tuple[str, str]]) -> list[LabelStatistics]:
+    """Each label's precision, recall and F1, counted from a classifier's observations, ordered by label.
 
-    Every label the matrix names is here, expected or predicted, so a label only ever given (an
+    Every label the observations name is here, expected or predicted, so a label only ever given (an
     one outside the label set, say) appears with a precision and no recall.
 
     Args:
-        matrix: The confusion matrix (:func:`confusion_matrix`).
+        observations: One ``(confusion_cell value, test case id)`` per observation. A value that is not a
+            confusion cell (:func:`~threetears.evals.contracts.metrics.confusion_of` reads no two labels
+            from it) is in no count, as in :func:`confusion_matrix`.
 
     Returns:
         One entry per label.
     """
-    cells = list(matrix)
+    classified: list[tuple[str, str, str]] = [
+        (labels[0], labels[1], case) for cell, case in observations if (labels := confusion_of(cell)) is not None
+    ]
     statistics: list[LabelStatistics] = []
-    for label in sorted({label for cell in cells for label in (cell.expected, cell.predicted)}):
-        correct = sum(cell.count for cell in cells if cell.expected == label and cell.predicted == label)
-        predicted = sum(cell.count for cell in cells if cell.predicted == label)
-        expected = sum(cell.count for cell in cells if cell.expected == label)
+    for label in sorted({label for expected, predicted, _ in classified for label in (expected, predicted)}):
+        given = [(expected == label, case) for expected, predicted, case in classified if predicted == label]
+        met = [(predicted == label, case) for expected, predicted, case in classified if expected == label]
+        correct = sum(1 for hit, _ in given if hit)
+        predicted = len(given)
+        expected = len(met)
         statistics.append(
             LabelStatistics(
                 label=label,
                 expected=expected,
+                expected_cases=len({case for _, case in met}),
                 predicted=predicted,
+                predicted_cases=len({case for _, case in given}),
                 correct=correct,
                 precision=correct / predicted if predicted else None,
-                precision_interval=wilson_interval(correct, predicted),
+                precision_interval=_interval(given),
                 recall=correct / expected if expected else None,
-                recall_interval=wilson_interval(correct, expected),
+                recall_interval=_interval(met),
                 f1=2 * correct / (predicted + expected) if predicted and expected else None,
             )
         )
     return statistics
+
+
+def _interval(outcomes: Sequence[tuple[bool, str]]) -> tuple[float, float] | None:
+    return proportion_interval([hit for hit, _ in outcomes], [case for _, case in outcomes])
 
 
 __all__ = ["ConfusionCount", "LabelStatistics", "confusion_matrix", "label_statistics"]

@@ -48,7 +48,9 @@ JobState = Literal["running", "completed", "stopped", "failed", "cancelled", "lo
 #: The states a job does not leave.
 TERMINAL_JOB_STATES: frozenset[str] = frozenset({"completed", "stopped", "failed", "cancelled", "lost"})
 
+#: The prefix of a launched run's job id.
 RUN_JOB_PREFIX = "run:"
+#: The prefix of an analysis generation's job id.
 ANALYSIS_JOB_PREFIX = "analysis:"
 
 #: A run's stored status, as the job state it is.

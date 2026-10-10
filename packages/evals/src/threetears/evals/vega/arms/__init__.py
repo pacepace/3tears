@@ -15,8 +15,7 @@ wearing a data error's clothes.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Any
+from typing import Any, Protocol
 
 from threetears.evals.vega.arms.attribution import compile_attribution
 from threetears.evals.vega.arms.breakdown import compile_breakdown
@@ -27,12 +26,22 @@ from threetears.evals.vega.arms.null_result import compile_null_result
 from threetears.evals.vega.arms.sweep_ranking import compile_sweep_ranking
 from threetears.evals.vega.arms.timeseries import compile_timeseries
 from threetears.evals.analysis.viz.intent import ChartIntent
+from threetears.evals.contracts.host import ChartFont
+
+
+class Arm(Protocol):
+    """What draws one chart type: an intent, laid out in a typeface, as a Vega-Lite spec."""
+
+    def __call__(self, intent: ChartIntent, *, font: ChartFont | None = None) -> dict[str, Any]:
+        """Draw ``intent``; ``font`` is the face its layout is measured in, ``None`` for the packaged one."""
+        ...
+
 
 #: ``Viz.type`` → the arm that draws it.
 #:
 #: Keyed by the same strings as ``PAYLOAD_MODELS`` so the two registries can be
 #: compared directly rather than related by convention.
-ARMS: dict[str, Callable[[ChartIntent], dict[str, Any]]] = {
+ARMS: dict[str, Arm] = {
     "attribution": compile_attribution,
     "breakdown": compile_breakdown,
     "delta_table": compile_delta_table,
@@ -46,4 +55,5 @@ ARMS: dict[str, Callable[[ChartIntent], dict[str, Any]]] = {
 
 __all__ = [
     "ARMS",
+    "Arm",
 ]

@@ -46,7 +46,7 @@ from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, S
 from dataclasses import dataclass
 from functools import partial
 from itertools import chain
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple, Protocol
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -68,6 +68,7 @@ from threetears.evals.contracts.evidence_tiers import (
     JudgedEvidenceTier,
     JudgeEvidenceTier,
 )
+from threetears.evals.analysis.arms import arm_names, surface_order
 from threetears.evals.analysis.cells import (
     CELL_MODEL_VERSION,
     ApparatusClass,
@@ -80,7 +81,7 @@ from threetears.evals.analysis.cells import (
     pool_observations,
     subject_key_instabilities,
 )
-from threetears.evals.analysis.confusion import confusion_matrix, label_statistics
+from threetears.evals.analysis.confusion import label_statistics
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.reporting import (
     METRIC_COMPOSITE,
@@ -97,19 +98,30 @@ from threetears.evals.analysis.reporting import (
     compute_frontier,
     compute_program_budget,
     decompose_total_ms,
+    pooled_composite_basis,
     lever_level,
     measurement_window,
     measurement_window_disclosure,
     project_score_records,
 )
 from threetears.evals.analysis.stats import (
+    MIN_PAIRS_FOR_DETERMINISTIC_GAP,
     MULTIPLE_COMPARISON_CORRECTION,
     SIGNIFICANCE_ALPHA,
+    LevelDifference,
+    clustered_standard_error,
     composite_significance,
+    difference_interval,
+    exact_decimal,
+    guardrail_decision,
     holm_adjust,
+    interval_clears,
+    level_difference,
+    no_spread_p,
     observed_mean_interval,
-    standard_error_of_mean,
-    wilson_interval,
+    paired_equivalence,
+    proportion_interval,
+    separation_p,
 )
 from threetears.evals.contracts.analysis_measures import BarAdjudication, BarVerdict, MeasureCollection, MeasureSummary
 from threetears.evals.contracts.campaign import (
@@ -120,18 +132,30 @@ from threetears.evals.contracts.campaign import (
     derive_window,
 )
 from threetears.evals.contracts.covariates import REASONING_RATIO_KEY
-from threetears.evals.contracts.declaration import BarName, CampaignDesign, UnreadableBarName, resolve_bar_name
+from threetears.evals.contracts.scoring import median_unbiased_quantile
+from threetears.evals.contracts.declaration import (
+    JUDGED_MERIT_AXIS,
+    BarName,
+    CampaignDesign,
+    SweptAxis,
+    UnreadableBarName,
+    axis_in_question_scope,
+    exploratory_reading,
+    resolve_bar_name,
+)
 from threetears.evals.contracts.hashing import canonical_digest, canonical_json
-from threetears.evals.contracts.host.profile import CANDIDATE_MODEL_LEVER, HostProfile
-from threetears.evals.contracts.host.values import SweepableValue
+from threetears.evals.contracts.host.profile import CANDIDATE_MODEL_LEVER, UNSEATED_LEVEL, HostProfile
+from threetears.evals.contracts.host.values import ProductionFooting, SweepableValue
 from threetears.evals.contracts.identity import IDENTITY_VERSION, resolve_variant_identity
 from threetears.evals.contracts.metrics import (
     ACCURACY_MEASURE,
     CONFUSION_CELL_MEASURE,
+    FRONTIER_RANKING_MEASURE,
     MATCH_MEASURE,
     AttributionScope,
     ClassifierStatistic,
     MeasurePopulation,
+    MeasureScale,
     MeritAxis,
     MetricDescriptor,
     classifier_label_measure,
@@ -148,11 +172,21 @@ from threetears.evals.contracts.metrics import (
     partition_components,
     remainder_withheld_reason,
     summary_population,
+    undeclarable_host_measures,
 )
+from threetears.evals.contracts.covariates import undeclarable_covariates
 from threetears.evals.contracts.base import EvalDocumentModel
 
 # At runtime for its field set, which tells a result-level measure from a row-level one.
-from threetears.evals.contracts.models import ApparatusProvenance, CalibrationRating, EvalResult
+from threetears.evals.contracts.models import (
+    goal_check_proofs_as_read,
+    stale_goal_check_proofs,
+    ApparatusProvenance,
+    CalibrationRating,
+    EvalResult,
+    GoalCheckProof,
+    RubricAxis,
+)
 from threetears.evals.contracts.provider import sum_optional_tokens
 from threetears.evals.contracts.result_condition import (
     JUDGE_CANNOT_TELL_OUTCOME,
@@ -165,6 +199,10 @@ from threetears.evals.contracts.result_condition import (
 from threetears.evals.contracts.surface import (
     CellFacts,
     DecisionSurface,
+    FrontierDominance,
+    GuardrailCell,
+    GuardrailCheck,
+    GuardrailReadings,
     JudgedDimensionFacts,
     JudgedReading,
     MeasureFacts,
@@ -272,6 +310,10 @@ _PER_RESULT = "result"
 # The result's blended spend, as a measure — the one lineage leaf that is read only where it was observed.
 _COST_MEASURE = "cost_usd"
 
+#: The spend belonging to the roles production runs — the candidate's cost, without the judge's. The one cost
+#: a contrast between arms is tested on (:func:`_per_case_values`); ``cost_usd`` is what it cost to measure.
+_CANDIDATE_SPEND = "production_replicating_cost"
+
 # The distinguishing clause of each reason a cross-scope difference is withheld. The reason
 # reaches the generator as a SENTENCE (see ``ScopeDivergence.unattributed_withheld``), and that
 # prose gets tuned for its reader — so the clause that identifies WHICH condition fired is named
@@ -281,16 +323,14 @@ WITHHELD_OPPOSITE_DIRECTIONS = "have opposite better-directions"
 WITHHELD_DIFFERENT_POPULATIONS = "are averaged over different populations"
 WITHHELD_UNKNOWN_POPULATION = "has no observation unit"
 
-# How many standard errors a movement must clear before it counts as having a direction
-# at all. Two is the conventional "outside the noise" bar on a difference of means, and it
-# is deliberately NOT a tuned knob: the standard error of the difference is computed by
-# propagating each side's own SEM, so the bar adapts to each measure's spread instead of
-# imposing one threshold on measures whose scales have nothing to do with each other.
-# Anything inside it reads as ``flat`` — which is a direction, and the one that carries the
-# most weight here: "the whole run moved and the part under test did not" is exactly the
-# divergence this surface exists to surface, and it would be missed by a rule that only
-# noticed improved-vs-regressed sign flips.
-_DIVERGENCE_SE_MULTIPLE = 2.0
+# How a divergence is decided. It is a test of the DIFFERENCE between the two movements, never two
+# movements graded apart and set side by side: "the whole moved" beside "the part did not" is the
+# difference between a significant and a non-significant result, which is not itself significant
+# (Gelman & Stern 2006), and with no divergence at all it published one 11% to 33% of the time. So
+# each case's remainder (its whole minus its part, per-case means) is tested between the two levels
+# by the engine's between-level test (`stats.level_difference`), and the lever's tests are corrected
+# together by Holm's method. A movement graded on its own still reads `improved`, `regressed`,
+# `not_separated` or `equivalent`, but it is context: no verdict on one movement decides a divergence.
 
 # How many divergences may be reported. Every (lever × level-pair × cross-scope measure
 # pair) is a candidate, so the space is quadratic in a campaign's measure count and a
@@ -298,6 +338,15 @@ _DIVERGENCE_SE_MULTIPLE = 2.0
 # the failure the gate exists to prevent, arriving by volume instead of by noise. The
 # count dropped is reported rather than silently truncated.
 _MAX_DIVERGENCES = 8
+
+# The same cap, for the three other lists that grow with the campaign or the ledger rather than with what a
+# reader can act on, each with what it dropped counted beside it (see `_capped`). `refused_merges` is
+# quadratic in the cells a variant spans, `next_experiments` grows with variants × unrecorded dimensions, and
+# `prior_insights` grows with every generation over the subject — and all three ride whole into a paid prompt.
+# Starting values, not measured ones: tuning them is separate work.
+_MAX_REFUSED_MERGES = 8
+_MAX_NEXT_EXPERIMENTS = 8
+_MAX_PRIOR_INSIGHTS = 12
 
 # Why another swept lever varying inside a cohort clouds the comparison. Generic on
 # purpose: which lever it is says nothing extra here, because a campaign sweeping it
@@ -442,28 +491,51 @@ UNDECIDED_CONFOUND_PREFIX = "not recorded on every run in this campaign, so whet
 # =============================================================================
 
 
-class MeasureMovement(EvalDocumentModel):
-    """How one measure moved between two levels of a lever, and whether that movement is real.
+#: How one movement between two levels reads — :func:`~threetears.evals.analysis.stats.level_difference`'s
+#: verdict, in the vocabulary of the history read (#592). ``not_separated`` claims nothing about whether the
+#: measure moved; only ``equivalent`` says the move is small, and only against a declared margin.
+MovementDirection = Literal["improved", "regressed", "equivalent", "not_separated", "untested"]
 
-    ``direction`` is the movement graded against its own noise, never the bare sign of
-    ``delta``: a difference smaller than :data:`_DIVERGENCE_SE_MULTIPLE` standard errors
-    reads ``flat``, as does one whose spread is unestimable (a level with a single
-    observation has no dispersion, which is not the same fact as having none).
+
+class MeasureMovement(EvalDocumentModel):
+    """How one measure moved between two levels of a lever, and whether that movement separates from noise.
+
+    ``direction`` is the movement tested against its own noise, never the bare sign of ``delta``: the
+    engine's between-level test over per-case means (paired over the cases both levels ran, Welch's
+    otherwise), read against Student's t at α. A movement that does not separate is ``not_separated``,
+    which says the data cannot tell it from noise — never that the measure held still. ``equivalent``
+    is the one reading that claims a small move, and it needs the measure's declared margin.
     """
 
     name: str = Field(min_length=1, description="The measure's registry name — its key into the measure_catalog.")
     scope: AttributionScope = Field(description="The measure's attribution scope.")
-    mean_a: float = Field(description="Mean at the first level.")
-    mean_b: float = Field(description="Mean at the second level.")
+    mean_a: float = Field(description="Mean of the per-case means the test read at the first level.")
+    mean_b: float = Field(description="Mean of the per-case means the test read at the second level.")
     delta: float = Field(description="mean_b - mean_a, in the measure's own unit.")
     se_of_delta: float | None = Field(
         default=None,
-        description="Standard error of the difference (each level's SEM propagated). None when unestimable.",
+        description=(
+            "Standard error of the difference the test read: of the per-case differences when paired, each level's "
+            "SEM of its case means in quadrature when not. None when no test ran."
+        ),
     )
-    n_a: int = Field(ge=0, description="Observations at the first level.")
-    n_b: int = Field(ge=0, description="Observations at the second level.")
-    direction: Literal["improved", "regressed", "flat"] = Field(
-        description="The movement read against its own noise — flat when it does not clear it."
+    test: Literal["paired", "unpaired"] | None = Field(
+        default=None,
+        description=(
+            "`paired` = over the cases both levels ran; `unpaired` = Welch's t statistic on Hsu's conservative "
+            "min(n) − 1 degrees of freedom over each level's cases, when they share fewer than two. None when no "
+            "test could run."
+        ),
+    )
+    n_a: int = Field(ge=0, description="Cases read at the first level (each case's repeats averaged first).")
+    n_b: int = Field(ge=0, description="Cases read at the second level.")
+    direction: MovementDirection = Field(
+        description=(
+            "improved / regressed = the movement separates from noise at alpha (this movement's own test, not "
+            "corrected across the lens). equivalent = shown inside ± the measure's declared materiality threshold by "
+            "a paired equivalence test; never read without one. not_separated = the data cannot tell this movement "
+            "from noise, which says nothing about whether the measure moved. untested = too few cases to test."
+        )
     )
     materiality: Materiality = Field(
         description=(
@@ -504,12 +576,12 @@ class Confound(EvalDocumentModel):
     dimension: str = Field(
         min_length=1,
         description=(
-            "What varied — a lever name, a run attribute, an observed mechanism (`observed:<covariate>`), or a "
-            "resolved surface folded into its knob without a check (`unverified_fold:<surface>`); key into "
-            "confound_catalog."
+            "What varied — a lever name, a run attribute, an observed mechanism (`observed:<covariate>`), a "
+            "resolved surface folded into its knob without a check (`unverified_fold:<surface>`), or the model that "
+            "answered one requested model id (`served_model:candidate`); key into confound_catalog."
         ),
     )
-    kind: Literal["swept_lever", "apparatus", "observed_mechanism", "unverified_fold"] = Field(
+    kind: Literal["swept_lever", "apparatus", "observed_mechanism", "unverified_fold", "served_model"] = Field(
         description=(
             "swept_lever = another knob this campaign deliberately tuned. apparatus = the measuring rig moved "
             "under the comparison, which is the more serious of the two because nothing intended it. "
@@ -519,7 +591,11 @@ class Confound(EvalDocumentModel):
             "unverified_fold = a resolved surface the host records beside the knob written into it moved with "
             "that knob and is reported as the same change, but every level of the knob here was run by one arm "
             "only, so nothing in these runs could have shown the surface moving apart from the knob: the fold is "
-            "an assumption these runs did not test, never a checked non-confound."
+            "an assumption these runs did not test, never a checked non-confound. "
+            "served_model = the runs asked for one candidate model id and the provider's responses named more than "
+            "one model as having answered it (a floating alias that moved, within an arm or between arms), so the "
+            "numbers under that id are a mixture of models; undecided when some response named no model, so which "
+            "model answered cannot be established."
         )
     )
     status: Literal["varied", "undecided"] = Field(
@@ -571,6 +647,8 @@ class Confound(EvalDocumentModel):
                 f"an unverified_fold confound names its surface as {UNVERIFIED_FOLD_PREFIX}<surface>, and is always "
                 "varied"
             )
+        if (self.kind == "served_model") != self.dimension.startswith(SERVED_MODEL_PREFIX):
+            raise ValueError(f"a served_model confound, and only one, names its role as {SERVED_MODEL_PREFIX}<role>")
         return self
 
 
@@ -583,6 +661,23 @@ OBSERVED_MECHANISM_PREFIX = "observed:"
 #: Prefixed for the same reason: the surface is a lever name too, and where some other cohort does not fold
 #: it, it is named there as a confound of its own with its own reason, which a bare name would overwrite.
 UNVERIFIED_FOLD_PREFIX = "unverified_fold:"
+
+#: The prefix a served-model confound's dimension carries — the role whose served model it names follows it.
+#: Prefixed for the reason the two above are: it shares ``confound_catalog`` with lever names, and a host
+#: may name a lever anything.
+SERVED_MODEL_PREFIX = "served_model:"
+
+#: The one served-model confound the engine raises today: the candidate's. The judge's served model is
+#: an apparatus input (``judge_model``) and confounds as one.
+CANDIDATE_SERVED_MODEL_CONFOUND = f"{SERVED_MODEL_PREFIX}candidate"
+
+#: Why the candidate's served model moving under one requested id clouds a comparison, in the catalog's words.
+_SERVED_MODEL_CONFOUNDS = (
+    "the candidate was asked for one model id and the provider's responses named more than one model as having "
+    "answered it — a floating alias (a 'latest' pointer) resolves on the provider's side and can move between "
+    "runs or within one — so the numbers recorded under that id are a mixture of models, and a difference between "
+    "arms may belong to which model answered rather than to anything the arms set"
+)
 
 #: How far apart two levels' mean reasoning share (``reasoning_ratio``, absolute) must be before a
 #: comparison between them is disclosed as confounded by it. A reasoning effort is sent to a provider
@@ -635,7 +730,8 @@ def observed_mechanism_key(covariate: str) -> str:
 #: acts on; ``not_swept`` = it was observed at one level, so there is nothing to compare;
 #: ``levels_unobserved`` = some level observed none of the measure, so no pair of levels separated and
 #: whether it held still at every level cannot be shown; ``too_few_observations`` = every level observed
-#: it, but some pair of levels has too few cases on a side for the separation test to run.
+#: it, but some pair of levels has too few cases on a side for the separation test to run, or a gap with no
+#: spread over too few cases for an exact test to call it at alpha.
 MechanismUncheckedReason = Literal["not_declared", "not_swept", "levels_unobserved", "too_few_observations"]
 
 
@@ -650,7 +746,9 @@ class MechanismCheck(EvalDocumentModel):
     **Read with the engine's own separation test, never by inequality.** Each pair of levels is
     compared on the measure's per-case means exactly as a family comparison compares a contrast with
     the control (paired over shared cases, else Welch's; Holm-corrected across the lever's pairs), so
-    noise does not read as a lever taking effect.
+    noise does not read as a lever taking effect. A gap with no spread — every case shifted alike — is
+    read by the exact permutation test, so over a handful of cases it is too few to tell, not ``moved``:
+    a 0/1 mechanism under a lever that did nothing shifts two cases alike one time in eight.
 
     **Three states, none of them a default.** ``moved``: some pair of levels separates on the measure.
     ``inert``: every level observed it, every pair could be tested, and none separates — no measurable
@@ -689,7 +787,8 @@ class MechanismCheck(EvalDocumentModel):
         description=(
             "Why the check is unchecked; None otherwise. not_declared = the lever names no mechanism. not_swept = "
             "one level only. levels_unobserved = some level observed none of it. too_few_observations = some pair "
-            "of levels had fewer than two cases on a side."
+            "of levels had fewer than two cases on a side, or every case shifted by the same amount over too few "
+            "cases for an exact test to tell that from chance (fewer than six shared cases)."
         ),
     )
 
@@ -728,6 +827,63 @@ class ArmMechanismReading(EvalDocumentModel):
     )
     n_measured: int = Field(ge=0, description="The arm's results that measured the covariate.")
     n_results: int = Field(ge=0, description="The arm's results in all.")
+
+
+class ArmServedModel(EvalDocumentModel):
+    """Which model answered one arm's candidate calls, as the provider's responses named it.
+
+    An arm is keyed by the model id its launch ASKED for, and a floating alias is resolved on the
+    provider's side, so two runs of one arm months apart can have been answered by different models and
+    still pool as one arm. Only the response names the model that answered (``RoleUsage.served_model``),
+    so this reads that and nothing else: never the requested id standing in for a response that named
+    none.
+    """
+
+    variant_key: str = Field(min_length=1, description="The arm, as `arms` and `design` key it.")
+    served_models: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Every distinct model the provider's responses named as having answered this arm's candidate calls, "
+            "sorted. Never the requested id: a call whose response named no model adds nothing here and is "
+            "counted in n_unrecorded."
+        ),
+    )
+    n_results: int = Field(ge=1, description="The arm's results whose candidate calls left a usage row.")
+    n_unrecorded: int = Field(
+        ge=0,
+        description=(
+            "Of those, the results with at least one candidate call whose response named no model — or stored "
+            "before served models were recorded. Not recorded, never a match with the requested id."
+        ),
+    )
+    state: Literal["one", "pooled", "unrecorded"] = Field(
+        description=(
+            "one = every candidate call named one and the same model. pooled = the arm pooled observations "
+            "answered by two or more models (served_models), so its numbers are a mixture, and every comparison "
+            "involving it names the served_model confound. unrecorded = at most one model was named and some call "
+            "named none, so whether the arm was answered by one model cannot be established."
+        )
+    )
+
+    @model_validator(mode="after")
+    def _state_follows_the_counts(self) -> ArmServedModel:
+        """The state is the one the served models and the unrecorded count imply, never a second opinion.
+
+        Raises:
+            ValueError: ``state`` disagrees with ``served_models`` and ``n_unrecorded``.
+        """
+        expected = (
+            "pooled"
+            if len(self.served_models) > 1
+            else "one"
+            if self.served_models and not self.n_unrecorded
+            else "unrecorded"
+        )
+        if self.state != expected or self.n_unrecorded > self.n_results:
+            raise ValueError(
+                f"an arm with these served models and unrecorded calls is {expected!r}, not {self.state!r}"
+            )
+        return self
 
 
 class DesignArm(EvalDocumentModel):
@@ -773,9 +929,11 @@ class DesignArm(EvalDocumentModel):
     mechanism_confounds: list[Confound] = Field(
         default_factory=list,
         description=(
-            "Observed mechanisms that diverged between the two sides of this arm and the control arm, when they ran different "
-            "candidate models: each names the covariate, the threshold it crossed and both models' values. It "
-            "qualifies the contrast and suppresses nothing. Empty on the control, and when the sides share a model or nothing diverged."
+            "What was observed, not set, to differ under this arm and the control arm: each observed mechanism that "
+            "diverged when they ran different candidate models (the covariate, the threshold it crossed and both "
+            "models' values), and the served_model confound when one requested model id was answered by more than "
+            "one model across the two. It qualifies the contrast and suppresses nothing. Empty on the control, and "
+            "when neither applies."
         ),
     )
 
@@ -786,7 +944,8 @@ class RealizedDesign(EvalDocumentModel):
     **The derived twin of the declaration, and the two must not share a name.** The declaration
     (:class:`~threetears.evals.contracts.declaration.CampaignDesign`, on the campaign) says what an
     operator SET OUT to learn; this says what the observations actually show. The delta between
-    them is the coverage story — a declared value with no observations is `unswept` and NAMED,
+    them is the coverage story — a declared value with no observations is NAMED, ``not_run`` in its
+    axis row's ``declared_levels`` (``undetermined`` where some run's level cannot be established),
     where this one can only ever report what happened to run.
 
     They were briefly both called ``CampaignDesign``, in one package, and the collision silently
@@ -853,11 +1012,18 @@ class RealizedDesign(EvalDocumentModel):
 class ScopeDivergence(EvalDocumentModel):
     """Two scopes disagreeing about what one lever change did — a finding, not a caveat.
 
-    The whole run and the part under test can move in different directions, or one can move
-    while the other does not, and a report that ranks on either lane alone presents that as
-    a clean result. The concrete failure: turn latency roughly halved between two arms while
-    the tuned subsystem's own elapsed time did not move at all, so the arm was credited for
-    a ~50s improvement that happened somewhere else entirely.
+    The whole run can move by more or less than the part under test accounts for, and a report
+    that ranks on either lane alone presents that as a clean result. The concrete failure: turn
+    latency roughly halved between two arms while the tuned subsystem's own elapsed time barely
+    changed, so the arm was credited for a ~50s improvement that happened somewhere else entirely.
+
+    **What is tested is the divergence itself**: whether the whole's movement and the part's differ.
+    Each case's remainder — its whole minus its part — is compared between the two levels by the
+    engine's between-level test (paired over shared cases, Welch's otherwise, per-case means so
+    repeats are not counted as cases), and a lever's divergence tests are Holm-corrected together. A
+    divergence is published only where that corrected test separates. Two movements graded apart and
+    set side by side are never the test: a whole that separates beside a part that does not is no
+    evidence the two differ.
 
     The two measures are paired by **unit**, which is what makes this subject-agnostic: an
     end-to-end and a subsystem measure in the same unit are two views of one quantity at
@@ -879,8 +1045,8 @@ class ScopeDivergence(EvalDocumentModel):
     the arithmetic between them is refused.
 
     **Where the catalog partitions the whole, the parts are graded too, and the one carrying the
-    movement is named.** A whole that moved beside a flat subsystem measure says only that the
-    movement was not THERE; left at that, a reader sets the whole beside whatever else is in view
+    movement is named.** A whole that moved by more than a subsystem measure says only that the
+    difference was not THERE; left at that, a reader sets the whole beside whatever else is in view
     — a disjoint phase timing, say — and attributes the swing to the lever. The whole's own
     components answer where it went: a ``total_ms`` swing that is almost all ``llm_ms`` is time
     inside model calls, which a provider's load moves as readily as any lever.
@@ -892,6 +1058,34 @@ class ScopeDivergence(EvalDocumentModel):
     unit: str = Field(min_length=1, description="The unit both measures share — why they are comparable.")
     end_to_end: MeasureMovement = Field(description="How the whole-run measure moved.")
     subsystem: MeasureMovement = Field(description="How the isolating measure moved.")
+    test: Literal["paired", "unpaired"] = Field(
+        description=(
+            "The test of the divergence — of each case's whole-minus-part between the two levels: `paired` over "
+            "the cases both levels ran, `unpaired` (Welch's t statistic on Hsu's min(n) − 1 degrees of freedom) when "
+            "they share fewer than two."
+        )
+    )
+    n_cases_a: int = Field(ge=2, description="Cases carrying both measures that the divergence test read at level_a.")
+    n_cases_b: int = Field(ge=2, description="Cases carrying both measures that the divergence test read at level_b.")
+    p_raw: float = Field(
+        ge=0.0,
+        le=1.0,
+        description=(
+            "The divergence test's own two-sided p, before correction. Kept for audit, never the figure the "
+            "divergence rests on, and withheld from the analysis writer."
+        ),
+    )
+    p_adjusted: float = Field(
+        ge=0.0,
+        le=1.0,
+        description=(
+            "The Holm-adjusted p across every divergence test of this lever (`family_size`) — the figure the "
+            "divergence rests on. Always below alpha: nothing else is published."
+        ),
+    )
+    family_size: int = Field(
+        ge=1, description="How many divergence tests this lever's comparisons carried a p, corrected together."
+    )
     unattributed_delta: float | None = Field(
         default=None,
         description=(
@@ -929,8 +1123,9 @@ class ScopeDivergence(EvalDocumentModel):
     confounded_by: list[Confound] = Field(
         default_factory=list,
         description=(
-            "Everything NOT held fixed across the two cohorts being compared — other swept levers, and "
-            "run attributes that moved on their own. This is a marginal comparison, not a controlled "
+            "Everything NOT held fixed across the two cohorts being compared — other swept levers, "
+            "run attributes that moved on their own, observed mechanisms that diverged, and a requested candidate "
+            "model answered by more than one model. This is a marginal comparison, not a controlled "
             "one: some of the movement may belong to these. Empty means the comparison is clean."
         ),
     )
@@ -945,8 +1140,11 @@ class ScopeDivergence(EvalDocumentModel):
     carried_by: str | None = Field(
         default=None,
         description=(
-            "The component carrying the whole-run movement: the one whose delta, in the whole's direction, is "
-            "largest. None when the whole did not move beyond its noise, or no component moved its way. When it "
+            "The component shown to carry the whole-run movement: the one with the largest delta in the whole's "
+            "direction, named only when its own movement separates that way and it is shown to move further than "
+            "every other component (each case's difference between the two, tested between the levels, "
+            "Holm-adjusted). None when the whole's movement does not separate from its noise, no component moved "
+            "its way, or no single component is shown to carry it — read `whole_components` then. When it "
             "is time inside model calls (llm_ms), a provider's load moves it as readily as the lever does, so "
             "read candidate_output_tokens_per_s across the two cohorts before attributing the movement to the lever."
         ),
@@ -978,12 +1176,72 @@ class ScopeDivergence(EvalDocumentModel):
 
 
 #: What the frontier lens's clearing count means when no bar was passed to it — nothing. The
-#: sentence the MCP frontier render states for the same condition, carried on the bundle.
+#: sentence the MCP frontier render states for the same condition, carried on the bundle, and followed by
+#: why no bar was passed (:func:`_frontier_bar`).
 _FRONTIER_BAR_WITHHELD = (
     "withheld — no bar was supplied to the frontier lens, so it names no verdict and each subject's "
     "n_cleared_bar is a default of 0, not a count of arms that failed a bar. The bars this campaign is "
     "held to are adjudicated in bar_adjudications."
 )
+
+
+def _frontier_bar(
+    behavior: str, design: CampaignDesign | None, *, profile: HostProfile
+) -> tuple[float | None, str | None]:
+    """The bar the frontier is given, or why it is given none.
+
+    The frontier ranks on pass^k (:data:`~threetears.evals.contracts.metrics.FRONTIER_RANKING_MEASURE`) and
+    reads a bar only on it, while a campaign's bars may name any measure. So it takes the campaign's
+    effective bar on that measure — the declared one, else the host's registered one, exactly as
+    :func:`_applicable_bars` resolves every bar — and none otherwise; a bar on another measure is adjudicated
+    per cell in ``bar_adjudications`` and is never translated onto pass^k. The frontier reads the bar on each
+    contestant's pass^k interval by the three-valued rule every bar is read by
+    (:func:`~threetears.evals.analysis.stats.interval_clears`), with no margin, which is pass^k's own: its
+    descriptor declares none.
+
+    **More than one effective bar on pass^k is refused, not picked between**, as is one the frontier cannot
+    read — lower-is-better, or a threshold outside pass^k's range [0, 1] (a host's registered bar is not
+    range-checked where it is registered) — and the reason says so.
+
+    Args:
+        behavior: The campaign's behavior, the scope a registered bar is keyed under.
+        design: The campaign's declaration.
+        profile: The host whose registered bars apply.
+
+    Returns:
+        ``(bar, None)`` when the frontier takes a bar, else ``(None, reason)``: the withheld sentence followed
+        by which bars exist, and on what measure, or why the one on pass^k was not passed.
+    """
+    bars = _applicable_bars(behavior, design, profile=profile)
+    on_ranking = [bar for bar in bars if bar[0] == FRONTIER_RANKING_MEASURE]
+
+    def named(bar: tuple[str, float, bool, str]) -> str:
+        measure_id, threshold, higher_is_better, source = bar
+        return f"{measure_id} {'≥' if higher_is_better else '≤'} {format_number(threshold)} ({source})"
+
+    if len(on_ranking) == 1:
+        _, threshold, higher_is_better, _ = on_ranking[0]
+        if higher_is_better and 0.0 <= threshold <= 1.0:
+            return threshold, None
+        why = (
+            f"The one bar on {FRONTIER_RANKING_MEASURE}, {named(on_ranking[0])}, is not one the frontier can read: "
+            "pass^k is a probability whose higher end is better, so its bar is a threshold in [0, 1] to reach."
+        )
+    elif on_ranking:
+        why = (
+            f"{len(on_ranking)} bars name {FRONTIER_RANKING_MEASURE}, the measure the frontier ranks on — "
+            f"{'; '.join(named(bar) for bar in on_ranking)} — and it takes one, so it was given none rather than "
+            "a pick between them."
+        )
+    elif bars:
+        why = (
+            f"The frontier ranks on {FRONTIER_RANKING_MEASURE} and reads a bar only on it; this campaign's bars are "
+            f"on other measures — {'; '.join(named(bar) for bar in bars)} — so none was passed to it."
+        )
+    else:
+        why = "This campaign is held to no bar, declared or registered."
+    return None, f"{_FRONTIER_BAR_WITHHELD} {why}"
+
 
 #: Why a judged dimension sits beside the ranking surface rather than on it. One sentence for every
 #: dimension, because the reason is a property of how judged scores are produced and not of any
@@ -1017,8 +1275,8 @@ class JudgedArm(EvalDocumentModel):
     n_independent: int = Field(
         ge=0,
         description=(
-            "Distinct test cases behind those scores. Below n, the scores are repeats of the same cases "
-            "and `sem` is narrower than the data supports, exactly as on a telemetry measure."
+            "Distinct test cases behind those scores — the independent draws. Below n, the scores are repeats "
+            "of the same cases, and `sem` is computed over the cases, exactly as on a telemetry measure."
         ),
     )
     n_infra_excluded: int = Field(
@@ -1039,7 +1297,12 @@ class JudgedArm(EvalDocumentModel):
     )
     mean: float | None = Field(default=None, description="Mean score on the dimension's own scale. None when n is 0.")
     sem: float | None = Field(
-        default=None, description="Standard error of that mean. None below n=2, where no spread is estimable."
+        default=None,
+        description=(
+            "Standard error of that mean, over the test cases (cluster-robust: a case's repeats are not "
+            "independent draws), read on `n_independent - 1` degrees of freedom. None below two cases, where "
+            "no between-case spread is estimable."
+        ),
     )
     evidence_tier: JudgedEvidenceTier = Field(
         description=(
@@ -1067,7 +1330,18 @@ class JudgedMeasure(EvalDocumentModel):
         description="The registry family — `rubric` for a template dimension, `dual_axis` for a reserved axis.",
     )
     value_range: tuple[float, float] | None = Field(default=None, description="The scale the scores are on.")
+    scale: MeasureScale | None = Field(
+        default=None,
+        description="`interval` for a 1-5 score (only differences mean anything), `ratio` for a pass rate.",
+    )
     higher_is_better: bool = Field(default=True, description="Which end of the scale is better.")
+    axis: RubricAxis = Field(
+        default="capability",
+        description=(
+            "`boundary` when any score on it was judged as a boundary dimension: a guardrail, decided in "
+            "`guardrails` and never in a comparison family or the composite. `capability` otherwise."
+        ),
+    )
     off_ranking_reason: str = Field(
         default=JUDGED_OFF_RANKING_REASON,
         description="Why this dimension is measured and reportable yet never a ranking measure. Absent from measure_catalog for this reason alone.",
@@ -1161,7 +1435,9 @@ class RunSummary(EvalDocumentModel):
             "`config_provenance` separates them: a lever whose value could not be established is here "
             "as `unknown` there and absent here, so 'we could not establish this' is never readable as "
             "a level; a lever the campaign never engaged with — declared by the host, never moved, never "
-            "named by a launch, never recovered — is in neither, and says nothing about the experiment."
+            "named by a launch, never recovered — is in neither, and says nothing about the experiment. "
+            "The level `null` is a value the launch SET (it named the lever as null, stamped `overridden`), "
+            "not a missing one."
         ),
     )
     config_provenance: dict[str, str] = Field(
@@ -1211,7 +1487,8 @@ class RunSummary(EvalDocumentModel):
             "Production-replicating spend per MEASURED turn — the comparable figure, and the one the "
             "measure registry names the reporting default. Its denominator is `n_prod_cost_usd`, never "
             "`n_results`: a result that measured nothing is absent from this mean rather than dragging it "
-            "toward a zero nobody observed, which would rank the least-measured configuration cheapest."
+            "toward a zero nobody observed, which would rank the least-measured configuration cheapest. A "
+            "result the harness faulted is absent too, as from every comparison cost."
         ),
     )
     n_prod_cost_usd: int = Field(
@@ -1222,7 +1499,21 @@ class RunSummary(EvalDocumentModel):
             "travels together. A result with no usage decomposition, or one carrying a substituted "
             "delivery, is ABSENT from both rather than entering the sum as a zero: averaging an "
             "unobserved zero in would rank the least-measured config the cheapest. So is a call the model "
-            "refused or errored on, which took no turn (`delivered_a_turn`), as every cost reading leaves it out."
+            "refused or errored on, which took no turn (`delivered_a_turn`), and a result the harness faulted, "
+            "whose cut-short spend would let the rig make an arm look cheaper: every comparison cost leaves both "
+            "out, while `cost_usd` (program spend) keeps them."
+        ),
+    )
+    production_footing: ProductionFooting | None = Field(
+        default=None,
+        description=(
+            "Which inputs this run held away from the subject's production configuration, read off the host's "
+            "declarations — what `prod_cost_usd` and `mean_prod_cost_usd` were spent under. `moved` names each "
+            "input the run set off production with its level, `unchecked` each lever whose departure could not "
+            "be decided, `held` the inputs checked and found at production. Only an empty `moved` AND an empty "
+            "`unchecked` say the cost was measured at production's configuration; anything in either means it "
+            "was not, or may not have been. None when nobody checked: a summary assembled before the "
+            "disclosure existed, or one built from a run read without its host payload."
         ),
     )
     measures: MeasureCollection = Field(
@@ -1230,21 +1521,38 @@ class RunSummary(EvalDocumentModel):
     )
 
 
-class LeverCoverageInput(EvalDocumentModel):
-    """Structural coverage of one lever — the raw material the generator grades.
+class DeclaredLevelCoverage(EvalDocumentModel):
+    """Whether one level the campaign DECLARED for an axis was run — the declaration's delta, by name."""
 
-    This is *input* to generation, not the final graded
+    display: str = Field(min_length=1, description="The declared level, as the declaration renders it.")
+    content_hash: str = Field(min_length=1, description="The declared level's identity, which runs are joined on.")
+    state: Literal["ran", "not_run", "undetermined"] = Field(
+        description=(
+            "ran = some member run sat at this level. not_run = declared and never run: every member run's "
+            "level on the axis is established and none is this one, so the comparison it was declared for "
+            "was not made. undetermined = no run is known to sit here, but some run's level on the axis "
+            "could not be established (a run that inherited the subject's own setting may be at it), so "
+            "'not run' cannot be claimed."
+        )
+    )
+
+
+class LeverCoverageInput(EvalDocumentModel):
+    """Structural coverage of one lever, as the bundle computes it.
+
+    The generator copies it, field for field, into the stored
     :class:`~threetears.evals.contracts.campaign.LeverCoverage`: it reports how finely a
     lever was swept (``cells`` = distinct observed levels), how many samples inform
     it (``n`` = distinct results), the repeat floor (``k``), a scored-signal spread
     (``dispersion``, the composite SEM read via the core ``stats`` helper — never a
-    new statistic), and a coarse ``status``. The generator refines confidence from
-    these facts; carrying them is what makes coverage the analysis's spine.
+    new statistic), and a coarse ``status``. Nothing grades these into a confidence:
+    carrying them is what makes coverage the analysis's spine.
     """
 
     name: str = Field(description="Lever name — a dotted factor key or 'model'.")
     levels: list[str] = Field(
-        default_factory=list, description="Distinct observed values ('—' = ran without the override)."
+        default_factory=list,
+        description="Distinct observed values ('—' = ran without the override; 'null' = the launch set it to null).",
     )
     cells: int = Field(ge=0, description="Number of distinct observed levels — how finely the lever was swept.")
     k: int = Field(
@@ -1277,9 +1585,28 @@ class LeverCoverageInput(EvalDocumentModel):
         default_factory=list,
         description=(
             "Everything else that varied across the runs behind this lever — other swept levers, run "
-            "attributes that moved on their own, and observed mechanisms that diverged between its levels. A "
+            "attributes that moved on their own, observed mechanisms that diverged between its levels, and a "
+            "requested candidate model answered by more than one model. A "
             "comparison on this lever is marginal, not controlled, for each of these. Empty means nothing else "
             "moved."
+        ),
+    )
+    declared_levels: list[DeclaredLevelCoverage] = Field(
+        default_factory=list,
+        description=(
+            "On a DECLARED axis, every level the declaration names, in its order, each marked ran / not_run / "
+            "undetermined. `levels` lists only what ran, so this is where a declared level that never ran is "
+            "named — a gap in the design as run, distinct from a level nobody declared. Empty on an "
+            "undeclared row."
+        ),
+    )
+    cannot_be_an_arm: str | None = Field(
+        default=None,
+        description=(
+            "Set only on a DECLARED axis the host cannot vary on purpose — an apparatus or label input, or a name "
+            "it never registered: the host's own reason, with its remedy. Such an input never enters the variant "
+            "key, so every run resolves to one arm on it and this row is unswept BY CONSTRUCTION, whatever the "
+            "runs did — a design that cannot be met, never a sweep that did not happen. Null on every other row."
         ),
     )
     mechanism: MechanismCheck = Field(
@@ -1314,7 +1641,7 @@ class TelemetryRollup(EvalDocumentModel):
     )
 
 
-class ControlsReading(EvalDocumentModel):
+class HeldFixedReading(EvalDocumentModel):
     """What the campaign declared held still, beside what its runs say about the apparatus.
 
     The declaration (:class:`~threetears.evals.contracts.declaration.ControlDeclaration`) is a claim
@@ -1450,9 +1777,10 @@ class VerdictOrder(EvalDocumentModel):
     )
 
 
-#: What one comparison in a family came to, read off its ADJUSTED p. ``untested`` = no test could
-#: run (fewer than two cases a side), which is neither a separation nor its absence.
-ComparisonVerdict = Literal["improved", "regressed", "not_separated", "untested"]
+#: What one comparison in a family came to, read off its ADJUSTED p's. ``equivalent`` = shown inside the
+#: measure's declared margin by an equivalence test; ``untested`` = no test could run (fewer than two cases a
+#: side), which is neither a separation nor its absence.
+ComparisonVerdict = Literal["improved", "regressed", "equivalent", "not_separated", "untested"]
 
 
 class ComparedCell(EvalDocumentModel):
@@ -1467,7 +1795,21 @@ class ComparedCell(EvalDocumentModel):
             "is paired, every case carrying the reading otherwise."
         ),
     )
-    mean: float | None = Field(default=None, description="Mean of those per-case values. None when n_cases is 0.")
+    mean: float | None = Field(
+        default=None,
+        description=(
+            "Mean of those per-case values — over the cases the test read, which is not the cell's own mean when "
+            "`n_left_out` is above 0. None when n_cases is 0."
+        ),
+    )
+    n_left_out: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Cases this side carried the reading on that the test did not read, because the other side did not run "
+            "them: a paired test reads only the cases both ran. 0 when the test read every case this side has."
+        ),
+    )
 
 
 class FamilyComparison(EvalDocumentModel):
@@ -1480,13 +1822,36 @@ class FamilyComparison(EvalDocumentModel):
     contrast: ComparedCell = Field(description="The contrast arm's cell under the same rig.")
     delta: float | None = Field(
         default=None,
-        description="contrast mean minus control mean, in the reading's unit. None when either side is empty.",
+        description=(
+            "contrast mean minus control mean, in the reading's unit, over the cases the test read (each side's "
+            "`mean`). None when either side is empty."
+        ),
+    )
+    interval: tuple[float, float] | None = Field(
+        default=None,
+        description=(
+            "The interval on `delta` at the family's `interval_level`, from the same test as `p_raw`: simultaneous "
+            "over the family, so every interval in it covers its true difference together at least 95% of the time. "
+            "One that excludes zero always comes with a separation; a separation Holm's later steps found can still "
+            "touch zero. None when no test could run, and where the values have no spread (every shared case moved "
+            "by one amount, or each side constant): the exact test that decides those has no interval to invert."
+        ),
+    )
+    hedges_g: float | None = Field(
+        default=None,
+        description=(
+            "The standardized effect, Hedges' g (bias-corrected Cohen's d): over the SD of the per-case differences "
+            "when paired, the pooled SD when not. None when no test ran, at two paired cases, where no unbiased "
+            "estimate exists, and where the values have no spread, where no finite effect size exists."
+        ),
     )
     test: Literal["paired", "unpaired"] | None = Field(
         default=None,
         description=(
-            "`paired` = a paired t-test over the cases both cells ran; `unpaired` = Welch's t-test over each cell's "
-            "per-case values, when they share fewer than two cases. None when neither could run."
+            "`paired` = a paired t-test over the cases both cells ran, or the exact sign-flip test where every one "
+            "moved by the same amount; `unpaired` = Welch's t statistic on Hsu's conservative min(n) − 1 degrees of "
+            "freedom over each cell's per-case values, when they share fewer than two cases, or the exact "
+            "permutation test where each side is constant. None when neither could run."
         ),
     )
     p_raw: float | None = Field(
@@ -1498,12 +1863,32 @@ class FamilyComparison(EvalDocumentModel):
     )
     p_adjusted: float | None = Field(
         default=None,
-        description="The Holm-adjusted p within this comparison's family — the one figure a verdict rests on.",
+        description="The Holm-adjusted p within this comparison's family — the one figure a separation rests on.",
+    )
+    equivalence_margin: float | None = Field(
+        default=None,
+        description=(
+            "The measure's declared margin (`materiality_threshold`) the equivalence test ran against, in its unit. "
+            "None when it declares none, for a judged dimension, and for an unpaired test: then no equivalence test "
+            "ran and the verdict cannot be `equivalent`."
+        ),
+    )
+    equivalence_p_raw: float | None = Field(
+        default=None,
+        description=(
+            "The paired TOST p against ± `equivalence_margin` (the larger one-sided p), before correction. Kept for "
+            "audit and withheld from the writer, as `p_raw` is. None when no equivalence test ran."
+        ),
+    )
+    equivalence_p_adjusted: float | None = Field(
+        default=None,
+        description="The TOST p adjusted within the family — the one figure an `equivalent` verdict rests on.",
     )
     verdict: ComparisonVerdict = Field(
         description=(
-            "Read off `p_adjusted` against the family's alpha: improved or regressed when it is below it, in the "
-            "direction `delta` moved on this reading; not_separated otherwise; untested when no test could run."
+            "improved or regressed when `p_adjusted` is below the family's alpha, in the direction `delta` moved "
+            "on this reading; else equivalent when `equivalence_p_adjusted` is below it; else not_separated, which "
+            "says nothing about whether the arms differ; untested when no test could run."
         )
     )
     untested_reason: str | None = Field(
@@ -1521,9 +1906,11 @@ class FamilyComparison(EvalDocumentModel):
     mechanism_confounds: list[Confound] = Field(
         default_factory=list,
         description=(
-            "Observed mechanisms that diverged between the two sides of this contrast, when they ran different "
-            "candidate models: each names the covariate, the threshold it crossed and both models' values. It "
-            "qualifies the contrast and suppresses nothing. Empty when the sides share a model or nothing diverged."
+            "What was observed, not set, to differ between the two sides of this contrast: each observed mechanism "
+            "that diverged when they ran different candidate models (the covariate, the threshold it crossed and "
+            "both models' values), and the served_model confound when one requested model id was answered by more "
+            "than one model across the two. It qualifies the contrast and suppresses nothing. Empty when neither "
+            "applies."
         ),
     )
 
@@ -1540,8 +1927,8 @@ class ComparisonFamily(EvalDocumentModel):
         min_length=1,
         description=(
             "The live declared question this family serves. None for the campaign-wide family a campaign declaring no "
-            "question gets: every comparison it holds, on every reading, corrected as one — so a chance difference is "
-            "no more a finding for a campaign that asked nothing than for one that asked."
+            "question gets: every comparison it holds, on every reading on a merit axis, corrected as one — so a "
+            "chance difference is no more a finding for a campaign that asked nothing than for one that asked."
         ),
     )
     merit_axes: list[MeritAxis] = Field(
@@ -1554,7 +1941,26 @@ class ComparisonFamily(EvalDocumentModel):
     alpha: float = Field(default=SIGNIFICANCE_ALPHA, description="The family-wise error rate the verdicts hold.")
     family_size: int = Field(
         ge=0,
-        description="How many comparisons carried a p and were corrected together — the m the adjustment divided by.",
+        description=(
+            "How many comparisons carried a separation p and were corrected together — the m the adjustment "
+            "divides by, and the most hypotheses that can be true at once when equivalence tests join them."
+        ),
+    )
+    n_equivalence_tests: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Equivalence tests corrected in the same family, one per paired comparison on a measure that declares "
+            "a margin. A comparison's difference is either zero or at least its margin, never both, so the two "
+            "tests of one comparison cannot both be wrong and the family's error stays at alpha over every verdict."
+        ),
+    )
+    interval_level: float | None = Field(
+        default=None,
+        description=(
+            "The level of each comparison's `interval`: 1 − alpha / family_size, Bonferroni's, so the family's "
+            "intervals hold together at 1 − alpha. None when no comparison carried a p."
+        ),
     )
     n_untested: int = Field(ge=0, description="Comparisons in the family that could run no test, so carry no p.")
     comparisons: list[FamilyComparison] = Field(
@@ -1581,6 +1987,49 @@ class MultipleComparisons(EvalDocumentModel):
             "arms is tested and none may be claimed. None when families exist."
         ),
     )
+
+
+class ReadingScope(EvalDocumentModel):
+    """Which readings the campaign's declared questions asked about — and which it reads only exploratorily.
+
+    A reading no question asked about can still be reported, as a lead: it was not looked for, so a
+    pattern in it is the kind a reader finds in any data. Labelled where questions are declared, on the
+    readings outside them only; where none are, the whole campaign is exploratory and that is said once
+    (``disclosure``), never on every row — a label that fires on every row is one readers learn to skip.
+    """
+
+    questions_declared: bool = Field(
+        default=False, description="Whether the campaign declares at least one live question."
+    )
+    exploratory_measures: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Measures in `measure_catalog` on no axis a live question names, sorted — exploratory: reportable as "
+            "leads, never as a confirmed answer. Empty when no question is declared (see `disclosure`). A "
+            "guardrail is never listed: it is held because it was declared one."
+        ),
+    )
+    exploratory_dimensions: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Capability judged dimensions no live question covers (none names `quality`, and none is unscoped), "
+            "sorted. Empty when no question is declared."
+        ),
+    )
+    disclosure: str | None = Field(
+        default=None,
+        description=(
+            "Set when the campaign declares no live question: the one sentence saying every finding is "
+            "exploratory. None when questions are declared, where the two lists above carry the label."
+        ),
+    )
+
+
+#: The one sentence a campaign with no live question gets, in place of a label on every reading.
+NO_QUESTION_EXPLORATORY = (
+    "This campaign declares no live question, so every finding it supports is exploratory: nothing was asked "
+    "before the evidence was read, and a pattern found in it is a lead for a campaign that asks, not an answer."
+)
 
 
 class AnalysisContextBundle(EvalDocumentModel):
@@ -1611,17 +2060,24 @@ class AnalysisContextBundle(EvalDocumentModel):
     completeness record has not finished, or had its record's write refused, rather than having
     delivered everything — absence is not zero, and reporting unknown as complete re-commits the
     error one layer down.
+
+    ``held_fixed_reading`` was ``controls_reading`` until the declaration's ``controls`` was renamed
+    ``held_fixed``; a frozen bundle (a reporter case's) carrying the old key reads it under the new one.
     """
 
+    __retired_fields__: ClassVar[dict[str, str | None]] = {"controls_reading": "held_fixed_reading"}
+
     # The bundle's shape version. It reaches `fingerprint()`, so bump it whenever a fingerprinted
-    # field is added, renamed or removed — and whenever a change moves a fingerprinted VALUE over
-    # unchanged evidence: a host dimension joining the apparatus partition, a new ordering, a
+    # field is added, renamed or removed — and whenever a PACKAGE change moves a fingerprinted VALUE
+    # over unchanged evidence: a core dimension joining the apparatus partition, a new ordering, a
     # different rendering of what the writer is shown. Otherwise a re-assembled bundle that only
-    # changed shape reads as evidence that moved, which is the one thing this number separates. An
+    # changed shape reads as evidence that moved, which is the one thing this number separates. A
+    # HOST editing its own declarations is not a reason to bump it, and a host has no way to: that
+    # move is carried by `host_declarations_digest`, derived from the declarations themselves. An
     # A/B set spanning a bump must be read as spanning it. Why each earlier version moved is in
     # this file's history.
     schema_version: int = Field(
-        default=44, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=47, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -1673,10 +2129,13 @@ class AnalysisContextBundle(EvalDocumentModel):
     frontier_bar_withheld: str | None = Field(
         default=None,
         description=(
-            "Set when the frontier lens was given no bar, which is how this bundle always assembles it. "
-            "Its verdict is then withheld and each subject's `n_cleared_bar` is a default of 0 rather than "
-            "a count of arms that failed anything — quoting it as one reports a comparison nobody made. "
-            "The bars this campaign is held to are adjudicated in `bar_adjudications`."
+            "Set when the frontier lens was given no bar: the campaign's effective bar (declared, else registered) "
+            "is passed to it only when one names `pass_hat_k`, the measure it ranks on, and `frontier.bar` is then "
+            "set and each point's `bar_decision` names the variants below it. Otherwise its verdict is withheld "
+            "and each subject's `n_cleared_bar` is a default of 0 rather than a count of arms that failed "
+            "anything — quoting it as one reports a comparison nobody made. The sentence ends with why: which bars "
+            "exist and on what measure, or why the one on pass^k could not be passed. The bars this campaign is "
+            "held to are adjudicated in `bar_adjudications`."
         ),
     )
     telemetry: TelemetryRollup = Field(description="Campaign-wide descriptive telemetry.")
@@ -1685,12 +2144,30 @@ class AnalysisContextBundle(EvalDocumentModel):
     )
     scope_divergences: list[ScopeDivergence] = Field(
         default_factory=list,
-        description="Lever changes where the whole-run and isolating measures disagree — each one is a finding.",
+        description=(
+            "Lever changes where the whole-run measure moved by a different amount than the isolating measure, the "
+            "difference itself tested and Holm-corrected within the lever — each one is a finding. An empty list "
+            "claims no agreement: a pair whose test did not separate is not_separated, and one that could not be "
+            "tested is counted in divergences_untested."
+        ),
     )
     divergences_omitted: int = Field(
         default=0,
         ge=0,
         description="Gated divergences beyond the reporting cap, dropped weakest-first. Stated so a short list is not read as a complete one.",
+    )
+    divergences_tested: int = Field(
+        default=0,
+        ge=0,
+        description="Whole-and-part pairs across every lever whose divergence test carried a p, published or not.",
+    )
+    divergences_untested: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Whole-and-part pairs whose divergence could not be tested: fewer than two cases carrying both measures "
+            "on a side, or a remainder with no spread over too few cases for an exact test. Nothing is known of them."
+        ),
     )
     declared_design: CampaignDesign | None = Field(
         default=None,
@@ -1790,10 +2267,10 @@ class AnalysisContextBundle(EvalDocumentModel):
             "or latency to read. None when every cell delivered a result."
         ),
     )
-    controls_reading: ControlsReading = Field(
-        default_factory=ControlsReading,
+    held_fixed_reading: HeldFixedReading = Field(
+        default_factory=HeldFixedReading,
         description=(
-            "The declared controls beside the provenance every resolved run recorded, compared value for value, "
+            "What the campaign declared held fixed beside the provenance every resolved run recorded, compared value for value, "
             "with the sentence to quote when they disagree, when runs mix commissioned and witnessed apparatus "
             "with nothing declared, or when the stimulus was declared uncontrolled. Commissioned and witnessed "
             "observations never share a cell, so a mixed campaign has separate cells for them."
@@ -1823,13 +2300,27 @@ class AnalysisContextBundle(EvalDocumentModel):
         default_factory=list,
         description=(
             "The evidence tier of each judge's readings on each judged dimension — a judge being a served model "
-            "and a judge config — decided by code from `judge_agreement` and `judge_self_agreement`: `calibrated` "
-            f"(agreement with people at least {format_number(CALIBRATION_MIN_AGREEMENT)} over at least "
-            f"{CALIBRATION_MIN_RESULTS} distinct results), `separation` (agreement with its own repeats at least "
-            f"{format_number(SEPARATION_MIN_AGREEMENT)} over at least {SEPARATION_MIN_RESULTS} distinct results), "
-            "`incidental` (both measured over enough results and both missed), or `undetermined` (too little "
-            "evidence to decide). Each entry carries both criteria. Every judged reading in `judged_measures` and "
-            "`cell_measures` carries the tier of the judges behind it; a finding citing one stands on it."
+            "and a judge config — decided by code from `judge_agreement` and `judge_self_agreement`, each criterion on "
+            "confidence bounds for its agreement and never the point estimate: `calibrated` (the one-sided 95% lower "
+            "bound on agreement with "
+            f"people at or above {format_number(CALIBRATION_MIN_AGREEMENT)}, over at least {CALIBRATION_MIN_RESULTS} "
+            "distinct results), `separation` (that bound on agreement with its own repeats at or above "
+            f"{format_number(SEPARATION_MIN_AGREEMENT)}, over at least {SEPARATION_MIN_RESULTS} distinct results), "
+            "`incidental` (both upper bounds below their bars), or `undetermined` (not shown either way: too few "
+            "results, or bounds across a bar). Each entry carries both criteria, their bounds, and how many more "
+            "results each needs to be decided (`results_needed`). Every "
+            "judged reading in `judged_measures` and `cell_measures` carries the tier of the judges behind it; a "
+            "finding citing one stands on it."
+        ),
+    )
+    goal_check_proofs: list[GoalCheckProofReading] = Field(
+        default_factory=list,
+        description=(
+            "Per goal check the member runs graded: whether it was shown, at launch, to tell its outcomes apart "
+            "(`proven`), or not (`unproven`: no control, or a proof recorded under an earlier rule (`stale`); "
+            "`refuted`: a control it does not beat, or a check the grammar refused at launch (`refused`)). The check's pass "
+            "rate is the measure `goal_state:<check>`; on any check not `proven` that rate may be what a candidate "
+            "that did nothing would score, so it never reads as the behaviour measured."
         ),
     )
     multiple_comparisons: MultipleComparisons = Field(
@@ -1838,6 +2329,24 @@ class AnalysisContextBundle(EvalDocumentModel):
             "Each contrast tested against the control on every reading a live question asks about, per rig, with "
             "Holm correction inside each question's family: the family's size, each comparison's adjusted p and "
             "the verdict read off it. A separation stands only where its verdict says so."
+        ),
+    )
+    guardrails: GuardrailReadings = Field(
+        default_factory=GuardrailReadings,
+        description=(
+            "The guardrails — boundary judged dimensions and measures declared `guardrail`, what the candidate must "
+            "not get worse on — each decided for every arm against the control on its own 95% interval: `held` "
+            "(shown no worse than its margin), `breached` (shown worse) or `undecided`. Kept out of every "
+            "comparison family and composite, so a capability gain cannot pay for a guardrail loss. An arm with a "
+            "breached guardrail is not adopted; an undecided one is never safe, and is stated wherever the arm is "
+            "recommended."
+        ),
+    )
+    reading_scope: ReadingScope = Field(
+        default_factory=ReadingScope,
+        description=(
+            "Which readings no declared question asked about: exploratory, reportable as leads and never as "
+            "confirmed answers. Where no question is declared, one sentence says every finding is exploratory."
         ),
     )
     verdict_order: VerdictOrder = Field(
@@ -1883,7 +2392,7 @@ class AnalysisContextBundle(EvalDocumentModel):
             "disjoint, and otherwise counts the disjoint pairs against the total and names the "
             "overlapping remainder. It also names each disjoint pair's gap magnitude, widest first. "
             "None when every pair overlaps or too few runs resolved a span. Built by the same helper "
-            "compare_runs banners from, on the same predicate, and listing every span rather than "
+            "runs_compare discloses from, on the same predicate, and listing every span rather than "
             "collapsing above the inline cap: the reader here cannot go and fetch the omitted ones. "
             "The PAIR list can still truncate — pairs grow quadratically where spans grow linearly — "
             "and says how many it did not name."
@@ -1909,12 +2418,34 @@ class AnalysisContextBundle(EvalDocumentModel):
             "Where two levels of a comparison diverge in it, the comparison's `confounded_by` names it."
         ),
     )
+    arm_served_models: list[ArmServedModel] = Field(
+        default_factory=list,
+        description=(
+            "Which model the provider's responses named as having answered each arm's candidate calls, sorted by "
+            "arm. An arm is keyed by the model id it ASKED for, and a floating alias can be answered by different "
+            "models; a `pooled` arm's numbers are a mixture of models, and an `unrecorded` one cannot be said to "
+            "be one model. An arm whose candidate left no usage row is absent. Wherever one requested id was "
+            "answered by more than one model across a comparison's runs, the comparison names the "
+            "`served_model:candidate` confound."
+        ),
+    )
     cell_model_version: int = Field(
         default=CELL_MODEL_VERSION,
         description=(
             "Which definition of a cell produced `cells`. Carried on the bundle so a fingerprint and "
             "the pooling behind it travel together — two bundles computed under different cell models "
             "are not comparable on any per-cell number, and a fingerprint alone cannot say so."
+        ),
+    )
+    host_declarations_digest: str | None = Field(
+        default=None,
+        description=(
+            "sha256 of the host's declared sweepables (each one's name, role and blank rule) and world dimension "
+            "names — the declarations that partition observations into apparatus classes and arms "
+            "(:func:`host_declarations_digest`). Derived from the declarations at assembly, never kept by hand, "
+            "so a host that adds, removes or renames one moves it without bumping anything. Two bundles whose "
+            "fingerprints differ while this and `schema_version` agree did not differ in those declarations. "
+            "None on a bundle frozen before it was recorded, which says nothing about them."
         ),
     )
     cells: list[Cell] = Field(
@@ -1955,12 +2486,28 @@ class AnalysisContextBundle(EvalDocumentModel):
             "reason, and only one of the three reasons is fixable by recording something."
         ),
     )
+    refused_merges_omitted: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Refused pairs beyond the reporting cap, dropped smallest-first (by the observations the two cells "
+            "hold). Stated so a short list is not read as a complete one."
+        ),
+    )
     next_experiments: list[NextExperiment] = Field(
         default_factory=list,
         description=(
             "What recording one unrecorded apparatus dimension would buy, in units of k. Generated "
             "mechanically — no model is asked — because it is arithmetic over cells that already share "
             "a variant. This is what keeps a conservative merge from being pure refusal."
+        ),
+    )
+    next_experiments_omitted: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Recordings beyond the reporting cap, dropped least-gain-first (by the observations recording would "
+            "add). Stated so a short list is not read as a complete one."
         ),
     )
     subject_key_instabilities: list[SubjectKeyInstability] = Field(
@@ -1996,13 +2543,17 @@ class AnalysisContextBundle(EvalDocumentModel):
         description=(
             "Every bar this campaign is held to — its own declared bars, plus each registered incumbent for "
             "its behavior that no declared bar overrides — with a verdict per cell computed here, or the "
-            "reason none exists. Read verdicts from this; never recompute them."
+            "reason none exists. A verdict is decided by the cell's interval against the threshold less the "
+            "measure's declared margin, never by its mean, and its `decision` is `cleared` (shown on the good "
+            "side), `missed` (shown on the bad side), `undecided` (the interval straddles the line: neither a pass "
+            "nor a failure), `no_interval` or `no_data`. Read verdicts from this; never recompute them."
         ),
     )
     cell_measures: list[CellFacts] = Field(
         default_factory=list,
         description=(
-            "Everything measured in each cell, one entry per cell ordered by (variant_key, apparatus_class_id): "
+            "Everything measured in each cell, one entry per cell, the declared control's cells first as the "
+            "reference, then every other arm alphabetically by name (an order that is not a ranking): "
             "every measure over the cell's non-faulted observations — the population every bar verdict is "
             "read over, so a value here and a verdict on the same cell describe the same observations — "
             "every judged dimension scored there, its replication, and the notes on its member runs. Read "
@@ -2043,8 +2594,18 @@ class AnalysisContextBundle(EvalDocumentModel):
     prior_insights: list[EvalInsight] = Field(
         default_factory=list,
         description=(
-            "Subject-scoped prior insights (newest first). Every insight minted by an ARCHIVED analysis is "
-            "left out and named in `retracted_insights` instead."
+            "Subject-scoped prior insights (newest first), one per claim and at most the reporting cap of the "
+            "newest. Every insight minted by an ARCHIVED analysis is left out and named in `retracted_insights` "
+            "instead; what else is left out is counted in `prior_insights_omitted`."
+        ),
+    )
+    prior_insights_omitted: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Live prior insights the ledger holds that `prior_insights` does not carry: an older insight stating "
+            "the same claim as a carried one, and every insight beyond the cap, oldest dropped first. Retracted "
+            "insights are not counted here. Stated so a short list is not read as the whole ledger."
         ),
     )
     retracted_insights: dict[str, str] = Field(
@@ -2121,13 +2682,16 @@ class BundleInspection(EvalDocumentModel):
     all along. So archiving one analysis moves the re-assembly of every analysis that READ its
     insights, and un-archiving it moves them back.
 
-    **What remains has two causes and this surface cannot tell them apart.** The evidence
-    moved — a member archived, a result deleted, an insight the generation read since
-    deleted, or the analysis that minted one archived — or :attr:`AnalysisContextBundle.schema_version` moved and the same evidence now
-    digests differently — a rename is enough. Separating them needs the version the
-    generation ran over, which ``GenerationProvenance`` does not record; until
-    it does, a reader diagnosing a ``False`` reads that field's version history against
-    the analysis's ``generated_at``.
+    **What remains has three causes, and ``mismatch_cause`` names which.** The package's bundle
+    shape moved (:attr:`AnalysisContextBundle.schema_version` differs from the one the generation
+    recorded — a rename is enough), the host's declarations moved
+    (:attr:`AnalysisContextBundle.host_declarations_digest` differs — a host added, removed or
+    renamed a sweepable, which moves the apparatus partition without touching package code), or
+    neither did and the evidence moved — a member archived, a result deleted, an insight the
+    generation read since deleted or superseded, or the analysis that minted one archived. An
+    analysis stored before :class:`~threetears.evals.contracts.campaign.GenerationProvenance`
+    recorded both reads ``cannot_say``: a version that was never written is never read as the
+    same one.
 
     Host-agnostic by construction: campaign, scope, fingerprint and bundle are
     all engine vocabulary, and nothing here branches on what the subject is.
@@ -2153,13 +2717,38 @@ class BundleInspection(EvalDocumentModel):
             "Whether the re-assembled bundle IS the one the addressed analysis was generated over "
             "(fingerprint == recorded_fingerprint). Prior insights are read as of the instant the "
             "analysis's bundle was assembled, so an insight minted afterwards — its own included — does not move this. "
-            "False means the bundle below explains today's inputs and not that generation's — either "
-            "because the evidence moved (a run archived, a result deleted, an insight the generation "
-            "read since deleted, or the analysis that minted one archived — which retracts it) or because the bundle SHAPE moved under unchanged evidence; this "
-            "surface cannot say which, because no stored analysis records the schema version it ran "
-            "over. None when addressed by campaign. Stated rather than "
+            "False means the bundle below explains today's inputs and not that generation's; `mismatch_cause` says "
+            "why. None when addressed by campaign. Stated rather than "
             "hedged in prose because a reader diagnosing a generator defect from its input has to "
             "know whether the input is the one that produced the defect."
+        ),
+    )
+    recorded_bundle_schema_version: int | None = Field(
+        default=None,
+        description=(
+            "The bundle schema version the addressed generation ran over, as its provenance recorded it. None "
+            "when addressed by campaign, or when the analysis was stored before the version was recorded."
+        ),
+    )
+    recorded_host_declarations_digest: str | None = Field(
+        default=None,
+        description=(
+            "The host declarations digest the addressed generation ran over, as its provenance recorded it. None "
+            "when addressed by campaign, or when the analysis was stored before the digest was recorded."
+        ),
+    )
+    mismatch_cause: Literal["package_shape", "host_declarations", "evidence", "cannot_say"] | None = Field(
+        default=None,
+        description=(
+            "Why the re-assembly does not reproduce the generation, set exactly when `reproduces_generation` is "
+            "False. `package_shape`: the bundle `schema_version` differs from the recorded one, so this build "
+            "digests the same evidence differently (when the host declarations differ too, this still wins: a "
+            "package change can move the core declarations the digest covers). `host_declarations`: the version "
+            "agrees and `host_declarations_digest` does not — the host changed which sweepables or world "
+            "dimensions it declares. `evidence`: both agree, so the inputs moved — a run archived, a result "
+            "deleted, an insight the generation read since deleted or superseded, the analysis that minted one "
+            "archived — or a host declaration the digest does not cover (a measure, a bar, prose) changed. "
+            "`cannot_say`: the stored provenance lacks either recorded value, so no cause can be told apart."
         ),
     )
     bundle: AnalysisContextBundle = Field(description="The assembled bundle itself, whole.")
@@ -2171,26 +2760,46 @@ class BundleInspection(EvalDocumentModel):
         *,
         analysis_id: str | None = None,
         recorded_fingerprint: str | None = None,
+        recorded_schema_version: int | None = None,
+        recorded_host_declarations_digest: str | None = None,
     ) -> BundleInspection:
-        """Wrap an assembled bundle, computing its fingerprint and the comparison.
+        """Wrap an assembled bundle, computing its fingerprint, the comparison and, on a mismatch, its cause.
 
         Args:
             bundle: The freshly assembled bundle to project.
             analysis_id: The analysis the caller addressed, when they addressed one.
             recorded_fingerprint: That analysis's stored ``bundle_fingerprint``.
+            recorded_schema_version: That analysis's stored ``bundle_schema_version``; None when it recorded none.
+            recorded_host_declarations_digest: That analysis's stored ``host_declarations_digest``; None when it
+                recorded none.
 
         Returns:
             The inspection payload, with ``reproduces_generation`` set exactly when
-            a recorded fingerprint was supplied to compare against.
+            a recorded fingerprint was supplied to compare against, and ``mismatch_cause``
+            exactly when that comparison is False.
         """
         fingerprint = bundle.fingerprint()
+        reproduces = None if recorded_fingerprint is None else fingerprint == recorded_fingerprint
+        cause: Literal["package_shape", "host_declarations", "evidence", "cannot_say"] | None = None
+        if reproduces is False:
+            if recorded_schema_version is None or recorded_host_declarations_digest is None:
+                cause = "cannot_say"
+            elif recorded_schema_version != bundle.schema_version:
+                cause = "package_shape"
+            elif recorded_host_declarations_digest != bundle.host_declarations_digest:
+                cause = "host_declarations"
+            else:
+                cause = "evidence"
         return cls(
             campaign_id=bundle.campaign_id,
             scope_id=bundle.scope_id,
             fingerprint=fingerprint,
             analysis_id=analysis_id,
             recorded_fingerprint=recorded_fingerprint,
-            reproduces_generation=None if recorded_fingerprint is None else fingerprint == recorded_fingerprint,
+            reproduces_generation=reproduces,
+            recorded_bundle_schema_version=recorded_schema_version,
+            recorded_host_declarations_digest=recorded_host_declarations_digest,
+            mismatch_cause=cause,
             bundle=bundle,
         )
 
@@ -2200,34 +2809,24 @@ class BundleInspection(EvalDocumentModel):
 # =============================================================================
 
 
-def _percentile(sorted_values: list[float], q: float) -> float:
-    """Linear-interpolation percentile of a pre-sorted non-empty list.
+def _percentile(sorted_values: list[float], q: float) -> float | None:
+    """A measure's ``q`` quantile, median-unbiased, or ``None`` where its sample cannot give one.
 
-    Matches numpy's default (``method="linear"``) without the dependency, so the
-    result is deterministic for fingerprinting.
-
-    **Not the same function as :func:`threetears.evals.contracts.scoring.percentile`, on two axes.** That one
-    is nearest-rank rather than interpolated, and it takes its argument on the 0-100 scale where
-    this one takes [0, 1]. Interpolation is right here — a campaign-scale distribution — and
-    nearest-rank is right there, over a run's handful of cells, where an interpolated value is a
-    number nothing observed. Neither is a candidate to replace the other.
+    :func:`~threetears.evals.contracts.scoring.median_unbiased_quantile` (Hyndman–Fan type 8), the rule the
+    run summary's ``p95_total_ms`` reads too, so a tail figure means one thing on every surface. It replaced
+    linear interpolation (numpy's default), which at the sizes a campaign's cells have sat below the true
+    95th percentile 0.84 (n=5), 0.73 (n=15) and 0.68 (n=30) of the time — a tail figure that understates
+    the tail. The median is unchanged by the switch: type 8 and linear interpolation place it alike.
 
     Args:
         sorted_values: Ascending-sorted values, at least one element.
-        q: Quantile in [0, 1] — NOT 0-100.
+        q: Quantile in (0, 1) — NOT 0-100.
 
     Returns:
-        The interpolated percentile.
+        The estimate, or ``None`` for ``p05``/``p95`` below 13 observations, where no estimate is
+        median-unbiased; ``max`` beside it is then the worst case seen, under its own name.
     """
-    if len(sorted_values) == 1:
-        return sorted_values[0]
-    pos = q * (len(sorted_values) - 1)
-    lo = math.floor(pos)
-    hi = math.ceil(pos)
-    if lo == hi:
-        return sorted_values[lo]
-    frac = pos - lo
-    return sorted_values[lo] * (1 - frac) + sorted_values[hi] * frac
+    return median_unbiased_quantile(sorted_values, q)
 
 
 #: The one name the candidate model answers to, everywhere. The coverage map, the divergence
@@ -2330,6 +2929,9 @@ def _effective_config(run: EvalRun, results: list[EvalResult], *, profile: HostP
     1. **An open family's members** — the levers the launch NAMED. A kind overlay
        ``house_rules={'flanking': 'on'}`` resolves the member ``gm.house_rules.flanking``, which is
        the lever's declared name rather than a carrier path this function flattened for itself.
+       A member named as ``null`` is the level :data:`~threetears.evals.analysis.reporting.NULL_LEVEL`,
+       ``overridden`` — unless the lever has a recovery rule, which reads a null as "not stated"
+       and resolves it in the second pass instead.
     2. **Recovery from observation** — :func:`_observed_model_levers` maps a lever to the usage
        role whose ``model`` is the value that ran. Two or more distinct models under one role
        make the value genuinely ambiguous, which is ``unknown`` rather than a guess at the first.
@@ -2393,8 +2995,14 @@ def _resolve_config(
     flat: dict[str, EffectiveLever] = {}
     for lever in sorted(resolution.overlaid):
         value = resolution.values.get(lever)
-        if value is not None:
-            flat[lever] = EffectiveLever(lever_level(value), "overridden")
+        if value is None and lever in recovery:
+            # A recovery rule gives ``null`` its own meaning — "not stated, read it off what ran" —
+            # so the second pass resolves it, to ``inherited`` or ``unknown``, never to a level.
+            continue
+        # Anywhere else a NAMED null is a level the operator set (``NULL_LEVEL``). Skipping it, as
+        # this once did, dropped the lever from the config, its provenance and the coverage map
+        # together, so a sweep between a value and ``null`` read ``unswept`` (#574).
+        flat[lever] = EffectiveLever(lever_level(value), "overridden")
     for lever, role in recovery.items():
         if lever in flat:
             continue
@@ -2409,7 +3017,9 @@ def _resolve_config(
         # its declaration's reader here would report the run-level projection (the candidate
         # model lever reads the run's whole model LIST) as one observation's level, and a lever
         # whose role never ran genuinely does not apply to the run rather than sitting at
-        # whatever the record happens to hold.
+        # whatever the record happens to hold. ``None`` here is a declaration's reader finding
+        # nothing on this run — the lever does not apply — unlike a launch-named null, which the
+        # first pass has already placed.
         if lever in flat or lever in recovery or value is None:
             continue
         flat[lever] = EffectiveLever(lever_level(value), "overridden")
@@ -2652,7 +3262,7 @@ def _derived_leaves(result: EvalResult) -> Iterator[tuple[str, float | str, bool
     analysis cannot rank on, and this surface is the only way a subsystem reaches a report at all.
 
     Without it, a whole-run latency movement that lived in orchestration could only be
-    reported as ``total_ms`` moving while ``llm_ms`` and ``tool_ms`` stayed flat, which
+    reported as ``total_ms`` moving by more than ``llm_ms`` and ``tool_ms`` account for, which
     is indistinguishable in a report from a measurement fault. With it the movement has
     a component to be attributed to, and — because the registry declares it
     ``contained_by: total_ms`` — the divergence lens will difference it against the
@@ -2669,6 +3279,102 @@ def _derived_leaves(result: EvalResult) -> Iterator[tuple[str, float | str, bool
         yield "orchestration_ms", partition.orchestration_ms, True, "latency", _PER_RESULT
     if (throughput := _candidate_output_throughput(result)) is not None:
         yield "candidate_output_tokens_per_s", throughput, True, "latency", _PER_RESULT
+
+
+class GoalCheckProofReading(EvalDocumentModel):
+    """Whether one goal check the campaign's runs graded was shown to beat doing nothing."""
+
+    check: str = Field(min_length=1, description="The goal check, as its template states it.")
+    measure_id: str = Field(min_length=1, description="The measure its pass rate is read as: `goal_state:<check>`.")
+    proof: GoalCheckProof = Field(
+        description=(
+            "`proven` only when every run that graded it recorded it proven at launch; `refuted` when any recorded "
+            "its control does not discriminate; otherwise `unproven` — including a run that recorded no proof."
+        )
+    )
+    runs: int = Field(ge=1, description="Member runs that graded it, or for a refused check, that refused it.")
+    unrecorded: int = Field(
+        ge=0, description="Of those, runs launched before proofs were recorded — read as unproven, never as proven."
+    )
+    stale: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Of those, runs that recorded it `proven` under an earlier proof rule (before a control's case "
+            "parameters were read as a case stores them, #665) — read as unproven, and needing a new launch to "
+            "be proven again."
+        ),
+    )
+    refused: str | None = Field(
+        default=None,
+        description=(
+            "Why the grammar refused the check when a member run launched, for a check a template stored before "
+            "the rule still carried: those runs graded it on no cell (their cells are not rig faults for it), so "
+            "it has no pass rate there and its proof is `refuted`. None for a check every run could grade."
+        ),
+    )
+
+
+def goal_check_proofs_of(runs: Sequence[EvalRun], results: Iterable[EvalResult]) -> list[GoalCheckProofReading]:
+    """Each goal check the runs' results graded, with the proof its runs froze at launch, in the order first met.
+
+    Args:
+        runs: The member runs.
+        results: Their results.
+
+    Returns:
+        One reading per check.
+    """
+    graded: dict[str, list[str]] = {}
+    for result in results:
+        for outcome in result.goal_state_outcomes:
+            runs_of = graded.setdefault(outcome.expression, [])
+            if result.eval_run_id not in runs_of:
+                runs_of.append(result.eval_run_id)
+    by_id = {run.id: run for run in runs}
+    refusals: dict[str, tuple[str, list[str]]] = {}
+    for run in runs:
+        for check, reason in (run.refused_goal_checks or {}).items():
+            refusals.setdefault(check, (reason, []))[1].append(run.id)
+    readings = []
+    for check, run_ids in graded.items():
+        members = [by_id[run_id] for run_id in run_ids if run_id in by_id]
+        # As read under the current proof rules: a `proven` an older rule stamped is unproven (#665).
+        recorded = [goal_check_proofs_as_read(run) for run in members]
+        proofs = [None if record is None else record.get(check, "unproven") for record in recorded]
+        refused = refusals.get(check)
+        proof: GoalCheckProof = (
+            "refuted"
+            if "refuted" in proofs or refused is not None
+            else "proven"
+            if proofs and all(each == "proven" for each in proofs)
+            else "unproven"
+        )
+        readings.append(
+            GoalCheckProofReading(
+                check=check,
+                measure_id=goal_check_measure(check),
+                proof=proof,
+                runs=max(len(run_ids), 1),
+                unrecorded=sum(1 for each in proofs if each is None),
+                stale=sum(1 for run in members if check in stale_goal_check_proofs(run)),
+                refused=None if refused is None else refused[0],
+            )
+        )
+    # A check the grammar refused is graded on no cell, so no result names it; it is read from the runs.
+    readings.extend(
+        GoalCheckProofReading(
+            check=check,
+            measure_id=goal_check_measure(check),
+            proof="refuted",
+            runs=len(run_ids),
+            unrecorded=0,
+            refused=reason,
+        )
+        for check, (reason, run_ids) in refusals.items()
+        if check not in graded
+    )
+    return readings
 
 
 def _goal_check_leaves(result: EvalResult) -> Iterator[tuple[str, float | str, bool, str, str]]:
@@ -2868,6 +3574,14 @@ def _lineage_leaves(result: EvalResult, *, profile: HostProfile) -> Iterator[tup
         if name == _COST_MEASURE and not observed:
             continue
         yield name, value, describe_measure(name, profile.measures)
+    # The candidate's own spend, where the result measured one: what the arm costs, beside ``cost_usd``, what
+    # it cost to measure (the judge's and simulator's spend included). Derived here rather than stored, so every
+    # slicing the walk serves — a cell, a run, a case, a stratum — reads the one figure a contrast on cost tests.
+    candidate_spend = production_replicating_cost(
+        result.usage, substituted_deliveries=count_substituted_deliveries(result)
+    )
+    if candidate_spend is not None:
+        yield _CANDIDATE_SPEND, candidate_spend, describe_measure(_CANDIDATE_SPEND, profile.measures)
 
 
 def _open_map_leaves(
@@ -2885,8 +3599,11 @@ def _open_map_leaves(
     absence of a name, not a name that failed to resolve). Skip rather than raise, so one
     malformed key cannot destroy the analysis it appears in.
     """
+    # A core-named covariate no covariate writer lands — a result stored by another writer, or before the rule —
+    # is dropped and named, never pooled, as an undeclarable host measure is (`_undeclarable_host_entries`).
+    stray = set(undeclarable_covariates(result.covariates))
     for name, value in result.covariates.items():
-        if name.strip():
+        if name.strip() and name not in stray:
             yield name, value, describe_measure(name, profile.measures)
     for name, value in result.phase_timings.items():
         if name.strip():
@@ -2900,13 +3617,42 @@ def _open_map_leaves(
     # The core wins a tie on the DESCRIPTOR, and only on the descriptor. A host reporting
     # `cost_usd` here would not redefine what the word means — but its numbers WOULD pool into
     # the engine's own spend distribution under that core descriptor, with `n` inflated,
-    # because `record()` appends into one bucket per name at this level. Nothing refuses a
-    # host measure whose name collides with `METRIC_DESCRIPTORS`: `MeasureRegistry._defects`
-    # refuses duplicates, bad ranges and containment defects, and `HostProfile.__post_init__`
-    # refuses reserved LEVERS, neither of which is this. No host in the tree collides today.
+    # because `record()` appends into one bucket per name at this level. So a host may not
+    # DECLARE a measure named like a core one: `MeasureRegistry._defects` refuses it, and
+    # `run_eval` refuses a scorer so named. A core name still arrives here legitimately — the
+    # classifier track lands `match` and `confusion_cell` as host measures — and those pass. Any
+    # other engine-owned key is one no host could have declared: the runner refuses a kind landing
+    # one, and a result stored before that refusal has it dropped here and named as unreported
+    # (`_undeclarable_host_entries`), never pooled into the engine's own observations of the name.
+    smuggled = set(undeclarable_host_measures(result.host_measures))
     for name, value in result.host_measures.items():
-        if name.strip():
+        if name.strip() and name not in smuggled:
             yield name, value, describe_measure(name, profile.measures)
+
+
+def _undeclarable_host_entries(results: Sequence[EvalResult]) -> list[str]:
+    """The unreported-observation entries for host-measure keys the walk dropped as engine-owned.
+
+    Each entry is the key with its reason in parentheses, the form
+    :attr:`~threetears.evals.contracts.analysis_measures.MeasureCollection.unreported_observations` reads —
+    the plain name could not carry it, because the engine's own measure of that name is usually pooled
+    beside it and the bare name would read as a gap in the engine's reading rather than a drop of the host's.
+
+    Args:
+        results: The results the walk read.
+
+    Returns:
+        One entry per dropped key, sorted.
+    """
+    names = {name for result in results for name in undeclarable_host_measures(result.host_measures)}
+    covariates = {name for result in results for name in undeclarable_covariates(result.covariates)}
+    return [
+        f"{name} (a host kind reported it on host_measures, where only the engine measures it; dropped, not pooled)"
+        for name in sorted(names)
+    ] + [
+        f"{name} (a result carried it as a covariate, which no covariate writer lands; dropped, not pooled)"
+        for name in sorted(covariates)
+    ]
 
 
 def _in_population(population: MeasurePopulation, result: EvalResult) -> bool:
@@ -2933,6 +3679,10 @@ def _in_population(population: MeasurePopulation, result: EvalResult) -> bool:
     return True
 
 
+#: One measure's pooled observations: its descriptor, its values, and each value's test case.
+_PooledMeasure = tuple[MetricDescriptor, list[float | str], list[str]]
+
+
 def _measure_collection(
     results: list[EvalResult], *, profile: HostProfile, undeclared: MeasurePopulation
 ) -> MeasureCollection:
@@ -2946,7 +3696,7 @@ def _measure_collection(
 
 def _collect_measures(
     results: list[EvalResult], *, profile: HostProfile, undeclared: MeasurePopulation
-) -> tuple[MeasureCollection, dict[str, str]]:
+) -> tuple[MeasureCollection, dict[str, str], dict[str, _PooledMeasure]]:
     """Build the measure surface, and say what one observation of each measure describes.
 
     **Each measure is computed over its own population** (``MetricDescriptor.population``): a
@@ -2988,20 +3738,23 @@ def _collect_measures(
     ``absent_scopes`` instead of being silently missing, and an observation the walk reached
     but could not summarise is named in ``unreported_observations`` — see that field for why
     silence there was the dangerous case.
+
+    The third return value is the pooled observations each summary was computed from, beside their
+    cases, for a lens that tests between levels over per-case values rather than reading summaries.
     """
-    outer: dict[str, tuple[MetricDescriptor, list[float | str]]] = {}
-    inner: dict[str, tuple[MetricDescriptor, list[float | str]]] = {}
+    # Each observation is pooled beside its test case. `n` alone cannot distinguish 15 independent
+    # observations from 5 cases repeated 3 times, and the two license very different intervals —
+    # pooling k repeats as independent draws narrows every interval by roughly sqrt(k). So the
+    # summary computes its spread over the cases and counts them, from the very observations it
+    # pooled: a name's two levels never contribute cases to each other.
+    outer: dict[str, _PooledMeasure] = {}
+    inner: dict[str, _PooledMeasure] = {}
     unreported: set[str] = set()
     carriers_by_name: dict[str, set[str]] = {}
     inner_units: dict[str, str] = {}
-    # Distinct test cases behind each measure. `n` alone cannot distinguish 15 independent
-    # observations from 5 cases repeated 3 times, and the two license very different
-    # intervals — pooling k repeats as independent draws narrows every interval by roughly
-    # sqrt(k). Carried structurally so the reader is never in a position to assume.
-    cases_by_name: dict[str, set[str]] = {}
 
     def record(
-        level: dict[str, tuple[MetricDescriptor, list[float | str]]],
+        level: dict[str, _PooledMeasure],
         name: str,
         value: float | str,
         descriptor: MetricDescriptor,
@@ -3032,8 +3785,9 @@ def _collect_measures(
             return
         if carrier is not None:
             carriers_by_name.setdefault(name, set()).add(carrier)
-        cases_by_name.setdefault(name, set()).add(case_id)
-        level.setdefault(name, (descriptor, []))[1].append(value)
+        _, values, cases = level.setdefault(name, (descriptor, [], []))
+        values.append(value)
+        cases.append(case_id)
 
     for result in results:
         case_id = result.test_case_id
@@ -3078,21 +3832,25 @@ def _collect_measures(
     pooled = {**{name: entry for name, entry in inner.items() if name not in EvalResult.model_fields}, **outer}
 
     measures = [
-        _measure_summary(
-            *pooled[name],
-            n_independent=len(cases_by_name.get(name, ())),
-            population=summary_population(pooled[name][0], undeclared),
-        )
+        _measure_summary(*pooled[name], population=summary_population(pooled[name][0], undeclared))
         for name in sorted(pooled)
     ]
     confusion = next((measure for measure in measures if measure.name == CONFUSION_CELL_MEASURE), None)
     if confusion is not None:
-        measures = sorted([*measures, *_classifier_label_summaries(confusion)], key=lambda measure: measure.name)
+        _, cells, cell_cases = pooled[CONFUSION_CELL_MEASURE]
+        observations = [(str(cell), case) for cell, case in zip(cells, cell_cases)]
+        measures = sorted(
+            [*measures, *_classifier_label_summaries(confusion, observations)], key=lambda measure: measure.name
+        )
     present = {measure.attribution_scope for measure in measures}
     collection = MeasureCollection(
         measures=measures,
         absent_scopes=[scope for scope in _ATTRIBUTION_SCOPES if scope not in present],
-        unreported_observations=sorted((unreported - set(pooled)) | set(_withheld_derived(results, pooled))),
+        unreported_observations=sorted(
+            (unreported - set(pooled))
+            | set(_withheld_derived(results, pooled))
+            | set(_undeclarable_host_entries(results))
+        ),
     )
     # Outer names describe the result itself by construction; an inner name keeps whatever
     # the walk saw carrying it, and loses to the outer level on a collision — the same
@@ -3100,19 +3858,21 @@ def _collect_measures(
     # under it. Names dropped along the way (unreportable, ambiguous) are excluded, so the
     # map is exactly the collection's own vocabulary.
     units = {**inner_units, **dict.fromkeys(outer, _PER_RESULT)}
-    return collection, {name: units[name] for name in pooled}
+    return collection, {name: units[name] for name in pooled}, pooled
 
 
-def _classifier_label_summaries(confusion: MeasureSummary) -> list[MeasureSummary]:
+def _classifier_label_summaries(
+    confusion: MeasureSummary, observations: Sequence[tuple[str, str]]
+) -> list[MeasureSummary]:
     """Each label's precision, recall and F1, derived from a cell's confusion matrix.
 
-    The matrix is the ``confusion_cell`` measure's category counts — one count per
-    ``expected → predicted`` pair — so the per-label statistics are counted from what the walk already
+    The matrix is the ``confusion_cell`` measure's observations — one ``expected → predicted`` pair
+    each, beside its test case — so the per-label statistics are counted from what the walk already
     pooled, over the same population, never re-read from the results, and counted by
     :func:`~threetears.evals.analysis.confusion.label_statistics`, the one count the run summary reads
     too. Precision and recall are
-    proportions, so each is a boolean-shaped summary: its rate, the count behind it, and the Wilson
-    interval. F1 is not a proportion of anything, so it is a numeric summary with a mean and no
+    proportions, so each is a boolean-shaped summary: its rate, the count behind it, and its interval
+    over the cases (:func:`~threetears.evals.analysis.stats.proportion_interval`). F1 is not a proportion of anything, so it is a numeric summary with a mean and no
     spread — it has none by construction, at any n. It is the harmonic mean of precision and recall, so a
     label missing either has no F1 either, rather than an F1 of 0.0 stated over no evidence; its ``n`` is
     the label's support across both — the observations predicted or expected as it
@@ -3120,18 +3880,25 @@ def _classifier_label_summaries(confusion: MeasureSummary) -> list[MeasureSummar
 
     Args:
         confusion: The ``confusion_cell`` summary.
+        observations: The ``(confusion_cell, test_case_id)`` observations it summarises.
 
     Returns:
         The derived summaries, named by :func:`~threetears.evals.contracts.metrics.classifier_label_measure`.
         A label never predicted has no precision; one never expected has no recall; either has no F1.
     """
     derived: list[MeasureSummary] = []
-    for statistics in label_statistics(confusion_matrix(confusion.categories)):
-        rates: tuple[tuple[ClassifierStatistic, int, float | None, tuple[float, float] | None], ...] = (
-            ("precision", statistics.predicted, statistics.precision, statistics.precision_interval),
-            ("recall", statistics.expected, statistics.recall, statistics.recall_interval),
+    for statistics in label_statistics(observations):
+        rates: tuple[tuple[ClassifierStatistic, int, int, float | None, tuple[float, float] | None], ...] = (
+            (
+                "precision",
+                statistics.predicted,
+                statistics.predicted_cases,
+                statistics.precision,
+                statistics.precision_interval,
+            ),
+            ("recall", statistics.expected, statistics.expected_cases, statistics.recall, statistics.recall_interval),
         )
-        for statistic, n, rate, interval in rates:
+        for statistic, n, cases, rate, interval in rates:
             if rate is not None:
                 derived.append(
                     MeasureSummary(
@@ -3140,6 +3907,7 @@ def _classifier_label_summaries(confusion: MeasureSummary) -> list[MeasureSummar
                         higher_is_better=True,
                         population=confusion.population,
                         n=n,
+                        n_independent=cases,
                         rate=rate,
                         n_true=statistics.correct,
                         ci_low=None if interval is None else interval[0],
@@ -3163,28 +3931,33 @@ def _classifier_label_summaries(confusion: MeasureSummary) -> list[MeasureSummar
 def _measure_summary(
     descriptor: MetricDescriptor,
     values: list[float | str],
+    cases: list[str],
     *,
-    n_independent: int = 0,
     population: MeasurePopulation,
 ) -> MeasureSummary:
     """Summarise one measure's observations in the shape its data type takes.
 
+    A spread is computed over the test cases, never over the observations as if each were its own
+    draw: the SEM is :func:`~threetears.evals.analysis.stats.clustered_standard_error`, and the interval
+    is read on ``n_independent - 1`` degrees of freedom. Where every case was observed once, both are
+    the unclustered forms exactly.
+
     Args:
         descriptor: The measure's registry descriptor, carried onto the summary.
         values: Its observations, at least one.
-        n_independent: Distinct test cases behind those observations.
+        cases: Each observation's test case, aligned with ``values``.
         population: The population those observations were drawn from, stated on the summary.
 
     Returns:
-        A categorical summary (counts), a boolean one (rate + Wilson interval), a text one (every
-        observation listed, nothing aggregated) or a numeric one (distribution + SEM).
+        A categorical summary (counts), a boolean one (rate + interval), a text one (every
+        observation listed, nothing aggregated) or a numeric one (distribution + SEM + interval).
     """
     shape: dict[str, Any]
     if descriptor.data_type == "text":
         shape = {"texts": [str(value) for value in values]}
     elif descriptor.data_type == "boolean":
         n_true = sum(1 for value in values if value is True)
-        interval = wilson_interval(n_true, len(values))
+        interval = proportion_interval([value is True for value in values], cases)
         shape = {
             "rate": n_true / len(values),
             "n_true": n_true,
@@ -3197,10 +3970,11 @@ def _measure_summary(
             counts[str(value)] = counts.get(str(value), 0) + 1
         shape = {"categories": counts}
     else:
-        numeric = sorted(float(value) for value in values)
+        observed = [float(value) for value in values]
+        numeric = sorted(observed)
         mean = sum(numeric) / len(numeric)
-        sem = standard_error_of_mean(numeric)
-        interval = observed_mean_interval(numeric, value_range=descriptor.value_range)
+        sem = clustered_standard_error(observed, cases)
+        interval = observed_mean_interval(observed, cases=cases, value_range=descriptor.value_range)
         shape = {
             "mean": mean,
             "p05": _percentile(numeric, 0.05),
@@ -3218,8 +3992,9 @@ def _measure_summary(
             # silently came back with no visualization at all. Interval of the mean,
             # not of the observations: it
             # answers "where does this arm's average sit", which is the question a
-            # null result asks. None below n=2, where `sem` itself is unestimable. Inside the measure's
-            # declared scale, and a 0/1 measure's is its proportion's Wilson interval — one rule,
+            # null result asks. Over the cases, not the observations, so k repeats of a case are not
+            # k draws. None below n=2, or over a single case, where `sem` itself is unestimable. Inside
+            # the measure's declared scale, and a 0/1 measure's is its proportion's interval — one rule,
             # `stats.observed_mean_interval`, so `accuracy` and the `match` it is derived from agree.
             "ci_low": None if interval is None else interval[0],
             "ci_high": None if interval is None else interval[1],
@@ -3230,7 +4005,7 @@ def _measure_summary(
         higher_is_better=descriptor.higher_is_better,
         population=population,
         n=len(values),
-        n_independent=n_independent,
+        n_independent=len(set(cases)),
         **shape,
     )
 
@@ -4153,24 +4928,13 @@ def _mechanism_observations(results: Sequence[EvalResult], *, profile: HostProfi
     return observed
 
 
-def _exact(value: float) -> Fraction:
-    """A value as the decimal it is written as, exactly.
-
-    A divergence threshold is a bound, not a tolerance to tune, so the levels' means it bounds are taken
-    over rationals rather than floats. Over the float's own binary value, two levels written 0.7 and 0.5
-    would sit a hair under the 0.2 apart they are read as; over the shortest decimal that round-trips the
-    float, they sit exactly that far apart.
-    """
-    return Fraction(repr(value))
-
-
 def _per_case_means(values: Mapping[str, tuple[str, float]], result_ids: Collection[str]) -> dict[str, Fraction]:
     """One level's exact per-case means of one mechanism — the unit the separation test reads.
 
     Repeats of a case are averaged first, as :func:`_per_case_values` averages them for a family comparison,
-    and averaged EXACTLY (:func:`_exact`): a float mean of three 0.1s is 0.10000000000000002, so a constant
-    measure read at three repeats a case on one level and one on another would differ by float noise with no
-    spread, which the separation test counts as a gap.
+    and averaged EXACTLY (:func:`~threetears.evals.analysis.stats.exact_decimal`): a float mean of three
+    0.1s is 0.10000000000000002, so a constant measure read at three repeats a case on one level and one on
+    another would differ by float noise with no spread, which the separation test counts as a gap.
 
     Args:
         values: Result id -> that result's ``(case id, value)``.
@@ -4184,7 +4948,7 @@ def _per_case_means(values: Mapping[str, tuple[str, float]], result_ids: Collect
     for result_id in result_ids:
         if result_id in values:
             case_id, value = values[result_id]
-            by_case[case_id].append(_exact(value))
+            by_case[case_id].append(exact_decimal(value))
     return {
         case_id: sum(case_values, Fraction(0)) / len(case_values) for case_id, case_values in sorted(by_case.items())
     }
@@ -4223,43 +4987,35 @@ def _level_means(
     }
 
 
-def _levels_separate(per_case: Mapping[str, Mapping[str, float]]) -> tuple[bool, bool]:
+def _levels_separate(per_case: Mapping[str, Mapping[str, Fraction]]) -> tuple[bool, bool]:
     """Whether any pair of levels separates on per-case values, and whether any pair could not be tested.
 
-    The family comparison's test, applied to every pair of levels: paired over the cases both levels ran
-    when they share at least two, else Welch's over each level's per-case values
-    (:func:`~threetears.evals.analysis.stats.composite_significance`), the pairs Holm-corrected as one
-    family and read against the same alpha. Two of the test's own undefined results are decided here,
-    since each has only one honest reading: fewer than two cases on a side is untestable; a gap with no
-    spread at all (every case moved by the same nonzero amount, or two different constants) is a
-    separation the noise cannot account for, because there is none.
+    The engine's between-level test applied to every pair of levels
+    (:func:`~threetears.evals.analysis.stats.level_difference`): paired over the cases both levels ran when
+    they share at least two, else Welch's over each level's per-case values, the pairs Holm-corrected as one
+    family and read against the same alpha. A gap with no spread at all (every case moved by the same nonzero
+    amount, or two different constants) is read by the exact permutation test, so it separates only over
+    enough cases for that pattern to be rarer than alpha by chance: at two cases a 0/1 mechanism under a lever
+    that did nothing shifts both cases alike one time in eight. Below that it is untestable, as is a pair with
+    fewer than two cases on a side.
 
     Args:
-        per_case: Level -> its per-case means, for every level that observed the measure.
+        per_case: Level -> its exact per-case means, for every level that observed the measure.
 
     Returns:
         ``(separated, untestable)``.
     """
     raw: list[float] = []
-    separated = untestable = False
+    untestable = False
     levels = sorted(per_case)
     for index, level_a in enumerate(levels):
         for level_b in levels[index + 1 :]:
-            values_a, values_b = per_case[level_a], per_case[level_b]
-            shared = sorted(set(values_a) & set(values_b))
-            paired = len(shared) >= 2
-            a = [values_a[case] for case in shared] if paired else list(values_a.values())
-            b = [values_b[case] for case in shared] if paired else list(values_b.values())
-            result = composite_significance(a, b, paired=paired)
-            if result.significant is None:
-                if len(a) < 2 or len(b) < 2:
-                    untestable = True
-                else:
-                    separated = True
-            elif result.p_value is not None:
-                raw.append(result.p_value)
-    if raw and min(holm_adjust(raw)) < SIGNIFICANCE_ALPHA:
-        separated = True
+            tested = level_difference(per_case[level_a], per_case[level_b])
+            if tested.p_value is None:
+                untestable = True
+            else:
+                raw.append(tested.p_value)
+    separated = bool(raw) and min(holm_adjust(raw)) < SIGNIFICANCE_ALPHA
     return separated, untestable
 
 
@@ -4288,9 +5044,7 @@ def _mechanism_check(
     unobserved = [level for level in sorted(result_ids_by_level) if level not in per_case]
     state: Literal["moved", "inert", "unchecked"]
     reason: MechanismUncheckedReason | None = None
-    separated, untestable = _levels_separate(
-        {level: {case: float(mean) for case, mean in cases.items()} for level, cases in per_case.items()}
-    )
+    separated, untestable = _levels_separate(per_case)
     if len(result_ids_by_level) < 2:
         state, reason = "unchecked", "not_swept"
     elif separated:
@@ -4362,7 +5116,7 @@ def _observed_mechanism_confounds(
         if not _raises_observed_mechanism(lever, covariate, profile=profile):
             continue
         means = _level_means(observations.get(covariate, {}), result_ids_by_level)
-        if len(means) < 2 or max(means.values()) - min(means.values()) < _exact(mechanism.threshold):
+        if len(means) < 2 or max(means.values()) - min(means.values()) < exact_decimal(mechanism.threshold):
             continue
         confounds.append(
             Confound(
@@ -4416,36 +5170,32 @@ def _design_with_mechanism_confounds(
     results_by_run: Mapping[str, list[EvalResult]],
     observations: _MechanismObservations,
     *,
+    served: _ServedModels,
     profile: HostProfile,
 ) -> RealizedDesign:
-    """The design with each contrast arm's observed-mechanism confounds against the control arm.
+    """The design with each contrast arm's observed confounds against the control arm.
 
     Args:
         design: The derived design.
         results_by_run: Each run's results.
         observations: The campaign's mechanism observations.
+        served: Which model answered each result's candidate calls, from :func:`_served_models`.
         profile: The host whose declaration of the model lever names its mechanism.
 
     Returns:
-        The design, its contrasts qualified where they ran another model and a mechanism diverged; unchanged
-        when no control resolved.
+        The design, its contrasts qualified where they ran another model and a mechanism diverged, and where
+        one requested model id was answered by more than one model across the two arms; unchanged when no
+        control resolved.
     """
     if design.control_arm is None:
         return design
     control = [result for run_id in design.control_arm.run_ids for result in results_by_run.get(run_id, [])]
-    contrasts = [
-        arm.model_copy(
-            update={
-                "mechanism_confounds": _model_contrast_confounds(
-                    control,
-                    [result for run_id in arm.run_ids for result in results_by_run.get(run_id, [])],
-                    observations,
-                    profile=profile,
-                )
-            }
-        )
-        for arm in design.contrasts
-    ]
+    contrasts = []
+    for arm in design.contrasts:
+        side = [result for run_id in arm.run_ids for result in results_by_run.get(run_id, [])]
+        confounds = _model_contrast_confounds(control, side, observations, profile=profile)
+        confounds += _served_model_confounds((result.id for result in (*control, *side)), served)
+        contrasts.append(arm.model_copy(update={"mechanism_confounds": confounds}))
     return design.model_copy(update={"contrasts": contrasts})
 
 
@@ -4477,6 +5227,118 @@ def _arm_mechanisms(
                     n_results=len(result_ids),
                 )
             )
+    return readings
+
+
+@dataclass(frozen=True)
+class _ServedReading:
+    """What one result's candidate calls say about which model answered them.
+
+    Attributes:
+        requested: The model id the result's run asked for (``EvalResult.model``).
+        served: The models the provider's responses named, over every candidate usage row.
+        unrecorded: Some candidate row names no served model — a response that named none, or a row
+            stored before served models were recorded.
+    """
+
+    requested: str
+    served: frozenset[str]
+    unrecorded: bool
+
+
+#: Result id -> what its candidate calls say about the model that answered them. A result whose candidate
+#: left no usage row is absent: nothing was called, so nothing answered, and no claim is made about it.
+_ServedModels = dict[str, _ServedReading]
+
+
+def _served_models(results: Iterable[EvalResult]) -> _ServedModels:
+    """Read which model answered each result's candidate calls, off its candidate usage rows.
+
+    ``RoleUsage.served_model`` only — what the provider's response named — and never ``RoleUsage.model``
+    or the run's ``candidate_model``, which are what the launch asked for and, for a floating alias, name
+    the pointer rather than the model behind it.
+
+    Args:
+        results: The campaign's results.
+
+    Returns:
+        Each result's reading, for the results whose candidate left a usage row.
+    """
+    readings: _ServedModels = {}
+    for result in results:
+        rows = [row for row in result.usage if row.role == "candidate"]
+        if rows:
+            readings[result.id] = _ServedReading(
+                requested=result.model,
+                served=frozenset(row.served_model for row in rows if row.served_model),
+                unrecorded=any(not row.served_model for row in rows),
+            )
+    return readings
+
+
+def _served_model_confounds(result_ids: Iterable[str], served: _ServedModels) -> list[Confound]:
+    """Name the candidate's served model as a confound where one requested id was answered by more than one model.
+
+    The served model is EXPECTED to move with the requested one — a comparison between two model ids is
+    a comparison between the models that answered them — so a difference between arms that asked for
+    different ids is the lever, not a confound. What is a confound is one requested id answered by two
+    models across the runs compared: within one arm, its numbers are a mixture; between two arms that
+    asked for the same id, the arms differ by a model nobody set. The rule is the fold the engine applies
+    to a resolved surface (:class:`_SurfaceFolds`): the served model folds into the requested one where it
+    is constant within each requested id, and only there.
+
+    Args:
+        result_ids: The results under comparison, every side together.
+        served: The campaign's readings, from :func:`_served_models`.
+
+    Returns:
+        One ``served_model`` confound, ``varied`` where some requested id was answered by two or more named
+        models, ``undecided`` where none was but some candidate call named no model — which model answered
+        cannot be established there, and unknown is never read as one model. Empty otherwise, including where
+        no result under comparison called its candidate.
+    """
+    by_requested: dict[str, set[str]] = {}
+    unrecorded = False
+    for result_id in result_ids:
+        if (reading := served.get(result_id)) is not None:
+            by_requested.setdefault(reading.requested, set()).update(reading.served)
+            unrecorded = unrecorded or reading.unrecorded
+    if any(len(models) > 1 for models in by_requested.values()):
+        return [Confound(dimension=CANDIDATE_SERVED_MODEL_CONFOUND, kind="served_model")]
+    if unrecorded:
+        return [Confound(dimension=CANDIDATE_SERVED_MODEL_CONFOUND, kind="served_model", status="undecided")]
+    return []
+
+
+def _arm_served_models(
+    arms: _CampaignArms, results_by_run: Mapping[str, list[EvalResult]], served: _ServedModels
+) -> list[ArmServedModel]:
+    """Each arm's served models, as the provider's responses named them.
+
+    Args:
+        arms: The campaign's arms. A run that resolved no arm is in none, and so in no reading.
+        results_by_run: Each run's results.
+        served: The campaign's readings, from :func:`_served_models`.
+
+    Returns:
+        One reading per arm whose candidate left a usage row, sorted by arm.
+    """
+    readings: list[ArmServedModel] = []
+    for variant_key, members in sorted(arms.keyed.items()):
+        own = [served[result.id] for run in members for result in results_by_run.get(run.id, []) if result.id in served]
+        if not own:
+            continue
+        models = sorted(set().union(*(reading.served for reading in own)))
+        n_unrecorded = sum(1 for reading in own if reading.unrecorded)
+        readings.append(
+            ArmServedModel(
+                variant_key=variant_key,
+                served_models=models,
+                n_results=len(own),
+                n_unrecorded=n_unrecorded,
+                state="pooled" if len(models) > 1 else "one" if models and not n_unrecorded else "unrecorded",
+            )
+        )
     return readings
 
 
@@ -4550,6 +5412,8 @@ def _confound_catalog(bundle: AnalysisContextBundle, *, profile: HostProfile) ->
             reason = unverified_reasons[confound.dimension]
         elif confound.kind == "observed_mechanism":
             reason = _OBSERVED_MECHANISMS[confound.dimension.removeprefix(OBSERVED_MECHANISM_PREFIX)].reason
+        elif confound.kind == "served_model":
+            reason = _SERVED_MODEL_CONFOUNDS
         else:
             reason = surface_reasons.get(confound.dimension, _SWEPT_LEVER_CONFOUNDS)
         catalog[confound.dimension] = (
@@ -4558,43 +5422,84 @@ def _confound_catalog(bundle: AnalysisContextBundle, *, profile: HostProfile) ->
     return catalog
 
 
-def _movement(descriptor: MetricDescriptor, a: MeasureSummary, b: MeasureSummary) -> MeasureMovement:
-    """Grade one measure's movement between two levels against its own noise, and against what matters.
+#: Measure name -> case id -> the exact mean of that case's observations of it, at one level.
+_PerCaseMeasures = dict[str, dict[str, Fraction]]
+
+
+def _per_case_measures(pooled: Mapping[str, _PooledMeasure]) -> _PerCaseMeasures:
+    """Each numeric measure's per-case means at one level, exact — the unit a between-level test reads.
+
+    Repeats of a case are averaged first, so a case repeated three times is one case, and averaged
+    exactly (:func:`~threetears.evals.analysis.stats.exact_decimal`) so a constant read at unequal repeats
+    stays one constant rather than acquiring a float residue a test would read as spread.
 
     Args:
-        descriptor: The measure's descriptor — its name, and the materiality threshold the delta is
-            labelled against (:func:`~threetears.evals.contracts.metrics.materiality`).
-        a: Its summary at the first level.
-        b: Its summary at the second level.
+        pooled: The level's pooled observations, from :func:`_collect_measures`.
 
     Returns:
-        The movement, with ``direction`` ``flat`` unless the difference clears
-        :data:`_DIVERGENCE_SE_MULTIPLE` standard errors of that difference, and ``materiality``
-        ``immaterial`` when the difference is below the measure's declared threshold.
+        ``{name: {case id: mean}}`` for every numeric measure; text, boolean and categorical measures are absent.
     """
-    name = descriptor.name
-    mean_a, mean_b = float(a.mean or 0.0), float(b.mean or 0.0)
-    delta = mean_b - mean_a
-    # Unestimable on either side means unestimable overall — a level with one observation
-    # carries no spread, and treating that as zero spread would let any difference at all
-    # read as a real movement.
-    se = math.sqrt(a.sem**2 + b.sem**2) if a.sem is not None and b.sem is not None else None
-    if se is None or delta == 0.0 or abs(delta) < _DIVERGENCE_SE_MULTIPLE * se:
-        direction: Literal["improved", "regressed", "flat"] = "flat"
-    else:
-        direction = "improved" if (delta > 0) == bool(a.higher_is_better) else "regressed"
-    return MeasureMovement(
-        name=name,
-        scope=a.attribution_scope,
-        mean_a=mean_a,
-        mean_b=mean_b,
-        delta=delta,
-        se_of_delta=se,
-        n_a=a.n,
-        n_b=b.n,
-        direction=direction,
-        materiality=materiality(descriptor.materiality_threshold, delta),
+    per_case: _PerCaseMeasures = {}
+    for name, (descriptor, values, cases) in pooled.items():
+        if descriptor.data_type in ("text", "boolean", "categorical"):
+            continue
+        by_case: dict[str, list[Fraction]] = defaultdict(list)
+        for value, case in zip(values, cases):
+            by_case[case].append(exact_decimal(float(value)))
+        per_case[name] = {
+            case: sum(case_values, Fraction(0)) / len(case_values) for case, case_values in sorted(by_case.items())
+        }
+    return per_case
+
+
+def measure_movement(
+    descriptor: MetricDescriptor, at_a: Mapping[str, Fraction], at_b: Mapping[str, Fraction]
+) -> MeasureMovement:
+    """Test one measure's movement between two levels against its own noise, and read it against what matters.
+
+    Public as the one reading the scope-divergence lens grades a whole, a part and each component by, so
+    :func:`component_carrier` can be handed movements read the way the lens reads them.
+
+    Args:
+        descriptor: The measure's descriptor — its name, scope, better direction, and the materiality
+            threshold that is both the delta's label and the margin an equivalence test runs against.
+        at_a: Its per-case means at the first level.
+        at_b: Its per-case means at the second level.
+
+    Returns:
+        The movement, read by :func:`~threetears.evals.analysis.stats.level_difference`.
+    """
+    tested = level_difference(
+        at_a, at_b, equivalence_margin=descriptor.materiality_threshold, value_range=descriptor.value_range
     )
+    assert tested.mean_a is not None and tested.mean_b is not None and tested.delta is not None
+    direction: MovementDirection
+    if tested.separated is None:
+        direction = "untested"
+    elif tested.separated:
+        direction = "improved" if (tested.delta > 0) == bool(descriptor.higher_is_better) else "regressed"
+    elif tested.equivalent:
+        direction = "equivalent"
+    else:
+        direction = "not_separated"
+    return MeasureMovement(
+        name=descriptor.name,
+        scope=descriptor.attribution_scope,
+        mean_a=tested.mean_a,
+        mean_b=tested.mean_b,
+        delta=tested.delta,
+        se_of_delta=tested.se,
+        test=tested.test,
+        n_a=tested.n_a,
+        n_b=tested.n_b,
+        direction=direction,
+        materiality=materiality(descriptor.materiality_threshold, tested.delta),
+    )
+
+
+def _remainders(whole: Mapping[str, Fraction], part: Mapping[str, Fraction]) -> dict[str, Fraction]:
+    """Each case's whole minus its part, at one level, over the cases carrying both — what a divergence tests."""
+    return {case: value - part[case] for case, value in whole.items() if case in part}
 
 
 def _comparable_pairs(
@@ -4702,8 +5607,8 @@ def _unsound_subtraction(
 
 def _carried_by(
     whole: MeasureMovement,
-    level_a: MeasureCollection,
-    level_b: MeasureCollection,
+    level_a: _PerCaseMeasures,
+    level_b: _PerCaseMeasures,
     catalog: dict[str, MetricDescriptor],
     *,
     profile: HostProfile,
@@ -4719,31 +5624,89 @@ def _carried_by(
 
     Args:
         whole: The whole-run measure's movement.
-        level_a: Measures at the first level.
-        level_b: Measures at the second level.
+        level_a: Per-case measures at the first level.
+        level_b: Per-case measures at the second level.
         catalog: Descriptors by measure name.
         profile: The host whose vocabulary this reads.
 
     Returns:
-        ``(components, carried_by, carried_share)``. The carrier is the component whose delta,
-        taken in the whole's direction, is largest, and is None when the whole is flat, its delta is
-        zero, or no component moved its way.
+        ``(components, carried_by, carried_share)``, the carrier decided by :func:`component_carrier`.
     """
-    at_a = {m.name: m for m in level_a.measures}
-    at_b = {m.name: m for m in level_b.measures}
     components = [
-        _movement(catalog[name], at_a[name], at_b[name])
+        measure_movement(catalog[name], level_a[name], level_b[name])
         for name in partition_components(whole.name, catalog, measures=profile.measures)
-        if name in at_a and name in at_b and at_a[name].mean is not None and at_b[name].mean is not None
+        if level_a.get(name) and level_b.get(name)
     ]
-    if whole.direction == "flat" or whole.delta == 0.0:
+    carrier = component_carrier(whole, components, level_a, level_b)
+    if carrier is None:
         return components, None, None
+    return components, carrier.name, carrier.delta / whole.delta
+
+
+def component_carrier(
+    whole: MeasureMovement,
+    components: Sequence[MeasureMovement],
+    level_a: Mapping[str, Mapping[str, Fraction]],
+    level_b: Mapping[str, Mapping[str, Fraction]],
+) -> MeasureMovement | None:
+    """The component SHOWN to carry the whole's movement, or None where the data cannot name one.
+
+    Public so the rule the scope-divergence lens names a ``carried_by`` component by can be read, and tested for its
+    false-naming rate, on per-case values directly: the lens itself calls exactly this, over movements read by
+    :func:`measure_movement`.
+
+    The candidate is the component whose delta, in the whole's direction, is largest. It is named only
+    when two things are shown, each by the engine's between-level test
+    (:func:`~threetears.evals.analysis.stats.level_difference`): its own movement separates in the whole's
+    direction, and it moved further that way than every other component — each case's difference between the
+    candidate and that component, tested between the levels, Holm-adjusted over the other components. Named on
+    the largest delta alone, two components moved alike would hand the carrier to whichever noise favoured.
+
+    Args:
+        whole: The whole-run measure's movement.
+        components: Each component's movement.
+        level_a: Per-case measures at the first level.
+        level_b: Per-case measures at the second level.
+
+    Returns:
+        The carrier, or None when the whole's movement does not separate, no component moved its way, or the
+        largest mover is not shown to move further than every other.
+    """
+    if whole.direction not in ("improved", "regressed") or whole.delta == 0.0:
+        return None
     sign = 1.0 if whole.delta > 0 else -1.0
     moving = [component for component in components if component.delta * sign > 0]
     if not moving:
-        return components, None, None
-    carrier = max(moving, key=lambda component: (component.delta * sign, component.name))
-    return components, carrier.name, carrier.delta / whole.delta
+        return None
+    top = max(moving, key=lambda component: (component.delta * sign, component.name))
+    if top.direction != whole.direction:
+        return None
+    p_values: list[float] = []
+    for other in components:
+        if other.name == top.name:
+            continue
+        gap_a = {
+            case: value - level_a[other.name][case]
+            for case, value in level_a[top.name].items()
+            if case in level_a[other.name]
+        }
+        gap_b = {
+            case: value - level_b[other.name][case]
+            for case, value in level_b[top.name].items()
+            if case in level_b[other.name]
+        }
+        tested = level_difference(gap_a, gap_b)
+        if tested.p_value is None or tested.delta is None or tested.delta * sign <= 0:
+            return None
+        p_values.append(tested.p_value)
+    return top if all(p < SIGNIFICANCE_ALPHA for p in holm_adjust(p_values)) else None
+
+
+class _DivergenceCount(NamedTuple):
+    """How many whole-and-part pairs the divergence lens tested, and how many it could not."""
+
+    tested: int
+    untested: int
 
 
 def _scope_divergences(
@@ -4755,17 +5718,22 @@ def _scope_divergences(
     *,
     folds: _SurfaceFolds,
     observations: _MechanismObservations,
+    served: _ServedModels,
     profile: HostProfile,
-) -> tuple[list[ScopeDivergence], int]:
-    """Find the lever changes where the whole run and the part under test disagree.
+) -> tuple[list[ScopeDivergence], int, _DivergenceCount]:
+    """Find the lever changes where the whole run moved by a different amount than the part under test.
 
     Each level of each swept lever gets its own measure collection, built from that level's
-    results by the same walk the rest of the bundle uses — so the means and spreads compared
-    here are the real ones, not summaries of summaries. Levels are then compared pairwise, and
-    a pair is reported only when the two scopes end up with different directions, where
-    "flat" (inside the noise) counts as a direction of its own. That gate is what keeps this
-    from firing constantly: two noisy tails over a handful of runs disagree by sign almost
-    always, and a finding that appears every time trains a reader to skip it.
+    results by the same walk the rest of the bundle uses — so the observations compared here
+    are the real ones, not summaries of summaries. Levels are then compared pairwise, and for
+    each whole-and-part pair sharing a unit **the divergence itself is tested**: each case's
+    whole minus its part (per-case means) between the two levels, by the engine's between-level
+    test (:func:`~threetears.evals.analysis.stats.level_difference`). Every such test of one lever
+    is one family, Holm-corrected at the engine's alpha, and a divergence is published only where
+    its adjusted p is below it. Grading the whole and the part apart and publishing where their
+    verdicts differ is NOT a test of the difference (Gelman & Stern 2006): a whole that
+    separates beside a part that does not is ordinary noise, and that rule published a divergence
+    that did not exist 11–33% of the time.
 
     Two honesty constraints ride along, because a comparison this cheap to produce is easy
     to over-read. The cohorts are grouped by ONE lever, so they also differ in whatever else
@@ -4789,12 +5757,15 @@ def _scope_divergences(
             so every divergence it produced would restate one a member already reports.
         observations: The campaign's mechanism observations, compared across each divergence's two levels
             for the observed-mechanism confounds it names.
+        served: Which model answered each result's candidate calls, for the served-model confound.
         profile: The host whose vocabulary this reads.
 
     Returns:
-        The divergences to report (strongest first, capped) and the count dropped by the cap.
+        The divergences to report (strongest first, capped), the count dropped by the cap, and how
+        many pairs were tested and could not be.
     """
     found: list[tuple[float, ScopeDivergence]] = []
+    n_tested = n_untested = 0
     all_run_ids = [run.id for run in runs]
     lever_levels = _lever_levels(runs, results_by_run, profile=profile)
     for lever, campaign_wide in lever_levels.items():
@@ -4813,12 +5784,15 @@ def _scope_divergences(
             )
             for level in levels
         }
-        collections = {level: collection for level, (collection, _) in collected.items()}
+        collections = {level: collection for level, (collection, _, _) in collected.items()}
+        per_case = {level: _per_case_measures(pooled) for level, (_, _, pooled) in collected.items()}
         result_ids = {
             level: {result.id for run_id in by_level[level] for result in results_by_run.get(run_id, [])}
             for level in levels
         }
-        units = {level: observation_units for level, (_, observation_units) in collected.items()}
+        units = {level: observation_units for level, (_, observation_units, _) in collected.items()}
+        # Every test this lever's comparisons carried, with what a published divergence needs beside it.
+        family: list[tuple[LevelDifference, dict[str, Any]]] = []
         for index, level_a in enumerate(levels):
             for level_b in levels[index + 1 :]:
                 confounded = _uncontrolled_dimensions(
@@ -4831,11 +5805,19 @@ def _scope_divergences(
                 ) + _observed_mechanism_confounds(
                     lever, {level: result_ids[level] for level in (level_a, level_b)}, observations, profile=profile
                 )
-                for unit, e_a, e_b, s_a, s_b in _comparable_pairs(collections[level_a], collections[level_b], catalog):
-                    whole = _movement(catalog[e_a.name], e_a, e_b)
-                    part = _movement(catalog[s_a.name], s_a, s_b)
-                    if whole.direction == part.direction:
+                confounded += _served_model_confounds(result_ids[level_a] | result_ids[level_b], served)
+                at_a, at_b = per_case[level_a], per_case[level_b]
+                for unit, e_a, _e_b, s_a, _s_b in _comparable_pairs(
+                    collections[level_a], collections[level_b], catalog
+                ):
+                    tested = level_difference(
+                        _remainders(at_a[e_a.name], at_a[s_a.name]), _remainders(at_b[e_a.name], at_b[s_a.name])
+                    )
+                    if tested.p_value is None:
+                        n_untested += 1
                         continue
+                    whole = measure_movement(catalog[e_a.name], at_a[e_a.name], at_b[e_a.name])
+                    part = measure_movement(catalog[s_a.name], at_a[s_a.name], at_b[s_a.name])
                     withheld = _unsound_subtraction(
                         whole=e_a,
                         part=s_a,
@@ -4843,38 +5825,51 @@ def _scope_divergences(
                         observation_units=[units[level_a], units[level_b]],
                         profile=profile,
                     )
-                    unattributed = None if withheld else whole.delta - part.delta
-                    components, carried_by, carried_share = _carried_by(
-                        whole, collections[level_a], collections[level_b], catalog, profile=profile
+                    components, carried_by, carried_share = _carried_by(whole, at_a, at_b, catalog, profile=profile)
+                    assert tested.test is not None
+                    family.append(
+                        (
+                            tested,
+                            {
+                                "lever": lever,
+                                "level_a": level_a,
+                                "level_b": level_b,
+                                "unit": unit,
+                                "end_to_end": whole,
+                                "subsystem": part,
+                                "test": tested.test,
+                                "n_cases_a": tested.n_a,
+                                "n_cases_b": tested.n_b,
+                                "p_raw": tested.p_value,
+                                "unattributed_delta": None if withheld else whole.delta - part.delta,
+                                "unattributed_withheld": withheld,
+                                # Read from the same catalog `_unsound_subtraction` consulted, so the
+                                # published fact and the decision made from it have one source.
+                                "contained_by": (
+                                    described.contained_by if (described := catalog.get(part.name)) else None
+                                ),
+                                "confounded_by": confounded,
+                                "whole_components": components,
+                                "carried_by": carried_by,
+                                "carried_share": carried_share,
+                            },
+                        )
                     )
-                    divergence = ScopeDivergence(
-                        lever=lever,
-                        level_a=level_a,
-                        level_b=level_b,
-                        unit=unit,
-                        end_to_end=whole,
-                        subsystem=part,
-                        unattributed_delta=unattributed,
-                        unattributed_withheld=withheld,
-                        # Read from the same catalog `_unsound_subtraction` consulted, so the
-                        # published fact and the decision made from it have one source.
-                        contained_by=(described.contained_by if (described := catalog.get(part.name)) else None),
-                        confounded_by=confounded,
-                        whole_components=components,
-                        carried_by=carried_by,
-                        carried_share=carried_share,
-                    )
-                    # Rank by how much of the whole-run movement the part fails to explain, as
-                    # a fraction of the whole's own scale — the question a reader opens a
-                    # divergence to answer, and scale-free so milliseconds and dollars can be
-                    # ordered against each other. Where the swing cannot be stated, the
-                    # whole-run movement stands in: a divergence whose arithmetic is unsound is
-                    # not thereby uninteresting, and ranking it at zero would drop the real
-                    # ones under the cap first. The scale takes both levels so a measure
-                    # starting near zero cannot manufacture an unbounded score.
-                    scale = max(abs(whole.mean_a), abs(whole.mean_b), 1e-9)
-                    strength = abs(whole.delta if unattributed is None else unattributed) / scale
-                    found.append((strength, divergence))
+        n_tested += len(family)
+        adjusted = holm_adjust([tested.p_value or 0.0 for tested, _ in family])
+        for (tested, fields), p_adjusted in zip(family, adjusted):
+            if p_adjusted >= SIGNIFICANCE_ALPHA:
+                continue
+            divergence = ScopeDivergence(**fields, p_adjusted=p_adjusted, family_size=len(family))
+            # Rank by how far the whole's movement and the part's differ — the difference the test
+            # read — as a fraction of the whole's own scale: the question a reader opens a divergence
+            # to answer, and scale-free so milliseconds and dollars can be ordered against each other.
+            # The scale takes both levels so a measure starting near zero cannot manufacture an
+            # unbounded score.
+            whole = divergence.end_to_end
+            scale = max(abs(whole.mean_a), abs(whole.mean_b), 1e-9)
+            strength = abs(tested.delta or 0.0) / scale
+            found.append((strength, divergence))
 
     found.sort(
         key=lambda item: (
@@ -4886,7 +5881,11 @@ def _scope_divergences(
             item[1].subsystem.name,
         )
     )
-    return [divergence for _, divergence in found[:_MAX_DIVERGENCES]], max(0, len(found) - _MAX_DIVERGENCES)
+    return (
+        [divergence for _, divergence in found[:_MAX_DIVERGENCES]],
+        max(0, len(found) - _MAX_DIVERGENCES),
+        _DivergenceCount(n_tested, n_untested),
+    )
 
 
 def _token_rollup(results: list[EvalResult]) -> TokenRollup | None:
@@ -5010,6 +6009,11 @@ def _run_summary(
         prod_cost_usd=sum(prod_costs) if prod_costs else None,
         mean_prod_cost_usd=(sum(prod_costs) / len(prod_costs)) if prod_costs else None,
         n_prod_cost_usd=len(prod_costs),
+        # A run read without its host payload cannot be checked: an elided lever would read as the
+        # subject's own setting. None says nobody checked rather than claiming nothing moved.
+        production_footing=(
+            None if run.elided_payload_paths else profile.sweepables.production_footing(run, run_results)
+        ),
         measures=_measure_collection(run_results, profile=profile, undeclared="all_observed"),
     )
 
@@ -5045,27 +6049,39 @@ def _within_level_dispersion(
     statistic), and averages across levels. This is the noise the point estimate at
     a level carries — the "is this ±0.10 or ±0.01" signal the analysis wants — and it is
     lever-specific (a different grouping per lever), unlike a spread pooled across
-    every observation. ``standard_error_of_mean`` needs ≥2 values, so a level with a
-    lone observation contributes nothing; if no level clears that bar the spread is
-    unestimable and the field reads ``"unscored"`` (honest, not a fabricated 0).
+    every observation. The standard error is over test cases
+    (``clustered_standard_error``), since a level's repeats of one case are not independent
+    draws, and it needs ≥2 cases, so a level with a lone case contributes nothing; if no
+    level clears that bar the spread is unestimable and the field reads ``"unscored"``
+    (honest, not a fabricated 0).
 
     Args:
         composite_records: Score records for the composite metric, ``value`` present.
         lever: The lever to group by.
         effective_by_run: Each run's resolved levers, keyed by run id.
 
+    **A ragged pool says so in the text** (#638): where the composites behind the spread were meaned over
+    different dimension sets (:func:`~threetears.evals.analysis.reporting.pooled_composite_basis`), the spread
+    is partly the difference between those sets, and the text carries the sets beside the number.
+
     Returns:
         ``"±"`` and the mean within-level SEM in :func:`~threetears.evals.analysis.numbers.format_number`'s spelling,
-        or ``"unscored"``.
+        followed by the ragged-composite disclosure in parentheses where the pool is ragged, or ``"unscored"``.
     """
-    by_level: dict[str, list[float]] = {}
+    by_level: dict[str, tuple[list[float], list[str]]] = {}
+    pooled: list[ScoreRecord] = []
     for record in composite_records:
         if record.value is not None and (level := _lever_value(record, lever, effective_by_run)) is not None:
-            by_level.setdefault(level, []).append(record.value)
-    sems = [sem for values in by_level.values() if (sem := standard_error_of_mean(values)) is not None]
+            values, cases = by_level.setdefault(level, ([], []))
+            values.append(record.value)
+            cases.append(record.test_case_id)
+            pooled.append(record)
+    sems = [sem for values, cases in by_level.values() if (sem := clustered_standard_error(values, cases)) is not None]
     if not sems:
         return "unscored"
-    return f"±{format_number(sum(sems) / len(sems))}"
+    basis = pooled_composite_basis(pooled)
+    ragged = f" ({basis.disclosure()})" if basis is not None and basis.ragged else ""
+    return f"±{format_number(sum(sems) / len(sems))}{ragged}"
 
 
 def _lever_k_floor(
@@ -5181,6 +6197,57 @@ def _reportable_levers(
     return moved | declared | (engaged & resolved)
 
 
+def _declared_level_coverage(
+    axis: SweptAxis,
+    runs: list[EvalRun],
+    results_by_run: dict[str, list[EvalResult]],
+    *,
+    profile: HostProfile,
+) -> list[DeclaredLevelCoverage]:
+    """Mark each level ``axis`` declares as ran, not run, or undetermined, joined on content identity.
+
+    A run's level on the axis is its variant coordinate where it has one (the engine's own and the
+    host's), else the value the host's registry resolves for it — joined to a declared level by
+    ``content_hash``, the declaration's identity. A resolved value that is itself a digest is
+    compared as one. A run whose level cannot be established (no coordinate, nothing resolved)
+    blocks a ``not_run`` claim on every level no other run matched: it may be sitting at one.
+
+    Args:
+        axis: The declared axis.
+        runs: The campaign's resolved runs.
+        results_by_run: Each run's results.
+        profile: The host whose vocabulary this reads.
+
+    Returns:
+        One entry per declared level, in the declaration's order.
+    """
+    observed: set[str] = set()
+    unestablished = False
+    for run in runs:
+        coordinates = {
+            **profile.engine_levels(run),
+            **(profile.variant_levers(run) if profile.variant_levers is not None else {}),
+        }
+        if (coordinate := coordinates.get(axis.axis_id)) is not None:
+            observed.add(coordinate.content_hash)
+            continue
+        value = profile.sweepables.resolve_levers(run, results_by_run.get(run.id, [])).values.get(axis.axis_id)
+        if value is None:
+            unestablished = True
+            continue
+        observed.add(canonical_digest(value))
+        if isinstance(value, str):
+            observed.add(value)
+    return [
+        DeclaredLevelCoverage(
+            display=level.display,
+            content_hash=level.content_hash,
+            state="ran" if level.content_hash in observed else "undetermined" if unestablished else "not_run",
+        )
+        for level in axis.values
+    ]
+
+
 def _coverage_map(
     runs: list[EvalRun],
     records: list[ScoreRecord],
@@ -5191,6 +6258,7 @@ def _coverage_map(
     *,
     folds: _SurfaceFolds,
     observations: _MechanismObservations,
+    served: _ServedModels,
     arms: _CampaignArms | None = None,
     profile: HostProfile,
 ) -> list[LeverCoverageInput]:
@@ -5251,6 +6319,7 @@ def _coverage_map(
             dropped this way: the completeness check needs its row whatever it resolved to.
         observations: The campaign's mechanism observations, which each row's ``mechanism`` check and its
             observed-mechanism confounds compare across the row's levels.
+        served: Which model answered each result's candidate calls, for the served-model confound.
         arms: :func:`_campaign_arms`'s answer, when the caller already has it; derived otherwise.
         profile: The host whose vocabulary this reads.
 
@@ -5286,7 +6355,8 @@ def _coverage_map(
     levers = _reportable_levers(resolved, records, effective_by_run, declared_design, engaged)
 
     coverage: list[LeverCoverageInput] = []
-    declared = {axis.axis_id for axis in declared_design.axes} if declared_design else set()
+    declared_axes = {axis.axis_id: axis for axis in declared_design.axes} if declared_design else {}
+    declared = set(declared_axes)
     for lever in sorted(levers):
         # Every number below is read over this lever's own cohort, which under a designated
         # control is usually narrower than the campaign — reporting a campaign-wide n or spread
@@ -5314,6 +6384,11 @@ def _coverage_map(
                 result_ids_by_level.setdefault(level, set()).add(record.result_id)
         declared_lever = profile.sweepables.get(lever)
         k = _lever_k_floor(lever, cohort_records, k_by_arm, group_of_run, effective_by_run)
+        # A declared axis is asked the authoring gate's own question. A campaign stored before that
+        # gate, or past it, can still declare an apparatus or label input, and its row is then
+        # `unswept` for a reason no run could change — said here, in the host's words, so the memo
+        # can state the cause rather than report a sweep that never happened (#675).
+        controllable = profile.controllable(lever) if lever in declared else None
         if cells <= 1:
             status: Literal["measured", "thin", "unswept"] = "unswept"
         elif k < _MEASURED_K_FLOOR or n_distinct_results < 2 * cells:
@@ -5335,16 +6410,68 @@ def _coverage_map(
                 # draw. Sizing it would label that row 'campaign' and tell the generator, two
                 # paragraphs after "compare each cell to the control", that no contrast exists.
                 cohort_scope="control_referenced" if _is_control_referenced(lever, design) else "campaign",
+                declared_levels=(
+                    _declared_level_coverage(declared_axes[lever], runs, results_by_run, profile=profile)
+                    if lever in declared_axes
+                    else []
+                ),
+                cannot_be_an_arm=(
+                    controllable.reason if controllable is not None and controllable.state != "covered" else None
+                ),
                 confounded_by=_uncontrolled_dimensions(
                     lever, sorted(cohort), lever_levels, apparatus_levels, folds=folds, profile=profile
                 )
-                + _observed_mechanism_confounds(lever, result_ids_by_level, observations, profile=profile),
+                + _observed_mechanism_confounds(lever, result_ids_by_level, observations, profile=profile)
+                + _served_model_confounds(chain.from_iterable(result_ids_by_level.values()), served),
                 mechanism=_mechanism_check(
                     declared_lever.acts_on if declared_lever is not None else None, result_ids_by_level, observations
                 ),
             )
         )
     return coverage
+
+
+#: Apparatus dimensions that joined the rig after cells were minted under ids that never digested them, each
+#: mapped to the dimension whose seat it shares. Such a dimension stays out of a class's id at the levels that
+#: say nothing about it the class does not already say: UNRECORDED (``None``) — every run stored before the
+#: dimension existed — or the unseated level where its owner reads unseated too. At any recorded level it is
+#: digested like every other dimension. So a stored run's cell keeps the id a stored analysis cites, and a run
+#: that recorded the dimension gets a cell of its own, which never pools with the unrecorded one: the class
+#: still lists the dimension (``unknown_dimensions``), so the merge rule refuses the pair, and the confound scan
+#: reads it ``undecided``.
+#:
+#: **Why no two different classes can share an id.** Within one bundle every class is built over one dimension
+#: set, so a class's unknown set is fixed by its recorded map, and two classes the id cannot tell apart differ
+#: only in this dimension's level, which is neutral in both. Unrecorded beside unrecorded is the same class.
+#: Unrecorded beside unseated cannot happen with the owner agreeing: unseated here needs the owner unseated
+#: (the condition below), while unrecorded here means the run filled the seat, so its owner reads a recorded or
+#: an unrecorded level, never unseated — the owner's own level tells the two classes apart. A dimension's
+#: unseated level paired with a recorded owner (a run that filled no judge seat yet recorded a judge, which
+#: :meth:`~threetears.evals.contracts.host.profile.HostProfile.omits_apparatus` reports as a contradiction) is
+#: therefore digested, not neutral.
+CELL_ID_NEUTRAL: Mapping[str, str] = {"judge_temperature": "judge_model"}
+
+
+def _cell_id_neutral(run_id: str, apparatus_levels: dict[str, dict[str, str | None]]) -> frozenset[str]:
+    """The :data:`CELL_ID_NEUTRAL` dimensions this run's class id leaves out, at the levels where it says nothing new.
+
+    Args:
+        run_id: The run.
+        apparatus_levels: Dimension → run id → level key, from :func:`_apparatus_levels`.
+
+    Returns:
+        The dimensions to leave out of the run's class id; empty when every one is recorded, or absent from the
+        bundle's apparatus altogether.
+    """
+    unseated = canonical_json(UNSEATED_LEVEL)
+    neutral: set[str] = set()
+    for dimension, owner in CELL_ID_NEUTRAL.items():
+        if dimension not in apparatus_levels:
+            continue
+        level = apparatus_levels[dimension].get(run_id)
+        if level is None or (level == unseated and apparatus_levels.get(owner, {}).get(run_id) == unseated):
+            neutral.add(dimension)
+    return frozenset(neutral)
 
 
 def _apparatus_classes(
@@ -5372,6 +6499,7 @@ def _apparatus_classes(
         run.id: apparatus_class_of(
             {dim: apparatus_levels.get(dim, {}).get(run.id) for dim in dimensions},
             dimensions=dimensions,
+            id_neutral=_cell_id_neutral(run.id, apparatus_levels),
             # Read off the run, never assumed: the launch path stamps `commissioned`, and a host
             # capturing traffic it did not control writes `witnessed`. It enters the class id, so a
             # captured session beside a launched arm of the same variant is two cells everywhere.
@@ -5508,6 +6636,61 @@ def _name_arms(
             )
         )
     return named
+
+
+def _declared_level_names(index: list[VariantIndexEntry], declared: CampaignDesign | None) -> list[VariantIndexEntry]:
+    """Name each arm's levels by what the campaign declared them as, where it declared them.
+
+    A host displays a level by what it can see of it, and for a long text — a prompt in a prompt sweep — that is a
+    fingerprint (``cognitive_style: 2304 chars · 539ef3``), so two arms that differ only in their text read as two
+    digests. A campaign that declared the level (``SweptAxis.values``) said what to call it: "current text",
+    "optimised text". That name replaces the host's display on every entry carrying the level, so every surface
+    reading the index — the arm names, the report's tables and charts, and the writer's arm list — prints it.
+
+    **Joined on ``(axis_id, content_hash)``, never on a display**: the hash is the level's identity, and a display
+    is what is being replaced. The first declaration wins where one hash is declared twice on one axis, as an
+    author reading the declaration top to bottom would expect. A level with no declared name keeps the host's
+    display, and so does a lever's "not a run of this kind" level, which is the engine's and no declaration's.
+    Only ``display`` changes: the variant key digests content hashes alone, so no key moves and no cell regroups.
+
+    Args:
+        index: The variant index, its arms already named by :func:`_name_arms`.
+        declared: The campaign's declaration, or None when it declared nothing.
+
+    Returns:
+        The index, each declared level displayed by its declared name; entries no declaration names unchanged.
+    """
+    if declared is None:
+        return index
+    names: dict[tuple[str, str], str] = {}
+    for axis in declared.axes:
+        for value in axis.values:
+            names.setdefault((axis.axis_id, value.content_hash), value.display)
+
+    def named(levers: dict[str, SweepableValue]) -> dict[str, SweepableValue]:
+        return {
+            axis: level.model_copy(update={"display": name})
+            if level.not_of_kind is None and (name := names.get((axis, level.content_hash))) is not None
+            else level
+            for axis, level in levers.items()
+        }
+
+    renamed: list[VariantIndexEntry] = []
+    for entry in index:
+        levers, swept = named(entry.levers), named(entry.swept)
+        if levers == entry.levers and swept == entry.swept:
+            renamed.append(entry)
+            continue
+        renamed.append(
+            VariantIndexEntry(
+                variant_key=entry.variant_key,
+                levers=levers,
+                levels_unavailable=entry.levels_unavailable,
+                swept=swept,
+                folded=entry.folded,
+            )
+        )
+    return renamed
 
 
 def _variant_key_of(
@@ -5724,7 +6907,11 @@ def assemble_context_bundle(
     results_by_run = _failures_as_misses(results_by_run)
     results = [result for run in runs for result in results_by_run[run.id]]
 
-    projection = project_score_records(runs, results, known_run_ids=known_run_ids, profile=profile)
+    # ``archived_run_ids=None`` is true here, not a default: archived members were removed
+    # above, so ``runs`` is the whole corpus these surfaces read and none of it is archived.
+    projection = project_score_records(
+        runs, results, known_run_ids=known_run_ids, archived_run_ids=None, profile=profile
+    )
     budget = compute_program_budget(runs, results)
     # What the campaign was not tuning, read once and shared by all three surfaces that
     # disclose it — the coverage map (where most findings are formed), the divergences, and
@@ -5750,6 +6937,9 @@ def assemble_context_bundle(
     # Every mechanism a lens compares across levels, read once so the coverage rows, the divergences
     # and the arm readings report one set of values.
     mechanisms = _mechanism_observations(results, profile=profile)
+    # Which model answered each result's candidate calls, read once so every lens that names the served
+    # model as a confound and the per-arm readings agree about it.
+    served = _served_models(results)
     design = _campaign_design(
         runs,
         control_variant,
@@ -5760,7 +6950,7 @@ def assemble_context_bundle(
         folds=folds,
         profile=profile,
     )
-    design = _design_with_mechanism_confounds(design, results_by_run, mechanisms, profile=profile)
+    design = _design_with_mechanism_confounds(design, results_by_run, mechanisms, served=served, profile=profile)
     # Built before the run summaries, because `RunSummary.config` names the levers this map
     # names. Both read `_effective_config`, so without that the two disagreed the moment the
     # registry became the vocabulary: a summary would carry every contestant property the host
@@ -5775,6 +6965,7 @@ def assemble_context_bundle(
         campaign.declared_design,
         folds=folds,
         observations=mechanisms,
+        served=served,
         arms=arms,
         profile=profile,
     )
@@ -5788,11 +6979,25 @@ def assemble_context_bundle(
         runs, results_by_run, apparatus_classes, scope_id=scope_id, profile=profile
     )
     variant_index = _name_arms(variant_index, observations, folds, run_ids)
+    variant_index = _declared_level_names(variant_index, campaign.declared_design)
     cells, refused_merges, next_experiments = pool_observations(
         observations, {c.apparatus_class_id: c for c in apparatus_classes.values()}
     )
+    # Capped like the divergences, keeping the entries that bear on the most evidence: a refusal by the
+    # observations its two cells hold, a recording by the observations it would add.
+    held = {(cell.variant_key, cell.apparatus_class_id): cell.n_observations for cell in cells}
+    refused_merges, refused_merges_omitted = _capped(
+        refused_merges,
+        _MAX_REFUSED_MERGES,
+        weight=lambda merge: sum(held.get((merge.variant_key, class_id), 0) for class_id in merge.apparatus_class_ids),
+    )
+    next_experiments, next_experiments_omitted = _capped(
+        next_experiments,
+        _MAX_NEXT_EXPERIMENTS,
+        weight=lambda entry: entry.n_observations_if_recorded - entry.n_observations_now,
+    )
 
-    # Only the runs that RESOLVED a span contribute, exactly as compare_runs does: a run
+    # Only the runs that RESOLVED a span contribute, exactly as runs_compare's do: a run
     # that produced nothing cannot say when it was measured, and letting that absence count
     # would report a difference on the strength of what one run could not say.
     # Sorted once, here, so the bundle's structured spans and the sentence rendered from them
@@ -5810,7 +7015,12 @@ def assemble_context_bundle(
         if insights_as_of is None or insight.observed_at < insights_as_of
     ]
     retracted = retracted_insights(ledger, lambda analysis_id: storage.analysis_archived(analysis_id, scope_id))
+    prior_insights, prior_insights_omitted = _prior_insights(
+        [insight for insight in ledger if insight.id not in retracted]
+    )
 
+    # The campaign's effective bar on the measure the frontier ranks on, or why it takes none.
+    frontier_bar, frontier_bar_withheld = _frontier_bar(campaign.behavior, campaign.declared_design, profile=profile)
     bundle = AnalysisContextBundle(
         campaign_id=campaign.id,
         subject_id=campaign.subject_id,
@@ -5829,7 +7039,18 @@ def assemble_context_bundle(
         # Called without them, this surface was blind to exactly the difference a judge A/B is
         # made of while the bundle beside it reported that difference from the same readers.
         comparison=compute_comparison_sets(runs, results=results, profile=profile),
-        frontier=compute_frontier(runs, results, known_run_ids=known_run_ids),
+        # pass^k at the behavior's declared threshold (#642), recorded on the frontier beside every figure,
+        # and ranked against the campaign's bar on pass^k when it declares one (#679). Archived members were
+        # removed before this point, so no archived set is passed (#670).
+        frontier=compute_frontier(
+            runs,
+            results,
+            bar=frontier_bar,
+            known_run_ids=known_run_ids,
+            archived_run_ids=None,
+            rubric_threshold=profile.bars.pass_threshold(campaign.behavior),
+        ),
+        frontier_bar_withheld=frontier_bar_withheld,
         telemetry=_telemetry_rollup(runs, results, budget, profile=profile),
         coverage=coverage,
         declared_design=campaign.declared_design,
@@ -5852,7 +7073,7 @@ def assemble_context_bundle(
         # one layer down.
         completeness_unknown_run_ids=[run.id for run in runs if run.completeness is None],
         short_cells=_short_cells(cells, campaign.declared_design),
-        controls_reading=_controls_reading(runs, campaign.declared_design),
+        held_fixed_reading=_held_fixed_reading(runs, campaign.declared_design),
         # ``full`` because this bundle's reader is a model that cannot go and look:
         # above the inline cap the collapsed form names two spans and says where to
         # get the rest, which is an instruction only a human at a terminal can follow.
@@ -5868,17 +7089,22 @@ def assemble_context_bundle(
         # underneath it reports that fact nowhere at all.
         apparatus_confounds=_apparatus_confounds(run_ids, apparatus_levels, profile=profile),
         arm_mechanisms=_arm_mechanisms(arms, results_by_run, mechanisms),
+        arm_served_models=_arm_served_models(arms, results_by_run, served),
         cells=cells,
         variant_index=variant_index,
         refused_merges=refused_merges,
+        refused_merges_omitted=refused_merges_omitted,
         next_experiments=next_experiments,
+        next_experiments_omitted=next_experiments_omitted,
+        host_declarations_digest=host_declarations_digest(profile),
         # Read off the projection rather than the campaign, because the campaign states ONE
         # subject and this check exists to catch the case where the observations disagree with
         # that — a rename mid-campaign, or two subjects collided onto one key.
         subject_key_instabilities=subject_key_instabilities(
             (record.subject_id, record.subject_label) for record in projection.records
         ),
-        prior_insights=_sorted_insights([insight for insight in ledger if insight.id not in retracted]),
+        prior_insights=prior_insights,
+        prior_insights_omitted=prior_insights_omitted,
         retracted_insights=retracted,
         # Over the resolved members only, like every other lens: a rating of an archived run's result
         # calibrates a judge the bundle does not otherwise read. Ratings are read per run, in run order,
@@ -5894,6 +7120,7 @@ def assemble_context_bundle(
     bundle.judge_evidence_tiers = judge_evidence_tiers(
         bundle.judge_agreement, bundle.judge_self_agreement, _judged_keys(results)
     )
+    bundle.goal_check_proofs = goal_check_proofs_of(runs, results)
     # Judged quality and the bars, per cell. Both read the cell algebra's own grouping, so every
     # per-arm number here describes observations the bundle already calls one arm, and neither
     # enters `measures` or the catalog: judged dimensions stay off the ranking surface, and are
@@ -5904,12 +7131,21 @@ def assemble_context_bundle(
         projection.records, results_by_cell, campaign.declared_design, tiers=bundle.judge_evidence_tiers
     )
     bundle.bar_adjudications = _bar_adjudications(
-        campaign.behavior, campaign.declared_design, results_by_cell, projection.records, profile=profile
+        campaign.behavior,
+        campaign.declared_design,
+        results_by_cell,
+        projection.records,
+        tiers=bundle.judge_evidence_tiers,
+        frontier_bar=frontier_bar,
+        profile=profile,
     )
     bundle.verdict_order = _verdict_order(bundle.bar_adjudications, campaign.declared_design)
     # The decision surface, over the same grouping and the same population the bars were read over,
     # and before the catalog: its collections are measure collections like any other here, so the
-    # catalog has to describe their names too.
+    # catalog has to describe their names too. Laid out in the surface's one row order (the control as
+    # the reference, then the arms by name), which the writer reads and the frozen surface keeps.
+    control = campaign.declared_design.control if campaign.declared_design else None
+    names = arm_names(bundle.variant_index)
     bundle.cell_measures = _cell_measures(
         cells,
         results_by_cell,
@@ -5930,6 +7166,8 @@ def assemble_context_bundle(
         short_runs=bundle.short_runs,
         incomplete_runs=bundle.incomplete_runs,
         profile=profile,
+        control=control,
+        names=names,
     )
     bundle.all_failed_cells, bundle.all_failed = _all_failed(bundle.cell_measures)
     # The time axis, over the same algebra the decision surface was just read with, and before the catalog
@@ -5945,11 +7183,12 @@ def assemble_context_bundle(
         short_runs=bundle.short_runs,
         incomplete_runs=bundle.incomplete_runs,
         profile=profile,
+        names=names,
     )
     bundle.measure_catalog = _measure_catalog(bundle, profile=profile)
     # After the catalog, which says each measure's better direction and axis: a family is the readings a
     # question's axes name, and a reading with no better end has no verdict to correct.
-    bundle.multiple_comparisons = _multiple_comparisons(
+    bundle.multiple_comparisons, bundle.guardrails = _multiple_comparisons(
         campaign.declared_design,
         design,
         results_by_cell,
@@ -5957,17 +7196,14 @@ def assemble_context_bundle(
         catalog=bundle.measure_catalog,
         judged_measures=bundle.judged_measures,
         observations=mechanisms,
+        served=served,
         profile=profile,
     )
-    # The frontier is always assembled without a bar, so its per-subject clearing count is a
-    # default rather than a count. Said on the bundle, because a zero with no sentence beside it
-    # was quoted as "no arm cleared the bar".
-    if bundle.frontier.bar is None:
-        bundle.frontier_bar_withheld = _FRONTIER_BAR_WITHHELD
+    bundle.reading_scope = _reading_scope(campaign.declared_design, bundle.measure_catalog, bundle.judged_measures)
     # Divergences pair measures by unit, which only the catalog knows, so they are derived
     # after it — and from the same descriptors the generator will read, never a second lookup
     # that could disagree with what the bundle says a measure is.
-    bundle.scope_divergences, bundle.divergences_omitted = _scope_divergences(
+    bundle.scope_divergences, bundle.divergences_omitted, divergence_count = _scope_divergences(
         runs,
         results_by_run,
         bundle.measure_catalog,
@@ -5975,8 +7211,10 @@ def assemble_context_bundle(
         design,
         folds=folds,
         observations=mechanisms,
+        served=served,
         profile=profile,
     )
+    bundle.divergences_tested, bundle.divergences_untested = divergence_count
     # Last, because it reads what both confound-bearing lenses actually emitted rather than
     # what they might have — a catalog built from the declaration would name dimensions no
     # lens reported, and a reader would take that as a claim the campaign made.
@@ -6134,6 +7372,7 @@ def _judged_measures(
     """
     result_by_id = {result.id: result for members in results_by_cell.values() for result in members}
     cell_of_result = {result.id: key for key, members in results_by_cell.items() for result in members}
+    boundary = _boundary_dimensions(result_by_id.values())
     scored: dict[str, dict[_CellKey, list[ScoreRecord]]] = {}
     for dimension, record in _judged_rows(records):
         key = cell_of_result.get(record.result_id)
@@ -6156,7 +7395,9 @@ def _judged_measures(
             counted = [
                 row for row in rows if row.outcome not in (ResultOutcome.INFRA_EXCLUDE.value, JUDGE_CANNOT_TELL_OUTCOME)
             ]
-            values = [float(row.value) for row in counted if row.value is not None]
+            valued = [row for row in counted if row.value is not None]
+            values = [float(row.value) for row in valued if row.value is not None]
+            value_cases = [row.test_case_id for row in valued]
             # The whole judge behind each counted score — dimension, scale, served model and config — so an arm
             # can only carry a tier measured for the very judges that scored it.
             served = [
@@ -6170,11 +7411,11 @@ def _judged_measures(
                     apparatus_class_id=key[1],
                     run_ids=_member_run_ids(results_by_cell[key]),
                     n=len(values),
-                    n_independent=len({row.test_case_id for row in counted}),
+                    n_independent=len(set(value_cases)),
                     n_infra_excluded=len(rows) - len(counted) - len(cannot_tell),
                     n_cannot_tell=len(cannot_tell),
                     mean=sum(values) / len(values) if values else None,
-                    sem=standard_error_of_mean(values) if values else None,
+                    sem=clustered_standard_error(values, value_cases) if values else None,
                     evidence_tier=tier_for_judges(tiers, served),
                 )
             )
@@ -6183,7 +7424,9 @@ def _judged_measures(
                 name=dimension,
                 family=str(descriptor.family),
                 value_range=descriptor.value_range,
+                scale=descriptor.scale,
                 higher_is_better=bool(descriptor.higher_is_better),
+                axis="boundary" if dimension in boundary else "capability",
                 bar_threshold=bars.get(dimension),
                 arms=arms,
             )
@@ -6191,8 +7434,22 @@ def _judged_measures(
     return measures
 
 
-#: A bar's per-cell reading: ``(mean, sem, n, n_independent)``.
-_BarReading = tuple[float | None, float | None, int, int]
+def _boundary_dimensions(results: Iterable[EvalResult]) -> set[str]:
+    """The judged dimensions any of ``results`` was scored on as a boundary dimension — the judged guardrails.
+
+    Any one boundary score makes the dimension a guardrail: a dimension stamped both ways was declared a
+    boundary somewhere, and reading it as a guardrail errs toward holding it rather than trading it.
+    """
+    return {score.dim for result in results for score in result.rubric_scores if score.axis == "boundary"}
+
+
+def _unstamped_dimensions(results: Iterable[EvalResult]) -> list[str]:
+    """The judged dimensions carrying a score judged before the rubric axis was stamped, sorted."""
+    return sorted({score.dim for result in results for score in result.rubric_scores if score.axis is None})
+
+
+#: A bar's per-cell reading: ``(mean, sem, n, n_independent, interval)``.
+_BarReading = tuple[float | None, float | None, int, int, tuple[float, float] | None]
 
 #: What adjudicating a bar came to — see :attr:`BarAdjudication.state`.
 _BarState = Literal["adjudicated", "names_no_stored_measure", "not_numeric"]
@@ -6295,7 +7552,10 @@ def _bar_reading(
         profile: The host whose vocabulary this reads.
 
     Returns:
-        ``(mean, sem, n, n_independent)``, or None when no counted result carries the name.
+        ``(mean, sem, n, n_independent, interval)``, or None when no counted result carries the name.
+        The interval is the one the cell's own reading states — a measure's summary, or a judged
+        dimension's through the same rule (:func:`~threetears.evals.analysis.stats.observed_mean_interval`)
+        — never one computed for the bar, so a bar and the cell it reads cannot state two widths.
     """
     if bar.kind in ("measure", "goal_state"):
         # A check's rate is the measure the walk publishes for it, read here rather than recomputed,
@@ -6305,7 +7565,8 @@ def _bar_reading(
         summary = next((m for m in collection.measures if m.name == name), None)
         if summary is None or summary.mean is None:
             return None
-        return summary.mean, summary.sem, summary.n, summary.n_independent
+        interval = None if summary.ci_low is None or summary.ci_high is None else (summary.ci_low, summary.ci_high)
+        return summary.mean, summary.sem, summary.n, summary.n_independent, interval
     rows = [
         (float(record.value), record.test_case_id)
         for result in _non_faulted(members)
@@ -6315,7 +7576,38 @@ def _bar_reading(
     if not rows:
         return None
     values = [value for value, _ in rows]
-    return sum(values) / len(values), standard_error_of_mean(values), len(values), len({case for _, case in rows})
+    cases = [case for _, case in rows]
+    return (
+        sum(values) / len(values),
+        clustered_standard_error(values, cases),
+        len(values),
+        len(set(cases)),
+        observed_mean_interval(values, cases=cases, value_range=bar.descriptor.value_range),
+    )
+
+
+def _judged_bar_tier(
+    bar: BarName,
+    members: list[EvalResult],
+    judged_rows: dict[str, list[ScoreRecord]],
+    *,
+    tiers: list[JudgeEvidenceTier],
+) -> JudgedEvidenceTier | None:
+    """The evidence tier a judged bar's verdict on one cell stands on, or None for a bar no judge scored.
+
+    The weakest tier among the judges that served the very scores :func:`_bar_reading` read for the cell — its
+    non-faulted results' values on the bar's dimension — by
+    :func:`~threetears.evals.analysis.agreement.tier_for_judges`, the lookup every judged arm's tier is read by.
+    """
+    if bar.kind != "judged":
+        return None
+    served = [
+        judge
+        for result in _non_faulted(members)
+        for dimension, _ in _judged_values(judged_rows.get(result.id, []))
+        if dimension == bar.name and (judge := judge_key(result, dimension)) is not None
+    ]
+    return tier_for_judges(tiers, served)
 
 
 def _bar_adjudications(
@@ -6324,6 +7616,8 @@ def _bar_adjudications(
     results_by_cell: dict[_CellKey, list[EvalResult]],
     records: list[ScoreRecord],
     *,
+    tiers: list[JudgeEvidenceTier],
+    frontier_bar: float | None,
     profile: HostProfile,
 ) -> list[BarAdjudication]:
     """Adjudicate every applicable bar against every cell.
@@ -6336,13 +7630,17 @@ def _bar_adjudications(
     host's registered bar — which no gate saw — be resolved by the same rule.
 
     Every kind is read over the same population, each cell's non-faulted results; see
-    :class:`BarVerdict`.
+    :class:`BarVerdict`. A verdict on a judged dimension carries the evidence tier of the judges behind it
+    (:func:`_judged_bar_tier`); every other verdict carries None.
 
     Args:
         behavior: The campaign's behavior.
         design: The campaign's declaration.
         results_by_cell: Each cell's results.
         records: The assembly's score projection rows, where a judged dimension's name survives.
+        tiers: The judges' evidence tiers (``judge_evidence_tiers``).
+        frontier_bar: The bar the frontier was given (:func:`_frontier_bar`), or None. A bar on pass^k carries
+            no cell verdict, and its reason says whether the frontier read it.
         profile: The host whose vocabulary this reads.
 
     Returns:
@@ -6372,6 +7670,18 @@ def _bar_adjudications(
         if isinstance(resolved, UnreadableBarName):
             state = "not_numeric" if resolved.refusal == "not_numeric" else "names_no_stored_measure"
             reason = resolved.reason
+            if measure_id == FRONTIER_RANKING_MEASURE:
+                # Not "never read": no cell carries pass^k, and the frontier is where a bar on it is read.
+                reason = (
+                    f"{measure_id} is a rate over a contestant's cases that no single result carries, so no cell "
+                    "verdict is given on it here. "
+                    + (
+                        "The frontier read this bar on each contestant's pass^k interval: see frontier.bar and each "
+                        "point's bar_decision."
+                        if frontier_bar is not None
+                        else "The frontier was given no bar either; frontier_bar_withheld says why."
+                    )
+                )
         else:
             readings = {
                 key: _bar_reading(resolved, members, judged_rows, profile=profile)
@@ -6380,11 +7690,13 @@ def _bar_adjudications(
             # A measure computed over every observation excluded none; reporting the cell's faults as
             # excluded from it would describe a population the value was not computed over.
             keeps_faults = resolved.kind == "measure" and resolved.descriptor.population == "all_observed"
+            # The measure's declared margin — the difference too small to act on, the one margin the
+            # history read's equivalence test is run against too. None holds the bar at its threshold.
+            margin = resolved.descriptor.materiality_threshold
             if any(reading is not None for reading in readings.values()):
                 state = "adjudicated"
                 for key, members in results_by_cell.items():
-                    mean, sem, n, n_independent = readings[key] or (None, None, 0, 0)
-                    cleared = None if mean is None else (mean >= threshold if higher_is_better else mean <= threshold)
+                    mean, sem, n, n_independent, interval = readings[key] or (None, None, 0, 0, None)
                     verdicts.append(
                         BarVerdict(
                             variant_key=key[0],
@@ -6396,7 +7708,13 @@ def _bar_adjudications(
                             n_independent=n_independent,
                             n_infra_excluded=0 if keeps_faults else len(members) - len(counted_by_cell[key]),
                             n_cannot_tell=_cannot_tell_on(resolved, counted_by_cell[key], judged_rows),
-                            cleared=cleared,
+                            ci_low=None if interval is None else interval[0],
+                            ci_high=None if interval is None else interval[1],
+                            margin=margin,
+                            cleared=None
+                            if interval is None
+                            else interval_clears(interval, threshold, margin=margin, higher_is_better=higher_is_better),
+                            judge_evidence_tier=_judged_bar_tier(resolved, members, judged_rows, tiers=tiers),
                         )
                     )
             else:
@@ -6541,8 +7859,8 @@ def _all_failed(cells: list[CellFacts]) -> tuple[list[CellCoordinate], str | Non
     return failed, all_failed_sentence(len(failed), len(cells))
 
 
-def _controls_reading(runs: list[EvalRun], design: CampaignDesign | None) -> ControlsReading:
-    """Compare the declared controls with the provenance every resolved run recorded.
+def _held_fixed_reading(runs: list[EvalRun], design: CampaignDesign | None) -> HeldFixedReading:
+    """Compare what the campaign declared held fixed with the provenance every resolved run recorded.
 
     Args:
         runs: The resolved member runs.
@@ -6554,8 +7872,8 @@ def _controls_reading(runs: list[EvalRun], design: CampaignDesign | None) -> Con
         add their own sentence, and none of them adds one that did not happen.
     """
     provenance = {run.id: run.apparatus_provenance for run in sorted(runs, key=lambda r: r.id)}
-    controls = design.controls if design is not None else None
-    declared = controls.apparatus if controls is not None else None
+    held_fixed = design.held_fixed if design is not None else None
+    declared = held_fixed.apparatus if held_fixed is not None else None
     contradicting = sorted(run_id for run_id, found in provenance.items() if declared is not None and found != declared)
     sentences = []
     if contradicting:
@@ -6567,14 +7885,14 @@ def _controls_reading(runs: list[EvalRun], design: CampaignDesign | None) -> Con
         )
     elif declared is None and len(set(provenance.values())) > 1:
         sentences.append(
-            "This campaign declares no controls, and its runs mix commissioned and witnessed apparatus; the two "
+            "This campaign declares nothing held fixed, and its runs mix commissioned and witnessed apparatus; the two "
             "never share a cell, so an arm measured both ways is reported as two cells."
         )
-    if controls is not None and controls.stimulus == "uncontrolled":
-        sentences.append(f"The stimulus was not held fixed: {controls.stimulus_reason.strip()}")
-    return ControlsReading(
-        declared_stimulus=controls.stimulus if controls is not None else None,
-        stimulus_reason=controls.stimulus_reason if controls is not None else "",
+    if held_fixed is not None and held_fixed.stimulus == "uncontrolled":
+        sentences.append(f"The stimulus was not held fixed: {held_fixed.stimulus_reason.strip()}")
+    return HeldFixedReading(
+        declared_stimulus=held_fixed.stimulus if held_fixed is not None else None,
+        stimulus_reason=held_fixed.stimulus_reason if held_fixed is not None else "",
         declared_apparatus=declared,
         run_provenance=provenance,
         contradicting_run_ids=contradicting,
@@ -6634,7 +7952,7 @@ def _verdict_order(adjudications: list[BarAdjudication], design: CampaignDesign 
 #: Opens the campaign-wide family's disclosure, where the campaign declares no question.
 _NO_QUESTION_FAMILY = (
     "This campaign declares no live question, so every comparison it holds — each contrast against the control, "
-    "on every reading — is corrected as one family."
+    "on every reading on a merit axis — is corrected as one family."
 )
 _NO_CONTROL_TO_COMPARE_AGAINST = (
     "No control resolved, so there is no arm for a contrast to be tested against and no separation between arms is "
@@ -6666,6 +7984,9 @@ def _per_case_values(
         by_case[result.test_case_id].append(result)
     values: dict[tuple[ReadingKind, str], dict[str, float]] = defaultdict(dict)
     for case_id in sorted(by_case):
+        # The candidate's own spend among them (``production_replicating_cost``, which the walk yields over the
+        # turns the candidate took and only where a result measured it): a contrast on cost tests it, never
+        # ``cost_usd``, which sums the judge's spend too.
         for summary in _measure_collection(by_case[case_id], profile=profile, undeclared="scored").measures:
             if summary.mean is not None:
                 values[("measure", summary.name)][case_id] = summary.mean
@@ -6686,8 +8007,16 @@ def _family_readings(
 
     A measure qualifies when it has a better end (a reading with none cannot improve or regress) and
     sits on one of the axes; a per-label classifier statistic does not, because it is computed from a
-    whole cell's confusion counts and has no per-case value to test. A judged dimension sits on the
-    quality axis. An unscoped question (no axes) asks about every axis.
+    whole cell's confusion counts and has no per-case value to test. A capability judged dimension sits on
+    the quality axis. A guardrail — a boundary judged dimension, or a measure declared one, which serves no
+    axis — is in no family: it is held, never traded against a gain, and is decided on its own
+    (:func:`_guardrails`). An unscoped question (no axes) asks about every axis — every axis, not every measure:
+    a measure that serves no merit axis contributes to no verdict (:data:`MeritAxis`), scoped or not
+    (:func:`~threetears.evals.contracts.declaration.axis_in_question_scope`).
+    That is how the measuring apparatus's own readings stay out of a contrast between candidates: the
+    judge phase's time (``judge_ms``), the drain wait, and ``cost_usd`` and ``program_cost``, which sum the
+    judge's spend — what it cost to MEASURE an arm. The candidate's spend is ``production_replicating_cost``,
+    on the cost axis.
 
     Args:
         axes: The question's merit axes; empty for an unscoped question.
@@ -6701,12 +8030,41 @@ def _family_readings(
     for name, descriptor in catalog.items():
         if descriptor.higher_is_better is None or classifier_label_of(name) is not None:
             continue
-        if not axes or descriptor.merit_axis in axes:
+        if axis_in_question_scope(descriptor.merit_axis, axes):
             readings[("measure", name)] = descriptor.higher_is_better
-    if not axes or "quality" in axes:
+    if axis_in_question_scope(JUDGED_MERIT_AXIS, axes):
         for measure in judged_measures:
-            readings[("judged", measure.name)] = measure.higher_is_better
+            if measure.axis == "capability":
+                readings[("judged", measure.name)] = measure.higher_is_better
     return readings
+
+
+def _test_samples(
+    control_values: Mapping[str, float], contrast_values: Mapping[str, float]
+) -> tuple[list[float], list[float], bool]:
+    """The two samples a contrast against the control reads, and whether they are paired.
+
+    Paired over the cases both cells ran when they share at least two — far more powerful, and the design
+    a fixed case set exists for — else each side's per-case values, unpaired. One choice for every reading
+    of a contrast, a comparison's and a guardrail's alike.
+
+    Returns:
+        ``(control sample, contrast sample, paired)``, the two aligned by case when paired.
+    """
+    shared = sorted(set(control_values) & set(contrast_values))
+    paired = len(shared) >= 2
+    a = [control_values[case] for case in shared] if paired else list(control_values.values())
+    b = [contrast_values[case] for case in shared] if paired else list(contrast_values.values())
+    return a, b, paired
+
+
+class _Tested(NamedTuple):
+    """One comparison before its family's correction: the comparison, the p's it carries, and its samples."""
+
+    comparison: FamilyComparison
+    p_raw: float | None
+    equivalence_p_raw: float | None
+    samples: tuple[list[float], list[float]]
 
 
 def _compare(
@@ -6716,12 +8074,19 @@ def _compare(
     contrast: tuple[_CellKey, dict[str, float]],
     *,
     threshold: float | None,
+    value_range: tuple[float, float] | None = None,
     no_turn: tuple[str, ...] = (),
-) -> tuple[FamilyComparison, float | None]:
+) -> _Tested:
     """Test one contrast against the control on one reading, before correction.
 
     Paired over the cases both cells ran when they share at least two — far more powerful, and the
-    design a fixed case set exists for — else Welch's test over each side's per-case values.
+    design a fixed case set exists for — else the unpaired test over each side's per-case values
+    (:func:`~threetears.evals.analysis.stats.composite_significance`), and where the values have no spread
+    the exact permutation p every other surface reads that gap by (:func:`~threetears.evals.analysis.stats.separation_p`),
+    so one concept has one answer. The means, the counts and the delta
+    are all over the cases the test read, and each side says how many of its own it left out, so the
+    figures a reader sees are the figures the test saw. A paired comparison on a measure with a declared
+    margin also runs the paired equivalence test (TOST) against it.
 
     Args:
         reading: The reading's kind and name.
@@ -6729,28 +8094,40 @@ def _compare(
         control: The control cell and its per-case values.
         contrast: The contrast cell and its per-case values.
         threshold: The measure's declared materiality threshold, which labels the delta through the one
-            predicate every surface uses (:func:`~threetears.evals.contracts.metrics.materiality`); None for a
-            measure that declared none and for a judged dimension.
+            predicate every surface uses (:func:`~threetears.evals.contracts.metrics.materiality`) and is the
+            equivalence test's margin; None for a measure that declared none and for a judged dimension.
+        value_range: The measure's declared inclusive bounds, which the equivalence test reads so its error
+            rate holds on coarse values at every n (:func:`~threetears.evals.analysis.stats.paired_equivalence`);
+            None where it declares none.
         no_turn: Which sides (``"control"``, ``"arm"``) have no turn to read a turn's time or spend over —
             every result there failed with no turn taken — so an untested comparison says that, the reason,
             rather than that too few cases carried the reading.
 
     Returns:
-        The comparison with its adjusted p and verdict still unset, and its raw p (None when the test
-        produced none) for the family's correction.
+        The comparison with its adjusted p's, interval and verdict still unset, its raw p's (None where no
+        test produced one) for the family's correction, and the samples the test read, for the interval.
     """
     (control_key, control_values), (contrast_key, contrast_values) = control, contrast
-    shared = sorted(set(control_values) & set(contrast_values))
-    paired = len(shared) >= 2
-    a = [control_values[case] for case in shared] if paired else list(control_values.values())
-    b = [contrast_values[case] for case in shared] if paired else list(contrast_values.values())
-    _, significant, p_raw = composite_significance(a, b, paired=paired)
+    a, b, paired = _test_samples(control_values, contrast_values)
+    # The separation p every surface reads a gap by (:func:`separation_p`): the t-test's where the values have
+    # spread, and where they have none — every shared case moved by one amount, or each side constant — the
+    # exact permutation p the frontier, the mechanism and scope reads and the history use, decided on exact
+    # values. So a gap with no spread is separated once the exact test can reach α, as it is everywhere else.
+    p_raw = separation_p(a, b, paired=paired)
+    hedges_g, _, _ = composite_significance(a, b, paired=paired)
+    no_spread = (
+        no_spread_p([exact_decimal(x) for x in a], [exact_decimal(y) for y in b], paired=paired)
+        if len(a) >= 2 and len(b) >= 2
+        else None
+    )
+    if no_spread is not None:
+        # No spread, decided exactly: no finite effect size, whatever a float residue lets the t statistic say.
+        hedges_g = None
     mean_a = sum(a) / len(a) if a else None
     mean_b = sum(b) / len(b) if b else None
     untested_reason = None
-    if significant is None:
-        # Named from the branch that refused, since the two causes have different remedies: more cases
-        # for the first, while the second is a gap so regular that no t statistic exists to measure it.
+    if p_raw is None:
+        # Named from the branch that refused, since the causes have different remedies.
         if no_turn:
             untested_reason = (
                 f"every result of the {' and the '.join(no_turn)} failed with no turn taken, so there is no "
@@ -6758,45 +8135,145 @@ def _compare(
             )
         elif len(a) < 2 or len(b) < 2:
             untested_reason = "fewer than two cases carry this reading on a side"
-        elif paired:
-            untested_reason = "every shared case moved by the same amount, so the differences have no spread to test"
+        elif no_spread is not None and paired:
+            untested_reason = (
+                f"every shared case moved by the same amount, and over {len(a)} shared cases the exact sign-flip "
+                f"test's smallest p is {format_number(no_spread)}, above α={format_number(SIGNIFICANCE_ALPHA)}; "
+                f"it needs {MIN_PAIRS_FOR_DETERMINISTIC_GAP} shared cases"
+            )
+        elif no_spread is not None:
+            untested_reason = (
+                f"each side's values are constant, and over {len(a)} and {len(b)} cases the exact permutation "
+                f"test's smallest p is {format_number(no_spread)}, above α={format_number(SIGNIFICANCE_ALPHA)}; "
+                "it needs more cases on a side"
+            )
         else:
-            untested_reason = "each side's values are constant, so there is no spread to test"
+            untested_reason = "the values differ by less than floating point resolves, so no t statistic exists"
+    # The equivalence test only where the separation test produced a p, so each equivalence hypothesis has
+    # its comparison's separation hypothesis beside it in the family (see holm_adjust's max_true).
+    margin = threshold if paired and threshold and p_raw is not None else None
+    # The differences of exact values, so a float residue cannot pass for a spread nor a spread for a constant; on
+    # the measure's declared range the bounded test decides either, at the error rate it states.
+    _, equivalence_p_raw = paired_equivalence(
+        [exact_decimal(y) - exact_decimal(x) for x, y in zip(a, b)], margin, value_range=value_range
+    )
     delta = None if mean_a is None or mean_b is None else mean_b - mean_a
     comparison = FamilyComparison(
         reading=reading[0],
         name=reading[1],
         higher_is_better=higher_is_better,
         control=ComparedCell(
-            variant_key=control_key[0], apparatus_class_id=control_key[1], n_cases=len(a), mean=mean_a
+            variant_key=control_key[0],
+            apparatus_class_id=control_key[1],
+            n_cases=len(a),
+            mean=mean_a,
+            n_left_out=len(control_values) - len(a),
         ),
         contrast=ComparedCell(
-            variant_key=contrast_key[0], apparatus_class_id=contrast_key[1], n_cases=len(b), mean=mean_b
+            variant_key=contrast_key[0],
+            apparatus_class_id=contrast_key[1],
+            n_cases=len(b),
+            mean=mean_b,
+            n_left_out=len(contrast_values) - len(b),
         ),
         delta=delta,
-        test=None if significant is None else ("paired" if paired else "unpaired"),
+        hedges_g=hedges_g if p_raw is not None else None,
+        test=None if p_raw is None else ("paired" if paired else "unpaired"),
         p_raw=p_raw,
-        verdict="untested" if significant is None else "not_separated",
+        equivalence_margin=margin,
+        equivalence_p_raw=equivalence_p_raw,
+        verdict="untested" if p_raw is None else "not_separated",
         untested_reason=untested_reason,
         materiality=None if delta is None else materiality(threshold, delta),
     )
-    return comparison, p_raw
+    return _Tested(comparison, p_raw, equivalence_p_raw, (a, b))
 
 
-def _family_disclosure(family_size: int, n_untested: int, alpha: float, *, campaign_wide: bool = False) -> str:
+def _family_disclosure(
+    family_size: int, n_untested: int, alpha: float, *, n_equivalence: int = 0, campaign_wide: bool = False
+) -> str:
     """The sentence a writer quotes about one family, composed from what the family holds."""
     asked = "the campaign holds" if campaign_wide else "this question asks about"
     if family_size == 0:
         sentence = f"No comparison {asked} carried a p, so it supports no separation between arms."
     else:
+        equivalence = (
+            f", with {n_equivalence} equivalence test{'s' if n_equivalence != 1 else ''} against a declared margin,"
+            if n_equivalence
+            else ""
+        )
         sentence = (
             f"{family_size} comparison{'s' if family_size != 1 else ''} {asked} carried a p and "
-            f"{'were' if family_size != 1 else 'was'} corrected together by Holm's method at "
-            f"α={format_number(alpha)}; a separation stands only where the adjusted p is below it."
+            f"{'were' if family_size != 1 else 'was'}{equivalence} corrected together by Holm's method at "
+            f"α={format_number(alpha)}; a separation stands only where the adjusted p is below it. Each interval "
+            f"is at {format_number(100 * (1 - alpha / family_size))}%, so the family's intervals hold together at "
+            f"{format_number(100 * (1 - alpha))}%."
         )
     if n_untested:
         sentence += f" {n_untested} more could not be tested; each says why."
     return f"{_NO_QUESTION_FAMILY} {sentence}" if campaign_wide else sentence
+
+
+def _corrected_family(question_id: str | None, axes: list[MeritAxis], tested: list[_Tested]) -> ComparisonFamily:
+    """Correct one family's tests together, and read each comparison's verdict and interval off the result.
+
+    Every separation p and every equivalence p is Holm-adjusted as one family, capped at the separation
+    count (:func:`~threetears.evals.analysis.stats.holm_adjust`'s ``max_true``): a comparison's two
+    hypotheses — no difference, a difference of at least the margin — cannot both be true, so the family's
+    error stays at α over every verdict it can reach. Each interval is at ``1 − α/m`` (Bonferroni over the
+    ``m`` separations), which holds the family's intervals together at ``1 − α`` and keeps them consistent
+    with the verdicts: one that excludes zero has ``m · p_raw < α`` and so a separation; one inside the margin
+    has a TOST p below ``α/2m`` and so an equivalence.
+
+    Args:
+        question_id: The question the family serves, or None for the campaign-wide family.
+        axes: The question's merit axes.
+        tested: The family's comparisons, tested and uncorrected.
+
+    Returns:
+        The corrected family.
+    """
+    family_size = sum(1 for one in tested if one.p_raw is not None)
+    n_equivalence = sum(1 for one in tested if one.equivalence_p_raw is not None)
+    raw = [p for one in tested for p in (one.p_raw, one.equivalence_p_raw) if p is not None]
+    adjusted = iter(holm_adjust(raw, max_true=family_size) if raw else [])
+    interval_level = 1.0 - SIGNIFICANCE_ALPHA / family_size if family_size else None
+    comparisons = []
+    for one in tested:
+        comparison = one.comparison
+        if one.p_raw is not None and interval_level is not None:
+            p_adjusted = next(adjusted)
+            equivalence_p_adjusted = next(adjusted) if one.equivalence_p_raw is not None else None
+            verdict: ComparisonVerdict = "not_separated"
+            if p_adjusted < SIGNIFICANCE_ALPHA and comparison.delta:
+                verdict = "improved" if (comparison.delta > 0) == comparison.higher_is_better else "regressed"
+            elif equivalence_p_adjusted is not None and equivalence_p_adjusted < SIGNIFICANCE_ALPHA:
+                verdict = "equivalent"
+            control_sample, contrast_sample = one.samples
+            comparison = comparison.model_copy(
+                update={
+                    "p_adjusted": p_adjusted,
+                    "equivalence_p_adjusted": equivalence_p_adjusted,
+                    "interval": difference_interval(
+                        control_sample, contrast_sample, paired=comparison.test == "paired", confidence=interval_level
+                    ),
+                    "verdict": verdict,
+                }
+            )
+        comparisons.append(comparison)
+    n_untested = sum(1 for comparison in comparisons if comparison.verdict == "untested")
+    return ComparisonFamily(
+        question_id=question_id,
+        merit_axes=axes,
+        family_size=family_size,
+        n_equivalence_tests=n_equivalence,
+        interval_level=interval_level,
+        n_untested=n_untested,
+        comparisons=comparisons,
+        disclosure=_family_disclosure(
+            family_size, n_untested, SIGNIFICANCE_ALPHA, n_equivalence=n_equivalence, campaign_wide=question_id is None
+        ),
+    )
 
 
 def _multiple_comparisons(
@@ -6808,15 +8285,19 @@ def _multiple_comparisons(
     catalog: dict[str, MetricDescriptor],
     judged_measures: list[JudgedMeasure],
     observations: _MechanismObservations,
+    served: _ServedModels,
     profile: HostProfile,
-) -> MultipleComparisons:
-    """Test each contrast against the control, per live question — or campaign-wide — and correct each family.
+) -> tuple[MultipleComparisons, GuardrailReadings]:
+    """Test each contrast against the control, per live question — or campaign-wide — and decide every guardrail.
 
     A question's family is every comparison it could draw a verdict from: each contrast cell against
     the control cell under the same rig (a contrast across rigs differs by its instrument too, so it is
     not this test), on every reading on the question's axes (:func:`_family_readings`). The family is
     corrected by Holm's method over the comparisons that carried a p, and each verdict is read off its
     adjusted p, so a family of ten cannot hand the writer a chance "difference" as a finding.
+
+    The guardrails are read over the same pairs and the same per-case values, and kept out of every
+    family: each is decided on its own (:func:`_guardrails`), so no capability gain can offset one.
 
     Args:
         declared: The campaign's declaration, for its live questions.
@@ -6826,14 +8307,23 @@ def _multiple_comparisons(
         catalog: The bundle's measure catalog — direction and axis per measure.
         judged_measures: The bundle's judged measures.
         observations: The campaign's mechanism observations, read for each contrast between two models.
+        served: Which model answered each result's candidate calls, read for every contrast.
         profile: The host whose vocabulary this reads.
 
     Returns:
         One family per live question, in declaration order; one campaign-wide family over every reading when
-        the campaign declares no live question; or none, with the reason, when no control resolved.
+        the campaign declares no live question; or none, with the reason, when no control resolved. Beside
+        them, every guardrail decided for each arm against the control.
     """
+    guardrail_readings = _guardrail_readings(catalog, judged_measures)
+    unstamped = _unstamped_dimensions(result for members in results_by_cell.values() for result in members)
     if realized.control_arm is None:
-        return MultipleComparisons(withheld=_NO_CONTROL_TO_COMPARE_AGAINST)
+        return MultipleComparisons(withheld=_NO_CONTROL_TO_COMPARE_AGAINST), _guardrails_of(
+            guardrail_readings,
+            [],
+            unstamped=unstamped,
+            withheld=_NO_CONTROL_TO_HOLD_AGAINST if guardrail_readings else None,
+        )
     questions = declared.live_questions() if declared is not None else []
     # A campaign that asked nothing is not thereby licensed to report chance differences: its family is every
     # comparison it holds, on every reading, corrected as one.
@@ -6860,24 +8350,26 @@ def _multiple_comparisons(
         pair: _model_contrast_confounds(
             results_by_cell[pair[0]], results_by_cell[pair[1]], observations, profile=profile
         )
+        + _served_model_confounds((result.id for key in pair for result in results_by_cell[key]), served)
         for pair in pairs
     }
     families = []
     for question_id, axes in scopes:
         readings = _family_readings(axes, catalog, judged_measures)
-        tested: list[tuple[FamilyComparison, float | None]] = []
+        tested: list[_Tested] = []
         for reading in sorted(readings):
             for control_key, contrast_key in sorted(pairs, key=lambda pair: (pair[0][1], pair[1][0])):
                 control_values = values[control_key].get(reading, {})
                 contrast_values = values[contrast_key].get(reading, {})
                 if not control_values and not contrast_values:
                     continue
-                comparison, p_raw = _compare(
+                one = _compare(
                     reading,
                     readings[reading],
                     (control_key, control_values),
                     (contrast_key, contrast_values),
                     threshold=catalog[reading[1]].materiality_threshold if reading[0] == "measure" else None,
+                    value_range=catalog[reading[1]].value_range if reading[0] == "measure" else None,
                     no_turn=tuple(
                         side
                         for side, key in (("control", control_key), ("arm", contrast_key))
@@ -6886,39 +8378,172 @@ def _multiple_comparisons(
                         and _took_no_turn(results_by_cell[key])
                     ),
                 )
+                confounds = pair_confounds[(control_key, contrast_key)]
                 tested.append(
-                    (
-                        comparison.model_copy(
-                            update={"mechanism_confounds": pair_confounds[(control_key, contrast_key)]}
-                        ),
-                        p_raw,
-                    )
+                    one._replace(comparison=one.comparison.model_copy(update={"mechanism_confounds": confounds}))
                 )
-        adjusted = iter(holm_adjust([p for _, p in tested if p is not None]))
-        comparisons = []
-        for comparison, p_raw in tested:
-            if p_raw is not None:
-                p_adjusted = next(adjusted)
-                verdict: ComparisonVerdict = "not_separated"
-                if p_adjusted < SIGNIFICANCE_ALPHA and comparison.delta:
-                    verdict = "improved" if (comparison.delta > 0) == comparison.higher_is_better else "regressed"
-                comparison = comparison.model_copy(update={"p_adjusted": p_adjusted, "verdict": verdict})
-            comparisons.append(comparison)
-        family_size = sum(1 for _, p in tested if p is not None)
-        n_untested = sum(1 for comparison in comparisons if comparison.verdict == "untested")
-        families.append(
-            ComparisonFamily(
-                question_id=question_id,
-                merit_axes=axes,
-                family_size=family_size,
-                n_untested=n_untested,
-                comparisons=comparisons,
-                disclosure=_family_disclosure(
-                    family_size, n_untested, SIGNIFICANCE_ALPHA, campaign_wide=question_id is None
-                ),
-            )
+        families.append(_corrected_family(question_id, axes, tested))
+    checks = [
+        _guardrail_check(
+            reading,
+            guardrail_readings[reading],
+            (control_key, values[control_key].get(reading, {})),
+            (contrast_key, values[contrast_key].get(reading, {})),
         )
-    return MultipleComparisons(families=families)
+        for reading in sorted(guardrail_readings)
+        for control_key, contrast_key in sorted(pairs, key=lambda pair: (pair[0][1], pair[1][0]))
+        if values[control_key].get(reading) or values[contrast_key].get(reading)
+    ]
+    return MultipleComparisons(families=families), _guardrails_of(guardrail_readings, checks, unstamped=unstamped)
+
+
+def _reading_scope(
+    declared: CampaignDesign | None, catalog: dict[str, MetricDescriptor], judged_measures: list[JudgedMeasure]
+) -> ReadingScope:
+    """Label the readings no live question asks about exploratory — or, with no question, say so once.
+
+    The same rule the families are scoped by (:func:`~threetears.evals.contracts.declaration.exploratory_reading`),
+    so a reading is exploratory exactly when no question's family could test it.
+    """
+    questions = declared.live_questions() if declared is not None else []
+    if not questions:
+        return ReadingScope(questions_declared=False, disclosure=NO_QUESTION_EXPLORATORY)
+    return ReadingScope(
+        questions_declared=True,
+        exploratory_measures=sorted(
+            name
+            for name, descriptor in catalog.items()
+            if not descriptor.guardrail and exploratory_reading(descriptor.merit_axis, questions)
+        ),
+        exploratory_dimensions=sorted(
+            measure.name
+            for measure in judged_measures
+            if measure.axis == "capability" and exploratory_reading(JUDGED_MERIT_AXIS, questions)
+        ),
+    )
+
+
+#: Why no guardrail was checked, where some reading is one.
+_NO_CONTROL_TO_HOLD_AGAINST = (
+    "No control resolved, so there is no arm to hold another against and no guardrail was checked: every guardrail "
+    "here is unchecked, which is not the same as held."
+)
+
+
+class _Guardrail(NamedTuple):
+    """What a guardrail check needs to know about its reading."""
+
+    higher_is_better: bool
+    #: The declared margin, or None when the reading declares none (every judged dimension).
+    margin: float | None
+    value_range: tuple[float, float] | None
+
+
+def _guardrail_readings(
+    catalog: dict[str, MetricDescriptor], judged_measures: list[JudgedMeasure]
+) -> dict[tuple[ReadingKind, str], _Guardrail]:
+    """Every guardrail reading the bundle carries: the measures declared one and the boundary judged dimensions.
+
+    A measure's margin is its declared ``materiality_threshold``, the one margin a measure has; a judged
+    dimension declares none, so it is held at zero change.
+    """
+    readings: dict[tuple[ReadingKind, str], _Guardrail] = {
+        ("measure", name): _Guardrail(
+            descriptor.higher_is_better, descriptor.materiality_threshold, descriptor.value_range
+        )
+        for name, descriptor in catalog.items()
+        if descriptor.guardrail and descriptor.higher_is_better is not None
+    }
+    for measure in judged_measures:
+        if measure.axis == "boundary":
+            readings[("judged", measure.name)] = _Guardrail(measure.higher_is_better, None, measure.value_range)
+    return readings
+
+
+def _guardrail_check(
+    reading: tuple[ReadingKind, str],
+    guardrail: _Guardrail,
+    control: tuple[_CellKey, dict[str, float]],
+    contrast: tuple[_CellKey, dict[str, float]],
+) -> GuardrailCheck:
+    """Decide one guardrail for one arm against the control under one rig (:func:`~threetears.evals.analysis.stats.guardrail_decision`).
+
+    The samples are the ones a comparison on the same reading would read (:func:`_test_samples`), so a
+    guardrail and a comparison never disagree about which cases were compared. An undecided check says
+    why, in words that point at the remedy: more cases for a thin side, a declared range or margin for
+    a difference with no spread, and for a straddling interval the line it straddles.
+    """
+    (control_key, control_values), (contrast_key, contrast_values) = control, contrast
+    a, b, paired = _test_samples(control_values, contrast_values)
+    verdict = guardrail_decision(
+        a,
+        b,
+        paired=paired,
+        margin=guardrail.margin,
+        higher_is_better=guardrail.higher_is_better,
+        value_range=guardrail.value_range,
+    )
+    mean_a = sum(a) / len(a) if a else None
+    mean_b = sum(b) / len(b) if b else None
+    margin = guardrail.margin or 0.0
+    reason = None
+    if verdict.decision == "undecided":
+        if not b:
+            reason = "the arm carries no value of it, so it was not checked against the control"
+        elif not a:
+            reason = "the control carries no value of it, so the arm could not be checked against one"
+        elif len(a) < 2 or len(b) < 2:
+            reason = "fewer than two cases carry it on a side, so no interval on the difference exists"
+        elif verdict.interval is None:
+            reason = (
+                "every shared case moved by the same amount and the reading declares no range to bound that by"
+                if paired
+                else "each side's values are constant, so the difference has no spread to bound"
+            )
+        else:
+            line = -margin if guardrail.higher_is_better else margin
+            reason = (
+                f"the interval on the difference, [{format_number(verdict.interval[0])}, "
+                f"{format_number(verdict.interval[1])}], reaches both sides of {format_number(line)}"
+                + (" (the declared margin)" if guardrail.margin else " (no change: no margin is declared)")
+                + ", so the arm is shown neither within it nor beyond it"
+            )
+    return GuardrailCheck(
+        reading=reading[0],
+        name=reading[1],
+        higher_is_better=guardrail.higher_is_better,
+        control=GuardrailCell(
+            variant_key=control_key[0], apparatus_class_id=control_key[1], n_cases=len(a), mean=mean_a
+        ),
+        contrast=GuardrailCell(
+            variant_key=contrast_key[0], apparatus_class_id=contrast_key[1], n_cases=len(b), mean=mean_b
+        ),
+        test=("paired" if paired else "unpaired") if verdict.interval is not None else None,
+        delta=None if mean_a is None or mean_b is None else mean_b - mean_a,
+        interval=verdict.interval,
+        interval_basis=verdict.basis,
+        margin=margin,
+        margin_declared=guardrail.margin is not None,
+        decision=verdict.decision,
+        undecided_reason=reason,
+    )
+
+
+def _guardrails_of(
+    readings: dict[tuple[ReadingKind, str], _Guardrail],
+    checks: list[GuardrailCheck],
+    *,
+    unstamped: list[str],
+    withheld: str | None = None,
+) -> GuardrailReadings:
+    """The bundle's guardrail section, from the readings that are guardrails and the checks run on them."""
+    return GuardrailReadings(
+        measures=sorted(name for kind, name in readings if kind == "measure"),
+        dimensions=sorted(name for kind, name in readings if kind == "judged"),
+        checks=checks,
+        withheld=withheld,
+        unstamped_dimensions=unstamped,
+    )
 
 
 def _judged_by_cell(judged_measures: list[JudgedMeasure]) -> dict[_CellKey, list[JudgedReading]]:
@@ -7025,6 +8650,8 @@ def _cell_measures(
     short_runs: dict[str, str],
     incomplete_runs: dict[str, str],
     profile: HostProfile,
+    control: str | None,
+    names: Mapping[str, str],
 ) -> list[CellFacts]:
     """Everything measured in each cell — the facts an analysis freezes as its decision surface.
 
@@ -7048,9 +8675,13 @@ def _cell_measures(
         short_runs: The bundle's short-run sentences, by run id.
         incomplete_runs: The bundle's incomplete-run statuses, by run id.
         profile: The host whose vocabulary this reads.
+        control: The declared control's variant key, or None.
+        names: The bundle's arm names (:func:`~threetears.evals.analysis.arms.arm_names`), which order the arms.
 
     Returns:
-        One entry per cell, ordered by ``(variant_key, apparatus_class_id)``.
+        One entry per cell, in the decision surface's row order
+        (:func:`~threetears.evals.analysis.arms.surface_order`): the control's cells first, as the reference,
+        then every other arm alphabetically by name, each arm's rigs by id. Not a ranking.
     """
     judged_by_cell = _judged_by_cell(judged_measures)
     facts = []
@@ -7080,7 +8711,7 @@ def _cell_measures(
                 strata=strata.get(key, []),
             )
         )
-    return facts
+    return surface_order(facts, control=control, names=names)
 
 
 def _time_axis(
@@ -7095,6 +8726,7 @@ def _time_axis(
     short_runs: dict[str, str],
     incomplete_runs: dict[str, str],
     profile: HostProfile,
+    names: Mapping[str, str],
 ) -> tuple[TimeAxis | None, str | None]:
     """Place the campaign's runs in time, or say why they cannot be.
 
@@ -7117,6 +8749,7 @@ def _time_axis(
         short_runs: The bundle's short-run sentences, by run id.
         incomplete_runs: The bundle's incomplete-run statuses, by run id.
         profile: The host, whose ``release_label`` names its builds.
+        names: The bundle's arm names, which order each position's cells as the whole surface's are.
 
     Returns:
         ``(axis, None)`` when the measuring runs span two or more positions, else ``(None, why)``.
@@ -7153,6 +8786,8 @@ def _time_axis(
                     short_runs=short_runs,
                     incomplete_runs=incomplete_runs,
                     profile=profile,
+                    control=design.control if design else None,
+                    names=names,
                 ),
             )
         )
@@ -7253,11 +8888,14 @@ def cell_measure_facts(bundle: AnalysisContextBundle) -> dict[str, MeasureFacts]
     )
     return {
         name: MeasureFacts(
+            reader_name=bundle.measure_catalog[name].reader_name,
             unit=bundle.measure_catalog[name].unit,
             merit_axis=bundle.measure_catalog[name].merit_axis,
             higher_is_better=bundle.measure_catalog[name].higher_is_better,
             materiality_threshold=bundle.measure_catalog[name].materiality_threshold,
             population=bundle.measure_catalog[name].population,
+            scale=bundle.measure_catalog[name].scale,
+            guardrail=bundle.measure_catalog[name].guardrail,
         )
         for name in names
     }
@@ -7282,7 +8920,10 @@ def cell_dimension_facts(bundle: AnalysisContextBundle) -> dict[str, JudgedDimen
     names = sorted({reading.dimension for cell in bundle.cell_measures for reading in cell.judged})
     return {
         name: JudgedDimensionFacts(
-            higher_is_better=described[name].higher_is_better, value_range=described[name].value_range
+            higher_is_better=described[name].higher_is_better,
+            value_range=described[name].value_range,
+            scale=described[name].scale,
+            axis=described[name].axis,
         )
         for name in names
     }
@@ -7308,7 +8949,33 @@ def bundle_decision_surface(bundle: AnalysisContextBundle) -> DecisionSurface:
         measures=cell_measure_facts(bundle),
         dimensions=cell_dimension_facts(bundle),
         time_axis=bundle.time_axis,
+        frontier_dominance=_frontier_dominance(bundle.frontier),
+        rubric_threshold=bundle.frontier.rubric_threshold,
+        guardrails=bundle.guardrails,
     )
+
+
+def _frontier_dominance(frontier: FrontierResult) -> dict[str, FrontierDominance]:
+    """Each variant's standing on the frontier lens — the verdict a frontier chart draws, never recomputed.
+
+    The lens decides domination by test over per-case values (:func:`~threetears.evals.analysis.reporting.compute_frontier`),
+    which a frozen surface does not carry, so a chart deciding it again from the surface's means would be a
+    second rule for one question, and on means it called one of two identical arms dominated a third of the
+    time. Keyed by variant because a cell is one; a variant the lens placed as more than one point (under two
+    identity versions, or two subjects) has no one standing and is left out, so a chart reads it as untested.
+    A point stored before domination was tested carries no standing either, and is left out the same way.
+
+    Args:
+        frontier: The bundle's frontier lens.
+
+    Returns:
+        ``{variant_key: dominance}``.
+    """
+    placed: dict[str, list[FrontierDominance | None]] = {}
+    for subject in frontier.subjects:
+        for point in subject.points:
+            placed.setdefault(point.variant_key, []).append(point.dominance)
+    return {key: standings[0] for key, standings in placed.items() if len(standings) == 1 and standings[0] is not None}
 
 
 class InsightStanding(NamedTuple):
@@ -7388,6 +9055,146 @@ def retracted_insights(
     return insight_standing(insights, analysis_archived).retracted
 
 
+def insight_restatement_key(statement: str) -> str:
+    """The claim an insight states, as two insights stating it compare — case, spacing and a final period aside.
+
+    The one rule for "these two insights say the same thing", read by the bundle (which carries one insight per
+    claim) and by the ledger write (which replaces a live insight a new one restates rather than adding a
+    duplicate). Deliberately literal: two sentences that mean the same thing in different words are two keys,
+    because deciding they are one claim is a judgement, and a wrong merge here would retire a claim nobody
+    restated.
+
+    Args:
+        statement: An insight's statement.
+
+    Returns:
+        The comparison key.
+    """
+    return " ".join(statement.casefold().split()).rstrip(".").rstrip()
+
+
+def superseding_insights(
+    minted: Sequence[EvalInsight],
+    ledger: Iterable[EvalInsight],
+    analysis_archived: Callable[[str], bool | None],
+) -> list[EvalInsight]:
+    """The insights a generation writes: each one minted, taking the id of the live insight it restates.
+
+    A generation mints one insight per finding that states one, and regenerating over the same evidence
+    states the same claims again. Written as new rows, every regeneration grew the ledger by its whole
+    output, and every one of those rows rode into the next paid prompt. So a minted insight whose claim
+    (:func:`insight_restatement_key`) a LIVE ledger insight of the subject already states is written under
+    that insight's id: the store's upsert replaces the old row with the restatement — its statement,
+    confidence, evidence and minting analysis now the newer ones — and the ledger keeps its size. That is the
+    insight's ``invalidation_trigger``, carried out.
+
+    A RETRACTED insight (its analysis archived, :func:`retracted_insights`) is not live and is never replaced:
+    a new analysis stating a claim an archive withdrew mints it afresh, and archiving that new analysis is
+    what would withdraw it again. Where the ledger already holds several live insights stating one claim —
+    written before this rule — the newest is the one replaced.
+
+    Args:
+        minted: The insights a generation returned, in its order.
+        ledger: The subject's prior insights.
+        analysis_archived: Whether one analysis is archived, ``None`` when it does not resolve.
+
+    Returns:
+        The insights to write, in ``minted`` order, each under its own id or the id of the insight it replaces.
+        A claim the generation stated twice is written once.
+    """
+    prior = list(ledger)
+    retracted = retracted_insights(prior, analysis_archived)
+    live: dict[str, EvalInsight] = {}
+    for insight in _sorted_insights([insight for insight in prior if insight.id not in retracted]):
+        live.setdefault(insight_restatement_key(insight.statement), insight)
+    written: list[EvalInsight] = []
+    seen: set[str] = set()
+    for insight in minted:
+        key = insight_restatement_key(insight.statement)
+        if key in seen:
+            continue
+        seen.add(key)
+        replaced = live.get(key)
+        written.append(insight if replaced is None else insight.model_copy(update={"id": replaced.id}))
+    return written
+
+
+def _prior_insights(live: list[EvalInsight]) -> tuple[list[EvalInsight], int]:
+    """The live insights a bundle carries — the newest per claim, at most the cap — and how many it leaves out.
+
+    Args:
+        live: The subject's insights as of the cutoff, less the retracted ones.
+
+    Returns:
+        ``(carried, omitted)``: newest first, deterministic for the fingerprint.
+    """
+    newest: dict[str, EvalInsight] = {}
+    for insight in _sorted_insights(live):
+        newest.setdefault(insight_restatement_key(insight.statement), insight)
+    carried, _beyond_cap = _capped(list(newest.values()), _MAX_PRIOR_INSIGHTS, weight=None)
+    return carried, len(live) - len(carried)
+
+
+def _capped[T](items: list[T], cap: int, *, weight: Callable[[T], float] | None) -> tuple[list[T], int]:
+    """Keep at most ``cap`` of ``items`` and count the rest, so a capped list is never read as a complete one.
+
+    The one cap the bundle's growing lists share. Deterministic, so the fingerprint stays stable: the kept
+    entries are the ``cap`` heaviest by ``weight`` (earlier entries winning ties), or the first ``cap`` when
+    there is no weight, and they keep their order in ``items``.
+
+    Args:
+        items: The full list, in the order it is reported.
+        cap: How many may be reported.
+        weight: What ranks an entry for keeping, heaviest first; None keeps the leading entries.
+
+    Returns:
+        ``(kept, omitted)``.
+    """
+    if len(items) <= cap:
+        return items, 0
+    if weight is None:
+        return items[:cap], len(items) - cap
+    ranked = sorted(range(len(items)), key=lambda index: (-weight(items[index]), index))
+    kept = sorted(ranked[:cap])
+    return [items[index] for index in kept], len(items) - cap
+
+
+def host_declarations_digest(profile: HostProfile) -> str:
+    """sha256 of the host declarations that partition observations — derived, so no host has a counter to forget.
+
+    A host's apparatus sweepable is a dimension of every observation's apparatus class, and so of the bundle
+    fingerprint, and the same holds for a world dimension; a lever is a coordinate of every arm. A host adding,
+    removing or renaming one moves every fingerprint over unchanged runs, and the package's own versions
+    cannot say so — they are the package's. This digest is computed from the registry the bundle was assembled
+    under, so it moves exactly when those declarations do: each sweepable's name, role and blank rule (whether
+    a blank means "never recorded", which decides whether a level can be compared at all), and each world
+    dimension's name. The core's declarations are in it too, because the registry a host extends carries them;
+    a core change also moves :attr:`AnalysisContextBundle.schema_version`, which is read first.
+
+    What it does not cover: a reader callable's behaviour (code, not a declaration), and the host's measure and
+    bar registries, which describe readings rather than partitioning them.
+
+    Args:
+        profile: The host profile a bundle is assembled under.
+
+    Returns:
+        A 64-character lowercase hex digest.
+    """
+    sweepables = sorted(
+        (declared.name, declared.role, declared.indeterminate_when_blank)
+        for declared in profile.sweepables.declarations
+    )
+    world = sorted(profile.world.names) if profile.world is not None else []
+    return canonical_digest(
+        {
+            "sweepables": [
+                {"name": name, "role": role, "indeterminate_when_blank": blank} for name, role, blank in sweepables
+            ],
+            "world": world,
+        }
+    )
+
+
 def _sorted_insights(insights: list[EvalInsight]) -> list[EvalInsight]:
     """Order insights newest-first with an id tie-break — a stable fingerprint slice.
 
@@ -7424,6 +9231,8 @@ def _telemetry_rollup(
 __all__ = [
     "AnalysisContextBundle",
     "BundleInspection",
+    "DeclaredLevelCoverage",
+    "GoalCheckProofReading",
     "LeverCoverageInput",
     "MeasureCollection",
     "MeasureMovement",
@@ -7434,4 +9243,10 @@ __all__ = [
     "TokenRollup",
     "assemble_context_bundle",
     "bundle_decision_surface",
+    "component_carrier",
+    "goal_check_proofs_of",
+    "host_declarations_digest",
+    "insight_restatement_key",
+    "measure_movement",
+    "superseding_insights",
 ]

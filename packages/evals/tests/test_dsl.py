@@ -339,34 +339,50 @@ def test_contains_string_substring():
 
 def test_intersects_lists():
     state = _state_with(shop={"cart": ["kitchen", "garden"]})
-    assert (
-        evaluate(
-            "intersects(state.shop.cart, variation.target_categories)",
-            **state,
-            variation={"target_categories": ["kitchen", "outdoor"]},
-        )
-        is True
-    )
-    assert (
-        evaluate(
-            "intersects(state.shop.cart, variation.target_categories)",
-            **state,
-            variation={"target_categories": ["toys"]},
-        )
-        is False
-    )
+    assert evaluate('intersects(state.shop.cart, ["kitchen", "outdoor"])', **state) is True
+    assert evaluate('intersects(state.shop.cart, ["toys"])', **state) is False
 
 
 def test_intersects_missing_path_returns_false():
     state = _state_with()
-    assert (
-        evaluate(
-            "intersects(state.shop.cart, variation.target_categories)",
-            **state,
-            variation={"target_categories": ["kitchen"]},
-        )
-        is False
-    )
+    assert evaluate('intersects(state.shop.cart, ["kitchen"])', **state) is False
+
+
+def test_a_case_parameter_is_looked_for_as_one_value():
+    """A parameter is one string, as a case stores it, so it is the needle, never the haystack."""
+    state = _state_with(shop={"cart": ["kitchen", "garden"]})
+    assert evaluate("contains(state.shop.cart, variation.category)", **state, variation={"category": "kitchen"})
+    assert not evaluate("contains(state.shop.cart, variation.category)", **state, variation={"category": "toys"})
+
+
+@pytest.mark.parametrize(
+    ("expression", "said"),
+    [
+        ("intersects(state.shop.cart, variation.categories)", r"intersects\(\) over variation.categories"),
+        ("intersects(variation.categories, state.shop.cart)", r"intersects\(\) over variation.categories"),
+        ("any(intersects(it.tags, variation.target) for it in state.shop.cart)", r"over variation.target"),
+        ('contains(variation.categories, "kitchen")', r"contains\(\) with variation.categories as what is searched"),
+        ('any(it == "kitchen" for it in variation.categories)', "a generator over variation.categories"),
+        ('variation.categories[0] == "kitchen"', r"an index into variation.categories"),
+    ],
+)
+def test_a_case_parameter_read_as_a_collection_is_refused_where_it_is_parsed(expression, said):
+    """A case stores every parameter as one string (#665): read as a collection it never meant what it says.
+
+    ``intersects`` took the string as ONE element, so a parameter spelling several categories never
+    intersected anything; ``contains`` searched its spelling; a generator or an index walked its
+    characters. Each evaluated False (or worse, True by accident) with no error, so it is refused.
+    """
+    with pytest.raises(DSLError, match=said) as refused:
+        parse(expression)
+    assert "never a list" in str(refused.value)
+    for stored in ("kitchen,garden", '["garden", "kitchen"]'):
+        with pytest.raises(DSLError):
+            evaluate(
+                expression,
+                **_state_with(shop={"cart": ["kitchen"]}),
+                variation={"categories": stored, "target": stored},
+            )
 
 
 def test_length_function_form_matches_attribute_form():
@@ -749,14 +765,7 @@ def test_any_with_intersects_predicate():
             ]
         }
     )
-    assert (
-        evaluate(
-            "any(intersects(it.tags, variation.target) for it in state.shop.cart)",
-            **state,
-            variation={"target": ["kitchen", "klezmer"]},
-        )
-        is True
-    )
+    assert evaluate('any(intersects(it.tags, ["kitchen", "klezmer"]) for it in state.shop.cart)', **state) is True
 
 
 def test_all_requires_every_element_to_match():

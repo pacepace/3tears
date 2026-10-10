@@ -33,7 +33,8 @@ Comparisons::
 Predicates (function-call form)::
 
     contains(state.inventory.orders, "SKU-42")              # value in path
-    intersects(state.inventory.orders, variation.categories) # non-empty intersection
+    contains(state.inventory.categories, variation.category) # a case parameter in path
+    intersects(state.inventory.categories, ["toys", "games"]) # non-empty intersection
     length(state.inventory.orders) >= 2                     # equivalent to .length
 
 Ordering predicates (across all tools' recorded calls — the cell's call ledger, never world state)::
@@ -60,7 +61,13 @@ cell's seed armed, so the world's own firing on the same dimension does not sati
 Generator predicates (``it`` binds to each element)::
 
     any(it.sku == "X" for it in state.inventory.orders)
-    all(intersects(it.tags, variation.categories) for it in state.inventory.orders)
+    all(intersects(it.tags, ["toys", "games"]) for it in state.inventory.orders)
+
+A case parameter (``variation.<name>``) is one string, as the case stores it, and never a list: a
+case's variation parameters are a flat string map. So it is compared (``==``, ``!=``) or looked for
+(``contains(state.<path>, variation.<name>)``), and never read as a collection — ``intersects`` over
+one, ``contains`` searching one, a generator over one or an index into one is refused where the
+expression is parsed. Write a set of values in the check itself, as a list literal.
 
 Boolean composition::
 
@@ -376,6 +383,50 @@ def _validate(tree: ast.AST) -> None:
                 raise DSLError("any/all generators may not have 'if' filters in this DSL.")
             if not (isinstance(gen.target, ast.Name) and gen.target.id == "it"):
                 raise DSLError("any/all generators must bind to the variable 'it'.")
+        _refuse_a_variation_read_as_a_collection(node)
+
+
+def _variation_path(node: ast.AST) -> str | None:
+    """The source of ``node`` when it is a path under ``variation`` (``variation.x``, ``variation.x[0]``), else None."""
+    base = node
+    while isinstance(base, (ast.Attribute, ast.Subscript)):
+        base = base.value
+    if isinstance(base, ast.Name) and base.id == "variation" and base is not node:
+        return ast.unparse(node)
+    return None
+
+
+def _refuse_a_variation_read_as_a_collection(node: ast.AST) -> None:
+    """Refuse an expression that reads a case parameter as a collection of elements.
+
+    A case stores every variation parameter as ONE string (``EvalTestCase.variation_params`` is a
+    flat string map), so a parameter is never a list, whatever it spells. Read as a collection it
+    reads wrong without a word: ``intersects`` takes a string as a single element, so a parameter
+    spelling several categories (``"a,b"``, or JSON) never intersects anything; ``contains`` over one
+    is a substring test on its spelling, so ``"a"`` is found in ``'["ab"]'``; iterating or indexing
+    one walks its characters. A control end state may still state a real list, so a check of this
+    shape could be proven on its control and then fail every case — refused where it is parsed instead.
+
+    Raises:
+        DSLError: ``intersects`` with a variation operand, ``contains`` with a variation haystack, a
+            generator over a variation path, or an index into one.
+    """
+    remedy = (
+        "a case stores every variation parameter as one string, never a list, so it cannot be read as a "
+        'collection; write the set in the check as a list literal (intersects(it.tags, ["kitchen", "garden"])), '
+        "or test one parameter's value with contains(state.<path>, variation.<name>) or =="
+    )
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+        if node.func.id == "intersects":
+            read = next((path for arg in node.args if (path := _variation_path(arg)) is not None), None)
+            if read is not None:
+                raise DSLError(f"intersects() over {read}: {remedy}.")
+        if node.func.id == "contains" and node.args and (read := _variation_path(node.args[0])) is not None:
+            raise DSLError(f"contains() with {read} as what is searched: {remedy}.")
+    if isinstance(node, ast.comprehension) and (read := _variation_path(node.iter)) is not None:
+        raise DSLError(f"a generator over {read}: {remedy}.")
+    if isinstance(node, ast.Subscript) and (read := _variation_path(node.value)) is not None:
+        raise DSLError(f"an index into {read}: {remedy}.")
 
 
 def speaks_the_goal_language(expression: str) -> bool:

@@ -141,7 +141,7 @@ def test_the_published_schema_is_a_valid_draft_2020_12_schema() -> None:
 class TestTheToyReportsContent:
     async def test_the_sections_are_in_reading_order(self, toy: tuple[Any, Any, Report]) -> None:
         _, _, report = toy
-        order = ["summary", "questions", "decisions", "findings", "arms", "surface", "next", "methods"]
+        order = ["summary", "questions", "decisions", "guardrails", "findings", "arms", "surface", "next", "methods"]
         seen = list(dict.fromkeys(block.section for block in report.blocks))
         assert seen == [section for section in order if section in seen]
         assert set(seen) == set(order)
@@ -418,7 +418,7 @@ class TestTheBasisIsRefusedWhenTheReportDisagreesWithIt:
 
     def test_the_schema_holds_the_version(self) -> None:
         document = json.loads(_code_only().to_canonical_json())
-        assert document["report_version"] == REPORT_VERSION == 4
+        assert document["report_version"] == REPORT_VERSION == 5
         document["report_version"] = 3
         with pytest.raises(jsonschema.ValidationError):
             jsonschema.Draft202012Validator(published_report_schema()).validate(document)
@@ -604,7 +604,7 @@ class TestACampaignWithNoAnalysisIsReportedFromItsEvidence:
         drawn_or_disclosed = {chart.intent.title for chart in charts if chart.intent is not None} | {
             block.text for block in report.blocks if isinstance(block, DisclosureBlock) and block.source == "chart"
         }
-        assert any(text.startswith("total_ms") for text in drawn_or_disclosed), drawn_or_disclosed
+        assert any(text.startswith("Turn time") for text in drawn_or_disclosed), drawn_or_disclosed
         titles = [chart.intent.title for chart in charts if chart.intent is not None]
         assert len(set(titles)) == len(titles), titles
 
@@ -669,10 +669,12 @@ def test_a_code_only_report_states_the_contrasts_code_tested_against_the_control
 
     report = campaign_report(host, campaign.id, campaign.scope_id)
     (comparisons,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "comparisons"]
-    assert comparisons.rows and {row["question"] for row in comparisons.rows} == {"q-chunk-width"}
+    # The question in the words it was asked, never its id.
+    asked = next(q.text for q in campaign.declared_design.questions if q.id == "q-chunk-width")
+    assert comparisons.rows and {row["question"] for row in comparisons.rows} == {asked}
     by_reading = {row["reading"]: row["verdict"] for row in comparisons.rows}
-    assert by_reading["field_accuracy"] == "improved on the control"
-    assert by_reading["total_ms"] == "regressed from the control"
+    assert by_reading["Field accuracy"] == "improved on the control"
+    assert by_reading["Turn time"] == "regressed from the control"
     assert any(
         isinstance(block, DisclosureBlock) and block.source == "comparisons" and "Holm" in block.text
         for block in report.blocks

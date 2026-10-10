@@ -84,7 +84,11 @@ async def test_the_end_state_is_read_back_after_the_last_turn_and_the_goal_check
     )
     assert (summary.status, summary.n_scored) == ("completed", 2)
     assert [(goal.check, goal.passed, goal.n) for goal in summary.goal_checks] == [(LIT_IFF_DARK, 2, 2)]
-    assert f"goal check {LIT_IFF_DARK}: passed 2/2" in summary.render()
+    # A quick run names no control, so the check is unproven, and its do-nothing baseline is read off each case's seed:
+    # both cases start with the lamp wrong, so doing nothing passes neither.
+    (goal,) = summary.goal_checks
+    assert (goal.proof, goal.did_nothing_passed, goal.did_nothing_cases) == ("unproven", 0, 2)
+    assert f"goal check {LIT_IFF_DARK}: passed 2/2 — unproven" in summary.render()
     for (result, trace), case in zip(await stored(host, summary.run_id), CASES, strict=True):
         assert trace is not None
         # Both cases started wrong, so the stored end state is the candidate's, never the seed.
@@ -92,6 +96,29 @@ async def test_the_end_state_is_read_back_after_the_last_turn_and_the_goal_check
         assert [outcome.passed for outcome in result.goal_state_outcomes] == [True]
     (run,) = list_runs(host, SCOPE)
     assert run.world_placements == {"lamp": "representable", "dark": "representable"}
+    assert run.goal_check_proofs == {LIT_IFF_DARK: "unproven"}
+
+
+def test_a_check_unevaluable_against_a_starting_state_loses_only_its_own_baseline() -> None:
+    """A check that raises at a starting state gets no do-nothing figure — never one counted as passed or failed —
+    and the other checks keep theirs. The arithmetic stands in for any check that raises when graded there."""
+    unevaluable = '1 / length(calls("room.switch")) > 0'
+    baseline = room().did_nothing_passes([LIT_IFF_DARK, unevaluable], [(start(case), {}) for case in CASES])
+    assert baseline == {LIT_IFF_DARK: 0}
+
+
+async def test_a_check_doing_nothing_passes_in_every_case_never_reads_as_a_measurement() -> None:
+    never_needless = 'all(it.to != variation.lamp for it in calls("room.switch"))'
+    summary = await run_eval(
+        CASES, sensible, world=room(), seed=start, goal_checks=[never_needless], scope_id=SCOPE, k=1
+    )
+    (goal,) = summary.goal_checks
+    assert (goal.passed, goal.n, goal.did_nothing_passed, goal.did_nothing_cases) == (2, 2, 2, 2)
+    (line,) = [line for line in summary.render().splitlines() if "goal check" in line]
+    assert line.endswith(
+        "passed 2/2 — NOT A MEASUREMENT: a candidate that did nothing passes it in 2 of 2 case(s), "
+        "so this pass rate does not beat doing nothing"
+    )
 
 
 async def test_a_call_that_succeeds_is_recorded_for_calls_and_one_the_world_refuses_is_not() -> None:
@@ -226,3 +253,110 @@ async def test_an_incoherent_world_run_is_refused_before_anything_is_stored(kwar
     with pytest.raises(ValueError, match=said):
         await run_eval(CASES, sensible, host=host, scope_id=SCOPE, **kwargs)
     assert list_templates(host.storage, SCOPE) == []
+
+
+async def test_a_well_formed_quick_world_passes_the_engine_s_own_conformance_kit() -> None:
+    """The kit reads the subject view one entry per surface; the quick world once returned its state bare.
+
+    Every dimension's ``perception_ab`` then read nothing on the ``view`` surface and failed, so the engine's own
+    world could not pass the kit a host is told to run.
+    """
+    from threetears.evals.contracts.host.world_conformance import check_world_conformance
+
+    world = room()
+    report = await check_world_conformance(world.registry, expressions=[LIT_IFF_DARK])
+
+    failed = [
+        (result.check, result.dimension, result.detail) for result in report.results if result.outcome == "failed"
+    ]
+    assert failed == []
+    ab = {result.dimension: result.outcome for result in report.results if result.check == "perception_ab"}
+    assert ab == {"lamp": "passed", "dark": "passed"}
+
+
+def note(room: dict[str, Any], text: str) -> str:
+    """Leave a note by the lamp."""
+    room["note"] = text
+    return "noted"
+
+
+def noting_room() -> World:
+    return World(
+        "room",
+        [
+            Dimension("lamp", {"enum": ["on", "off"]}, "What the candidate switches."),
+            Dimension("dark", {"type": "boolean"}, "Whether the lamp is needed."),
+            Dimension("note", {"type": "string"}, "What the candidate wrote down."),
+        ],
+        tools=[WorldTool(switch, to={"enum": ["on", "off"]}), WorldTool(note, text={"type": "string"})],
+    )
+
+
+def noting_start(case: Mapping[str, Any]) -> Mapping[str, Any]:
+    return {**start(case), "note": ""}
+
+
+async def test_a_string_match_over_a_free_text_tool_parameter_is_refused_before_anything_runs() -> None:
+    """Authoring refuses it, so the quick path does: a free string is what the model wrote, not structure."""
+    ran: list[str] = []
+
+    async def candidate(case: Mapping[str, Any], tools: WorldTools) -> str:
+        ran.append("ran")
+        return "x"
+
+    with pytest.raises(ValueError, match=r"room.note's text is free text"):
+        await run_eval(
+            CASES,
+            candidate,
+            world=noting_room(),
+            seed=noting_start,
+            goal_checks=['any(it.text == "lamp fixed" for it in calls("room.note"))'],
+            scope_id=SCOPE,
+        )
+    assert ran == [], "refused up front, never graded"
+
+
+async def test_a_comparison_over_an_enum_closed_tool_parameter_is_accepted_and_graded() -> None:
+    """The quick world describes its tools' parameters from their schemas, so authoring's closure rule admits it."""
+    summary = await run_eval(
+        CASES,
+        sensible,
+        world=noting_room(),
+        seed=noting_start,
+        goal_checks=['any(it.to == "on" for it in calls("room.switch"))'],
+        scope_id=SCOPE,
+        k=1,
+    )
+    assert summary.status == "completed"
+    (goal,) = summary.goal_checks
+    assert (goal.passed, goal.n) == (1, 2), "only the dark case switches the lamp on"
+
+
+async def test_a_check_the_grammar_refuses_is_refused_by_the_quick_path() -> None:
+    with pytest.raises(ValueError, match=r"intersects\(\) over variation.p"):
+        await run_eval(
+            [{"p": "on", **case} for case in CASES],
+            sensible,
+            world=room(),
+            seed=start,
+            goal_checks=['intersects(["on"], variation.p)'],
+            scope_id=SCOPE,
+        )
+
+
+def test_authoring_on_a_quick_world_host_closes_its_tools_parameters_from_their_schemas() -> None:
+    """The quick host described no tool parameters, so authoring refused even an enum-closed comparison on it."""
+    from threetears.evals.contracts import EvalTemplate, ValidationFailedError
+    from threetears.evals.run.authoring import refuse_unsupplied_world
+
+    world = noting_room()
+    profile = callable_host(world=world).profile
+
+    def template(check: str) -> EvalTemplate:
+        return EvalTemplate(scope_id=SCOPE, name="t", intent="i", candidate_kind="callable", goal_state_checks=[check])
+
+    refuse_unsupplied_world(template('any(it.to == "on" for it in calls("room.switch"))'), profile=profile)
+    with pytest.raises(ValidationFailedError, match="room.note's text is free text"):
+        refuse_unsupplied_world(template('calls("room.note")[0].text == "x"'), profile=profile)
+    with pytest.raises(ValidationFailedError, match="names calls this host does not define"):
+        refuse_unsupplied_world(template('calls("room.paint").length > 0'), profile=profile)

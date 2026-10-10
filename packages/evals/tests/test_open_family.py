@@ -32,6 +32,7 @@ from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_EXTRACTION_FAM
 def _descriptor(name: str, family: str) -> MetricDescriptor:
     return MetricDescriptor(
         name=name,
+        reader_name=f"{name} reading",
         data_type="numeric",
         family=family,
         transferability_class="mechanical",

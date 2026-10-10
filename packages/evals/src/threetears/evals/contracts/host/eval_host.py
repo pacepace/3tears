@@ -87,7 +87,11 @@ class CompletionClients(Protocol):
             role: Which apparatus role the client serves.
             model: The model to bind, or ``None`` for the role's default as the host resolves it.
                 The built client names what it resolved to (``model_name``).
-            temperature: The sampling temperature, or ``None`` for the provider default.
+            temperature: The sampling temperature, or ``None`` for the provider default. The judge always
+                names one (:data:`~threetears.evals.contracts.models.DEFAULT_JUDGE_TEMPERATURE` unless a config
+                says otherwise); a client whose model refuses a temperature sends none and says so on each
+                completion (``CompletionResult.temperature`` is ``None``), because the score records what was
+                sent, never what was asked.
 
         Returns:
             The client, owned by the caller.

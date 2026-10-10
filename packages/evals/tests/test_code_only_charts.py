@@ -96,14 +96,14 @@ class TestReadingsWithNoChart:
 
     async def test_match_is_not_charted_beside_the_accuracy_derived_from_it(self) -> None:
         titles = _chart_titles(await _compare(right, guess))
-        assert "accuracy" in titles and "match" not in titles
+        assert "Accuracy" in titles and "Label matched" not in titles
 
 
 class TestUnobservedCost:
     async def test_no_arm_reporting_spend_charts_and_tests_no_cost_and_says_so_once(self) -> None:
         comparison = await _compare(right, guess)
-        assert not [title for title in _chart_titles(comparison) if title.startswith("cost_usd")]
-        assert {row["reading"] for row in comparison.contrasts()} == {"accuracy"}
+        assert not [title for title in _chart_titles(comparison) if title.startswith("Measuring spend")]
+        assert {row["reading"] for row in comparison.contrasts()} == {"Accuracy"}
         (said,) = _cost_disclosures(comparison)
         assert "no result reported its spend" in said and "returning an Answer" in said
 
@@ -112,10 +112,12 @@ class TestUnobservedCost:
         assert bundle.cost_unmeasured == said
         assert not any(m.name == "cost_usd" for cell in bundle.cell_measures for m in cell.measures.measures)
 
-    async def test_reported_spend_is_charted_and_tested_as_before(self) -> None:
+    async def test_reported_spend_is_charted_and_tested_as_the_candidates_spend(self) -> None:
         comparison = await _compare(right_priced, guess_priced)
-        assert [title for title in _chart_titles(comparison) if title.startswith("cost_usd")]
-        assert "cost_usd" in {row["reading"] for row in comparison.contrasts()}
+        assert [title for title in _chart_titles(comparison) if title.startswith("Measuring spend")]
+        # Tested as the candidate's spend: cost_usd also sums what a judge spent measuring the arm.
+        readings = {row["reading"] for row in comparison.contrasts()}
+        assert "Production cost" in readings and "Measuring spend, all roles" not in readings
         assert _cost_disclosures(comparison) == []
 
     async def test_a_measured_zero_is_a_reading_not_an_unmeasured_cost(self) -> None:
@@ -127,13 +129,14 @@ class TestUnobservedCost:
             next(m.mean for m in cell.measures.measures if m.name == "cost_usd") for cell in bundle.cell_measures
         )
         assert costs == [0.0, 1e-5]
-        assert "cost_usd" in {row["reading"] for row in comparison.contrasts()}
+        (spend,) = comparison.contrasts("production_replicating_cost")
+        assert spend["control_mean"] is not None and spend["arm_mean"] is not None
 
     async def test_one_arm_unmeasured_is_named_and_left_out_of_the_cost_chart(self) -> None:
         comparison = await _compare(right, guess_priced)
         (said,) = _cost_disclosures(comparison)
         assert said.startswith("Cost was not measured in 1 of 2 cells") and said.endswith(
-            "Unmeasured: model=candidate."
+            "Unmeasured: candidate=candidate."
         )
         bundle = inspect_campaign_bundle(comparison.host, comparison.campaign_id, SCOPE).bundle
         (unmeasured,) = bundle.cost_unmeasured_cells

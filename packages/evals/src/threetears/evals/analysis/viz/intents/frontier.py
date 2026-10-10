@@ -2,8 +2,14 @@
 
 The one type whose identity is not on an axis: it reads two quantities against each other and names each
 contestant beside its mark. Both axes are positions and may crop. **Dominance rides on shape, never hue**:
-an on-frontier contestant is a circle, a dominated one a diamond, a disqualified one a cross — geometry a
-reader with low contrast vision still receives, and a channel the palette's recycling cannot reach.
+a contestant the frontier lens tested and did not show dominated is a circle, one it could not test a square,
+a dominated one a diamond, a disqualified one a cross — geometry a reader with low contrast vision still
+receives, and a channel the palette's recycling cannot reach.
+
+**The classes are the lens's three-valued verdict, never a reading of the drawn means.** No class says "on
+the frontier": a point not shown dominated may still be beaten, and calling it on the frontier would state the
+absence of a test result as a finding. The lens tests on pass^k, production-replicating cost and mean latency,
+which may not be the two quantities drawn, and a disclosure says so.
 """
 
 from __future__ import annotations
@@ -23,12 +29,23 @@ from threetears.evals.analysis.viz.intent import (
 from threetears.evals.analysis.viz.payloads import FrontierPayload, FrontierVizPoint
 from threetears.evals.analysis.viz.quantities import axis_title, display_scale, strip_common_prefix
 
-#: The symbol each contention class is drawn as, best to worst — the order a reader is told them in.
+#: The class of a contestant the frontier lens tested and did not show dominated — `not_separated`.
+NOT_SHOWN_DOMINATED = "Not shown dominated"
+
+#: The class of a contestant nothing could be tested against, or whose standing was not recorded.
+NOT_TESTED = "Dominance not tested"
+
+#: The symbol each contention class is drawn as — the order a reader is told them in.
 CLASS_SHAPES: tuple[tuple[str, str], ...] = (
-    ("On frontier", "circle"),
+    (NOT_SHOWN_DOMINATED, "circle"),
+    (NOT_TESTED, "square"),
     ("Dominated", "diamond"),
     ("Disqualified", "cross"),
 )
+
+#: The classes drawn at full weight. Every other class recedes, so a class added later recedes unless it
+#: is listed here.
+EMPHATIC_CLASSES: tuple[str, ...] = (NOT_SHOWN_DOMINATED, NOT_TESTED)
 
 #: The row key holding a point's contention class — what its shape is drawn from.
 CLASS_FIELD = "status"
@@ -41,26 +58,27 @@ DISPLAY_FIELD = "display"
 UNPRICED_CLASS = "Not priced"
 
 
-def _classify(dominated: bool, disqualified: bool, *, priced: bool) -> str:
+def _classify(point: FrontierVizPoint) -> str:
     """Which contention class a point belongs to.
 
     Disqualification outranks domination: a contestant out on a safety bar is out whatever its cost
-    bought. An unpriced contestant is its own class rather than the default one: domination is a claim
-    about both axes, so a point with no cost cannot be known to be on the frontier OR off it.
+    bought. A shown domination is stated wherever the point is. Otherwise an unpriced contestant is its own
+    class, since it is not on the plot; and a priced one is ``not shown dominated`` only where the lens tested
+    it — a point with no recorded standing is not tested, never on the frontier by default.
 
     Args:
-        dominated: Whether some other point beats it on both axes.
-        disqualified: Whether it failed a two-pillar / safety bar.
-        priced: Whether it carries a production-replicating cost.
+        point: The payload point.
 
     Returns:
         The class name.
     """
-    if disqualified:
+    if point.disqualified:
         return "Disqualified"
-    if dominated:
+    if point.dominated:
         return "Dominated"
-    return "On frontier" if priced else UNPRICED_CLASS
+    if point.cost is None:
+        return UNPRICED_CLASS
+    return NOT_SHOWN_DOMINATED if point.dominance == "not_separated" else NOT_TESTED
 
 
 def _joined_names(labels: Sequence[str]) -> str:
@@ -110,7 +128,7 @@ def frontier_intent(payload: FrontierPayload) -> ChartIntent:
             "cost": point.cost,
             "quality": point.quality,
             "latency": None if point.latency_ms is None else point.latency_ms * latency_scale,
-            CLASS_FIELD: _classify(point.dominated, point.disqualified, priced=point.cost is not None),
+            CLASS_FIELD: _classify(point),
         }
         for point in payload.points
     ]
@@ -124,6 +142,13 @@ def frontier_intent(payload: FrontierPayload) -> ChartIntent:
     disclosures: list[str] = []
     if len(present) > 1:
         disclosures.append(", ".join(f"{symbol} = {name.lower()}" for name, symbol in present) + ".")
+    if any(point.dominance is not None for point in payload.points):
+        disclosures.append(
+            "Domination is the frontier lens's test on pass^k, production-replicating cost and mean latency, "
+            "not a reading of the two quantities drawn; not shown dominated is not on the frontier."
+        )
+    elif any(row[CLASS_FIELD] == NOT_TESTED for row in drawn):
+        disclosures.append("No domination test was recorded for these contestants.")
     disclosures.extend(
         f"{_joined_names(labels)} {'is' if len(labels) == 1 else 'are'} disqualified: {reason}."
         for reason, labels in _disqualifications(payload.points)
@@ -181,6 +206,9 @@ __all__ = [
     "CLASS_FIELD",
     "CLASS_SHAPES",
     "DISPLAY_FIELD",
+    "EMPHATIC_CLASSES",
+    "NOT_SHOWN_DOMINATED",
+    "NOT_TESTED",
     "UNPRICED_CLASS",
     "frontier_intent",
 ]

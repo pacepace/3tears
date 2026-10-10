@@ -1,7 +1,7 @@
 # Principles
 
-Read this when you want the rules the engine keeps and why: before you design a campaign, extend the
-engine, or argue with one of its refusals. Where the package does not yet keep a
+**For** anyone about to design a campaign, extend the engine, or argue with one of its refusals. **Answers:**
+which rules the engine keeps, and why. Where the package does not yet keep a
 rule in full, the entry says so and points at [open problems](open-problems.md). Terms are as
 [concepts](concepts.md) defines them.
 
@@ -11,6 +11,11 @@ rule in full, the entry says so and points at [open problems](open-problems.md).
 A decision names what may change and what settles it. A campaign with no declared question is passive,
 and its report leads with what the evidence taught. A watch re-runs a fixed suite against an earlier
 measurement; its value is the regression it catches, so most of its runs change nothing.
+
+**What nobody asked about is a lead, not an answer.**
+A reading no declared question names is labelled exploratory wherever a reader meets it, so a report
+cannot lead with it as if it were confirmed; a campaign that declares no question says once that every
+finding is exploratory, rather than on every row, where the label would be skipped.
 
 **A report shows tradeoffs, not a winner.**
 Every arm is placed on quality, reliability, cost and latency, and called best only against a declared
@@ -47,6 +52,11 @@ tell" as an answer that excludes the trial from that criterion. Pairwise judging
 adopted either: the error reduction claimed for it rests on a single study, and it would multiply judge
 spend and change how a trial's identity is computed.
 
+**What the subject must never do is held, never traded.**
+A guardrail (a boundary judged dimension, or a measure declared one) stays out of every composite and
+comparison family and is decided per arm against the control: a breached one keeps the arm from adoption
+whatever it gained, and an undecided one is never read as safe.
+
 ## Numbers
 
 **A failure of the rig is not a measurement.**
@@ -55,18 +65,18 @@ failure the candidate caused is the candidate's. Unknown is never shown as zero,
 price is unpriced, not free. See [rig failures](adopting-a-host.md#rig-failures-a-broken-rig-costs-one-cell-never-the-run).
 
 **Count test cases, not attempts.**
-Five cases run three times are five pieces of evidence, not fifteen: repeats of one case are correlated.
-Comparisons against the control run on per-case means, paired when both arms ran the same cases. A single
-reading's interval is still computed over trials and says "interval too narrow" instead
-([open problems](open-problems.md)).
+Five cases run three times are five pieces of evidence, not fifteen: repeats of one case are correlated. So
+comparisons run on per-case means, every interval is computed over cases, and a reading of one case repeated
+has no interval.
 
 **A verdict comes from a corrected test, and "not separated" never means "no difference".**
-Each contrast against the control is `improved`, `regressed`, `not_separated` or `untested`, read off a
-Holm-adjusted p within one family: one per declared question, or one campaign-wide. Twenty uncorrected
-tests find a chance "winner" more often than not. False-discovery control across a history of campaigns and
-sequential testing stay out. The two-run change helper still calls a sub-threshold move `flat`
-([open problems](open-problems.md)); the figures behind these rules are in
-[measuring soundly](measuring-soundly.md).
+Each contrast against the control is `improved`, `regressed`, `equivalent`, `not_separated` or
+`untested`, read off a Holm-adjusted p within one family: one per declared question, or one campaign-wide
+over every reading on a merit axis (the rig's own readings, such as the judge's time and spend, are on none).
+`equivalent` takes an equivalence test (TOST) against the measure's declared margin, corrected in the same
+family; the run-history read follows the same rule. Twenty uncorrected tests find a chance "winner" more often
+than not. False-discovery control across campaigns and sequential testing stay out. The methods are named in
+[reading reports](reading-reports.md#methods).
 
 **Trust in a judge is measured, not asserted, and nothing waits for calibration.**
 Code assigns every judged reading an [evidence tier](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers)
@@ -76,10 +86,10 @@ self-consistency measures precision, not accuracy.
 
 **Bars start where the incumbent performs ("never ship worse than what runs today") and only tighten.**
 A proposed bar is never adopted
-automatically, and one looser than the registered bar is refused. The engine still seeds a proposal from
-the incumbent's mean and clears a bar on a cell's mean; the intended rule is the interval against a
-declared margin, since a bar at the mean fails an unchanged incumbent about half the time
-([open problems](open-problems.md)).
+automatically, and one looser than the registered bar is refused. A bar decides on the interval against the
+measure's declared margin, never the mean: cleared, missed, or undecided when the interval straddles the line,
+which is neither a pass nor a failure. A bar at the mean, read on a cell's mean, failed an unchanged incumbent
+about half the time.
 
 **What an arm would cost in production and what it cost to measure are kept apart.**
 Spend is recorded per role: the candidate's calls and the work they start are what production would pay;
@@ -119,8 +129,12 @@ would govern users that do not exist.
 
 **The eval system is meant to evaluate itself.**
 Its model-driven parts are subjects, and every chain of evaluation should end in a code check or a human
-label. The analysis writer has a kind, and a judge's self-agreement is measured by repeating its scores. Testing the statistics
-against simulated data with known answers is not yet in the suite ([open problems](open-problems.md)).
+label. The analysis writer has a kind, and a judge's self-agreement is measured by repeating its scores. The statistics
+are tested against seeded data with a known truth at the sample sizes the engine sees (2–15 cases, 1–5 repeats):
+the `test_simulated_*` and `test_sim_*` files in `tests/`, on the generators and reference answers in
+`tests/simulation_support.py`. They check interval coverage, false-positive rates, power, family-wise error and
+estimator bias, and each property the engine misses stays in the suite as a strict `xfail` stating the measured rate
+against the nominal.
 
 **A run's memory should scale with its matrix, never with how much a cell produced.**
 How talkative a candidate is should not decide whether a run survives. Nothing measures this yet.

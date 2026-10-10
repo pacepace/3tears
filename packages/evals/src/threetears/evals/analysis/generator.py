@@ -71,13 +71,14 @@ from typing import TYPE_CHECKING, Any, TypeIs, get_args
 from pydantic import BaseModel, Field, ValidationError
 
 from threetears.evals.analysis import viz_refs
-from threetears.evals.analysis.arms import arm_names, writer_arms
+from threetears.evals.analysis.arms import arm_names, contradicted_arms, writer_arms
 from threetears.evals.analysis.bundle import (
     AnalysisContextBundle,
     FamilyComparison,
     LeverCoverageInput,
     RunSummary,
     bundle_decision_surface,
+    insight_restatement_key,
 )
 from threetears.evals.analysis.cells import cell_ref, variant_of_cell_ref
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal, UnresolvableReference
@@ -107,7 +108,6 @@ from threetears.evals.contracts.authored import Chart as AuthoredChart
 from threetears.evals.contracts.authored import Finding as AuthoredFinding
 from threetears.evals.contracts.campaign import (
     ENGINE_CAVEAT_KINDS,
-    ConfidenceTier,
     CoverageLens,
     EvalAnalysis,
     EvalInsight,
@@ -120,6 +120,7 @@ from threetears.evals.contracts.campaign import (
     Viz,
     VizType,
 )
+from threetears.evals.contracts.evidence_tiers import JUDGED_TIER_RULE
 from threetears.evals.contracts.hashing import bytes_digest
 from threetears.evals.contracts.host.measures import MeasureRegistry
 from threetears.evals.contracts.host.profile import HostProfile
@@ -200,16 +201,6 @@ def generation_ceiling_s(*, request_s: RequestCeiling, generator_max_tokens: int
     """
     return MAX_GENERATION_CALLS * request_s(generator_max_tokens)
 
-
-# A lever's coverage status maps to a starting confidence for its point estimate.
-# Coarse and deliberately conservative (this is a measurement-trust prior, refined
-# by the prompt-tunable findings, not a claim about the world): a well-swept,
-# replicated lever earns more trust than a single-level or thin one. Kept here (not
-# LLM-produced) so the coverage spine's confidence tracks the bundle's actual n/k,
-# never the model's optimism. A tier like every other confidence on new output, and
-# never `very_high`: a coverage status says how finely a lever was swept, which bounds
-# what can be known about it without establishing that anything was.
-_STATUS_CONFIDENCE: dict[str, ConfidenceTier] = {"measured": "high", "thin": "medium", "unswept": "low"}
 
 # How many measure columns the run-index table may carry. The measure name space is open
 # by construction — phase timings are `<tool>_<phase>_ms`, one per tool per phase — so
@@ -413,6 +404,8 @@ async def generate_analysis(
             repaired_refusal=refusal,
             user_message_digest=sent_digest,
             cell_model_version=bundle.cell_model_version,
+            bundle_schema_version=bundle.schema_version,
+            host_declarations_digest=bundle.host_declarations_digest,
         )
 
     try:
@@ -801,10 +794,11 @@ def _resolved_analysis(
         The stored analysis and the insights it mints.
 
     Raises:
-        SoundnessRefusal: A cell, reading or position points nowhere, or a decision adopts an arm no
-            reading separated from the control (repaired once).
+        SoundnessRefusal: A cell, reading or position points nowhere, one arm is both adopted and
+            rejected, or a decision adopts an arm no reading separated from the control (repaired once).
     """
     document = _with_cell_refs(document, surface)
+    _reject_contradicted_arms(document, bundle)
     _reject_unseparated_adoptions(document, bundle)
     document = render_prose_figures(document, surface)
     resolutions = [
@@ -826,6 +820,7 @@ def _resolved_analysis(
             design_snapshot=bundle.declared_design,
             document=document,
             resolutions=resolutions,
+            judged_tier_rule=JUDGED_TIER_RULE,
             coverage=CoverageLens(levers=[_lever_from_bundle(lever) for lever in bundle.coverage]),
             run_index=[
                 _run_index_entry(summary, reported=reported, omitted=sorted(all_names - reported))
@@ -920,6 +915,34 @@ def _reject_mismatched_question_answers(document: AuthoredAnalysis, bundle: Anal
         )
 
 
+def _reject_contradicted_arms(document: AuthoredAnalysis, bundle: AnalysisContextBundle) -> None:
+    """Refuse an analysis in which one decision adopts an arm and another rejects it.
+
+    The arm table reads each verdict off the cells a decision names, so a memo adopting and rejecting
+    one arm states a winner its own decisions also rule out. That is a defect in the memo's structure,
+    not a reading of its prose: it is found from dispositions and cell variants alone
+    (:func:`~threetears.evals.analysis.arms.contradicted_arms`), and refused through the repair round
+    like any other. Runs after cells are translated from aliases, so the refusal names a full ref,
+    which the repair round renders back into the writer's alias.
+
+    Raises:
+        SoundnessRefusal: Some arm is named by an ``adopted`` and a ``rejected`` decision.
+    """
+    contradicted = contradicted_arms(document.decisions)
+    if not contradicted:
+        return
+    names = arm_names(bundle.variant_index)
+    variant, adopting, rejecting = contradicted[0]
+    cell = next(c for c in document.decisions[adopting].cells if variant_of_cell_ref(c) == variant)
+    arm = f"the arm at cell {cell}" + (f" ({names[variant]})" if variant in names else "")
+    more = f" ({len(contradicted) - 1} other arm(s) likewise)" if len(contradicted) > 1 else ""
+    raise SoundnessRefusal(
+        f"decisions[{adopting}] adopts {arm} and decisions[{rejecting}] rejects it{more}; one arm takes one "
+        "verdict, so keep the decision the findings support and drop or re-scope the other — or, if the "
+        "evidence settles neither, mark it `deferred`"
+    )
+
+
 def _reject_unseparated_adoptions(document: AuthoredAnalysis, bundle: AnalysisContextBundle) -> None:
     """Refuse a decision that adopts an arm no reading separated from the control in its favour.
 
@@ -937,13 +960,20 @@ def _reject_unseparated_adoptions(document: AuthoredAnalysis, bundle: AnalysisCo
     it is ``untested`` — has no separation to adopt on either, and is refused saying so, since a
     reader of the arm table cannot tell an adoption resting on nothing from one resting on a test.
 
+    **A breached guardrail refuses the adoption whatever the arm gained** (``bundle.guardrails``): a guardrail
+    is what the arm must not get worse on, and it is held, never traded. An undecided guardrail does not
+    refuse it — at a few cases and no declared margin almost every guardrail is undecided, so refusing on
+    one would refuse nearly every adoption in any campaign that carries a guardrail — and it is never read
+    as held either: the report states it on the adopted decision.
+
     Adopting the declared control (keeping what is there) needs no separation, and a ``rejected`` or
     ``deferred`` decision, or one naming no cell, is not checked. Runs after cells are translated
     from aliases, so it reads full refs; the refusal names them, and the repair round renders them
     back into the writer's aliases.
 
     Raises:
-        SoundnessRefusal: An adopted decision names a non-control arm with no ``improved`` reading.
+        SoundnessRefusal: An adopted decision names a non-control arm with a breached guardrail, or with no
+            ``improved`` reading.
     """
     control = bundle.declared_design.control if bundle.declared_design else None
     comparisons = bundle.multiple_comparisons
@@ -961,6 +991,13 @@ def _reject_unseparated_adoptions(document: AuthoredAnalysis, bundle: AnalysisCo
                 arms.setdefault(variant, cell)
         for variant, cell in arms.items():
             arm = f"the arm at cell {cell}" + (f" ({names[variant]})" if variant in names else "")
+            if breached := bundle.guardrails.of_arm(variant).breached:
+                raise SoundnessRefusal(
+                    f"decisions[{index}] adopts {arm}, but it breached the guardrail{'s' if len(breached) > 1 else ''} "
+                    f"{', '.join(breached)} (`guardrails`: shown worse than the control by more than the margin), "
+                    "and no gain elsewhere pays for a guardrail; mark it `rejected`"
+                    + (", or adopt the control" if comparisons.families else "")
+                )
             against = [
                 comparison
                 for family in comparisons.families
@@ -1078,16 +1115,28 @@ def _is_viz_type(value: str) -> TypeIs[VizType]:
 
 
 def _insights_of(analysis: EvalAnalysis, bundle: AnalysisContextBundle, surface: DecisionSurface) -> list[EvalInsight]:
-    """Mint one durable insight per finding that states one, citing the runs behind its evidence.
+    """Mint one durable insight per claim the findings state, citing the runs behind its evidence.
 
     The model names what is durable; the runs it rests on are read off the cells its evidence cites,
-    so an insight cannot cite a run the finding did not.
+    so an insight cannot cite a run the finding did not. Two findings stating one claim
+    (:func:`~threetears.evals.analysis.bundle.insight_restatement_key`) mint it once, from the first.
+    Each insight's ``invalidation_trigger`` names what retires it, which the engine carries out:
+    archiving this analysis, or a later analysis restating the claim.
     """
     cells = cell_index(surface)
     insights = []
+    stated: set[str] = set()
+    trigger = (
+        f"Retracted if analysis {analysis.id} is archived; replaced in place when a later analysis of this "
+        "subject states the same claim."
+    )
     for finding in analysis.document.findings:
         if not finding.durable.strip():
             continue
+        key = insight_restatement_key(finding.durable)
+        if key in stated:
+            continue
+        stated.add(key)
         runs = sorted({run for row in finding.evidence if row.cell in cells for run in cells[row.cell].run_ids})
         insights.append(
             EvalInsight(
@@ -1098,6 +1147,7 @@ def _insights_of(analysis: EvalAnalysis, bundle: AnalysisContextBundle, surface:
                 confidence=finding.confidence,
                 evidence_run_ids=runs,
                 model_versions=bundle.model_versions,
+                invalidation_trigger=trigger,
                 source_campaign_id=bundle.campaign_id,
                 source_analysis_id=analysis.id,
             )
@@ -1137,7 +1187,8 @@ def build_user_message(bundle: AnalysisContextBundle) -> str:
     ``variant_index``: the index is the key's pre-image, hashes and folded surfaces included, and
     stays on the bundle for code to store and join on.
 
-    The writer is shown each family comparison's ADJUSTED p only. The raw p stays on the bundle for
+    The writer is shown each family comparison's ADJUSTED p's only (separation and equivalence), and each scope
+    divergence's adjusted p. The raw p stays on the bundle for
     audit, but a figure the writer can see is a figure it can quote, and a verdict quoted on the raw
     p of a ten-comparison family is the chance finding the correction exists to stop.
 
@@ -1149,9 +1200,17 @@ def build_user_message(bundle: AnalysisContextBundle) -> str:
     """
     payload = bundle.to_dict()
     del payload["variant_index"]
+    # Provenance for code comparing two bundles, and the engine's own retirement rule on each prior insight:
+    # nothing the writer can read a finding off, and each one billed on every generation.
+    del payload["host_declarations_digest"]
+    for insight in payload["prior_insights"]:
+        del insight["invalidation_trigger"]
     for family in payload["multiple_comparisons"]["families"]:
         for comparison in family["comparisons"]:
             del comparison["p_raw"]
+            del comparison["equivalence_p_raw"]
+    for divergence in payload["scope_divergences"]:
+        del divergence["p_raw"]
     payload.update(writer_arms(bundle.variant_index))
     _name_cells_by_alias(payload, cell_aliases(bundle.cell_measures))
     return "CONTEXT BUNDLE (JSON):\n" + json.dumps(payload, indent=2, sort_keys=True)
@@ -1349,9 +1408,9 @@ def _resolve(surface: DecisionSurface, ref: str, reading: ReadingRef, *, where: 
 def _lever_from_bundle(lever: LeverCoverageInput) -> LeverCoverage:
     """Promote a bundle coverage lever to an analysis lever — facts from the bundle.
 
-    n / dispersion / cells / k / status come verbatim from the bundle (never the
-    LLM), so a point estimate always carries its sample size and spread;
-    ``confidence`` is the status-derived measurement-trust prior.
+    Every field comes verbatim from the bundle (never the LLM), so a point estimate always carries its
+    sample size and spread. Nothing is added: a lever's coverage is how finely it was swept, and a
+    tier looked up from ``status`` would restate ``status`` while reading as a confidence.
     """
     return LeverCoverage(
         name=lever.name,
@@ -1360,7 +1419,6 @@ def _lever_from_bundle(lever: LeverCoverageInput) -> LeverCoverage:
         n=lever.n,
         dispersion=lever.dispersion,
         status=lever.status,
-        confidence=_STATUS_CONFIDENCE[lever.status],
     )
 
 
@@ -1431,7 +1489,8 @@ def _run_index_entry(summary: RunSummary, *, reported: set[str], omitted: list[s
     """Build one run-index row from a bundle run summary (factual, not LLM).
 
     A numeric measure contributes the tail at its *worse* end — p95 where lower is better,
-    p05 where higher is — under a key naming which, so a reader is never invited to compare
+    p05 where higher is — under a key naming which (the maximum, as ``<name>_max``, where lower is
+    better and too few observations give a p95), so a reader is never invited to compare
     a measure's best outcome against another's worst as though both moved the same way. A
     categorical measure contributes its counts.
 
@@ -1469,6 +1528,19 @@ def _run_index_entry(summary: RunSummary, *, reported: set[str], omitted: list[s
         # able to see that one of them measured far fewer results than it produced.
         key_metrics["n_prod_cost_usd"] = summary.n_prod_cost_usd
         key_metrics["n_prod_cost_unmeasured"] = summary.n_results - summary.n_prod_cost_usd
+        # What the run set away from the subject's production configuration travels with the figure
+        # (#571): it is production's cost only for a run that moved nothing, and a caveat printed on
+        # every run alike is one a reader stops reading.
+        footing = summary.production_footing
+        key_metrics["prod_cost_footing"] = (
+            "nobody checked which inputs this run moved off the subject's production configuration"
+            if footing is None
+            else footing.sentence()
+        )
+        if footing is not None and footing.moved:
+            key_metrics["prod_cost_moved_off_production"] = dict(sorted(footing.moved.items()))
+        if footing is not None and footing.unchecked:
+            key_metrics["prod_cost_unchecked_against_production"] = dict(sorted(footing.unchecked.items()))
     for measure in summary.measures.measures:
         if measure.name not in reported:
             continue
@@ -1478,6 +1550,9 @@ def _run_index_entry(summary: RunSummary, *, reported: set[str], omitted: list[s
         tail = measure.bad_tail()
         if tail is not None:
             key_metrics[f"{measure.name}_p05" if measure.higher_is_better else f"{measure.name}_p95"] = tail
+        elif measure.higher_is_better is False and measure.max is not None:
+            # Too few observations for a 95th percentile: the slowest seen, named as what it is.
+            key_metrics[f"{measure.name}_max"] = measure.max
     if omitted:
         key_metrics["measures_omitted"] = ", ".join(omitted)
     return RunIndexEntry(

@@ -37,7 +37,13 @@ package imports its own modules directly.
 from __future__ import annotations
 
 from threetears.evals.contracts.host.apparatus import ApparatusError
-from threetears.evals.contracts.host.bars import Bar, BarRegistry
+from threetears.evals.contracts.host.bars import (
+    DEFAULT_PASS_THRESHOLD,
+    Bar,
+    BarRegistry,
+    PassThreshold,
+    pass_threshold_label,
+)
 from threetears.evals.contracts.host.eval_host import CompletionClients, CompletionRole, EvalHost
 from threetears.evals.contracts.host.kinds import (
     ActsOn,
@@ -52,8 +58,10 @@ from threetears.evals.contracts.host.measures import MeasureRegistrationError, M
 from threetears.evals.contracts.host.profile import Coverage, HostProfile
 from threetears.evals.contracts.host.spend import ExternalSpend
 from threetears.evals.contracts.host.style import (
+    CHART_FONT_CHARACTERS,
     SERIES_SLOTS,
     VALIDATED_SLOTS,
+    ChartFont,
     ChartPalette,
     StyleError,
     StyleProfile,
@@ -71,7 +79,7 @@ from threetears.evals.contracts.host.sweepables import (
     served_models_by_score,
 )
 from threetears.evals.contracts.host.traces import CellIdentity, CellTrace, TraceSink
-from threetears.evals.contracts.host.values import IntervalScale, NominalScale, SweepableValue
+from threetears.evals.contracts.host.values import IntervalScale, NominalScale, ProductionFooting, SweepableValue
 from threetears.evals.contracts.host.world import Triggered, WorldDimension, WorldRegistry
 from threetears.evals.contracts.host.world_schema import UnsupportedSchemaError, nested_schemas, schema_violations
 from threetears.evals.contracts.host.world_conformance import (
@@ -100,6 +108,7 @@ from threetears.evals.contracts.host.style import ToneRegister
 from threetears.evals.contracts.host.sweepables import (
     Comparability,
     FamilyMemberTest,
+    ProductionDepartureReader,
     RegistrationError,
     ResidualReader,
     ResolvedLevers,
@@ -122,6 +131,7 @@ from threetears.evals.contracts.schema_nesting import NestedSchema
 __all__ = [
     "CANDIDATE_KIND_LEVER",
     "CANDIDATE_MODEL_LEVER",
+    "CHART_FONT_CHARACTERS",
     "SERIES_SLOTS",
     "SHARED_CORE",
     "UNSEATED_LEVEL",
@@ -130,12 +140,16 @@ __all__ = [
     "ActsOn",
     "ApparatusError",
     "Bar",
+    "DEFAULT_PASS_THRESHOLD",
+    "PassThreshold",
+    "pass_threshold_label",
     "BarProposal",
     "BarRegistrationError",
     "BarRegistry",
     "CellIdentity",
     "CellTimeoutFactory",
     "CellTrace",
+    "ChartFont",
     "ChartPalette",
     "CheckName",
     "Comparability",
@@ -162,6 +176,8 @@ __all__ = [
     "Ordinal",
     "OrdinalScale",
     "Outcome",
+    "ProductionDepartureReader",
+    "ProductionFooting",
     "ProfileRegistrationError",
     "Qualification",
     "RegistrationError",

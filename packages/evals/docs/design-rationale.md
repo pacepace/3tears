@@ -1,7 +1,8 @@
 # Design rationale
 
-Read this when you want to know why the engine's measurement concepts are shaped as they are. Each
-section gives the problem that forced the design, the choice, what was rejected, and what changed later.
+**For** anyone who wants to know why the engine's measurement concepts are shaped as they are. **Answers:** for
+each concept, the problem that forced the design, the choice, what was rejected, and what changed later. These
+are practice notes from building against one private host; the Evidence lines summarise unpublished campaigns.
 Terms are defined in [Concepts](concepts.md); the world has its own page, [The world model](world-model.md).
 
 ## Who owns the vocabulary: levers, apparatus and labels
@@ -39,7 +40,8 @@ second host-shaped mechanism. A second product, built independently, had made th
 prompt blocks, everything else by name.
 
 **What changed.** A hash is a correct identity and an unreadable label, so a level became
-`SweepableValue{content_hash, display, scale, raw?}`, `display` required and never derived from the hash.
+`SweepableValue{content_hash, display, scale, raw?}` with `display` always present: only a value built from
+opaque bytes with no name given falls back to its digest's prefix (`sha256:<12>`), a poor label but an honest one.
 `scale` is nominal, ordinal or interval, not a bare rank, because a lever swept at 0.1 / 0.4 / 0.85 drawn
 as ranks 1 / 2 / 3 puts the knee in the wrong place.
 
@@ -104,32 +106,45 @@ alone. Rules told to the writer in prose were broken (inferring "no effect" from
 forbidden in capitals and done anyway), so each rule below is computed into the bundle.
 
 - **A lever seen twice is not a confound.** A knob and the resolved surface it lands in move together, so
-  the analysis reported every sweep of the knob as confounded by itself. A knob now names its surface
-  (`ResolvesInto` on an overlay field, `Sweepable.resolves_into` underneath), and the engine folds the surface
-  into the knob where the runs show it moved with the knob alone: every level of the knob carries one level
-  of the surface. For a map overlay, the surface is compared with the swept entries removed. An unreadable
-  surface folds nothing. The surface is part of the variant key, so only two *arms* at one knob level can
-  show it moving on its own; where no level has two, the fold is applied and disclosed as an
-  `unverified_fold` confound ([open problems](open-problems.md#a-fold-with-one-arm-per-knob-level-is-untested)).
+  every sweep of the knob read as confounded by itself. A knob now names its surface (`ResolvesInto`), and the
+  engine folds the surface into the knob where the runs show it moved with the knob alone; a fold no two arms
+  could test is disclosed as `unverified_fold`
+  ([open problems](open-problems.md#a-fold-with-one-arm-per-knob-level-is-untested)).
 - **Assert the knob moved before reading the outcome.** A lever names the measure it acts on, and the
   bundle reports it `moved`, `inert` or `unchecked`: see
   [Did a lever take effect](reading-reports.md#did-a-lever-take-effect-mechanism-checks-and-observed-mechanisms).
 
   *Evidence:* agent with tools, reasoning-effort sweep, setting confirmed sent, 0 reasoning tokens in every arm, 2026-09, single campaign.
-- **Significance has three states:** separated, `not_separated`, and `untested` (fewer than two cases a
-  side, a gap with zero spread, or an arm that took no turn). Collapsing the last two retires a lever nobody
-  tested.
+- **Significance has three states:** separated, `not_separated`, and `untested`: no test could decide
+  (fewer than two cases a side, a gap with zero spread over too few cases for the exact sign-flip test to
+  reach α, or an arm that took no turn). The frontier's dominance and cheapest-pick read the same three, and
+  so does the history's step-to-step change flag. Zero spread is decided on each value's written decimal, so a
+  float residue never passes for a spread.
+  Collapsing the last two retires a lever nobody tested. A fourth, `equivalent`, is a claim of its own: an equivalence test against a declared margin.
 - **Subtract a part from a whole only under declared containment** (`MetricDescriptor.contained_by`) and
   when the declared parts exhaust it. One remainder of about 95 seconds described no wall-clock at all,
   because the part ran as detached background work.
 - **Rank on the scope under test; report both.** A subsystem change was credited with halving an
   end-to-end latency its own time did not touch, and the losing arm was recommended. Measures carry a
-  scope; the bundle pairs end-to-end and subsystem measures by unit and reports where their directions
-  differ. A movement counts only past 2 × the standard error of the difference (each side's SEM in
-  quadrature), a bar that adapts per measure instead of being tuned. Inside it the movement is `flat`, and
-  `flat` is a direction: "the whole moved and the part did not" is what this exists to catch.
+  scope; the bundle pairs end-to-end and subsystem measures by unit and tests whether the whole moved by
+  a different amount than the part: each case's whole minus its part, compared between the levels
+  (paired over shared cases, Holm-corrected within the lever). Grading each movement alone and reporting
+  where the verdicts differed published a divergence that did not exist 11–33% of the time, because "the
+  whole moved, the part did not" is not a test of the difference. Each movement still reads `improved`,
+  `regressed`, `not_separated` or, against a declared margin, `equivalent`; none reads "did not move".
 
   *Evidence:* agent with tools, turn p95 98.3 s → 48.5 s against subsystem p95 36.6 s → 37.6 s, 2026-07, single campaign.
+
+## Guardrails are a pillar apart from capability
+
+A single score lets a capability gain pay for a guardrail loss, and the sum reads as progress. Online
+experimentation keeps guardrail metrics apart from the criterion it optimizes (Kohavi, Tang & Xu, 2020),
+Ng calls them satisficing against optimizing metrics, and Anthropic's agent-eval guidance tests where a
+behaviour should and should not occur ([prior art](prior-art.md#methodology-and-statistics)). So a
+boundary dimension or a guardrail measure enters no composite and no comparison family, and is decided per
+arm against the control by the bar rule read on the difference; a breach refuses the adoption, and an
+undecided guardrail is stated on it rather than blocking it, because at a few cases with no margin almost
+every guardrail is undecided.
 
 ## A failure is charged to whoever caused it
 
@@ -153,12 +168,10 @@ Five steps, each fixing the last:
 
 ## The subject key, and evaluability
 
-**Subject key.** Identity keyed on a display name split a renamed subject and merged two same-named ones.
-"Never pool across subjects" was rejected: it is phrased on who the subject is while its reason is where
-the rubric comes from, and it forbids comparing candidates that share one declared rubric. So a
-[subject](concepts.md#subject)'s key and label are separate required fields, the engine warns at
-population level on one key under two labels or the reverse, and a pooled score states its dimension
-basis. That disclosure had to exist before any pooling ban was relaxed.
+**Subject key.** Identity keyed on a display name split a renamed subject and merged two same-named ones. So a
+[subject](concepts.md#subject)'s key and label are separate required fields, the engine warns on one key under
+two labels or the reverse, and a pooled score states its dimension basis. "Never pool across subjects" was
+rejected, because it would forbid comparing candidates that share one declared rubric.
 
 **Evaluability.** One campaign hit four independent failures, each found by spending a run: a scenario the
 world could not represent, a fix target no run could vary, an eval calling a stub instead of the
@@ -172,24 +185,22 @@ production path, and a decision logged where nothing ingested it.
 - **Fidelity is a test, never a map entry.** One constructor builds the payload for production and eval,
   a `FidelityContract` checks each caller's source reaches it, and a boundary-equality test asserts both
   payloads are identical. That test is the load-bearing part; a registry is a checklist.
-- **Observability was deleted** (2026-09): rubric dimensions mint measure names no registry enumerates, so
-  a coverage check called every honest name "uncovered".
+- **Observability is derived, never checked** (2026-09): the measures registry is the observability map,
+  but its coverage check was deleted, because rubric dimensions and goal checks mint measure names no
+  registry enumerates, so the check called every honest name "uncovered".
 
 ## The analysis: from gated prose to an evaluated document
 
-**Prose gates did not converge.** The [analysis](concepts.md#analysis) was ruled the product, with a
-deterministic gate checking the numbers in its sentences. Committed 83 minutes after the ruling, the gate
-grew to 4,099 lines in 33 days and was deleted, because every real generation found a claim shape it
-could not parse. The writer's prompt grew 12× in 23 days, roughly 95% of it defence against past
-incidents, and one of 44 tests asserting prompt text passed while the writer did what the text forbade.
+**Prose gates did not converge.** A deterministic gate checking the numbers in the
+[analysis](concepts.md#analysis)'s sentences grew to 4,099 lines in 33 days and was deleted, because every real
+generation found a claim shape it could not parse. The writer's prompt grew 12× in 23 days, mostly defence
+against past incidents, and a test asserting prompt text passed while the writer did what the text forbade.
 
 **Code renders the numbers.** The writer is asked to cite every figure as a reference,
 `{{c1|<measure>|<reading>|<stat>}}`, and code substitutes the value from the decision surface
-(`analysis/prose_refs.py`). A reference is structure: one that does not resolve is refused, with one
-repair round naming what exists, and the words around it are never read, so a figure typed into a sentence
-instead of cited passes unchecked. The grammar is appended from the
-parser's constants, because a copy in a stored prompt went stale and every generation was refused at full
-cost.
+(`analysis/prose_refs.py`). A reference that does not resolve is refused, with one repair round naming
+what exists; the words around it are never read, so a figure typed into a sentence passes unchecked. The grammar
+is appended from the parser's constants, because a copy in a stored prompt went stale.
 
 **Typed shape, freeform content** (2026-09-25). A strict schema derived from the stored analysis was
 refused by some providers as a grammar too large. The authored document (`contracts/authored.py`) types
@@ -201,8 +212,6 @@ off the readings a finding names, never chosen by the writer.
 a case is a frozen campaign bundle, and the judge reads what the writer read and the memo as written. Code
 checks the structure of model output and never its prose; a judge never grades a fact code can check.
 
-*Evidence:* analysis writer, prompt-latitude A/B, 5 cases, k=3, 2 arms, 2026-09, insight −0.27 and decision shape −0.8 against within-cell SD 0.33–0.68, variant not adopted, single campaign.
-
-*Evidence:* analysis writer, 4 form × input conditions, 4 cases, k=2, 2026-09, judge re-score 62% exact / 0.46 mean absolute difference, every gap ≤ 0.33 inside it, single campaign.
-
 The judge's noise exceeds the effects being ranked, so rubric criteria are removed before any are added.
+
+*Evidence:* analysis writer, 2026-09, a prompt-latitude A/B (5 cases, k=3) and a 4-condition form × input study (4 cases, k=2): effects of −0.27 and −0.8 against within-cell SD 0.33–0.68 in the first (variant not adopted), and every gap in the second (≤ 0.33) inside the judge's re-score noise (62% exact, 0.46 mean absolute difference); single campaign each.

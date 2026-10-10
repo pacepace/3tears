@@ -32,7 +32,7 @@ DISTRIBUTION = {
         },
         {
             "label": "deepseek",
-            "buckets": [{"range": "0-1s", "count": 2}, {"range": "1-2s", "count": 7}],
+            "buckets": [{"range": "1000-1500", "count": 2}, {"range": "1500-2000", "count": 7}],
             "ci": {"low": 1400.0, "high": 1900.0, "mean": 1650.0, "variability": "across 5 runs", "level": 0.95},
             "n": 9,
         },
@@ -88,8 +88,21 @@ DELTA_TABLE = {
 #: geometry assertions state their subject as "row-based" rather than "every".
 FRONTIER: dict = {
     "points": [
-        {"label": "model-a-3.5-fast-lite", "cost": 0.0071, "quality": 0.2, "latency_ms": 31000.0},
-        {"label": "model-b", "cost": 0.0174, "quality": 0.0, "latency_ms": 48700.0, "dominated": True},
+        {
+            "label": "model-a-3.5-fast-lite",
+            "cost": 0.0071,
+            "quality": 0.2,
+            "latency_ms": 31000.0,
+            "dominance": "not_separated",
+        },
+        {
+            "label": "model-b",
+            "cost": 0.0174,
+            "quality": 0.0,
+            "latency_ms": 48700.0,
+            "dominated": True,
+            "dominance": "dominated",
+        },
     ],
     "bar": 0.5,
     "cost_label": "Cost per run (USD)",

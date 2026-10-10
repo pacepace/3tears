@@ -39,6 +39,7 @@ FIELDS_CORRECT = "fields_correct"
 
 FIELDS_CORRECT_AS_A_RAW_COUNT = MetricDescriptor(
     name=FIELDS_CORRECT,
+    reader_name="Fields correct",
     data_type="numeric",
     family="mechanical",
     transferability_class="mechanical",
@@ -51,6 +52,7 @@ FIELDS_CORRECT_AS_A_RAW_COUNT = MetricDescriptor(
 def _diagnostic(**overrides: object) -> MetricDescriptor:
     fields: dict[str, object] = {
         "name": "signed_error",
+        "reader_name": "Signed error",
         "data_type": "numeric",
         "family": "mechanical",
         "transferability_class": "mechanical",

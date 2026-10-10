@@ -1,22 +1,29 @@
 # Cost and budgets
 
-Read this if you launch runs that call paid models or tools, and want to know what a launch will cost, what
-stops it spending, and how spend is counted. If you are writing a host, read
+**For** anyone launching runs that call paid models or tools. **Answers:** what a launch will cost, what stops
+it spending, how long it takes, and how spend is counted. If you are writing a host, read
 [Adopting the engine](adopting-a-host.md) first; the terms used here (arm, run, launcher, cell) are
 defined in [Concepts](concepts.md).
 
 ## The rules, in plain words
 
-The engine holds one line everywhere: **it does not spend money it has not priced first, and it never
-pretends a cost it could not count was zero.**
+**The engine never pretends a cost it could not count was zero.** A call nobody could price is recorded as
+**unpriced**, not as $0.
+
+**Caps bind only on a host that enforces them** (`LaunchSettings.enforcement_enabled`, which every host sets).
+There, the engine does not spend money it has not priced first:
 
 - Every **run** has a dollar cap. Before a launch starts, the engine predicts what each arm will cost and
-  refuses an arm it predicts will blow its cap — or one it cannot predict at all.
+  refuses an arm it predicts will blow its cap — or one it cannot predict at all. A capped run stops at its
+  first unpriced result.
 - Calls made **outside any run** (writing new cases, proposing a rubric, writing an analysis, re-asking a
   judge) are priced before they are sent, against a separate out-of-run cap, and written to a ledger you
   can read back.
-- A call nobody could price is recorded as **unpriced**, not as $0, and a capped run stops at the first
-  one.
+
+With enforcement off, runs record themselves as `uncapped` (below) and nothing is refused on price. **The quick
+path (`run_eval`, `compare`) runs with enforcement off:** its candidate is your own function, whose spend the
+engine sees only afterwards and only if you report it (an `Answer`), so no cap could price it first or stop
+it. Bound a quick run's spend inside your candidate or your client.
 
 The sections below state each rule exactly.
 
@@ -27,6 +34,33 @@ The sections below state each rule exactly.
 mid-flight ends `budget_stopped`, with the results it already delivered kept: an honest outcome, not
 an infrastructure failure. A conversing kind's loop checks the cap before every paid simulator call (see
 [conversations](adopting-a-host.md#what-the-judge-reads-and-conversations)).
+
+**An uncapped run** (the host's cost enforcement off) records `max_cost_usd` as null and
+`max_cost_usd_origin` as `uncapped`. When an analysis or a bisection compares spend ceilings, it reads that
+run's ceiling as the level `uncapped`, so two uncapped runs agree and an uncapped run differs from a capped
+one. Only a run that recorded no ceiling and no origin is undecided.
+
+**The quick path's cap.** `run_eval` and `compare` run uncapped unless given `max_cost_usd=`, and the summary
+says which. The cap is the per-run cap above, counting each result's reported spend (the candidate's `Answer`
+and the judge's); `compare` splits it equally across arms. It is checked between cases, so a run can overshoot
+by one case's spend. A candidate that returns no `Answer` is invisible to it, and the summary says so.
+
+**The wall-clock budget.** Each run's job also runs under a time budget sized to its matrix (cases × k ×
+the cell timeout, plus a margin, clamped between a floor and an 8-hour cap). When it binds, the run ends
+`budget_stopped` too, not `failed`: like the cost cap, it is a bound someone set doing its job, and the
+results already delivered are kept and counted in the run's completeness record. `budget_stop_reason` tells
+the two apart (a clock stop's reason opens with `wall-clock budget`), and `error_details` stays empty,
+because that list counts faults. A run stopped by its clock under 0.66.0 or earlier stays stored `failed`
+(`Job timed out after Ns`).
+
+**Wall time.** A run executes its cells (case × repeat) one at a time, in a shuffled order; the only
+concurrency inside a run is a cell's judge calls (`judge_concurrency`, 4 by default, 1 on the quick path).
+The arms of one launch run side by side in one concurrency slot, so a comparison takes about as long as its
+slowest arm. Estimate a run's wall time as cases × k × the time one cell takes (the candidate's calls plus
+its judging): 30 cases at k=3 and 6 s a cell is about 9 minutes, whatever the number of arms. Cells are
+serial on purpose: each cell's metered-call count is read as a before/after pair around it, and the record of
+how busy the system was assumes no sibling cell competes, so both would be wrong under concurrent cells.
+No setting changes it.
 
 **The out-of-run cap** is `LaunchSettings.max_out_of_run_cost_usd`. It bounds every call the engine makes
 outside a run (below).
@@ -45,7 +79,11 @@ ceiling of `0` with origin `none_declared`, and a metered call that happens anyw
 2. **Price.** Under an enforced cap, it prices each arm with the host's `LaunchHost.launch_pricer`
    (`ArmQuote.case_source` says which). `threetears.evals.ops.history_launch_pricer` bounds it by the upper
    end of the band of runs launched the same way — template, model, cassette mode, the model each scored
-   dim was judged by, the simulator that ran, resolved apparatus settings.
+   dim was judged by, the simulator that ran, resolved apparatus settings. The band is a 95% prediction band
+   read on the log scale, since costs are positive and a few long conversations cost several times the rest.
+   With three past results it is wide on the high side (three costs of $0.10, $0.20 and $0.30 put a
+   15-observation arm's upper end near $59), so a capped launch on thin history can be refused. It treats
+   each observation as independent, which repeats of one case are not, and says so (`band_basis`).
 3. **Refuse.** It refuses an arm predicted above its run's cap, or one nothing can predict — no pricer, no
    plan, or no history to bound — whose cap the run would merely inherit. An unpriceable arm under a cap
    the launch named runs under it.
@@ -72,17 +110,15 @@ second pricing of the same arm.
 ## Spend outside any run
 
 Four engine calls have no run around them: a launch's case generation (an `llm` variation axis's writer),
-the rubric proposer (`propose_draft`), an analysis generation, and a judge repeat. Every spend operation
-is bounded in dollars before it spends.
+the rubric proposer (`propose_draft`), an analysis generation, and a judge repeat. Under enforcement, each is
+bounded in dollars before it spends; every one is ledgered either way.
 
 **Case generation.** Generation runs before any run exists, so its calls are outside every run's cost cap
-and metered-call ceiling — which is one reason the engine prices every arm before any launcher runs
-(above). The launcher hands `generate_variations` the request's `budget=request.generation_budget`: every
-`llm` axis's call is priced on the writer's client (`price_ceiling`, the host's answer) against
-`LaunchSettings.max_out_of_run_cost_usd` before the first is made, and each is ledgered as an
-`OutOfRunSpend` document (`EvalStorage.query_out_of_run_spend`) under the launch's group, written on the
-host's blocking executor (an `OutOfRunBudget` names its `blocking_executor`, as an `EvalHost` does).
-`propose_draft` takes a budget the same way.
+and metered-call ceiling. Every `llm` axis's call is priced on the writer's client (`price_ceiling`) against
+`LaunchSettings.max_out_of_run_cost_usd` before the first is made, and each is ledgered as an `OutOfRunSpend`
+under the launch's group. The launcher's side is in
+[Generating cases at launch](adopting-a-host.md#generating-cases-at-launch); `propose_draft` takes a budget the
+same way.
 
 **Batteries that generate.** A battery prices every template's arms and every template's writer calls (on
 the host's `variation` client, against the budget each launch will be held to) before any template
@@ -113,15 +149,51 @@ never assumes a provider. Your kind reports its own calls' spend only as usage r
 result's `cost_usd` from those rows and its background work's (`async_deliveries`, see
 [background work](adopting-a-host.md#background-work-payloads-and-spend)).
 
-**A `run_eval` or `compare` candidate reports its spend by returning an `Answer`.** The quick layer's
-candidate is a plain async function, so the engine sees what it returns and nothing of what it spent.
-Return `Answer(value, model=..., input_tokens=..., output_tokens=..., cost_usd=...)` instead of the bare
-value and the call becomes the cell's `candidate` usage row: `value` is graded and stored as a plain return
-would be, the result's `cost_usd` is derived from the row, the summary prints `candidate spend: $... over N
-call(s)`, and `compare`'s report tests the arms' `cost_usd` against the control like any other reading. A
-field left `None` is unreported, not zero, so an `Answer` with no `cost_usd` leaves its result's cost
-unknown. A candidate that returns anything else reports no spend, as before.
-`examples/compare_two_models.py` prices each Claude call this way.
+**A `run_eval` or `compare` candidate reports its spend by returning an `Answer`.** The engine sees only what a
+plain function returns. Return `Answer(value, model=..., input_tokens=..., output_tokens=..., cost_usd=...)`
+and the call becomes the cell's `candidate` usage row: `value` is graded as a plain return would be, the
+result's `cost_usd` is derived from the row, the summary prints `candidate spend: $... over N call(s)`, and
+`compare` tests the arms' spend against the control. A field left `None` is unreported, not zero.
+`examples/compare_two_models.py` prices each call this way.
+
+**Every surface that states what an arm costs reads `production_replicating_cost`**, the spend of the roles
+production runs: the contrasts, each decision-surface cell, its cost column and a frontier's cost axis (which
+refuses `cost_usd`). `cost_usd` and `program_cost` also sum what a judge spent, which is measuring cost: never
+tested between arms, and labelled measuring spend wherever drawn. An analysis stored before cells carried the
+candidate's spend shows its frozen `cost_usd` column under that label.
+
+**What an arm costs and what the program spent count different results.** A comparison cost — the
+candidate's own spend, `production_replicating_cost`, and every mean of it (`mean_prod_cost_usd` in a run
+summary, a frontier point's cost, an analysis cell's) — reads only the turns the candidate took. It leaves
+out a result the harness faulted, since a cell an apparatus fault cut short spent less than a whole one and
+would let the rig make an arm look cheaper. It also leaves out a call the candidate's model refused straight
+away, which took no turn. Program spend (`cost_usd`, `total_cost_usd`, `mean_cost_usd`, a `cost_usd` pivot,
+the `cost_usd` history series, an analysis cell's or bar's `cost_usd`, the budget view) keeps both, because those
+dollars were spent. `n_prod_cost_usd` counts what the comparison figure rests on.
+
+**A production-replicating cost names what its run moved off production.** It is what production
+would spend only for a run that set nothing: a model the launch named, an overlay set off its default, or
+an apparatus setting that strips the candidate's learned state each make it the cost of something
+production does not run, and the error has no reliable sign. So every surface that shows it carries the
+run's production footing, read off the host's sweepable declarations
+(`SweepableRegistry.production_footing`): a bundle's `RunSummary.production_footing`, the
+`prod_cost_footing` on each `run_summary` row and in an analysis run index's key metrics. It names the
+inputs the run `moved` (with their levels), the levers whose departure nothing records (`unchecked`), and
+the inputs `held`; only an empty `moved` and an empty `unchecked` say the cost was measured at production's
+configuration. A lever with no `departs_production` reader is read by the engine's rule: unset is the
+subject's own setting, a value is unchecked, so a lever you declare reaches the disclosure with nothing
+else edited. Declare `departs_production` on a lever to decide its value against production, and on an
+apparatus input that moves the candidate off its production footing. A run launched before the candidate
+model's origin was recorded reads its model as unchecked; a summary assembled before the disclosure
+carries `None`, "nobody checked".
+
+**A cost pivot says what its cells pool.** `scope_pivot(metric="cost_usd")` averages measuring spend, so each
+cell names the role sets its dollars were summed over (`cost_compositions`, with `cost_compositions_differ` when
+they are not one set: a cheaper cell may only have priced fewer things). A cell pooling a replayed run with a
+live one is `withheld`, because the mean of the two is neither one's spend; put `cassette_mode` on an axis to
+read each alone. A cell whose observations carried a seeded or
+replayed delivery counts them (`n_substituted`) and says its dollars leave that spend out; one built only from
+such observations says it is no live run's spend.
 
 **Unpriced is a state, never zero.** A call your client could not price (a local model, say), or
 background work's paid calls that report no `money` and that a run with declared rates has no rate

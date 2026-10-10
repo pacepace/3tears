@@ -103,7 +103,10 @@ class CurationStore(Protocol):
         ...
 
     def delete_eval_result(self, result_id: str, scope_id: str, /) -> bool:
-        """Destroy one result and its trace sibling, reporting whether it was there."""
+        """Destroy one result and its trace sibling, reporting whether it was there.
+
+        Raises ``StorageError`` and keeps the result when its trace survived the delete.
+        """
         ...
 
     def load_analysis(self, analysis_id: str, scope_id: str, /) -> EvalAnalysis | None:
@@ -506,7 +509,18 @@ def delete_run(storage: CurationStore, run: EvalRun, scope_id: str, *, confirm: 
         )
 
     results = storage.query_eval_results_by_run(run_id, scope_id)
-    failed = [r.id for r in results if not storage.delete_eval_result(r.id, scope_id)]
+    failed: list[str] = []
+    reasons: list[str] = []
+    for r in results:
+        try:
+            deleted = storage.delete_eval_result(r.id, scope_id)
+        except StorageError as e:
+            # A refused delete (a trace that would be orphaned) or a store fault: the result
+            # is still there, so it counts as failed and the cascade stops short of the run.
+            deleted = False
+            reasons.append(str(e))
+        if not deleted:
+            failed.append(r.id)
     if failed:
         # Destruction already happened for the results that did delete. The success
         # path below logs what it removed; so must every path that removes something
@@ -522,6 +536,7 @@ def delete_run(storage: CurationStore, run: EvalRun, scope_id: str, *, confirm: 
         raise StorageError(
             f"run '{run_id}' left intact: {len(failed)} of {len(results)} result(s) could not be deleted "
             f"({', '.join(failed[:3])}{'…' if len(failed) > 3 else ''}) — retry to finish the cascade"
+            + (f". First cause: {reasons[0]}" if reasons else "")
         )
 
     campaigns = _detach_run_from_all_campaigns(storage, run_id, scope_id, results_already_deleted=len(results))
@@ -580,7 +595,9 @@ def delete_result(
 
     Raises:
         ValidationFailedError: ``confirm`` does not echo the result id.
-        StorageError: The result failed to delete.
+        StorageError: The result failed to delete, including when its trace could not be
+            deleted: the result is then kept rather than leaving the trace unreachable
+            (:meth:`~threetears.evals.contracts.storage.EvalStorage.delete_eval_result`).
     """
     result_id = result.id
     require_delete_confirmation("result", result_id, confirm, alternative=_ARCHIVE_THE_RUN_INSTEAD)

@@ -235,4 +235,75 @@ class SweepableValue(BaseModel):
         return cls(content_hash=digest, display=display, scale=resolved_scale, raw=raw)
 
 
-__all__ = ["IntervalScale", "NominalScale", "OrdinalScale", "Scale", "SweepableValue"]
+class ProductionFooting(BaseModel):
+    """Which inputs one run held away from the subject's production configuration, read off the host's declarations.
+
+    The disclosure a production-replicating cost travels with (#571). That cost sums what the
+    production roles spent **under whatever this run set**, so it is what production would spend only
+    for a run that set nothing: a cheaper swept model understates it, a candidate stripped of its
+    learned state can overstate it, and the error has no reliable sign. A caveat printed on every run
+    alike is one a reader stops reading, so this says which inputs THIS run moved.
+
+    Built by :meth:`~threetears.evals.contracts.host.sweepables.SweepableRegistry.production_footing`
+    from the host's declarations alone, so a lever a host declares reaches every cost surface without
+    any of them being edited. Three buckets, never two: an input whose departure nothing can decide is
+    ``unchecked``, not held, so "moved nothing" is claimed only when every input was checked.
+
+    Crosses storage on a bundle's run summary; a summary assembled before it carries ``None``, which
+    reads as "nobody checked", never as "nothing moved".
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    moved: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Input name -> the level this run set it at, for every input it held away from the subject's own "
+            "production configuration: a lever the launch set, or an apparatus input the host declares moves the "
+            "candidate off its production footing (stripping its learned state, say)."
+        ),
+    )
+    unchecked: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Input name -> the level this run carried, for every lever whose departure from production could not be "
+            "decided: it carried a value and neither its declaration nor the run says whether that value is the "
+            "subject's own. Not evidence that it moved, and not evidence that it held."
+        ),
+    )
+    held: list[str] = Field(
+        default_factory=list,
+        description="Inputs checked and found at the subject's own production setting, sorted.",
+    )
+
+    @property
+    def moved_nothing(self) -> bool:
+        """True only when every input was checked and none moved — the one reading that needs no caveat."""
+        return not self.moved and not self.unchecked
+
+    def sentence(self) -> str:
+        """The disclosure in words, for a surface that prints a production-replicating cost.
+
+        Returns:
+            One sentence naming what moved and what could not be checked, or saying nothing moved.
+        """
+        if self.moved_nothing:
+            return (
+                f"this run moved none of the {len(self.held)} input(s) checked off the subject's own production "
+                "configuration, so its production-replicating cost was measured at that configuration"
+            )
+        parts: list[str] = []
+        if self.moved:
+            levels = ", ".join(f"{name}={level}" for name, level in sorted(self.moved.items()))
+            parts.append(f"this run set {levels} in place of the subject's own production configuration")
+        if self.unchecked:
+            levels = ", ".join(f"{name}={level}" for name, level in sorted(self.unchecked.items()))
+            parts.append(f"nothing records whether {levels} is the subject's own production setting")
+        return (
+            "; ".join(parts)
+            + " — so its production-replicating cost is what was spent under these settings, not necessarily what "
+            "production spends"
+        )
+
+
+__all__ = ["IntervalScale", "NominalScale", "OrdinalScale", "ProductionFooting", "Scale", "SweepableValue"]

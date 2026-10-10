@@ -1,59 +1,11 @@
 # Open problems
 
-Read this when you plan work on the engine, or want to know whether a weakness in a report is known.
-Each entry is a gap in today's code, or a limit chosen on purpose and marked as such: what is missing, why it
+**For** anyone planning work on the engine, or wondering whether a weakness in a report is known. **Answers:**
+what is missing today and why it matters. Each entry is a gap in today's code, or a limit chosen on purpose and marked as such: what is missing, why it
 matters, and the fix where one is known. Each has a tracking issue; the change that closes it deletes its entry. The figures behind several entries are in [measuring soundly](measuring-soundly.md),
 and the outside sources in [prior art](prior-art.md).
 
 ## Measurement
-
-### A reading's interval ignores clustering
-
-Tracked in [#590](https://github.com/pacepace/3tears/issues/590).
-
-A single reading's interval is a t-interval over every observation, so `k` repeats of one case count as
-`k` independent draws. The reading says `N obs over M cases, interval too narrow`
-(`analysis/references.py`) instead of computing the right width. Comparisons between arms already use
-per-case means. In simulation a raw-observation 95% interval covered the
-truth 70% of the time, against 94% for one computed over case means. Fix: the standard error over case means
-with `n_cases − 1` degrees of freedom, or Miller's cluster-robust form, and drop the disclosure.
-
-*Evidence:* simulation, 5 cases × k=3, between-case σ 1.0 and repeat σ 0.3, 2026-09, coverage 70.3% vs 94.3%.
-
-### pass^k is the all-pass indicator, stored under the opposite name
-
-Tracked in [#591](https://github.com/pacepace/3tears/issues/591).
-
-`compute_pass_k` (`contracts/scoring.py`) is the all-pass indicator per case, averaged: a case passes when
-every scored repeat passed. At uniform depth that is unbiased; a run stopped early leaves mixed depths, which flatter the shallow cases,
-and the engine discloses the depth range rather than correcting. Grouping is per run, so repeat runs
-cannot add depth. The stored key is `pass_at_k`, which elsewhere
-means "at least one of k" (Chen et al. 2021): the opposite quantity. Fix: the τ-bench estimator
-C(c,k)/C(n,k) per case with n ≥ k, pooled across the runs of one cell, reported as the pass^1..k curve,
-and the field renamed.
-
-*Evidence:* simulation, 5 cases, depths [1,3,2,3,1], 2026-09, 0.651 against a true 0.531.
-
-### A sub-threshold change in history reads "flat"
-
-Tracked in [#592](https://github.com/pacepace/3tears/issues/592).
-
-Campaign contrasts say `not_separated`, never "no difference". The history read does not:
-`paired_change` (`analysis/stats.py`) labels any move that misses significance or the magnitude gate
-`flat`, which its docstring glosses as "real noise, not a finding". At two to six cases almost nothing is significant, so `flat` becomes
-the default claim. Fix: say `not_separated`; for a "no meaningful change" claim, an
-equivalence test (TOST, Lakens 2017) against a declared margin.
-
-### Bars compare means, not intervals
-
-Tracked in [#593](https://github.com/pacepace/3tears/issues/593).
-
-`propose_bars` (`analysis/bar_proposals.py`) seeds a bar at the incumbent's mean, and `BarVerdict.cleared`
-compares the cell's mean with the threshold, so an unchanged incumbent misses its own bar about half the
-time. The ruled design: a bar decides by the interval against a declared margin, and seeds from the
-incumbent's measured interval.
-
-*Evidence:* simulation of an unchanged incumbent, n = 3, 6 and 15, 2026-09, missed its own bar 49–50% of the time.
 
 ### No power pre-flight
 
@@ -82,6 +34,29 @@ comparison separates them"). State that aliasing with an interaction (C = A⊕B)
 
 *Evidence:* agent with tools, 22 runs, 1 campaign, 2026-07, single campaign.
 
+### A judged guardrail has no margin, and the frontier does not read guardrails
+
+Tracked in [#613](https://github.com/pacepace/3tears/issues/613).
+
+A boundary dimension declares no margin, so it is held at zero change: `held` needs the arm shown no worse
+at all, and at fifteen cases a pass/fail guardrail at its ceiling reads `undecided` (the interval runs to
+about ±0.22). Measures take their `materiality_threshold`; a judged dimension has nowhere to declare one.
+The frontier, which ranks contestants against an absolute bar with no control, leaves boundary dimensions
+out of pass^k and the composite but does not disqualify a contestant on one, and says so
+(`TwoPillarDisclosure`). Fix: a declared margin per judged guardrail, and a frontier rule for the boundary
+pillar.
+
+### An arm's production-replicating cost does not name what its runs moved
+
+Tracked in [#571](https://github.com/pacepace/3tears/issues/571).
+
+A run's production-replicating cost carries its production footing: what the run moved off the subject's
+production configuration, what could not be checked, and that it moved nothing when it did (see
+[cost and budgets](cost-and-budgets.md)). The figures that pool runs by arm do not yet: a decision-surface
+cell's cost, a cost contrast and a frontier point's cost axis. Each reads the same spend over an arm's runs,
+which share the arm's levers, so the arm's footing is its runs' (or a disagreement to disclose). Fix: carry
+the union of the arm's run footings beside each pooled cost, saying where the runs disagree.
+
 ## Judging
 
 ### No check for judge drift across configurations
@@ -99,6 +74,19 @@ ruled permanently unanswerable.
 
 *Evidence:* agent with tools, one before/after pair, 2026-07, 2.7→4.4 on the changed judge vs −0.3 to +0.5 on unchanged ones, single campaign.
 
+### The judge temperature policy is not measured
+
+Tracked in [#633](https://github.com/pacepace/3tears/issues/633).
+
+Every judge call now asks for temperature 0 unless a config says otherwise, and the temperature
+sent is part of the judge's identity, so the split the issue found is gone. What was not done is the measurement
+the issue asked the policy to rest on: borderline-case score variance across repeats at each setting, which
+`repeat_judge_scores` can produce for a judge at 0 and one at the provider's default. Until it is run, how much
+temperature moves a judge's scores is unknown; what is known is that the two are never pooled.
+
+*Evidence:* one probe in a private host application, 2026-09: scores stable across attempts at the provider default (a refusal scored
+5, a detailed answer 4); says nothing about borderline cases.
+
 ### Human labels and judge scores are not combined
 
 Tracked in [#598](https://github.com/pacepace/3tears/issues/598).
@@ -106,6 +94,19 @@ Tracked in [#598](https://github.com/pacepace/3tears/issues/598).
 Calibration ratings (`CalibrationRating`) decide a judge's tier, but the estimate itself uses judge
 scores alone. Prediction-powered inference (Angelopoulos et al. 2023) combines a small human-labelled set
 with many judge scores into an estimate whose interval stays valid when the judge is biased. Not built.
+
+### A tier's bounds are conservative on a 1-5 scale
+
+A tier is decided on score bounds for kappa
+([evidence tiers](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers)). On pass/fail and
+for separation at its floor, a judge at the bar earns the tier 2.5-4.5% of the time, close to the 5% allowed. On a
+1-5 scale at the 20-result calibration floor it earns it 0.2-1.9% of the time. That spends power: a true-0.9
+judge calibrates only 14-45% of the time at 20 results. An exact test under a stated
+disagreement model would earn tiers on fewer results. It would be valid only for that model, though, and a judge
+that occasionally reverses the scale breaks it. Not built. The floors are set where the power is reasonable:
+separation needs 120 results.
+
+*Evidence:* seeded simulation, 20 to 140 results, six marginals, 2026-10, `tests/test_simulated_agreement.py`.
 
 ### Pairwise judging (declined for now)
 
@@ -140,15 +141,6 @@ quota the host declares, shared across runs.
 
 ## Testing the engine
 
-### No test checks the statistics against known answers
-
-Tracked in [#601](https://github.com/pacepace/3tears/issues/601).
-
-The statistics tests (`tests/test_stats.py`, `tests/test_multiple_comparisons.py`) pin outputs on fixed
-inputs. None simulates data with a known truth and checks coverage, false-positive rate or power; this
-page's figures came from a simulation outside the package. Fix: a seeded simulation suite that checks
-interval coverage and test error rates at the sample sizes the engine actually sees.
-
 ### No paid analysis-generation lane
 
 Tracked in [#602](https://github.com/pacepace/3tears/issues/602).
@@ -164,11 +156,3 @@ Tracked in [#603](https://github.com/pacepace/3tears/issues/603).
 A run's peak memory should be bounded by its matrix, not its total trace volume. Fixes in the runner and
 scoring hold this today; no test does. Fix: a probe that runs a large
 synthetic matrix and asserts peak memory. Reinstate the accumulation to prove it fails.
-
-### The report-writer prompt budget is unenforced
-
-Tracked in [#604](https://github.com/pacepace/3tears/issues/604).
-
-`analysis/gen_prompt.py` declares `PROMPT_CHAR_BUDGET = 28_000` and `PROMPT_RULE_BUDGET = 15`, and says
-the budget only falls. Nothing reads either constant, and rules, each added to fix one failure, accrete. Fix: a test that measures the seed prompt against
-both constants.

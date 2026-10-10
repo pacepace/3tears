@@ -14,24 +14,29 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 
 from threetears.evals.contracts.models import EvalResult, EvalTrace, eval_trace_doc_id
 from threetears.evals.run.reads import get_result_trace
+from threetears.evals.contracts.errors import StorageError
 from threetears.evals.contracts.storage import EvalStorage
 from threetears.evals.contracts.store_port import omit_paths
 from packages.evals.tests.factories import make_eval_result, make_eval_trace
 
 
 class _RecordingRepo:
-    """A repository double that remembers every call, and can be told to fail one write."""
+    """A repository double that remembers every call, and can be told to fail one write or delete."""
 
-    def __init__(self, *, fail_doc_types: frozenset[str] = frozenset()) -> None:
+    def __init__(
+        self, *, fail_doc_types: frozenset[str] = frozenset(), fail_delete_ids: frozenset[str] = frozenset()
+    ) -> None:
         self.container = "documents"
         self.written: list[dict[str, Any]] = []
         self.reads: list[str] = []
         self.deletes: list[str] = []
         self.queried_doc_types: list[str] = []
         self._fail_doc_types = fail_doc_types
+        self._fail_delete_ids = fail_delete_ids
 
     def upsert(self, document: dict[str, Any], *, if_match: str | None = None) -> dict[str, Any]:
         if document.get("doc_type") in self._fail_doc_types:
@@ -51,6 +56,8 @@ class _RecordingRepo:
 
     def delete(self, item_id: str, scope_id: str) -> bool:
         self.deletes.append(item_id)
+        if item_id in self._fail_delete_ids:
+            return False
         before = len(self.written)
         self.written = [d for d in self.written if d["id"] != item_id]
         return len(self.written) != before
@@ -194,6 +201,57 @@ class TestDeletesTakeThePayloadWithThem:
         store.save_eval_result(make_eval_result(id="res-1"), None)
 
         assert store.delete_eval_result("res-1", "uni-1") is True
+
+    def test_a_trace_that_survives_its_delete_keeps_the_result_and_raises(self):
+        """#650: the trace is ~95% of a result's bytes and only its result's id finds it.
+
+        Deleting the result after a trace delete that did not take would orphan it for good, and
+        the caller would hear a clean delete. ``has_trace`` says a trace should be there, so the
+        delete is refused and the result survives for a retry.
+        """
+        repo = _RecordingRepo(fail_delete_ids=frozenset({eval_trace_doc_id("res-1")}))
+        result, trace = _result_and_trace()
+        store = _storage(repo)
+        store.save_eval_result(result, trace)
+
+        with pytest.raises(StorageError, match="left intact"):
+            store.delete_eval_result("res-1", "uni-1")
+
+        assert "res-1" not in repo.deletes
+        assert store.load_eval_result("res-1", "uni-1") is not None
+        assert store.load_eval_trace("res-1", "uni-1") is not None
+
+    def test_a_result_stamped_without_a_trace_ignores_an_empty_trace_delete(self):
+        """``has_trace=False``: a trace delete that removes nothing is the expected case."""
+        repo = _RecordingRepo(fail_delete_ids=frozenset({eval_trace_doc_id("res-1")}))
+        store = _storage(repo)
+        store.save_eval_result(make_eval_result(id="res-1"), None)
+
+        assert store.delete_eval_result("res-1", "uni-1") is True
+        assert repo.written == []
+
+    def test_a_marker_whose_trace_is_already_gone_does_not_make_the_result_undeletable(self, caplog):
+        """``has_trace=True`` with no document: nothing to orphan, so refusing would strand the result."""
+        import logging
+
+        repo = _RecordingRepo()
+        store = _storage(repo)
+        store.replace_eval_result(make_eval_result(id="res-1", has_trace=True), if_match=None)
+
+        with caplog.at_level(logging.WARNING, logger="threetears.evals.contracts.storage"):
+            assert store.delete_eval_result("res-1", "uni-1") is True
+
+        assert repo.written == []
+        assert any("has no trace document" in r.getMessage() for r in caplog.records)
+
+    def test_an_id_naming_another_document_type_deletes_nothing(self):
+        """A run's id is not a result's: the delete must not remove the run document."""
+        repo = _RecordingRepo()
+        repo.written.append({"id": "run-1", "doc_type": "eval_run", "scope_id": "uni-1"})
+        store = _storage(repo)
+
+        assert store.delete_eval_result("run-1", "uni-1") is False
+        assert [d["id"] for d in repo.written] == ["run-1"]
 
 
 class TestTheMarkerAndTheDocumentAreCheckedAgainstEachOther:

@@ -52,12 +52,20 @@ from threetears.evals.contracts.authored import Chart
 from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts.campaign import ReadingKind, VariantIndexEntry
 from threetears.evals.contracts.host.measures import MeasureRegistry
-from threetears.evals.contracts.metrics import describe_reported_measure, materiality, remainder_withheld_reason
+from threetears.evals.contracts.metrics import (
+    MEASURING_SPEND_MEASURES,
+    describe_reported_measure,
+    materiality,
+    remainder_withheld_reason,
+)
 from threetears.evals.contracts.surface import CellFacts, DecisionSurface, TimePosition
 
 #: The dimension a sweep row gains when one arm was measured under more than one rig. Without it
 #: the two cells carry identical levels and draw as one configuration holding two ranks.
 _RIG_DIMENSION = "rig"
+
+#: The candidate's own spend — what an arm costs, the measure a frontier's cost axis names by default.
+_CANDIDATE_SPEND = "production_replicating_cost"
 
 #: The only unit a frontier's latency field is stated in — the payload names it ``latency_ms``.
 _LATENCY_UNIT = "ms"
@@ -205,35 +213,34 @@ def cell_arm_labels(surface: DecisionSurface, variant_index: list[VariantIndexEn
 # --- Shared readers --------------------------------------------------------------------------------
 
 
-def _variability(reading: ResolvedReading) -> str:
-    """What a code-filled interval varies over — worded without the count, so equal sources compare equal.
-
-    The compiler states one sentence when every interval names the same source and a "not
-    comparable" warning when they differ, so a per-cell count in this text would make every chart
-    read as incomparable. Clustering is the difference that DOES change what a width means.
-    """
-    if reading.n_cases is not None and reading.n_cases < reading.n:
-        return "the cell's observations, repeats of one case counted as independent (narrower than the clustering supports)"
-    return "the cell's observations"
+#: What every code-filled interval varies over — worded without the count, so equal sources compare equal.
+#:
+#: The compiler states one sentence when every interval names the same source and a "not comparable"
+#: warning when they differ, so a per-cell count in this text would make every chart read as
+#: incomparable. Every reading's interval is computed over its cell's cases, a case's repeats clustered
+#: (:func:`threetears.evals.analysis.stats.clustered_standard_error`), so a cell run once per case and
+#: one run three times per case draw widths that mean the same thing, and one wording is the truth.
+_VARIABILITY = "the cell's cases (repeats of one case clustered)"
 
 
 def _interval(reading: ResolvedReading) -> dict[str, Any]:
     """A reading's interval in the payload's ``ci`` shape, or a refusal when it has none.
 
     Raises:
-        UnresolvableReference: The reading has no interval (fewer than two observations).
+        UnresolvableReference: The reading has no interval (fewer than two observations, or one case).
     """
     if reading.ci_low is None or reading.ci_high is None:
         raise UnresolvableReference(
             f"reference names {reading.measure_id!r} at cell {reading.cell_ref!r}, which has no interval "
-            f"({reading.dispersion}) — this chart draws intervals, so name a cell with at least 2 observations of it"
+            f"({reading.dispersion}) — this chart draws intervals, so name a cell with at least 2 observations of it, "
+            "over at least 2 cases"
         )
     return {
         "low": reading.ci_low,
         "high": reading.ci_high,
         "mean": reading.mean,
         "level": stats.INTERVAL_LEVEL,
-        "variability": _variability(reading),
+        "variability": _VARIABILITY,
     }
 
 
@@ -304,15 +311,20 @@ def _delta_table(ref: DeltaTableRef, surface: DecisionSurface, labels: dict[str,
         # A measure's threshold is frozen on the surface; a judged dimension declares none, so its
         # every difference is material.
         facts = surface.measures.get(reading_ref.measure_id) if reading_ref.reading == "measure" else None
+        # Whether a relative change means anything: frozen beside the measure or the dimension. A 1-5 score's
+        # zero is below its scale, so its rows state the points moved and no percent.
+        dimension = surface.dimensions.get(reading_ref.measure_id) if reading_ref.reading == "judged" else None
+        scale = facts.scale if facts is not None else dimension.scale if dimension is not None else None
         rows.append(
             {
-                "metric": reading_ref.measure_id,
+                "metric": surface.measure_heading(reading_ref.measure_id, reading_ref.reading),
                 "data_type": "numeric",
                 "a": a.mean,
                 "b": b.mean,
                 "unit": a.unit,
                 "delta": b.mean - a.mean,
                 "materiality": materiality(facts.materiality_threshold if facts else None, b.mean - a.mean),
+                "scale": scale,
                 # The smaller arm bounds any test the pair could support; the bundle carries no
                 # paired statistic, so no test was run and the row says so through `significant`.
                 "n": min(a.n, b.n),
@@ -324,7 +336,7 @@ def _delta_table(ref: DeltaTableRef, surface: DecisionSurface, labels: dict[str,
         )
     return {
         "caption": ref.caption,
-        "rows": rows,
+        "rows": _distinctly_headed(rows, [reading_ref.measure_id for reading_ref in ref.measures]),
         "a_label": labels[ref.a_cell],
         "b_label": labels[ref.b_cell],
     }
@@ -340,7 +352,7 @@ def _distribution(ref: DistributionRef, surface: DecisionSurface, labels: dict[s
         "unit": readings[0].unit,
         # The value axis is the reading drawn, named — without it every distribution titles itself
         # "Distribution", and two on one page cannot be told apart.
-        "x_label": f"{ref.measure_id} (judged)" if ref.reading == "judged" else ref.measure_id,
+        "x_label": surface.measure_heading(ref.measure_id, ref.reading),
     }
 
 
@@ -351,7 +363,7 @@ def _null_result(ref: NullResultRef, surface: DecisionSurface, labels: dict[str,
         "groups": [
             {"label": labels[reading.cell_ref], "ci": _interval(reading), "n": reading.n} for reading in readings
         ],
-        "metric": ref.measure_id,
+        "metric": surface.measure_heading(ref.measure_id, ref.reading),
         "unit": readings[0].unit,
         "mechanism": ref.mechanism,
     }
@@ -363,7 +375,9 @@ def _breakdown(ref: BreakdownRef, surface: DecisionSurface, labels: dict[str, st
     parts = [resolve_reading(surface, ref.cell, name) for name in ref.part_measure_ids or []]
     return {
         "caption": ref.caption,
-        "parts": [{"label": part.measure_id, "value": part.mean, "n": part.n} for part in parts],
+        "parts": [
+            {"label": surface.measure_heading(part.measure_id), "value": part.mean, "n": part.n} for part in parts
+        ],
         "unit": _shared_unit(parts, "breakdown"),
     }
 
@@ -395,7 +409,7 @@ def _categorical_breakdown(ref: BreakdownRef, measure_id: str, surface: Decision
         "caption": ref.caption,
         "parts": [{"label": category, "value": float(count)} for category, count in summary.categories.items()],
         "unit": "observations",
-        "measure": measure_id,
+        "measure": surface.measure_heading(measure_id),
         "total": float(sum(summary.categories.values())),
         "total_n": summary.n,
     }
@@ -410,7 +424,13 @@ def _attribution(
         a = resolve_reading(surface, ref.a_cell, name)
         b = resolve_reading(surface, ref.b_cell, name)
         readings += [a, b]
-        movements[role] = {"measure": name, "delta": b.mean - a.mean, "a": a.mean, "b": b.mean, "n": min(a.n, b.n)}
+        movements[role] = {
+            "measure": surface.measure_heading(name),
+            "delta": b.mean - a.mean,
+            "a": a.mean,
+            "b": b.mean,
+            "n": min(a.n, b.n),
+        }
     unit = _shared_unit(readings, "attribution")
     # Whether the remainder may be stated is the one rule the bundle's divergence lens also asks —
     # declared containment AND exhaustion — so a chart can never state a remainder the lens withholds.
@@ -422,7 +442,8 @@ def _attribution(
         "end_to_end": movements["end_to_end"],
         "subsystem": movements["subsystem"],
         "unit": unit,
-        "contained_by": contained_by,
+        # Headed as the movements are, so the chart can check the declared whole IS the end-to-end measure drawn.
+        "contained_by": surface.measure_heading(contained_by) if contained_by is not None else None,
         "lever": ref.lever,
         "a_label": labels[ref.a_cell],
         "b_label": labels[ref.b_cell],
@@ -472,39 +493,16 @@ def _optional_reading(surface: DecisionSurface, ref: str, measure_id: str | None
     return resolve_reading(surface, ref, measure_id)
 
 
-def dominated_flags(points: Sequence[tuple[float, float | None]]) -> list[bool]:
-    """Which contestants another beats on both axes — quality higher, cost lower.
-
-    A point is dominated when some other point is at least as good on quality AND on cost and
-    strictly better on one of them. A point with no cost cannot be placed on the trade-off, so it
-    neither dominates nor is dominated — "never priced" is not "priced high".
-
-    Args:
-        points: ``(quality, cost)`` per contestant, higher quality and lower cost better.
-
-    Returns:
-        One flag per point, in order.
-    """
-    flags = []
-    for i, (quality, cost) in enumerate(points):
-        flags.append(
-            cost is not None
-            and any(
-                j != i
-                and other_cost is not None
-                and other_quality >= quality
-                and other_cost <= cost
-                and (other_quality > quality or other_cost < cost)
-                for j, (other_quality, other_cost) in enumerate(points)
-            )
-        )
-    return flags
-
-
 def _frontier(ref: FrontierRef, surface: DecisionSurface, labels: dict[str, str]) -> dict[str, Any]:
     cells = _cells_or_all(surface, ref.cells, "frontier")
     cost_id = ref.cost_measure_id or _axis_default(surface, "cost", required=True)
     latency_id = ref.latency_measure_id or _axis_default(surface, "latency", required=False)
+    if cost_id in MEASURING_SPEND_MEASURES:
+        # A frontier's x is what shipping the arm costs; a measuring-spend measure adds the judge's bill to it.
+        raise UnresolvableReference(
+            f"frontier places cost on x as what each arm costs, and {cost_id!r} is measuring spend — every role, the "
+            f"judge's included; name the candidate's own spend, {_CANDIDATE_SPEND!r}, or another cost-axis measure"
+        )
 
     qualities = [_read(surface, cell, ref.quality) for cell in cells]
     _require_higher_is_better(qualities[0], "quality", "frontier")
@@ -523,25 +521,34 @@ def _frontier(ref: FrontierRef, surface: DecisionSurface, labels: dict[str, str]
                 "name a latency measure in ms"
             )
 
-    flags = dominated_flags([(q.mean, c.mean if c else None) for q, c in zip(qualities, costs, strict=True)])
+    # Domination is the frontier lens's verdict, read off the surface rather than decided again from the
+    # means drawn here: the lens tests it over per-case values, and two arms drawn from one distribution
+    # always differ in their means. A surface frozen before standings were carried has none to draw.
+    standings = surface.frontier_dominance
     points = [
         {
             "label": labels[cell],
             "quality": quality.mean,
             "cost": cost.mean if cost else None,
             "latency_ms": latency.mean if latency else None,
-            "dominated": dominated,
+            "dominated": dominance == "dominated",
+            "dominance": dominance,
             "disqualified": False,
         }
-        for cell, quality, cost, latency, dominated in zip(cells, qualities, costs, latencies, flags, strict=True)
+        for cell, quality, cost, latency in zip(cells, qualities, costs, latencies, strict=True)
+        for dominance in [
+            None if standings is None else standings.get(require_cell(surface, cell).variant_key, "untested")
+        ]
     ]
     cost_unit = surface.measures[cost_id].unit if cost_id in surface.measures else None
     return {
         "caption": ref.caption,
         "points": points,
         "bar": _quality_bar(surface, ref.quality),
-        "cost_label": _titled(cost_id, cost_unit),
-        "quality_label": _titled(ref.quality.measure_id, qualities[0].unit),
+        "cost_label": _titled(surface.measure_heading(cost_id), cost_unit),
+        "quality_label": _titled(
+            surface.measure_heading(ref.quality.measure_id, ref.quality.reading), qualities[0].unit
+        ),
     }
 
 
@@ -593,7 +600,7 @@ def _timeseries(ref: TimeseriesRef, surface: DecisionSurface, labels: dict[str, 
     ]
     return {
         "caption": ref.caption,
-        "metric": ref.measure_id,
+        "metric": surface.measure_heading(ref.measure_id, ref.reading),
         "unit": whole[0].unit,
         "basis": axis.basis,
         "release_label": axis.release_label,
@@ -641,8 +648,24 @@ def _quality_bar(surface: DecisionSurface, quality: ReadingRef) -> float | None:
     return next(iter(thresholds)) if len(thresholds) == 1 else None
 
 
-def _titled(name: str, unit: str | None) -> str:
-    return f"{name} ({unit})" if unit else name
+def _titled(heading: str, unit: str | None) -> str:
+    """An axis title: the measure as a reader calls it (:meth:`DecisionSurface.measure_heading`), and its unit."""
+    return f"{heading} ({unit})" if unit else heading
+
+
+def _distinctly_headed(rows: list[dict[str, Any]], keys: list[str]) -> list[dict[str, Any]]:
+    """The delta rows, each still headed apart from the others — the key added only where two headings coincide.
+
+    Reader names are distinct within the measures one host declares beside the engine's, but a judged dimension is
+    named by its rubric and a measure the surface describes by construction by its own text, so two rows of one
+    table can still meet on one heading; the chart refuses a table naming one metric twice, and a reader could
+    not tell the rows apart either.
+    """
+    headings = [row["metric"] for row in rows]
+    return [
+        {**row, "metric": f"{row['metric']} [{key}]"} if headings.count(row["metric"]) > 1 else row
+        for row, key in zip(rows, keys, strict=True)
+    ]
 
 
 def _sweep_ranking(
@@ -661,8 +684,14 @@ def _sweep_ranking(
     rows = sorted(unsorted, key=lambda row: -row["ranked_value"])
     return {
         "caption": ref.caption,
-        "ranked": {"measure": ref.ranked.measure_id, "unit": ranked[0].unit},
-        "secondary": {"measure": ref.secondary.measure_id, "unit": secondary[0].unit},
+        "ranked": {
+            "measure": surface.measure_heading(ref.ranked.measure_id, ref.ranked.reading),
+            "unit": ranked[0].unit,
+        },
+        "secondary": {
+            "measure": surface.measure_heading(ref.secondary.measure_id, ref.secondary.reading),
+            "unit": secondary[0].unit,
+        },
         "rows": rows,
         "dimensions": dimensions,
     }
@@ -946,6 +975,5 @@ __all__ = [
     "TIME_VIZ_TYPES",
     "build_viz_payload",
     "cell_arm_labels",
-    "dominated_flags",
     "reference_from_chart",
 ]

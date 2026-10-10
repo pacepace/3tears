@@ -8,6 +8,8 @@ Pinned here:
 - **A corpus that cannot be seeded as written is refused when it is built**: two documents of one type
   under one natural key, and two non-archived judge configs for one dim. Each refusal sits beside the
   shape that constructs.
+- **A seeded rubric dim an operator retired stays retired**, archived or deleted: a delete leaves a
+  tombstone for the key, the seed does not write it back, and the outcome names it.
 - **A config the store would contradict is withheld and named**: a non-archived corpus config for a dim
   the store already holds an active config for is not written (it would supersede the operator's for
   every run), and the outcome and its summary say which.
@@ -30,7 +32,15 @@ from typing import Any
 import pytest
 
 from threetears.evals.contracts import EvalStorage, EvalTemplate, ValidationFailedError
-from threetears.evals.run import SeedCorpus, SeedOutcome, seed_eval_definitions
+from threetears.evals.run import (
+    SeedCorpus,
+    SeedOutcome,
+    create_rubric_dim,
+    delete_judge_config,
+    delete_rubric_dim,
+    seed_eval_definitions,
+    update_rubric_dim,
+)
 from packages.evals.tests.factories import make_judge_config, make_rubric_dim, memory_storage
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
@@ -99,6 +109,98 @@ def test_a_config_the_operator_archived_is_not_resurrected() -> None:
 
     assert (again.created["judge_config"], again.skipped["judge_config"]) == (0, 2)
     assert storage.load_active_judge_config(DIM, SCOPE) is None
+
+
+def test_a_seeded_judge_config_the_operator_deleted_stays_deleted_and_is_named() -> None:
+    """#620's tombstone, carried to judge configs: a delete is a decision the next boot must not undo."""
+    storage, _ = memory_storage()
+    _seed(storage, corpus=_two_pacing_judges())
+    strict = next(c for c in storage.query_judge_configs(SCOPE) if c.name == "pacing-strict")
+
+    delete_judge_config(storage, strict.id, SCOPE, confirm=strict.id)
+    again = _seed(storage, corpus=_two_pacing_judges())
+
+    assert {c.name for c in storage.query_judge_configs(SCOPE)} == {"pacing-lenient"}, "written back"
+    assert again.created["judge_config"] == 0
+    assert again.deleted == {"judge_config": [f"{DIM}/pacing-strict"]}
+    (tombstone,) = storage.query_judge_config_tombstones(SCOPE)
+    assert (tombstone.rubric_dim_id, tombstone.name, tombstone.deleted_config_id) == (DIM, "pacing-strict", strict.id)
+
+
+def test_a_refused_judge_config_delete_writes_no_tombstone() -> None:
+    storage, _ = memory_storage()
+    _seed(storage, corpus=_two_pacing_judges())
+    strict = next(c for c in storage.query_judge_configs(SCOPE) if c.name == "pacing-strict")
+
+    with pytest.raises(ValidationFailedError):
+        delete_judge_config(storage, strict.id, SCOPE, confirm="not-the-id")
+
+    assert storage.query_judge_config_tombstones(SCOPE) == []
+
+
+# =============================================================================
+# Rubric dims: archived or deleted, a seeded dim stays retired
+# =============================================================================
+
+
+def _one_seeded_dim() -> SeedCorpus:
+    return SeedCorpus(scope_id=SCOPE, rubric_dims=(make_rubric_dim(scope_id=SCOPE, key="play.pacing"),))
+
+
+def test_a_seeded_rubric_dim_the_operator_archived_is_not_resurrected() -> None:
+    storage, _ = memory_storage()
+    _seed(storage, corpus=_one_seeded_dim())
+    (seeded,) = storage.query_rubric_dims(SCOPE)
+    update_rubric_dim(storage, seeded.id, SCOPE, {"archived": True})
+
+    again = _seed(storage, corpus=_one_seeded_dim())
+
+    assert (again.created["rubric_dim"], again.skipped["rubric_dim"]) == (0, 1)
+    assert storage.load_active_rubric_dim("play.pacing", SCOPE) is None
+
+
+def test_a_seeded_rubric_dim_the_operator_deleted_stays_deleted_and_is_named() -> None:
+    """A delete is a decision, like an archive: the seed must not undo it at the next boot."""
+    storage, _ = memory_storage()
+    _seed(storage, corpus=_one_seeded_dim())
+    (seeded,) = storage.query_rubric_dims(SCOPE)
+
+    delete_rubric_dim(storage, seeded.id, SCOPE, confirm=seeded.id)
+    again = _seed(storage, corpus=_one_seeded_dim())
+
+    assert storage.query_rubric_dims(SCOPE) == [], "the deleted dim was written back"
+    assert again.created["rubric_dim"] == 0
+    assert again.deleted == {"rubric_dim": ["play.pacing"]}
+    assert "1 not written, deleted by an operator (play.pacing)" in again.summary()
+    assert not again.nothing_to_do, "a withheld deleted key is something the seed did"
+    (tombstone,) = storage.query_rubric_dim_tombstones(SCOPE)
+    assert (tombstone.key, tombstone.deleted_dim_id) == ("play.pacing", seeded.id)
+
+
+def test_a_deleted_key_authored_again_by_hand_is_the_operators_and_the_seed_leaves_it() -> None:
+    """The tombstone retires the key from the SEED only: authoring it again is the way back."""
+    storage, _ = memory_storage()
+    _seed(storage, corpus=_one_seeded_dim())
+    (seeded,) = storage.query_rubric_dims(SCOPE)
+    delete_rubric_dim(storage, seeded.id, SCOPE, confirm=seeded.id)
+
+    authored = create_rubric_dim(storage, {"key": "play.pacing", "dim": seeded.dim.model_dump()}, scope_id=SCOPE)
+    again = _seed(storage, corpus=_one_seeded_dim())
+
+    assert storage.query_rubric_dims(SCOPE) == [authored]
+    assert (again.created["rubric_dim"], again.skipped["rubric_dim"]) == (0, 1)
+
+
+def test_a_refused_delete_writes_no_tombstone() -> None:
+    storage, _ = memory_storage()
+    _seed(storage, corpus=_one_seeded_dim())
+    (seeded,) = storage.query_rubric_dims(SCOPE)
+
+    with pytest.raises(ValidationFailedError):
+        delete_rubric_dim(storage, seeded.id, SCOPE, confirm="not-the-id")
+
+    assert storage.query_rubric_dim_tombstones(SCOPE) == []
+    assert storage.query_rubric_dims(SCOPE) == [seeded]
 
 
 # =============================================================================
