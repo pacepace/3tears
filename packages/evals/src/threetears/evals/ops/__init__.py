@@ -95,6 +95,7 @@ from threetears.evals.ops.lenses import (
     scope_out_of_run_spend,
     scope_pivot,
 )
+from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.reporter_bank import FrozenReporterCase
 from threetears.evals.ops.reporter import (
     AmbiguousReporterPair,
@@ -216,6 +217,7 @@ __all__ = [
     "campaign_create",
     "campaigns_list",
     "dollars_text",
+    "format_number",
     "estimate_text",
     "export_text",
     "generation_key",

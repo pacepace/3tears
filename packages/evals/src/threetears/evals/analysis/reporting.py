@@ -5418,7 +5418,7 @@ def _decide_boundary_pillar(
             )
             reason = None
             if verdict.decision == "undecided":
-                reason = getattr(verdict, "refusal", None) or (
+                reason = verdict.refusal or (
                     "a side carries fewer than two cases scored on it"
                     if len(a) < 2 or len(b) < 2
                     else "no interval on the difference exists"

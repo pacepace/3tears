@@ -30,7 +30,13 @@ from typing import TYPE_CHECKING, Final, Literal
 from pydantic import Field
 
 from threetears.evals.analysis.agreement import JudgeKey
-from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA, difference_interval, holm_adjust, separation_p
+from threetears.evals.analysis.stats import (
+    SIGNIFICANCE_ALPHA,
+    bounded_difference_interval,
+    difference_interval,
+    holm_adjust,
+    separation_p,
+)
 from threetears.evals.contracts.base import EvalDocumentModel
 from threetears.evals.contracts.models import SCALES, JudgeTemperature, RubricScale
 
@@ -77,8 +83,8 @@ class JudgeDriftDimension(EvalDocumentModel):
     )
     interval: tuple[float, float] | None = Field(
         description=(
-            "The interval on the movement at `interval_level`, over the cases (paired), within ± the scale's span. "
-            "None where no t interval exists — fewer than two cases, or every case moving by one amount."
+            "The interval on the movement at `interval_level`, over the cases (paired), within ± the scale's span: the "
+            "paired t interval, or where every case moved by one amount the bounded test's. None below two cases."
         ),
     )
     interval_level: float | None = Field(
@@ -110,6 +116,19 @@ class JudgeDrift(EvalDocumentModel):
 
 
 _GroupKey = tuple[JudgeKey, str, str | None, float | None]
+
+
+def _interval(a: list[float], b: list[float], level: float, scale: tuple[float, float]) -> tuple[float, float] | None:
+    """The interval on ``mean(b) − mean(a)`` over paired cases at ``level``.
+
+    The paired t interval, clipped to ± the scale's span; where every case moved by the same amount it has no width
+    to give, and the bounded test's interval (:func:`~threetears.evals.analysis.stats.bounded_difference_interval`),
+    valid at every n on the scale's range, stands in — so a uniform move is never stated without its bounds.
+    """
+    interval = difference_interval(a, b, paired=True, confidence=level, value_range=scale)
+    if interval is None:
+        interval = bounded_difference_interval(a, b, paired=True, value_range=scale, confidence=level)
+    return interval
 
 
 def judge_drift(results: Iterable[EvalResult], *, pass_id: str | None = None) -> JudgeDrift:
@@ -173,7 +192,6 @@ def judge_drift(results: Iterable[EvalResult], *, pass_id: str | None = None) ->
         first, model, config_id, temperature = key
         a, b = samples[key]
         low, high = SCALES[first.scale].scores
-        span = float(high - low)
         p_adjusted = adjusted.get(key)
         verdict: DriftVerdict = (
             "untested" if p_adjusted is None else "separated" if p_adjusted < SIGNIFICANCE_ALPHA else "not_separated"
@@ -196,11 +214,9 @@ def judge_drift(results: Iterable[EvalResult], *, pass_id: str | None = None) ->
                 first_mean=first_mean,
                 second_mean=second_mean,
                 delta=None if first_mean is None or second_mean is None else second_mean - first_mean,
-                interval=(
-                    difference_interval(a, b, paired=True, confidence=level, value_range=(0.0, span))
-                    if level is not None and key in raw
-                    else None
-                ),
+                interval=_interval(a, b, level, (float(low), float(high)))
+                if level is not None and key in raw
+                else None,
                 interval_level=level if key in raw else None,
                 p_adjusted=p_adjusted,
                 verdict=verdict,

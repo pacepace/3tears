@@ -21,7 +21,6 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
-from threetears.evals.analysis.numbers import format_number
 from threetears.evals.contracts import GoalStateOutcome, ResultOutcome, counted_goal_verdicts
 from threetears.evals.contracts.errors import EvalServiceError
 from threetears.evals.ops import (
@@ -56,6 +55,7 @@ from threetears.evals.ops import (
     UndescribableArmsListing,
     dollars_text,
     estimate_text,
+    format_number,
     export_text,
     history_text,
     out_of_run_spend_text,

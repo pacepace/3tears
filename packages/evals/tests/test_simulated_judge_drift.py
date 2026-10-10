@@ -166,3 +166,22 @@ class TestInterJudgeKappaIsTheKnownOne:
         )
         assert abs(mean - 0.6) <= 0.03 + TOLERANCE_Z * se, f"mean kappa {mean:.4f}"
         assert held / replicates >= at_least(0.95, replicates), f"lower bound held {held / replicates:.3f}"
+
+
+def test_a_uniform_move_still_states_its_bounds() -> None:
+    """Every case moved by exactly +1: no t interval exists, so the bounded test's interval stands in. It covers +1
+    at 20 cases, where it is still wide enough to reach 0 (the bounded test over differences in ±4 pays for its
+    validity at every n), and excludes 0 by 40."""
+
+    def uniform(rng: random.Random, dim: str, case: str) -> tuple[int, int]:
+        first = rng.choice((1, 2, 3, 4))
+        return first, first + 1 if dim == "dim.a" else first
+
+    for n_cases, excludes_zero in ((20, False), (40, True)):
+        drift = judge_drift(_results(random.Random("uniform"), n_cases, 1, uniform))
+        rows = {row.rubric_dim: row for row in drift.dimensions}
+        moved = rows["dim.a"]
+        assert moved.verdict == "separated" and moved.interval is not None
+        assert moved.interval[0] <= 1.0 <= moved.interval[1]
+        assert (moved.interval[0] > 0) is excludes_zero
+        assert rows["dim.b"].verdict == "not_separated"
