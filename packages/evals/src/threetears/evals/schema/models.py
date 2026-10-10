@@ -186,6 +186,7 @@ EVAL_DOC_TYPES = (
     "eval_out_of_run_spend",
     "case_set",
     "eval_sweep",
+    "eval_judge_profile",
 )
 
 

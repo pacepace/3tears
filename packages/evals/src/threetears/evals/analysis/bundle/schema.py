@@ -2105,7 +2105,10 @@ class AnalysisContextBundle(EvalDocumentModel):
             "results, or bounds across a bar). Each entry carries both criteria, their bounds, and how many more "
             "results each needs to be decided (`results_needed`). Every "
             "judged reading in `judged_measures` and `cell_measures` carries the tier of the judges behind it; a "
-            "finding citing one stands on it."
+            "finding citing one stands on it. An entry carrying `from_profile` took its tier and criteria from a "
+            "stored judge profile — this campaign's own evidence decided no tier, and a judge campaign's measurement "
+            "of this very judge and criterion decided one: say so when citing it, with when and on how many frozen "
+            "cases the profile was measured, never as this campaign's own measurement."
         ),
     )
     inter_judge_agreement: InterJudgeAgreement = Field(

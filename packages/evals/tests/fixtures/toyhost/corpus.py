@@ -33,13 +33,14 @@ from threetears.evals.schema import (
     EvalCaseStratum,
     EvalResult,
     EvalRun,
+    EvalTemplate,
     GoalStateOutcome,
     LatencyMetrics,
     RoleUsage,
     RubricScore,
     omit_paths,
 )
-from threetears.evals.kernel import EvalAnalysis, EvalInsight, resolve_variant_identity
+from threetears.evals.kernel import EvalAnalysis, EvalInsight, EvalJudgeProfile, resolve_variant_identity
 from threetears.evals.kernel.host import HostProfile
 from threetears.evals.schema import SubjectSnapshot, SweepableValue
 from threetears.evals.schema import WorldPlacement
@@ -269,6 +270,7 @@ class ToyhostStorage:
         results_by_run: Mapping[str, list[EvalResult]],
         insights: Sequence[EvalInsight] = (),
         analyses: Sequence[EvalAnalysis] = (),
+        templates: Sequence[EvalTemplate] = (),
     ) -> None:
         """Hold one campaign's observations.
 
@@ -279,12 +281,16 @@ class ToyhostStorage:
                 before — and supplied by a test that needs a ledger to read as of an instant.
             analyses: The stored analyses those insights were minted by, for a test that needs
                 one archived. Empty by default, so an insight's source resolves to nothing.
+            templates: The templates the batches were judged against. Empty by default — the toy
+                batches name none — so no judged criterion is known and no judge profile is read.
         """
         self._runs = list(runs)
         self._results_by_run = dict(results_by_run)
         self._insights = list(insights)
         self.analyses = {analysis.id: analysis for analysis in analyses}
         self._ratings: dict[str, CalibrationRating] = {}
+        self.templates = {template.id: template for template in templates}
+        self._judge_profiles: dict[str, EvalJudgeProfile] = {}
 
     def load_eval_run(self, run_id: str, scope_id: str) -> EvalRun | None:
         """The batch with this id in this scope, or None."""
@@ -362,6 +368,22 @@ class ToyhostStorage:
         """Whether the stored analysis with this id in this scope is archived, or None when there is none."""
         analysis = self.load_analysis(analysis_id, scope_id)
         return None if analysis is None else analysis.archived
+
+    def load_template(self, template_id: str, scope_id: str) -> EvalTemplate | None:
+        """The template with this id in this scope, or None."""
+        template = self.templates.get(template_id)
+        return template if template is not None and template.scope_id == scope_id else None
+
+    def save_judge_profile(self, profile: EvalJudgeProfile) -> None:
+        """Hold a judge profile, replacing the one of the same judge and criterion, as the real store does."""
+        self._judge_profiles[profile.id] = profile
+
+    def query_judge_profiles(self, scope_id: str) -> list[EvalJudgeProfile]:
+        """The judge profiles in one scope, oldest recording first."""
+        return sorted(
+            (profile for profile in self._judge_profiles.values() if profile.scope_id == scope_id),
+            key=lambda profile: profile.recorded_at,
+        )
 
 
 def toyhost_batch(**toyhost_values: Any) -> EvalRun:

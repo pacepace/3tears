@@ -136,6 +136,7 @@ from threetears.evals.kernel.evidence_tiers import (
     SEPARATION_MIN_RESULTS,
     CriterionState,
     JudgeEvidenceTier,
+    JudgeTierFromProfile,
     JudgedEvidenceTier,
     JudgedTierRule,
     TierCriterion,
@@ -171,7 +172,14 @@ from threetears.evals.kernel.judge_cases import (
     JudgeTrialOutcome,
     judge_case_of,
     judge_case_payload,
+    judge_criterion_digest,
     judge_trial_of,
+)
+from threetears.evals.kernel.judge_profiles import (
+    EvalJudgeProfile,
+    JudgeProfileAgreement,
+    JudgeProfileStore,
+    judge_profile_id,
 )
 from threetears.evals.kernel.metrics import (
     ACCURACY_MEASURE,
@@ -316,6 +324,12 @@ __all__ = [
     "JudgeTrialOutcome",
     "judge_case_of",
     "judge_case_payload",
+    "judge_criterion_digest",
+    "judge_profile_id",
+    "EvalJudgeProfile",
+    "JudgeProfileAgreement",
+    "JudgeProfileStore",
+    "JudgeTierFromProfile",
     "judge_trial_of",
     "CONFIDENCE_TIERS",
     "IDENTITY_VERSION",

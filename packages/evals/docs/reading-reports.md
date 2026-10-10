@@ -517,6 +517,13 @@ repeated, and its cells keep their old ids.
 or `none`), which every report states beside the finding; a code-only report also states each judge's tier
 with the numbers behind it. Tiers are flagged, never a reason to drop a reading.
 
+**A tier read from a stored judge profile.** When a campaign's own evidence leaves a judge `undetermined` and a
+judge campaign recorded a profile of that very judge and criterion that decides a tier, the tier is the profile's.
+The entry's `from_profile` names the profile, when and on how many frozen cases it was measured, and the campaign's
+own criteria, and the tier sentence says "read from the judge's stored profile". A changed model, prompt config,
+temperature or criterion wording reads no profile
+([storing a judge's profile](judges-and-calibration.md#storing-a-judges-profile-for-other-campaigns)).
+
 **Measuring self-agreement: judge repeats.** Self-agreement is measured by **repeating** a finished run's
 judge scores: `repeat_judge_scores` (operation `judge_repeat`; `estimate_judge_repeat` /
 `judge_repeat_estimate` price it without a call) asks the same judge the same question again from the

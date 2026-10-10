@@ -101,6 +101,7 @@ class JudgeKindReading(EvalDocumentModel):
     cases: int = Field(ge=0, description="Distinct cases the judge replied to on this criterion.")
     trials: int = Field(ge=0, description="Trials read: every reply, a case's repeats included.")
     run_ids: list[str] = Field(description="The runs the trials came from, sorted.")
+    measured_at: str = Field(description="When the measurement was taken: the latest scored_at among its trials.")
     parse_validity: JudgeParseValidity
     label_agreement: DimensionAgreement | None = Field(
         description=(
@@ -317,6 +318,7 @@ def judge_kind_readings(results: Iterable[EvalResult]) -> JudgeKindReadings:
                 cases=len(by_case),
                 trials=len(trials),
                 run_ids=sorted({result.eval_run_id for result, _ in entries}),
+                measured_at=max(result.scored_at for result, _ in entries),
                 parse_validity=JudgeParseValidity(
                     replies=len(trials),
                     scored=scored,

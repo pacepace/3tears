@@ -116,6 +116,8 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "reporter_case_freeze": "write",
         "reporter_cases_list": "read",
         "judge_cases_freeze": "write",
+        "judge_profiles_record": "write",
+        "judge_profiles_list": "read",
         "scope_pivot": "read",
         "runs_compare": "read",
         "runs_bisect": "read",

@@ -131,6 +131,14 @@ from threetears.evals.analysis.out_of_run_spend import (
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.reporter_bank import FrozenReporterCase
 from threetears.evals.ops.judge_cases import JudgeCasesFreeze, judge_cases_freeze
+from threetears.evals.ops.judge_profiles import (
+    JudgeProfileEntry,
+    JudgeProfileListing,
+    JudgeProfileRecording,
+    JudgeProfilesRecord,
+    judge_profiles_list,
+    judge_profiles_record,
+)
 from threetears.evals.ops.regressions import RegressionAlert, RegressionSink, RegressionWatch
 from threetears.evals.ops.reporter import (
     AmbiguousReporterPair,
@@ -253,6 +261,10 @@ __all__ = [
     "RegressionSink",
     "RegressionWatch",
     "JudgeCasesFreeze",
+    "JudgeProfileEntry",
+    "JudgeProfileListing",
+    "JudgeProfileRecording",
+    "JudgeProfilesRecord",
     "ReporterCaseEntry",
     "ReporterCaseFreeze",
     "ReporterCaseListing",
@@ -299,6 +311,8 @@ __all__ = [
     "insights_list",
     "job_cancel",
     "judge_cases_freeze",
+    "judge_profiles_list",
+    "judge_profiles_record",
     "job_poll",
     "history_launch_pricer",
     "launch_estimate",

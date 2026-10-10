@@ -397,3 +397,89 @@ async def test_the_freeze_operation_loads_the_template_in_scope_and_renders_its_
     assert f"{len(source)} judge case(s) of template {template.id}" in text and "case set faithfulness v1" in text
     # The same freeze again answers with the version already listing exactly these cases.
     assert judge_cases_freeze(host, freeze, TOYHOST_SCOPE).case_set == report.case_set
+
+
+async def test_a_label_follows_a_byte_identical_output_into_its_case_and_never_counts_twice() -> None:
+    host = toyhost_host()
+    template = toyhost_judged_template()
+    host.storage.save_template(template)
+    path = await execute_toyhost_run(
+        host=host,
+        template=template,
+        judge_service=toyhost_judge_service(ScriptedJudgeClient()),
+        judge_model=TOY_JUDGE_MODEL,
+    )
+    for case in path.test_cases:
+        host.storage.save_test_case(case)
+    for run in path.runs:
+        host.storage.save_eval_run(
+            run.model_copy(
+                update={
+                    "effective_judges": {FAITHFULNESS_DIM: TOY_JUDGE_MODEL},
+                    "judge_config_ids": {},
+                    "judge_request_settings": JUDGE_REQUEST_SETTINGS,
+                    "judge_temperature": DEFAULT_JUDGE_TEMPERATURE,
+                }
+            )
+        )
+    results = [result for run in path.runs for result in host.storage.query_eval_results_by_run(run.id, TOYHOST_SCOPE)]
+    keys = {}
+    for result in results:
+        score = result.judge_score(FAITHFULNESS_DIM)
+        assert score is not None and score.label_key is not None, "the judge stamps what it read"
+        keys[result.id] = score.label_key
+    # One result rated, by one person: its output's twins carry the label too, found by what was read.
+    rated = next(result for result in results if sum(key == keys[result.id] for key in keys.values()) > 1)
+    score = rated.judge_score(FAITHFULNESS_DIM)
+    assert score is not None
+    rate_result(
+        host.storage,
+        result_id=rated.id,
+        scope_id=TOYHOST_SCOPE,
+        rubric_dim=FAITHFULNESS_DIM,
+        rater=_RATER,
+        rater_kind="person",
+        score=score.score,
+        reason="read against the invoice",
+    )
+    judge_template = _judge_template()
+    host.storage.save_template(judge_template)
+
+    report = freeze_judge_cases(
+        host.storage,
+        template=judge_template,
+        run_ids=[run.id for run in path.runs],
+        scope_id=TOYHOST_SCOPE,
+    )
+
+    labels = {case.source_result_id: case.labels for case in report.cases}
+    twins = {result_id for result_id, key in keys.items() if key == keys[rated.id]}
+    assert labels[rated.id] == 1, "found by its result and by what was read, it is one label"
+    assert all(labels[result_id] == 1 for result_id in twins), "a byte-identical output carries the label"
+    assert all(labels[result_id] == 0 for result_id in set(keys) - twins), "another output carries none"
+    assert len(twins) > 1
+    # The same person rating a twin too gives one opinion of one output: the later rating is the case's label.
+    twin = next(result_id for result_id in sorted(twins) if result_id != rated.id)
+    later = rate_result(
+        host.storage,
+        result_id=twin,
+        scope_id=TOYHOST_SCOPE,
+        rubric_dim=FAITHFULNESS_DIM,
+        rater=_RATER,
+        rater_kind="person",
+        score=max(1, score.score - 1),
+        reason="read it again, more strictly",
+    )
+    again = freeze_judge_cases(
+        host.storage,
+        template=judge_template,
+        run_ids=[run.id for run in path.runs],
+        scope_id=TOYHOST_SCOPE,
+        result_ids=sorted(twins),
+    )
+    for frozen in again.cases:
+        stored = host.storage.load_test_case(frozen.test_case_id, TOYHOST_SCOPE)
+        assert stored is not None
+        case = judge_case_of(stored)
+        assert case is not None
+        assert [label.rating_id for label in case.labels] == [later.id]

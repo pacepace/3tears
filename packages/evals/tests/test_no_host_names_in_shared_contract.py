@@ -384,6 +384,7 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # cases. Shared contract from the day they existed: they replay stored evidence through the engine's own judge
     # service and name no host.
     "kernel/judge_cases.py",
+    "kernel/judge_profiles.py",
     "run/judge_kind.py",
     "run/judge_temperature.py",
     # How a run's cells are executed, serially or several at once: the runner's own seam, which a host may fill

@@ -123,3 +123,8 @@ its temperature. It starts from frozen cases, never generated ones.
 - Then `run_launch` the judge template, one arm per judge: the arm's model, and its `config_ids` and `temperature`
   as overlays. The trials call only the judge, and their spend is recorded under the `judge` role.
   See [judges and calibration](judges-and-calibration.md#evaluating-a-judge-as-a-subject).
+- `judge_profiles_record` (write) stores, from the campaign's finished runs (`judge_run_ids`), one profile per judge
+  and criterion: both agreements, parse validity, the cases and runs it was measured on, and when. Any campaign that
+  judge scores then reads its evidence tier from the profile where its own evidence decides none, and says so.
+  `judge_profiles_list` (read) lists them. See
+  [storing a judge's profile](judges-and-calibration.md#storing-a-judges-profile-for-other-campaigns).

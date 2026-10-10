@@ -74,6 +74,12 @@ the scores and the versioned judge config that asked (``None`` = the built-in pr
 prompt is a different judge, so a measurement under one config never sets the tier of readings judged
 under another.
 
+**A tier may be read from a stored judge profile** (#628): where a campaign's own evidence leaves a judge
+``undetermined`` and a judge campaign recorded a profile of that very judge and criterion
+(:class:`~threetears.evals.kernel.EvalJudgeProfile`) that decides a tier, the entry carries the profile's criteria
+and tier, and names the profile in :attr:`JudgeEvidenceTier.from_profile` — never presented as the campaign's own
+(:func:`~threetears.evals.analysis.tiers_with_judge_profiles`).
+
 **Tiers are flagged, not dropped** (PD-13): every judged reading stays on every surface, carrying its
 tier and the two criteria that decided it, so a reader sees how much the number can bear.
 
@@ -254,6 +260,32 @@ class TierCriterion(EvalDocumentModel):
         return (self.lower, self.upper)
 
 
+class JudgeTierFromProfile(EvalDocumentModel):
+    """Where a tier read from a stored judge profile came from: the profile, when and on what it was measured (#628).
+
+    Carried on a :class:`JudgeEvidenceTier` whose criteria are a stored profile's rather than the campaign's own, so
+    no surface presents a tier measured elsewhere as the campaign's: it names the profile, the time it was measured,
+    the frozen cases it was measured on and the runs that measured it, and keeps the campaign's own two criteria
+    beside it — the evidence the profile was read in place of.
+    """
+
+    profile_id: str = Field(min_length=1, description="The stored judge profile read (`EvalJudgeProfile.id`).")
+    criterion_digest: str = Field(
+        min_length=1, description="The criterion the profile was measured on, as the campaign's judge was asked it."
+    )
+    measured_at: str = Field(description="When the profile's measurement was taken: its latest trial's scored_at.")
+    recorded_at: str = Field(description="When the profile was recorded from the judge campaign's runs.")
+    cases: int = Field(ge=0, description="The distinct frozen cases the profile was measured on.")
+    case_set_fingerprint: str = Field(min_length=1, description="A digest of those cases (each id and content).")
+    run_ids: list[str] = Field(description="The judge campaign's runs the profile was measured by, sorted.")
+    own_calibration: TierCriterion = Field(
+        description="The campaign's own agreement with people for this judge, which decided no tier."
+    )
+    own_separation: TierCriterion = Field(
+        description="The campaign's own agreement of this judge with its repeats, which decided no tier."
+    )
+
+
 class JudgeEvidenceTier(EvalDocumentModel):
     """The evidence tier of one judge's readings on one dimension, and the two measurements that decided it."""
 
@@ -282,6 +314,15 @@ class JudgeEvidenceTier(EvalDocumentModel):
     tier: JudgedEvidenceTier = Field(description="The tier the two criteria decide — see `tier_of`.")
     calibration: TierCriterion = Field(description="The judge's agreement with people's ratings of the same results.")
     separation: TierCriterion = Field(description="The judge's agreement with its own repeated scores.")
+    from_profile: JudgeTierFromProfile | None = Field(
+        default=None,
+        description=(
+            "Set when `tier`, `calibration` and `separation` are a stored judge profile's rather than this campaign's "
+            "own (#628): the campaign's own evidence decided no tier, the profile's — measured on frozen cases, for "
+            "this very judge and criterion — decided one. Names the profile, when and on what it was measured, and "
+            "carries the campaign's own two criteria. None when the tier is the campaign's own."
+        ),
+    )
 
     @model_validator(mode="after")
     def _tier_follows_the_criteria(self) -> JudgeEvidenceTier:
@@ -449,6 +490,7 @@ __all__ = [
     "SEPARATION_MIN_RESULTS",
     "CriterionState",
     "JudgeEvidenceTier",
+    "JudgeTierFromProfile",
     "JudgedEvidenceTier",
     "JudgedTierRule",
     "TierCriterion",

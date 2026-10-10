@@ -443,8 +443,9 @@ prompt, another temperature), make the judge the subject of a campaign of its ow
   (`config_ids`, versioned `JudgeConfig` ids) and the temperature are the arm's overlays (`JudgeKindOverlays`), so
   two arms that differ in their judge are two variants the campaign tells apart.
 - **A case is frozen from a stored result:** one judged output and one criterion. It holds the evidence the
-  result's judge read, the criterion as its template worded it, and the person ratings given on that result as
-  its labels.
+  result's judge read, the criterion as its template worded it, and as its labels the person ratings given on
+  that result or on any result whose judged output is byte-identical on the same criterion (output-bound labels).
+  A rating found both ways counts once, and one person's ratings of one output are one label: the latest.
 - **A trial replays the stored output and calls only the judge.** It asks the criterion through the engine's own
   judge service, so the judge reads the same evidence block the first judge read. Only the judge differs. No
   candidate is re-run.
@@ -503,8 +504,53 @@ wording (`criterion_digest`).
 `candidate` role in its spend. It is in-run spend under the run's cost cap, not the out-of-run ledger a judge
 repeat or a second judge writes to.
 
-A stored profile per judge and criterion, which other campaigns' evidence tiers read, is not built yet
-([#628](https://github.com/pacepace/3tears/issues/628)).
+### Storing a judge's profile for other campaigns
+
+A judge campaign's readout lives in that campaign alone. Record it as a **judge profile**, so every campaign the
+same judge scores can read it:
+
+```python
+from threetears.evals.ops import JudgeProfilesRecord, judge_profiles_record
+
+recording = judge_profiles_record(host, JudgeProfilesRecord(judge_run_ids=arm_run_ids), scope_id)
+for entry in recording.profiles:
+    print(entry.profile.rubric_dim, entry.profile.judge_config_id, entry.tier, entry.profile.measured_at)
+```
+
+The action is `judge_profiles_record`; `judge_profiles_list` lists what is stored. Recording is an explicit step,
+never a write when a run completes, because which runs make up one measurement is your call: a campaign's arms are
+several runs, and a run abandoned halfway should not overwrite a full measurement.
+
+**What a profile holds.** One `EvalJudgeProfile` per judge and criterion. The judge is everything `JudgeKey` keys:
+dim, scale, served model, config and temperature. The criterion is its wording (`criterion_digest`). The profile
+stores both agreements as the tiers read them (figure, bounds, pairs and distinct cases), parse validity, the
+number of cases, the case-set fingerprint, the runs, `measured_at` (the latest trial's `scored_at`) and
+`recorded_at`. Recording again replaces the profile of the same judge and criterion, and the receipt says when the
+replaced one was measured. A judge whose served model or temperature was not recorded is skipped, with the reason:
+nothing could show that another campaign's judge is the same one.
+
+**When a campaign reads a profile.** A campaign's own evidence about its judge comes first, because it was
+measured on the campaign's own outputs. The campaign reads a profile in its place only when its own evidence is
+*thinner*, which means both of these hold:
+
+1. the campaign's own evidence decides no tier for that judge (its tier is `undetermined`), and
+2. the profile decides one (`calibrated`, `separation` or `incidental`), by the same bars and floors. Distinct
+   frozen cases count as distinct results.
+
+A campaign whose own ratings or repeats decided a tier keeps it, even if a profile was measured on more cases. A
+profile that decides nothing is not read.
+
+**A tier read from a profile always says so.** The bundle's tier entry carries `from_profile`: the profile's id,
+when it was measured, on how many cases (and their fingerprint), by which runs, and the campaign's own two criteria
+it stood in for. Its `calibration` and `separation` are the profile's. The report's tier sentence reads "read from
+the judge's stored profile ..., measured at ... on N frozen cases". The profile is part of the bundle, so a profile
+re-recorded or newly read changes the bundle's fingerprint.
+
+**A changed judge reads no profile.** A profile is found by an id derived from the whole judge and the criterion's
+wording. Change the model, the prompt (a new `JudgeConfig` version), the temperature, or the rubric dimension's
+wording, and the campaign looks for a profile that does not exist. The old one is stale and is never read for the
+new judge. The wording comes from the template each run was judged against. A run with no template, or whose
+template was edited after the run was created, has an unknown criterion and reads no profile.
 
 ## What to read next
 
