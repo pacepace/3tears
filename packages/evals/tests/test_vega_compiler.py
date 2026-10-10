@@ -2004,11 +2004,25 @@ class TestAttributionNeverBalances:
         assert "stack" not in encoding["x"]
         assert encoding["x"]["scale"]["zero"] is True
 
-    def test_the_derived_remainder_is_recessive(self):
-        """It is computed rather than observed, so it must not read as a third measurement."""
-        encoding = _mark_layer(compile_chart("attribution", ATTRIBUTION_EARNED).spec, "bar")["encoding"]
-        assert encoding["opacity"]["condition"]["test"] == "datum.derived"
-        assert encoding["opacity"]["condition"]["value"] < encoding["opacity"]["value"]
+    def test_the_derived_remainder_recedes_by_name(self):
+        """It is computed rather than observed, so it must not read as a third measurement.
+
+        The recession is the `chart-context` style on a layer of its own, never a compiled
+        alpha, and the measured movements keep full ink.
+        """
+        measured, derived = _mark_layers(compile_chart("attribution", ATTRIBUTION_EARNED).spec, "bar")
+        assert measured["transform"] == [{"filter": "!datum.derived"}]
+        assert measured["mark"].get("style") is None
+        assert derived["transform"] == [{"filter": "datum.derived"}]
+        assert derived["mark"]["style"] == CONTEXT_STYLE
+        for layer in (measured, derived):
+            assert "opacity" not in layer["mark"]
+            assert "opacity" not in layer["encoding"]
+
+    def test_a_withheld_remainder_draws_no_receding_layer(self):
+        """An empty filter is an invisible mark that still joins scale resolution."""
+        (only,) = _mark_layers(compile_chart("attribution", ATTRIBUTION_WITHHELD).spec, "bar")
+        assert only["mark"].get("style") is None
 
     def test_no_identity_rides_on_colour(self):
         """Same rule as every other type here — the scopes are on the axis."""
@@ -3323,36 +3337,90 @@ class TestACompiledSpecStatesNoAppearanceValue:
         artifact is drawn on. `chart-context` is how a mark says "I carry no
         identity" and lets the renderer decide what that looks like.
 
-        **Two carve-outs, and each is a real distinction rather than a hole.**
+        Both places an opacity can live are read: the mark, and the `opacity`
+        ENCODING, including every branch of a condition. An encoding is where the
+        attribution chart once hid its emphasis (a conditional 0.35 on the derived
+        remainder), and a gate reading only the mark could not see it.
 
-        A DATA-DRIVEN opacity encoding stays legal, because there the alpha is the
-        encoding — a rug of raw samples and an interval whose coverage is
-        unrecorded both use it to say marks ACCUMULATE or a bound is unknown, which
-        is a fact about the data and identical in both themes.
-
-        And `1` stays legal, because it states no appearance: it opts OUT of a
-        renderer default. Vega-Lite draws a point at 0.7 so a cloud reads as
-        density, which for a figure of a handful of answers means every mark draws
-        in a blend of the palette hue and whatever sits behind it — a different
-        colour per theme, arrived at by not deciding. Full ink is the same
-        instruction on both surfaces.
-
-        What is refused is any other constant: a number chosen to make one mark
-        quieter than another, which is a judgement about a surface the compiler
-        cannot see.
+        **What is admitted, and why.** `1` states no appearance: it opts OUT of a
+        renderer default (Vega-Lite draws a point at 0.7). Any other alpha is
+        admitted only on a layer named in :data:`_DENSITY_OPACITY`, for what the
+        alpha MEANS there (marks pile up, so overlap reads as density), never because
+        it holds an allowed value. The same 0.35 used for emphasis is refused.
         """
-        for layer in _mark_layers(compile_chart(viz_type, EVERY_TYPE[viz_type]).spec):
-            mark = layer["mark"]
-            if not isinstance(mark, dict) or "opacity" not in mark:
+        offences = _opacity_offences(viz_type, compile_chart(viz_type, EVERY_TYPE[viz_type]).spec)
+        assert not offences, offences
+
+    def test_the_gate_refuses_an_emphasis_opacity_stated_in_an_encoding(self):
+        """Reintroduce the attribution chart's old conditional and the gate must fail."""
+        spec = copy.deepcopy(compile_chart("attribution", ATTRIBUTION_EARNED).spec)
+        bar = _mark_layer(spec, "bar")
+        bar["encoding"]["opacity"] = {
+            "condition": {"test": "datum.derived", "value": SECONDARY_OPACITY},
+            "value": 1,
+        }
+        assert _opacity_offences("attribution", spec)
+
+    def test_the_gate_admits_the_density_weight_by_meaning_not_by_value(self):
+        """The overlap band's 0.35 is admitted; the same number on another layer is not."""
+        spec = copy.deepcopy(compile_chart("null_result", NULL_RESULT).spec)
+        assert not _opacity_offences("null_result", spec)
+        for layer in _mark_layers(spec):
+            if layer["mark"]["type"] != "rect":
+                layer["mark"]["opacity"] = SECONDARY_OPACITY
+                break
+        assert _opacity_offences("null_result", spec)
+
+
+#: The layers whose compiled alpha is a fact about the DATA, keyed by chart type and
+#: the layer's identity, with what the alpha means there. Admission is by meaning:
+#: a layer absent from this table may state no opacity but `1`, whatever its value.
+_DENSITY_OPACITY: dict[tuple[str, str], str] = {
+    ("null_result", "rect"): "the overlap band: the stretch two intervals share, translucent so both stay visible",
+    ("distribution", "bin"): "the marginal's histogram bins, which sit under the sample marks they summarise",
+    ("distribution", "recorded-bin"): "a recorded bin, drawn in the same band and ink as a computed one",
+}
+
+
+def _layer_identity(layer):
+    """What :data:`_DENSITY_OPACITY` keys a layer by: its row kind if it filters on one, else its mark type."""
+    for step in layer.get("transform") or []:
+        selected = step.get("filter")
+        if isinstance(selected, dict) and "equal" in selected:
+            return str(selected["equal"])
+    mark = layer["mark"]
+    return mark["type"] if isinstance(mark, dict) else mark
+
+
+def _opacity_offences(viz_type, spec):
+    """Every compiled opacity in ``spec`` that is neither full ink nor an admitted density weight."""
+    offences = []
+    for layer in _mark_layers(spec):
+        mark = layer["mark"] if isinstance(layer["mark"], dict) else {}
+        stated = []
+        if "opacity" in mark:
+            stated.append(("mark", mark["opacity"]))
+        channel = (layer.get("encoding") or {}).get("opacity")
+        if channel is not None:
+            if "field" in channel or "condition" not in channel and "value" not in channel:
+                offences.append(f"{viz_type}: an opacity encoding reads the data ({channel!r})")
+            conditions = channel.get("condition", [])
+            for branch in conditions if isinstance(conditions, list) else [conditions]:
+                stated.append(("encoding condition", branch.get("value")))
+            if "value" in channel:
+                stated.append(("encoding", channel["value"]))
+        identity = _layer_identity(layer)
+        for where, value in stated:
+            if value == 1:
                 continue
-            assert mark["opacity"] in (1, SECONDARY_OPACITY), (
-                f"{viz_type} states a bespoke opacity {mark['opacity']!r}; the density weight and full ink are the only "
-                "flat values left, and anything expressing EMPHASIS asks for `chart-context` by name"
-            )
-            assert mark["opacity"] == 1 or mark.get("style") is None, (
-                f"{viz_type} recedes a mark by style AND by opacity — the style already carries the theme's answer, "
-                "and the number overrides it with one chosen for neither theme"
-            )
+            if (viz_type, identity) not in _DENSITY_OPACITY:
+                offences.append(
+                    f"{viz_type}: {where} opacity {value!r} on the {identity!r} layer is emphasis, not density; "
+                    "ask for `chart-context` by name"
+                )
+            elif mark.get("style") is not None:
+                offences.append(f"{viz_type}: the {identity!r} layer recedes by style AND by opacity")
+    return offences
 
 
 def _point_layers(spec):
