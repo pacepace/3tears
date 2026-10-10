@@ -193,6 +193,7 @@ from threetears.evals.analysis.stats import EQUIVALENCE_TEST_NAME, PAIRED_TEST_N
 from threetears.evals.analysis.surface_table import SurfaceTable
 from threetears.evals.analysis.arms import ArmLevel, ArmMeasurement, ArmRow, ArmStatus
 from threetears.evals.analysis.bundle import (
+    AliasedFactors,
     ArmMechanismReading,
     ArmServedModel,
     CampaignReadStore,
@@ -204,6 +205,9 @@ from threetears.evals.analysis.bundle import (
     HeldFixedReading,
     DeclaredLevelCoverage,
     DesignArm,
+    FactorPairCell,
+    FactorPairPivot,
+    FactorPairScan,
     FamilyComparison,
     JudgedArm,
     JudgedMeasure,
@@ -331,6 +335,7 @@ __all__ = [
     "SCOPED_METRICS_HELP",  # debt: retires when the English moves to one renderer
     "SERVED_MODEL_UNRECORDED",
     "WEIGHTING_EQUAL_PER_SCENARIO",
+    "AliasedFactors",
     "AmbiguousPair",
     "AnalysisContextBundle",
     "AnalysisStore",
@@ -366,6 +371,9 @@ __all__ = [
     "DesignArm",
     "DimensionAgreement",
     "DimensionReading",
+    "FactorPairCell",
+    "FactorPairPivot",
+    "FactorPairScan",
     "FamilyComparison",
     "FrontierCostDecision",
     "FrontierCostTie",

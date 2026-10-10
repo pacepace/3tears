@@ -353,6 +353,8 @@ _MAX_DIVERGENCES = 8
 _MAX_REFUSED_MERGES = 8
 _MAX_NEXT_EXPERIMENTS = 8
 _MAX_PRIOR_INSIGHTS = 12
+# Pivots over co-varying factor pairs, which grow with the square of the factors in the worst case.
+_MAX_FACTOR_PAIR_PIVOTS = 8
 
 # Why another swept lever varying inside a cohort clouds the comparison. Generic on
 # purpose: which lever it is says nothing extra here, because a campaign sweeping it
@@ -1537,6 +1539,71 @@ class DeclaredLevelCoverage(EvalDocumentModel):
     )
 
 
+class AliasedFactors(EvalDocumentModel):
+    """Factors that moved in lockstep: every one splits the runs into the same groups, so no comparison separates them."""
+
+    factors: list[str] = Field(description="The factors, sorted; two or more.")
+    n_runs: int = Field(ge=0, description="The runs whose levels of every one of these factors were read.")
+    n_levels: int = Field(ge=2, description="How many groups each of them splits those runs into.")
+    sentence: str = Field(description="The one sentence that names the group; quote it rather than a factor apiece.")
+
+
+class FactorPairCell(EvalDocumentModel):
+    """One combination of two factors' levels, and how many runs sat at it."""
+
+    row_level: str
+    column_level: str
+    n_runs: int = Field(ge=0)
+    status: Literal["ran", "not_run"] = Field(
+        description="ran = some run sat at both levels; not_run = none did, a hole in the design."
+    )
+
+
+class FactorPairPivot(EvalDocumentModel):
+    """Two co-varying factors crossed: every combination of their observed levels, the unrun ones as ``not_run``."""
+
+    row_factor: str
+    column_factor: str
+    row_aliases: list[str] = Field(
+        default_factory=list, description="Factors in the row factor's lockstep group, which this pivot stands for too."
+    )
+    column_aliases: list[str] = Field(
+        default_factory=list,
+        description="Factors in the column factor's lockstep group, which this pivot stands for too.",
+    )
+    cells: list[FactorPairCell] = Field(description="The full cross of observed levels, row-major in level order.")
+
+
+#: What the pair scan cannot see, stated wherever its result is.
+INTERACTION_ALIASING_UNCHECKED = (
+    "Only pairs of factors are checked: a factor that moved with a combination of two others (C = A⊕B, an "
+    "interaction) is not detected, so it is neither grouped nor shown."
+)
+
+
+class FactorPairScan(EvalDocumentModel):
+    """Every pair of varying factors checked for co-varying, with a pivot for each co-varying pair outside a group.
+
+    Two factors co-vary when one never moves while the other holds still: across the runs at any one level of
+    either, the other takes a single level. Every pair is checked; only the pivots are bounded, so the count says
+    how complete the short list is.
+    """
+
+    factors: list[str] = Field(
+        description=(
+            "Every factor that varied: the swept levers and candidate model the coverage reads, and each apparatus "
+            "dimension every run recorded."
+        )
+    )
+    n_pairs_examined: int = Field(ge=0)
+    n_covarying: int = Field(ge=0, description="Pairs that co-vary, inside a lockstep group or not.")
+    n_covarying_in_groups: int = Field(ge=0, description="Of those, the pairs whose two factors share a group.")
+    pivots: list[FactorPairPivot] = Field(default_factory=list)
+    pivots_omitted: int = Field(default=0, ge=0, description="Pivots past the cap, fewest holes first.")
+    completeness: str = Field(description="The sentence stating what was examined and what is shown.")
+    interaction_aliasing: str = Field(default=INTERACTION_ALIASING_UNCHECKED)
+
+
 class LeverCoverageInput(EvalDocumentModel):
     """Structural coverage of one lever, as the bundle computes it.
 
@@ -2450,6 +2517,22 @@ class AnalysisContextBundle(EvalDocumentModel):
             "answer even when the campaign compared nothing. Empty means the rig held — a claim only "
             "made about runs that recorded a value, since an unrecorded dimension is 'undecided' here "
             "as everywhere else."
+        ),
+    )
+    aliased_factors: list[AliasedFactors] = Field(
+        default_factory=list,
+        description=(
+            "Factors that moved in lockstep across the campaign: each group's factors split the runs identically, "
+            "so no comparison separates them. Name a group once, by its sentence, never one factor at a time. "
+            "Pairs only: see factor_pairs.interaction_aliasing."
+        ),
+    )
+    factor_pairs: FactorPairScan | None = Field(
+        default=None,
+        description=(
+            "Every pair of varying factors checked for co-varying, with a pivot (unrun combinations as not_run) "
+            "for each co-varying pair outside a lockstep group, and how many pairs were examined. None on a "
+            "bundle assembled before the scan existed."
         ),
     )
     arm_mechanisms: list[ArmMechanismReading] = Field(
@@ -6483,6 +6566,164 @@ def _coverage_map(
     return coverage
 
 
+def _factor_aliasing(
+    run_ids: list[str],
+    lever_levels: dict[str, dict[str, list[str]]],
+    apparatus_levels: dict[str, dict[str, str | None]],
+) -> tuple[list[AliasedFactors], FactorPairScan]:
+    """Group the factors that moved in lockstep, and check every pair of factors for co-varying.
+
+    A factor is anything that varied across the campaign's runs: a swept lever or the candidate model, as
+    :func:`_lever_levels` reads them, and an apparatus dimension every run recorded at two or more levels (one some
+    run never recorded is undecided, not a partition, and is named in ``apparatus_confounds``). Each factor
+    splits the runs it was read on into groups, one per level. **Factors whose splits are identical are aliased**
+    — the same runs, grouped the same way, whatever the levels are called — and are reported as one group.
+
+    A pair **co-varies** when neither can be compared holding the other fixed: across the runs at any one level
+    of one, the other takes a single level. Every pair is checked; a co-varying pair whose factors are not in one
+    group gets a pivot crossing the two (a group stands in for each of its members, so its mates share one
+    pivot), with every combination no run sat at as ``not_run``. Only interactions go unchecked
+    (:data:`INTERACTION_ALIASING_UNCHECKED`).
+
+    Args:
+        run_ids: The campaign's resolved runs.
+        lever_levels: Lever → level → run ids, from :func:`_lever_levels`.
+        apparatus_levels: Dimension → run id → level key, from :func:`_apparatus_levels`.
+
+    Returns:
+        The lockstep groups (sorted by their first factor), and the pair scan.
+    """
+    by_factor: dict[str, dict[str, str]] = {}
+    for lever, by_level in lever_levels.items():
+        by_factor[lever] = {run_id: level for level, members in by_level.items() for run_id in members}
+    for dimension, by_run in apparatus_levels.items():
+        levels = [by_run.get(run_id) for run_id in run_ids]
+        if dimension in by_factor or any(level is None for level in levels) or len(set(levels)) < 2:
+            continue
+        by_factor[dimension] = {run_id: str(by_run[run_id]) for run_id in run_ids}
+    factors = sorted(name for name, by_run in by_factor.items() if len(set(by_run.values())) >= 2)
+
+    def split(name: str) -> frozenset[frozenset[str]]:
+        blocks: dict[str, set[str]] = {}
+        for run_id, level in by_factor[name].items():
+            blocks.setdefault(level, set()).add(run_id)
+        return frozenset(frozenset(block) for block in blocks.values())
+
+    by_split: dict[frozenset[frozenset[str]], list[str]] = {}
+    for name in factors:
+        by_split.setdefault(split(name), []).append(name)
+    group_of = {name: members[0] for members in by_split.values() for name in members}
+    groups = []
+    for blocks, members in sorted(by_split.items(), key=lambda item: item[1][0]):
+        if len(members) < 2:
+            continue
+        n_runs = sum(len(block) for block in blocks)
+        across = f"all {n_runs} runs" if n_runs == len(run_ids) else f"the {n_runs} runs that recorded them"
+        groups.append(
+            AliasedFactors(
+                factors=members,
+                n_runs=n_runs,
+                n_levels=len(blocks),
+                sentence=(
+                    f"{_listed_names(members)} move together across {across}, splitting them into the same "
+                    f"{len(blocks)} groups; no comparison separates them, so a difference across them belongs to all "
+                    f"{len(members)} at once."
+                ),
+            )
+        )
+
+    def varies_within(name: str, other: str) -> bool:
+        shared = by_factor[name].keys() & by_factor[other].keys()
+        seen: dict[str, set[str]] = {}
+        for run_id in shared:
+            seen.setdefault(by_factor[other][run_id], set()).add(by_factor[name][run_id])
+        return any(len(levels) >= 2 for levels in seen.values())
+
+    n_pairs = n_covarying = n_in_groups = 0
+    pivots: dict[tuple[str, str], FactorPairPivot] = {}
+    for index, row in enumerate(factors):
+        for column in factors[index + 1 :]:
+            n_pairs += 1
+            if varies_within(row, column) and varies_within(column, row):
+                continue
+            n_covarying += 1
+            if group_of[row] == group_of[column]:
+                n_in_groups += 1
+                continue
+            first, second = sorted((group_of[row], group_of[column]))
+            key = (first, second)
+            if key not in pivots:
+                pivots[key] = _factor_pair_pivot(key[0], key[1], by_factor, group_of)
+    ordered = [pivots[key] for key in sorted(pivots)]
+    kept, omitted = _capped(
+        ordered,
+        _MAX_FACTOR_PAIR_PIVOTS,
+        weight=lambda pivot: sum(1 for cell in pivot.cells if cell.status == "not_run"),
+    )
+    outside = n_covarying - n_in_groups
+    if len(factors) < 2:
+        completeness = f"{len(factors)} factor varied, so no pair of factors could co-vary."
+    else:
+        completeness = (
+            f"{n_pairs} factor pair(s) examined over the {len(factors)} factors that varied; {n_covarying} co-vary"
+            + (f", {n_in_groups} of them inside a group that moves in lockstep" if n_in_groups else "")
+            + (
+                f"; the {outside} outside any group are shown in {len(ordered)} pivot(s), a group's members sharing one"
+                if outside
+                else ""
+            )
+            + (f", of which {omitted} with the fewest unrun combinations are left out" if omitted else "")
+            + "."
+        )
+    return groups, FactorPairScan(
+        factors=factors,
+        n_pairs_examined=n_pairs,
+        n_covarying=n_covarying,
+        n_covarying_in_groups=n_in_groups,
+        pivots=kept,
+        pivots_omitted=omitted,
+        completeness=completeness,
+    )
+
+
+def _factor_pair_pivot(
+    row: str,
+    column: str,
+    by_factor: dict[str, dict[str, str]],
+    group_of: dict[str, str],
+) -> FactorPairPivot:
+    """Cross two factors' observed levels over the runs both were read on, counting the runs at each combination."""
+    shared = sorted(by_factor[row].keys() & by_factor[column].keys())
+    counts: dict[tuple[str, str], int] = {}
+    for run_id in shared:
+        combination = (by_factor[row][run_id], by_factor[column][run_id])
+        counts[combination] = counts.get(combination, 0) + 1
+    rows = sorted({by_factor[row][run_id] for run_id in shared})
+    columns = sorted({by_factor[column][run_id] for run_id in shared})
+    mates = {name: [other for other in group_of if group_of[other] == name and other != name] for name in (row, column)}
+    return FactorPairPivot(
+        row_factor=row,
+        column_factor=column,
+        row_aliases=sorted(mates[row]),
+        column_aliases=sorted(mates[column]),
+        cells=[
+            FactorPairCell(
+                row_level=row_level,
+                column_level=column_level,
+                n_runs=counts.get((row_level, column_level), 0),
+                status="ran" if (row_level, column_level) in counts else "not_run",
+            )
+            for row_level in rows
+            for column_level in columns
+        ],
+    )
+
+
+def _listed_names(names: list[str]) -> str:
+    """``a``, ``a and b``, ``a, b and c``."""
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + f" and {names[-1]}"
+
+
 #: Apparatus dimensions that joined the rig after cells were minted under ids that never digested them, each
 #: mapped to the dimension whose seat it shares. Such a dimension stays out of a class's id at the levels that
 #: say nothing about it the class does not already say: UNRECORDED (``None``) — every run stored before the
@@ -7022,6 +7263,7 @@ def assemble_context_bundle(
         profile=profile,
     )
     reportable = {entry.name for entry in coverage}
+    aliasing = _factor_aliasing(run_ids, _lever_levels(runs, results_by_run, profile=profile), apparatus_levels)
 
     # The cell algebra, over observations rather than runs. Independent of `design`, which is
     # the point: a cell is what pools, and pooling must not depend on whether anyone designated
@@ -7141,6 +7383,8 @@ def assemble_context_bundle(
         # lenses iterate levers — so without this, a campaign whose template changed
         # underneath it reports that fact nowhere at all.
         apparatus_confounds=_apparatus_confounds(run_ids, apparatus_levels, profile=profile),
+        aliased_factors=aliasing[0],
+        factor_pairs=aliasing[1],
         arm_mechanisms=_arm_mechanisms(arms, results_by_run, mechanisms),
         arm_served_models=_arm_served_models(arms, results_by_run, served),
         arm_production_footings=_arm_production_footings(arms, results_by_run, profile=profile),
@@ -9375,9 +9619,14 @@ def _telemetry_rollup(
 
 
 __all__ = [
+    "INTERACTION_ALIASING_UNCHECKED",
+    "AliasedFactors",
     "AnalysisContextBundle",
     "BundleInspection",
     "DeclaredLevelCoverage",
+    "FactorPairCell",
+    "FactorPairPivot",
+    "FactorPairScan",
     "GoalCheckProofReading",
     "LeverCoverageInput",
     "MeasureCollection",

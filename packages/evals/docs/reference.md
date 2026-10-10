@@ -1087,6 +1087,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 
 **Classes**
 
+- **`AliasedFactors`** · model · Factors that moved in lockstep: every one splits the runs into the same groups, so no comparison separates them.
 - **`AmbiguousPair`** · dataclass · A (campaign, recorded memo) pair holding more than one live case.
 - **`AnalysisContextBundle`** · model · The closed context bundle a generation prompt runs over.
 - **`AnalysisGenerationEstimate`** · model · What a generation would be priced at before it starts, against the cap it would be held to.
@@ -1124,6 +1125,9 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`DimensionReading`** · model · A dimension the judge scored that no label speaks to — reported, never compared.
 - **`DisclosureBlock`** · model · Something code must tell the reader that no author wrote — one idea.
 - **`Fact`** · model · A labelled fact code states beside an author's words — a confidence, a disposition, a tier.
+- **`FactorPairCell`** · model · One combination of two factors' levels, and how many runs sat at it.
+- **`FactorPairPivot`** · model · Two co-varying factors crossed: every combination of their observed levels, the unrun ones as `not_run`.
+- **`FactorPairScan`** · model · Every pair of varying factors checked for co-varying, with a pivot for each co-varying pair outside a group.
 - **`FamilyComparison`** · model · One contrast against the control on one reading, tested and corrected within its family.
 - **`FrontierCostTie`** · model · A contestant that cleared the bar with a cost, which the verdict's pick was NOT shown cheaper than.
 - **`FrontierDominator`** · model · One contestant shown to beat another point on every axis it measured, named as a ROW is named.
@@ -1984,6 +1988,8 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `launch_disclosure` | `str \| None` | `None` | Set when the member runs were NOT all started by one campaign launch — some came from different launches, or were started on their own. |
 | `measurement_window_disclosure` | `str \| None` | `None` | Set when AT LEAST ONE PAIR of member runs was measured over spans of wall-clock time that do not overlap — so anything that moved between those spans (a model revision, a provider's load, a rate limit) moved with the runs, and a difference between the two runs of such a pair is not attributable to the runs alone. |
 | `apparatus_confounds` | `list[Confound]` | `[]` | Apparatus dimensions that varied across the WHOLE campaign, scanned independently of any lever. |
+| `aliased_factors` | `list[AliasedFactors]` | `[]` | Factors that moved in lockstep across the campaign: each group's factors split the runs identically, so no comparison separates them. |
+| `factor_pairs` | `FactorPairScan \| None` | `None` | Every pair of varying factors checked for co-varying, with a pivot (unrun combinations as not_run) for each co-varying pair outside a lockstep group, and how many pairs were examined. |
 | `arm_mechanisms` | `list[ArmMechanismReading]` | `[]` | Each arm's mean of every covariate read as an observed mechanism (today the candidate's reasoning share, `reasoning_ratio`), sorted by arm then covariate. |
 | `arm_served_models` | `list[ArmServedModel]` | `[]` | Which model the provider's responses named as having answered each arm's candidate calls, sorted by arm. |
 | `arm_production_footings` | `dict[str, PooledProductionFooting]` | `{}` | Arm (variant key) -> what each of its runs set away from the subject's production configuration, read off the host's sweepable declarations: `runs` maps run id -> that run's footing (`moved` with levels, `unchecked`, `held`; null for a run nobody could check). |

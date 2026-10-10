@@ -16,18 +16,6 @@ Tracked in [#595](https://github.com/pacepace/3tears/issues/595).
 Pairing on the frozen case helps only as far as the arms' per-case results correlate; Miller recommends
 reporting the correlation so a reader sees what pairing bought. The engine pairs but reports none.
 
-### Factors that move together are not grouped
-
-Tracked in [#596](https://github.com/pacepace/3tears/issues/596).
-
-The bundle lists each varying factor as a
-[confound](design-rationale.md#confounds-qualify-never-suppress) but not which moved together. In one campaign four factors moved in lockstep across all 22 runs, and
-no comparison could separate them. The design: hash each factor's partition of the runs. Factors with identical
-partitions are aliased and are reported as one group ("these four move together across all 22 runs; no
-comparison separates them"). State that aliasing with an interaction (C = A⊕B) is not checked.
-
-*Evidence:* agent with tools, 22 runs, 1 campaign, 2026-07, single campaign.
-
 ### The frontier does not read guardrails
 
 Tracked in [#613](https://github.com/pacepace/3tears/issues/613).

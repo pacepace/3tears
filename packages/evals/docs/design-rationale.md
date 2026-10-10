@@ -110,6 +110,11 @@ forbidden in capitals and done anyway), so each rule below is computed into the 
   engine folds the surface into the knob where the runs show it moved with the knob alone; a fold no two arms
   could test is disclosed as `unverified_fold`
   ([open problems](open-problems.md#a-fold-with-one-arm-per-knob-level-is-untested)).
+- **Factors that moved together are one group.** Factors that split the runs identically are reported once,
+  as `aliased_factors` ("these four move together across all 22 runs; no comparison separates them"). Every
+  pair of varying factors is checked, and a pair that co-varies outside a group gets a pivot whose unrun
+  combinations read `not_run`; `factor_pairs` says how many pairs were examined. Aliasing with an
+  interaction (C = A⊕B) is not checked, and the bundle says so.
 - **Assert the knob moved before reading the outcome.** A lever names the measure it acts on, and the
   bundle reports it `moved`, `inert` or `unchecked`: see
   [Did a lever take effect](reading-reports.md#did-a-lever-take-effect-mechanism-checks-and-observed-mechanisms).

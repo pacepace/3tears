@@ -1480,6 +1480,19 @@ def _evidence_disclosures(bundle: AnalysisContextBundle) -> list[ReportBlock]:
     for dimension in unverified:
         reason = bundle.confound_catalog[dimension]
         say("comparisons", reason[:1].upper() + reason[1:] + ".")
+    # Factors that moved in lockstep are named once, as a group, and every co-varying pair's holes are listed (#596).
+    for group in bundle.aliased_factors:
+        say("comparisons", group.sentence)
+    if bundle.factor_pairs is not None and bundle.factor_pairs.factors:
+        say("comparisons", f"{bundle.factor_pairs.completeness} {bundle.factor_pairs.interaction_aliasing}")
+        for pivot in bundle.factor_pairs.pivots:
+            holes = [f"{cell.row_level} with {cell.column_level}" for cell in pivot.cells if cell.status == "not_run"]
+            if holes:
+                say(
+                    "comparisons",
+                    f"{pivot.row_factor} and {pivot.column_factor} co-vary; {len(holes)} of their {len(pivot.cells)} "
+                    f"combinations never ran: {_listed(holes)}.",
+                )
     # A declared level that never ran leaves `levels` silently; the row's declared_levels names it.
     for row in bundle.coverage:
         not_run = [level.display for level in row.declared_levels if level.state == "not_run"]
