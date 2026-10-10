@@ -171,6 +171,42 @@ async def test_without_case_material_the_judge_reads_the_case_as_json_and_a_non_
     assert user.endswith('# Output under review\n{\n  "answer": 4\n}')
 
 
+async def test_without_case_material_a_classifier_s_judge_never_reads_the_answer_key() -> None:
+    """The field holding the expected label is left out of what the judge reads, and the trace keeps what was sent."""
+    client = _FakeJudgeClient()
+    host = callable_host()
+    cases = [{"ticket": "I was charged twice.", "queue": "billing", "channel": "email"}]
+
+    async def classify(case: Mapping[str, Any]) -> str:
+        return "billing"
+
+    summary = await run_eval(
+        cases, classify, judge=_judge(client), expected=lambda case: case["queue"], scope_id=SCOPE, host=host, k=1
+    )
+    sent = {user.split("# Output under review\n", 1)[0] for _, user in client.calls}
+    assert len(sent) == 1 and len(client.calls) == 2
+    (material_sent,) = sent
+    assert '"ticket": "I was charged twice."' in material_sent and '"channel": "email"' in material_sent
+    assert '"queue"' not in material_sent, "the judge read the expected label it is grading without"
+    (result,) = list_results(host.storage, summary.run_id, SCOPE)
+    trace = get_result_trace(host.storage, result)
+    assert trace is not None and trace.judge_evidence is not None
+    assert trace.judge_evidence.case_material == '{\n  "channel": "email",\n  "ticket": "I was charged twice."\n}'
+    assert trace.judge_evidence.case_material in material_sent, "the trace records exactly the material sent"
+
+
+async def test_a_reference_answer_reaches_the_judge_only_through_case_material() -> None:
+    client = _FakeJudgeClient()
+    cases = [{"ticket": "I was charged twice.", "queue": "billing"}]
+
+    async def classify(case: Mapping[str, Any]) -> str:
+        return "billing"
+
+    judge = _judge(client, case_material=lambda case: f"Ticket: {case['ticket']}\nReference queue: {case['queue']}")
+    await run_eval(cases, classify, judge=judge, expected=lambda case: case["queue"], scope_id=SCOPE, k=1)
+    assert all("Reference queue: billing" in user for _, user in client.calls)
+
+
 async def test_the_judges_client_is_lent_never_closed_so_one_client_serves_two_runs() -> None:
     client = _FakeJudgeClient()
     host = callable_host()

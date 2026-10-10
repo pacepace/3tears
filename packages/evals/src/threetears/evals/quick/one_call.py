@@ -590,7 +590,8 @@ class CallableKind:
         evidence: JudgeEvidence | None = None
         if self._judge is not None:
             try:
-                evidence = judge_evidence(self._judge, case, answer)
+                expected = test_case.host_payload[_EXPECTED_KEY] if self._classifies else None
+                evidence = judge_evidence(self._judge, case, answer, expected=expected)
             except ValueError as unrenderable:
                 # The judge's material is the rig: the cell is excluded, and with no evidence to read it
                 # stores no answer either, since a judged kind's every stored answer carries its evidence.
