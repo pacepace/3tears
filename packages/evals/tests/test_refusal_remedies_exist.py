@@ -29,16 +29,27 @@ def _catalogue() -> set[str]:
     return {action.name for action in engine_actions()}
 
 
+#: Catalogue nouns spelled in two words. Split at the first underscore, ``case_set_mint`` would read as the
+#: noun ``case`` and the verb ``set_mint`` — and ``set_[a-z_]+`` is a write verb, so the launch fields
+#: ``case_set_name`` and ``case_set_version`` would read as remedies. They are fields; the noun is ``case_set``.
+_COMPOUND_NOUNS = ("reporter_cases", "reporter_case", "case_sets", "case_set")
+
+
 def _action_shaped() -> re.Pattern[str]:
     """A catalogue noun, then a verb: the catalogue's own verbs, plus the write verbs a remedy reaches for.
 
     Derived from the catalogue so a new noun or verb there widens what is checked. Identifiers that
-    merely start with a noun (``campaign_id``, ``run_eval``, ``job_manager``) are not remedies and do
-    not match, because what follows the noun is not a verb.
+    merely start with a noun (``campaign_id``, ``run_eval``, ``job_manager``, ``case_set_name``) are not
+    remedies and do not match, because what follows the noun is not a verb.
     """
     names = _catalogue()
-    nouns = {name.split("_", 1)[0] for name in names} | {"reporter_case", "reporter_cases"}
-    verbs = {name.split("_", 1)[1] for name in names if "_" in name and not name.startswith("reporter_case")}
+    nouns: set[str] = set()
+    verbs: set[str] = set()
+    for name in names:
+        noun = next((n for n in _COMPOUND_NOUNS if name.startswith(f"{n}_")), name.split("_", 1)[0])
+        nouns.add(noun)
+        if name != noun:
+            verbs.add(name[len(noun) + 1 :])
     verbs |= {"update", "edit", "patch", "set_[a-z_]+", "add_[a-z_]+", "remove_[a-z_]+"}
     noun = "|".join(sorted(map(re.escape, nouns), key=len, reverse=True))
     verb = "|".join(sorted(verbs, key=len, reverse=True))
@@ -84,6 +95,17 @@ def test_the_pattern_catches_the_two_names_that_did_not_exist() -> None:
         "set_campaign_controls",
     ]
     assert pattern.findall("campaign_id run_eval job_manager analysis_reporter") == []
+
+
+def test_a_two_word_noun_s_fields_are_not_remedies_but_its_actions_are() -> None:
+    """``case_set`` is one noun: its fields pass, a verb after it is still checked."""
+    pattern = _action_shaped()
+    assert pattern.findall("case_set_name and case_set_version name one version of one set together") == []
+    assert pattern.findall("call case_set_mint, or case_set_update, or reporter_case_delete") == [
+        "case_set_mint",
+        "case_set_update",
+        "reporter_case_delete",
+    ]
 
 
 def test_every_remedy_a_refusal_names_exists() -> None:

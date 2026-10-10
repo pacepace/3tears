@@ -1405,6 +1405,7 @@ def _kind_factory(
 DEFAULT_QUICK_SCOPE = "quick"
 
 
+# scope-default: unscoped only on the call's own in-memory store; quick_scope refuses it with host= or store=
 def quick_scope(scope_id: str | None, host: EvalHost | None, store: DocumentStore | None = None) -> str:
     """The scope a quick call stores in: the one named, else :data:`DEFAULT_QUICK_SCOPE` when its store is the call's own.
 
@@ -1430,6 +1431,7 @@ def quick_scope(scope_id: str | None, host: EvalHost | None, store: DocumentStor
     return DEFAULT_QUICK_SCOPE
 
 
+# scope-default: unscoped only on the call's own in-memory store; quick_scope refuses it with host= or store=
 async def run_eval(
     cases: Sequence[Mapping[str, Any]],
     candidate: Candidate | ToolUsingCandidate | WorldCandidate,
@@ -1615,6 +1617,7 @@ def _template_intent(arms: Sequence[CallableArm], graded_by: str, intent: str | 
     return f"Answer each case so that {graded_by} the answer well.", f"a generic default: no intent=, and {lacking}"
 
 
+# scope-default: unscoped only on the call's own in-memory store; quick_scope refuses it with host= or store=
 async def run_arms(
     cases: Sequence[Mapping[str, Any]],
     arms: Sequence[CallableArm],
