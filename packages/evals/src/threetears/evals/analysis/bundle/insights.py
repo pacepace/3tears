@@ -10,9 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Sequence
 from typing import NamedTuple
 
-
 from threetears.evals.kernel.campaign import EvalInsight
-
 from threetears.evals.analysis.bundle.caps import (
     _capped,
     _MAX_PRIOR_INSIGHTS,

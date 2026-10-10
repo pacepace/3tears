@@ -14,7 +14,6 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from itertools import chain
 from typing import Literal, NamedTuple
 
-
 from threetears.evals.analysis.reporting import (
     pool_served_readings,
     ResultServedReading,
@@ -32,11 +31,7 @@ from threetears.evals.kernel.metrics import (
     describe_measure,
     summary_population,
 )
-
-# At runtime for its field set, which tells a result-level measure from a row-level one.
 from threetears.evals.schema.models import EvalResult
-
-
 from threetears.evals.analysis.bundle.schema import (
     _OBSERVED_MECHANISMS,
     ArmMechanismReading,
@@ -48,11 +43,7 @@ from threetears.evals.analysis.bundle.schema import (
     observed_mechanism_key,
     RealizedDesign,
 )
-
-
 from threetears.evals.analysis.bundle.config import _CANDIDATE_MODEL_LEVER
-
-
 from threetears.evals.analysis.bundle.measures import (
     _carrier_leaves,
     _derived_leaves,
@@ -61,7 +52,6 @@ from threetears.evals.analysis.bundle.measures import (
     _PER_RESULT,
     in_population,
 )
-
 from threetears.evals.analysis.bundle.design import _CampaignArms
 
 

@@ -10,7 +10,6 @@ from datetime import UTC, datetime
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING
 
-
 from threetears.evals.kernel.evidence_tiers import JudgeEvidenceTier
 from threetears.evals.analysis.cells import (
     ApparatusClass,
@@ -20,22 +19,17 @@ from threetears.evals.analysis.cells import (
 from threetears.evals.analysis.reporting import ScoreRecord
 from threetears.evals.kernel.declaration import CampaignDesign
 from threetears.evals.kernel.host.profile import HostProfile
-
-# At runtime for its field set, which tells a result-level measure from a row-level one.
 from threetears.evals.schema.models import EvalResult
 from threetears.evals.kernel.surface import (
     TimeAxis,
     TimeAxisBasis,
     TimePosition,
 )
-
-
 from threetears.evals.analysis.bundle.cell_reads import (
     _cell_measures,
     _judged_measures,
     _results_by_cell,
 )
-
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.schema.models import EvalRun

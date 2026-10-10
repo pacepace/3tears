@@ -11,7 +11,6 @@ from collections import defaultdict
 from collections.abc import Collection, Mapping
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
-
 from threetears.evals.analysis.contention import withhold_contended_latency
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.reporting import (
@@ -53,8 +52,6 @@ from threetears.evals.kernel.metrics import (
     materiality,
     summary_population,
 )
-
-# At runtime for its field set, which tells a result-level measure from a row-level one.
 from threetears.evals.schema.models import (
     EvalResult,
     RubricScale,
@@ -64,8 +61,6 @@ from threetears.evals.kernel.surface import (
     GuardrailCheck,
     GuardrailReadings,
 )
-
-
 from threetears.evals.analysis.bundle.schema import (
     ComparedCell,
     ComparisonFamily,
@@ -77,22 +72,16 @@ from threetears.evals.analysis.bundle.schema import (
     ReadingScope,
     RealizedDesign,
 )
-
-
 from threetears.evals.analysis.bundle.measures import (
     _failures_as_misses,
     _measure_collection,
 )
-
-
 from threetears.evals.analysis.bundle.mechanisms import (
     _MechanismObservations,
     _model_contrast_confounds,
     _served_model_confounds,
     _ServedModels,
 )
-
-
 from threetears.evals.analysis.bundle.cell_reads import (
     _boundary_dimensions,
     _CellKey,
@@ -101,7 +90,6 @@ from threetears.evals.analysis.bundle.cell_reads import (
     _took_no_turn,
     _unstamped_dimensions,
 )
-
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.schema.models import EvalRun

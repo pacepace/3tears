@@ -12,7 +12,6 @@ from collections.abc import Callable, Collection
 from functools import partial
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
-
 from threetears.evals.analysis.cells import Observation
 from threetears.evals.analysis.reporting import lever_level
 from threetears.evals.kernel.campaign import VariantIndexEntry
@@ -20,26 +19,18 @@ from threetears.evals.kernel.declaration import CampaignDesign
 from threetears.evals.schema.hashing import canonical_json
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.schema.values import SweepableValue
-
-# At runtime for its field set, which tells a result-level measure from a row-level one.
 from threetears.evals.schema.models import EvalResult
-
-
 from threetears.evals.analysis.bundle.schema import (
     DesignArm,
     RealizedDesign,
 )
-
-
 from threetears.evals.analysis.bundle.config import (
     _CANDIDATE_MODEL_LEVER,
     _effective_config,
     _effective_values,
     _INHERITED_DEFAULT_LEVEL,
 )
-
 from threetears.evals.analysis.bundle.observations import variant_key_of_run
-
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.schema.models import EvalRun

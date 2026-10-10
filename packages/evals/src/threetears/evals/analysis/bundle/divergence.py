@@ -12,7 +12,6 @@ from fractions import Fraction
 from collections.abc import Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-
 from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
     LevelDifference,
@@ -29,33 +28,24 @@ from threetears.evals.kernel.metrics import (
     partition_components,
     remainder_withheld_reason,
 )
-
-# At runtime for its field set, which tells a result-level measure from a row-level one.
 from threetears.evals.schema.models import EvalResult
-
 from threetears.evals.analysis.bundle.caps import _MAX_DIVERGENCES
-
 from threetears.evals.analysis.bundle.schema import (
     MeasureMovement,
     MovementDirection,
     RealizedDesign,
     ScopeDivergence,
 )
-
-
 from threetears.evals.analysis.bundle.measures import (
     _collect_measures,
     _PooledMeasure,
 )
-
 from threetears.evals.analysis.bundle.design import (
     _lever_cohort,
     _lever_levels,
     _SurfaceFolds,
 )
-
 from threetears.evals.analysis.bundle.confounds import _uncontrolled_dimensions
-
 from threetears.evals.analysis.bundle.mechanisms import (
     _MechanismObservations,
     _observed_mechanism_confounds,

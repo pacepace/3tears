@@ -10,16 +10,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
-
 from threetears.evals.analysis.reporting import (
     ScoreRecord,
     lever_level,
 )
 from threetears.evals.kernel.host.profile import CANDIDATE_MODEL_LEVER, HostProfile
-
-# At runtime for its field set, which tells a result-level measure from a row-level one.
 from threetears.evals.schema.models import EvalResult
-
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.schema.models import EvalRun

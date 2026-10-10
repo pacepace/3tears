@@ -42,7 +42,6 @@ from collections.abc import Collection, Sequence
 from dataclasses import replace
 from typing import TYPE_CHECKING, Protocol
 
-
 from threetears.evals.analysis.agreement import (
     judge_agreement,
     judge_evidence_tiers,
@@ -76,38 +75,29 @@ from threetears.evals.kernel.metrics import (
     MetricDescriptor,
     declaration_of,
 )
-
-# At runtime for its field set, which tells a result-level measure from a row-level one.
 from threetears.evals.schema.models import (
     CalibrationRating,
     EvalResult,
     MeasureDeclaration,
 )
-
 from threetears.evals.analysis.bundle.caps import (
     _capped,
     _MAX_NEXT_EXPERIMENTS,
     _MAX_REFUSED_MERGES,
 )
-
 from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
     host_declarations_digest,
 )
-
 from threetears.evals.analysis.bundle.insights import (
     _prior_insights,
     retracted_insights,
 )
-
-
 from threetears.evals.analysis.bundle.observations import _apparatus_classes, _observations, variant_key_of_run
-
 from threetears.evals.analysis.bundle.measures import (
     _failures_as_misses,
     goal_check_proofs_of,
 )
-
 from threetears.evals.analysis.bundle.design import (
     _apparatus_levels,
     _campaign_arms,
@@ -117,9 +107,7 @@ from threetears.evals.analysis.bundle.design import (
     _name_arms,
     _SurfaceFolds,
 )
-
 from threetears.evals.analysis.bundle.confounds import _apparatus_confounds, _confound_catalog
-
 from threetears.evals.analysis.bundle.mechanisms import (
     _arm_mechanisms,
     _arm_production_footings,
@@ -128,13 +116,9 @@ from threetears.evals.analysis.bundle.mechanisms import (
     _mechanism_observations,
     _served_models,
 )
-
 from threetears.evals.analysis.bundle.divergence import _scope_divergences
-
 from threetears.evals.analysis.bundle.telemetry import _model_versions, _run_summary, _telemetry_rollup
-
 from threetears.evals.analysis.bundle.coverage import _coverage_map, _declared_crossing, _factor_aliasing
-
 from threetears.evals.analysis.bundle.cell_reads import (
     _cell_measures,
     _cell_strata,
@@ -142,9 +126,7 @@ from threetears.evals.analysis.bundle.cell_reads import (
     _judged_measures,
     _results_by_cell,
 )
-
 from threetears.evals.analysis.bundle.bars import _bar_adjudications, _frontier_bar, _verdict_order
-
 from threetears.evals.analysis.bundle.cell_notes import (
     _all_failed,
     _cost_unmeasured,
@@ -152,16 +134,12 @@ from threetears.evals.analysis.bundle.cell_notes import (
     _latency_contended,
     _short_cells,
 )
-
 from threetears.evals.analysis.bundle.comparisons import (
     _multiple_comparisons,
     _reading_scope,
 )
-
 from threetears.evals.analysis.bundle.judges import _judge_change
-
 from threetears.evals.analysis.bundle.time_axis import _time_axis
-
 from threetears.evals.analysis.bundle.surface import _measure_catalog
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.

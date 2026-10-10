@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping
 
-
 from threetears.evals.analysis.agreement import (
     JudgeKey,
     judge_key,
@@ -35,8 +34,6 @@ from threetears.evals.kernel.declaration import (
 )
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.metrics import describe_rubric_dim
-
-# At runtime for its field set, which tells a result-level measure from a row-level one.
 from threetears.evals.schema.models import EvalResult
 from threetears.evals.kernel.result_condition import (
     JUDGE_CANNOT_TELL_OUTCOME,
@@ -50,14 +47,10 @@ from threetears.evals.kernel.surface import (
     JudgedReading,
     StratumFacts,
 )
-
-
 from threetears.evals.analysis.bundle.schema import (
     JudgedArm,
     JudgedMeasure,
 )
-
-
 from threetears.evals.analysis.bundle.measures import _measure_collection
 
 

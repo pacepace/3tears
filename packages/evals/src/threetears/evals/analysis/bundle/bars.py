@@ -10,7 +10,6 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Literal
 
-
 from threetears.evals.analysis.agreement import (
     judge_key,
     tier_for_judges,
@@ -40,22 +39,14 @@ from threetears.evals.kernel.metrics import (
     goal_check_measure,
     summary_population,
 )
-
-# At runtime for its field set, which tells a result-level measure from a row-level one.
 from threetears.evals.schema.models import EvalResult
 from threetears.evals.kernel.result_condition import delivered_a_turn
-
-
 from threetears.evals.analysis.bundle.schema import (
     MeritTier,
     QuestionScope,
     VerdictOrder,
 )
-
-
 from threetears.evals.analysis.bundle.measures import _measure_collection
-
-
 from threetears.evals.analysis.bundle.cell_reads import (
     _cannot_tell_on,
     _CellKey,

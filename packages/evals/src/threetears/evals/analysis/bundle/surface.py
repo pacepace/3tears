@@ -7,7 +7,6 @@ surface carries.
 
 from __future__ import annotations
 
-
 from threetears.evals.analysis.reporting import FrontierResult
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.metrics import (
@@ -21,11 +20,7 @@ from threetears.evals.kernel.surface import (
     JudgedDimensionFacts,
     MeasureFacts,
 )
-
-
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
-
-
 from threetears.evals.analysis.bundle.cell_reads import _cell_collections
 
 

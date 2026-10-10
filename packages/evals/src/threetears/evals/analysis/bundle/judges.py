@@ -5,22 +5,14 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
-
 from threetears.evals.analysis.judge_drift import judge_drift
-
-# At runtime for its field set, which tells a result-level measure from a row-level one.
 from threetears.evals.schema.models import EvalResult
-
-
 from threetears.evals.analysis.bundle.schema import (
     JudgeChange,
     JudgeDriftLink,
     JudgeIdentityLevel,
 )
-
-
 from threetears.evals.analysis.bundle.observations import variant_key_of_run
-
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.schema.models import EvalRun, SecondJudge

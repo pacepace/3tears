@@ -9,14 +9,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-
 from threetears.evals.analysis.reporting import (
     ProgramBudget,
     ScoreRecord,
 )
 from threetears.evals.kernel.host.profile import HostProfile
-
-# At runtime for its field set, which tells a result-level measure from a row-level one.
 from threetears.evals.schema.models import EvalResult
 from threetears.evals.kernel.provider import sum_optional_tokens
 from threetears.evals.kernel.result_condition import delivered_a_turn
@@ -24,20 +21,13 @@ from threetears.evals.kernel.usage_capture import (
     count_substituted_deliveries,
     production_replicating_cost,
 )
-
-
 from threetears.evals.analysis.bundle.schema import (
     RunSummary,
     TelemetryRollup,
     TokenRollup,
 )
-
-
 from threetears.evals.analysis.bundle.config import _effective_config
-
-
 from threetears.evals.analysis.bundle.measures import _measure_collection
-
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.schema.models import EvalRun

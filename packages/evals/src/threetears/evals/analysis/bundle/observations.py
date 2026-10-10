@@ -10,7 +10,6 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
-
 from threetears.evals.analysis.cells import (
     ApparatusClass,
     Observation,
@@ -21,10 +20,7 @@ from threetears.evals.schema.hashing import canonical_json
 from threetears.evals.kernel.host.profile import UNSEATED_LEVEL, HostProfile
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import IDENTITY_VERSION, resolve_variant_identity
-
-# At runtime for its field set, which tells a result-level measure from a row-level one.
 from threetears.evals.schema.models import EvalResult
-
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.schema.models import EvalRun

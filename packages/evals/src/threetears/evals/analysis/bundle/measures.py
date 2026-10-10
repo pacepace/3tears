@@ -62,10 +62,7 @@ from threetears.evals.kernel.usage_capture import (
     production_replicating_cost,
     spend_observed,
 )
-
-
 from threetears.evals.analysis.bundle.schema import GoalCheckProofReading
-
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.kernel.host.measures import MeasureRegistry

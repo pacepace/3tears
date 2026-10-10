@@ -10,7 +10,6 @@ from __future__ import annotations
 from itertools import chain, product
 from typing import TYPE_CHECKING, Literal
 
-
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.reporting import (
     METRIC_COMPOSITE,
@@ -25,17 +24,13 @@ from threetears.evals.kernel.declaration import (
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.metrics import describe_measure
-
-# At runtime for its field set, which tells a result-level measure from a row-level one.
 from threetears.evals.schema.models import EvalResult
-
 from threetears.evals.analysis.bundle.caps import (
     _capped,
     _CELL_STATES,
     _MAX_DECLARED_CELLS,
     _MAX_FACTOR_PAIR_PIVOTS,
 )
-
 from threetears.evals.analysis.bundle.schema import (
     AliasedFactors,
     DeclaredCellCoverage,
@@ -47,16 +42,12 @@ from threetears.evals.analysis.bundle.schema import (
     LeverCoverageInput,
     RealizedDesign,
 )
-
-
 from threetears.evals.analysis.bundle.config import (
     _CANDIDATE_MODEL_LEVER,
     _lever_value,
     _resolve_config,
     EffectiveLever,
 )
-
-
 from threetears.evals.analysis.bundle.design import (
     _arm_repeats,
     _campaign_arms,
@@ -66,9 +57,7 @@ from threetears.evals.analysis.bundle.design import (
     _lever_levels,
     _SurfaceFolds,
 )
-
 from threetears.evals.analysis.bundle.confounds import _uncontrolled_dimensions
-
 from threetears.evals.analysis.bundle.mechanisms import (
     _mechanism_check,
     _MechanismObservations,
@@ -76,7 +65,6 @@ from threetears.evals.analysis.bundle.mechanisms import (
     _served_model_confounds,
     _ServedModels,
 )
-
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.schema.models import EvalRun

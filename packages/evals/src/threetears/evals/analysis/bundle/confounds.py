@@ -9,10 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Collection
 
-
 from threetears.evals.kernel.host.profile import HostProfile
-
-
 from threetears.evals.analysis.bundle.schema import (
     _OBSERVED_MECHANISMS,
     _SERVED_MODEL_CONFOUNDS,
@@ -22,8 +19,6 @@ from threetears.evals.analysis.bundle.schema import (
     UNDECIDED_CONFOUND_PREFIX,
     UNVERIFIED_FOLD_PREFIX,
 )
-
-
 from threetears.evals.analysis.bundle.design import (
     _SurfaceFolds,
     world_dimension_key,

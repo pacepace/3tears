@@ -10,12 +10,9 @@ from __future__ import annotations
 from collections.abc import Collection
 from typing import TYPE_CHECKING
 
-
 from threetears.evals.analysis.contention import contended_latency_sentence
 from threetears.evals.analysis.cells import Cell
 from threetears.evals.kernel.declaration import CampaignDesign
-
-# At runtime for its field set, which tells a result-level measure from a row-level one.
 from threetears.evals.schema.models import EvalResult
 from threetears.evals.kernel.result_condition import delivered_a_turn
 from threetears.evals.kernel.surface import (
@@ -23,17 +20,12 @@ from threetears.evals.kernel.surface import (
     all_failed_sentence,
 )
 from threetears.evals.kernel.usage_capture import spend_observed
-
-
 from threetears.evals.analysis.bundle.schema import (
     CellCoordinate,
     HeldFixedReading,
     ShortCell,
 )
-
-
 from threetears.evals.analysis.bundle.cell_reads import _CellKey
-
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.schema.models import EvalRun
