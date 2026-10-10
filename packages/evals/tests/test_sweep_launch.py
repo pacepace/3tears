@@ -37,7 +37,7 @@ def _host(*, latency_s: float) -> tuple[OpsHost, EvalStorage]:
     client = ScriptedExtractionClient(
         tuple(type(script)(**{**vars(script), "latency_s": latency_s}) for script in TOY_SCRIPTS)
     )
-    launch, _client = toyhost_launch_host(storage=storage, extraction_client=client)
+    launch, _client = toyhost_launch_host(storage=storage, client=client)
     return OpsHost(launch=launch), storage
 
 

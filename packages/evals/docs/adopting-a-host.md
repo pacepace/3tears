@@ -116,7 +116,8 @@ typed `DefinitionStore` cannot reach a run, and a test of one hands it only that
 missing required one, and a document written under any schema version other than this build's
 `EVAL_SCHEMA_VERSION`. There is no migration and no tolerant reader: across a schema change, drop
 the eval documents and regenerate them. Identity keys carry their own `IDENTITY_VERSION`, so keys
-from different predicates never silently pool.
+from different predicates never silently pool. After a bump, `analyses_undescribable` (operation and
+action) lists the scope's analyses holding an arm this build can no longer describe.
 
 ## The kind: what you are evaluating
 

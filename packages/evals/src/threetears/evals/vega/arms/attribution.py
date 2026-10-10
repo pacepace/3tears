@@ -10,7 +10,6 @@ from __future__ import annotations
 from typing import Any
 
 from threetears.evals.vega.compiler import (
-    SECONDARY_OPACITY,
     VALUE_LABEL_OFFSET,
     VEGA_LITE_SCHEMA,
     MarkValue,
@@ -30,6 +29,7 @@ from threetears.evals.analysis.viz.intent import ChartIntent
 from threetears.evals.contracts.host import ChartFont
 from threetears.evals.analysis.viz.intents.attribution import REMAINDER_SCOPE
 from threetears.evals.analysis.viz.quantities import signed_with_unit
+from threetears.evals.vega.palette import CONTEXT_STYLE
 
 #: What an `attribution` draws in the remainder's row when the subtraction was not
 #: earned. Words rather than a zero-length bar: the row has to stay on the axis so
@@ -47,8 +47,8 @@ def compile_attribution(intent: ChartIntent, *, font: ChartFont | None = None) -
     as its own magnitude.
 
     **The remainder always occupies a row; only its MARK changes.** Where the arithmetic is earned it is
-    a bar, drawn at a lower opacity than the two measured movements because it is derived rather than
-    observed. Where it is withheld the same row carries the words *not placeable*: omitting the row
+    a bar, drawn in the ``chart-context`` style rather than the full ink of the two measured movements
+    because it is derived rather than observed. Where it is withheld the same row carries the words *not placeable*: omitting the row
     leaves the picture silent about a question the finding asked, and drawing it EMPTY reads as "the
     movement was fully accounted for" — the one misreading this type exists to prevent.
 
@@ -66,25 +66,34 @@ def compile_attribution(intent: ChartIntent, *, font: ChartFont | None = None) -
     width, height = categories.plot_size()
     value_axis = ValueAxis.magnitude(axis_title, [_number(row["delta"]) for row in plotted], width)
     identity = categories.axis(domain=not value_axis.marks_form_the_edge())
-    bars: dict[str, Any] = {
-        "data": {"values": categories.labelled(plotted)},
-        "mark": _bar_mark(tooltip=True),
-        "encoding": {
-            "y": identity,
-            "x": value_axis.encoding("delta"),
-            # Opacity, not hue: the remainder is a different KIND of quantity, not a
-            # different category, and identity is already on the axis labels.
-            "opacity": {
-                "condition": {"test": "datum.derived", "value": SECONDARY_OPACITY},
-                "value": 1,
+    labelled = categories.labelled(plotted)
+
+    def bars(derived: bool) -> dict[str, Any] | None:
+        """One bar layer per weight: the measured movements at full ink, the remainder receding.
+
+        The remainder is a different KIND of quantity (computed, not observed), so it
+        recedes; identity is already on the axis labels, so hue carries nothing. The
+        recession is asked for by NAME, as the frontier's dominated marks do, because a
+        compiled alpha chosen for emphasis is right on at most one of the two surfaces a
+        stored spec is drawn onto. A weight with no row is no layer at all.
+        """
+        if not any(bool(row.get("derived")) == derived for row in plotted):
+            return None
+        return {
+            "data": {"values": labelled},
+            "transform": [{"filter": "datum.derived" if derived else "!datum.derived"}],
+            "mark": _bar_mark(tooltip=True) | ({"style": CONTEXT_STYLE} if derived else {}),
+            "encoding": {
+                "y": identity,
+                "x": value_axis.encoding("delta"),
+                "tooltip": [
+                    {"field": "scope", "type": "nominal", "title": "Scope"},
+                    {"field": "measure", "type": "nominal", "title": "Measure"},
+                    {"field": "delta", "type": "quantitative", "title": axis_title},
+                ],
             },
-            "tooltip": [
-                {"field": "scope", "type": "nominal", "title": "Scope"},
-                {"field": "measure", "type": "nominal", "title": "Measure"},
-                {"field": "delta", "type": "quantitative", "title": axis_title},
-            ],
-        },
-    }
+        }
+
     not_placeable: dict[str, Any] | None = None
     if not quantified:
         # Words, not an absence. Anchored at the zero line so it starts where a bar
@@ -128,7 +137,8 @@ def compile_attribution(intent: ChartIntent, *, font: ChartFont | None = None) -
             "title": _title_spec(intent.title, categories.figure_width(), font=font),
             "layer": _layers(
                 _zero_rule(value_axis),
-                bars,
+                bars(derived=False),
+                bars(derived=True),
                 not_placeable,
                 *value_label_layers(labels, value_axis, identity, font=font),
             ),

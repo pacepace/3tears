@@ -40,6 +40,11 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple, get_args
 
 from pydantic import Field, model_validator
 
+from threetears.evals.analysis.contention import (
+    contended_latency_sentence,
+    withheld_latency,
+    withhold_contended_latency,
+)
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
@@ -4719,6 +4724,10 @@ class FrontierResult(EvalBaseModel):
     #: points, so an answer whose points were all filtered out still says what
     #: it spanned.
     identity_span_disclosure: str | None = None
+    #: That latency read under concurrency was left out of the latency axis — and so of every
+    #: dominance test and "fastest" — and how much; ``None`` when every latency ranked was read
+    #: serially (:mod:`~threetears.evals.analysis.contention`).
+    contended_latency_disclosure: str | None = None
 
 
 #: What both lenses group on. The predicate version is IN the key rather than a filter
@@ -5425,6 +5434,12 @@ def compute_frontier(
     if bar is not None and not (0.0 <= bar <= 1.0):
         raise FrontierError(f"bar {bar!r} is outside the pass^k range [0, 1] — pass^k is a probability")
 
+    # Latency read under concurrency is never ranked: removed before any point is built, so the latency
+    # axis, every dominance test and every "fastest" read only latency taken serially (#701).
+    measures = profile.measures if profile is not None else None
+    contended = {result.id for result in withheld_latency(results, measures)}
+    results = withhold_contended_latency(results, measures)
+
     placed, exclusions = place_results(
         runs, results, known_run_ids, source="frontier", archived_run_ids=archived_run_ids
     )
@@ -5611,6 +5626,9 @@ def compute_frontier(
         n_degraded_observations=n_degraded_observations,
         identity_version_span=identity_versions,
         identity_span_disclosure=_identity_span_disclosure(identity_versions),
+        contended_latency_disclosure=contended_latency_sentence(
+            sum(1 for result in considered if result.id in contended), len(considered)
+        ),
     )
 
 
@@ -5973,6 +5991,10 @@ class HistoryResult(EvalBaseModel):
     #: read alone still declares its posture. Derived before any series is assembled, so
     #: an answer with no series at all still carries it.
     attribution_disclosure: str | None = None
+    #: That latency read under concurrency was left out of a latency series — no step of it reads a
+    #: contended latency — and how much; ``None`` for any other measure, and when every latency in the
+    #: series was read serially (:mod:`~threetears.evals.analysis.contention`).
+    contended_latency_disclosure: str | None = None
 
 
 def _history_value_of(metric: str) -> Callable[[EvalResult], float | None]:
@@ -6241,6 +6263,14 @@ def compute_history(
     margin = descriptor.materiality_threshold
     flag_test = PAIRED_TEST_NAME if margin is None else f"{PAIRED_TEST_NAME}; {EQUIVALENCE_TEST_NAME}"
 
+    # A latency series never steps across a contended reading: latency read under concurrency is removed
+    # before any point is built, so a regression flag compares only latency taken serially (#701).
+    contended = (
+        {result.id for result in withheld_latency(results, profile.measures)} if metric == METRIC_TOTAL_MS else set()
+    )
+    if contended:
+        results = withhold_contended_latency(results, profile.measures)
+
     placed, exclusions = place_results(
         runs, results, known_run_ids, source="history", archived_run_ids=archived_run_ids
     )
@@ -6429,6 +6459,9 @@ def compute_history(
         identity_version_span=identity_versions,
         identity_span_disclosure=_identity_span_disclosure(identity_versions),
         attribution_disclosure=_attribution_disclosure(descriptor),
+        contended_latency_disclosure=contended_latency_sentence(
+            sum(1 for result in considered if result.id in contended), len(considered)
+        ),
     )
 
 

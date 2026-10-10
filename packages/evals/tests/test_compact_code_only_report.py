@@ -172,7 +172,13 @@ class TestPerLabelStatisticsAreOneTable:
 
 class TestNoColumnThatSaysNothing:
     async def test_an_interval_only_chart_prints_no_shape_column_and_its_intent_keeps_the_shape(self) -> None:
-        report = (await _classifier()).report
+        # Five cases, the fewest a chart draws an interval band from: below that it draws the cases (#677).
+        five = [*CASES, {"text": "a fern", "label": "plant"}]
+        report = (
+            await compare(
+                five, {"control": right, "candidate": guess}, expected=_expected, control="control", scope_id=SCOPE, k=2
+            )
+        ).report
         (chart,) = [block for block in report.blocks if isinstance(block, ChartBlock)]
         assert chart.intent is not None
         assert {row["shape"] for row in chart.intent.rows} == {SHAPE_UNKNOWN}, "the intent still says it, per row"

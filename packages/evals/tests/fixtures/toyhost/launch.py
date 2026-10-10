@@ -24,6 +24,7 @@ from threetears.evals.contracts import EvalRun, EvalStorage, NotFoundError, Worl
 from threetears.evals.contracts.host import CompletionClients, HostProfile, TraceSink, WorldPlacement
 from threetears.evals.run import (
     ArmPlan,
+    CellExecutor,
     ArmPrice,
     ArmQuote,
     KindWiring,
@@ -128,7 +129,8 @@ def toyhost_launch_host(
     trace_sink: TraceSink | None = None,
     settings: Callable[[], LaunchSettings] = lambda: TOYHOST_LAUNCH_SETTINGS,
     clients: CompletionClients | None = None,
-    extraction_client: ScriptedExtractionClient | None = None,
+    client: ScriptedExtractionClient | None = None,
+    cell_executor: CellExecutor | None = None,
     kind_cell_timeout_s: float | None = None,
 ) -> tuple[LaunchHost, ScriptedExtractionClient]:
     """The toy host as a launching host: its :class:`~threetears.evals.contracts.host.EvalHost`, plus its launch registry.
@@ -140,7 +142,8 @@ def toyhost_launch_host(
         settings: Reads the launch settings; a callable because a host's settings hot-reload.
         clients: The completion-client factory, for a drive that also analyses what it launched. The
             extractor itself calls no model.
-        extraction_client: The extractor's scripted client; ``None`` is one over the toy scripts.
+        client: The scripted client the extractor calls; ``None`` is a fresh one with the toy scripts.
+        cell_executor: What runs each run's cells; ``None`` is the engine's in-process default.
         kind_cell_timeout_s: The per-cell deadline the launcher wires for its kind
             (``KindWiring.cell_timeout_s``); ``None`` leaves the engine's default.
 
@@ -150,7 +153,7 @@ def toyhost_launch_host(
     eval_host = toyhost_host(profile=profile, storage=storage, trace_sink=trace_sink, clients=clients)
     world = eval_host.profile.world
     assert world is not None, "the toy host declares a world"
-    client = extraction_client if extraction_client is not None else ScriptedExtractionClient()
+    client = client if client is not None else ScriptedExtractionClient()
 
     def place(run: EvalRun) -> dict[str, WorldPlacement]:
         # The algebra over what this run's kind can actually do: the dimensions its seed sets,
@@ -228,6 +231,7 @@ def toyhost_launch_host(
         # The toy host has no timeout layer of its own, so a run's job is bounded by the engine's.
         job_timeout_factory=default_job_timeout,
         world_placements=place,
+        cell_executor=cell_executor,
     )
     return launch_host, client
 

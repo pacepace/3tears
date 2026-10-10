@@ -119,6 +119,7 @@ from threetears.evals.contracts.metrics import (
     MECHANICAL_FAMILY,
     METRIC_DESCRIPTORS,
     RUBRIC_FAMILY,
+    RUN_MARGIN_MEASURES,
     AttributionScope,
     ClassifierStatistic,
     GradedBy,
@@ -133,6 +134,7 @@ from threetears.evals.contracts.metrics import (
     goal_check_of,
     list_metrics,
     materiality,
+    run_margin_refusal,
 )
 from threetears.evals.contracts.models import (
     ApparatusSettingValue,
@@ -591,6 +593,7 @@ __all__ = [
     "NOT_ESTABLISHED",
     "MECHANICAL_FAMILY",
     "RUBRIC_FAMILY",
+    "RUN_MARGIN_MEASURES",
     "ClassifierStatistic",
     "GradedBy",
     "Materiality",
@@ -600,6 +603,7 @@ __all__ = [
     "confusion_cell",
     "confusion_of",
     "materiality",
+    "run_margin_refusal",
     "ModelRoleOrigin",
     "RoleModelOrigin",
     "NextStep",

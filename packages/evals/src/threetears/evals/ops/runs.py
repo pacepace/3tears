@@ -125,6 +125,14 @@ class LaunchArguments(EvalBaseModel):
     case_set_version: int | None = Field(
         default=None, ge=1, description="The version of case_set_name to run; required with it."
     )
+    measure_latency: bool = Field(
+        default=False,
+        description=(
+            "Declare latency under test: each run executes its cases one at a time, with no other run beside it. "
+            "False runs several cases at once — far faster — and the latency then recorded is marked read under "
+            "concurrency and never compared."
+        ),
+    )
 
     @model_validator(mode="after")
     def _a_case_set_names_its_version(self) -> LaunchArguments:
@@ -344,6 +352,7 @@ async def run_launch(host: OpsHost, arguments: LaunchArguments, scope_id: str) -
         scope_id=scope_id,
         cell_timeout_s=arguments.cell_timeout_s,
         case_set=arguments.case_set,
+        measure_latency=arguments.measure_latency,
     )
     return JobsStarted(
         jobs=[

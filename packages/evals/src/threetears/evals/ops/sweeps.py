@@ -9,7 +9,9 @@ neutral, because shared provider rate limits inflate the latency each arm measur
 arms, each with its own model, overlays and apparatus settings. It refuses up front whatever any arm's launch
 would refuse (each arm is quoted by the launch's own rule, :func:`~threetears.evals.run.quote_launch`), creates
 the named campaign, and starts one background job that launches the arms in order. By default one arm runs at a
-time (``max_concurrent_arms=1``), and a caller can raise it. Each arm's run joins the campaign as it is created,
+time (``max_concurrent_arms=1``), and a caller can raise it. Arms one after another do not share provider load,
+but a run's own cells still run side by side unless the sweep declares latency under test (``measure_latency``,
+passed to every arm's launch as ``run_launch`` takes it), which latency comparisons need. Each arm's run joins the campaign as it is created,
 so a sweep stopped part-way leaves its finished runs already members. The job is polled and cancelled through
 the ordinary job contract (``sweep:<sweep id>``). Its progress counts the arms launched and finished, and one
 cancel stops the arm in flight and launches none after it.
@@ -84,7 +86,7 @@ class SweepSettings(EvalBaseModel):
         default=1,
         ge=1,
         description="How many of a sweep's arms run at once. 1 (the default) runs them one after another, so no "
-        "arm's latency is measured under another's provider load.",
+        "arm shares another's provider load. To compare latency, also declare measure_latency.",
     )
     judge_model: Annotated[str | None, LaunchArguments.model_fields["judge_model"]] = None
     simulator_model: Annotated[str | None, LaunchArguments.model_fields["simulator_model"]] = None
@@ -92,6 +94,7 @@ class SweepSettings(EvalBaseModel):
     cell_timeout_s: Annotated[float | None, LaunchArguments.model_fields["cell_timeout_s"]] = None
     case_set_name: Annotated[str | None, LaunchArguments.model_fields["case_set_name"]] = None
     case_set_version: Annotated[int | None, LaunchArguments.model_fields["case_set_version"]] = None
+    measure_latency: Annotated[bool, LaunchArguments.model_fields["measure_latency"]] = False
 
     @property
     def case_set(self) -> CaseSetRef | None:
@@ -283,6 +286,7 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep)
                     max_cost_usd=arguments.max_cost_usd,
                     cell_timeout_s=arguments.cell_timeout_s,
                     case_set=arguments.case_set,
+                    measure_latency=arguments.measure_latency,
                     scope_id=scope_id,
                 )
             # prawduct:ok-broad-except — any refusal of one arm ends the sweep, recorded on its record

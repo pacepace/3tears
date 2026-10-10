@@ -40,9 +40,7 @@ def no_false_alarm(case: dict, label: str) -> bool:  # the engine reads its docs
 
 # 3. Run it over every case twice, print what the run measured, then read every miss.
 async def main() -> EvalSummary:
-    summary = await run_eval(
-        CASES, classify, [no_false_alarm], expected=lambda case: case["expected"], scope_id="rung-zero", k=2
-    )
+    summary = await run_eval(CASES, classify, [no_false_alarm], expected=lambda case: case["expected"], k=2)
     print(summary.render())
     print("\nWhat it got wrong, each case once per repeat:")
     for miss in summary.misses():

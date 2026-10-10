@@ -40,7 +40,7 @@ def _launching(
     )
     settings = TOYHOST_LAUNCH_SETTINGS.model_copy(update={"max_cell_timeout_s": max_cell_timeout_s})
     host, _client = toyhost_launch_host(
-        storage=storage, settings=lambda: settings, extraction_client=slow, kind_cell_timeout_s=kind_deadline_s
+        storage=storage, settings=lambda: settings, client=slow, kind_cell_timeout_s=kind_deadline_s
     )
     return host, storage
 

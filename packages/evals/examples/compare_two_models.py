@@ -9,7 +9,9 @@ against cost. New here: spend, and a margin.
 - **A margin.** "Good enough" means "no more than ``MARGIN`` less accurate". Only the verdict ``equivalent``
   supports that: an equivalence test shows the difference inside a margin declared on the measure.
   "Not separated" never does: it means these cases could not tell the models apart. ``margins=`` declares the
-  margin on the ``correct`` scorer; with none declared, no contrast can read ``equivalent``.
+  margin on accuracy, recorded on both runs; with none declared, no contrast can read ``equivalent``.
+- **Typed verdicts.** The decision branches on ``comparison.verdicts("accuracy")``, whose ``outcome`` is a value
+  (``"equivalent"``, ``"not_separated"``, ...), never on the printed words.
 
 Twelve emails cannot show a margin of 0.05. Two models that agree on every email need about a hundred
 emails (in this package's runs, 80 did not show it and 120 did). So expect "not separated" here, and read the
@@ -32,7 +34,7 @@ STAND_INS = {"current-stand-in": (1.00, 5.00), "cheaper-stand-in": (0.10, 0.50)}
 MARGIN = 0.05  # the most accuracy you would give up for the saving: declare it before you look at the results
 
 # -----------------------------------------------------------------------------
-# 1. The cases: each email, and the label a person gave it.
+# 1. The cases: each email, and the label a person gave it, which grades each answer (expected=).
 # -----------------------------------------------------------------------------
 
 CASES = [
@@ -57,17 +59,7 @@ PROMPT = """Label the email as exactly one of:
 Answer with the label only."""
 
 # -----------------------------------------------------------------------------
-# 2. The grade: a scorer, since a margin is declared on a scorer's measure.
-# -----------------------------------------------------------------------------
-
-
-def correct(case: Mapping[str, Any], label: str) -> bool:
-    """Whether the label is the one a person gave the email."""
-    return label == case["label"]
-
-
-# -----------------------------------------------------------------------------
-# 3. The candidates: a model's label, returned as an Answer that carries what the call cost.
+# 2. The candidates: a model's label, returned as an Answer that carries what the call cost.
 # -----------------------------------------------------------------------------
 
 Candidate = Callable[[Mapping[str, Any]], Awaitable[Answer]]
@@ -105,7 +97,7 @@ def offline_classifier(model: str) -> Candidate:
 
 
 # -----------------------------------------------------------------------------
-# 4. Run both models over every email twice, test the cheaper against the current one, and decide.
+# 3. Run both models over every email twice, test the cheaper against the current one, and decide.
 # -----------------------------------------------------------------------------
 
 WHAT_TO_DO = {
@@ -113,7 +105,7 @@ WHAT_TO_DO = {
     "equivalent": f"the cheaper model is shown within {MARGIN} of the current one: it is good enough, so switch "
     "if the spend row shows the saving.",
     "regressed": "the cheaper model is shown less accurate: switch only if the interval's loss is worth the saving.",
-    "not separated": "these cases could not tell the models apart, which does not show the cheaper one is good "
+    "not_separated": "these cases could not tell the models apart, which does not show the cheaper one is good "
     "enough. Keep the current model, and add cases (hard ones first) until the verdict is decided.",
     "untested": "no test could decide; the verdict says why.",
 }
@@ -130,11 +122,10 @@ async def main() -> Comparison:
     comparison = await compare(
         CASES,
         {current: make(current), cheaper: make(cheaper)},
-        [correct],
+        expected=lambda case: case["label"],  # grades each answer against its label: the report reads Accuracy
         factors=("model",),  # the arms ARE models: each key is its run's model, and the report reads model=<key>
-        margins={"correct": MARGIN},  # declared on the scorer, so a contrast on it can read "equivalent"
+        margins={"accuracy": MARGIN},  # recorded on both runs, so a contrast on accuracy can read "equivalent"
         control=current,
-        scope_id="compare-two-models",
         k=2,
     )
     for arm, summary in comparison.arms.items():
@@ -147,9 +138,8 @@ async def main() -> Comparison:
         print(f"{row['arm']} vs {comparison.control} on {row['reading']}: {row['control_mean']:.3g} -> ", end="")
         print(f"{row['arm_mean']:.3g}, delta {row['delta']:+.3g}, interval {row['interval']}{p}: {row['verdict']}")
 
-    (accuracy,) = comparison.contrasts("correct")
-    verdict = next(verdict for verdict in WHAT_TO_DO if accuracy["verdict"].startswith(verdict))
-    print(f"\nOn accuracy, {verdict}: {WHAT_TO_DO[verdict]}")
+    (accuracy,) = comparison.verdicts("accuracy")  # typed: branch on its outcome, never on the printed words
+    print(f"\nOn accuracy, {accuracy.outcome.replace('_', ' ')}: {WHAT_TO_DO[accuracy.outcome]}")
 
     print("\nWhere the models disagree:")
     for index, case in enumerate(CASES):

@@ -42,9 +42,12 @@ from threetears.evals.analysis.report.model import (
     TableBlock,
     TableColumn,
     TextBlock,
+    Verdict,
+    VerdictReason,
 )
 from threetears.evals.analysis.report.words import (
     ARM_STATUS_WORDS,
+    BAR_DECISION_WORDS,
     COMPARISON_VERDICT_WORDS,
     CONFIDENCE_WORDS,
     EVIDENCE_COLUMNS,
@@ -67,7 +70,7 @@ from threetears.evals.analysis.viz.payloads import PayloadError
 from threetears.evals.analysis.viz.policy import IntentPolicyError
 from threetears.evals.analysis.viz_refs import DistributionRef, build_viz_payload, cell_arm_labels
 from threetears.evals.contracts.authored import NO_CHART, Finding
-from threetears.evals.contracts.campaign import EvalAnalysis, FindingResolution, ReadingKind, Viz
+from threetears.evals.contracts.campaign import EvalAnalysis, EvidenceRow, FindingResolution, ReadingKind, Viz
 from threetears.evals.contracts.host.measures import MeasureRegistry
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.stats import EQUIVALENCE_NEEDS_RANGE, INTERVAL_LEVEL
@@ -159,7 +162,9 @@ def build_report(analysis: EvalAnalysis) -> Report:
                 )
             )
 
-    blocks.extend(_guardrail_blocks(surface, surface.guardrails, _cell_namer(surface, analysis.variant_index)))
+    cell_name = _cell_namer(surface, analysis.variant_index)
+    guardrails_read = guardrail_verdicts(surface, surface.guardrails, cell_name)
+    blocks.extend(_guardrail_blocks(surface, surface.guardrails, cell_name, guardrails_read))
 
     resolutions: list[FindingResolution | None] = (
         list(analysis.resolutions) if analysis.resolutions else [None] * len(document.findings)
@@ -177,6 +182,10 @@ def build_report(analysis: EvalAnalysis) -> Report:
         )
 
     blocks.extend(_arm_blocks(arm_table(analysis)))
+    # Compiled from the frozen surface by the code-only report's own compiler, with no model in the loop, and
+    # ahead of the table: the chart is the reading form, the table the audit form (#643). A stored analysis
+    # carries no host registry, and a distribution reads none.
+    blocks.extend(_surface_chart_blocks(surface, analysis.variant_index, MeasureRegistry([])))
     blocks.extend(_surface_blocks(build_surface_table(analysis)))
     blocks.extend(_strata_blocks(analysis.decision_surface, analysis.variant_index))
 
@@ -206,6 +215,7 @@ def build_report(analysis: EvalAnalysis) -> Report:
             bundle_fingerprint=generation.bundle_fingerprint,
         ),
         blocks=blocks,
+        verdicts=[*guardrails_read, *bar_verdicts(surface, cell_name)],
     )
 
 
@@ -270,6 +280,10 @@ def _finding_blocks(
     if finding.body.strip():
         blocks.append(TextBlock(section="findings", role="finding_body", finding=position, body=finding.body))
     if resolution is not None and resolution.evidence:
+        if resolution.chart is None:
+            # The evidence compiled to the chart that leads it, where it compares arms and the author's own
+            # chart did not draw: a finding already carrying a drawn chart is not given a second one.
+            blocks.extend(_evidence_chart_blocks(analysis, position, resolution.evidence))
         rows = evidence_rows(analysis, resolution.evidence, arm)
         blocks.append(
             TableBlock(
@@ -306,6 +320,58 @@ def _finding_blocks(
     return blocks
 
 
+def _evidence_chart_blocks(analysis: EvalAnalysis, position: int, evidence: Sequence[EvidenceRow]) -> list[ReportBlock]:
+    """A finding's evidence table compiled to charts: one distribution per reading it cites at two or more cells.
+
+    The same compiler the surface charts take, so a cited reading is drawn as the surface draws it. A reading
+    cited at one cell compares nothing and stays a row; a chart this build cannot draw is disclosed with the
+    reason rather than dropped (#643).
+
+    Args:
+        analysis: The analysis, whose frozen surface every number is read from.
+        position: The finding's position.
+        evidence: The finding's resolved rows.
+
+    Returns:
+        The chart blocks, in the order the readings were first cited.
+    """
+    cited: dict[tuple[str, ReadingKind], list[str]] = {}
+    for row in evidence:
+        cells = cited.setdefault((row.measure_id, row.reading), [])
+        if row.cell_ref not in cells:
+            cells.append(row.cell_ref)
+    blocks: list[ReportBlock] = []
+    for (name, reading), cells in cited.items():
+        if len(cells) < 2:
+            continue
+        try:
+            payload = build_viz_payload(
+                DistributionRef(cells=cells, measure_id=name, reading=reading),
+                analysis.decision_surface,
+                list(analysis.variant_index),
+                measures=MeasureRegistry([]),
+            )
+            blocks.append(
+                ChartBlock(
+                    section="findings",
+                    finding=position,
+                    viz_type="distribution",
+                    intent=chart_intent("distribution", payload),
+                )
+            )
+        except (UnresolvableReference, PayloadError, IntentPolicyError) as undrawable:
+            what = f"{name} (judged)" if reading == "judged" else name
+            blocks.append(
+                DisclosureBlock(
+                    section="findings",
+                    finding=position,
+                    source="chart",
+                    text=f"The {what} evidence chart cannot be drawn: {undrawable}.",
+                )
+            )
+    return blocks
+
+
 #: The ``Scope`` fact on a finding resting wholly on readings no declared question asked about.
 EXPLORATORY_FINDING = (
     "exploratory: it rests on no reading a declared question asked about, so it is a lead, not an answer"
@@ -315,7 +381,9 @@ EXPLORATORY_FINDING = (
 _GUARDRAILS_DISCLOSURE = (
     "A guardrail is what an arm must not get worse on. Each is decided on its own 95% interval on the difference "
     "from the control: held when the whole interval lies on the good side of the margin, breached when it lies "
-    "wholly beyond it, undecided otherwise. A measure's margin is its declared materiality threshold, a judged "
+    "wholly beyond it, undecided otherwise. On a declared range the interval is the bounded test's, which holds "
+    "its error rate at any number of cases; a reading with no declared range is never held, since no test holds "
+    "its rate there, and can only be shown breached. A measure's margin is its declared materiality threshold, a judged "
     "dimension's the one its campaign declares; with none, a guardrail is held at zero change. Guardrails join no comparison and no composite, so no "
     "gain elsewhere offsets one; an arm with a breached guardrail is not adopted, and an undecided guardrail is "
     "not known to be safe."
@@ -391,10 +459,100 @@ def _cell_namer(surface: DecisionSurface, variant_index: Sequence[VariantIndexEn
     return name
 
 
-def _guardrail_blocks(
+def guardrail_verdicts(
     surface: DecisionSurface, guardrails: GuardrailReadings | None, arm: Callable[[str, str], str]
+) -> list[Verdict]:
+    """Each guardrail check as a typed verdict, in the guardrails table's row order; the table prints their words."""
+    if guardrails is None or guardrails.withheld is not None:
+        return []
+    verdicts = []
+    for check in guardrails.checks:
+        reason: VerdictReason = (
+            "within_margin"
+            if check.decision == "held"
+            else "beyond_margin"
+            if check.decision == "breached"
+            else "no_interval"
+            if check.interval is None
+            else "interval_straddles"
+        )
+        verdicts.append(
+            Verdict(
+                kind="guardrail",
+                outcome=check.decision,
+                reason=reason,
+                reason_detail=check.undecided_reason,
+                reading=check.reading,
+                name=check.name,
+                heading=surface.measure_heading(check.name, check.reading),
+                arm=arm(check.contrast.variant_key, check.contrast.apparatus_class_id),
+                variant_key=check.contrast.variant_key,
+                apparatus_class_id=check.contrast.apparatus_class_id,
+                control=arm(check.control.variant_key, check.control.apparatus_class_id),
+                delta=check.delta,
+                interval=check.interval,
+                interval_level=INTERVAL_LEVEL if check.interval is not None else None,
+                margin=check.margin,
+                margin_source=(
+                    None if not check.margin_declared else "campaign" if check.reading == "judged" else "measure"
+                ),
+                guardrail=True,
+                words=GUARDRAIL_DECISION_WORDS[check.decision]
+                + (f" ({check.undecided_reason})" if check.undecided_reason else ""),
+            )
+        )
+    return verdicts
+
+
+def bar_verdicts(surface: DecisionSurface, arm: Callable[[str, str], str]) -> list[Verdict]:
+    """Each adjudicated bar's reading on each cell as a typed verdict, bar by bar in the surface's order."""
+    reasons: dict[str, VerdictReason] = {
+        "cleared": "interval_clears",
+        "missed": "interval_misses",
+        "undecided": "interval_straddles",
+        "no_interval": "too_few_observations",
+        "no_data": "no_observations",
+    }
+    verdicts = []
+    for bar in surface.bars:
+        if bar.state != "adjudicated":
+            continue
+        reading: ReadingKind = "judged" if bar.measure_id in surface.dimensions else "measure"
+        for read in bar.verdicts:
+            interval = (read.ci_low, read.ci_high) if read.ci_low is not None and read.ci_high is not None else None
+            verdicts.append(
+                Verdict(
+                    kind="bar",
+                    outcome=read.decision,
+                    reason=reasons[read.decision],
+                    reading=reading,
+                    name=bar.measure_id,
+                    heading=surface.measure_heading(bar.measure_id, reading),
+                    arm=arm(read.variant_key, read.apparatus_class_id),
+                    variant_key=read.variant_key,
+                    apparatus_class_id=read.apparatus_class_id,
+                    interval=interval,
+                    value=read.value,
+                    threshold=bar.threshold,
+                    margin=read.margin,
+                    margin_source="measure" if read.margin is not None else None,
+                    words=BAR_DECISION_WORDS[read.decision],
+                )
+            )
+    return verdicts
+
+
+def _guardrail_blocks(
+    surface: DecisionSurface,
+    guardrails: GuardrailReadings | None,
+    arm: Callable[[str, str], str],
+    verdicts: Sequence[Verdict],
 ) -> list[ReportBlock]:
-    """The guardrails section: each guardrail, held, breached or undecided for each arm against the control."""
+    """The guardrails section: each guardrail, held, breached or undecided for each arm against the control.
+
+    ``verdicts`` are :func:`guardrail_verdicts` over the same readings, row for row; each row's decision is its
+    verdict's words.
+    """
     if guardrails is None:
         return []
     blocks: list[ReportBlock] = []
@@ -403,8 +561,8 @@ def _guardrail_blocks(
     elif guardrails.checks:
         rows: list[dict[str, Cell]] = [
             {
-                "guardrail": surface.measure_heading(check.name, check.reading),
-                "arm": arm(check.contrast.variant_key, check.contrast.apparatus_class_id),
+                "guardrail": verdict.heading,
+                "arm": verdict.arm,
                 "control_mean": check.control.mean,
                 "arm_mean": check.contrast.mean,
                 "cases": (
@@ -417,12 +575,11 @@ def _guardrail_blocks(
                 if check.interval is None
                 else f"[{format_number(check.interval[0])}, {format_number(check.interval[1])}] at "
                 f"{format_number(100 * INTERVAL_LEVEL)}%"
-                + (" (bounded: every case moved alike)" if check.interval_basis == "bounded" else ""),
+                + (" (t: no declared range)" if check.interval_basis == "t" else ""),
                 "margin": format_number(check.margin) if check.margin_declared else "0 (none declared)",
-                "decision": GUARDRAIL_DECISION_WORDS[check.decision]
-                + (f" ({check.undecided_reason})" if check.undecided_reason else ""),
+                "decision": verdict.words,
             }
-            for check in guardrails.checks
+            for check, verdict in zip(guardrails.checks, verdicts, strict=True)
         ]
         blocks.append(
             TableBlock(
@@ -924,7 +1081,10 @@ def build_code_only_report(
     variant_index = bundle.variant_index
     blocks: list[ReportBlock] = [DisclosureBlock(section="summary", source="generation", text=NO_ANALYSIS)]
     blocks.extend(_question_blocks(bundle))
-    blocks.extend(_guardrail_blocks(surface, bundle.guardrails, _cell_namer(surface, variant_index)))
+    cell_name = _cell_namer(surface, variant_index)
+    guardrails_read = guardrail_verdicts(surface, bundle.guardrails, cell_name)
+    contrasts_read = contrast_verdicts(bundle, surface)
+    blocks.extend(_guardrail_blocks(surface, bundle.guardrails, cell_name, guardrails_read))
     blocks.extend(
         _arm_blocks(
             arm_table_of(
@@ -936,10 +1096,11 @@ def build_code_only_report(
             )
         )
     )
+    # The charts lead the surface table they draw: the chart is the reading form, the table the audit form.
+    blocks.extend(_measure_chart_blocks(surface, bundle, measures))
     blocks.extend(_surface_blocks(surface_table_of(surface, variant_index), provenance=False))
     blocks.extend(_strata_blocks(surface, variant_index))
-    blocks.extend(_comparison_blocks(bundle, surface))
-    blocks.extend(_measure_chart_blocks(surface, bundle, measures))
+    blocks.extend(_comparison_blocks(bundle, surface, contrasts_read))
     blocks.extend(_label_blocks(surface, variant_index))
     blocks.extend(_time_axis_blocks(surface.time_axis))
     if bundle.time_axis_withheld:
@@ -971,6 +1132,7 @@ def build_code_only_report(
             bundle_fingerprint=fingerprint,
         ),
         blocks=blocks,
+        verdicts=[*guardrails_read, *bar_verdicts(surface, cell_name), *contrasts_read],
     )
 
 
@@ -1058,30 +1220,121 @@ def _comparison_interval(interval: tuple[float, float] | None, level: float | No
     return f"[{format_number(interval[0])}, {format_number(interval[1])}] at {format_number(100 * level)}%"
 
 
-def _immaterial_words(bundle: AnalysisContextBundle, comparison: FamilyComparison, heading: str) -> str:
+def _contrast_margin(bundle: AnalysisContextBundle, comparison: FamilyComparison) -> float | None:
+    """The margin a contrast's reading has — its equivalence margin, or the margin no equivalence test could read."""
+    if comparison.equivalence_margin is not None:
+        return comparison.equivalence_margin
+    if comparison.reading != "measure":
+        return None
+    descriptor = bundle.measure_catalog.get(comparison.name)
+    if descriptor is not None and descriptor.materiality_threshold is not None:
+        return descriptor.materiality_threshold
+    return bundle.run_margins.get(comparison.name)
+
+
+def _immaterial_words(margin: float | None, heading: str) -> str:
     """The caveat an immaterial row carries, naming the margin it was read against and the reading it is on.
 
     In the reader's terms — the margin they declared, on the reading the row names — rather than the descriptor
     field it is stored in, which a first comparison's reader has never seen.
     """
-    descriptor = bundle.measure_catalog.get(comparison.name) if comparison.reading == "measure" else None
-    margin = None if descriptor is None else descriptor.materiality_threshold
     where = "the margin declared on it" if margin is None else f"the margin of ±{format_number(margin)} on {heading}"
     return f" — immaterial: the observed delta is inside {where}, which does not show the true difference is that small"
 
 
-def _comparison_blocks(bundle: AnalysisContextBundle, surface: DecisionSurface) -> list[ReportBlock]:
-    """Each contrast the bundle tested against the control, per live question, and how the family was corrected."""
+def _contrast_reason(comparison: FamilyComparison) -> tuple[VerdictReason, str | None]:
+    """Why a contrast's verdict is what it is, as a code and, where there is more to say, in words."""
+    if comparison.verdict == "untested":
+        return "untestable", comparison.untested_reason
+    if comparison.verdict in ("improved", "regressed"):
+        return "separated", None
+    if comparison.verdict == "equivalent":
+        return "inside_margin", None
+    if comparison.margin_source is None:
+        return "no_margin", None
+    if comparison.equivalence_p_adjusted is None:
+        return "margin_untested", comparison.equivalence_untested_reason or (
+            "the test was unpaired, and the equivalence test reads only cases both arms ran"
+        )
+    return "not_inside_margin", None
+
+
+def contrast_verdicts(bundle: AnalysisContextBundle, surface: DecisionSurface) -> list[Verdict]:
+    """Each contrast the bundle tested against the control as a typed verdict, in the contrasts table's row order.
+
+    The table's verdict cell is each one's words, so a program reading :attr:`Verdict.outcome` and a person reading
+    the cell read one verdict.
+    """
+    arm = _cell_namer(surface, bundle.variant_index)
+    verdicts = []
+    for family in bundle.multiple_comparisons.families:
+        for comparison in family.comparisons:
+            heading = surface.measure_heading(comparison.name, comparison.reading)
+            margin = _contrast_margin(bundle, comparison)
+            reason, detail = _contrast_reason(comparison)
+            words = (
+                COMPARISON_VERDICT_WORDS[comparison.verdict]
+                + (f" ({comparison.untested_reason})" if comparison.untested_reason else "")
+                + (
+                    f" (margin ±{format_number(margin)}"
+                    + (", declared on the runs" if comparison.margin_source == "run" else "")
+                    + ")"
+                    if comparison.verdict == "equivalent" and margin is not None
+                    else ""
+                )
+                + (
+                    # The observed delta, not the true one: only `equivalent` shows the difference is small, and an
+                    # `equivalent` row already says so through its margin, so the caveat would contradict the verdict.
+                    _immaterial_words(margin, heading)
+                    if comparison.materiality == "immaterial" and comparison.verdict != "equivalent"
+                    else ""
+                )
+            )
+            verdicts.append(
+                Verdict(
+                    kind="contrast",
+                    outcome=comparison.verdict,
+                    reason=reason,
+                    reason_detail=detail,
+                    reading=comparison.reading,
+                    name=comparison.name,
+                    heading=heading,
+                    arm=arm(comparison.contrast.variant_key, comparison.contrast.apparatus_class_id),
+                    variant_key=comparison.contrast.variant_key,
+                    apparatus_class_id=comparison.contrast.apparatus_class_id,
+                    control=arm(comparison.control.variant_key, comparison.control.apparatus_class_id),
+                    question_id=family.question_id,
+                    delta=comparison.delta,
+                    interval=comparison.interval,
+                    interval_level=family.interval_level if comparison.interval is not None else None,
+                    p_adjusted=comparison.p_adjusted,
+                    margin=margin,
+                    margin_source=comparison.margin_source,
+                    materiality=comparison.materiality,
+                    words=words,
+                )
+            )
+    return verdicts
+
+
+def _comparison_blocks(
+    bundle: AnalysisContextBundle, surface: DecisionSurface, verdicts: Sequence[Verdict]
+) -> list[ReportBlock]:
+    """Each contrast the bundle tested against the control, per live question, and how the family was corrected.
+
+    ``verdicts`` are :func:`contrast_verdicts` over the same bundle, row for row; each row's verdict is its words.
+    """
     comparisons = bundle.multiple_comparisons
     if not comparisons.families:
         if comparisons.withheld:
             return [DisclosureBlock(section="surface", source="comparisons", text=comparisons.withheld)]
         return []
-    arm = _cell_namer(surface, bundle.variant_index)
+    typed = iter(verdicts)
 
     rows: list[dict[str, Cell]] = []
     for family in comparisons.families:
         for comparison in family.comparisons:
+            verdict = next(typed)
             rows.append(
                 {
                     "question": (
@@ -1089,9 +1342,9 @@ def _comparison_blocks(bundle: AnalysisContextBundle, surface: DecisionSurface) 
                         if family.question_id is not None
                         else "(campaign-wide)"
                     ),
-                    "reading": surface.measure_heading(comparison.name, comparison.reading),
-                    "contrast": arm(comparison.contrast.variant_key, comparison.contrast.apparatus_class_id),
-                    "control": arm(comparison.control.variant_key, comparison.control.apparatus_class_id),
+                    "reading": verdict.heading,
+                    "contrast": verdict.arm,
+                    "control": verdict.control,
                     "control_mean": comparison.control.mean,
                     "arm_mean": comparison.contrast.mean,
                     "cases": _comparison_cases(comparison),
@@ -1099,23 +1352,7 @@ def _comparison_blocks(bundle: AnalysisContextBundle, surface: DecisionSurface) 
                     "interval": _comparison_interval(comparison.interval, family.interval_level),
                     "hedges_g": comparison.hedges_g,
                     "p_adjusted": comparison.p_adjusted,
-                    "verdict": COMPARISON_VERDICT_WORDS[comparison.verdict]
-                    + (f" ({comparison.untested_reason})" if comparison.untested_reason else "")
-                    + (
-                        f" (margin ±{format_number(comparison.equivalence_margin)})"
-                        if comparison.verdict == "equivalent" and comparison.equivalence_margin is not None
-                        else ""
-                    )
-                    + (
-                        # The observed delta, not the true one: only `equivalent` shows the difference is small,
-                        # and an `equivalent` row already says so through its margin, so the caveat would
-                        # contradict the verdict it sits beside.
-                        _immaterial_words(
-                            bundle, comparison, surface.measure_heading(comparison.name, comparison.reading)
-                        )
-                        if comparison.materiality == "immaterial" and comparison.verdict != "equivalent"
-                        else ""
-                    ),
+                    "verdict": verdict.words,
                 }
             )
     blocks: list[ReportBlock] = [
@@ -1164,6 +1401,8 @@ def _comparison_blocks(bundle: AnalysisContextBundle, surface: DecisionSurface) 
                 text=f"Equivalence untested on {_listed(unranged)}: {EQUIVALENCE_NEEDS_RANGE}.",
             )
         )
+    if bundle.run_margins_withheld is not None:
+        blocks.append(DisclosureBlock(section="surface", source="comparisons", text=bundle.run_margins_withheld))
     return blocks
 
 
@@ -1190,13 +1429,9 @@ def _measure_chart_blocks(
       (the bundle leaves its stored zeros out), so there is nothing to chart; the bundle's one sentence saying
       so stands in its place, naming the arms when only some went unmeasured.
     """
-    readings: list[tuple[str, ReadingKind]] = [
-        *((name, "measure") for name, facts in sorted(surface.measures.items()) if _chartable(name, facts, surface)),
-        *((name, "judged") for name in sorted(surface.dimensions)),
-    ]
+    blocks: list[ReportBlock] = []
     cells = cell_index(surface)
     labels = cell_arm_labels(surface, bundle.variant_index)
-    blocks: list[ReportBlock] = []
     if bundle.cost_unmeasured:
         unmeasured = [cell_ref(cell.variant_key, cell.apparatus_class_id) for cell in bundle.cost_unmeasured_cells]
         named = (
@@ -1205,6 +1440,42 @@ def _measure_chart_blocks(
             else " Unmeasured: " + "; ".join(labels.get(ref, ref) for ref in unmeasured) + "."
         )
         blocks.append(DisclosureBlock(section="surface", source="measurement", text=bundle.cost_unmeasured + named))
+    if bundle.latency_contended:
+        contended = [cell_ref(cell.variant_key, cell.apparatus_class_id) for cell in bundle.latency_contended_cells]
+        named = (
+            ""
+            if len(contended) == len(cells)
+            else " Read under concurrency: " + "; ".join(labels.get(ref, ref) for ref in contended) + "."
+        )
+        blocks.append(DisclosureBlock(section="surface", source="measurement", text=bundle.latency_contended + named))
+    blocks.extend(_surface_chart_blocks(surface, bundle.variant_index, measures))
+    return blocks
+
+
+def _surface_chart_blocks(
+    surface: DecisionSurface, variant_index: Sequence[VariantIndexEntry], measures: MeasureRegistry
+) -> list[ReportBlock]:
+    """The decision surface's readings compiled to charts, one distribution per chartable reading (#643).
+
+    The one compiler both reports use, so a stored analysis's surface is drawn exactly as a code-only
+    report's is, and ahead of the surface table: the chart is the reading form, the table the audit form.
+    A reading drawn at fewer than two cells has nothing to compare, so it stays in the table alone.
+
+    Args:
+        surface: The decision surface.
+        variant_index: How each cell is labelled.
+        measures: The host's measure registry, which a payload reads.
+
+    Returns:
+        The chart blocks and the disclosures of what they left out.
+    """
+    readings: list[tuple[str, ReadingKind]] = [
+        *((name, "measure") for name, facts in sorted(surface.measures.items()) if _chartable(name, facts, surface)),
+        *((name, "judged") for name in sorted(surface.dimensions)),
+    ]
+    cells = cell_index(surface)
+    labels = cell_arm_labels(surface, list(variant_index))
+    blocks: list[ReportBlock] = []
     for name, reading in readings:
         drawn: list[str] = []
         left_out: list[str] = []
@@ -1231,15 +1502,15 @@ def _measure_chart_blocks(
                     ),
                 )
             )
-        if not drawn:
-            # Every cell that measured it was left out, which the disclosure above already says — or no
-            # cell measured it at all, and there is nothing to chart and nothing withheld.
+        if len(drawn) < 2:
+            # Nothing to compare: every cell that measured it was left out (the disclosure above says so), one
+            # cell drew it (the table states that one figure), or no cell measured it at all.
             continue
         try:
             payload = build_viz_payload(
                 DistributionRef(cells=drawn, measure_id=name, reading=reading),
                 surface,
-                bundle.variant_index,
+                list(variant_index),
                 measures=measures,
             )
             blocks.append(
