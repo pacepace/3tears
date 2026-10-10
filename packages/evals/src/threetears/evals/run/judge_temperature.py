@@ -25,7 +25,7 @@ run that has finished, over the machinery a judge repeat uses (:mod:`threetears.
 - **Spent here, read there.** This module asks and returns every answer
   (:class:`~threetears.evals.kernel.JudgeTemperatureAnswers`); the reading — per-case variance and self-agreement at
   each setting, side by side — is :func:`~threetears.evals.analysis.read_judge_temperatures`, which spends nothing.
-  The ``judge_temperature`` operation and the ``judge-temperature`` command do both.
+  The ``judge_temperature`` operation (as a job) and the ``judge-temperature`` command (in the foreground) do both.
 - **The temperature sent is checked, never assumed.** Each answer records the temperature its client reports sending
   (:func:`~threetears.evals.run.judge.sent_temperature`). A run whose every borderline score records that its model
   was sent none (a model that refuses a temperature) is refused before anything is spent: both sides would be the
@@ -42,8 +42,9 @@ run that has finished, over the machinery a judge repeat uses (:mod:`threetears.
 
 from __future__ import annotations
 
+import asyncio
 import math
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -68,6 +69,7 @@ from threetears.evals.run.judge_repeat import (
     BudgetedJudgeClient,
     CollectedRepeat,
     PlannedRepeat,
+    cancelled_partway,
     collect_repeatable,
     planned_judge_call,
 )
@@ -398,12 +400,17 @@ async def judge_at_two_temperatures(
     selection: TemperatureSelection = "borderline",
     repeats: int = DEFAULT_TEMPERATURE_REPEATS,
     result_ids: Sequence[str] | None = None,
+    on_progress: Callable[[JudgeTemperatureAnswers], Awaitable[None]] | None = None,
 ) -> JudgeTemperatureAnswers:
     """Re-judge a finished run's borderline cases ``repeats`` times at each temperature, and return every answer.
 
     Every call is priced and admitted against ``out_of_run_cap_usd`` before the first is sent, so a comparison the
     cap refuses has spent nothing. Nothing is written to the results. Read the answers with
     :func:`~threetears.evals.analysis.read_judge_temperatures`.
+
+    A comparison cancelled partway (its task cancelled — a job's ``job_cancel``) makes no further call:
+    ``on_progress`` is handed every answer it had, ``stopped`` naming the cancellation, before the cancellation
+    propagates.
 
     Args:
         host: The host: the run's store, its judge clients — through the run-pinned resolution the run scored
@@ -414,6 +421,8 @@ async def judge_at_two_temperatures(
         selection: ``borderline`` (the default: see :func:`borderline_dims`) or ``all`` scored dims.
         repeats: Calls per dim per setting, at least :data:`~threetears.evals.kernel.MIN_TEMPERATURE_REPEATS`.
         result_ids: The results to draw from; ``None`` for every result of the run.
+        on_progress: Handed every answer so far after each result is re-judged, and when the comparison is
+            cancelled; ``None`` for nobody. A job's record is written from it.
 
     Returns:
         Per case and setting every answer in call order, the case count and the spend.
@@ -437,10 +446,19 @@ async def judge_at_two_temperatures(
     )
     answered: dict[tuple[str, str, TemperatureSetting], list[JudgeOutcome]] = {}
     stopped: str | None = None
+
+    def answers_now() -> JudgeTemperatureAnswers:
+        return _answers(
+            prepared, answered, selection=selection, repeats=repeats, stopped=stopped, cap=out_of_run_cap_usd
+        )
+
+    done = 0
+    asking: str | None = None
     try:
         for client, calls in prepared.calls:
             client.admit(calls)
         for one, context in zip(prepared.planned, prepared.contexts, strict=True):
+            asking = one.result.id
             for _ in range(repeats):
                 for setting, _, _ in TEMPERATURE_SETTINGS:
                     outcomes = await judge_dims(
@@ -461,8 +479,43 @@ async def judge_at_two_temperatures(
                     break
             if stopped:
                 break
+            done += 1
+            asking = None
+            if on_progress is not None:
+                await on_progress(answers_now())
+    except asyncio.CancelledError:
+        # The in-flight result's answers are dropped: its two settings were part-way through their rounds, so keeping
+        # them would read one side over more repeats than the other. Their calls are on the ledger all the same.
+        if asking is not None:
+            answered = {key: outcomes for key, outcomes in answered.items() if key[0] != asking}
+        stopped = cancelled_partway(done, len(prepared.planned), asking)
+        if on_progress is not None:
+            await on_progress(answers_now())
+        raise
     finally:
         await _close(prepared.services)
+    answers = answers_now()
+    log.info(
+        "eval.judge_temperature run=%s cases=%d repeats=%d calls=%d cost=%s",
+        answers.run_id,
+        answers.cases,
+        repeats,
+        answers.calls_made,
+        "unpriced" if answers.cost_usd is None else f"${answers.cost_usd:.6f}",
+    )
+    return answers
+
+
+def _answers(
+    prepared: _Prepared,
+    answered: dict[tuple[str, str, TemperatureSetting], list[JudgeOutcome]],
+    *,
+    selection: TemperatureSelection,
+    repeats: int,
+    stopped: str | None,
+    cap: float | None,
+) -> JudgeTemperatureAnswers:
+    """Every answer so far, per case and setting in call order, with the spend the budget has recorded."""
     cases: list[TemperatureCaseAnswers] = []
     for one in prepared.planned:
         for dim in one.dims:
@@ -493,7 +546,7 @@ async def judge_at_two_temperatures(
                 )
     spends = prepared.budget.recorded
     costs = [spend.cost_usd for spend in spends]
-    answers = JudgeTemperatureAnswers(
+    return JudgeTemperatureAnswers(
         run_id=prepared.run_id,
         judge_model=prepared.judge_model,
         selection=selection,
@@ -505,17 +558,8 @@ async def judge_at_two_temperatures(
         stopped=stopped,
         calls_made=len(spends),
         cost_usd=None if None in costs else math.fsum(c for c in costs if c is not None),
-        cap_usd=out_of_run_cap_usd,
+        cap_usd=cap,
     )
-    log.info(
-        "eval.judge_temperature run=%s cases=%d repeats=%d calls=%d cost=%s",
-        answers.run_id,
-        answers.cases,
-        repeats,
-        answers.calls_made,
-        "unpriced" if answers.cost_usd is None else f"${answers.cost_usd:.6f}",
-    )
-    return answers
 
 
 __all__ = [

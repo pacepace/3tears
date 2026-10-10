@@ -2,7 +2,8 @@
 
 Each operation takes the host and the scope and returns a typed value, so the surfaces above read one
 shape rather than each re-typing an untyped ``dict``. Long work follows **one job contract**: an
-operation that starts it (:func:`run_launch`, :func:`analysis_generate`) returns a :class:`JobsStarted`
+operation that starts it (:func:`run_launch`, :func:`sweep_launch`, :func:`analysis_generate`, and the judge
+jobs :func:`judge_second`, :func:`judge_drift_check` and :func:`judge_temperature`) returns a :class:`JobsStarted`
 naming one job per piece of work, and :func:`job_poll` / :func:`job_cancel` take any job id either
 returned. A job is the name of the durable record its work writes as it ends, so a job id stays
 answerable across a restart.
@@ -89,7 +90,11 @@ from threetears.evals.ops.jobs import (
     run_job_id,
     SWEEP_JOB_PREFIX,
     sweep_job_id,
+    JUDGE_JOB_PREFIX,
+    judge_job_id,
 )
+from threetears.evals.ops.judge_jobs import judge_drift_check, judge_second, judge_temperature
+from threetears.evals.ops.judge_reads import SecondJudgeRead, read_second_judge
 from threetears.evals.ops.sweeps import SweepArguments, SweepArm, SweepSettings, sweep_launch
 from threetears.evals.analysis import (
     CostEstimate,
@@ -170,15 +175,11 @@ from threetears.evals.ops.runs import (
     RunDeleted,
     RunLine,
     RunListing,
-    SecondJudgeRead,
     TemplateLine,
     TemplateListing,
-    judge_drift_check,
     judge_repeat,
     judge_repeat_estimate,
-    judge_temperature,
     judge_temperature_estimate,
-    judge_second,
     judge_second_estimate,
     result_rate,
     run_archive,
@@ -202,6 +203,9 @@ from threetears.evals.analysis.summary import (
 
 __all__ = [
     "SWEEP_JOB_PREFIX",
+    "JUDGE_JOB_PREFIX",
+    "judge_job_id",
+    "read_second_judge",
     "SweepArguments",
     "SweepArm",
     "SweepSettings",

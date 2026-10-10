@@ -32,10 +32,11 @@ Both are one operation, :func:`ask_second_judge`, over the machinery a judge rep
 
 from __future__ import annotations
 
+import asyncio
 import math
 import random
 import uuid
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -43,6 +44,7 @@ from pydantic import ValidationError as PydanticValidationError
 
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, StorageError, ValidationFailedError
+from threetears.evals.kernel.judge_second import SecondJudgeReport, SecondJudgeSkip
 from threetears.evals.schema.models import (
     NON_TERMINAL_RUN_STATUSES,
     EvalResult,
@@ -54,7 +56,7 @@ from threetears.evals.schema.models import (
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.out_of_run import OutOfRunBudget, PlannedCall
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS, JUDGE_REQUEST_SETTINGS
-from threetears.evals.run.judge_repeat import BudgetedJudgeClient, planned_judge_call
+from threetears.evals.run.judge_repeat import BudgetedJudgeClient, cancelled_partway, planned_judge_call
 from threetears.evals.run.judge_service import JudgeService
 from threetears.evals.run.rejudge import (
     ReproducibleJudgeInputs,
@@ -79,13 +81,6 @@ _WRITE_ATTEMPTS = 3
 
 #: The seed a pass is drawn with when the caller names none — fixed, so an unseeded call is still reproducible.
 DEFAULT_SECOND_JUDGE_SEED = 0
-
-
-class SecondJudgeSkip(EvalBaseModel):
-    """A result of the run that the second judge is not asked about, and why."""
-
-    result_id: str
-    reason: str
 
 
 class SecondJudgeEstimate(EvalBaseModel):
@@ -117,47 +112,6 @@ class SecondJudgeEstimate(EvalBaseModel):
     would_start: bool
     refusal: str | None = None
     skipped: list[SecondJudgeSkip]
-
-
-class SecondJudgeReport(EvalBaseModel):
-    """What a second judge's pass did, what it spent apart from the candidate's cost, and what it read.
-
-    Attributes:
-        run_id: The run.
-        pass_id: The pass, as every entry it recorded names it.
-        judge: The second judge.
-        sample_fraction: The share of the eligible results it drew.
-        sample_seed: The seed it drew them with.
-        eligible: The run's results it could have asked about.
-        sampled: The results the sample drew, sorted by id.
-        judged: The results a second score was recorded on, in the order they were asked.
-        scores_paired: Dims the second judge scored.
-        scores_unanswered: Dims whose call failed or answered it could not tell.
-        skipped: The run's results not asked about, each with why — decided before anything was spent.
-        unwritten: Results asked and paid for whose record did not land. Their spend is in the ledger.
-        stopped: Why the pass stopped before its last result, when it did — the account behind the judge refused a
-            call, so every later one would be refused too.
-        calls_made: Calls made, as the ledger recorded them under purpose ``second_judge``.
-        cost_usd: What they cost together — measurement cost, never the candidate's; ``None`` when any went unpriced.
-        cap_usd: The out-of-run cap the calls were admitted under; ``None`` when the host enforces none.
-    """
-
-    run_id: str
-    pass_id: str
-    judge: SecondJudge
-    sample_fraction: float
-    sample_seed: int
-    eligible: int
-    sampled: list[str]
-    judged: list[str]
-    scores_paired: int
-    scores_unanswered: int
-    skipped: list[SecondJudgeSkip]
-    unwritten: list[str]
-    stopped: str | None = None
-    calls_made: int
-    cost_usd: float | None
-    cap_usd: float | None
 
 
 @dataclass(frozen=True)
@@ -442,6 +396,7 @@ async def ask_second_judge(
     sample_fraction: float = 1.0,
     seed: int = DEFAULT_SECOND_JUDGE_SEED,
     result_ids: Sequence[str] | None = None,
+    on_progress: Callable[[SecondJudgeReport], Awaitable[None]] | None = None,
 ) -> SecondJudgeReport:
     """Ask a second judge to score a seeded share of a finished run's judged results, and record each beside its scores.
 
@@ -450,7 +405,10 @@ async def ask_second_judge(
     return, so a pass cut off partway keeps what it paid for. What the pairs say — agreement
     (:func:`~threetears.evals.analysis.inter_judge_agreement`) and drift (:func:`~threetears.evals.analysis.judge_drift`)
     — is read off the stored pairs, by the same code wherever the results are read
-    (:func:`~threetears.evals.ops.judge_second` reads both over the pass it ran).
+    (:func:`~threetears.evals.ops.judge_second` reads both over the pass it ran, as a job).
+
+    A pass cancelled partway (its task cancelled — a job's ``job_cancel``) makes no further call: ``on_progress`` is
+    handed the report of what it did, ``stopped`` naming the cancellation, before the cancellation propagates.
 
     Args:
         host: The host: the run's store, its judge clients, and how a judge call that raised reads.
@@ -463,6 +421,8 @@ async def ask_second_judge(
             one, as a drift check does.
         seed: The seed the share is drawn with.
         result_ids: The results to draw from; ``None`` for every result of the run.
+        on_progress: Handed the report so far after each result is asked and recorded, and the partial report when
+            the pass is cancelled; ``None`` for nobody. A job's record is written from it.
 
     Returns:
         What was asked, and what it cost apart from the candidate.
@@ -492,51 +452,68 @@ async def ask_second_judge(
     unwritten: list[str] = []
     paired = unanswered = 0
     stopped: str | None = None
-    async with prepared.service:
-        for client, calls in prepared.calls:
-            client.admit(calls)
-        for planned, context in zip(collected.planned, prepared.contexts, strict=True):
-            outcomes = await judge_dims(
-                template=planned.inputs.template,
-                judge_service=prepared.service,
-                context=context,
-                only=frozenset(planned.dims),
-            )
-            entry = _judging_of(
-                planned.result, outcomes, pass_id=pass_id, judge=judge, fraction=sample_fraction, seed=seed
-            )
-            paired += sum(1 for score in entry.scores if score.second is not None)
-            unanswered += sum(1 for score in entry.scores if score.second is None)
-            if await run_blocking(host.blocking_executor, _record, host.storage, planned.result.id, scope_id, entry):
-                judged.append(planned.result.id)
-            else:
-                unwritten.append(planned.result.id)
-            if any(outcome.account_refused for _, outcome in outcomes):
-                stopped = (
-                    f"the account behind the second judge refused a call while asking about result "
-                    f"'{planned.result.id}', so every later call would be refused too"
+
+    def report_now() -> SecondJudgeReport:
+        spends = prepared.budget.recorded
+        costs = [spend.cost_usd for spend in spends]
+        return SecondJudgeReport(
+            run_id=collected.run.id,
+            pass_id=pass_id,
+            judge=judge,
+            sample_fraction=sample_fraction,
+            sample_seed=seed,
+            eligible=collected.eligible,
+            sampled=sorted(planned.result.id for planned in collected.planned),
+            judged=list(judged),
+            scores_paired=paired,
+            scores_unanswered=unanswered,
+            skipped=collected.skipped,
+            unwritten=list(unwritten),
+            stopped=stopped,
+            calls_made=len(spends),
+            cost_usd=None if None in costs else math.fsum(c for c in costs if c is not None),
+            cap_usd=out_of_run_cap_usd,
+        )
+
+    asking: str | None = None
+    try:
+        async with prepared.service:
+            for client, calls in prepared.calls:
+                client.admit(calls)
+            for planned, context in zip(collected.planned, prepared.contexts, strict=True):
+                asking = planned.result.id
+                outcomes = await judge_dims(
+                    template=planned.inputs.template,
+                    judge_service=prepared.service,
+                    context=context,
+                    only=frozenset(planned.dims),
                 )
-                break
-    spends = prepared.budget.recorded
-    costs = [spend.cost_usd for spend in spends]
-    report = SecondJudgeReport(
-        run_id=collected.run.id,
-        pass_id=pass_id,
-        judge=judge,
-        sample_fraction=sample_fraction,
-        sample_seed=seed,
-        eligible=collected.eligible,
-        sampled=sorted(planned.result.id for planned in collected.planned),
-        judged=judged,
-        scores_paired=paired,
-        scores_unanswered=unanswered,
-        skipped=collected.skipped,
-        unwritten=unwritten,
-        stopped=stopped,
-        calls_made=len(spends),
-        cost_usd=None if None in costs else math.fsum(c for c in costs if c is not None),
-        cap_usd=out_of_run_cap_usd,
-    )
+                entry = _judging_of(
+                    planned.result, outcomes, pass_id=pass_id, judge=judge, fraction=sample_fraction, seed=seed
+                )
+                paired += sum(1 for score in entry.scores if score.second is not None)
+                unanswered += sum(1 for score in entry.scores if score.second is None)
+                if await run_blocking(
+                    host.blocking_executor, _record, host.storage, planned.result.id, scope_id, entry
+                ):
+                    judged.append(planned.result.id)
+                else:
+                    unwritten.append(planned.result.id)
+                asking = None
+                if any(outcome.account_refused for _, outcome in outcomes):
+                    stopped = (
+                        f"the account behind the second judge refused a call while asking about result "
+                        f"'{planned.result.id}', so every later call would be refused too"
+                    )
+                    break
+                if on_progress is not None:
+                    await on_progress(report_now())
+    except asyncio.CancelledError:
+        stopped = cancelled_partway(len(judged) + len(unwritten), len(collected.planned), asking)
+        if on_progress is not None:
+            await on_progress(report_now())
+        raise
+    report = report_now()
     log.info(
         "eval.judge_second run=%s pass=%s model=%s sampled=%d judged=%d paired=%d unanswered=%d calls=%d cost=%s",
         report.run_id,

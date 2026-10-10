@@ -20,10 +20,14 @@ What is pinned:
   ``judge`` stamped with the run; a cent under the cap nothing is called; the estimate answers what it would do;
 * nothing is written to the results;
 * the command line runs it in one command, under a cap it names.
+* as an action it is a job: the call refuses what the comparison would refuse and makes no judge call; the ended
+  job's poll carries the comparison the call computed, its answers kept on the job's record; a cancel stops the calls
+  and keeps the whole results answered so far.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass, field
@@ -62,8 +66,15 @@ from threetears.evals.schema.models import (
     RubricDim,
     RubricScore,
 )
+from threetears.evals.actions import engine_actions
+from threetears.evals.kernel import EvalStorage
+from threetears.evals.ops import OpsHost, job_cancel, job_poll, judge_temperature
+from threetears.evals.run import LaunchSettings
+from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
+from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS, toyhost_launch_host
+from packages.evals.tests.ops_support import settled
 
 _SCOPE = "scope-temperature"
 _KIND = "temperature-probe"
@@ -122,6 +133,11 @@ class _Judge:
     sends: object = "as_asked"
     calls: list[tuple[float | None, str]] = field(default_factory=list)
     requested: list[float | None] = field(default_factory=list)
+    #: When set, every call after the first ``hold_after`` waits on it before answering — a job held mid-way.
+    gate: asyncio.Event | None = None
+    hold_after: int = 0
+    #: Set when a call starts waiting on :attr:`gate`.
+    held: asyncio.Event = field(default_factory=asyncio.Event)
     _noise: int = 0
 
     def client(self, temperature: float | None) -> _Client:
@@ -154,6 +170,9 @@ class _Client:
         return _CEILING
 
     async def generate(self, *, system: str, user: str, response_format: Any = None) -> Any:
+        if self.judge.gate is not None and len(self.judge.calls) >= self.judge.hold_after:
+            self.judge.held.set()
+            await self.judge.gate.wait()
         sent = self.temperature if self.judge.sends == "as_asked" else self.judge.sends
         return self.judge.answer(sent, system, user)
 
@@ -183,9 +202,11 @@ class _Kind:
         return CandidateOutput(output=[{"rendered": "elsewhere"}], judge_evidence=_EVIDENCE)
 
 
-async def _judged_run(judge: _Judge, *, cases: int = 4, **run_fields: Any) -> tuple[EvalHost, str]:
+async def _judged_run(
+    judge: _Judge, *, cases: int = 4, storage: EvalStorage | None = None, **run_fields: Any
+) -> tuple[EvalHost, str]:
     """Run ``cases`` judged cells through the real runner, stored as a finished run would be."""
-    host = toyhost_host(clients=lambda role, model, *, temperature=None: judge.client(temperature))
+    host = toyhost_host(storage=storage, clients=lambda role, model, *, temperature=None: judge.client(temperature))
     template = EvalTemplate(
         scope_id=_SCOPE,
         name="temperature",
@@ -535,6 +556,115 @@ class TestTheCommandLine:
         assert no_cap.value.code == 2
         assert await _cli(["judge-temperature", run_id, "--scope", _SCOPE, "--max-cost-usd", "0"], host) == 2
         assert judge.calls == []
+
+
+def _ops_host(judge: _Judge, storage: EvalStorage, *, settings: LaunchSettings = TOYHOST_LAUNCH_SETTINGS) -> OpsHost:
+    """An operations host over ``storage``, every judge client ``judge``'s — what an action's call runs against."""
+    launch, _ = toyhost_launch_host(
+        storage=storage,
+        clients=lambda role, model, *, temperature=None: judge.client(temperature),
+        settings=lambda: settings,
+    )
+    return OpsHost(launch=launch)
+
+
+class TestTheJobForm:
+    """judge_temperature starts a job: the call refuses or admits, the job spends, and its record keeps the answers."""
+
+    async def test_the_call_makes_no_judge_call_and_the_ended_job_reads_what_the_call_computes(self):
+        called = _Judge()
+        host, called_run = await _judged_run(called)
+        comparison = await compare_judge_temperatures(host, called_run, _SCOPE, out_of_run_cap_usd=4.0, repeats=3)
+        judge = _Judge()
+        storage = EvalStorage(InMemoryDocumentStore())
+        _, run_id = await _judged_run(judge, storage=storage)
+        ops = _ops_host(judge, storage)
+
+        (job,) = (await judge_temperature(ops, run_id, _SCOPE, repeats=3)).jobs
+
+        assert (job.kind, job.target_id) == ("judge", run_id) and job.job_id.startswith("judge:")
+        assert judge.calls == [], "the call makes no judge call: only the job does"
+        status = await settled(ops, job.job_id, _SCOPE)
+        assert (status.state, status.judge_action, status.second_judge) == ("completed", "judge_temperature", None)
+        read = status.judge_temperature
+        assert read is not None
+        assert [row.model_dump() for row in read.dimensions] == [row.model_dump() for row in comparison.dimensions]
+        assert (read.comparable, read.results, read.cases, read.calls_made, read.stopped) == (
+            comparison.comparable,
+            comparison.results,
+            comparison.cases,
+            comparison.calls_made,
+            None,
+        )
+        rows = storage.query_out_of_run_spend(_SCOPE, purpose="judge")
+        assert len(rows) == read.calls_made == 2 * 3 * 3, "every call is metered, as in the call"
+        assert status.progress == {
+            "results_total": 3,
+            "results_done": 3,
+            "max_calls": 2 * 3 * 3 * JUDGE_CALL_ATTEMPTS,
+            "calls_made": 2 * 3 * 3,
+        }
+        # The task is gone; the record still answers, and nothing was written to the results.
+        assert (await job_poll(ops, job.job_id, _SCOPE)).judge_temperature == read
+        assert all(not result.judge_repeats and not result.judge_seconds for result in _stored(storage, run_id))
+        (poll,) = [action for action in engine_actions() if action.name == "job_poll"]
+        assert "temperature 0" in poll.render(status)
+
+    async def test_every_refusal_is_the_calls_and_starts_no_job(self):
+        judge = _Judge()
+        store = InMemoryDocumentStore()
+        storage = EvalStorage(store)
+        _, run_id = await _judged_run(judge, storage=storage)
+        total = 2 * 3 * 2 * JUDGE_CALL_ATTEMPTS * _CEILING
+        tight = _ops_host(
+            judge,
+            storage,
+            settings=TOYHOST_LAUNCH_SETTINGS.model_copy(update={"max_out_of_run_cost_usd": total - 0.01}),
+        )
+        ops = _ops_host(judge, storage)
+
+        with pytest.raises(ValidationFailedError, match="above the out-of-run cap"):
+            await judge_temperature(tight, run_id, _SCOPE, repeats=2)
+        with pytest.raises(ValidationFailedError, match="repeats"):
+            await judge_temperature(ops, run_id, _SCOPE, repeats=1)
+        _, refusing = await _judged_run(_Judge(sends=None), storage=storage)
+        with pytest.raises(ValidationFailedError, match="nothing to compare"):
+            await judge_temperature(ops, refusing, _SCOPE, repeats=2)
+
+        assert store.by_doc_type("eval_judge_job", _SCOPE) == [], "a refused call starts no job and writes no record"
+        assert judge.calls == []
+        assert storage.query_out_of_run_spend(_SCOPE, purpose="judge") == []
+
+    async def test_a_cancel_stops_the_calls_and_keeps_the_answers_so_far(self):
+        gate = asyncio.Event()
+        judge = _Judge()
+        storage = EvalStorage(InMemoryDocumentStore())
+        _, run_id = await _judged_run(judge, storage=storage)
+        # One result's two settings, two repeats each: four calls, then the next result's first is held.
+        judge.gate, judge.hold_after = gate, 4
+        ops = _ops_host(judge, storage)
+
+        (job,) = (await judge_temperature(ops, run_id, _SCOPE, repeats=2)).jobs
+        async with asyncio.timeout(5):
+            await judge.held.wait()
+        await job_cancel(ops, job.job_id, _SCOPE)
+        status = await settled(ops, job.job_id, _SCOPE)
+        gate.set()
+
+        assert status.state == "cancelled" and len(judge.calls) == 4, "no judge call is made after the cancel"
+        read = status.judge_temperature
+        assert read is not None and read.stopped is not None
+        assert read.stopped.startswith("cancelled after 1 of 3 result(s) while asking about result")
+        assert status.detail == read.stopped and status.progress["results_done"] == 1
+        assert {case.result_id for setting in read.settings for case in setting.cases} == {
+            result.id for result in _stored(storage, run_id) if _party(result) == 0
+        }
+        rows = storage.query_out_of_run_spend(_SCOPE, purpose="judge")
+        assert len(rows) >= read.calls_made >= 4, "what was spent stays on the ledger, and the comparison counts it"
+
+
+def _stored(storage: EvalStorage, run_id: str) -> list[EvalResult]:
+    return storage.query_eval_results_by_run(run_id, _SCOPE)
 
 
 async def _cli(argv: list[str], host: EvalHost) -> int:

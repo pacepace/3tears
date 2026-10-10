@@ -41,6 +41,7 @@ from pydantic import ValidationError
 from threetears.evals.kernel.campaign import EvalAnalysis, EvalAnalysisAttempt, EvalCampaign, EvalInsight, EvalSweep
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.errors import ConflictError, StorageError
+from threetears.evals.kernel.judge_jobs import EvalJudgeJob
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile, JudgeProfileStore
 from threetears.evals.schema.models import (
     EVAL_DOC_TYPES,
@@ -753,6 +754,18 @@ class EvalStorage:
     def load_sweep(self, sweep_id: str, scope_id: str) -> EvalSweep | None:
         """Load a sweep's record by id within a scope."""
         return self._load(EvalSweep, sweep_id, scope_id)
+
+    # =========================================================================
+    # EvalJudgeJob — a judge job's own record
+    # =========================================================================
+
+    def save_judge_job(self, job: EvalJudgeJob) -> None:
+        """Persist a judge job's record in the scope it names; its own task is its one writer."""
+        self._save(job.to_dict())
+
+    def load_judge_job(self, job_id: str, scope_id: str) -> EvalJudgeJob | None:
+        """Load a judge job's record by id within a scope."""
+        return self._load(EvalJudgeJob, job_id, scope_id)
 
     # =========================================================================
     # EvalCampaign — the analysis hub

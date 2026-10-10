@@ -10,8 +10,8 @@ written today. The stored bytes are not touched; the next write of that document
 toggle's read-modify-write) writes the current version, so migration is lazy and a scope may hold documents
 at several core versions at once.
 
-**Everything else is regenerable.** Campaigns, analyses and their attempts, insights, sweeps, judge profiles and
-cassettes are derived from the core (or, for a cassette, re-captured), so they keep the strict rule they always had: a
+**Everything else is regenerable.** Campaigns, analyses and their attempts, insights, sweeps, judge profiles, judge
+jobs and cassettes are derived from the core (or, for a cassette, re-captured), so they keep the strict rule they always had: a
 document written under any :data:`REGENERABLE_SCHEMA_VERSION` but this build's is refused on read, and the
 operator regenerates it. The bundle (``schema_version``), the report (``REPORT_VERSION``), the cell model and
 the identity keys (``IDENTITY_VERSION``) are separate version spaces with their own pins; an upgrader never
@@ -236,6 +236,11 @@ run arm after arm. A store written before it holds none, which reads as "no swee
 one judge to be on one criterion, which other campaigns' evidence tiers read. Regenerable, since it is recorded from
 the judge campaign's stored runs and results. A store written before it holds none, which reads as "no judge was
 profiled": every campaign's tiers are its own evidence alone, as they were.
+
+**Within v8, not a bump**: ``EvalJudgeJob`` joined as a new stored type — the record of a second judge's pass, a
+drift check or a judge temperature comparison started as a job, and what it handed back. Regenerable: a second
+judge's scores are recorded on the results (core), and a comparison is measured again. A store written before it
+holds none, which reads as "no judge job was started".
 """
 
 #: The kept documents, by ``doc_type``. Embedded shapes (a result's rubric scores, usage rows and goal-state

@@ -14,6 +14,9 @@ What is pinned:
   unshifted dimension ``not_separated``; the stored scores are unchanged afterwards;
 * every call is priced against the out-of-run cap before the first; a second judge that IS the run's judge is refused;
 * an analysis whose arms were judged by different judges names the change, and links the drift reading that spans it.
+* as an action, a second judge and a drift check are jobs: the call refuses what the pass would
+  refuse and makes no judge call; the ended job's poll carries what the pass computed in a call, read off its record;
+  a cancel stops the calls, keeps what was paid for on the ledger, and the partial report says it was cancelled.
 
 Mutations that turn this file red (each made in a scratch copy, the file restored from it, 2026-10-10):
 
@@ -26,6 +29,7 @@ Mutations that turn this file red (each made in a scratch copy, the file restore
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass, field
@@ -60,7 +64,13 @@ from threetears.evals.run.launch import build_judge_service
 from threetears.evals.run.runner import RunnerOptions, run_one_result
 from threetears.evals.storage import InMemoryDocumentStore
 from threetears.evals.kernel import EvalStorage
+from threetears.evals.actions import Caller, engine_actions
+from threetears.evals.kernel.errors import NotFoundError
+from threetears.evals.ops import JobsStarted, OpsHost, job_cancel, job_poll, judge_drift_check, judge_second
+from threetears.evals.run import LaunchSettings
 from packages.evals.tests.factories import make_eval_run
+from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS, toyhost_launch_host
+from packages.evals.tests.ops_support import settled
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 
 _SCOPE = "scope-second"
@@ -105,6 +115,11 @@ class _ScriptedJudge:
     constant: int | None = None
     calls: list[tuple[str, str]] = field(default_factory=list)
     temperatures: list[float | None] = field(default_factory=list)
+    #: When set, every call after the first ``hold_after`` waits on it before answering — a job held mid-way.
+    gate: asyncio.Event | None = None
+    hold_after: int = 0
+    #: Set when a call starts waiting on :attr:`gate`.
+    held: asyncio.Event = field(default_factory=asyncio.Event)
 
     def price_ceiling(self, *, system: str, user: str, response_format: Any = None) -> float | None:
         """The most one call costs."""
@@ -112,6 +127,9 @@ class _ScriptedJudge:
 
     async def generate(self, *, system: str, user: str, response_format: Any = None) -> _Completion:
         """Record the call and answer it."""
+        if self.gate is not None and len(self.calls) >= self.hold_after:
+            self.held.set()
+            await self.gate.wait()
         dim = re.search(r'the single key "(.+?)"', system).group(1)  # type: ignore[union-attr]
         party = int(re.search(r"party: p(\d+)", user).group(1))  # type: ignore[union-attr]
         self.calls.append((dim, user))
@@ -382,3 +400,158 @@ class TestDriftAcrossAJudgeChange:
         moved = {row.rubric_dim: row.verdict for row in link.drift.dimensions}
         assert moved == {_SHIFTED: "separated", _STEADY: "not_separated"}
         assert linked.sentence is not None and "drift reading" in linked.sentence
+
+
+def _ops_host(judges: _Judges, storage: EvalStorage, *, settings: LaunchSettings = TOYHOST_LAUNCH_SETTINGS) -> OpsHost:
+    """An operations host over ``storage``, serving ``judges`` — what an action's call runs against."""
+    launch, _ = toyhost_launch_host(storage=storage, clients=judges.clients, settings=lambda: settings)
+    return OpsHost(launch=launch)
+
+
+class TestTheJobForm:
+    """judge_second and judge_drift_check start a job: the call refuses or admits, and only the job spends."""
+
+    async def test_the_call_starts_a_job_and_makes_no_judge_call(self) -> None:
+        judges = _Judges(first=_ScriptedJudge(_FIRST), second=_ScriptedJudge(_SECOND))
+        store = InMemoryDocumentStore()
+        storage = EvalStorage(store)
+        _, run_id = await _judged_run(judges, cases=4, storage=storage)
+        ops = _ops_host(judges, storage)
+
+        started = await judge_second(ops, run_id, _SCOPE, judge=SecondJudge(model=_SECOND), sample_fraction=0.5)
+
+        (job,) = started.jobs
+        assert (job.kind, job.target_id) == ("judge", run_id) and job.job_id.startswith("judge:")
+        assert judges.second.calls == [], "the call makes no judge call: only the job does"
+        assert storage.query_out_of_run_spend(_SCOPE, purpose="second_judge") == []
+        running = await job_poll(ops, job.job_id, _SCOPE)
+        assert (running.kind, running.judge_action, running.run_id) == ("judge", "judge_second", run_id)
+        assert running.progress == {
+            "results_total": 2,
+            "results_done": 0,
+            "max_calls": 2 * 2 * JUDGE_CALL_ATTEMPTS,
+            "calls_made": 0,
+        }
+        await settled(ops, job.job_id, _SCOPE)
+
+    async def test_every_refusal_is_the_calls_and_starts_no_job(self) -> None:
+        judges = _Judges(first=_ScriptedJudge(_FIRST), second=_ScriptedJudge(_SECOND))
+        store = InMemoryDocumentStore()
+        storage = EvalStorage(store)
+        _, run_id = await _judged_run(judges, cases=2, storage=storage)
+        priced = 2 * 2 * JUDGE_CALL_ATTEMPTS * _CEILING
+        tight = _ops_host(
+            judges,
+            storage,
+            settings=TOYHOST_LAUNCH_SETTINGS.model_copy(update={"max_out_of_run_cost_usd": priced - 0.001}),
+        )
+        ops = _ops_host(judges, storage)
+
+        with pytest.raises(ValidationFailedError, match="above the out-of-run cap"):
+            await judge_second(tight, run_id, _SCOPE, judge=SecondJudge(model=_SECOND))
+        with pytest.raises(ValidationFailedError, match="judge repeat"):
+            await judge_drift_check(ops, run_id, _SCOPE, judge=SecondJudge(model=_FIRST))
+        with pytest.raises(ValidationFailedError, match="sample_fraction"):
+            await judge_second(ops, run_id, _SCOPE, judge=SecondJudge(model=_SECOND), sample_fraction=0.0)
+        with pytest.raises(NotFoundError):
+            await judge_second(ops, "no-such-run", _SCOPE, judge=SecondJudge(model=_SECOND))
+        unfinished = make_eval_run(scope_id=_SCOPE, judge_model=_FIRST, status="running")
+        storage.save_eval_run(unfinished)
+        with pytest.raises(ValidationFailedError, match="still being written"):
+            await judge_second(ops, unfinished.id, _SCOPE, judge=SecondJudge(model=_SECOND))
+
+        assert store.by_doc_type("eval_judge_job", _SCOPE) == [], "a refused call starts no job and writes no record"
+        assert judges.second.calls == []
+        assert storage.query_out_of_run_spend(_SCOPE, purpose="second_judge") == []
+
+    async def test_the_ended_job_reads_back_what_the_call_computes(self) -> None:
+        # Two identical runs: one asked in a call by the spend itself, one through the action as a job. Every result
+        # is asked about on both, as the seeded draw is over result ids, which differ between the two.
+        called = _Judges(first=_ScriptedJudge(_FIRST), second=_ScriptedJudge(_SECOND, shift={_SHIFTED: 1}))
+        host, called_run = await _judged_run(called)
+        report = await ask_second_judge(
+            host, called_run, _SCOPE, judge=SecondJudge(model=_SECOND), out_of_run_cap_usd=4.0
+        )
+        results = _results(host, called_run)
+        judges = _Judges(first=_ScriptedJudge(_FIRST), second=_ScriptedJudge(_SECOND, shift={_SHIFTED: 1}))
+        storage = EvalStorage(InMemoryDocumentStore())
+        _, run_id = await _judged_run(judges, storage=storage)
+        ops = _ops_host(judges, storage)
+        (action,) = [action for action in engine_actions() if action.name == "judge_second"]
+
+        started = await action.handler(
+            ops,
+            Caller(scope_id=_SCOPE, identity="agent:test"),
+            action.params.model_validate({"run_id": run_id, "second_judge_model": _SECOND}),
+        )
+        assert isinstance(started, JobsStarted)
+        status = await settled(ops, started.jobs[0].job_id, _SCOPE)
+
+        assert (status.state, status.done, status.detail) == ("completed", True, None)
+        read = status.second_judge
+        assert read is not None and status.judge_temperature is None
+
+        # The same reading but for the ids the two runs and passes were minted with.
+        def same(dumped: str, pass_id: str, run: str) -> str:
+            return dumped.replace(pass_id, "<pass>").replace(run, "<run>")
+
+        assert same(read.agreement.model_dump_json(), read.report.pass_id, run_id) == same(
+            inter_judge_agreement(results, pass_id=report.pass_id).model_dump_json(), report.pass_id, called_run
+        )
+        assert same(read.drift.model_dump_json(), read.report.pass_id, run_id) == same(
+            judge_drift(results, pass_id=report.pass_id).model_dump_json(), report.pass_id, called_run
+        )
+        assert (read.report.calls_made, read.report.scores_paired, len(read.report.judged)) == (
+            report.calls_made,
+            report.scores_paired,
+            len(report.judged),
+        )
+        rows = storage.query_out_of_run_spend(_SCOPE, purpose="second_judge")
+        assert len(rows) == read.report.calls_made == _CASES * 2, "every call is metered, as in the call"
+        assert {row.run_id for row in rows} == {run_id}
+        assert {r.id for r in _stored(storage, run_id) if r.judge_seconds} == set(read.report.judged)
+        assert status.progress == {
+            "results_total": _CASES,
+            "results_done": _CASES,
+            "max_calls": _CASES * 2 * JUDGE_CALL_ATTEMPTS,
+            "calls_made": _CASES * 2,
+        }
+        # The task is gone; the record still answers, with the same report.
+        assert (await job_poll(ops, status.job_id, _SCOPE)).second_judge == read
+        with pytest.raises(NotFoundError):
+            await job_poll(ops, status.job_id, "another-scope")
+        (poll,) = [action for action in engine_actions() if action.name == "job_poll"]
+        assert "agreement between the judges" in poll.render(status)
+
+    async def test_a_cancel_stops_the_calls_and_keeps_the_partial_report(self) -> None:
+        gate = asyncio.Event()
+        judges = _Judges(first=_ScriptedJudge(_FIRST), second=_ScriptedJudge(_SECOND, gate=gate, hold_after=2))
+        storage = EvalStorage(InMemoryDocumentStore())
+        _, run_id = await _judged_run(judges, cases=4, storage=storage)
+        judges.second.held.clear()
+        ops = _ops_host(judges, storage)
+
+        (job,) = (await judge_drift_check(ops, run_id, _SCOPE, judge=SecondJudge(model=_SECOND))).jobs
+        async with asyncio.timeout(5):
+            await judges.second.held.wait()
+        await job_cancel(ops, job.job_id, _SCOPE)
+        status = await settled(ops, job.job_id, _SCOPE)
+        gate.set()
+
+        assert (status.state, status.judge_action) == ("cancelled", "judge_drift_check")
+        assert len(judges.second.calls) == 2, "no judge call is made after the cancel"
+        read = status.second_judge
+        assert read is not None
+        assert read.report.stopped is not None and read.report.stopped.startswith("cancelled after 1 of 4 result(s)")
+        assert status.detail == read.report.stopped
+        assert len(read.report.judged) == 1 and status.progress["results_done"] == 1
+        rows = storage.query_out_of_run_spend(_SCOPE, purpose="second_judge")
+        # A call cut off in flight writes its row as it unwinds, which may land after the partial report was taken.
+        assert len(rows) >= read.report.calls_made >= 2, "what was spent stays on the ledger, and the report counts it"
+        assert {r.id for r in _stored(storage, run_id) if r.judge_seconds} == set(read.report.judged)
+        with pytest.raises(ValidationFailedError, match="nothing to cancel"):
+            await job_cancel(ops, job.job_id, _SCOPE)
+
+
+def _stored(storage: EvalStorage, run_id: str) -> list[EvalResult]:
+    return storage.query_eval_results_by_run(run_id, _SCOPE)

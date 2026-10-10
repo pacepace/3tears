@@ -443,7 +443,11 @@ def render_job_status(status: JobStatus) -> str:
         lines.append("progress: " + json.dumps(status.progress, sort_keys=True))
     if status.detail:
         lines.append(f"detail: {status.detail}")
-    if status.state == "completed" and status.analysis_id and status.campaign_id:
+    if status.second_judge is not None:
+        lines.append(render_second_judge(status.second_judge))
+    elif status.judge_temperature is not None:
+        lines.append(render_judge_temperature(status.judge_temperature))
+    elif status.state == "completed" and status.analysis_id and status.campaign_id:
         lines.append(f"Read it with action='report_read', campaign_id='{status.campaign_id}'.")
     elif status.done and status.run_id:
         lines.append(f"Read it with action='run_get', run_id='{status.run_id}'.")
