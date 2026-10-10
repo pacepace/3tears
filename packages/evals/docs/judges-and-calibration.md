@@ -99,8 +99,12 @@ dimension states another. Each score records what its call was actually sent at 
 separately per temperature, and a repeat at another temperature is not paired. On the quick path your client
 builds the request, so send temperature 0 and report it as `CompletionResult.temperature`. How much temperature
 moves your judge's scores is measured, not assumed: see [Step 10](#step-10-measure-what-temperature-does-to-the-judge).
-That has not yet been measured on a judge that honours temperature: the one real run so far is void for the
-question (#633, [the 2026-10-10 run](#the-2026-10-10-run-is-void)). On a judge whose model accepts no temperature,
+On a judge that honours it, 0 halves the spread: re-judging 50 borderline cases 5 times each, mean score variance
+was 0.27 at 0 against 0.55 at a provider default that samples, a paired difference of -0.28 (95% interval -0.45 to
+-0.12) and about five times the same-setting noise floor (#633, [the valid
+measurement](#the-2026-10-10-measurement-on-a-judge-that-honours-temperature)). 0 does not make a reasoning judge
+deterministic, though: 20 of the 50 cases still moved at 0. An earlier run on a judge that takes no temperature is
+void for the question ([the void run](#the-2026-10-10-run-is-void)). On a judge whose model accepts no temperature,
 0 is requested but never applied: the run stamps `judge_temperature=0` (the request) while each score records
 `model_default` (what was sent).
 
@@ -402,7 +406,9 @@ temperature it actually sent, not the one it was asked for. To a model that take
 report none: every score then records `model_default`, and the harness refuses the run or marks it
 `comparable: false` instead of comparing the default against itself. A router can drop an unsupported parameter
 silently (OpenRouter does, unless the request sets `require_parameters`), so check the model's supported
-parameters before trusting either side.
+parameters before trusting either side. Then check that the provider's default actually samples: it is the
+endpoint's own default, and one serving the model greedily makes the comparison 0 against nearly 0. Pinning the
+calls to one endpoint keeps a mix of providers from adding spread to both sides.
 
 ### The 2026-10-10 run is void
 
@@ -416,7 +422,64 @@ default, and the near-identical variances are what two identical settings produc
 What its figures are is a same-setting baseline: two sets of 5 repeats of luna at its provider default on the same
 50 cases (1-5 scales). Mean score variance was 0.202 and 0.180, 34 and 31 cases were unstable, and agreement with
 each case's first answer was 56% and 69%. Two runs of one setting differing that much is the noise floor any real
-comparison on such a judge has to clear.
+comparison on such a judge has to clear. Paired case by case, the variance difference between the two was +0.02
+(95% interval -0.03 to +0.08), 11 cases lower, 12 higher and 27 tied.
+
+### The 2026-10-10 measurement on a judge that honours temperature
+
+The same host re-ran the measurement the same day, on the same seven runs and the same 50 borderline cases (19
+`__outcome__`, 23 `__transcript__`, 8 across four host dimensions, all on 1-5), 5 repeats at each setting.
+
+**The judge.** `openai/gpt-oss-120b`, a reasoning model in the same price class as the runs' own judge. Its
+OpenRouter catalogue entry lists `temperature` in `supported_parameters`, and so does the endpoint the calls were
+pinned to. Every request carried `provider: {"require_parameters": true}`, so a provider that cannot apply a
+parameter refuses the call rather than dropping it. A probe confirmed that it does: `openai/gpt-6-luna` at
+temperature 0 was refused with "No endpoints found that can handle the requested parameters", where the void run
+had been silently served. The client reported the temperature on the wire: 0 on every pinned call, and none on
+every default call, whose requests carried no `temperature` field at all. All 500 calls were served by the pinned
+endpoint and named `openai/gpt-oss-120b` in the response. Each kept the judge's usual request settings (the 8192-token
+reasoning budget, JSON replies).
+
+**The provider's default is the endpoint's, so check that it samples.** The first sweep was pinned to DeepInfra.
+Its default turned out to be effectively greedy: an open-ended prompt answered identically 12 times out of 12 with
+no temperature, as at 0, but 8 different ways out of 12 at temperature 1. Over the 50 cases that sweep read
+variance 0.047 at 0 and 0.055 at the default, paired difference -0.01 (-0.05 to +0.03). That is a comparison of 0
+with something close to 0, a second same-setting control and no evidence about temperature. A second endpoint
+(CoreWeave, fp4) sampled at its default but corrupted the judge's JSON (criterion names such as `__outoutcome__`)
+on most calls at both settings, so it was stopped after one run and its answers are not used. The measurement
+is the third sweep, pinned to AkashML (bf16), whose default samples (7 different answers out of 8 on the probe
+prompt) and whose temperature 0 does not (8 of 8 the same). It had no failed answers.
+
+| Dimension | Cases | Variance at 0 | Variance at default | Unstable at 0 / default | Agreement with first answer at 0 / default |
+|---|---|---|---|---|---|
+| `__outcome__` | 19 | 0.12 | 0.30 | 5 / 7 | 91% / 76% |
+| `__transcript__` | 23 | 0.45 | 0.88 | 14 / 16 | 64% / 58% |
+| host dimensions | 8 | 0.10 | 0.19 | 1 / 1 | 94% / 91% |
+| all | 50 | 0.27 | 0.55 | 20 / 24 | 79% / 70% |
+
+Paired case by case, variance at 0 minus variance at the default was -0.28 (95% bootstrap interval -0.45 to
+-0.12). 0 was lower on 21 cases, higher on 5 and tied on 24, a sign-test p of 0.002. On `__transcript__` alone it
+was -0.43 (-0.68 to -0.17). On `__outcome__` (-0.17, -0.51 to +0.06) and on the host dimensions (-0.09, -0.26
+to 0) the intervals touch 0. The mean score moved by -0.10 between the settings, so temperature changed how much
+the scores scatter, not where they sit. Against the noise floor, two settings that are the same differed by
++0.02 (-0.03 to +0.08) on luna and -0.01 (-0.05 to +0.03) on the greedy endpoint. The difference here is about
+five times either one, and its interval clears both.
+
+**What it says.** Pinning the judge at 0 halves the spread of its scores on borderline cases. That is what
+the policy is for, so the policy stays. It does not make a reasoning judge repeatable: at 0, 20 of the 50 cases
+still gave more than one score in five tries, and on `__transcript__` only 64% of later answers matched the first.
+Run judge repeats (Step 8) to see how much of that a given judge has. It also means a default is not one setting:
+the same model sampled greedily by default on one endpoint and freely on another.
+
+**Limits.** The cases were chosen as borderline by the runs' original luna scores. They are the cases luna found
+hard, not the ones gpt-oss-120b finds hard, and gpt-oss-120b's scores sat on average more than a point from luna's.
+The judge was swapped in the host's adapter: the harness replays each run's recorded judge pin, so the comparison
+JSON still names luna as `judge_model`, while the ledger rows and every response name `openai/gpt-oss-120b`. One
+model on one endpoint: another judge or provider can move differently, and these runs' JSON is the record of this
+one.
+
+**Cost.** 500 calls, $0.09 for the measurement. Everything that day on this judge, the two other sweeps, the
+diagnostics and the probes included, cost $0.30, against a $5 budget sized so the out-of-run caps could never pass it.
 
 ## Evaluating a judge as a subject
 
