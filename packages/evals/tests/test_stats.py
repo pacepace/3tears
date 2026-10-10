@@ -16,12 +16,15 @@ from threetears.evals.analysis.stats import (
     EQUIVALENCE_NEEDS_RANGE,
     PAIRED_TEST_NAME,
     SIGNIFICANCE_ALPHA,
+    UNIFORM_MOVE_NEEDS_RANGE,
     UNPAIRED_TEST_NAME,
+    bounded_separation_p,
     composite_significance,
     difference_interval,
     level_difference,
     paired_change,
     separation_p,
+    separation_test,
     standard_error_of_mean,
     t_critical_two_sided,
 )
@@ -261,7 +264,7 @@ class TestPairedChange:
         """
         verdict = paired_change(
             [0.800] * 6,
-            [0.810] * 6,
+            [0.809, 0.811, 0.809, 0.811, 0.809, 0.811],
             min_absolute_change=0.05,
             min_relative_change=0.10,
             higher_is_better=True,
@@ -274,7 +277,7 @@ class TestPairedChange:
         """A small absolute move on a small baseline is a large relative one."""
         verdict = paired_change(
             [0.020] * 6,
-            [0.040] * 6,
+            [0.039, 0.041, 0.039, 0.041, 0.039, 0.041],
             min_absolute_change=1.0,  # absolute gate never clears
             min_relative_change=0.50,  # but +100% relative does
             higher_is_better=True,
@@ -286,7 +289,7 @@ class TestPairedChange:
         """0.0/0.0 imposes no magnitude floor — a significant move is flagged on its own."""
         verdict = paired_change(
             [0.80] * 6,
-            [0.79] * 6,
+            [0.789, 0.791, 0.789, 0.791, 0.789, 0.791],
             min_absolute_change=0.0,
             min_relative_change=0.0,
             higher_is_better=True,
@@ -303,7 +306,7 @@ class TestPairedChange:
         """
         verdict = paired_change(
             [0.800] * 6,
-            [0.801] * 6,
+            [0.8009, 0.8011, 0.8009, 0.8011, 0.8009, 0.8011],
             min_absolute_change=0.05,  # the real floor: +0.001 does not clear it
             min_relative_change=0.0,  # OFF, must not rescue the change
             higher_is_better=True,
@@ -312,17 +315,11 @@ class TestPairedChange:
         assert verdict.exceeds_threshold is False
         assert verdict.label == "below_threshold"
 
-    def test_a_deterministic_uniform_decline_is_significant_not_untested(self) -> None:
-        """Every case dropping by the same amount is the strongest regression, not the weakest.
+    def test_a_uniform_decline_on_a_declared_range_is_read_by_the_bounded_test(self) -> None:
+        """Every case dropping by the same amount leaves no t, and the bounded test on the range decides (#597).
 
-        The paired t-test is undefined on zero difference-variance (it divides by
-        that SD), and the effect-size helper returns None there — but a perfectly
-        consistent decline is strong evidence of a real move, so the flag calls it
-        significant rather than punting to untested, on the exact sign-flip p it carries.
-
-        The sample is sized at the pair-count floor deliberately: below it, the
-        exact sign-flip test that licenses this reasoning cannot reach alpha, so a
-        smaller uniform decline is untested and is pinned as such separately.
+        The exact sign-flip p (``2 ** (1 - n)``) this once carried tests symmetry, not the mean. The bounded test
+        holds α for every distribution on the range, and its p is the one carried, so the label can be checked.
         """
         verdict = paired_change(
             [1.0] * 6,
@@ -330,25 +327,22 @@ class TestPairedChange:
             min_absolute_change=0.05,
             min_relative_change=0.0,
             higher_is_better=True,
+            value_range=(0.0, 1.0),
         )
+        expected = bounded_separation_p([1.0] * 6, [0.0] * 6, paired=True, value_range=(0.0, 1.0))
+        assert expected is not None and expected < SIGNIFICANCE_ALPHA
+        assert verdict.p_value == expected
         assert verdict.significant is True
         assert verdict.label == "regressed"
-        assert verdict.p_value == 2.0**-5, "the exact sign-flip p, so the label can be checked"
+        assert verdict.hedges_g is None, "no spread, so no finite effect size"
+        assert verdict.not_separated_reason is None
 
-    @pytest.mark.parametrize("n_pairs", [2, 3, 4, 5])
-    def test_a_uniform_move_below_the_pair_floor_is_untested_not_significant(self, n_pairs) -> None:
-        """A perfectly consistent move too small to be tested must not be called significant.
+    @pytest.mark.parametrize("n_pairs", [2, 3, 6, 40])
+    def test_a_uniform_move_on_a_measure_with_no_range_is_not_separated_and_says_why(self, n_pairs) -> None:
+        """With no range no test of the mean can call a uniform move, at any n: not separated, naming the remedy.
 
-        Zero difference-variance leaves no t-statistic, so the only reasoning that
-        could license a significance claim is the exact paired sign-flip test —
-        and its smallest attainable two-sided p is ``2 ** (1 - n)``, which does not
-        reach alpha until the floor. Below it, "every case moved by the same
-        amount" is an ordinary coincidence on the coarse lattice a composite lives
-        on (a mean over a 5-point rubric), not evidence.
-
-        The failure this pins is a verdict carrying no statistic at all — no p, no
-        effect size — while asserting significance, which is exactly what the
-        reporting layer refuses to render as a result.
+        Never ``regressed`` (the sign-flip reading called six pairs that), and never ``untested`` either: the rule
+        refused the claim, and the reason says what to declare for a test to run.
         """
         verdict = paired_change(
             [1.0] * n_pairs,
@@ -358,33 +352,37 @@ class TestPairedChange:
             higher_is_better=True,
         )
         assert verdict.n_pairs == n_pairs
-        assert verdict.significant is None
-        assert verdict.label == "untested"
-        assert verdict.p_value is None
+        assert (verdict.label, verdict.significant, verdict.p_value) == ("not_separated", False, None)
+        assert verdict.not_separated_reason == UNIFORM_MOVE_NEEDS_RANGE
         assert verdict.hedges_g is None
 
-    def test_the_pair_floor_is_the_smallest_n_an_exact_sign_flip_test_could_reject_at(self) -> None:
-        """The floor is derived from alpha, not chosen — pin the derivation, not the number.
+    def test_a_uniform_move_over_two_pairs_on_a_range_states_its_p_and_is_not_separated(self) -> None:
+        """The bounded test runs at every n; over two pairs its p cannot reach α, and it is stated."""
+        verdict = paired_change(
+            [1.0, 1.0],
+            [0.0, 0.0],
+            min_absolute_change=0.05,
+            min_relative_change=0.0,
+            higher_is_better=True,
+            value_range=(0.0, 1.0),
+        )
+        assert verdict.label == "not_separated"
+        assert verdict.p_value is not None and verdict.p_value > SIGNIFICANCE_ALPHA
 
-        Writing the constant down invites it drifting away from the alpha it is
-        supposed to track, so it is computed. This asserts the property that makes
-        it correct: the floor clears alpha and the value one below it does not.
-        """
-
-        def flagged(n_pairs: int) -> bool | None:
-            return paired_change(
-                [1.0] * n_pairs,
-                [0.0] * n_pairs,
-                min_absolute_change=0.05,
-                min_relative_change=0.0,
-                higher_is_better=True,
-            ).significant
-
-        # The floor as the classifier applies it: the fewest pairs at which a uniform move is called.
-        n = next(n_pairs for n_pairs in range(2, 64) if flagged(n_pairs))
-        assert all(flagged(n_pairs) is None for n_pairs in range(2, n))
-        assert 2.0 ** (1 - n) <= SIGNIFICANCE_ALPHA
-        assert 2.0 ** (1 - (n - 1)) > SIGNIFICANCE_ALPHA
+    def test_the_counterexample_null_cannot_read_twenty_uniform_cases_below_their_chance(self) -> None:
+        """A judge whose mean did not move (+1 four times in five, −4 the fifth) gives twenty cases at +1 one time
+        in 87. A valid p for that outcome is at least that; the sign-flip p said one in 524,288 (#597)."""
+        baseline = [float(1 + i % 4) for i in range(20)]
+        current = [x + 1.0 for x in baseline]
+        verdict = paired_change(
+            baseline,
+            current,
+            min_absolute_change=0.0,
+            min_relative_change=0.0,
+            higher_is_better=True,
+            value_range=(1.0, 5.0),
+        )
+        assert verdict.p_value is not None and verdict.p_value >= 0.8**20 > 2.0**-19
 
     def test_a_deterministic_no_change_is_not_separated_not_untested(self) -> None:
         """Two identical paired samples (>= 2 pairs) are measured, and read 'not_separated' without a margin.
@@ -437,9 +435,9 @@ class TestPairedChange:
         [
             ([0.8], [0.4], "untested"),  # one pair: the test is undefined
             ([], [], "untested"),  # no pairs at all
-            # Every case moved by the same amount over too few pairs for the exact
-            # sign-flip p to reach alpha: no test decided, so no p is stated.
-            ([1.0] * 4, [0.0] * 4, "untested"),
+            # Every case moved by the same amount on a measure with no range: no test of the mean
+            # ran, so the move is not separated and no p is stated (#597).
+            ([1.0] * 4, [0.0] * 4, "not_separated"),
         ],
     )
     def test_a_label_no_t_test_produced_reports_no_p(self, baseline, current, expected_label) -> None:
@@ -450,32 +448,38 @@ class TestPairedChange:
         assert verdict.label == expected_label
         assert verdict.p_value is None
 
-    def test_a_constant_shift_written_in_decimals_reads_its_exact_sign_flip_p_not_a_float_residue(self) -> None:
+    def test_a_constant_shift_written_in_decimals_is_read_exactly_not_as_a_float_residue(self) -> None:
         """``i/10`` against ``i/10 + 0.5``: every case moved by exactly 0.5, though the floats differ by a hair.
 
         Over floats the differences carry a residue a t-test reads as a tiny, perfectly consistent spread,
-        with a p near 1e-113; read exactly, there is no spread and the p is the sign-flip ``2 ** (1 - n)`` —
-        the same p :func:`separation_p` states for the same values.
+        with a p near 1e-113; read exactly, there is no spread, and on the declared range the bounded test
+        reads it — the same p :func:`separation_p` states for the same values.
         """
         baseline = [i / 10 for i in range(8)]
         current = [i / 10 + 0.5 for i in range(8)]
         verdict = paired_change(
-            baseline, current, min_absolute_change=0.05, min_relative_change=0.0, higher_is_better=True
+            baseline,
+            current,
+            min_absolute_change=0.05,
+            min_relative_change=0.0,
+            higher_is_better=True,
+            value_range=(0.0, 1.5),
         )
 
-        assert verdict.p_value == 2.0**-7 == separation_p(baseline, current, paired=True)
+        assert verdict.p_value == separation_p(baseline, current, paired=True, value_range=(0.0, 1.5))
+        assert verdict.p_value is not None and verdict.p_value > 1e-6, "never the residue's p"
         assert verdict.hedges_g is None, "no spread, so no finite effect size"
         assert verdict.delta == 0.5
-        assert verdict.label == "improved"
 
-    def test_the_same_shift_over_too_few_cases_is_untested_not_a_residue_p(self) -> None:
+    def test_the_same_shift_with_no_range_is_not_separated_not_a_residue_p(self) -> None:
         baseline = [i / 10 for i in range(4)]
         current = [i / 10 + 0.5 for i in range(4)]
         verdict = paired_change(
             baseline, current, min_absolute_change=0.05, min_relative_change=0.0, higher_is_better=True
         )
 
-        assert (verdict.label, verdict.p_value, verdict.significant) == ("untested", None, None)
+        assert (verdict.label, verdict.p_value, verdict.significant) == ("not_separated", None, False)
+        assert verdict.not_separated_reason == UNIFORM_MOVE_NEEDS_RANGE
 
     def test_misaligned_samples_are_a_pairing_bug_not_missing_data(self) -> None:
         with pytest.raises(ValueError, match="aligned"):
@@ -669,31 +673,55 @@ class TestLevelDifference:
         assert (tested.separated, tested.p_value, tested.test) == (None, None, None)
         assert tested.untested_reason == "fewer than two cases on a side"
 
-    @pytest.mark.parametrize(("n", "separated"), [(2, None), (5, None), (6, True), (8, True)])
-    def test_an_alike_shift_is_read_by_the_exact_sign_flip_test(self, n: int, separated: bool | None) -> None:
-        """Every case moving by one amount has exact p 2^(1-n): below α only from six cases."""
+    @pytest.mark.parametrize("n", [2, 6, 40])
+    def test_an_alike_shift_with_no_range_is_not_separated_and_says_why(self, n: int) -> None:
+        """Every case moving by one amount leaves no t, and with no range no test of the mean can call it (#597).
+
+        The sign-flip p ``2^(1-n)`` this once read called six cases separated; it tests symmetry, not the mean.
+        """
         a = {f"c{i}": Fraction(i, 10) for i in range(n)}
         b = {case: value + Fraction(1, 10) for case, value in a.items()}
         tested = level_difference(a, b)
-        assert tested.separated is separated
-        if separated:
-            assert tested.p_value == pytest.approx(2.0 ** (1 - n))
-        else:
-            assert tested.p_value is None and tested.untested_reason is not None
+        assert (tested.separated, tested.p_value, tested.untested_reason) == (False, None, None)
+        assert tested.not_separated_reason == UNIFORM_MOVE_NEEDS_RANGE
+
+    @pytest.mark.parametrize("n", [2, 6, 12])
+    def test_an_alike_shift_on_a_declared_range_is_read_by_the_bounded_test(self, n: int) -> None:
+        a = {f"c{i}": Fraction(i, 10) for i in range(n)}
+        b = {case: value + Fraction(1) for case, value in a.items()}
+        tested = level_difference(a, b, value_range=(0.0, 3.0))
+        expected = bounded_separation_p(list(a.values()), list(b.values()), paired=True, value_range=(0.0, 3.0))
+        assert expected is not None
+        assert tested.p_value == expected
+        assert tested.separated is (expected < SIGNIFICANCE_ALPHA)
+        assert tested.not_separated_reason is None
+
+    def test_the_counterexample_null_cannot_read_twenty_alike_cases_below_their_chance(self) -> None:
+        """Twenty cases each up one point on 1-5 arise one time in 87 from a mean that did not move (+1 four times
+        in five, −4 the fifth); a valid p is at least that, where the sign flip said one in 524,288 (#597)."""
+        a = {f"c{i}": float(1 + i % 4) for i in range(20)}
+        b = {case: value + 1.0 for case, value in a.items()}
+        tested = level_difference(a, b, value_range=(1.0, 5.0))
+        assert tested.p_value is not None and tested.p_value >= 0.8**20 > 2.0**-19
 
     def test_an_alike_shift_of_decimals_is_decided_exactly(self) -> None:
         """0.1→0.3 and 0.2→0.4 are one shift; in floats they differ in the last place, which a t would read."""
         a = {"c1": Fraction("0.1"), "c2": Fraction("0.2")}
         b = {"c1": Fraction("0.3"), "c2": Fraction("0.4")}
-        assert level_difference(a, b).separated is None
+        assert level_difference(a, b).not_separated_reason == UNIFORM_MOVE_NEEDS_RANGE
 
-    @pytest.mark.parametrize(("n_a", "n_b", "separated"), [(2, 2, None), (3, 3, None), (4, 4, True), (3, 5, True)])
-    def test_two_constants_are_read_by_the_exact_split_test(self, n_a: int, n_b: int, separated: bool | None) -> None:
-        """Exact p 2 / C(n_a + n_b, n_a): 1/3 at two a side, 1/10 at three, 1/35 at four."""
-        tested = level_difference({f"a{i}": 1.0 for i in range(n_a)}, {f"b{i}": 2.0 for i in range(n_b)})
-        assert tested.separated is separated
-        if separated:
-            assert tested.p_value == pytest.approx(2 / math.comb(n_a + n_b, n_a))
+    @pytest.mark.parametrize(("n_a", "n_b"), [(2, 2), (4, 4), (3, 5), (12, 12)])
+    def test_two_constants_are_read_by_the_bounded_test_or_not_called(self, n_a: int, n_b: int) -> None:
+        """Two unpaired constants: the bounded test on a declared range, and with none not separated."""
+        a = {f"a{i}": 0.0 for i in range(n_a)}
+        b = {f"b{i}": 1.0 for i in range(n_b)}
+        unranged = level_difference(a, b)
+        assert (unranged.separated, unranged.p_value) == (False, None)
+        assert unranged.not_separated_reason == UNIFORM_MOVE_NEEDS_RANGE
+        ranged = level_difference(a, b, value_range=(0.0, 1.0))
+        expected = bounded_separation_p(list(a.values()), list(b.values()), paired=False, value_range=(0.0, 1.0))
+        assert expected is not None and ranged.p_value == expected
+        assert ranged.separated is (expected < SIGNIFICANCE_ALPHA)
 
     def test_identical_values_are_tested_and_not_separated(self) -> None:
         tested = level_difference({"c1": 3.0, "c2": 3.0}, {"c1": 3.0, "c2": 3.0})
@@ -714,53 +742,41 @@ class TestSeparationPAgreesWithLevelDifference:
     """One concept, one answer: the frontier's separation p and the between-level test's p for one pattern."""
 
     @pytest.mark.parametrize(("n_a", "n_b"), [(2, 2), (3, 3), (4, 4), (3, 5), (2, 9)])
-    def test_two_unpaired_constants_read_the_exact_split_p(self, n_a: int, n_b: int) -> None:
-        """Each side constant, the two different: ``2 / C(n_a + n_b, n_a)``, where it was None."""
-        a = [1.0] * n_a
-        b = [2.0] * n_b
-        exact = 2 / math.comb(n_a + n_b, n_a)
+    def test_two_unpaired_constants_read_one_answer(self, n_a: int, n_b: int) -> None:
+        """Each side constant, the two different: the bounded p on a range, and no p and the same refusal without."""
+        a, b = [1.0] * n_a, [2.0] * n_b
         tested = level_difference({f"a{i}": 1.0 for i in range(n_a)}, {f"b{i}": 2.0 for i in range(n_b)})
-        # Both state the p where it can reach alpha and call the rest untested (None), alike.
-        if exact <= SIGNIFICANCE_ALPHA:
-            assert separation_p(a, b, paired=False) == pytest.approx(exact)
-            assert tested.p_value == pytest.approx(exact)
-        else:
-            assert separation_p(a, b, paired=False) is None
-            assert (tested.p_value, tested.separated) == (None, None)
+        assert separation_p(a, b, paired=False) is None and tested.p_value is None
+        assert separation_test(a, b, paired=False).refusal == tested.not_separated_reason == UNIFORM_MOVE_NEEDS_RANGE
+        ranged = level_difference(
+            {f"a{i}": 1.0 for i in range(n_a)}, {f"b{i}": 2.0 for i in range(n_b)}, value_range=(0.0, 3.0)
+        )
+        assert separation_p(a, b, paired=False, value_range=(0.0, 3.0)) == ranged.p_value is not None
 
     @pytest.mark.parametrize("n", [2, 5, 6, 8])
-    def test_an_alike_paired_shift_reads_the_sign_flip_p(self, n: int) -> None:
+    def test_an_alike_paired_shift_reads_one_answer(self, n: int) -> None:
         # Exactly representable, so the differences carry no float residue for a t statistic to read.
         a = [float(i) for i in range(n)]
         b = [value + 0.5 for value in a]
         tested = level_difference(dict(enumerate(a)), dict(enumerate(b)))
-        if 2.0 ** (1 - n) <= SIGNIFICANCE_ALPHA:
-            assert separation_p(a, b, paired=True) == pytest.approx(2.0 ** (1 - n))
-            assert tested.p_value == pytest.approx(2.0 ** (1 - n))
-        else:
-            # No exact test can reach alpha here: untested on both paths, never a p read as not separated.
-            assert separation_p(a, b, paired=True) is None
-            assert tested.separated is None
+        assert separation_p(a, b, paired=True) is None and tested.p_value is None and tested.separated is False
+        ranged = level_difference(dict(enumerate(a)), dict(enumerate(b)), value_range=(0.0, 10.0))
+        assert separation_p(a, b, paired=True, value_range=(0.0, 10.0)) == ranged.p_value is not None
 
     @pytest.mark.parametrize("n", [3, 6, 8, 12])
-    def test_a_constant_shift_with_float_residue_reads_the_exact_p(self, n: int) -> None:
+    def test_a_constant_shift_with_float_residue_is_read_exactly(self, n: int) -> None:
         """``i/10`` against ``i/10 + 0.5``: the float differences are not all 0.5, the decimal ones are.
 
         Over floats the t-test read the residue as a tiny, perfectly consistent spread and returned a p near
-        1e-113. Read exactly, the pattern is the sign-flip one: ``2^(1 - n)`` where that reaches alpha, and
-        untested where it cannot, the reading level_difference makes of the same values.
+        1e-113. Read exactly there is no spread: the bounded test on a range, and no test without one, on both paths.
         """
         a = [i / 10 for i in range(n)]
         b = [i / 10 + 0.5 for i in range(n)]
         assert len({y - x for x, y in zip(a, b)}) > 1, "the fixture must carry float residue to test anything"
-        exact = 2.0 ** (1 - n)
-        tested = level_difference(dict(enumerate(a)), dict(enumerate(b)))
-        if exact <= SIGNIFICANCE_ALPHA:
-            assert separation_p(a, b, paired=True) == pytest.approx(exact)
-            assert tested.p_value == pytest.approx(exact)
-        else:
-            assert separation_p(a, b, paired=True) is None
-            assert tested.separated is None
+        tested = level_difference(dict(enumerate(a)), dict(enumerate(b)), value_range=(0.0, 2.0))
+        p = separation_p(a, b, paired=True, value_range=(0.0, 2.0))
+        assert p is not None and p == tested.p_value and p > 1e-6
+        assert separation_p(a, b, paired=True) is None
 
     @pytest.mark.parametrize("paired", [True, False])
     def test_identical_values_read_one(self, paired: bool) -> None:

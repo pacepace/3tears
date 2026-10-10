@@ -122,6 +122,7 @@ def _row(model_or_key: str, measure_id: str, value: float, *, raw: bool = False)
         "reading": "measure",
         "value": value,
         "n": 6,
+        "n_cases": 3,
         "dispersion": "p95",
     }
 
@@ -349,6 +350,7 @@ class TestEvidencePlacesOntoTheArms:
 
         assert [m.measure_id for m in row.measurements] == ["p95_s"]
         assert row.measurements[0].finding_id == "1", "a number keeps the finding it was recorded under, by position"
+        assert (row.measurements[0].n, row.measurements[0].n_cases) == (6, 3), "the cases ride beside the observations"
         assert [m.measure_id for r in table.rows if not r.is_control for m in r.measurements] == [], (
             "a row at one arm's cell must not be attributed to another"
         )

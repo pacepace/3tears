@@ -251,6 +251,31 @@ class GenerationTally(BaseModel):
         return self.calls - self.returned + self.unreported_cost
 
 
+def refuse_an_unlisted_writer(profile: HostProfile, model: str) -> None:
+    """Refuse, before a token is spent, a writer model the host does not allow (#644).
+
+    The host's :attr:`~threetears.evals.contracts.host.profile.HostProfile.analysis_writer_models` names the
+    models it trusts to write its analyses. A model off that list is knowable from what the caller already holds,
+    so it is refused before the first provider request: nothing is sent and nothing is spent. It is a
+    precondition on the caller's request, not on anything a generator said, so no repair could correct it — a
+    second call would be the same model refused the same way — and it raises the bare class. A reporter run, which
+    measures writers to learn which belong on the list, does not call this.
+
+    Named ``_refuse_`` for the reason :func:`refuse_an_undescribable_arm_table` is: it is not a member of the
+    validation chain.
+
+    Args:
+        profile: The host whose allowed writers this reads.
+        model: The writer model id, as requested or as the host's client resolved its default.
+
+    Raises:
+        GenerationError: The host declares a writer list and ``model`` is not on it. Not
+            :class:`SoundnessRefusal`, because that class buys a repair this must never buy.
+    """
+    if (refusal := profile.analysis_writer_refusal(model)) is not None:
+        raise GenerationError(refusal)
+
+
 def refuse_an_undescribable_arm_table(bundle: AnalysisContextBundle) -> None:
     """Refuse, before a token is spent, a bundle in which NO arm can be described.
 
@@ -365,9 +390,9 @@ async def generate_analysis(
         :class:`EvalInsight` objects it minted (each traced back to this analysis).
 
     Raises:
-        GenerationError: ``model`` is not a writer the host allows, or the bundle describes no arm at all
-            — nothing is spent, because it is
-            knowable from what the caller already holds (:func:`refuse_an_undescribable_arm_table`).
+        GenerationError: ``model`` is not a writer the host allows (:func:`refuse_an_unlisted_writer`), or the
+            bundle describes no arm at all (:func:`refuse_an_undescribable_arm_table`) — nothing is spent, because
+            each is knowable from what the caller already holds.
             Or the provider cut the call short (an output-cap
             truncation or a content filter). Not repaired — see :class:`SoundnessRefusal` for
             the boundary and why a truncation in particular must not buy a second charge.
@@ -382,8 +407,8 @@ async def generate_analysis(
             documents its own. Every one reads a structured field; none reads prose.
     """
     tally = tally if tally is not None else GenerationTally()
-    if not measuring_writers and (ineligible := profile.analysis_writer_refusal(model)) is not None:
-        raise GenerationError(ineligible)
+    if not measuring_writers:
+        refuse_an_unlisted_writer(profile, model)
     refuse_an_undescribable_arm_table(bundle)
     system_prompt, user_message, contract = first_request(bundle, prompt, profile)
     sent_digest = user_message_digest(user_message)
@@ -1583,5 +1608,6 @@ __all__ = [
     "generate_analysis",
     "prompt_content_version",
     "refuse_an_undescribable_arm_table",
+    "refuse_an_unlisted_writer",
     "user_message_digest",
 ]

@@ -18,7 +18,6 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 
 from __future__ import annotations
 
-import math
 from collections.abc import Sequence
 from dataclasses import replace
 
@@ -31,7 +30,14 @@ from threetears.evals.analysis import (
     assemble_context_bundle,
 )
 from threetears.evals.analysis.generator import build_user_message
-from threetears.evals.analysis.stats import composite_significance, holm_adjust, paired_equivalence, separation_p
+from threetears.evals.analysis.stats import (
+    UNIFORM_MOVE_NEEDS_RANGE,
+    bounded_separation_p,
+    composite_significance,
+    holm_adjust,
+    paired_equivalence,
+    separation_p,
+)
 from threetears.evals.contracts import EvalCampaign, EvalResult, Question, RubricScore
 from threetears.evals.contracts.models import LatencyMetrics
 from threetears.evals.contracts.host import HostProfile, MeasureRegistry
@@ -242,62 +248,60 @@ class TestVerdicts:
         assert decline.delta is not None and decline.delta < 0
         assert decline.verdict == "regressed"
 
-    def test_an_untested_comparison_says_which_refusal_it_hit(self) -> None:
-        # Every one of five cases moved by exactly +1: the exact sign-flip p is 2^-4 at best, above α.
+    def test_a_uniform_shift_over_few_cases_is_tested_on_the_scale_and_not_separated(self) -> None:
+        """Five cases each up one point on the 1-5 scale: the bounded test on the scale reads it, and cannot show it.
+
+        The exact sign-flip test once called this untested below six cases and separated from six on: it tests
+        symmetry, not the mean (#597).
+        """
         gap = _family(_bundle([(1,) * 5], cases=5))
         (moved,) = gap.comparisons
-        assert (moved.verdict, moved.p_raw, moved.test, moved.hedges_g) == ("untested", None, None, None)
-        assert moved.untested_reason is not None
-        assert "same amount" in moved.untested_reason and "0.0625" in moved.untested_reason
-        assert "needs 6 shared cases" in moved.untested_reason
-        assert gap.family_size == 0 and gap.n_untested == 1
+        assert (moved.verdict, moved.test, moved.basis, moved.hedges_g) == ("not_separated", "paired", "bounded", None)
+        assert moved.p_raw == bounded_separation_p([3.0] * 5, [4.0] * 5, paired=True, value_range=(1.0, 5.0))
+        assert moved.interval is not None and moved.interval[0] <= 0.0 <= moved.interval[1]
+        assert gap.family_size == 1 and gap.n_untested == 0
 
+    def test_an_untested_comparison_says_which_refusal_it_hit(self) -> None:
         # One case: too few on a side for any test.
         thin = _family(_bundle([(1,)], cases=1))
         (single,) = thin.comparisons
         assert single.verdict == "untested"
         assert single.untested_reason is not None and "fewer than two" in single.untested_reason
 
-    @pytest.mark.parametrize("cases", [6, 12])
-    def test_a_constant_shift_is_separated_by_the_exact_sign_flip_p(self, cases: int) -> None:
-        """Every shared case moved by +1: the frontier, the mechanism reads and history call that separated, so here too."""
+    @pytest.mark.parametrize("cases", [30, 40])
+    def test_a_constant_shift_is_separated_by_the_bounded_test_with_its_interval(self, cases: int) -> None:
+        """Every shared case moved by +1 on the 1-5 scale: the bounded test separates it once the cases can show
+        it, and states its interval, so a separation is never shown with none beside it (#597)."""
         family = _family(_bundle([(1,) * cases], cases=cases))
         (moved,) = family.comparisons
-        assert (moved.test, moved.p_raw) == ("paired", 2.0 ** (1 - cases))
-        assert moved.p_raw == separation_p([3.0] * cases, [4.0] * cases, paired=True)
+        expected = bounded_separation_p([3.0] * cases, [4.0] * cases, paired=True, value_range=(1.0, 5.0))
+        assert (moved.test, moved.basis, moved.p_raw) == ("paired", "bounded", expected)
+        assert moved.p_raw == separation_p([3.0] * cases, [4.0] * cases, paired=True, value_range=(1.0, 5.0))
         assert moved.verdict == "improved" and family.family_size == 1
         assert moved.hedges_g is None, "no spread, so no finite effect size"
-        assert moved.interval is None, "the exact test has no interval to invert"
+        assert moved.interval is not None and moved.interval[0] > 0.0, "the bounded test's own interval"
+
+    def test_the_counterexample_null_cannot_read_twenty_uniform_cases_below_their_chance(self) -> None:
+        """Twenty cases each up one point arise one time in 87 from a mean that did not move (+1 four times in five,
+        −4 the fifth). The contrast's p is at least that, where the sign flip stated 2^-19 and separated it."""
+        (moved,) = _family(_bundle([(1,) * 20], cases=20)).comparisons
+        assert moved.p_raw is not None and moved.p_raw >= 0.8**20 > 2.0**-19
 
     def test_identical_values_are_tested_and_not_separated(self) -> None:
         (same,) = _family(_bundle([(0,) * 12])).comparisons
         assert (same.verdict, same.test, same.p_raw, same.hedges_g) == ("not_separated", "paired", 1.0, None)
 
-    @pytest.mark.parametrize(("n_control", "n_contrast"), [(4, 4), (3, 5)])
-    def test_two_constant_sides_unpaired_are_tested_by_the_exact_permutation_p(
-        self, n_control: int, n_contrast: int
-    ) -> None:
+    @pytest.mark.parametrize(("n_control", "n_contrast"), [(4, 4), (3, 5), (3, 4)])
+    def test_two_constant_sides_unpaired_are_read_by_the_bounded_test(self, n_control: int, n_contrast: int) -> None:
         (comparison,) = _family(
             _bundle([(1,) * max(n_control, n_contrast)], cases=n_control, unpaired=n_contrast)
         ).comparisons
-        assert comparison.test == "unpaired"
-        assert comparison.p_raw == pytest.approx(2 / math.comb(n_control + n_contrast, n_control))
-        assert comparison.p_raw is not None and comparison.p_raw < 0.05
-        assert comparison.hedges_g is None and comparison.untested_reason is None
-
-    def test_two_constant_sides_too_few_for_the_exact_p_read_untested_and_say_why(self) -> None:
-        family = _family(_bundle([(1,) * 4], cases=3, unpaired=4))
-        (comparison,) = family.comparisons
-        assert (comparison.verdict, comparison.test, comparison.p_raw, comparison.p_adjusted) == (
-            "untested",
-            None,
-            None,
-            None,
+        assert (comparison.test, comparison.basis) == ("unpaired", "bounded")
+        assert comparison.p_raw == bounded_separation_p(
+            [3.0] * n_control, [4.0] * n_contrast, paired=False, value_range=(1.0, 5.0)
         )
-        assert family.n_untested == 1, "an untested comparison is counted as untested, not corrected over"
-        assert comparison.untested_reason is not None
-        assert "each side's values are constant" in comparison.untested_reason
-        assert "3 and 4 cases" in comparison.untested_reason and "0.05714" in comparison.untested_reason
+        assert comparison.hedges_g is None and comparison.untested_reason is None
+        assert comparison.verdict == "not_separated", "a handful of cases a side cannot show a mean moved"
 
     def test_comparisons_are_against_the_control_only(self) -> None:
         family = _family(_bundle([CLEAR]))
@@ -404,6 +408,42 @@ def _accuracy_threshold(threshold: float | None) -> HostProfile:
 
 #: The contrast extracts about two points better on every case, with spread: separated after any correction.
 _ACCURACY = ([0.80, 0.81, 0.79, 0.80] * 3, [0.82, 0.83, 0.82, 0.82] * 3)
+
+
+def _accuracy_unranged() -> HostProfile:
+    """The toy host with ``field_accuracy`` declaring no range."""
+    profile = toyhost_profile()
+    measures = tuple(
+        descriptor.model_copy(update={"value_range": None}) if descriptor.name == "field_accuracy" else descriptor
+        for descriptor in TOYHOST_MEASURES
+    )
+    return replace(profile, measures=MeasureRegistry(measures, families=profile.measures.families))
+
+
+def test_a_uniform_shift_on_a_measure_with_no_range_is_not_separated_and_says_why() -> None:
+    """Every case 0.1 better on a measure that declares no range: no test of the mean can call that (#597).
+
+    The sign-flip reading called twelve such cases improved. Now the row is not separated, joins no family (no
+    test ran to correct), and its reason names the remedy, on the bundle and in the report's verdict words.
+    """
+    from threetears.evals.analysis.report.build import build_code_only_report
+
+    profile = _accuracy_unranged()
+    bundle = _bundle([], accuracy=([0.8] * 12, [0.9] * 12), profile=profile)
+    family = _family(bundle)
+    (comparison,) = [c for c in family.comparisons if c.name == "field_accuracy"]
+    assert (comparison.verdict, comparison.p_raw, comparison.interval) == ("not_separated", None, None)
+    assert comparison.not_separated_reason == UNIFORM_MOVE_NEEDS_RANGE and comparison.untested_reason is None
+    assert family.family_size == 0 and family.n_untested == 0
+
+    ranged = _family(_bundle([], accuracy=([0.8] * 12, [0.9] * 12)))
+    (on_range,) = [c for c in ranged.comparisons if c.name == "field_accuracy"]
+    assert on_range.basis == "bounded" and on_range.not_separated_reason is None
+
+    report = build_code_only_report(bundle, measures=profile.measures, assembled_at="2026-10-06T00:00:00Z")
+    (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
+    (row,) = [row for row in table.rows if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
+    assert row["verdict"].startswith("not separated") and "declare value_range" in row["verdict"]
 
 
 @pytest.mark.parametrize(("threshold", "expected"), [(0.05, "immaterial"), (0.01, "material"), (None, "material")])

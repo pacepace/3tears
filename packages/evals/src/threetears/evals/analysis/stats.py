@@ -70,16 +70,17 @@ def _min_pairs_for_sign_flip(alpha: float) -> int:
     return n
 
 
-#: Pair-count floor for claiming significance from a zero-variance difference.
-#: Derived from the alpha above, not chosen: below it, no exact test of a perfectly
-#: consistent move could reject at that alpha, so the claim would outrun the data.
+#: The fewest pairs at which the exact sign-flip p of a perfectly consistent move reaches alpha.
+#: Kept for callers that cite it; since #597 no verdict reads it. The sign-flip test asks whether a move is
+#: symmetric about zero, not whether the mean moved, so a move with no spread is decided by the bounded test on
+#: a declared range instead (:func:`separation_test`), and with no range is never called separated.
 MIN_PAIRS_FOR_DETERMINISTIC_GAP = _min_pairs_for_sign_flip(SIGNIFICANCE_ALPHA)
 
 #: The paired test the change classifier discloses, so a regression flag names the
 #: statistics it rests on rather than presenting a bare verdict.
 PAIRED_TEST_NAME = (
-    "paired two-sided t-test on shared per-case values (the exact sign-flip test where every difference is one "
-    f"amount), α={SIGNIFICANCE_ALPHA}"
+    "paired two-sided t-test on shared per-case values (where every difference is one amount, the bounded test by "
+    f"betting on the measure's declared range, and not separated with no range), α={SIGNIFICANCE_ALPHA}"
 )
 
 # The test that runs when the two samples cannot be paired — no shared frozen
@@ -106,6 +107,22 @@ EQUIVALENCE_NEEDS_RANGE = (
     "declare value_range on this measure to test equivalence: it declares a margin and no range, and with no range "
     "no test of a mean holds its error rate (an unbounded value can hide a rare large move), so equivalence is "
     "untested and nothing here says the two are alike"
+)
+
+
+#: Why a move with no spread on a reading with no declared range is read ``not_separated``: no test of the mean can
+#: call it. Names the remedy, as :data:`EQUIVALENCE_NEEDS_RANGE` does.
+UNIFORM_MOVE_NEEDS_RANGE = (
+    "declare value_range on this measure for a uniform move to be tested: every case moved by the same amount, and "
+    "with no declared range no test of a mean can call that separated (the exact sign-flip test asks whether the "
+    "move is symmetric about zero, not whether the mean moved, and an unbounded value can hide a rare large move the "
+    "other way), so it is not separated and nothing here says the two are alike"
+)
+
+#: Why a move with no spread is not tested on its declared range: a value contradicts the range.
+UNIFORM_MOVE_OUTSIDE_RANGE = (
+    "every case moved by the same amount, and a value lies outside the declared range, so the range bounds nothing "
+    "and no bounded test can read the move"
 )
 
 
@@ -1180,7 +1197,13 @@ def no_spread_p(a: Sequence[Fraction], b: Sequence[Fraction], *, paired: bool) -
     Paired, every difference one amount: ``2 ** (1 - n)`` (:func:`_sign_flip_p`), or 1 when that amount is
     zero. Unpaired, each side constant: ``2 / C(n_a + n_b, n_a)`` (:func:`_constant_split_p`), or 1 when the
     two constants agree. Decided on exact values (:func:`exact_decimal`), so a float residue cannot pass for a
-    spread. The one reading of that pattern, shared by :func:`separation_p` and :func:`level_difference`.
+    spread. The one detector of that pattern, shared by :func:`separation_test`, :func:`paired_change` and
+    :func:`level_difference`.
+
+    **The p is a test of symmetry (or exchangeability), never of the mean**, and no verdict reads it as one
+    (#597): a mean that did not move can still put every case on one side of zero (+1 four times in five, −4 the
+    fifth, gives twenty cases at +1 one time in 87, where this states one in 524,288). Callers read only whether
+    it is None (the values have spread) or 1 (identical values).
 
     Args:
         a: One side's exact values, at least two.
@@ -1403,46 +1426,95 @@ def guardrail_decision(
     return GuardrailVerdict("undecided", t_interval, "t", GUARDRAIL_HELD_NEEDS_RANGE)
 
 
-def separation_p(
-    sample_a: Sequence[float | Fraction], sample_b: Sequence[float | Fraction], *, paired: bool
-) -> float | None:
-    """The two-sided p of the separation test between two samples, where a test can decide.
+class SeparationTest(NamedTuple):
+    """What :func:`separation_test` came to: the two-sided p where a test ran, and why none did where one was refused.
 
-    :func:`composite_significance`'s p — paired t on shared per-case values, Welch otherwise — and, where
-    the values have no spread, the exact permutation p :func:`level_difference` reads for the same pattern,
-    so one concept has one answer: every paired difference the same nonzero amount reads ``2^(1 − n)``
-    (:func:`_sign_flip_p`), two unpaired sides each constant and different read ``2 / C(n_a + n_b, n_a)``
-    (:func:`_constant_split_p`), and identical values (no gap, no spread) read 1.
+    ``p`` is None either because no test can run at all (``refusal`` None: too few values, or a spread that vanishes
+    in floating point — untested) or because the rule refuses to read a move with no spread on a reading that
+    declares no range (``refusal`` says so and names the remedy — read ``not_separated``, never separated).
+    """
 
-    **The spread is decided on exact values** (:func:`exact_decimal`), the arithmetic
-    :func:`level_difference` uses. Over floats, a constant shift such as ``i/10`` against ``i/10 + 0.5``
-    carries a residue in its differences, and the t-test reads that residue as a tiny, perfectly consistent
-    spread, with a p near 1e-113 where the exact one is ``2^(1 − n)``.
+    p: float | None
+    #: ``"t"`` (the t-test on values with spread), ``"bounded"`` (the bounded test by betting on the declared range,
+    #: where the values have no spread), ``"identical"`` (no gap and no spread: p is 1), or None where no test ran.
+    basis: Literal["t", "bounded", "identical"] | None
+    refusal: str | None = None
 
-    **Where the exact p cannot reach α the answer is ``None`` — untested, never a p.** At three pairs the
-    sign-flip p is 0.25 whatever the data: no test can decide, and :func:`level_difference` calls the same
-    pattern untested. Stating the p would let a caller read the pattern as tested and not separated, which
-    claims the data was asked and could not tell — a different statement from "no test could ask".
+
+def separation_test(
+    sample_a: Sequence[float | Fraction],
+    sample_b: Sequence[float | Fraction],
+    *,
+    paired: bool,
+    value_range: tuple[float, float] | None = None,
+) -> SeparationTest:
+    """The separation test between two samples: the t-test where the values have spread, the bounded test where not.
+
+    :func:`composite_significance`'s p — paired t on shared per-case values, Welch otherwise — wherever the values
+    have spread. **Where they have none** (every paired difference one nonzero amount, or two unpaired sides each
+    constant and different) no t exists, and:
+
+    - **on a declared range the bounded test by betting decides** (:func:`bounded_separation_p`), which holds α for
+      every distribution on the range at every n;
+    - **with no range nothing can** (:data:`UNIFORM_MOVE_NEEDS_RANGE`): the move reads ``not_separated``, with the
+      refusal naming the remedy.
+
+    The exact sign-flip p this read until #597 (``2^(1 − n)``) is a test of symmetry, not of the mean, and a
+    uniform move is exactly where the two part: a judge whose mean did not move (+1 four times in five, −4 the
+    fifth) gives twenty cases all at +1 about one time in 87, where the sign flip states one in 524,288. So it
+    called a uniform move separated far more often than α under a null of no change in the mean.
+
+    Identical values on both sides (no gap, no spread) read p = 1. **The spread is decided on exact values**
+    (:func:`exact_decimal`): over floats a constant shift such as ``i/10`` against ``i/10 + 0.5`` carries a residue
+    a t-test reads as a tiny, perfectly consistent spread, with a p near 1e-113.
 
     Args:
         sample_a: One side's per-case values.
         sample_b: The other's, aligned with ``sample_a`` when ``paired``.
         paired: Whether the two are one-to-one on the same cases.
+        value_range: The reading's declared inclusive bounds, or None when it declares none.
 
     Returns:
-        The p, or ``None`` where no test can decide: fewer than two values a side, paired samples of
-        different lengths, a spread that vanishes in floating point, or no spread over too few cases for the
-        exact test to reach α.
+        The :class:`SeparationTest`.
     """
     a = [exact_decimal(x) for x in sample_a]
     b = [exact_decimal(y) for y in sample_b]
     if len(a) < 2 or len(b) < 2 or (paired and len(a) != len(b)):
-        return None
+        return SeparationTest(None, None)
     exact = no_spread_p(a, b, paired=paired)
+    if exact == 1.0:
+        return SeparationTest(1.0, "identical")
     if exact is not None:
-        return exact if exact == 1.0 or exact <= SIGNIFICANCE_ALPHA else None
+        if value_range is None:
+            return SeparationTest(None, None, UNIFORM_MOVE_NEEDS_RANGE)
+        p = bounded_separation_p(a, b, paired=paired, value_range=value_range)
+        return SeparationTest(None, None, UNIFORM_MOVE_OUTSIDE_RANGE) if p is None else SeparationTest(p, "bounded")
     # The spread is exactly nonzero, so the t statistic exists unless its float residue vanishes.
-    return composite_significance([float(x) for x in a], [float(y) for y in b], paired=paired).p_value
+    t_p = composite_significance([float(x) for x in a], [float(y) for y in b], paired=paired).p_value
+    return SeparationTest(t_p, None if t_p is None else "t")
+
+
+def separation_p(
+    sample_a: Sequence[float | Fraction],
+    sample_b: Sequence[float | Fraction],
+    *,
+    paired: bool,
+    value_range: tuple[float, float] | None = None,
+) -> float | None:
+    """The two-sided p of the separation test between two samples (:func:`separation_test`), where one ran.
+
+    Args:
+        sample_a: One side's per-case values.
+        sample_b: The other's, aligned with ``sample_a`` when ``paired``.
+        paired: Whether the two are one-to-one on the same cases.
+        value_range: The reading's declared inclusive bounds, or None when it declares none.
+
+    Returns:
+        The p, or ``None`` where no test ran: fewer than two values a side, paired samples of different lengths,
+        a spread that vanishes in floating point, or no spread on a reading with no declared range (or with a value
+        outside it) — :func:`separation_test`'s ``refusal`` says which of the last two.
+    """
+    return separation_test(sample_a, sample_b, paired=paired, value_range=value_range).p
 
 
 #: What a change between two paired samples reads as — see :class:`ChangeVerdict`.
@@ -1476,10 +1548,11 @@ class ChangeVerdict(NamedTuple):
     - ``"below_threshold"`` — significant, but under the caller's magnitude gate, and not
       shown equivalent: a real move too small to flag, never a claim of no change.
     - ``"not_separated"`` — not significant and not shown equivalent: the data cannot tell
-      this move from noise, in either direction. Says nothing about whether it changed.
-    - ``"untested"`` — no test could decide: fewer than two pairs, every case moved by the same
-      nonzero amount over too few pairs for the exact sign-flip p to reach α, or a spread that
-      vanishes in floating point. The engine-wide word for an undecidable reading, the one
+      this move from noise, in either direction. Says nothing about whether it changed. Also
+      where every case moved by the same nonzero amount on a measure that declares no range:
+      no test of the mean can call that, and ``not_separated_reason`` says so and names the remedy.
+    - ``"untested"`` — no test could decide: fewer than two pairs, or a spread that vanishes in
+      floating point. The engine-wide word for an undecidable reading, the one
       :func:`level_difference` and the pivot use; it says nothing about whether the measure changed.
     """
 
@@ -1492,9 +1565,9 @@ class ChangeVerdict(NamedTuple):
     n_pairs: int
     #: The p the verdict was thresholded against, carried for the same reason the
     #: effect size is: a label a reader cannot check is an assertion. The t-test's p,
-    #: or where the paired differences have no spread the exact sign-flip p
-    #: (:func:`separation_p`'s reading of the same pattern). ``None`` when the verdict
-    #: is ``untested``.
+    #: or where the paired differences have no spread the bounded test's on the declared
+    #: range (:func:`separation_test`). ``None`` when the verdict is ``untested``, and
+    #: where ``not_separated_reason`` says no test ran.
     p_value: float | None = None
     #: The margin the equivalence test runs against, in the measure's units — the
     #: measure's declared materiality threshold. ``None`` when none was declared, and
@@ -1508,6 +1581,10 @@ class ChangeVerdict(NamedTuple):
     #: Why a measure with a margin was not tested for equivalence at all: it declares no range
     #: (:data:`EQUIVALENCE_NEEDS_RANGE`, which names the remedy). ``None`` otherwise.
     equivalence_untested_reason: str | None = None
+    #: Why the move reads ``not_separated`` with no test run: every case moved by the same amount and the
+    #: measure declares no range (:data:`UNIFORM_MOVE_NEEDS_RANGE`, which names the remedy), or a value lies
+    #: outside it (:data:`UNIFORM_MOVE_OUTSIDE_RANGE`). ``None`` otherwise.
+    not_separated_reason: str | None = None
 
 
 #: The largest fraction of its capital :func:`bounded_mean_p` stakes on one case: the betting fraction is capped
@@ -1678,6 +1755,60 @@ def _bounded_tost_p(diffs: Sequence[Fraction], margin: float, bounds: tuple[floa
     return max(above_lower, below_upper)
 
 
+def bounded_separation_p(
+    sample_a: Sequence[float | Fraction],
+    sample_b: Sequence[float | Fraction],
+    *,
+    paired: bool,
+    value_range: tuple[float, float],
+    alpha: float = SIGNIFICANCE_ALPHA,
+) -> float | None:
+    """The two-sided p of the bounded test by betting that ``mean(b) ≠ mean(a)``, valid at every n on a declared range.
+
+    Paired, :func:`bounded_mean_p` on the differences, which lie within ± the range's width, once upward and once
+    downward: the p is twice the smaller. Unpaired, each direction is an intersection of two one-sided tests at a
+    cut ``c`` between the two means (their midpoint): ``mean(a) < c`` and ``mean(b) > c``. Under a null with
+    ``mean(b) ≤ mean(a)`` any cut, however chosen, has one of the two true, and each test's p only falls as its
+    null moves away from the truth, so twice the larger of the two holds the one-sided rate; the two-sided p is
+    twice the smaller direction's. Valid for every distribution on the range, which a t-test on coarse values is
+    not, and the test that reads a move with no spread, where no t exists (:func:`separation_test`).
+
+    Args:
+        sample_a: One side's per-case values, in a fixed case order.
+        sample_b: The other's, aligned with ``sample_a`` when ``paired``.
+        paired: Whether the two are one-to-one on the same cases.
+        value_range: The reading's declared inclusive bounds.
+        alpha: The two-sided level the stakes are tuned for; the p is valid whatever it is.
+
+    Returns:
+        The p, in ``[0, 1]``; None with fewer than two values a side, paired samples of different lengths, or a value
+        outside the declared range.
+    """
+    a = [exact_decimal(v) for v in sample_a]
+    b = [exact_decimal(v) for v in sample_b]
+    if len(a) < 2 or len(b) < 2 or (paired and len(a) != len(b)):
+        return None
+    low, high = exact_decimal(value_range[0]), exact_decimal(value_range[1])
+    if high <= low or any(not low <= v <= high for v in (*a, *b)):
+        return None
+    if paired:
+        width = float(high - low)
+        diffs = [y - x for x, y in zip(a, b)]
+        upward = bounded_mean_p(diffs, 0.0, (-width, width), alpha=alpha / 2.0)
+        downward = bounded_mean_p([-d for d in diffs], 0.0, (-width, width), alpha=alpha / 2.0)
+        return min(1.0, 2.0 * min(upward, downward))
+    cut = (sum(a, Fraction(0)) / len(a) + sum(b, Fraction(0)) / len(b)) / 2
+    negated = (-float(high), -float(low))
+
+    def above(lower: list[Fraction], upper: list[Fraction]) -> float:
+        # H0 mean(lower) >= cut, read as mean(-lower) <= -cut; and H0 mean(upper) <= cut.
+        below_cut = bounded_mean_p([-v for v in lower], -cut, negated, alpha=alpha / 4.0)
+        above_cut = bounded_mean_p(upper, cut, (float(low), float(high)), alpha=alpha / 4.0)
+        return min(1.0, 2.0 * max(below_cut, above_cut))
+
+    return min(1.0, 2.0 * min(above(a, b), above(b, a)))
+
+
 def paired_change(
     baseline: list[float],
     current: list[float],
@@ -1698,9 +1829,10 @@ def paired_change(
     declared margin; otherwise ``"below_threshold"`` when it was significant but
     under the gate, and ``"not_separated"`` when it was not — which claims nothing
     about whether the measure changed. A move no test can decide — fewer than two
-    pairs, or a uniform move over too few pairs for the exact p to reach α — is
-    ``"untested"``. Values are read exactly (:func:`exact_decimal`), so a float
-    residue never passes for a spread.
+    pairs — is ``"untested"``. A uniform move (every case by the same nonzero amount)
+    is read by the bounded test on the declared range, and with no range reads
+    ``"not_separated"`` with its reason (:func:`separation_test`). Values are read
+    exactly (:func:`exact_decimal`), so a float residue never passes for a spread.
 
     The magnitude gate passes when any *active* threshold is cleared: the absolute
     change clearing ``min_absolute_change`` OR the relative change (against the
@@ -1751,11 +1883,10 @@ def paired_change(
     if len(baseline) != len(current):
         raise ValueError(f"paired_change requires samples aligned one-to-one; got {len(baseline)} vs {len(current)}")
 
-    # Read exactly (:func:`exact_decimal`), as :func:`separation_p` and :func:`level_difference` read: a
+    # Read exactly (:func:`exact_decimal`), as :func:`separation_test` and :func:`level_difference` read: a
     # constant per-case shift such as ``i/10`` against ``i/10 + 0.5`` carries a float residue in its
-    # differences that a t-test reads as a tiny, perfectly consistent spread (p near 1e-113), where the
-    # exact sign-flip p is ``2 ** (1 - n)`` — and that residue also decided whether the deterministic-gap
-    # branch ran at all.
+    # differences that a t-test reads as a tiny, perfectly consistent spread (p near 1e-113) — and that
+    # residue also decided whether the no-spread branch ran at all.
     a = [exact_decimal(x) for x in baseline]
     b = [exact_decimal(x) for x in current]
     n_pairs = len(a)
@@ -1786,6 +1917,7 @@ def paired_change(
     hedges_g: float | None
     significant: bool | None
     p_value: float | None
+    refusal: str | None = None
     exact = no_spread_p(a, b, paired=True) if n_pairs >= 2 else None
     if exact is None:
         hedges_g, significant, p_value = composite_significance(
@@ -1794,18 +1926,13 @@ def paired_change(
     elif exact == 1.0:
         # Every case moved by exactly nothing: definitively not separated, with the exact p of 1.
         hedges_g, significant, p_value = 0.0, False, 1.0
-    elif exact <= SIGNIFICANCE_ALPHA:
-        # A deterministic gap: every case moved by the same nonzero amount. No t exists (the
-        # difference SD is zero), but the exact paired sign-flip test does: its p is ``2 ** (1 - n)``,
-        # one of the ``2 ** n`` equally likely sign assignments in each tail, and here it clears α. The
-        # p is carried, so the label is checkable; the effect size stays None (unbounded).
-        hedges_g, significant, p_value = None, True, exact
     else:
-        # The same pattern over too few pairs for the exact p to reach α — at three pairs it is 0.25
-        # whatever the data. No test can decide, so the move is untested, never "not separated" (which
-        # would say the data was asked and could not tell). Composite values live on a coarse lattice,
-        # so "every case moved by exactly the same amount" is an ordinary coincidence at small n.
-        hedges_g, significant, p_value = None, None, None
+        # Every case moved by the same nonzero amount. No t exists (the difference SD is zero), and the exact
+        # sign-flip p tests symmetry, not the mean (#597): the bounded test on the declared range decides, and
+        # with no range no test can, so the move is not separated and says why. No finite effect size exists.
+        tested = separation_test(a, b, paired=True, value_range=value_range)
+        hedges_g, p_value, refusal = None, tested.p, tested.refusal
+        significant = False if tested.p is None else tested.p < SIGNIFICANCE_ALPHA
     equivalent, equivalence_p = paired_equivalence(
         [y - x for x, y in zip(a, b)], equivalence_margin, value_range=value_range
     )
@@ -1823,13 +1950,13 @@ def paired_change(
             equivalence_margin,
             equivalence_p,
             equivalence_untested_reason(equivalence_margin, value_range),
+            refusal,
         )
 
     if significant is None:
-        # Genuinely untestable — fewer than two pairs, a uniform move below the
-        # pair floor, or a spread that vanishes in floating point. Report the measured
-        # delta if there is one, but never a directional label from a test that did not
-        # run, and never equivalence.
+        # Genuinely untestable — fewer than two pairs, or a spread that vanishes in floating point.
+        # Report the measured delta if there is one, but never a directional label from a test that
+        # did not run, and never equivalence.
         return ChangeVerdict("untested", delta, relative, None, exceeds, hedges_g, n_pairs, None, equivalence_margin)
     if significant and exceeds:
         return verdict("improved" if (delta > 0) == higher_is_better else "regressed")
@@ -1843,7 +1970,9 @@ class LevelDifference(NamedTuple):
 
     ``separated`` is three-valued, like every verdict here: True when the test rejects at α, False when it
     ran and did not (the data cannot tell the difference from noise, which says nothing about whether there
-    is one), None when no test could run (``untested_reason`` says why). ``equivalent`` is the only field
+    is one), None when no test could run (``untested_reason`` says why). It is also False, with no p, where
+    every case moved by one amount on a quantity with no declared range: no test of the mean can call that,
+    and ``not_separated_reason`` says so and names the remedy. ``equivalent`` is the only field
     that claims the difference is small, and only against a declared margin (:func:`paired_equivalence`).
     """
 
@@ -1860,14 +1989,17 @@ class LevelDifference(NamedTuple):
     delta: float | None
     #: The standard error the test read ``delta`` against; None when no test ran.
     se: float | None
-    #: The two-sided p, uncorrected. A t-test's, or an exact permutation p where the values have no
-    #: spread (see :func:`level_difference`). None when no test ran.
+    #: The two-sided p, uncorrected. A t-test's, or the bounded test's on the declared range where the values
+    #: have no spread (see :func:`level_difference`). None when no test ran.
     p_value: float | None
     separated: bool | None
     untested_reason: str | None
     #: The paired TOST against ``± equivalence_margin``; None when no margin, or the test is unpaired.
     equivalent: bool | None
     equivalence_p: float | None
+    #: Why ``separated`` is False with no test run: the values have no spread and the quantity declares no range
+    #: (:data:`UNIFORM_MOVE_NEEDS_RANGE`), or a value lies outside it (:data:`UNIFORM_MOVE_OUTSIDE_RANGE`).
+    not_separated_reason: str | None = None
 
 
 def _all_equal(values: Sequence[float | Fraction]) -> bool:
@@ -1894,13 +2026,13 @@ def level_difference[Case: Hashable](
     multiple of the standard error: at three cases a level a fixed two standard errors calls a difference
     nearly 11% of the time when there is none.
 
-    **A difference with no spread is read by an exact test, not by reasoning.** Every shared case moving by
-    one nonzero amount (or two different constants, unpaired) leaves a t-test undefined. The exact
-    permutation test is not: the observed arrangement is the most extreme of ``2 ** n`` equally likely sign
-    flips (paired) or of ``C(n_a + n_b, n_a)`` splits (unpaired), so its two-sided p is ``2 ** (1 - n)``,
-    or ``2 / C(n_a + n_b, n_a)``. Where that p cannot reach α the pattern is a coincidence the data cannot
-    rule out — a 0/1 value moving the same way on two cases happens one time in eight by chance — so it is
-    untested, never separated. Identical values on both sides (no gap, no spread) have the exact p of 1.
+    **A difference with no spread is read by the bounded test, or not called.** Every shared case moving by
+    one nonzero amount (or two different constants, unpaired) leaves a t-test undefined. On a declared range
+    the bounded test by betting reads it (:func:`separation_test`), valid for the mean at every n. With no range
+    no test of the mean can: the exact permutation p this read until #597 tests symmetry, not the mean, and a
+    mean that did not move puts every case on one side of zero far more often than it states. So the
+    difference reads ``separated=False`` with ``not_separated_reason`` naming the remedy (declare
+    ``value_range``). Identical values on both sides (no gap, no spread) have the exact p of 1.
 
     Every value is read exactly (:func:`exact_decimal`) so a zero spread is decided exactly: two cases whose
     difference is the same decimal must not acquire a float residue a t-test would read as a tiny spread. A
@@ -1913,7 +2045,8 @@ def level_difference[Case: Hashable](
             tested for equivalence (:func:`paired_equivalence`); an unpaired one never is.
         value_range: The quantity's declared inclusive bounds, or None. The equivalence test reads it
             (:func:`paired_equivalence`): on a declared range its error rate holds at every n; with none
-            no equivalence test runs.
+            no equivalence test runs. A difference with no spread is read by the bounded test on it, and with
+            none is not separated.
 
     Returns:
         A :class:`LevelDifference`.
@@ -1947,15 +2080,29 @@ def level_difference[Case: Hashable](
             return LevelDifference(
                 test, n_a, n_b, mean_a, mean_b, delta, 0.0, 1.0, False, None, equivalent, equivalence_p
             )
-        if exact > SIGNIFICANCE_ALPHA:
-            return untested(
-                f"every shared case moved by the same amount, and over {len(diffs)} cases no exact test can "
-                f"call that at α={SIGNIFICANCE_ALPHA}"
-                if paired
-                else f"each side's values are constant, and over {n_a} and {n_b} cases no exact test can call two "
-                f"constants apart at α={SIGNIFICANCE_ALPHA}"
+        tested = separation_test(a, b, paired=paired, value_range=value_range)
+        if tested.p is None:
+            return LevelDifference(
+                test,
+                n_a,
+                n_b,
+                mean_a,
+                mean_b,
+                delta,
+                None,
+                None,
+                False,
+                None,
+                equivalent,
+                equivalence_p,
+                tested.refusal,
             )
-        return LevelDifference(test, n_a, n_b, mean_a, mean_b, delta, 0.0, exact, True, None, None, None)
+        separated = tested.p < SIGNIFICANCE_ALPHA
+        if separated:
+            equivalent, equivalence_p = None, None
+        return LevelDifference(
+            test, n_a, n_b, mean_a, mean_b, delta, None, tested.p, separated, None, equivalent, equivalence_p
+        )
     if paired:
         equivalent, equivalence_p = paired_equivalence(diffs, equivalence_margin, value_range=value_range)
     # The spread is exactly nonzero, so the shared statistic exists; its float residue is all that could
@@ -2351,6 +2498,11 @@ __all__ = [
     "paired_t_power",
     "proportion_interval",
     "separation_p",
+    "separation_test",
+    "SeparationTest",
+    "bounded_separation_p",
+    "UNIFORM_MOVE_NEEDS_RANGE",
+    "UNIFORM_MOVE_OUTSIDE_RANGE",
     "small_sample_case_means",
     "standard_error_of_mean",
     "t_critical_two_sided",

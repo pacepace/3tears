@@ -92,7 +92,22 @@ class ArmMeasurement(EvalDocumentModel):
 
     measure_id: str = Field(min_length=1, description="Which measure the value is of.")
     value: float = Field(description="The measurement, in that measure's own units.")
-    n: int = Field(ge=0, description="Samples behind the value.")
+    n: int = Field(
+        ge=0,
+        description=(
+            "Observations behind the value, copied from the evidence row (`EvidenceRow.n`): a case judged k times "
+            "counts k. Not the count a reader is shown; that is `n_cases`."
+        ),
+    )
+    n_cases: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Distinct test cases behind the value (`EvidenceRow.n_cases`): the independent draws its interval is "
+            "read over, and the count a reader is shown. None where the evidence row recorded none (an analysis "
+            "stored before rows carried it), read as not recorded, never as `n`."
+        ),
+    )
     dispersion: str = Field(description="Spread of the value.")
     finding_id: str = Field(min_length=1, description="The position of the finding whose evidence carried this row.")
 
@@ -681,7 +696,12 @@ def _measurements(
     for position, resolution in enumerate(resolutions):
         for row in resolution.evidence:
             measurement = ArmMeasurement(
-                measure_id=row.measure_id, value=row.value, n=row.n, dispersion=row.dispersion, finding_id=str(position)
+                measure_id=row.measure_id,
+                value=row.value,
+                n=row.n,
+                n_cases=row.n_cases,
+                dispersion=row.dispersion,
+                finding_id=str(position),
             )
             variant = variant_of_cell_ref(row.cell_ref or "")
             if variant is not None and variant in placed:

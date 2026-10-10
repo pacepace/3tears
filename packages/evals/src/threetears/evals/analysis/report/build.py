@@ -1329,9 +1329,10 @@ def _contrast_reason(comparison: FamilyComparison) -> tuple[VerdictReason, str |
     if comparison.verdict == "equivalent":
         return "inside_margin", None
     if comparison.margin_source is None:
-        return "no_margin", None
+        # A gap with no spread on a reading with no range ran no test, and says why and what to declare (#597).
+        return "no_margin", comparison.not_separated_reason
     if comparison.equivalence_p_adjusted is None:
-        return "margin_untested", comparison.equivalence_untested_reason or (
+        return "margin_untested", comparison.not_separated_reason or comparison.equivalence_untested_reason or (
             "the test was unpaired, and the equivalence test reads only cases both arms ran"
         )
     return "not_inside_margin", None
@@ -1353,6 +1354,7 @@ def contrast_verdicts(bundle: AnalysisContextBundle, surface: DecisionSurface) -
             words = (
                 COMPARISON_VERDICT_WORDS[comparison.verdict]
                 + (f" ({comparison.untested_reason})" if comparison.untested_reason else "")
+                + (f" ({comparison.not_separated_reason})" if comparison.not_separated_reason else "")
                 + (
                     f" (margin ±{format_number(margin)}"
                     + (", declared on the runs" if comparison.margin_source == "run" else "")

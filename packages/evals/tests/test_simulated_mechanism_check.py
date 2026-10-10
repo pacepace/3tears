@@ -126,13 +126,14 @@ def test_an_inert_lever_reads_moved_at_most_alpha(n_cases: int) -> None:
 
 @pytest.mark.parametrize("n_cases", [2, 3])
 def test_an_inert_lever_is_still_caught_where_the_data_can_say_so(n_cases: int) -> None:
-    """Only the alike-shifted assignments are too few to tell; every other one still reads ``inert``.
+    """Only the alike-shifted assignments go uncalled; every other one still reads ``inert``.
 
-    Both cases (or all three) shifting by the same ±1 is ``2 / 4 ** n`` of the mass: an exact test cannot call
-    that at α over so few cases, and reading it ``inert`` would hide a pattern the data cannot rule out.
+    Both cases (or all three) shifting by the same ±1 is ``2 / 4 ** n`` of the mass. The covariate declares no
+    range, so no test of the mean can call that shift at any n (#597), and reading it ``inert`` would hide a
+    pattern the data cannot rule out: it is ``unchecked`` for ``uniform_move_needs_range``, naming the remedy.
     """
     readings = _exact_readings(n_cases)
     alike = 2 / 4**n_cases
-    assert readings == pytest.approx({("inert", None): 1 - alike, ("unchecked", "too_few_observations"): alike}), dict(
-        readings
+    assert readings == pytest.approx({("inert", None): 1 - alike, ("unchecked", "uniform_move_needs_range"): alike}), (
+        dict(readings)
     )
