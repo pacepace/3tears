@@ -307,6 +307,7 @@ The engine's contracts: the stored shapes, and the vocabulary every other packag
 - **`TimeAxis`** · model · The campaign's runs placed in time — present only when they span two builds or two days.
 - **`TimePosition`** · model · One point on a campaign's time axis — the runs at one build or on one day, and what they measured.
 - **`ToolLike`** · protocol · The three members the cassette layer calls on a synchronous tool it wraps.
+- **`UndeclarableAxisError`** · exception · A declared axis this host will not accept: neither a registered lever nor a recognised open-family member.
 - **`UnknownCandidateKind`** · exception · A template names a kind this host did not wire.
 - **`UnreadableBarName`** · dataclass · A bar name no verdict can be given on, and why — the text an author or a reader is shown.
 - **`ValidationFailedError`** · exception · Validation failed (status 422).

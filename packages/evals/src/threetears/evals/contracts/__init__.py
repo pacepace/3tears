@@ -51,6 +51,7 @@ from threetears.evals.contracts.covariates import (
 from threetears.evals.contracts.declaration import (
     BarName,
     CampaignDesign,
+    UndeclarableAxisError,
     UnreadableBarName,
     refuse_an_undeclarable_design,
     resolve_bar_name,
@@ -645,6 +646,7 @@ __all__ = [
     "ToolLike",
     "ToolWrap",
     "TransferabilityClass",
+    "UndeclarableAxisError",
     "UnknownCandidateKind",
     "UnreadableBarName",
     "UsageRole",
