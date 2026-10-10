@@ -1117,6 +1117,12 @@ class TestTheMarginalIsRugOrBinnedBySampleCount:
         assert sum(row["count"] for row in bins) == limit + 1, "every observation lands in exactly one bin"
         assert not self._drawn(spec, "rug"), "and no rug survives"
 
+    def test_the_marginal_s_unlabelled_rise_axis_passes_the_crop_label_rule(self):
+        """The one `labels: False` in the package is zero-based, so #636's rule leaves it alone."""
+        spec = compile_chart("distribution", self._one_group(geometry()["rug_max_per_series"] + 1)).spec
+        assert '"labels": false' in json.dumps(spec), "the marginal's rise axis still suppresses its labels"
+        assert not any("suppresses its tick labels" in violation for violation in check_spec(spec))
+
     def test_the_bins_line_up_across_rows_rather_than_following_each_row_s_range(self):
         """Rows binned to their own ranges are two histograms drawn to two rulers.
 
