@@ -93,7 +93,7 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Iterable, Mapping
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 from pydantic import Field, model_validator
 
@@ -101,7 +101,14 @@ from threetears.evals.contracts.base import EvalBaseModel
 
 # The reserved dual-score axis ids, re-exported so a caller describing a judged dimension
 # has one import for both the ids and their descriptors.
-from threetears.evals.contracts.models import OUTCOME_DIM_ID, SCALES, TRANSCRIPT_DIM_ID, RubricScale
+from threetears.evals.contracts.models import (
+    OUTCOME_DIM_ID,
+    SCALES,
+    TRANSCRIPT_DIM_ID,
+    DeclaredMeritAxis,
+    MeasureDeclaration,
+    RubricScale,
+)
 
 if TYPE_CHECKING:
     # Type-only: the host's registry is BUILT from this module's descriptors, so importing it
@@ -110,6 +117,8 @@ if TYPE_CHECKING:
     from threetears.evals.contracts.host.measures import MeasureRegistry
 
 __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why the aliases are exported
+    "declaration_of",
+    "read_as_declared",
     "OUTCOME_DIM_ID",
     "TIME_UNITS",
     "is_latency_measure",
@@ -219,6 +228,9 @@ AttributionScope = Literal["subsystem", "end_to_end"]
 #: sweepables registry draws over levers. "Best" is never unqualified: a memo states position
 #: along these, and a measure that names none contributes to no verdict.
 MeritAxis = Literal["quality", "cost", "latency", "reliability"]
+
+if get_args(MeritAxis) != get_args(DeclaredMeritAxis):  # pragma: no cover - import-time invariant
+    raise RuntimeError("models.DeclaredMeritAxis must restate metrics.MeritAxis exactly")
 
 #: Which observations a measure is computed over. Two surfaces reporting the same measure name
 #: over different populations produce figures that differ **by construction** over any corpus with
@@ -1993,6 +2005,38 @@ _SEED = _SEED + _compare_trio("composite", "Mean composite quality", "judge_medi
 
 #: The engine's own measures, each one's descriptor keyed by its name.
 METRIC_DESCRIPTORS: dict[str, MetricDescriptor] = {d.name: d for d in _SEED}
+
+
+def declaration_of(descriptor: MetricDescriptor) -> MeasureDeclaration:
+    """The reading-side half of a host's descriptor, as a run launched under it freezes it.
+
+    Args:
+        descriptor: A measure the host declares.
+
+    Returns:
+        Its direction, merit axis, guardrail flag, margin and range.
+    """
+    return MeasureDeclaration(
+        higher_is_better=descriptor.higher_is_better,
+        merit_axis=descriptor.merit_axis,
+        guardrail=descriptor.guardrail,
+        materiality_threshold=descriptor.materiality_threshold,
+        value_range=descriptor.value_range,
+    )
+
+
+def read_as_declared(descriptor: MetricDescriptor, declaration: MeasureDeclaration) -> MetricDescriptor:
+    """The descriptor read on a stored declaration: everything the reading host says of it, but how to read it.
+
+    Args:
+        descriptor: The reading host's descriptor of the measure.
+        declaration: How the runs being read were launched to read it (``EvalRun.declared_measures``).
+
+    Returns:
+        The descriptor with the declaration's direction, merit axis, guardrail flag, margin and range.
+    """
+    return descriptor.model_copy(update=declaration.model_dump())
+
 
 #: The core rate measures a run may declare a margin on (``EvalRun.declared_margins``,
 #: :func:`run_margin_refusal`): numeric, on 0 to 1, with a better end and a merit axis (so a comparison tests

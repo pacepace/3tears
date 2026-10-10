@@ -665,23 +665,22 @@ class HostProfile:
 
         readable = mechanism_measure_names(self.measures)
         defects: list[str] = []
-        for declared in self.sweepables.declarations:
-            if declared.acts_on is None:
-                continue
-            descriptor = METRIC_DESCRIPTORS.get(declared.acts_on) or self.measures.get(declared.acts_on)
+        # Fixed levers' acts_on and open families' named members (member_acts_on, #585) alike.
+        for lever, measure in self.sweepables.mechanisms:
+            descriptor = METRIC_DESCRIPTORS.get(measure) or self.measures.get(measure)
             if descriptor is None:
                 defects.append(
-                    f"{declared.name} acts on {declared.acts_on!r}, which is no measure or covariate the engine's "
+                    f"{lever} acts on {measure!r}, which is no measure or covariate the engine's "
                     "catalogue or this host's measure registry declares"
                 )
             elif descriptor.data_type != "numeric":
                 defects.append(
-                    f"{declared.name} acts on {declared.acts_on!r}, a {descriptor.data_type} measure — the check "
+                    f"{lever} acts on {measure!r}, a {descriptor.data_type} measure — the check "
                     "compares levels' values, which only a numeric measure has"
                 )
-            elif declared.acts_on not in readable:
+            elif measure not in readable:
                 defects.append(
-                    f"{declared.name} acts on {declared.acts_on!r}, which no result carries as one value — it is "
+                    f"{lever} acts on {measure!r}, which no result carries as one value — it is "
                     "recorded per row (per role, per delivery) or only over a whole run, so the check would read "
                     "nothing and blame the data. Declare a measure each result carries once instead: the "
                     f"engine's covariate {REASONING_RATIO_KEY!r} for how much a candidate reasoned, or a host "

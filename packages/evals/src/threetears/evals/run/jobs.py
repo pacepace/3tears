@@ -107,6 +107,28 @@ ProgressFn = Callable[[dict[str, Any]], Awaitable[None]]
 WorkFn = Callable[[ProgressFn], Awaitable[None]]
 
 
+class RunEndListener(Protocol):
+    """What a host hands the job manager to hear that a run's terminal status was recorded.
+
+    Called once per run, after the terminal write landed and outside the run's concurrency slot, with
+    the status the store now holds — never for a write the store declined (the run was already terminal)
+    or refused, since then no new terminal status was recorded. It runs inside the run's job task, so
+    :meth:`EvalJobManager.wait_for` returns after it has. It cannot change how the run ended: whatever it
+    raises is logged and dropped. :class:`~threetears.evals.ops.RegressionWatch` is the engine's one
+    listener, and checks a completed run's measures against its contestant's history.
+    """
+
+    async def __call__(self, run_id: str, scope_id: str, status: str) -> None:
+        """Hear that ``run_id`` reached ``status``.
+
+        Args:
+            run_id: The run.
+            scope_id: Its scope.
+            status: The terminal status recorded.
+        """
+        ...  # pragma: no cover — protocol
+
+
 class EvalJobTimeout(Exception):
     """A job outlived the wall-clock budget its timeout context was enforcing.
 
@@ -452,6 +474,7 @@ class EvalJobManager:
         *,
         job_timeout_factory: JobTimeoutFactory | None = None,
         blocking_executor: Executor | None = None,
+        on_run_end: RunEndListener | None = None,
     ):
         """Wire the job manager to storage and configure concurrency.
 
@@ -483,6 +506,8 @@ class EvalJobManager:
                 eval traffic (a liveness probe, say) passes a pool of its
                 own; the same construction-site gate requires every non-test
                 site to name one.
+            on_run_end: Told each run's recorded terminal status (:class:`RunEndListener`), or
+                ``None`` for nobody. What it raises is logged and never changes the run.
         """
         self._storage = storage
         self._max_concurrent = max_concurrent
@@ -494,6 +519,11 @@ class EvalJobManager:
         self._job_timeout_s = job_timeout_s
         self._job_timeout_factory: JobTimeoutFactory = job_timeout_factory or default_job_timeout
         self._blocking_executor = blocking_executor
+        self._on_run_end = on_run_end
+        # The terminal status each in-flight run's write actually recorded, keyed by run id: set by
+        # _set_status when a terminal write lands, read once by _run_job as the job ends, so the
+        # listener hears the stored status and only one that was stored.
+        self._recorded_end: dict[str, str] = {}
         # Operator-supplied cancellation reasons keyed by job id. Written by
         # cancel_job, consumed (popped) by the job's own CancelledError
         # boundary — the only frame that can attach the reason to the
@@ -1042,9 +1072,26 @@ class EvalJobManager:
             log.exception("Job %s failed", run_id)
             await self._set_status(run_id, scope_id, "failed", error=str(exc))
         finally:
+            ended = self._recorded_end.pop(run_id, None)
+            if ended is not None:
+                await self._tell_run_end(run_id, scope_id, ended)
             self._tasks.pop(run_id, None)
             self._cancel_reasons.pop(run_id, None)
             self._work_ran.pop(run_id, None)
+
+    async def _tell_run_end(self, run_id: str, scope_id: str, status: str) -> None:
+        """Hand the recorded terminal status to the run-end listener, if any; never let it change the run.
+
+        After the concurrency slot is released, so a slow listener holds up no queued run. A listener that
+        raises is logged and dropped: the run's status is already stored, and nothing a listener does can
+        reopen it.
+        """
+        if self._on_run_end is None:
+            return
+        try:
+            await self._on_run_end(run_id, scope_id, status)
+        except Exception:  # prawduct:ok-broad-except — a listener's failure must not corrupt the run's ending
+            log.exception("eval.run_end listener failed for run=%s status=%s; the run's status stands", run_id, status)
 
     async def _set_status(
         self,
@@ -1188,6 +1235,8 @@ class EvalJobManager:
                 run_id,
                 status,
             )
+        elif status in TERMINAL_RUN_STATUSES:
+            self._recorded_end[run_id] = status
 
         self._safe_broadcast(run_id, {"status": status})
 
@@ -1281,6 +1330,7 @@ __all__ = [
     "EvalJobTimeout",
     "JobTimeoutFactory",
     "ProgressFn",
+    "RunEndListener",
     "WorkFn",
     "adaptive_job_timeout_s",
     "default_job_timeout",

@@ -18,6 +18,7 @@ python -m threetears.evals ls     --host myapp.evals:build_host --scope dev
 python -m threetears.evals report CAMPAIGN --host myapp.evals:build_host --scope dev [--format markdown|html|json] [--out PATH]
 python -m threetears.evals bundle CAMPAIGN --host myapp.evals:build_host --scope dev
 python -m threetears.evals spend  --host myapp.evals:build_host --scope dev [--purpose P] [--launch-group ID] [--template ID]
+python -m threetears.evals frontier --host myapp.evals:build_host --scope dev [--bar B] [--subject S] [--json]
 python -m threetears.evals gate   CAMPAIGN --host myapp.evals:build_host --scope dev [--fail-on OUTCOMES] [--reading MEASURE ...]
 ```
 
@@ -51,6 +52,11 @@ fingerprint; the bundle itself is the wrapper's `bundle` field. Neither command 
 `spend` prints what the engine spent outside any run in the scope — case generations, rubric proposals,
 analysis generations and judge repeats (`--purpose variation|proposer|analysis|judge`) — narrowed by its flags.
 
+### `frontier`
+
+`frontier` prints each subject's variants ranked on pass^k, cost and latency, and, with `--bar`, the cheapest
+that clears it ([The frontier](choosing-a-design.md#the-frontier-passk-against-cost)). `--subject` narrows it to
+one subject, and `--json` prints the `FrontierResult` the `scope_frontier` action returns.
 ### `gate`
 
 `gate` is the CI gate. It reads the campaign's typed verdicts as code reaches them on its evidence now (never an

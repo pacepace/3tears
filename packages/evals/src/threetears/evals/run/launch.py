@@ -44,7 +44,7 @@ from threetears.evals.contracts.host.world import WorldPlacement
 from threetears.evals.contracts.arguments import normalize_blank
 from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
 from threetears.evals.contracts.host.sweepables import CORE_SWEEPABLES
-from threetears.evals.contracts.metrics import run_margin_refusal
+from threetears.evals.contracts.metrics import declaration_of, run_margin_refusal
 from threetears.evals.contracts.identity import derive_context_identity, variant_levers_of_run
 from threetears.evals.contracts.models import (
     DEFAULT_JUDGE_TEMPERATURE,
@@ -69,7 +69,13 @@ from threetears.evals.run.budget import EvalRunCostCap
 from threetears.evals.run.case_sets import resolve_case_set
 from threetears.evals.run.ceilings import CeilingRaisedError, refuse_raised_ceiling
 from threetears.evals.contracts.cassettes import CassetteMode
-from threetears.evals.run.jobs import MAX_CONCURRENT_JOBS, EvalJobManager, JobTimeoutFactory, adaptive_job_timeout_s
+from threetears.evals.run.jobs import (
+    MAX_CONCURRENT_JOBS,
+    EvalJobManager,
+    JobTimeoutFactory,
+    RunEndListener,
+    adaptive_job_timeout_s,
+)
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import JudgeService, judge_clients_for_run
 from threetears.evals.run.lifecycle import record_completeness
@@ -437,6 +443,10 @@ class LaunchHost:
             to :attr:`LaunchSettings.max_concurrent_cells` at once, as each run's launch decided.
         on_job_progress: Called with ``(run id, progress)`` on every progress write — typically a
             broadcast to an operator's view — or ``None``.
+        on_run_end: Told each run's recorded terminal status
+            (:class:`~threetears.evals.run.jobs.RunEndListener`) — a
+            :class:`~threetears.evals.ops.RegressionWatch` to check a completed run against its contestant's
+            history — or ``None`` for nobody.
         job_manager: The process's job manager, built here over :attr:`eval_host`'s storage and
             executor, so the store a run's status is written to is the store its results are. It is
             the one a host hands :func:`~threetears.evals.run.lifecycle.cancel_run`, the boot reclaim
@@ -452,6 +462,7 @@ class LaunchHost:
     max_concurrent_jobs: int = MAX_CONCURRENT_JOBS
     cell_executor: CellExecutor | None = None
     on_job_progress: Callable[[str, dict[str, Any]], None] | None = None
+    on_run_end: RunEndListener | None = None
     job_manager: EvalJobManager = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -491,6 +502,7 @@ class LaunchHost:
                 self.on_job_progress,
                 job_timeout_factory=self.job_timeout_factory,
                 blocking_executor=self.eval_host.blocking_executor,
+                on_run_end=self.on_run_end,
             ),
         )
 
@@ -3077,6 +3089,13 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                 kind_spec=freeze(request.kind_spec),
                 apparatus_settings=dict(request.apparatus_settings),
                 declared_margins=dict(request.margins),
+                # How the host declared each of its measures to be read, as this run launched under it: a later
+                # reader's host may declare them otherwise, and a stored comparison is read on these.
+                declared_measures={
+                    name: declaration_of(descriptor)
+                    for name in host.eval_host.profile.measures.names
+                    if (descriptor := host.eval_host.profile.measures.get(name)) is not None
+                },
                 # The world and the tool bound the template states, frozen as this run launched them:
                 # the template is editable, and the runner hands the candidate the template's seed.
                 resolved_world_seed=dict(template.world_seed.namespaces),

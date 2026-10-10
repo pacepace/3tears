@@ -18,9 +18,15 @@ arm against the control apart from every contrast: held, breached or undecided. 
 in place of calling them. Handed a :class:`World`, each case's starting state and goal-state checks,
 :func:`run_eval` seeds every cell's world, hands the candidate :class:`WorldTools` that act on it, and
 grades the state it leaves (:class:`GoalCheckSummary`).
-:func:`run_cli` is ``python -m threetears.evals``: ``run``, ``ls``, ``report``, ``bundle``, ``spend`` and ``gate`` over
+:func:`run_cli` is ``python -m threetears.evals``: ``run``, ``ls``, ``report``, ``bundle``, ``spend``, ``gate`` and ``frontier`` over
 a host named ``module:factory``, or mounted under a product's own CLI with its host factory and any
 subcommands of its own (:class:`HostCommand`).
+
+**A host of your own** uses the same pieces without :func:`callable_host`: ``@measure(...)`` declares a measure on
+the function that computes it (a :class:`Measure`, whose ``descriptor`` the host registers),
+:func:`callable_kind` is the kind over a plain candidate and its scorers, declared under
+:func:`callable_kind_contracts`, and a :class:`World`'s ``registry`` and ``bindings(state)`` are its world's
+declaration and handles. Each is an ordinary contract object, mixed freely with ones the host writes by hand.
 
 This package composes the others and is composed by nothing: it may import ``contracts``, ``run``,
 ``analysis`` and ``storage``, and no package of the engine imports it.
@@ -62,11 +68,13 @@ from threetears.evals.quick.one_call import (
     ExpectedLabel,
     Scorer,
     callable_host,
+    callable_kind,
     callable_kind_contracts,
     run_eval,
 )
 from threetears.evals.quick.guardrails import Guardrail, GuardrailDirection
 from threetears.evals.quick.judged import CaseMaterial, Judge
+from threetears.evals.quick.measures import Measure, measure
 from threetears.evals.quick.tools import CandidateTools, Tool, ToolUsingCandidate
 from threetears.evals.quick.world import CaseSeed, Dimension, ToolRefused, World, WorldCandidate, WorldTool, WorldTools
 from threetears.evals.ops.summary import (
@@ -120,6 +128,7 @@ __all__ = [
     "Judge",
     "JudgeGrade",
     "LabelStatistics",
+    "Measure",
     "MeasureSummary",
     "Scorer",
     "Tool",
@@ -131,8 +140,10 @@ __all__ = [
     "WorldTools",
     "build_parser",
     "callable_host",
+    "callable_kind",
     "callable_kind_contracts",
     "compare",
+    "measure",
     "run_cli",
     "run_eval",
     "summarize_run",

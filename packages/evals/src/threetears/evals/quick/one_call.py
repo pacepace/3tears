@@ -62,6 +62,7 @@ from functools import partial
 from typing import Any, cast
 
 from threetears.evals.contracts import (
+    CandidateKind,
     ACCURACY_MEASURE,
     CONFUSION_CELL_MEASURE,
     DEFAULT_LAUNCH_K_RUNS,
@@ -135,6 +136,7 @@ from threetears.evals.quick.answer import unwrap_answer
 from threetears.evals.quick.guardrails import Guardrail
 from threetears.evals.quick.judged import Judge, judge_evidence
 from threetears.evals.quick.levers import CallableLevers, levers_model
+from threetears.evals.quick.measures import Measure
 from threetears.evals.quick.tools import CellTools, Tool, ToolUsingCandidate, refuse_unusable_tools
 from threetears.evals.quick.world import CaseSeed, World, WorldCandidate, WorldCellKind, world_case_payload
 from threetears.evals.storage import InMemoryDocumentStore
@@ -649,6 +651,15 @@ def callable_host(
     _refuse_unnamed_or_repeated(scorers)
     margins = dict(margins or {})
     ranges = dict(ranges or {})
+    if declared_twice := sorted(
+        scorer.descriptor.name
+        for scorer in scorers
+        if isinstance(scorer, Measure) and scorer.descriptor.name in {*margins, *ranges, *(guardrails or {})}
+    ):
+        raise ValueError(
+            f"{', '.join(declared_twice)} declare(s) its margin, range and guardrail on its own @measure; "
+            "declare them there rather than in margins=, ranges= or guardrails="
+        )
     refuse_unusable_margins(scorers, margins, ranges)
     guardrails = dict(guardrails or {})
     refuse_unusable_guardrails(scorers, guardrails, margins=margins, ranges=ranges)
@@ -659,7 +670,10 @@ def callable_host(
             if arms
             else SHARED_CORE,
             measures=MeasureRegistry(
-                scorer_measure(
+                # A Measure declares itself; any other scorer is declared here, with what this call declares on it.
+                scorer.descriptor
+                if isinstance(scorer, Measure)
+                else scorer_measure(
                     scorer,
                     margin=margins.get(_scorer_name(scorer)),
                     value_range=_as_range(ranges.get(_scorer_name(scorer))),
@@ -681,6 +695,50 @@ def callable_host(
         blocking_executor=None,
         cell_timeout=default_cell_timeout,
         clients=clients,
+    )
+
+
+def callable_kind(
+    candidate: Candidate | ToolUsingCandidate,
+    scorers: Sequence[Scorer] = (),
+    *,
+    classifies: bool = False,
+    judge: Judge | None = None,
+    tools: Mapping[str, Tool] | None = None,
+    ranges: Mapping[str, tuple[float, float]] | None = None,
+) -> CandidateKind:
+    """The kind over a plain async candidate and its scorers, for a host of your own to launch.
+
+    What :func:`run_eval` runs each cell through, as an ordinary :class:`~threetears.evals.contracts.CandidateKind`
+    a launcher wires like any other (``KindWiring(kind_factory=lambda _cell: kind, ...)``), declared on the profile
+    under :data:`CALLABLE_KIND` by :func:`callable_kind_contracts` (:data:`JUDGED_CALLABLE_KIND` with a judge).
+    Each cell calls the candidate with its case, read from the stored test case's ``host_payload["case"]``, where
+    the quick path stores it, and each scorer with the case and the answer, landing each score as a host measure
+    under the scorer's name. A candidate that raises fails its cell; a scorer that raises, returns no number, or
+    returns one outside its range excludes it.
+
+    Args:
+        candidate: The callable under test.
+        scorers: The grades: plain functions, or :class:`~threetears.evals.quick.Measure` objects declaring their own
+            measure (``@measure(...)``), each reported under its name.
+        classifies: Whether each case carries an expected label (``host_payload["expected"]``), landing ``match``
+            and ``confusion_cell``.
+        judge: The judge whose evidence each answer carries, for the judged kind; ``None`` for an unjudged one.
+        tools: The tools the candidate is called with beside each case; ``None`` for a candidate called alone.
+        ranges: Each scorer's range, by name, every score is held to; a ``Measure``'s own ``value_range`` when not
+            named here.
+
+    Returns:
+        The kind: one instance serves every cell of a run.
+    """
+    _refuse_unnamed_or_repeated(scorers)
+    held = {
+        scorer.descriptor.name: scorer.descriptor.value_range
+        for scorer in scorers
+        if isinstance(scorer, Measure) and scorer.descriptor.value_range is not None
+    }
+    return CallableKind(
+        candidate, scorers, classifies=classifies, judge=judge, tools=tools, ranges={**held, **(ranges or {})}
     )
 
 
@@ -1124,6 +1182,35 @@ def _template_id(
     return f"{CALLABLE_HOST_ID}-{digest[:16]}"
 
 
+_LIFECYCLE_STAMPS: set[str] = {"created_at", "updated_at"}
+
+
+def _save_unless_unchanged(host: EvalHost, template: EvalTemplate, test_cases: Sequence[EvalTestCase]) -> None:
+    """Store the template and its cases, leaving each one the store already holds unchanged as it is.
+
+    Both are addressed by their content, so a second call over the same cases finds them stored. Saving them again
+    would restamp ``updated_at``, and a template stamped after a run launched reads as edited since: that run's
+    summary withholds its intent and a rejudge of it is refused. So a stored definition that matches this one in
+    everything but its stamps is left alone, and one that differs (an unjudged template's intent, say) is a real
+    edit, saved with its original ``created_at``.
+    """
+    stored = host.storage.load_template(template.id, template.scope_id)
+    if stored is None or stored.model_dump(mode="json", exclude=_LIFECYCLE_STAMPS) != template.model_dump(
+        mode="json", exclude=_LIFECYCLE_STAMPS
+    ):
+        host.storage.save_template(
+            template if stored is None else template.model_copy(update={"created_at": stored.created_at})
+        )
+    for test_case in test_cases:
+        kept = host.storage.load_test_case(test_case.id, test_case.scope_id)
+        if kept is None or kept.model_dump(mode="json", exclude=_LIFECYCLE_STAMPS) != test_case.model_dump(
+            mode="json", exclude=_LIFECYCLE_STAMPS
+        ):
+            host.storage.save_test_case(
+                test_case if kept is None else test_case.model_copy(update={"created_at": kept.created_at})
+            )
+
+
 def _case_payload(case: dict[str, Any], label: str | None, seed: dict[str, Any] | None = None) -> dict[str, Any]:
     """The ``host_payload`` a case's stored test case carries: the case, verbatim, a classifier's expected label, and a world case's starting state."""
     labelled = {} if label is None else {_EXPECTED_KEY: label}
@@ -1157,10 +1244,13 @@ class _WiredArm:
     levers: dict[str, Any]
     kind_factory: KindFactory
     arm: str | None = None
+    shared_subject: str | None = None
 
     @property
     def subject(self) -> str:
-        """The run's subject: the arm's name when it has one, else its model."""
+        """The run's subject: the one every arm of the launch shares when it names one, else the arm's name, else its model."""
+        if self.shared_subject is not None:
+            return self.shared_subject
         return self.arm if self.arm is not None else self.model
 
 
@@ -1173,13 +1263,16 @@ def _launch_host(
     *,
     calls_tools: bool = False,
     max_cost_usd: float | None = None,
+    preparing: Sequence[_WiredArm] = (),
 ) -> LaunchHost:
     """``host`` as a launching host whose one kind runs each arm's kind over ``cases``, judged by ``judge`` when given.
 
     Every arm is launched into one group (:func:`_launch_arms`), each through its own
     :func:`~threetears.evals.run.start_run` call, so the launcher is asked once per arm and wires the arm the
-    request names: the one at the request's candidate model and overlays. Its subject is its model, as a
-    one-arm launch's is.
+    request names: the one at the request's candidate model, overlays and subject. Arms that share one subject
+    and differ only on the arm lever, which rides on the run's payload rather than the request, are told apart
+    by ``preparing``: the arm whose ``start_run`` call is in progress, which the caller sets before each call (a
+    launch into a caller's group prepares its one run inside that call).
 
     A judged kind's launcher builds its judge as every judged launcher does, with
     :func:`~threetears.evals.run.build_judge_service` over the run's template, on a host whose client
@@ -1199,7 +1292,7 @@ def _launch_host(
 
     def arm_of(request: LaunchRequest) -> _WiredArm:
         levels = {} if request.overlays is None else request.overlays.model_dump(mode="json")
-        for arm in arms:
+        for arm in preparing or arms:
             if arm.model == request.candidate_model and arm.levers == levels and arm.subject == request.subject_id:
                 return arm
         raise ValueError(f"no arm of this launch runs model {request.candidate_model!r} at levers {levels!r}")
@@ -1541,6 +1634,7 @@ async def run_arms(
     cassette_mode: CassetteMode = "off",
     cassette_corpus_id: str | None = None,
     max_cost_usd: float | None = None,
+    subject: str | None = None,
     margins: Mapping[str, float] | None = None,
     measure_latency: bool = False,
 ) -> list[EvalSummary]:
@@ -1556,7 +1650,9 @@ async def run_arms(
 
     Args and Raises as :func:`run_eval`, every argument but the arms the same for every arm — one judge, so
     every arm is judged by the same model, rubric and judge configs, and one ``max_cost_usd``, each arm's
-    run's own cap. The arms are distinct — no two at one model and one level of every lever — which the
+    run's own cap. ``subject`` is the subject every arm's run shares (a comparison's: its arms are variants of
+    one subject, so the frontier and history rank them together); ``None`` makes each run's subject its arm's
+    name, else its model. The arms are distinct — no two at one model and one level of every lever — which the
     caller holds. ``margins`` are run-scoped margins on core rate measures (``{"accuracy": 0.05}``), declared
     on every arm's run alike (:func:`~threetears.evals.run.start_run`'s ``margins``).
 
@@ -1638,9 +1734,7 @@ async def run_arms(
             refuse_unsupplied_world(template, profile=host.profile)
         except ValidationFailedError as refused:
             raise ValueError(refused.message) from refused
-    host.storage.save_template(template)
-    for test_case in test_cases:
-        host.storage.save_test_case(test_case)
+    _save_unless_unchanged(host, template, test_cases)
     # Each scorer's declared range, which every score it returns is held to: the bounded tests read it as a fact.
     ranges = {
         name: descriptor.value_range
@@ -1661,11 +1755,20 @@ async def run_arms(
                 ranges=ranges,
             ),
             arm=arm.arm,
+            shared_subject=subject,
         )
         for arm, model in zip(arms, models, strict=True)
     ]
+    preparing: list[_WiredArm] = []
     launch_host = _launch_host(
-        host, wired, test_cases, judge, world, calls_tools=tools is not None, max_cost_usd=max_cost_usd
+        host,
+        wired,
+        test_cases,
+        judge,
+        world,
+        calls_tools=tools is not None,
+        max_cost_usd=max_cost_usd,
+        preparing=preparing,
     )
 
     async def form() -> tuple[LaunchGroup, None]:
@@ -1674,11 +1777,13 @@ async def run_arms(
 
     async def prepare(group: LaunchGroup, _formed: None) -> list[EvalRun]:
         prepared: list[EvalRun] = []
-        for arm, model in zip(arms, models, strict=True):
+        for arm, wired_arm, model in zip(arms, wired, models, strict=True):
+            # A launch into this group prepares its one run inside the call, so the launcher wires this arm.
+            preparing[:] = [wired_arm]
             prepared += await start_run(
                 launch_host,
                 template_id=template_id,
-                subject_id=model if arm.arm is None else arm.arm,
+                subject_id=wired_arm.subject,
                 models=[model],
                 k_runs=k,
                 scope_id=scope_id,
@@ -1691,6 +1796,7 @@ async def run_arms(
                 margins=margins,
                 measure_latency=measure_latency,
             )
+        preparing.clear()
         return prepared
 
     runs = await launch_as_group(
@@ -1808,6 +1914,7 @@ __all__ = [
     "ExpectedLabel",
     "Scorer",
     "callable_host",
+    "callable_kind",
     "callable_kind_contracts",
     "run_eval",
 ]

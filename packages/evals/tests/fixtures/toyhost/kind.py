@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, get_args
 
 from threetears.evals.contracts import (
+    MeasureFamily,
     CallLedger,
     CandidateOutput,
     CandidatePreparationFailed,
@@ -60,6 +61,7 @@ from threetears.evals.contracts import (
     VariantConfig,
 )
 from threetears.evals.contracts.host import ApparatusError, SeedRefused, SubjectSnapshot, WorldRegistry
+from threetears.evals.quick import measure
 from threetears.evals.run import GoalCheckUnevaluable, grade_goal_checks
 from packages.evals.tests.fixtures.toyhost.product import ExtractionRequest, extraction_request
 from packages.evals.tests.fixtures.toyhost.tracing import OP_HOST_GRADE, OP_MODEL_CALL, OP_TURN_ROOT, toy_span
@@ -77,11 +79,55 @@ EMIT_FIELD_ACTION = "emit_field"
 #: The event trigger this kind fires once its extraction is posted, when the case's seed armed it.
 PAYMENT_HOLD = "payment_hold"
 
-#: The measure this kind takes, spelled as the toy host's profile declares it.
-FIELD_ACCURACY = "field_accuracy"
+#: The toy host's own measure family. Field accuracy is graded by code — a comparison rule against an
+#: adjudicated key — but it is not "measured the same way everywhere", which is what the engine's
+#: ``mechanical`` family says, so the host names the kind of number it is: an extraction grade.
+TOYHOST_EXTRACTION_FAMILY = MeasureFamily(
+    name="extraction_grade",
+    graded_by="code",
+    description="How an extraction compares with the adjudicated key, by the host's comparison rule.",
+)
 
-#: The host's signed diagnostic: fields emitted minus fields graded. Declared in ``profile.py``.
-FIELD_COUNT_ERROR = "field_count_error"
+
+# The two measures this kind computes, each declared on the function that computes it (``@measure``): the
+# profile registers ``field_accuracy.descriptor``, and ``invoke`` grades with ``field_accuracy(...)``.
+@measure(
+    reader_name="Field accuracy",
+    family=TOYHOST_EXTRACTION_FAMILY.name,
+    reader_prose="how often the extractor got a field exactly right",
+    higher_is_better=True,
+    value_range=(0.0, 1.0),
+    merit_axis="quality",
+    population="scored",
+)
+def field_accuracy(correct: list[str], graded: tuple[str, ...]) -> float:
+    """Share of invoice fields extracted exactly right, against the adjudicated key."""
+    return len(correct) / len(graded)
+
+
+# A SIGNED DIAGNOSTIC: no better end (emitting more fields than the template grades is not better or worse, it is
+# what happened), so it declares no direction — and declares itself a diagnostic, which is what carries it onto the
+# bundle's measure surfaces instead of being kept out as a raw count. The host-side twin of the engine's own
+# provider-rate diagnostic.
+@measure(
+    reader_name="Field count error",
+    attribution_scope="subsystem",
+    reader_prose="how far the extractor's field count was from the graded set",
+    higher_is_better=None,
+    diagnostic=True,
+    unit="fields",
+    population="all_observed",
+)
+def field_count_error(emitted: dict[str, str], graded: tuple[str, ...]) -> float:
+    """Fields the extractor emitted minus the fields the template grades; negative when it emitted fewer."""
+    return float(len(emitted) - len(graded))
+
+
+#: The measure this kind takes, by the name its declaration gives it.
+FIELD_ACCURACY = field_accuracy.descriptor.name
+
+#: The host's signed diagnostic: fields emitted minus fields graded.
+FIELD_COUNT_ERROR = field_count_error.descriptor.name
 
 #: Which case a cell ran, as the stimulus names it. A test case's ``variation_params`` is the
 #: only per-case channel the engine has — there is no per-case host payload — so the document is
@@ -508,7 +554,7 @@ class ToyExtractorKind:
             with toy_span(f"grade:{document.document_id}", operation=OP_HOST_GRADE, model=instance.model):
                 graded = self.graded_fields
                 correct = [name for name in graded if extraction.fields.get(name) == document.key[name]]
-                accuracy = len(correct) / len(graded)
+                accuracy = field_accuracy(correct, graded)
                 # One entry per cell coordinate, overwritten identically by the second k repeat.
                 self.measures[instance.model, document.document_id] = {FIELD_ACCURACY: accuracy}
                 # The template's goal checks, graded by the engine against the ledger, the world this
@@ -565,7 +611,7 @@ class ToyExtractorKind:
             host_measures={
                 FIELD_ACCURACY: accuracy,
                 "fields_correct": float(len(correct)),
-                FIELD_COUNT_ERROR: float(len(extraction.fields) - len(graded)),
+                FIELD_COUNT_ERROR: field_count_error(extraction.fields, graded),
             },
             # Which fields were wrong is this kind's fact, not a measure: the engine has no word for
             # an invoice field, so it travels opaque, stored verbatim on the result for a reader of
@@ -606,11 +652,14 @@ __all__ = [
     "TOY_DOCUMENTS",
     "TOY_EXTRACTOR_KIND",
     "TOY_SCRIPTS",
+    "TOYHOST_EXTRACTION_FAMILY",
     "ExtractionResult",
     "ExtractorScript",
     "ScriptedExtractionClient",
     "ToyDocument",
     "ToyExtractorInstance",
     "ToyExtractorKind",
+    "field_accuracy",
+    "field_count_error",
     "render_invoice",
 ]

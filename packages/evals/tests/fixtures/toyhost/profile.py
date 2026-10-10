@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from threetears.evals.contracts import MeasureFamily, MetricDescriptor
+from threetears.evals.contracts import MetricDescriptor
 from threetears.evals.contracts.host import (
     CHART_FONT_CHARACTERS,
     Bar,
@@ -25,7 +25,12 @@ from threetears.evals.contracts.host import (
     StyleProfile,
 )
 from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRACT
-from packages.evals.tests.fixtures.toyhost.kind import FIELD_COUNT_ERROR
+from packages.evals.tests.fixtures.toyhost.kind import (
+    FIELD_COUNT_ERROR,
+    TOYHOST_EXTRACTION_FAMILY,
+    field_accuracy,
+    field_count_error,
+)
 from packages.evals.tests.fixtures.toyhost.sweepables import (
     TOYHOST_SWEEPABLE_REGISTRY,
     TOYHOST_TUNABLE_SWEEPABLE_REGISTRY,
@@ -36,30 +41,10 @@ from packages.evals.tests.fixtures.toyhost.world import toyhost_world
 #: Opaque to the engine, which never branches on it.
 TOYHOST_ID = "toyhost"
 
-#: The toy host's own measure family. Field accuracy is graded by code — a comparison rule against an
-#: adjudicated key — but it is not "measured the same way everywhere", which is what the engine's
-#: ``mechanical`` family says, so the host names the kind of number it is: an extraction grade.
-TOYHOST_EXTRACTION_FAMILY = MeasureFamily(
-    name="extraction_grade",
-    graded_by="code",
-    description="How an extraction compares with the adjudicated key, by the host's comparison rule.",
-)
-
+#: The two measures the kind computes are declared on the functions computing them (``kind.py``); the four it
+#: does not are declared here.
 TOYHOST_MEASURES: tuple[MetricDescriptor, ...] = (
-    MetricDescriptor(
-        name="field_accuracy",
-        reader_name="Field accuracy",
-        data_type="numeric",
-        family=TOYHOST_EXTRACTION_FAMILY.name,
-        transferability_class="mechanical",
-        attribution_scope="end_to_end",
-        description="Share of invoice fields extracted exactly right, against the adjudicated key.",
-        reader_prose="how often the extractor got a field exactly right",
-        higher_is_better=True,
-        value_range=(0.0, 1.0),
-        merit_axis="quality",
-        population="scored",
-    ),
+    field_accuracy.descriptor,
     MetricDescriptor(
         name="cost_per_document_usd",
         reader_name="Cost per document",
@@ -124,24 +109,7 @@ TOYHOST_MEASURES: tuple[MetricDescriptor, ...] = (
         merit_axis="quality",
         population="all_observed",
     ),
-    # A SIGNED DIAGNOSTIC: no better end (emitting more fields than the template grades is not
-    # better or worse, it is what happened), so it declares no direction — and declares itself a
-    # diagnostic, which is what carries it onto the bundle's measure surfaces instead of being kept
-    # out as a raw count. The host-side twin of the engine's own provider-rate diagnostic.
-    MetricDescriptor(
-        name=FIELD_COUNT_ERROR,
-        reader_name="Field count error",
-        data_type="numeric",
-        family="mechanical",
-        transferability_class="mechanical",
-        attribution_scope="subsystem",
-        description="Fields the extractor emitted minus the fields the template grades; negative when it emitted fewer.",
-        reader_prose="how far the extractor's field count was from the graded set",
-        higher_is_better=None,
-        diagnostic=True,
-        unit="fields",
-        population="all_observed",
-    ),
+    field_count_error.descriptor,
 )
 
 #: The incumbent standards — what the ratchet and the vacuous-seed flag hold against.
@@ -252,6 +220,7 @@ def toyhost_profile(
 
 
 __all__ = [
+    "FIELD_COUNT_ERROR",
     "TOYHOST_BARS",
     "TOYHOST_EXTRACTION_FAMILY",
     "TOYHOST_FONT",

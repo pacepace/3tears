@@ -17,6 +17,7 @@ from typing import Any, Literal
 
 from pydantic import Field
 
+from threetears.evals.analysis.bundle import InsightStanding, insight_standing
 from threetears.evals.analysis.bar_proposals import propose_bars
 from threetears.evals.analysis.campaigns import create_campaign, list_campaigns
 from threetears.evals.analysis.numbers import format_number
@@ -24,19 +25,21 @@ from threetears.evals.analysis.report import Report, ReportBasis, report_html, r
 from threetears.evals.analysis.service import (
     AnalysisGenerationEstimate,
     campaign_report,
+    describe_insight_id_filters,
     estimate_analysis_generation,
     get_analysis,
     list_analyses,
+    list_insights,
     prepare_analysis_generation,
     run_analysis_generation,
 )
 from threetears.evals.contracts.base import EvalBaseModel, VerbatimText
-from threetears.evals.contracts.campaign import EvalAnalysis, EvalCampaign
-from threetears.evals.contracts.errors import ConflictError, ValidationFailedError
+from threetears.evals.contracts.campaign import ConfidenceTier, EvalAnalysis, EvalCampaign, EvalInsight
+from threetears.evals.contracts.errors import ConflictError, NotFoundError, ValidationFailedError
 from threetears.evals.contracts.host import EvalHost
 from threetears.evals.ops.host import AnalysisGeneration, OpsHost
 from threetears.evals.ops.jobs import JobHandle, JobsStarted, analysis_job_id, generation_key
-from threetears.evals.run.curation import delete_analysis, set_analysis_archived, set_campaign_archived
+from threetears.evals.run.curation import delete_analysis, delete_insight, set_analysis_archived, set_campaign_archived
 
 #: The forms a report is read in: Markdown (the memo, and what an agent reads), its canonical JSON (what
 #: the published schema validates) and HTML that reads without any script.
@@ -133,6 +136,65 @@ class AnalysisDeleted(EvalBaseModel):
 
     analysis_id: str
     campaign_id: str
+
+
+#: Where an insight stands, read from the analysis that minted it at every read and never stamped on the
+#: insight (:func:`~threetears.evals.analysis.bundle.insight_standing`): ``live`` — fed to later
+#: generations as prior context; ``retracted`` — its analysis is archived, so no generation reads it;
+#: ``orphaned`` — its analysis was deleted, so it is still read but its provenance cannot be followed.
+InsightStandingName = Literal["live", "retracted", "orphaned"]
+
+
+class InsightLine(EvalBaseModel):
+    """One insight in the ledger, as a listing shows it."""
+
+    id: str
+    subject_id: str
+    statement: str
+    confidence: ConfidenceTier
+    scope: str = Field(description="Where the insight applies, as the analysis wrote it (free text).")
+    observed_at: str
+    source_campaign_id: str
+    source_analysis_id: str
+    standing: InsightStandingName = Field(
+        description="live (fed to later generations as prior context), retracted (its analysis is archived) or "
+        "orphaned (its analysis was deleted; still read, provenance lost)."
+    )
+
+
+class InsightListing(EvalBaseModel):
+    """The scope's insights, newest observation first, and the filters they were read under."""
+
+    subject_id: str | None = Field(description="The subject filter, when one narrowed the read.")
+    source_campaign_id: str | None = Field(description="The campaign filter, when one narrowed the read.")
+    filters: str = Field(description="The id filters that narrowed the read, in words; empty when none did.")
+    insights: list[InsightLine]
+
+
+class InsightDetail(EvalBaseModel):
+    """One insight in full — as stored — and where it stands."""
+
+    insight: EvalInsight
+    standing: InsightStandingName
+
+
+class InsightDeleted(EvalBaseModel):
+    """What deleting an insight removed: the one insight, never the analysis that minted it."""
+
+    insight_id: str
+    source_campaign_id: str
+
+
+def _standing_of(insight: EvalInsight, standing: InsightStanding) -> InsightStandingName:
+    if insight.id in standing.retracted:
+        return "retracted"
+    if insight.id in standing.orphaned:
+        return "orphaned"
+    return "live"
+
+
+def _insight_standing(host: EvalHost, insights: list[EvalInsight], scope_id: str) -> InsightStanding:
+    return insight_standing(insights, lambda analysis_id: host.storage.analysis_archived(analysis_id, scope_id))
 
 
 def _campaign_line(campaign: EvalCampaign) -> CampaignLine:
@@ -606,6 +668,91 @@ def analysis_delete(host: EvalHost, analysis_id: str, scope_id: str, *, confirm:
     return AnalysisDeleted(analysis_id=removed["analysis_id"], campaign_id=removed["campaign_id"])
 
 
+def insights_list(
+    host: EvalHost, scope_id: str, *, subject_id: str | None = None, source_campaign_id: str | None = None
+) -> InsightListing:
+    """The scope's insight ledger, newest observation first, each with where it stands.
+
+    Over :func:`~threetears.evals.analysis.list_insights`: both filters match ids exactly, and an id that
+    matches nothing is an answer (that campaign minted no insights), not a refusal.
+
+    Args:
+        host: The host whose store holds the ledger.
+        scope_id: The scope whose ledger is read.
+        subject_id: Only insights about this subject.
+        source_campaign_id: Only insights an analysis of this campaign minted.
+
+    Returns:
+        The listing.
+    """
+    insights = list_insights(host.storage, scope_id, subject_id=subject_id, source_campaign_id=source_campaign_id)
+    standing = _insight_standing(host, insights, scope_id)
+    return InsightListing(
+        subject_id=subject_id,
+        source_campaign_id=source_campaign_id,
+        filters=describe_insight_id_filters(subject_id, source_campaign_id),
+        insights=[
+            InsightLine(
+                id=insight.id,
+                subject_id=insight.subject_id,
+                statement=insight.statement,
+                confidence=insight.confidence,
+                scope=insight.scope,
+                observed_at=insight.observed_at,
+                source_campaign_id=insight.source_campaign_id,
+                source_analysis_id=insight.source_analysis_id,
+                standing=_standing_of(insight, standing),
+            )
+            for insight in insights
+        ],
+    )
+
+
+def insight_get(host: EvalHost, insight_id: str, scope_id: str) -> InsightDetail:
+    """One insight in full: everything stored on it, and where it stands.
+
+    Args:
+        host: The host whose store holds the ledger.
+        insight_id: The insight.
+        scope_id: The scope it lives in.
+
+    Returns:
+        The insight and its standing.
+
+    Raises:
+        NotFoundError: No insight with that id in the scope.
+    """
+    insight = host.storage.load_insight(insight_id, scope_id)
+    if insight is None:
+        raise NotFoundError("insight", insight_id)
+    return InsightDetail(insight=insight, standing=_standing_of(insight, _insight_standing(host, [insight], scope_id)))
+
+
+def insight_delete(host: EvalHost, insight_id: str, scope_id: str, *, confirm: str | None) -> InsightDeleted:
+    """Destroy one insight — the intended answer to a wrong one, since an insight has no archive.
+
+    A live insight is fed to every later generation over its subject as prior context, so a wrong one keeps
+    steering analyses until it is gone (:func:`~threetears.evals.run.delete_insight`). Archiving its analysis
+    retracts every insight that analysis minted; this removes one.
+
+    Args:
+        host: The host whose store holds the ledger.
+        insight_id: The insight.
+        scope_id: The scope it lives in.
+        confirm: Must echo ``insight_id``.
+
+    Returns:
+        What was removed.
+
+    Raises:
+        NotFoundError: No insight with that id in the scope — refused before ``confirm`` is read.
+        ValidationFailedError: ``confirm`` does not echo the id.
+        StorageError: The delete failed.
+    """
+    removed = delete_insight(host.storage, insight_id, scope_id, confirm=confirm)
+    return InsightDeleted(insight_id=removed["insight_id"], source_campaign_id=removed["source_campaign_id"])
+
+
 __all__ = [
     "AnalysisDeleted",
     "AnalysisGenerationEstimate",
@@ -615,6 +762,11 @@ __all__ = [
     "CampaignDefinition",
     "CampaignLine",
     "CampaignListing",
+    "InsightDeleted",
+    "InsightDetail",
+    "InsightLine",
+    "InsightListing",
+    "InsightStandingName",
     "ProposedBar",
     "ReportDocument",
     "ReportFormat",
@@ -631,6 +783,9 @@ __all__ = [
     "campaign_archive",
     "campaign_create",
     "campaigns_list",
+    "insight_delete",
+    "insight_get",
+    "insights_list",
     "report_read",
     "serialize_report",
 ]

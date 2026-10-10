@@ -24,6 +24,13 @@ Everything past those — the trial loop, the stored documents, judging, pricing
 engine's. The sections after "Launching" cover what you need only if your subject has a stateful world,
 converses, does background work, or calls tools you want to record and replay.
 
+Quick's pieces build some of these as ordinary contract objects you mix with your own (all in
+`threetears.evals.quick`): `@measure(...)` declares a `MetricDescriptor` on the function that computes it, so you
+register its `.descriptor` and grade with the function; `callable_kind(candidate, scorers)` is the kind over a
+plain async function, declared under `callable_kind_contracts()`; and a quick `World`'s `registry` and
+`bindings(state)` are a simple world's declaration and its handles. The toy host's kind computes its measures
+this way.
+
 ## Read the reference hosts, in this order
 
 Two example hosts live in this repository (not in the wheel), written as reference code that imports
@@ -139,7 +146,9 @@ its levers (`<prefix>.<field>`; the kind's name when unset).
 
 An overlay field takes markers beside its type, in `Annotated[...]`: `Ordinal()` ranks a `Literal` or `Enum`
 in declaration order, `Interval(unit=...)` names a number's unit, `ActsOn(measure)` names the measure the knob
-is supposed to move, and `ResolvesInto(lever)` names the host lever the knob is written into.
+is supposed to move, and `ResolvesInto(lever)` names the host lever the knob is written into. A map field's
+entries are distinct knobs, so `ActsOn` is refused there; `MemberActsOn({"max_search_calls": "search_calls"})`
+names the measure per entry instead, and every entry it does not list reads `unchecked`.
 
 `ResolvesInto` is for a knob whose effect your host also records, resolved, as a lever of its own: a
 `reasoning_effort` overlay and an `llm_parameters` lever hashing the model parameters it resolved into, say.
@@ -186,6 +195,30 @@ prices it. `plan_arm` is therefore where a kind makes its request-level refusals
 `require_candidate_model` — a judge or simulator it needs), and the launch tail then holds each launcher to
 its plan. The full rule is in [Cost and budgets: every arm is priced before any launcher
 runs](cost-and-budgets.md#every-arm-is-priced-before-any-launcher-runs).
+
+### Hearing about a regression when a run completes
+
+`scope_history` flags a regression only when someone reads it. To hear about one as soon as a run
+completes, build a `RegressionWatch` (from `threetears.evals.ops`) over your host, a sink of your own and
+the measures to track, and hand it to the `LaunchHost` as `on_run_end`:
+
+```python
+watch = RegressionWatch(host=eval_host, sink=page_the_owner, measures=("composite", "cost_usd"),
+                        min_absolute_change=0.2)
+launch_host = LaunchHost(eval_host=eval_host, ..., on_run_end=watch)
+```
+
+When a run's `completed` status is stored, the watch reads each measure's history with the same test and
+thresholds `scope_history` uses. For each of the run's contestants whose step into this run reads
+`regressed`, it awaits your sink with one `RegressionAlert`. The alert names the contestant, the measure
+and the two runs of the step, and carries the history's flag whole: the verdict, its test and its
+thresholds. It also states whether code or a judge graded the measure, and the judges' evidence tier.
+
+A judged measure fires only when every judge behind the step's scores is `calibrated` (see
+[Judges and calibration](judges-and-calibration.md)). A run that ended any other way than `completed` is
+not a point on the history, so it is never checked. The engine ships no delivery: with no watch, nothing
+is checked. A sink that raises is logged, the next alert is still delivered, and the run's status never
+changes.
 
 ### Generating cases at launch
 

@@ -106,6 +106,8 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "judge_second_estimate": "read",
         "judge_drift_check": "spend",
         "analyses_list": "read",
+        "insights_list": "read",
+        "insight_get": "read",
         "analyses_undescribable": "read",
         "report_read": "read",
         "bars_propose": "read",
@@ -114,6 +116,7 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "scope_pivot": "read",
         "runs_compare": "read",
         "scope_history": "read",
+        "scope_frontier": "read",
         "scope_out_of_run_spend": "read",
         "scope_export": "read",
         "run_archive": "write",
@@ -123,6 +126,7 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "reporter_case_archive": "write",
         "run_delete": "destructive",
         "analysis_delete": "destructive",
+        "insight_delete": "destructive",
     }
     assert {action.name for action in engine_actions() if action.long_running} == {
         "run_launch",
@@ -135,7 +139,7 @@ def test_the_standard_tools_split_on_class_and_take_the_hosts_prefix() -> None:
     evals, admin = eval_catalogue().mount_all(standard_tools("lab"))
     assert (evals.name, admin.name) == ("lab", "lab_admin")
     assert {action.permission for action in evals.actions} == {"read", "spend", "write"}
-    assert [action.name for action in admin.actions] == ["run_delete", "analysis_delete"]
+    assert [action.name for action in admin.actions] == ["run_delete", "analysis_delete", "insight_delete"]
     assert evals.hints.open_world and not evals.hints.destructive and not evals.hints.read_only
     assert admin.hints.destructive
 
