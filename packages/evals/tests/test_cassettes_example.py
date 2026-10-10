@@ -69,7 +69,9 @@ async def test_the_example_captures_once_and_replays_one_recording_to_both_arms(
     assert means["newest_hit"] >= means["top_hit"]
     # The verdict, one line per contrast, and a pointer to the full report rather than the report itself.
     assert re.search(
-        r"\nnewest_hit vs top_hit on Correct score: \+0\.5 \(p=[\d.e-]+\): not separated from the control\n", out
+        r"\nnewest_hit vs top_hit on Correct score: delta \+0\.50, interval \[-?[\d.]+, [\d.]+\] at 95%, "
+        r"Holm-adjusted p [\d.e-]+: not separated from the control\n",
+        out,
     )
     assert comparison.render() not in out
 

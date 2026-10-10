@@ -1,26 +1,35 @@
 """Is the cheaper model good enough for this prompt, given what it saves?
 
-``compare_two_prompts.py`` changed the prompt; this keeps the prompt and changes the model, so accuracy is
-weighed against cost. Each candidate returns an ``Answer``, as ``llm_judge.py``'s did: its label plus the tokens
-and dollars the call spent. New here: each arm's summary prints its spend, and the report tests the arms' spend
-(``production_replicating_cost``, the candidate's own, never a judge's) against the control as it tests their
-accuracy. How spend is counted: ``docs/cost-and-budgets.md``.
+``compare_two_prompts.py`` changed the prompt; this keeps the prompt and changes the model, so accuracy is weighed
+against cost. New here: spend, and a margin.
 
-Run it with ``python packages/evals/examples/compare_two_models.py``. With ``ANTHROPIC_API_KEY`` set it
-calls Claude 48 times (12 emails, 2 repeats, 2 models) for well under a cent; without it, keyword
-stand-ins with made-up token counts play the models, and their numbers say nothing about Claude.
+- **Spend.** Each candidate returns an ``Answer``: its label plus the tokens and dollars the call spent. The report
+  tests the arms' spend (Production cost, the candidate's own, never a judge's) against the control, as it tests
+  their accuracy. How spend is counted: ``docs/cost-and-budgets.md``.
+- **A margin.** "Good enough" means "no more than ``MARGIN`` less accurate". Only the verdict ``equivalent``
+  supports that: an equivalence test shows the difference inside a margin declared on the measure.
+  "Not separated" never does: it means these cases could not tell the models apart. ``margins=`` declares the
+  margin on the ``correct`` scorer; with none declared, no contrast can read ``equivalent``.
+
+Twelve emails cannot show a margin of 0.05. Two models that agree on every email need about a hundred
+emails (in this package's runs, 80 did not show it and 120 did). So expect "not separated" here, and read the
+interval: it is how much worse the cheaper model could plausibly be. The verdicts: ``docs/reading-reports.md``.
+
+Run it with ``python packages/evals/examples/compare_two_models.py``. With ``ANTHROPIC_API_KEY`` set it calls
+Claude 48 times (12 emails x 2 repeats x 2 models), for well under a cent. Without it, two keyword stand-ins,
+with made-up token counts and prices, play a current model and a cheaper one. Their numbers say nothing about Claude.
 """
 
 import asyncio
-import os
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
+from _live import claude, online, spent
 from threetears.evals.quick import Answer, Comparison, compare
 
-# Model id -> Anthropic's list price, (input, output) USD per million tokens. Check it before you trust the dollars.
-MODELS = {"claude-haiku-4-5": (1.00, 5.00), "claude-haiku-5-5": (0.10, 0.50)}
-CONTROL, CHEAPER = MODELS  # the model you run today, and the one you might switch to
+LIVE = ("claude-haiku-4-5", "claude-haiku-5-5")  # the model you run today, and the cheaper one you might switch to
+STAND_INS = {"current-stand-in": (1.00, 5.00), "cheaper-stand-in": (0.10, 0.50)}  # made-up prices, USD per M tokens
+MARGIN = 0.05  # the most accuracy you would give up for the saving: declare it before you look at the results
 
 # -----------------------------------------------------------------------------
 # 1. The cases: each email, and the label a person gave it.
@@ -41,10 +50,6 @@ CASES = [
     {"email": "Your free trial ends in 3 days. You can manage your subscription in the app.", "label": "legit"},
 ]
 
-# -----------------------------------------------------------------------------
-# 2. The one prompt both models are given.
-# -----------------------------------------------------------------------------
-
 PROMPT = """Label the email as exactly one of:
 - phishing: it tries to get credentials, payment or a transfer by pretending to be someone it is not.
 - spam: unsolicited advertising or a too-good-to-be-true offer that asks for nothing sensitive.
@@ -52,51 +57,35 @@ PROMPT = """Label the email as exactly one of:
 Answer with the label only."""
 
 # -----------------------------------------------------------------------------
-# 3. The live candidate: one model's label, returned as an Answer that carries what the call cost.
+# 2. The grade: a scorer, since a margin is declared on a scorer's measure.
+# -----------------------------------------------------------------------------
+
+
+def correct(case: Mapping[str, Any], label: str) -> bool:
+    """Whether the label is the one a person gave the email."""
+    return label == case["label"]
+
+
+# -----------------------------------------------------------------------------
+# 3. The candidates: a model's label, returned as an Answer that carries what the call cost.
 # -----------------------------------------------------------------------------
 
 Candidate = Callable[[Mapping[str, Any]], Awaitable[Answer]]
 
 
-def priced_answer(label: str, model: str, input_tokens: int, output_tokens: int) -> Answer:
-    """The label, with the call's tokens and their cost at the model's list price."""
-    input_rate, output_rate = MODELS[model]
-    cost_usd = (input_tokens * input_rate + output_tokens * output_rate) / 1e6
-    # The engine sees only what the candidate returns, so the spend travels with the label.
-    return Answer(label, model=model, input_tokens=input_tokens, output_tokens=output_tokens, cost_usd=cost_usd)
-
-
 def claude_classifier(model: str) -> Candidate:
-    """A candidate that asks ``model`` to label each email."""
-    import anthropic  # imported here so the offline path does not need the package
-
-    client = anthropic.AsyncAnthropic()  # reads ANTHROPIC_API_KEY
-    effort: dict[str, Any] = {} if model == CONTROL else {"output_config": {"effort": "low"}}  # Haiku 4.5 takes none
+    client = claude(model, max_tokens=256)
 
     async def classify(case: Mapping[str, Any]) -> Answer:
-        response = await client.messages.create(
-            model=model,
-            max_tokens=256,  # room for Haiku 5.5's thinking, which is billed as output
-            system=PROMPT,
-            messages=[{"role": "user", "content": case["email"]}],
-            **effort,
-        )
-        label = "".join(block.text for block in response.content if block.type == "text").strip().lower()
-        return priced_answer(label, model, response.usage.input_tokens, response.usage.output_tokens)
+        reply = await client.generate(system=PROMPT, user=case["email"])
+        return spent(reply, reply.content.strip().lower())  # the engine sees only what the candidate returns
 
     return classify
 
 
-# -----------------------------------------------------------------------------
-# 4. The OFFLINE stand-in: keyword rules with made-up token counts, not a model.
-#
-# The control's stand-in knows two rules the cheaper one does not.
-# -----------------------------------------------------------------------------
-
-
 def offline_classifier(model: str) -> Candidate:
-    """A keyword stand-in for ``model``, so the example runs with no API key."""
-    careful = model == CONTROL
+    """A keyword stand-in, not a model; the current one knows two rules the cheaper one does not."""
+    careful, (input_rate, output_rate) = model == "current-stand-in", STAND_INS[model]
 
     async def classify(case: Mapping[str, Any]) -> Answer:
         text = case["email"].lower()
@@ -108,48 +97,66 @@ def offline_classifier(model: str) -> Candidate:
             label = "spam"
         else:
             label = "legit"
-        return priced_answer(label, model, input_tokens=80 + len(text) // 4, output_tokens=3 if careful else 20)
+        tokens_in, tokens_out = 80 + len(text) // 4, 3 if careful else 20
+        cost = (tokens_in * input_rate + tokens_out * output_rate) / 1e6
+        return Answer(label, model=model, input_tokens=tokens_in, output_tokens=tokens_out, cost_usd=cost)
 
     return classify
 
 
 # -----------------------------------------------------------------------------
-# 5. Run both models over every email twice, test the cheaper against the control, print the verdict.
+# 4. Run both models over every email twice, test the cheaper against the current one, and decide.
 # -----------------------------------------------------------------------------
+
+WHAT_TO_DO = {
+    "improved": "the cheaper model is more accurate on these cases: switch, if the spend row shows the saving.",
+    "equivalent": f"the cheaper model is shown within {MARGIN} of the current one: it is good enough, so switch "
+    "if the spend row shows the saving.",
+    "regressed": "the cheaper model is shown less accurate: switch only if the interval's loss is worth the saving.",
+    "not separated": "these cases could not tell the models apart, which does not show the cheaper one is good "
+    "enough. Keep the current model, and add cases (hard ones first) until the verdict is decided.",
+    "untested": "no test could decide; the verdict says why.",
+}
 
 
 async def main() -> Comparison:
-    online = bool(os.environ.get("ANTHROPIC_API_KEY"))
-    make = claude_classifier if online else offline_classifier
-    if online:
-        print(f"Running against Claude ({CONTROL}, {CHEAPER}).\n")
+    current, cheaper = LIVE if online() else STAND_INS
+    make = claude_classifier if online() else offline_classifier
+    if online():
+        print(f"Running against Claude ({current}, {cheaper}).\n")
     else:
-        print("ANTHROPIC_API_KEY is not set: running OFFLINE, with a keyword stand-in for each model.\n")
+        print("ANTHROPIC_API_KEY is not set: running OFFLINE, with keyword stand-ins for both models.\n")
 
     comparison = await compare(
         CASES,
-        {CONTROL: make(CONTROL), CHEAPER: make(CHEAPER)},  # each arm is named by its model id
-        factors=("model",),  # the arms ARE models, so each name is its run's model (the report reads model=<name>)
-        expected=lambda case: case["label"],
-        # The control is the arm every other arm is tested against.
-        control=CONTROL,
-        name=f"email triage: {CONTROL} vs {CHEAPER}" + ("" if online else " (offline)"),
+        {current: make(current), cheaper: make(cheaper)},
+        [correct],
+        factors=("model",),  # the arms ARE models: each key is its run's model, and the report reads model=<key>
+        margins={"correct": MARGIN},  # declared on the scorer, so a contrast on it can read "equivalent"
+        control=current,
         scope_id="compare-two-models",
         k=2,
     )
-
-    # Each arm's accuracy ("match") and, on its last line, what its calls cost.
     for arm, summary in comparison.arms.items():
-        print(f"--- {arm} ---\n{summary.render()}\n")
+        print(f"{arm}: {summary.candidate_calls} calls, candidate spend ${summary.candidate_cost_usd:.5f}")
 
-    # The verdict on accuracy and on spend. "Not separated" on accuracy does not say the cheaper arm is as
-    # accurate — only "equivalent", shown inside a declared margin, says that — so it is the case for switching
-    # only once enough hard cases make the interval on the difference narrow enough to live with.
+    # The verdicts: accuracy, then spend (lower is better, so a saving reads "improved").
+    print("\nEach reading against the control (Production cost is US dollars per answer):")
     for row in comparison.contrasts():
-        arm, control = row["arm"], comparison.control  # each arm by the key you gave it
-        p = "" if row["p_adjusted"] is None else f" (p={row['p_adjusted']:.2g})"  # none when nothing varied
-        print(f"{arm} vs {control} on {row['reading']}: {row['delta']:+.2g}{p}: {row['verdict']}")
-    print("\nThe full report: comparison.render(), or reports.py to write it to files.")
+        p = "" if row["p_adjusted"] is None else f", Holm-adjusted p {row['p_adjusted']:.2g}"  # none if nothing varied
+        print(f"{row['arm']} vs {comparison.control} on {row['reading']}: {row['control_mean']:.3g} -> ", end="")
+        print(f"{row['arm_mean']:.3g}, delta {row['delta']:+.3g}, interval {row['interval']}{p}: {row['verdict']}")
+
+    (accuracy,) = comparison.contrasts("correct")
+    verdict = next(verdict for verdict in WHAT_TO_DO if accuracy["verdict"].startswith(verdict))
+    print(f"\nOn accuracy, {verdict}: {WHAT_TO_DO[verdict]}")
+
+    print("\nWhere the models disagree:")
+    for index, case in enumerate(CASES):
+        said = {arm: [r.answer for r in comparison.results(arm) if r.case == str(index)] for arm in comparison.arms}
+        if len({str(answers) for answers in said.values()}) > 1:
+            print(f"  {case['email']!r}, labelled {case['label']}:")
+            print("    " + "; ".join(f"{arm} said {', '.join(answers)}" for arm, answers in said.items()))
     return comparison
 
 

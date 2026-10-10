@@ -1,160 +1,112 @@
-"""``examples/compare_two_models.py`` runs as a newcomer would run it, and its live path prices the real SDK's reply.
+"""``examples/compare_two_models.py`` answers "is the cheaper model good enough?" only as the evidence allows.
 
-Offline, each model is a keyword stand-in reporting made-up usage, so the run is deterministic: both
-arms complete, each reports a non-zero spend, and the campaign report carries a verdict on accuracy and
-on cost. The live path is exercised against replies built from the SDK's own types, so a field the SDK
-renames turns this red rather than the first live run. Model ids are read off the example, never
-written here.
+The package's headline question, so the example is held to the decision rule: "good enough" only on
+``equivalent`` against the margin it declares; ``not separated`` means the cases could not tell the models
+apart and never licenses the switch. Offline, the arms are keyword stand-ins that carry no real model's
+name. Live, the SDK is faked, so no test calls the API; model ids are read off the example, never written here.
 """
 
 from __future__ import annotations
 
-import importlib.util
-import re
-from collections.abc import Mapping
-from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
 
-from threetears.evals.analysis import TableBlock
-from threetears.evals.quick import Answer, Comparison
-from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
+from threetears.evals.quick import Comparison
+from packages.evals.tests.example_loader import load_example
 
-#: The example under test.
-COMPARE_TWO_MODELS = Path(__file__).resolve().parents[1] / "examples" / "compare_two_models.py"
+NAME = "compare_two_models.py"
 
 
 def _load() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("compare_two_models_example", COMPARE_TWO_MODELS)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_example(NAME)
 
 
-def _contrasts(comparison: Comparison) -> dict[str, Mapping[str, Any]]:
-    """The report's contrasts against the control, by reading."""
-    (table,) = [
-        block for block in comparison.report.blocks if isinstance(block, TableBlock) and block.name == "comparisons"
-    ]
-    return {row["reading"]: row for row in table.rows}
-
-
-async def test_with_no_api_key_the_example_runs_offline_and_weighs_accuracy_against_cost(
+async def test_offline_the_stand_ins_name_no_model_and_not_separated_is_no_reason_to_switch(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     module = _load()
     comparison = await module.main()
+    current, cheaper = module.STAND_INS
 
-    assert comparison.control == module.CONTROL
-    assert list(comparison.arms) == [module.CONTROL, module.CHEAPER]
+    assert isinstance(comparison, Comparison) and comparison.control == current
+    assert list(comparison.arms) == [current, cheaper]
     for summary in comparison.arms.values():
         assert summary.status == "completed" and (summary.n_cases, summary.k_runs, summary.n_scored) == (12, 2, 24)
-        assert summary.candidate_calls == 24
-        assert summary.candidate_cost_usd is not None and summary.candidate_cost_usd > 0
-        assert summary.errors == []
-    control, cheaper = comparison.arms[module.CONTROL], comparison.arms[module.CHEAPER]
-    assert cheaper.candidate_cost_usd < control.candidate_cost_usd  # type: ignore[operator]
+        assert summary.candidate_calls == 24 and summary.candidate_cost_usd is not None
+    assert comparison.arms[cheaper].candidate_cost_usd < comparison.arms[current].candidate_cost_usd  # type: ignore[operator]
+    # The margin is declared on the scorer, so equivalence could be tested; it is never assumed.
+    assert comparison.host.profile.measures.get("correct").materiality_threshold == module.MARGIN
 
-    contrasts = _contrasts(comparison)
-    assert {"Accuracy", "Production cost"} <= set(contrasts)
-    assert all(row["verdict"] for row in contrasts.values())
-    spend = contrasts["Production cost"]
-    assert spend["delta"] < 0 and spend["verdict"] == "improved on the control"
-    # The measuring apparatus's own readings are no contrast between candidates.
-    assert "cost_usd" not in contrasts
+    (accuracy,) = comparison.contrasts("correct")
+    assert accuracy["arm"] == cheaper and accuracy["delta"] == pytest.approx(-1 / 6)
+    assert accuracy["interval"] is not None and accuracy["verdict"].startswith("not separated")
+    (spend,) = comparison.contrasts("production_replicating_cost")
+    assert spend["verdict"] == "improved on the control"
 
     out = capsys.readouterr().out
     assert out.startswith("ANTHROPIC_API_KEY is not set: running OFFLINE")
-    assert "candidate spend: $" in out
-    # The verdict, one line per reading, and a pointer to the full report rather than the report itself.
-    arms = f"{module.CHEAPER} vs {module.CONTROL}"
-    assert re.search(rf"\n{arms} on Accuracy: -0\.17 \(p=[\d.e-]+\): not separated from the control\n", out)
-    assert re.search(rf"\n{arms} on Production cost: -[\d.e-]+ \(p=[\d.e-]+\): improved on the control\n", out)
-    assert comparison.render() not in out
+    assert "claude" not in out.lower() and "haiku" not in out.lower(), "a stand-in's output reads as a model's"
+    assert f"{cheaper} vs {current} on Correct score: 1 -> 0.833, delta -0.167, interval [" in out
+    assert "\nOn accuracy, not separated: these cases could not tell the models apart" in out
+    assert "Keep the current model" in out
+    assert f"    {current} said phishing, phishing; {cheaper} said legit, legit\n" in out
 
 
-def test_the_example_reaches_the_engine_only_through_public_roots() -> None:
-    assert (
-        public_root_violations(SOURCE_ROOT, [("compare_two_models.py", COMPARE_TWO_MODELS)], consumer_root=REPO_ROOT)
-        == []
-    )
+def test_each_verdict_has_its_decision_and_only_improved_or_equivalent_switch() -> None:
+    module = _load()
+    assert set(module.WHAT_TO_DO) == {"improved", "equivalent", "regressed", "not separated", "untested"}
+    assert "good enough" in module.WHAT_TO_DO["equivalent"]
+    assert "does not show the cheaper one is good enough" in module.WHAT_TO_DO["not separated"]
+    assert "switch," not in module.WHAT_TO_DO["not separated"]
 
 
-def _reply(anthropic: ModuleType, model: str, text: str) -> Any:
-    """A reply as the SDK types it: a thinking block, then the label."""
-    return anthropic.types.Message.model_validate(
-        {
-            "id": "msg_1",
-            "type": "message",
-            "role": "assistant",
-            "model": model,
-            "content": [{"type": "thinking", "thinking": "", "signature": "sig"}, {"type": "text", "text": text}],
-            "stop_reason": "end_turn",
-            "stop_sequence": None,
-            "usage": {"input_tokens": 120, "output_tokens": 40},
-        }
-    )
-
-
-def _fake_sdk(monkeypatch: pytest.MonkeyPatch, anthropic: ModuleType, reply: Any) -> list[dict[str, Any]]:
-    """Point ``anthropic.AsyncAnthropic`` at a client whose ``create`` records each request and returns ``reply``."""
+def _fake_sdk(monkeypatch: pytest.MonkeyPatch, anthropic: ModuleType, labels: dict[str, str]) -> list[dict[str, Any]]:
+    """Point ``anthropic.AsyncAnthropic`` at a client answering every email with its right label."""
     sent: list[dict[str, Any]] = []
 
     async def create(**request: Any) -> Any:
         sent.append(request)
-        return reply(request) if callable(reply) else reply
+        return anthropic.types.Message.model_validate(
+            {
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "model": request["model"],
+                "content": [{"type": "text", "text": labels[request["messages"][0]["content"]]}],
+                "stop_reason": "end_turn",
+                "stop_sequence": None,
+                "usage": {"input_tokens": 120, "output_tokens": 40},
+            }
+        )
 
-    monkeypatch.setattr(anthropic, "AsyncAnthropic", lambda: SimpleNamespace(messages=SimpleNamespace(create=create)))
+    async def close() -> None:
+        return None
+
+    monkeypatch.setattr(
+        anthropic, "AsyncAnthropic", lambda: SimpleNamespace(messages=SimpleNamespace(create=create), close=close)
+    )
     return sent
 
 
-async def test_the_live_candidate_returns_the_label_with_its_priced_usage(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_live_two_models_alike_on_twelve_emails_are_still_not_shown_good_enough(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     anthropic = pytest.importorskip("anthropic")
     module = _load()
-    sent = _fake_sdk(monkeypatch, anthropic, _reply(anthropic, module.CHEAPER, " Phishing\n"))
-
-    answer = await module.claude_classifier(module.CHEAPER)(module.CASES[0])
-
-    assert isinstance(answer, Answer)
-    assert sent[0]["model"] == module.CHEAPER and sent[0]["system"] == module.PROMPT
-    assert sent[0]["messages"] == [{"role": "user", "content": module.CASES[0]["email"]}]
-    assert sent[0]["output_config"] == {"effort": "low"}
-    assert answer.value == "phishing"
-    assert (answer.model, answer.input_tokens, answer.output_tokens) == (module.CHEAPER, 120, 40)
-    input_rate, output_rate = module.MODELS[module.CHEAPER]
-    assert answer.cost_usd == pytest.approx((120 * input_rate + 40 * output_rate) / 1e6)
-
-
-async def test_the_control_model_is_sent_no_effort(monkeypatch: pytest.MonkeyPatch) -> None:
-    anthropic = pytest.importorskip("anthropic")
-    module = _load()
-    sent = _fake_sdk(monkeypatch, anthropic, _reply(anthropic, module.CONTROL, "legit"))
-
-    await module.claude_classifier(module.CONTROL)(module.CASES[0])
-
-    assert sent[0]["model"] == module.CONTROL and "output_config" not in sent[0]
-
-
-async def test_with_an_api_key_every_call_s_spend_reaches_its_arm(monkeypatch: pytest.MonkeyPatch) -> None:
-    anthropic = pytest.importorskip("anthropic")
-    module = _load()
-    labels = {case["email"]: case["label"] for case in module.CASES}
-    sent = _fake_sdk(
-        monkeypatch,
-        anthropic,
-        lambda request: _reply(anthropic, request["model"], labels[request["messages"][0]["content"]]),
-    )
+    live = load_example("_live.py")
+    sent = _fake_sdk(monkeypatch, anthropic, {case["email"]: case["label"] for case in module.CASES})
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
 
     comparison = await module.main()
 
-    assert len(sent) == 2 * 24
+    assert len(sent) == 48, "12 emails x 2 repeats x 2 models, as the docstring says"
+    assert {request["model"] for request in sent} == set(module.LIVE)
     for model, summary in comparison.arms.items():
-        (accuracy,) = [measure.mean for measure in summary.measures if measure.name == "match"]
-        assert accuracy == 1.0
-        input_rate, output_rate = module.MODELS[model]
+        input_rate, output_rate = live.PRICES[model]
         assert summary.candidate_cost_usd == pytest.approx(24 * (120 * input_rate + 40 * output_rate) / 1e6)
+    (accuracy,) = comparison.contrasts("correct")
+    assert accuracy["delta"] == 0 and accuracy["verdict"].startswith("not separated")
+    assert "\nOn accuracy, not separated" in capsys.readouterr().out
