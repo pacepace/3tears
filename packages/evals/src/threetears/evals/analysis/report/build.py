@@ -1095,10 +1095,12 @@ def _comparison_blocks(bundle: AnalysisContextBundle, surface: DecisionSurface) 
                         else ""
                     )
                     + (
-                        # The observed delta, not the true one: only `equivalent` shows the difference is small.
+                        # The observed delta, not the true one: only `equivalent` shows the difference is small,
+                        # and an `equivalent` row already says so through its margin, so the caveat would
+                        # contradict the verdict it sits beside.
                         " — immaterial: the observed delta is below the host's materiality threshold, which does not "
                         "show the true difference is that small"
-                        if comparison.materiality == "immaterial"
+                        if comparison.materiality == "immaterial" and comparison.verdict != "equivalent"
                         else ""
                     ),
                 }

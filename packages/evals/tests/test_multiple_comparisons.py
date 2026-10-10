@@ -436,6 +436,25 @@ def test_the_report_and_the_writer_see_an_immaterial_verdict_labelled() -> None:
     assert '"materiality":"immaterial"' in build_user_message(bundle).replace(" ", "")
 
 
+def test_an_equivalent_row_does_not_carry_the_caveat_that_contradicts_it() -> None:
+    """An `equivalent` row's delta is inside the margin too, so it is immaterial; the caveat that an observed delta
+    "does not show the true difference is that small" belongs on every other verdict, never on the one that shows it.
+    """
+    from threetears.evals.analysis.report.build import build_code_only_report
+
+    profile = _accuracy_threshold(0.25)
+    bundle = _bundle([], accuracy=_ALIKE, cases=24, profile=profile)
+    (comparison,) = [c for c in _family(bundle).comparisons if c.name == "field_accuracy"]
+    assert (comparison.verdict, comparison.materiality) == ("equivalent", "immaterial")
+
+    report = build_code_only_report(bundle, measures=profile.measures, assembled_at="2026-10-06T00:00:00Z")
+    (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
+    (row,) = [row for row in table.rows if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
+
+    assert row["verdict"].startswith("equivalent") and "(margin ±0.25)" in row["verdict"]
+    assert "does not show" not in row["verdict"]
+
+
 # --- what a contrast states beside its verdict: interval, effect size, equivalence, the cases it read ---------
 
 
