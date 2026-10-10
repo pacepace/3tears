@@ -60,8 +60,8 @@ from threetears.evals.analysis.reporting import (
     PivotTable,
     PlannedCost,
     PredictedValue,
-    ScoreExport,
 )
+from threetears.evals.analysis.lenses.export import ScoreExport
 
 from threetears.evals.schema.base import EvalBaseModel
 

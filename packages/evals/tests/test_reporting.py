@@ -45,7 +45,6 @@ from threetears.evals.analysis.reporting import (
     WITHHELD_UNMEASURED_COMPONENT,
     ComparisonSet,
     CostEstimateError,
-    ExportError,
     FrontierError,
     HistoryError,
     LatencyPartition,
@@ -60,16 +59,14 @@ from threetears.evals.analysis.reporting import (
     compute_history,
     compute_orphaned_runs,
     compute_pivot,
-    export_projection,
     compute_program_budget,
     decompose_total_ms,
     difference_was_declared_at_launch,
     dim_judge_model,
-    export_records_csv,
     place_results,
     project_score_records,
-    serialize_export,
 )
+from threetears.evals.analysis.lenses.export import ExportError, export_projection, export_records_csv, serialize_export
 from threetears.evals.analysis.completeness import DEGRADED_RUN_CLAUSE, completeness_disclosure
 from threetears.evals.analysis.stats import UNIFORM_MOVE_NEEDS_RANGE, bounded_separation_p
 from threetears.evals.kernel.host import freeze

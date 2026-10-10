@@ -278,7 +278,6 @@ from threetears.evals.analysis.reporting import (
     ComparisonSetsResult,
     CostEstimate,
     CostEstimateCell,
-    ExportFormat,
     FrontierCostDecision,
     FrontierCostTie,
     FrontierDominance,
@@ -296,7 +295,6 @@ from threetears.evals.analysis.reporting import (
     PredictedValue,
     ProjectionExclusions,
     RegressionFlag,
-    ScoreExport,
     SeriesPoint,
     ServedModelReading,
     ServedModelState,
@@ -304,6 +302,7 @@ from threetears.evals.analysis.reporting import (
     SubjectFrontier,
     FrontierBoundaryCheck,
 )
+from threetears.evals.analysis.lenses.export import ExportFormat, ScoreExport
 from threetears.evals.analysis.service import AnalysisStore
 from threetears.evals.analysis.surface_table import (
     SurfaceColumn,

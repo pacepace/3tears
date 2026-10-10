@@ -22,9 +22,9 @@ from threetears.evals.analysis.reporting import (
     compute_frontier,
     compute_history,
     compute_pivot,
-    export_records_csv,
     project_score_records,
 )
+from threetears.evals.analysis.lenses.export import export_records_csv
 from threetears.evals.schema import EvalResult, EvalRun, EvalTemplate, RoleUsage
 from threetears.evals.kernel import EvalStorage
 from threetears.evals.ops import pivot_text
