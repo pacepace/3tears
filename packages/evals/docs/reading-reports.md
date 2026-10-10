@@ -125,6 +125,10 @@ the control on each reading, under one rig.
 | not separated | the cases could not tell the arms apart | add cases, or declare a margin; never read it as a tie |
 | untested | no test could decide: fewer than two cases on a side, or a gap with no spread (every shared case moved by exactly the same amount, or each side constant) over too few cases for the exact test to reach 0.05; the row says why | fix what it names (usually too few cases) |
 
+Latency read while other cells or runs executed beside it is never in this table: the bundle withholds it
+before anything reads it, a latency row whose arm has no other latency reads `untested` and says why, and
+one line (`latency_contended`) names the arms. Launch with `measure_latency=True` to read latency clean.
+
 A report from `compare` prints one line above this table when a tested measure declares no margin: "No margin
 is declared on …, so no contrast on it can read equivalent", with how to declare one for each kind of measure:
 a scorer's by its name (`compare(margins={"correct": 0.05})`), accuracy's the same way

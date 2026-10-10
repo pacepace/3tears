@@ -108,6 +108,14 @@ class LaunchArguments(EvalBaseModel):
     )
     judge_model: str | None = Field(default=None, description="The judge model, where the kind is model-judged.")
     simulator_model: str | None = Field(default=None, description="The simulated user's model, where the kind has one.")
+    measure_latency: bool = Field(
+        default=False,
+        description=(
+            "Declare latency under test: each run executes its cases one at a time, with no other run beside it. "
+            "False runs several cases at once — far faster — and the latency then recorded is marked read under "
+            "concurrency and never compared."
+        ),
+    )
 
 
 class RunDeleted(EvalBaseModel):
@@ -222,6 +230,7 @@ async def run_launch(host: OpsHost, arguments: LaunchArguments, scope_id: str) -
         judge_model=arguments.judge_model,
         simulator_model=arguments.simulator_model,
         scope_id=scope_id,
+        measure_latency=arguments.measure_latency,
     )
     return JobsStarted(
         jobs=[

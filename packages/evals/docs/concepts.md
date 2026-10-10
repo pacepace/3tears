@@ -221,6 +221,15 @@ A **launch** asks for one or more arms of one template; it is always a **launch 
 whose runs are prepared together and started together, or none of them are. A **launcher** is the per-kind
 code your host supplies: it receives a `LaunchRequest` and returns `launch_run(host, request, KindWiring(...))`.
 
+#### Latency under test (`measure_latency`)
+The one declaration that latency is being measured, on a launch (`start_run`, `run_eval`, `compare`, CLI
+`--measure-latency`) and on a campaign's design. Declared, a run executes its cells one at a time and a
+launch's arms one after another, so their latency is read clean; not declared (the default), cells run
+several at once, and any latency recorded is marked read under concurrency (`execution_mode`
+`concurrent`) and left out of every comparison, bar and ranking. A design that asks about latency (a
+bar, a question or a ranking on it) without declaring it is refused. Each run records both
+(`measure_latency`, `cell_concurrency`).
+
 #### k (repeats)
 How many times each case is played in a run (`k_runs`, `run_eval(k=...)`, CLI `--k`; default 3). LLM
 answers vary, so one play per case under-reports that variance. *Example:* 40 tickets, `k=3`, 120 trials.

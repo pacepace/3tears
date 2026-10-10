@@ -111,6 +111,8 @@ if TYPE_CHECKING:
 
 __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why the aliases are exported
     "OUTCOME_DIM_ID",
+    "TIME_UNITS",
+    "is_latency_measure",
     "TRANSCRIPT_DIM_ID",
     "METRIC_DESCRIPTORS",
     "HOST_PRODUCED_MEASURES",
@@ -1061,10 +1063,13 @@ _SEED: tuple[MetricDescriptor, ...] = (
         attribution_scope="end_to_end",
         categories=("serial", "concurrent"),
         description=(
-            "Whether the observation was made while other eval jobs were executing — a condition, not a result. "
-            "Counts runs holding a concurrency slot, never runs queued for one. Results stored by 3tears-evals "
-            "0.66.0 and earlier counted queued runs too, so a stored `serial` from then is trustworthy and a "
-            "stored `concurrent` is only an upper bound: nothing recorded which counted runs were waiting."
+            "Whether the observation was made while other eval work was executing — another run holding a "
+            "concurrency slot (never one queued for it), or other cells of its own run, which executes its cells "
+            "concurrently when its launch did not declare latency under test. A condition, not a result: a "
+            "`concurrent` observation's latency is kept out of every comparison, bar and ranking, and disclosed as "
+            "withheld. Results stored by 3tears-evals 0.66.0 and earlier counted queued runs too, so a stored "
+            "`serial` from then is trustworthy and a stored `concurrent` is only an upper bound: nothing recorded "
+            "which counted runs were waiting, so its latency is withheld too."
         ),
     ),
     # ---- Run-summary aggregates (RunSummaryRow / DimensionSummaryRow) -------
@@ -2800,6 +2805,29 @@ def describe_phase_timing(key: str) -> MetricDescriptor:
         formula="summed across repeat deliveries within the result",
         description=f"Wall-clock inside the {phase.replace('_', ' ')} phase.",
     )
+
+
+#: The units a measure of elapsed time is stated in. A measure in one reads wall-clock, which contention moves,
+#: whatever merit axis it serves — a guardrail on a time serves none.
+TIME_UNITS: frozenset[str] = frozenset({"ms", "s"})
+
+
+def is_latency_measure(descriptor: MetricDescriptor) -> bool:
+    """Whether a measure reads elapsed time — what a run executing its cells concurrently cannot read clean.
+
+    A measure on the ``latency`` merit axis (a turn's time, a throughput), or any measure stated in a unit of
+    time (a phase's wall-clock, a guardrail on a duration). One predicate for both halves of #701: what a
+    run's latency declaration must cover (a bar, a question or a ranking on it is refused on a campaign that
+    does not declare latency under test), and what the analysis withholds from a result read under
+    concurrency.
+
+    Args:
+        descriptor: The measure's descriptor.
+
+    Returns:
+        True for a measure of elapsed time.
+    """
+    return descriptor.merit_axis == "latency" or descriptor.unit in TIME_UNITS
 
 
 def _host_declared(name: str, measures: MeasureRegistry) -> MetricDescriptor | None:

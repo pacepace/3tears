@@ -1381,6 +1381,14 @@ def _measure_chart_blocks(
             else " Unmeasured: " + "; ".join(labels.get(ref, ref) for ref in unmeasured) + "."
         )
         blocks.append(DisclosureBlock(section="surface", source="measurement", text=bundle.cost_unmeasured + named))
+    if bundle.latency_contended:
+        contended = [cell_ref(cell.variant_key, cell.apparatus_class_id) for cell in bundle.latency_contended_cells]
+        named = (
+            ""
+            if len(contended) == len(cells)
+            else " Read under concurrency: " + "; ".join(labels.get(ref, ref) for ref in contended) + "."
+        )
+        blocks.append(DisclosureBlock(section="surface", source="measurement", text=bundle.latency_contended + named))
     for name, reading in readings:
         drawn: list[str] = []
         left_out: list[str] = []
