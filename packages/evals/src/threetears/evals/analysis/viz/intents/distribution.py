@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from threetears.evals.analysis.numbers import format_number
+from threetears.evals.analysis.stats import SMALL_N_BAND_FLOOR
 from threetears.evals.analysis.viz.intent import ChartAxis, ChartColumn, ChartEncoding, ChartIdentity, ChartIntent
 from threetears.evals.analysis.viz.payloads import DistributionGroup, DistributionPayload
 from threetears.evals.analysis.viz.quantities import (
@@ -144,8 +145,35 @@ def distribution_intent(payload: DistributionPayload) -> ChartIntent:
         footnote=_unplaceable_shape_footnote(unplaceable),
         columns=columns,
         rows=[_distribution_row(group, scale, unit, payload.unit) for group in payload.groups],
-        disclosures=interval_disclosures(intervals),
+        disclosures=[*interval_disclosures(intervals), *_unbanded_disclosures(payload.groups)],
     )
+
+
+def _unbanded_disclosures(groups: Sequence[DistributionGroup]) -> list[str]:
+    """Say why a group of a few values carries no interval band (#677).
+
+    A group drawn from fewer than :data:`~threetears.evals.analysis.stats.SMALL_N_BAND_FLOOR` values and no
+    interval is drawn as those values alone: a t interval over so few is too wide and unstable to draw as a
+    band, so its absence is a decision the reader is told about, not a gap.
+
+    Args:
+        groups: The payload's groups.
+
+    Returns:
+        One line naming every such group, or none.
+    """
+    few = [
+        group
+        for group in groups
+        if group.ci is None and not group.buckets and group.samples and len(group.samples) < SMALL_N_BAND_FLOOR
+    ]
+    if not few:
+        return []
+    named = ", ".join(f"{group.label} ({len(group.samples or [])})" for group in few)
+    return [
+        f"Drawn as its values with no interval band: {named}. Below {SMALL_N_BAND_FLOOR} values a t interval is too "
+        "wide and unstable to draw; a value from a case run more than once is that case's mean."
+    ]
 
 
 def _binned_intent(payload: DistributionPayload, identity: ChartIdentity, scale: float, unit: str) -> ChartIntent:

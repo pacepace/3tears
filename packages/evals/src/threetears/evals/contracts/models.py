@@ -150,6 +150,11 @@ gained ``judge_cannot_tell_boundary`` (empty, its can't-tells read as capability
 each judged guardrail (a boundary rubric dimension) is held to. A campaign, or an analysis's design snapshot,
 stored before it carries none and reads as declaring none: its judged guardrails are held at zero change, exactly
 as they were decided then, so no stored decision moves.
+
+**Within v8, not a bump**: ``MeasureSummary.case_means`` and ``JudgedReading.case_means`` joined as OPTIONAL fields
+(#677) — each case's mean, recorded only below 5 cases, where a chart draws the cases as points instead of an
+interval band. An analysis stored before them carries None and reads as not recorded: its small cells draw no band
+and no points, and the chart is refused with that reason rather than drawn from the interval.
 """
 
 

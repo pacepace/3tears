@@ -9,7 +9,7 @@ this file exists to prevent, so the only check that means anything is what colou
 reached the pixels.
 
 :func:`dominant_colours` therefore decodes the PNG rather than trusting it, and
-:func:`png_size` reads back the width — a chart drawn at the rasteriser's default
+:func:`png_size` reads back the size — a chart drawn at the rasteriser's default
 size carries exactly the same colours in the same proportions as one drawn at the
 width this module asked for. Both decoders are deliberately dependency-free: the
 venv carries no image library, and adding one so a test can read four bytes would
@@ -379,6 +379,19 @@ def png_size(png: bytes) -> tuple[int, int]:
     """
     assert png[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG"
     return struct.unpack(">II", png[16:24])
+
+
+def _declared_view_heights(node):
+    """Every view height a spec declares, at any composition depth; a mark's own height is not a view's."""
+    if isinstance(node, list):
+        for item in node:
+            yield from _declared_view_heights(item)
+    elif isinstance(node, dict):
+        if isinstance(node.get("height"), int | float):
+            yield int(node["height"])
+        for key, value in node.items():
+            if key not in ("mark", "encoding", "data", "config"):
+                yield from _declared_view_heights(value)
 
 
 def pixel_rows(png: bytes) -> list[list[tuple[int, int, int]]]:
@@ -1097,6 +1110,33 @@ class TestPngPixels:
         checks are the only place a new mark type is caught drawing black.
         """
         assert {viz_type for viz_type, _ in PAYLOADS.values()} == set(PAYLOAD_MODELS)
+
+    @pytest.mark.timeout(120)
+    @pytest.mark.parametrize("shape", sorted(PAYLOADS), ids=sorted(PAYLOADS))
+    def test_every_shape_is_drawn_at_the_height_it_declared(self, shape):
+        """Height read back from the pixels, as width already was (#677).
+
+        Two halves. Every view height the spec declares is the height its plot frame is
+        drawn at (a view squeezed or stretched to fit draws a frame of another height),
+        and the raster is the laid-out figure exactly at the scale asked for, in both
+        dimensions: a PNG drawn at the rasteriser's default size, or ignoring the scale,
+        carries the same colours and only its size gives it away.
+        """
+        viz_type, payload = PAYLOADS[shape]
+        spec = compile_chart(viz_type, payload).spec
+        svg = render_svg(spec, palette=packaged_palette("light"))
+        laid_out = re.search(r'<svg[^>]*\bwidth="(\d+)"[^>]*\bheight="(\d+)"', svg)
+        assert laid_out, "the rendered document states no size"
+        width, height = int(laid_out.group(1)), int(laid_out.group(2))
+        frames = {int(v) for v in re.findall(r'class="background"[^>]*d="M0,0h\d+v(\d+)h', svg)}
+        declared = set(_declared_view_heights(spec))
+        assert declared, f"{shape}: the spec declares no view height to check"
+        assert declared <= frames, f"{shape}: declared view heights {declared} drawn as frames {frames}"
+        scale = 2
+        assert png_size(render_png(spec, palette=packaged_palette("light"), scale=scale)) == (
+            width * scale,
+            height * scale,
+        ), f"{shape}: rasterised at a size other than the laid-out {width}x{height} at scale {scale}"
 
     # Same measurement, same reason — this one rasterises one shape per case in both themes and
     # its slowest parametrisation sat >3s idle, so it crosses the ceiling under the same load.

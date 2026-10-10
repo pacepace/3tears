@@ -302,7 +302,9 @@ A chart block carries the chart's **intent** (`ChartIntent`, from `threetears.ev
 a charting library's spec: its type from eval's eight, the rows it draws, what each field encodes
 (identity, length, position, interval with what it varies over, level, class, ordinal, count, label), its axes with
 their units and zero baselines, its order, the colour *slots* it uses and what it must disclose — plus its
-values as drawn, which the HTML shows as a table.
+values as drawn, which the HTML shows as a table. An interval is drawn as a band only over 5 or more cases
+(`SMALL_N_BAND_FLOOR`): below that a distribution draws each case's value as a point and says why, a timeseries
+leaves a stated gap, and a null result is refused. The interval itself still appears in the tables.
 
 How a chart looks is the host's: a renderer reads the intent and the host's palette —
 `StyleProfile.chart_palette`, a renderer-neutral `ChartPalette` (the eight numbered series slots, slots

@@ -60,6 +60,14 @@ class JudgedReading(EvalDocumentModel):
     )
     n: int = Field(ge=0, description="Scores contributing to the mean — one per scored, non-faulted observation.")
     n_independent: int = Field(ge=0, description="Distinct test cases behind those scores.")
+    case_means: list[float] | None = Field(
+        default=None,
+        description=(
+            "Each test case's mean over its observations, ascending, recorded only below 5 cases (the chart band "
+            "floor): a chart draws these as points rather than an interval band there. None at 5 cases or more, "
+            "and on a summary stored before it, which reads as not recorded."
+        ),
+    )
     n_infra_excluded: int = Field(
         default=0, ge=0, description="Scores on observations the harness faulted, left out of n and the mean."
     )

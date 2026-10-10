@@ -406,6 +406,59 @@ def clustered_standard_error(values: Sequence[float], cases: Sequence[Hashable])
     return math.sqrt(groups / (groups - 1) * sum(r * r for r in residual_by_case.values())) / n
 
 
+#: The fewest independent cases a chart draws an interval band from (#677).
+#:
+#: A t interval over 2-4 cases is wide and unstable: its multiplier is 12.7 at 2 cases, 4.3 at 3 and 3.2
+#: at 4, against 2.8 at 5 and 1.96 in the limit, and the standard error it multiplies is itself estimated
+#: from as few values. Drawn as a band it suggests a precision the data does not have, so below this floor
+#: a chart draws each case's value instead (:func:`case_means`) and says why there is no band. The
+#: interval is still computed and stated in the tables; only the drawn band is withheld.
+SMALL_N_BAND_FLOOR: Final = 5
+
+
+def case_means(values: Sequence[float], cases: Sequence[Hashable]) -> list[float]:
+    """Each case's mean over its observations, in ascending order — what a small-n chart draws as points.
+
+    A case's repeats are one independent draw, so a chart showing the draws shows one value per case:
+    the mean of that case's observations (the observation itself where the case ran once). Sorted by value,
+    because a point carries no case identity on the chart, and an order that depended on case ids would
+    move a stored document's bytes without moving anything a reader sees.
+
+    Args:
+        values: The observations.
+        cases: Each observation's case, aligned with ``values``.
+
+    Returns:
+        One mean per distinct case, ascending.
+
+    Raises:
+        ValueError: ``values`` and ``cases`` differ in length.
+    """
+    _require_aligned(values, cases)
+    totals: dict[Hashable, list[float]] = {}
+    for value, case in zip(values, cases):
+        totals.setdefault(case, []).append(float(value))
+    return sorted(math.fsum(group) / len(group) for group in totals.values())
+
+
+def small_sample_case_means(values: Sequence[float], cases: Sequence[Hashable]) -> list[float] | None:
+    """:func:`case_means` where a chart will need them, else ``None``.
+
+    Recorded beside a summary only below :data:`SMALL_N_BAND_FLOOR` cases, where a chart draws points
+    instead of a band; at or above it the band is drawn and per-case values would only grow the bundle.
+
+    Args:
+        values: The observations.
+        cases: Each observation's case, aligned with ``values``.
+
+    Returns:
+        The per-case means when there are 1 to ``SMALL_N_BAND_FLOOR - 1`` distinct cases, else ``None``.
+    """
+    if not 0 < len(set(cases)) < SMALL_N_BAND_FLOOR:
+        return None
+    return case_means(values, cases)
+
+
 def proportion_interval(outcomes: Sequence[bool], cases: Sequence[Hashable]) -> tuple[float, float] | None:
     """The interval on a rate at :data:`INTERVAL_LEVEL` over observations that come in cases.
 
@@ -1882,6 +1935,7 @@ __all__ = [
     "MULTIPLE_COMPARISON_CORRECTION",
     "PAIRED_TEST_NAME",
     "SIGNIFICANCE_ALPHA",
+    "SMALL_N_BAND_FLOOR",
     "UNPAIRED_TEST_NAME",
     "ChangeLabel",
     "ChangeVerdict",
@@ -1890,6 +1944,7 @@ __all__ = [
     "SignificanceResult",
     "bar_seed",
     "bounded_mean_p",
+    "case_means",
     "case_rate_interval",
     "ci_half_width",
     "clustered_standard_error",
@@ -1912,6 +1967,7 @@ __all__ = [
     "paired_equivalence",
     "proportion_interval",
     "separation_p",
+    "small_sample_case_means",
     "standard_error_of_mean",
     "t_critical_two_sided",
     "wilson_interval",

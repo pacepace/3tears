@@ -127,6 +127,7 @@ from threetears.evals.analysis.stats import (
     paired_equivalence,
     proportion_interval,
     separation_p,
+    small_sample_case_means,
 )
 from threetears.evals.contracts.analysis_measures import BarAdjudication, BarVerdict, MeasureCollection, MeasureSummary
 from threetears.evals.contracts.campaign import (
@@ -1284,6 +1285,14 @@ class JudgedArm(EvalDocumentModel):
         description=(
             "Scores the judge gave to observations the harness had already faulted, left out of `n` and the "
             "mean: a judge reading a broken transcript is not measuring the candidate."
+        ),
+    )
+    case_means: list[float] | None = Field(
+        default=None,
+        description=(
+            "Each test case's mean over its observations, ascending, recorded only below 5 cases (the chart band "
+            "floor): a chart draws these as points rather than an interval band there. None at 5 cases or more, "
+            "and on a summary stored before it, which reads as not recorded."
         ),
     )
     n_cannot_tell: int = Field(
@@ -4016,6 +4025,7 @@ def _measure_summary(
             "n_true": n_true,
             "ci_low": None if interval is None else interval[0],
             "ci_high": None if interval is None else interval[1],
+            "case_means": small_sample_case_means([1.0 if value is True else 0.0 for value in values], cases),
         }
     elif descriptor.data_type == "categorical":
         counts: dict[str, int] = {}
@@ -4053,6 +4063,8 @@ def _measure_summary(
             # `stats.observed_mean_interval`, so `accuracy` and the `match` it is derived from agree.
             "ci_low": None if interval is None else interval[0],
             "ci_high": None if interval is None else interval[1],
+            # Below the band floor a chart draws the cases rather than the interval, so it needs them.
+            "case_means": small_sample_case_means(observed, cases),
         }
     return MeasureSummary(
         name=descriptor.name,
@@ -7469,6 +7481,7 @@ def _judged_measures(
                     n_cannot_tell=len(cannot_tell),
                     mean=sum(values) / len(values) if values else None,
                     sem=clustered_standard_error(values, value_cases) if values else None,
+                    case_means=small_sample_case_means(values, value_cases),
                     evidence_tier=tier_for_judges(tiers, served),
                 )
             )
@@ -8642,6 +8655,7 @@ def _judged_by_cell(judged_measures: list[JudgedMeasure]) -> dict[_CellKey, list
                     sem=arm.sem,
                     n=arm.n,
                     n_independent=arm.n_independent,
+                    case_means=arm.case_means,
                     n_infra_excluded=arm.n_infra_excluded,
                     n_cannot_tell=arm.n_cannot_tell,
                     evidence_tier=arm.evidence_tier,
