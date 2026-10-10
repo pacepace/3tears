@@ -66,6 +66,14 @@ from threetears.evals.analysis.agreement import (
     tier_for_judges,
     tier_sentence,
 )
+from threetears.evals.analysis.judge_temperature import (
+    JudgeTemperatureComparison,
+    TemperatureCase,
+    TemperatureDimension,
+    TemperatureSettingRead,
+    TemperatureSide,
+    read_judge_temperatures,
+)
 from threetears.evals.analysis.judge_drift import DriftVerdict, JudgeDrift, JudgeDriftDimension, judge_drift
 from threetears.evals.analysis.judge_kind_readings import (
     JudgeKindReading,
@@ -595,6 +603,12 @@ __all__ = [
     "judge_key",
     "judge_self_agreement",
     "person_scores_by_result",
+    "JudgeTemperatureComparison",
+    "TemperatureCase",
+    "TemperatureDimension",
+    "TemperatureSettingRead",
+    "TemperatureSide",
+    "read_judge_temperatures",
     "inter_judge_agreement",
     "judge_drift",
     "judge_kind_readings",

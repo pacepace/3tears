@@ -38,10 +38,11 @@ from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.kernel.identity import resolve_variant_identity
 from threetears.evals.kernel.provider import withhold_failure_detail
 from threetears.evals.quick import run_cli
+from threetears.evals.analysis import JudgeTemperatureComparison, read_judge_temperatures
 from threetears.evals.run import (
     borderline_dims,
-    compare_judge_temperatures,
     estimate_judge_temperature_comparison,
+    judge_at_two_temperatures,
 )
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS, JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import JudgeService
@@ -233,6 +234,13 @@ async def _judged_run(judge: _Judge, *, cases: int = 4) -> tuple[EvalHost, str]:
     judge.calls.clear()
     judge.requested.clear()
     return host, run.id
+
+
+async def compare_judge_temperatures(
+    host: EvalHost, run_id: str, scope_id: str, **options: Any
+) -> JudgeTemperatureComparison:
+    """Ask at the two temperatures and read the answers — what the ``judge_temperature`` operation does."""
+    return read_judge_temperatures(await judge_at_two_temperatures(host, run_id, scope_id, **options))
 
 
 def _results(host: EvalHost, run_id: str) -> list[EvalResult]:

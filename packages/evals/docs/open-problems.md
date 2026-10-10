@@ -58,7 +58,7 @@ Every judge call now asks for temperature 0 unless a config says otherwise, and 
 sent is part of the judge's identity, so the split the issue found is gone. What was not done is the measurement
 the issue asked the policy to rest on: borderline-case score variance across repeats at each setting.
 
-The harness for it exists: `compare_judge_temperatures` (the `judge_temperature` action, and
+The harness for it exists: `judge_at_two_temperatures` read by `read_judge_temperatures` (the `judge_temperature` action, and
 `python -m threetears.evals judge-temperature RUN --max-cost-usd DOLLARS`) re-judges a run's borderline cases at 0
 and at the provider's default and reports per-dimension variance and self-agreement side by side, with the case
 count and the spend ([Step 10](judges-and-calibration.md#step-10-measure-what-temperature-does-to-the-judge)). It is

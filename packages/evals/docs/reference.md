@@ -195,7 +195,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`'chosen'` | `'inherited'`
 - **`OutOfRunOutcome`** · literal · How an out-of-run call ended: it returned a completion, or it raised.
   <br>`'completed'` | `'raised'`
-- **`OutOfRunPurpose`** · literal · What an out-of-run call was for: `variation` writes a launch's generated cases (an `llm` variation axis's values), `proposer` drafts a rubric for operator review, `analysis` writes a campaign's analysis memo (its first call and the one repair round-trip a refused output buys), `judge` repeats a finished run's judge scores to measure the judge's agreement with itself (`repeat_judge_scores`), or at two temperatures to measure what temperature does to it (`compare_judge_temperatures`), `second_judge` asks a judge other than the run's to score a finished run's evidence (`ask_second_judge`) — measurement cost on its own line, never the candidate's.
+- **`OutOfRunPurpose`** · literal · What an out-of-run call was for: `variation` writes a launch's generated cases (an `llm` variation axis's values), `proposer` drafts a rubric for operator review, `analysis` writes a campaign's analysis memo (its first call and the one repair round-trip a refused output buys), `judge` repeats a finished run's judge scores to measure the judge's agreement with itself (`repeat_judge_scores`), or at two temperatures to measure what temperature does to it (`judge_at_two_temperatures`), `second_judge` asks a judge other than the run's to score a finished run's evidence (`ask_second_judge`) — measurement cost on its own line, never the candidate's.
   <br>`'variation'` | `'proposer'` | `'analysis'` | `'judge'` | `'second_judge'`
 - **`RaterKind`** · literal · Who wrote a calibration rating: a `person`, whose rating is the human side of judge calibration, or an `agent` (a model acting through a tool), whose rating is not.
   <br>`'person'` | `'agent'`
@@ -428,6 +428,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`JudgedReading`** · model · One judged dimension's scores in one cell.
 - **`JudgeEvidenceTier`** · model · The evidence tier of one judge's readings on one dimension, and the two measurements that decided it.
 - **`JudgeKindOverlays`** · model · What one arm of a judge campaign turns besides its model: the prompt per criterion, and the temperature.
+- **`JudgeTemperatureAnswers`** · model · What a judge temperature comparison asked, was answered and spent — before anything is read off it.
 - **`JudgeTrial`** · model · What one judge trial recorded: the case it asked about, the judge that answered, and the answer.
 - **`LeverCoordinateError`** · exception · A host's per-observation lever map disagrees with its own registry, in either direction.
 - **`LeverCoverage`** · model · Per-lever coverage summary — a point estimate is invalid without n + dispersion.
@@ -468,6 +469,10 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`SweptAxis`** · model · One axis this campaign set out to vary, and the levels it meant to compare.
 - **`SyncActionSeam`** · protocol · A kind's synchronous tools whose calls block rather than await, as the cassette lane records and replays them.
 - **`SyncToolLike`** · protocol · The three members the cassette layer calls on a tool that answers as a plain blocking call.
+- **`TemperatureAnswer`** · model · One judge call's answer: a score, a "can't tell", or a failure.
+- **`TemperatureCaseAnswers`** · model · Every answer one result's dimension got at one setting, in call order.
+- **`TemperatureSettingSpec`** · class · One setting compared: its name, what each call is requested at, and what its answers must record.
+- **`TemperatureSkip`** · model · A result of the run the comparison did not re-judge, and why.
 - **`TierCriterion`** · model · One of the two measurements a judged tier is decided by, as it read.
 - **`TimeAxis`** · model · The campaign's runs placed in time — present only when they span two builds or two days.
 - **`TimePosition`** · model · One point on a campaign's time axis — the runs at one build or on one day, and what they measured.
@@ -542,6 +547,10 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`'running'` | `'completed'` | `'failed'` | `'cancelled'`
 - **`SyncToolWrap`** · type alias · What the synchronous action seam is handed: `ToolWrap` over `SyncToolLike` tools.
   <br>`Callable[[Mapping[str, SyncToolLike]], dict[str, SyncToolLike]]`
+- **`TemperatureSelection`** · literal · Which scored dims are re-judged: `borderline` (stored score inside its scale, or a recorded repeat or second judge disagreed on it — `borderline_dims`) or `all`.
+  <br>`'borderline'` | `'all'`
+- **`TemperatureSetting`** · literal · The two samplings compared.
+  <br>`'pinned'` | `'provider_default'`
 - **`TimeAxisBasis`** · literal · What a campaign's time positions are: the builds a host labels (`release`), or the UTC days its runs started on (`date`).
   <br>`'release'` | `'date'`
 - **`ToolWrap`** · type alias · What the action seam is handed: maps the candidate's tools, by name, to the tools it should use — each declared recorded tool wrapped for the cassette run, every other one unchanged.
@@ -566,6 +575,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`CONFIDENCE_TIERS`** · constant (tuple) · The tiers, strongest first — the order a surface ranks by.
 - **`CONFUSION_CELL_MEASURE`** · constant (str) · The core measure a classification's confusion-matrix cell is reported under.
   <br>`= 'confusion_cell'`
+- **`DEFAULT_TEMPERATURE_REPEATS`** · constant (int) · How many times each dim is judged at each setting when the caller names no number.
+  <br>`= 5`
 - **`DROPPED_TOOL_CALLS_KEY`** · constant (str) · Covariate key: how many tool calls the candidate emitted that the LLM client dropped before dispatch (a `dropped_tool_calls` list on each turn record the kind dumps into the trace).
   <br>`= 'dropped_tool_calls'`
 - **`DUAL_AXIS_FAMILY`** · constant (str) · The two reserved judge axes every judged run is scored on.
@@ -603,6 +614,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`MECHANICAL_FAMILY`** · constant (str) · Measured the same way everywhere by code: wall-clock, tokens, spend, counts.
   <br>`= 'mechanical'`
 - **`METRIC_DESCRIPTORS`** · constant (dict) · The engine's own measures, each one's descriptor keyed by its name.
+- **`MIN_TEMPERATURE_REPEATS`** · constant (int) · The fewest repeats per setting: one answer has no variance and nothing to agree with.
+  <br>`= 2`
 - **`NOT_ESTABLISHED`** · constant (str) · The prefix of every detail recording a check that rested on a value the world did not hold.
   <br>`= 'not established'`
 - **`REASONING_RATIO_KEY`** · constant (str) · Covariate key: the share of the candidate's generated tokens that were reasoning — candidate `reasoning_tokens` over candidate `completion_tokens`, summed across the candidate's usage rows.
@@ -618,6 +631,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`= 120`
 - **`STRATUM_MIN_CASES`** · constant (int) · The fewest distinct cases a stratum holds before its figures are read on their own.
   <br>`= 10`
+- **`TEMPERATURE_SETTINGS`** · constant (tuple) · The settings, in the order a call round makes them.
 - **`TRUNCATED_ROUNDS_KEY`** · constant (str) · Covariate key: how many of the candidate's LLM rounds the provider cut off at the output cap — rounds whose `stop_reason` was `max_tokens` (the output reached the cap, or the provider reported `finish_reason=length`; providers do not always say so).
   <br>`= 'truncated_rounds'`
 - **`TURN_BUDGET_ENDED_KEY`** · constant (str) · Covariate key: how many of the candidate's turns the HOST's turn budget ended before they finished.
@@ -780,8 +794,6 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`callers_missing_the_constructor(contract: FidelityContract) -> list[str]`
 - **`cancel_run`** · function · Cancel a pending/running eval run so it stops burning cost and quota.
   <br>`cancel_run(storage: RunRecordStore, run_id: str, scope_id: str, *, job_manager: EvalJobManager | None, reason: str | None = None) -> EvalRun`
-- **`compare_judge_temperatures`** · async function · Re-judge a finished run's borderline cases `repeats` times at each temperature, and read the two side by side.
-  <br>`compare_judge_temperatures(host: EvalHost, run_id: str, scope_id: str, *, out_of_run_cap_usd: float | None, selection: TemperatureSelection = 'borderline', repeats: int = 5, result_ids: Sequence[str] | None = None) -> JudgeTemperatureComparison`
 - **`create_judge_config`** · function · Create and persist a judge config from an authoring definition.
   <br>`create_judge_config(storage: DefinitionStore, definition: dict[str, Any], *, scope_id: str) -> JudgeConfig`
 - **`create_rubric_dim`** · function · Create and persist a catalog rubric dim from an authoring definition.
@@ -832,6 +844,8 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`get_template(host: EvalHost, template_id: str, scope_id: str) -> EvalTemplate`
 - **`grade_goal_checks`** · function · Grade goal checks against a call ledger, an end state and what fired: the one evaluation every caller uses.
   <br>`grade_goal_checks(expressions: Sequence[str], *, ledger: CallLedger, end_state: Mapping[str, Any], fired: Firings | None, variation: Mapping[str, Any], world: WorldRegistry | None) -> list[GoalStateOutcome]`
+- **`judge_at_two_temperatures`** · async function · Re-judge a finished run's borderline cases `repeats` times at each temperature, and return every answer.
+  <br>`judge_at_two_temperatures(host: EvalHost, run_id: str, scope_id: str, *, out_of_run_cap_usd: float | None, selection: TemperatureSelection = 'borderline', repeats: int = 5, result_ids: Sequence[str] | None = None) -> JudgeTemperatureAnswers`
 - **`judge_case_labels`** · function · The person ratings a judge case frozen from `result` on `dim` carries as its labels.
   <br>`judge_case_labels(storage: EvalStorage, scope_id: str, result: EvalResult, dim: str, *, scale: str) -> list[CalibrationRating]`
 - **`judge_kind`** · function · The judge kind for one arm, its configs loaded from the store: what a launcher builds per arm.
@@ -974,7 +988,6 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`JudgeRepeatSkip`** · model · A result of the run that is not repeated, and why.
 - **`JudgeRequest`** · class · One judge call as it is sent: what `JudgeService._score` hands the client.
 - **`JudgeService`** · class · Stateless single-dim judge. See module docstring for the contract.
-- **`JudgeTemperatureComparison`** · model · The measurement: a run's borderline cases re-judged at the pinned temperature and at the provider's default.
 - **`JudgeTemperatureEstimate`** · model · What comparing a run's judge at the two temperatures would be priced at, against its cap — no call made.
 - **`KeptOutcome`** · model · One stored outcome a re-check left as it was, and why.
 - **`KindFactory`** · protocol · Builds the candidate kind for one cell.
@@ -1026,8 +1039,6 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`'n_variations'` | `'judge_model'` | `'judge_config_ids'` | `'simulator_model'` | `'cassette_mode'`
 - **`RequestSettingsPolicy`** · literal · How a caller treats the run's recorded judge request settings.
   <br>`'today'` | `'as_recorded'`
-- **`TemperatureSelection`** · literal · Which scored dims are re-judged: `borderline` (stored score inside its scale, or a recorded repeat or second judge disagreed on it — `borderline_dims`) or `all`.
-  <br>`'borderline'` | `'all'`
 - **`TemplatePreflight`** · type alias · Checks one of a battery's templates the way its launch would, before any template launches.
   <br>`Callable[['EvalTemplate', str], Awaitable[None]]`
 - **`WorkFn`** · type alias · A job's work: an async function handed its progress callback.
@@ -1037,8 +1048,6 @@ The engine's run package: launching and executing a run, judging it, metering it
 
 - **`DEFAULT_MAX_CONCURRENT_CELLS`** · constant (int) · The width a run executes its cells at when latency is not under test and the host's settings name none: enough to turn hours of a slow candidate into a fraction of that, few enough that a provider's rate limit is not the first thing a default launch meets.
   <br>`= 4`
-- **`DEFAULT_TEMPERATURE_REPEATS`** · constant (int) · How many times each dim is judged at each setting when the caller names no number.
-  <br>`= 5`
 - **`JUDGE_CALL_ATTEMPTS`** · constant (int) · Calls one judge dimension can make: the first, plus its parse retries.
   <br>`= 2`
 - **`JUDGE_MAX_TOKENS`** · constant (int) · The eval judge's output cap: the reasoning budget plus the answer budget, DERIVED rather than chosen, so it always sits above the ceiling it wraps.
@@ -1193,6 +1202,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`propose_bars(host: EvalHost, baseline_campaign_id: str, *, scope_id: str) -> BaselineBarProposals`
 - **`published_report_schema`** · function · The schema as published in `schema.json`.
   <br>`published_report_schema() -> dict[str, Any]`
+- **`read_judge_temperatures`** · function · Read a judge temperature comparison's answers into per-dimension variance and self-agreement, side by side.
+  <br>`read_judge_temperatures(answers: JudgeTemperatureAnswers) -> JudgeTemperatureComparison`
 - **`remove_runs_from_campaign`** · function · Detach runs from a campaign — the inverse of `add_runs_to_campaign`.
   <br>`remove_runs_from_campaign(storage: CampaignStore, campaign_id: str, scope_id: str, run_ids: list[str]) -> EvalCampaign`
 - **`render_memo_as_written`** · function · The memo as authored: the model's words, code's figures, in one canonical layout a reader follows.
@@ -1318,6 +1329,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`JudgeKindReadings`** · model · Every judge and criterion a judge campaign's results measured, and every result left out.
 - **`JudgeParseValidity`** · model · How often one judge's replies on one criterion kept the protocol.
 - **`JudgeSelfAgreement`** · model · Every repeated score read, paired with the first score where it can be, and agreement per dimension and judge.
+- **`JudgeTemperatureComparison`** · model · The measurement: a run's borderline cases re-judged at the pinned temperature and at the provider's default.
 - **`LabelCriterion`** · model · The rubric criterion a label was written against, frozen as text when its case was frozen.
 - **`LabelReading`** · model · One reader's verdict on a dimension, beside what the judge scored there.
 - **`LabelStatistics`** · model · One label's counts in a confusion matrix, and the precision, recall and F1 they give.
@@ -1375,6 +1387,10 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`TableBlock`** · model · A table code laid out — its columns, its rows in their stated order, and how much of it is shown.
 - **`TableColumn`** · model · One column of a report table.
 - **`TelemetryRollup`** · model · Campaign-wide descriptive telemetry — the trustworthy-signal layer.
+- **`TemperatureCase`** · model · One result's dimension, judged `repeats` times at one setting: its answers and their spread.
+- **`TemperatureDimension`** · model · One dimension, the two settings side by side.
+- **`TemperatureSettingRead`** · model · Everything one setting's answers say, case by case.
+- **`TemperatureSide`** · model · One dimension at one setting: how much its cases' scores moved across repeats, and the judge's self-agreement.
 - **`TextBlock`** · model · What the analysis's author wrote, exactly as written, with the facts code states beside it.
 - **`TokenRollup`** · model · Summed token usage across results — visible cost of generation (§Visible Costs).
 - **`UnpairedRating`** · model · A rating with no judge score to set it against, and why.
@@ -1936,7 +1952,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 
 **Also exported here**
 
-`AnalysisGenerationEstimate` ([`threetears.evals.analysis`](#api-analysis)), `CaseResult` ([`threetears.evals.analysis`](#api-analysis)), `CostEstimate` ([`threetears.evals.analysis`](#api-analysis)), `DimensionSummary` ([`threetears.evals.analysis`](#api-analysis)), `dollars_text` ([`threetears.evals.analysis`](#api-analysis)), `EvalSummary` ([`threetears.evals.analysis`](#api-analysis)), `format_number` ([`threetears.evals.analysis`](#api-analysis)), `frontier_text` ([`threetears.evals.analysis`](#api-analysis)), `FrontierResult` ([`threetears.evals.analysis`](#api-analysis)), `FrozenReporterCase` ([`threetears.evals.analysis`](#api-analysis)), `HistoryResult` ([`threetears.evals.analysis`](#api-analysis)), `JudgeGrade` ([`threetears.evals.analysis`](#api-analysis)), `out_of_run_spend_text` ([`threetears.evals.analysis`](#api-analysis)), `OutOfRunSpendReport` ([`threetears.evals.analysis`](#api-analysis)), `OutOfRunSpendTotals` ([`threetears.evals.analysis`](#api-analysis)), `PivotTable` ([`threetears.evals.analysis`](#api-analysis)), `RunMeasureSummary` ([`threetears.evals.analysis`](#api-analysis)), `scope_out_of_run_spend` ([`threetears.evals.analysis`](#api-analysis)), `ScoreExport` ([`threetears.evals.analysis`](#api-analysis)), `serialize_report` ([`threetears.evals.analysis`](#api-analysis)), `summarize_run` ([`threetears.evals.analysis`](#api-analysis))
+`AnalysisGenerationEstimate` ([`threetears.evals.analysis`](#api-analysis)), `CaseResult` ([`threetears.evals.analysis`](#api-analysis)), `CostEstimate` ([`threetears.evals.analysis`](#api-analysis)), `DimensionSummary` ([`threetears.evals.analysis`](#api-analysis)), `dollars_text` ([`threetears.evals.analysis`](#api-analysis)), `EvalSummary` ([`threetears.evals.analysis`](#api-analysis)), `format_number` ([`threetears.evals.analysis`](#api-analysis)), `frontier_text` ([`threetears.evals.analysis`](#api-analysis)), `FrontierResult` ([`threetears.evals.analysis`](#api-analysis)), `FrozenReporterCase` ([`threetears.evals.analysis`](#api-analysis)), `HistoryResult` ([`threetears.evals.analysis`](#api-analysis)), `JudgeGrade` ([`threetears.evals.analysis`](#api-analysis)), `JudgeTemperatureComparison` ([`threetears.evals.analysis`](#api-analysis)), `out_of_run_spend_text` ([`threetears.evals.analysis`](#api-analysis)), `OutOfRunSpendReport` ([`threetears.evals.analysis`](#api-analysis)), `OutOfRunSpendTotals` ([`threetears.evals.analysis`](#api-analysis)), `PivotTable` ([`threetears.evals.analysis`](#api-analysis)), `RunMeasureSummary` ([`threetears.evals.analysis`](#api-analysis)), `scope_out_of_run_spend` ([`threetears.evals.analysis`](#api-analysis)), `ScoreExport` ([`threetears.evals.analysis`](#api-analysis)), `serialize_report` ([`threetears.evals.analysis`](#api-analysis)), `summarize_run` ([`threetears.evals.analysis`](#api-analysis))
 
 <a id="api-actions"></a>
 ### `threetears.evals.actions`

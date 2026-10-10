@@ -78,12 +78,8 @@ from threetears.evals.ops import (
 
 if TYPE_CHECKING:
     from threetears.evals.actions.catalogue import Action, MountedTool
-    from threetears.evals.run import (
-        JudgeCaseFreezeReport,
-        JudgeTemperatureComparison,
-        JudgeTemperatureEstimate,
-        SecondJudgeEstimate,
-    )
+    from threetears.evals.ops import JudgeTemperatureComparison
+    from threetears.evals.run import JudgeCaseFreezeReport, JudgeTemperatureEstimate, SecondJudgeEstimate
 
 
 # --- help --------------------------------------------------------------------------------------------
