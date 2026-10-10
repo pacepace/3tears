@@ -17,7 +17,7 @@ from typing import Any, Literal
 
 from pydantic import Field
 
-from threetears.evals.analysis.bundle.assemble import InsightStanding, insight_standing
+from threetears.evals.analysis.bundle.insights import InsightStanding, insight_standing
 from threetears.evals.analysis.bar_proposals import propose_bars
 from threetears.evals.analysis.campaigns import create_campaign, list_campaigns
 from threetears.evals.analysis.numbers import format_number

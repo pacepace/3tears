@@ -32,7 +32,8 @@ import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
-from threetears.evals.analysis.bundle.assemble import CampaignReadStore, assemble_context_bundle, superseding_insights
+from threetears.evals.analysis.bundle.assemble import CampaignReadStore, assemble_context_bundle
+from threetears.evals.analysis.bundle.insights import superseding_insights
 from threetears.evals.analysis.bundle.schema import BundleInspection
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal
 from threetears.evals.analysis.generator import MAX_GENERATION_CALLS, GenerationTally, build_user_message, first_request

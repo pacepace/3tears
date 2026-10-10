@@ -64,13 +64,12 @@ from threetears.evals.analysis.judge_drift import DriftVerdict, JudgeDrift, Judg
 from threetears.evals.analysis.arms import ArmTable, cell_label, multi_rig_variants, short_digest
 from threetears.evals.analysis.bar_proposals import BaselineBarProposals, propose_bars
 from threetears.evals.analysis.bundle.assemble import (
-    InsightStanding,
     assemble_context_bundle,
     component_carrier,
-    insight_standing,
     measure_movement,
     variant_key_of_run,
 )
+from threetears.evals.analysis.bundle.insights import InsightStanding, insight_standing
 from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
     JudgeChange,
