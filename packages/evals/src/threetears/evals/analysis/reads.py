@@ -784,6 +784,7 @@ def run_summary(
     *,
     load_run_listed: Callable[[str, str], EvalRun],
     row_columns: RowColumns,
+    profile: HostProfile,
     rubric_threshold: int = 3,
 ) -> dict[str, Any]:
     """Compose a run's verdict numbers — pass^k, latency, cost — per model.
@@ -808,6 +809,8 @@ def run_summary(
         load_run_listed: Loads one run the way a listing does (its scalars, not its host
             payload), raising ``NotFoundError`` for an unknown id.
         row_columns: The host's per-group columns (:data:`RowColumns`).
+        profile: The host whose sweepable declarations say which inputs the run moved off the
+            subject's production configuration — the disclosure every prod-cost row carries.
         rubric_threshold: Minimum rubric score counted as a pass (default 3).
 
     Returns:
@@ -818,7 +821,7 @@ def run_summary(
         "n_llm_ms", "n_tool_ms", "total_cost_usd",
         "mean_cost_usd", "n_cost_usd", "total_prod_cost_usd",
         "mean_prod_cost_usd",
-        "n_prod_cost_usd", "n_results", ...host columns}, ...],
+        "n_prod_cost_usd", "prod_cost_footing", "n_results", ...host columns}, ...],
         "dimension_rows": [{"model", "run_id", "dim", "mean_score",
         "min_score", "max_score", "n"}, ...]}``.
         Each row's engine keys are the ones named above; the host's ``row_columns`` for the
@@ -848,7 +851,13 @@ def run_summary(
         that observed no production-role cost is omitted from it rather than
         counted as a zero, and so is one that took no turn: a result the harness
         faulted, or a call the model refused straight away. The program-cost pair
-        keeps both, because those dollars were spent. ``completeness`` and ``completeness_disclosure``
+        keeps both, because those dollars were spent. ``prod_cost_footing`` travels with the
+        prod-cost keys and is absent with them: which inputs the run held away from the subject's
+        production configuration (``moved``), which could not be checked (``unchecked``), which held
+        (``held``), ``moved_nothing`` and the ``sentence`` to print beside the figure — read off the host's
+        declarations (:meth:`~threetears.evals.contracts.host.sweepables.SweepableRegistry.production_footing`),
+        since the figure is what production spends only for a run that moved nothing (#571).
+        ``completeness`` and ``completeness_disclosure``
         are both null when the run carries no completeness record (it has not
         reached a terminal state), and the disclosure alone is null when the
         run delivered its whole matrix — it is the sentence to render when a
@@ -866,6 +875,15 @@ def run_summary(
     pass_hat = compute_pass_hat_k(results, rubric_threshold=rubric_threshold)
     latency = compute_latency_summary(results)
     cost = compute_cost_summary(results)
+    # Read off the WHOLE run: the listed copy elides host payload, and a payload-carried lever read
+    # off it would report as the subject's own setting.
+    whole = run if not run.elided_payload_paths else storage.load_eval_run(run_id, scope_id)
+    footing = profile.sweepables.production_footing(whole, results) if whole is not None else None
+    footing_disclosure = (
+        {**footing.model_dump(), "moved_nothing": footing.moved_nothing, "sentence": footing.sentence()}
+        if footing is not None
+        else None
+    )
     dimensions = compute_dimension_summary(results)
     host_columns = row_columns(results)
 
@@ -884,6 +902,8 @@ def run_summary(
         # per-component denominators travel as n_total_ms / n_llm_ms /
         # n_tool_ms precisely so this overwrite costs no information.
         row.update(cost[key])
+        if "mean_prod_cost_usd" in row:
+            row["prod_cost_footing"] = footing_disclosure
         row.update(host_columns.get(key, {}))
         rows.append(row)
 

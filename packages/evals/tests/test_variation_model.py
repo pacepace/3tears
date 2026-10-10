@@ -948,6 +948,24 @@ async def test_an_arm_its_launcher_runs_on_another_model_than_its_plan_is_refuse
     assert host.job_manager.admitted_count == 0
 
 
+async def test_a_run_records_whether_its_launch_named_the_candidate_model_or_ran_the_kinds_default():
+    """#571: the one record of whether a production-replicating cost was measured off the subject's own model."""
+    template = _template(ENUM_AXIS)
+    host, _storage, _clients, _handed = _generating_host(
+        template, plan_model="kind-default", default_model="kind-default"
+    )
+
+    (defaulted,) = await _launch(host, template, models=[], n_variations=2)
+    await _settled(host, [defaulted.id])
+    named_host, _s, _c, _h = _generating_host(template)
+    named = await _launch(named_host, template, n_variations=2)
+    await _settled(named_host, [run.id for run in named])
+
+    assert defaulted.candidate_model == "kind-default"
+    assert (defaulted.model_role_provenance or {}).get("candidate") == "inherited"
+    assert named and all((run.model_role_provenance or {}).get("candidate") == "chosen" for run in named)
+
+
 class _MovingSettings:
     """The host's settings as a hot reload moves them: every read after the first declares no metered tools."""
 

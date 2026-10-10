@@ -64,6 +64,8 @@ TOYHOST_SWEEPABLES: tuple[Sweepable, ...] = (
             prompt.content_hash if (prompt := run.subject_snapshot.components.get("extraction_prompt")) else None
         ),
         reader_prose="the extraction prompt the subject carried, by content",
+        # Read off the subject's own snapshot, so it is the subject's setting by construction.
+        departs_production=lambda _run, _results: False,
     ),
     # A lever that names its MECHANISM: a wider chunk is supposed to carry more context into extraction,
     # so the engine's own covariate `context_tokens_in` should move across its levels. A sweep where it

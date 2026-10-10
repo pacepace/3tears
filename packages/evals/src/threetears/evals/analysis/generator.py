@@ -1507,6 +1507,19 @@ def _run_index_entry(summary: RunSummary, *, reported: set[str], omitted: list[s
         # able to see that one of them measured far fewer results than it produced.
         key_metrics["n_prod_cost_usd"] = summary.n_prod_cost_usd
         key_metrics["n_prod_cost_unmeasured"] = summary.n_results - summary.n_prod_cost_usd
+        # What the run set away from the subject's production configuration travels with the figure
+        # (#571): it is production's cost only for a run that moved nothing, and a caveat printed on
+        # every run alike is one a reader stops reading.
+        footing = summary.production_footing
+        key_metrics["prod_cost_footing"] = (
+            "nobody checked which inputs this run moved off the subject's production configuration"
+            if footing is None
+            else footing.sentence()
+        )
+        if footing is not None and footing.moved:
+            key_metrics["prod_cost_moved_off_production"] = dict(sorted(footing.moved.items()))
+        if footing is not None and footing.unchecked:
+            key_metrics["prod_cost_unchecked_against_production"] = dict(sorted(footing.unchecked.items()))
     for measure in summary.measures.measures:
         if measure.name not in reported:
             continue

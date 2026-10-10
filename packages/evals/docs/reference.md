@@ -579,6 +579,7 @@ The host contract — what a consuming product declares, and what the engine nev
 - **`NominalScale`** · model · Unordered categories. Two levels are different, and neither is larger.
 - **`Ordinal`** · dataclass · Mark a `Literal` or `Enum` field as ordered: its levels rank in the order they are declared.
 - **`OrdinalScale`** · model · Ordered but unspaced — `small` / `medium` / `large`.
+- **`ProductionFooting`** · model · Which inputs one run held away from the subject's production configuration, read off the host's declarations.
 - **`ProfileRegistrationError`** · exception · Two of a host's registries contradict each other, raised where both are in hand.
 - **`RegistrationError`** · exception · A declaration contradicts what this module promises, raised where it is written.
 - **`ResolvedLevers`** · dataclass · What one run's levers are called and what it ran them at.
@@ -621,6 +622,8 @@ The host contract — what a consuming product declares, and what the engine nev
   <br>`'seedable_machine_read'` | `'seedable_labeled_read'` | `'perceivable_not_seedable'` | `'triggered_automatic'` | `'triggered_human'` | `'every_dimension'`
 - **`Outcome`** · literal · What a check concluded.
   <br>`'passed'` | `'failed'` | `'unavailable'`
+- **`ProductionDepartureReader`** · type alias · Whether one run held an input away from the subject's production configuration: `True` it did, `False` it held production's setting, `None` the run cannot say.
+  <br>`Callable[['EvalRun', 'Sequence[EvalResult]'], bool | None]`
 - **`Qualification`** · literal · Why a result is narrower than a clean proof. Present on every outcome that is not one.
   <br>`'plumbing_only'` | `'arming_only'` | `'not_instantiable_unattended'` | `'no_perturbation_binding'` | `'nothing_to_observe'` | `'schema_admits_too_few_values'` | `'nothing_to_resolve'` | `'seeding_did_not_take'`
 - **`ResidualReader`** · type alias · The surface an open family resolves into, with some of its members taken back out.
@@ -1052,7 +1055,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`run_analysis_generation`** · async function · Make the paid generator call(s) for a prepared generation, then store and record the result.
   <br>`run_analysis_generation(host: EvalHost, prepared: PreparedGeneration, *, prompt_id: str, max_output_tokens: int) -> tuple[EvalAnalysis, list[EvalInsight]]`
 - **`run_summary`** · function · Compose a run's verdict numbers — pass^k, latency, cost — per model.
-  <br>`run_summary(storage: LensStore, run_id: str, scope_id: str, *, load_run_listed: Callable[[str, str], EvalRun], row_columns: RowColumns, rubric_threshold: int = 3) -> dict[str, Any]`
+  <br>`run_summary(storage: LensStore, run_id: str, scope_id: str, *, load_run_listed: Callable[[str, str], EvalRun], row_columns: RowColumns, profile: HostProfile, rubric_threshold: int = 3) -> dict[str, Any]`
 - **`set_campaign_control`** · function · Designate (or clear) the campaign's control, ADDRESSED from a member observation.
   <br>`set_campaign_control(storage: CampaignStore, campaign_id: str, scope_id: str, run_id: str | None, *, set_by: str, profile: HostProfile) -> EvalCampaign`
 - **`set_reporter_case_archived`** · function · Retire (archive) a reporter case, or restore one — the answer to a case that can no longer measure anything.

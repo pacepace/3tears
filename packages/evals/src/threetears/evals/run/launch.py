@@ -2806,7 +2806,11 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
         judge = wiring.judge
         # Whether each pinned role was named by the launch or resolved from the role's default: the
         # request says which, so the run records it without the launcher restating it.
-        role_provenance: dict[str, RoleModelOrigin] = {}
+        role_provenance: dict[str, RoleModelOrigin] = {
+            # Whether the launch named the candidate's model or ran it at the kind's own default: the one
+            # record of whether its production-replicating cost was measured off the subject's model (#571).
+            "candidate": "chosen" if request.candidate_model is not None else "inherited",
+        }
         if judge is not None:
             role_provenance["judge"] = _judge_origin(request, judge.model)
         if wiring.simulator_model is not None:

@@ -171,6 +171,22 @@ away, which took no turn. Program spend (`cost_usd`, `total_cost_usd`, `mean_cos
 the `cost_usd` history series, an analysis cell's or bar's `cost_usd`, the budget view) keeps both, because those
 dollars were spent. `n_prod_cost_usd` counts what the comparison figure rests on.
 
+**A production-replicating cost names what its run moved off production.** It is what production
+would spend only for a run that set nothing: a model the launch named, an overlay set off its default, or
+an apparatus setting that strips the candidate's learned state each make it the cost of something
+production does not run, and the error has no reliable sign. So every surface that shows it carries the
+run's production footing, read off the host's sweepable declarations
+(`SweepableRegistry.production_footing`): a bundle's `RunSummary.production_footing`, the
+`prod_cost_footing` on each `run_summary` row and in an analysis run index's key metrics. It names the
+inputs the run `moved` (with their levels), the levers whose departure nothing records (`unchecked`), and
+the inputs `held`; only an empty `moved` and an empty `unchecked` say the cost was measured at production's
+configuration. A lever with no `departs_production` reader is read by the engine's rule: unset is the
+subject's own setting, a value is unchecked, so a lever you declare reaches the disclosure with nothing
+else edited. Declare `departs_production` on a lever to decide its value against production, and on an
+apparatus input that moves the candidate off its production footing. A run launched before the candidate
+model's origin was recorded reads its model as unchecked; a summary assembled before the disclosure
+carries `None`, "nobody checked".
+
 **A cost pivot says what its cells pool.** `scope_pivot(metric="cost_usd")` averages measuring spend, so each
 cell names the role sets its dollars were summed over (`cost_compositions`, with `cost_compositions_differ` when
 they are not one set: a cheaper cell may only have priced fewer things). A cell pooling a replayed run with a
