@@ -41,6 +41,7 @@ from pydantic import ValidationError
 from threetears.evals.kernel.campaign import EvalAnalysis, EvalAnalysisAttempt, EvalCampaign, EvalInsight, EvalSweep
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.errors import ConflictError, StorageError
+from threetears.evals.kernel.judge_profiles import EvalJudgeProfile, JudgeProfileStore
 from threetears.evals.schema.models import (
     EVAL_DOC_TYPES,
     NON_TERMINAL_RUN_STATUSES,
@@ -945,6 +946,42 @@ class EvalStorage:
         return self._hydrate_all(CalibrationRating, items)
 
     # =========================================================================
+    # EvalJudgeProfile — a judge's measured reliability, for other campaigns to read (#628)
+    # =========================================================================
+
+    def save_judge_profile(self, profile: EvalJudgeProfile) -> None:
+        """Persist a profile in the scope it names, replacing the stored profile of the same judge and criterion.
+
+        The replacement is the id's doing: a profile's id derives from its judge and criterion, so the upsert lands
+        on the earlier profile's row.
+        """
+        self._save(profile.to_dict())
+
+    def load_judge_profile(self, profile_id: str, scope_id: str) -> EvalJudgeProfile | None:
+        """Load a profile by id within a scope."""
+        return self._load(EvalJudgeProfile, profile_id, scope_id)
+
+    def query_judge_profiles(self, scope_id: str, *, rubric_dim: str | None = None) -> list[EvalJudgeProfile]:
+        """Every profile in a scope, oldest recording first, optionally of one dim.
+
+        Unlimited: the bundle looks a judge's profile up among them, and a paged read would miss one.
+
+        Args:
+            scope_id: The scope to read.
+            rubric_dim: Optional equality filter on the criterion's dim.
+
+        Returns:
+            The matching profiles, ordered by when they were recorded.
+        """
+        field_eq: dict[str, Any] = {}
+        if rubric_dim is not None:
+            field_eq["rubric_dim"] = rubric_dim
+        items = self._store.by_doc_type(
+            "eval_judge_profile", scope_id, order_by="recorded_at", descending=False, **field_eq
+        )
+        return self._hydrate_all(EvalJudgeProfile, items)
+
+    # =========================================================================
     # OutOfRunSpend — the ledger of calls made outside any run
     # =========================================================================
 
@@ -1651,7 +1688,9 @@ if TYPE_CHECKING:
             CassetteStore,
             OutOfRunSpendStore,
             CaseSetStore,
+            JudgeProfileStore,
         ] = (
+            storage,
             storage,
             storage,
             storage,

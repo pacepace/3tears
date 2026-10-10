@@ -65,6 +65,7 @@ __all__ = [
     "JudgeTrial",
     "JudgeTrialOutcome",
     "judge_case_of",
+    "judge_criterion_digest",
     "judge_trial_of",
 ]
 
@@ -166,8 +167,7 @@ class JudgeCase(EvalBaseModel):
         Returns:
             The digest.
         """
-        wording = None if self.criterion is None else self.criterion.model_dump(mode="json")
-        return canonical_digest({"dim": self.dim, "scale": self.scale, "criterion": wording})
+        return judge_criterion_digest(self.dim, self.scale, self.criterion)
 
     def content_digest(self) -> str:
         """A digest of everything the case freezes, its labels included — what makes two freezes the same case.
@@ -176,6 +176,26 @@ class JudgeCase(EvalBaseModel):
             The digest.
         """
         return canonical_digest(self.model_dump(mode="json"))
+
+
+def judge_criterion_digest(dim: str, scale: RubricScale, criterion: RubricDim | None) -> str:
+    """A digest of one criterion as a judge is asked it: its id, scale and wording (#628).
+
+    The one derivation behind :meth:`JudgeCase.criterion_digest` and the stored judge profile's criterion, so a
+    campaign whose judge read a template's rubric dimension finds the profile measured on cases frozen from it, and
+    a dimension reworded since is another criterion whose profile it never reads.
+
+    Args:
+        dim: The criterion's id: a rubric dim's name, or a reserved axis id.
+        scale: The scale it is answered on.
+        criterion: The rubric dimension as the template words it; None for a reserved axis, whose criterion is
+            the engine's own.
+
+    Returns:
+        The digest.
+    """
+    wording = None if criterion is None else criterion.model_dump(mode="json")
+    return canonical_digest({"dim": dim, "scale": scale, "criterion": wording})
 
 
 def judge_case_of(test_case: EvalTestCase) -> JudgeCase | None:
