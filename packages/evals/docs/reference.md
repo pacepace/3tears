@@ -2438,6 +2438,8 @@ The engine's own measures (`METRIC_DESCRIPTORS`), grouped by family in the order
 | `n_test_cases` | — | — | cases | How many test cases the model was run against. |
 | `k` | — | — | iterations | The depth the headline pass_hat_k is read at. |
 | `n_cannot_tell_excluded` | — | — | iterations | Iterations left out of pass^k because the judge answered it could not score a rubric dimension from the evidence. |
+| `n_no_criterion_excluded` | — | — | iterations | Iterations left out of pass^k because they carried nothing for it to conjoin: no goal-state check and no judge, as a classifier scored only against its expected label. |
+| `pass_hat_k_unmeasured_reason` | — | — | — | Why pass_hat_k is null when the reason is that no iteration carried a pass criterion; null otherwise. |
 | `n_cases_at_k` | — | — | cases | The cases pass_hat_k averages over: those scored at least k times. |
 | `mean_total_ms` | lower | — | ms | Average end-to-end wall-clock over the cells that MEASURE the candidate — a cell an apparatus fault produced is excluded, since a clock stopped by a cassette miss or a judge error times the harness. |
 | `median_total_ms` | lower | — | ms | Typical end-to-end wall-clock, less sensitive to one slow outlier than the mean. |

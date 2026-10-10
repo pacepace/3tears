@@ -1195,6 +1195,9 @@ def compare_two_runs(
         "pass_hat_k_a": pass_hat_k_a,
         "pass_hat_k_b": pass_hat_k_b,
         "pass_hat_k_delta": _score_delta(pass_hat_k_a, pass_hat_k_b),
+        # Why a side has no pass^k when none of its attempts had a criterion to pass (#688); None otherwise.
+        "pass_hat_k_unmeasured_reason_a": entry_a.get("pass_hat_k_unmeasured_reason") if entry_a else None,
+        "pass_hat_k_unmeasured_reason_b": entry_b.get("pass_hat_k_unmeasured_reason") if entry_b else None,
         "composite_a": composite_a,
         "composite_b": composite_b,
         "composite_delta": _score_delta(composite_a, composite_b) if composites_comparable else None,

@@ -1013,6 +1013,12 @@ def runs_compared_text(compared: RunsCompared) -> str:
             hedges=True,
         ),
     ]
+    for run_id, key in (
+        (compared.baseline_run_id, "pass_hat_k_unmeasured_reason_a"),
+        (compared.candidate_run_id, "pass_hat_k_unmeasured_reason_b"),
+    ):
+        if arm.get(key):
+            lines.append(f"pass^k of run {run_id} is unmeasured: {arm[key]}")
     if view.get("composite_comparability"):
         lines.append(str(view["composite_comparability"]))
     if arm.get("composite_bases_differ"):

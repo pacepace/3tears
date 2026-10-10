@@ -447,6 +447,36 @@ def pass_hat_k_at(curve: Sequence[PassHatPoint], k: int) -> PassHatPoint:
     return {"k": k, "pass_hat_k": None, "n_cases": 0}
 
 
+#: Why a pass^k has no value when every attempt behind it had nothing to pass (#688).
+NO_PASS_CRITERION_REASON = (
+    "no attempt carried a pass criterion — no goal-state check and no judge — so there is nothing for pass^k to "
+    "conjoin: it is unmeasured, not 0; read the arm's own grade (its host measures, e.g. accuracy) instead"
+)
+
+
+def has_pass_criterion(result: EvalResult) -> bool:
+    """Whether pass^k has anything to conjoin on this result: a goal-state check, a capability criterion, or a judge.
+
+    A result with none — a classifier scored only against its expected label, no goal check and no judge — is
+    not a failed attempt: pass^k cannot ask it anything, so it is left out of pass^k (#688) rather than read as
+    failing every criterion it never had. A result whose run pinned a judge (``judge_model``) is in, scored or
+    not: its criteria were asked, so a judged arm whose candidate failed before the judge ran still fails.
+
+    Args:
+        result: The eval result.
+
+    Returns:
+        True when pass^k can decide the attempt.
+    """
+    capability_cannot_tell = set(result.judge_cannot_tell) - set(result.judge_cannot_tell_boundary)
+    return bool(
+        result.goal_state_outcomes
+        or capability_scores(result)
+        or capability_cannot_tell
+        or result.judge_model is not None
+    )
+
+
 def _trial_pass(result: EvalResult, *, rubric_threshold: int) -> tuple[bool | None, bool]:
     """Whether one attempt passed, ``None`` when it is left out — and whether it left as cannot-tell.
 
@@ -464,15 +494,30 @@ def _trial_pass(result: EvalResult, *, rubric_threshold: int) -> tuple[bool | No
         exclusion = None
     if exclusion is not None:
         return None, exclusion == "judge_cannot_tell"
+    if not has_pass_criterion(result):
+        # Nothing to conjoin: unmeasured for pass^k, never a fail (#688). Counted by the callers.
+        return None, False
     return classify_result(result) is ResultOutcome.OK and _result_passes(
         result, rubric_threshold=rubric_threshold
     ), False
 
 
-def _pass_hat_k_entry(attempts_by_case: Mapping[Any, list[bool]], *, k: int, n_cannot_tell: int) -> dict[str, Any]:
+def _no_criterion_count(results: Iterable[EvalResult]) -> int:
+    """The attempts pass^k leaves out because they carry no pass criterion (:func:`has_pass_criterion`).
+
+    Only those it would otherwise have read: an attempt left out for a fault or a judge's can't-tell is counted
+    there, not here.
+    """
+    return sum(1 for r in results if trial_exclusion(r) is None and not has_pass_criterion(r))
+
+
+def _pass_hat_k_entry(
+    attempts_by_case: Mapping[Any, list[bool]], *, k: int, n_cannot_tell: int, n_no_criterion: int = 0
+) -> dict[str, Any]:
     """The one row shape both pass^k producers return, so the two cannot describe a pool differently."""
     curve = _pass_hat_k_curve(attempts_by_case.values())
     headline = pass_hat_k_at(curve, k)
+    scored = any(attempts_by_case.values())
     return {
         "pass_hat_k": headline["pass_hat_k"],
         "k": k,
@@ -483,6 +528,10 @@ def _pass_hat_k_entry(attempts_by_case: Mapping[Any, list[bool]], *, k: int, n_c
         # Iterations left out because the judge could not tell on a rubric dim — the one exclusion
         # that is not a fault, so it is counted on its own rather than vanishing.
         "n_cannot_tell_excluded": n_cannot_tell,
+        # Attempts with nothing for pass^k to conjoin — no goal check, no judge (#688): left out, never failed.
+        "n_no_criterion_excluded": n_no_criterion,
+        # Why pass^k has no value at all, where the reason is that nothing had a criterion; None otherwise.
+        "pass_hat_k_unmeasured_reason": NO_PASS_CRITERION_REASON if n_no_criterion and not scored else None,
     }
 
 
@@ -524,7 +573,12 @@ def compute_pass_hat_k(
     Returns:
         ``{(model, eval_run_id): {"pass_hat_k": float | None, "k": int, "n_cases_at_k": int,
         "pass_hat_k_curve": [{"k", "pass_hat_k", "n_cases"}, ...], "n_test_cases": int,
-        "n_cannot_tell_excluded": int}}``.
+        "n_cannot_tell_excluded": int, "n_no_criterion_excluded": int,
+        "pass_hat_k_unmeasured_reason": str | None}}``.
+
+        An attempt with nothing to conjoin — no goal-state check and no judge (:func:`has_pass_criterion`)
+        — is left out and counted in ``n_no_criterion_excluded``, never read as a fail (#688); where no
+        attempt had one, ``pass_hat_k`` is None and ``pass_hat_k_unmeasured_reason`` says why.
 
         ``pass_hat_k`` is the curve's value at ``k`` and ``n_cases_at_k`` the cases it averages:
         ``None`` and 0 when no case was scored that deep — nothing was measured there, which is
@@ -558,11 +612,16 @@ def compute_pass_hat_k(
             continue
         cases.setdefault(r.test_case_id, []).append(passed)
 
+    no_criterion: dict[tuple[str, str], int] = {}
+    for r in results:
+        group = (r.model, r.eval_run_id)
+        no_criterion[group] = no_criterion.get(group, 0) + _no_criterion_count([r])
     return {
         group: _pass_hat_k_entry(
             cases,
             k=k if k is not None else k_observed.get(group, 1),
             n_cannot_tell=cannot_tell.get(group, 0),
+            n_no_criterion=no_criterion.get(group, 0),
         )
         for group, cases in attempts.items()
     }
@@ -686,7 +745,7 @@ def pool_pass_hat_k(
     if k < 1:
         raise ValueError(f"pass^k needs k >= 1, got {k}")
     cases, n_cannot_tell = pool_pass_hat_k_attempts(results, cell_of_run=cell_of_run, rubric_threshold=rubric_threshold)
-    return _pass_hat_k_entry(cases, k=k, n_cannot_tell=n_cannot_tell)
+    return _pass_hat_k_entry(cases, k=k, n_cannot_tell=n_cannot_tell, n_no_criterion=_no_criterion_count(results))
 
 
 # =============================================================================
@@ -1250,6 +1309,7 @@ def compute_per_case_composites(
 
 
 __all__ = [
+    "NO_PASS_CRITERION_REASON",
     "CellSummary",
     "CompositeBasis",
     "capability_scores",
@@ -1260,6 +1320,7 @@ __all__ = [
     "compute_latency_summary",
     "compute_pass_hat_k",
     "compute_per_case_composites",
+    "has_pass_criterion",
     "case_pass_hat_k",
     "median_unbiased_quantile",
     "median_unbiased_quantile_min_n",

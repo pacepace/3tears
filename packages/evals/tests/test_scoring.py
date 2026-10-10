@@ -38,6 +38,7 @@ from threetears.evals.contracts.campaign import EvalCampaign
 from threetears.evals.contracts.models import TRANSCRIPT_DIM_ID, EvalResult, LatencyMetrics, RoleUsage, RubricScore
 from threetears.evals.contracts.result_condition import ResultOutcome
 from threetears.evals.contracts.scoring import (
+    NO_PASS_CRITERION_REASON,
     CellSummary,
     compute_composite_summary,
     compute_cost_summary,
@@ -532,8 +533,14 @@ def test_compute_pass_hat_k_all_infra_run_reported_with_zero_measured_cases():
     assert out[("m1", "r1")]["pass_hat_k_curve"] == []
 
 
-def test_compute_pass_hat_k_empty_score_lists_with_no_error_also_not_passing():
-    """A result with no scoreable outcomes (no goal-state checks, no rubric) cannot pass."""
+@pytest.mark.parametrize("judge_model", [None, "judge-model"])
+def test_compute_pass_hat_k_empty_score_lists_with_no_error_never_pass(judge_model):
+    """A result with no scoreable outcomes cannot pass: unmeasured with no judge (#688), a fail under one.
+
+    With no goal-state check and no judge there is nothing for pass^k to conjoin, so the attempt is left out
+    and the group has no pass^k — never the 0.0 that read as failing every criterion. Under a judge the
+    criteria were asked and nothing was scored, which is the fail it always was.
+    """
     empty = EvalResult(
         scope_id="u",
         eval_run_id="r1",
@@ -549,9 +556,16 @@ def test_compute_pass_hat_k_empty_score_lists_with_no_error_also_not_passing():
         host_measures={},
         variant_key="vk-1",
         identity_version=IDENTITY_VERSION,
+        judge_model=judge_model,
     )
-    out = compute_pass_hat_k([empty])
-    assert out[("m1", "r1")]["pass_hat_k"] == 0.0
+    row = compute_pass_hat_k([empty])[("m1", "r1")]
+    if judge_model is None:
+        assert row["pass_hat_k"] is None and row["pass_hat_k_curve"] == []
+        assert row["n_no_criterion_excluded"] == 1
+        assert row["pass_hat_k_unmeasured_reason"] == NO_PASS_CRITERION_REASON
+    else:
+        assert row["pass_hat_k"] == 0.0
+        assert row["n_no_criterion_excluded"] == 0 and row["pass_hat_k_unmeasured_reason"] is None
 
 
 # =============================================================================

@@ -1071,6 +1071,29 @@ _SEED: tuple[MetricDescriptor, ...] = (
         ),
     ),
     _d(
+        name="n_no_criterion_excluded",
+        data_type="numeric",
+        family="mechanical",
+        transferability_class="mechanical",
+        attribution_scope="end_to_end",
+        unit="iterations",
+        description=(
+            "Iterations left out of pass^k because they carried nothing for it to conjoin: no goal-state check "
+            "and no judge, as a classifier scored only against its expected label. Unmeasured, never a fail; "
+            "where every iteration is one, pass_hat_k is null and pass_hat_k_unmeasured_reason says why."
+        ),
+    ),
+    _d(
+        name="pass_hat_k_unmeasured_reason",
+        data_type="text",
+        family="mechanical",
+        transferability_class="mechanical",
+        attribution_scope="end_to_end",
+        description=(
+            "Why pass_hat_k is null when the reason is that no iteration carried a pass criterion; null otherwise."
+        ),
+    ),
+    _d(
         name="n_cases_at_k",
         data_type="numeric",
         family="mechanical",
@@ -1483,8 +1506,9 @@ _SEED: tuple[MetricDescriptor, ...] = (
             "goal-state check; a boundary dimension is a guardrail and is decided apart. A 1-5 criterion clears at "
             "or above the pass threshold recorded beside the figure (`rubric_threshold`): the behavior's "
             "host-declared threshold (`PassThreshold`, registered with its bars), 3 where it declares none; a "
-            "pass/fail criterion clears on its pass. Unbiased at any depth; infra-excluded attempts count toward no "
-            "case's n."
+            "pass/fail criterion clears on its pass. An attempt with no goal-state check and no judge has nothing to "
+            "conjoin and is left out (n_no_criterion_excluded), never failed; with none measurable there is no "
+            "pass^k. Unbiased at any depth; infra-excluded attempts count toward no case's n."
         ),
     ),
     _d(

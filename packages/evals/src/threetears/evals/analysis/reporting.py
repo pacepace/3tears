@@ -4151,6 +4151,12 @@ class FrontierPoint(EvalBaseModel):
     pass_hat_k_ci_low: float | None = None
     #: The high end of that interval; ``None`` exactly when ``pass_hat_k_ci_low`` is.
     pass_hat_k_ci_high: float | None = None
+    #: Attempts behind this point with nothing for pass^k to conjoin — no goal-state check and no judge — left
+    #: out of pass^k and its curve rather than read as failures (#688).
+    n_pass_no_criterion: int = 0
+    #: Why ``pass_hat_k`` is None when the reason is that no attempt carried a pass criterion: the point has
+    #: no pass^k, not one of 0, and so no cost per acceptable outcome either. None otherwise.
+    pass_hat_k_unmeasured_reason: str | None = None
     #: How this point's pass^k reads against the bar, decided by its interval the way every campaign bar is
     #: (:func:`~threetears.evals.analysis.stats.interval_clears`): ``cleared``, ``missed``, ``undecided`` (the
     #: interval straddles the bar — neither a pass nor a failure), ``no_interval`` (fewer than two cases, not
@@ -4722,6 +4728,8 @@ def _frontier_point(
         pass_hat_k_curve=pooled["pass_hat_k_curve"],
         pass_hat_k_ci_low=None if pass_interval is None else pass_interval[0],
         pass_hat_k_ci_high=None if pass_interval is None else pass_interval[1],
+        n_pass_no_criterion=pooled["n_no_criterion_excluded"],
+        pass_hat_k_unmeasured_reason=pooled["pass_hat_k_unmeasured_reason"],
         mean_composite=mean_composite,
         composite_sem=composite_sem,
         composite_basis=pooled_composite_basis(results) if mean_composite is not None else None,
