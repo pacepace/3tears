@@ -8,17 +8,18 @@ its run.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts.host import EvalHost
-from threetears.evals.contracts.models import DEFAULT_LAUNCH_K_RUNS, EvalRun
+from threetears.evals.contracts.models import DEFAULT_LAUNCH_K_RUNS, CaseSet, CaseSetRef, EvalRun
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.jobs import JobHandle, JobsStarted, run_job_id
 from threetears.evals.ops.summary import EvalSummary, summarize_run
 from threetears.evals.run.authoring import list_templates
+from threetears.evals.run.case_sets import mint_case_set
 from threetears.evals.run.curation import delete_run, set_run_archived
 from threetears.evals.run.launch import start_run
 from threetears.evals.run.judge_repeat import (
@@ -115,6 +116,118 @@ class LaunchArguments(EvalBaseModel):
         description="The deadline each cell runs under, in seconds, in place of the kind's own; at or below the "
         "host's ceiling (a host declaring none allows only lowering the kind's deadline). Recorded on every run.",
     )
+    case_set_name: str | None = Field(
+        default=None,
+        min_length=1,
+        description="A named case set of the template to run, as case_sets_list names it; every arm runs exactly its "
+        "cases and records it. Named with case_set_version, and refused beside n_variations.",
+    )
+    case_set_version: int | None = Field(
+        default=None, ge=1, description="The version of case_set_name to run; required with it."
+    )
+
+    @model_validator(mode="after")
+    def _a_case_set_names_its_version(self) -> LaunchArguments:
+        """Refuse a case set's name without its version, or a version without a name."""
+        if (self.case_set_name is None) != (self.case_set_version is None):
+            raise ValueError(
+                "case_set_name and case_set_version name one version of one set together; a set's versions hold "
+                "different cases, so neither is read without the other"
+            )
+        return self
+
+    @property
+    def case_set(self) -> CaseSetRef | None:
+        """The case set the launch targets, or ``None``."""
+        if self.case_set_name is None or self.case_set_version is None:
+            return None
+        return CaseSetRef(name=self.case_set_name, version=self.case_set_version)
+
+
+class CaseSetLine(EvalBaseModel):
+    """One version of a named case set."""
+
+    name: str
+    version: int
+    label: str
+    template_id: str
+    test_case_ids: list[str]
+    tracked: bool
+    created_at: str
+
+
+class CaseSetListing(EvalBaseModel):
+    """A scope's case sets, every version, newest version first within a name."""
+
+    case_sets: list[CaseSetLine]
+
+
+class CaseSetMint(EvalBaseModel):
+    """What minting a case set's next version names: the set, its template and its cases in order."""
+
+    case_set: str = Field(min_length=1, description="The case set's name; a new name starts at version 1.")
+    template_id: Annotated[str, LaunchArguments.model_fields["template_id"]]
+    test_case_ids: list[str] = Field(
+        min_length=1,
+        description="The cases, in order, each a stored case of the template; a list the latest version already "
+        "holds is refused.",
+    )
+    tracked: bool = Field(
+        default=True, description="Whether the set is a standing suite followed over time, or made for one launch."
+    )
+
+
+def _case_set_line(case_set: CaseSet) -> CaseSetLine:
+    return CaseSetLine(
+        name=case_set.name,
+        version=case_set.version,
+        label=case_set.ref.label,
+        template_id=case_set.template_id,
+        test_case_ids=list(case_set.test_case_ids),
+        tracked=case_set.tracked,
+        created_at=case_set.created_at,
+    )
+
+
+def case_set_mint(host: EvalHost, arguments: CaseSetMint, scope_id: str) -> CaseSetLine:
+    """Store the next version of a named case set: append-only, so a change is a new version, never an edit.
+
+    Args:
+        host: The host whose store holds the set.
+        arguments: The set, its template and its cases.
+        scope_id: The scope the set lives in.
+
+    Returns:
+        The stored version.
+
+    Raises:
+        ValidationFailedError: Any refusal :func:`~threetears.evals.run.case_sets.mint_case_set` makes.
+        ConflictError: Another writer stored this version first.
+    """
+    return _case_set_line(
+        mint_case_set(
+            host.storage,
+            scope_id=scope_id,
+            name=arguments.case_set,
+            template_id=arguments.template_id,
+            test_case_ids=arguments.test_case_ids,
+            tracked=arguments.tracked,
+        )
+    )
+
+
+def case_sets_list(host: EvalHost, scope_id: str, *, name: str | None = None) -> CaseSetListing:
+    """The scope's case sets — every version, or every version of one name.
+
+    Args:
+        host: The host whose store is read.
+        scope_id: The scope.
+        name: Only this set's versions.
+
+    Returns:
+        The listing.
+    """
+    return CaseSetListing(case_sets=[_case_set_line(s) for s in host.storage.query_case_sets(scope_id, name=name)])
 
 
 class RunDeleted(EvalBaseModel):
@@ -230,6 +343,7 @@ async def run_launch(host: OpsHost, arguments: LaunchArguments, scope_id: str) -
         simulator_model=arguments.simulator_model,
         scope_id=scope_id,
         cell_timeout_s=arguments.cell_timeout_s,
+        case_set=arguments.case_set,
     )
     return JobsStarted(
         jobs=[
@@ -396,6 +510,9 @@ def run_delete(host: EvalHost, run_id: str, scope_id: str, *, confirm: str | Non
 
 
 __all__ = [
+    "CaseSetLine",
+    "CaseSetListing",
+    "CaseSetMint",
     "LaunchArguments",
     "ResultRated",
     "RunDeleted",
@@ -410,4 +527,6 @@ __all__ = [
     "run_launch",
     "runs_list",
     "templates_list",
+    "case_set_mint",
+    "case_sets_list",
 ]

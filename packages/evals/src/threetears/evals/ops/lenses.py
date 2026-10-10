@@ -463,6 +463,7 @@ async def launch_estimate(
         scope_id=scope_id,
         case_count=n_test_cases,
         cell_timeout_s=arguments.cell_timeout_s,
+        case_set=arguments.case_set,
     )
     arms = [_arm_estimate(arm, quote.k_runs, quote.n_variations) for arm in quote.arms]
     predicted = [arm.predicted_usd for arm in arms]
@@ -924,6 +925,7 @@ def history_text(result: HistoryResult) -> str:
         if series.served_models is not None and (sentence := series.served_models.disclosure()):
             lines.append(f"this series {sentence}")
         previous_basis: CompositeBasis | None = None
+        previous_label: str | None = None
         for point in series.points:
             flag = point.regression
             verdict = f"; {flag.label} vs previous ({flag.test})" if flag is not None else ""
@@ -931,6 +933,9 @@ def history_text(result: HistoryResult) -> str:
                 " (baseline)" if point.is_baseline else f", {format_signed(point.delta_from_baseline)} from baseline"
             )
             epoch = ", suite changed here" if point.epoch_boundary else ""
+            if point.epoch_boundary and (point.epoch_label or previous_label):
+                epoch += f" ({previous_label or 'no named case set'} to {point.epoch_label or 'no named case set'})"
+            previous_label = point.epoch_label
             short = f"; {point.completeness_disclosure}" if point.completeness_disclosure else ""
             ragged = (
                 f"; {point.composite_basis.disclosure()}"

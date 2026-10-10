@@ -50,8 +50,11 @@ from threetears.evals.contracts.models import (
     DEFAULT_LAUNCH_K_RUNS,
     GOAL_CHECK_PROOF_RULES,
     ApparatusSettingValue,
+    CaseSet,
+    CaseSetRef,
     CellTimeoutOrigin,
     EvalRun,
+    EvalTestCase,
     refused_goal_checks,
     JudgedArtifact,
     ModelRoleOrigin,
@@ -62,6 +65,7 @@ from threetears.evals.contracts.models import (
 from threetears.evals.contracts.out_of_run import OutOfRunBudget, plan_variation_calls
 from threetears.evals.run.authoring import validated_kind_spec
 from threetears.evals.run.budget import EvalRunCostCap
+from threetears.evals.run.case_sets import resolve_case_set
 from threetears.evals.run.ceilings import CeilingRaisedError, refuse_raised_ceiling
 from threetears.evals.contracts.cassettes import CassetteMode
 from threetears.evals.run.jobs import MAX_CONCURRENT_JOBS, EvalJobManager, JobTimeoutFactory, adaptive_job_timeout_s
@@ -85,7 +89,7 @@ from threetears.observe import get_logger
 if TYPE_CHECKING:
     from threetears.evals.contracts.host.subject import SubjectSnapshot
     from threetears.evals.contracts.host.sweepables import SweepableRegistry
-    from threetears.evals.contracts.models import EvalTemplate, EvalTestCase, JudgeConfig, VariationCounts
+    from threetears.evals.contracts.models import EvalTemplate, JudgeConfig, VariationCounts
     from threetears.evals.contracts.provider import PricedCompletion
     from threetears.evals.contracts.scoring import CellSummary
     from threetears.evals.contracts.storage import DefinitionStore
@@ -789,6 +793,11 @@ class LaunchRequest:
             the host's declared ceiling (:attr:`LaunchSettings.max_cell_timeout_s`); ``None`` runs every cell under
             the kind's own deadline. The launch tail holds it to the kind's deadline when the host declares no
             ceiling, and records the deadline every cell ran under (``EvalRun.cell_timeout_s``).
+        case_set: The named, versioned case set the launch targets, as stored, or ``None`` for a launch over the
+            template's cases. Its cases are :attr:`case_set_cases`; the launcher freezes exactly those
+            (:meth:`cases_or`), the launch tail refuses a wiring that froze any others, and the run records the set
+            (``EvalRun.case_set``).
+        case_set_cases: The set's cases, resolved in the set's order; empty when :attr:`case_set` is ``None``.
     """
 
     template: EvalTemplate
@@ -816,6 +825,19 @@ class LaunchRequest:
     settings: LaunchSettings
     refused_goal_checks: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
     cell_timeout_s: float | None = None
+    case_set: CaseSet | None = None
+    case_set_cases: tuple[EvalTestCase, ...] = ()
+
+    def cases_or(self, template_cases: Sequence[EvalTestCase]) -> list[EvalTestCase]:
+        """The cases this arm freezes: the case set's, when the launch names one, else the kind's own.
+
+        Args:
+            template_cases: The cases the kind plays when the launch names no set.
+
+        Returns:
+            The cases, in the order the run freezes them.
+        """
+        return list(self.case_set_cases) if self.case_set is not None else list(template_cases)
 
     def overlays_as(self, model: type[_Validated]) -> _Validated:
         """The launch's overlays as the kind's own overlay model, typed.
@@ -1295,6 +1317,7 @@ class _Dispatched(NamedTuple):
         overlays: The launch's overlays, validated by the kind's model.
         kind_spec: The template's kind spec, validated by the kind's spec model.
         apparatus_settings: The launch's apparatus settings, validated against the kind.
+        case_set: The case set the launch targets and its cases in order, resolved; ``None`` for none.
     """
 
     template: EvalTemplate
@@ -1303,6 +1326,7 @@ class _Dispatched(NamedTuple):
     overlays: BaseModel | None
     kind_spec: BaseModel | None
     apparatus_settings: dict[str, ApparatusSettingValue]
+    case_set: tuple[CaseSet, tuple[EvalTestCase, ...]] | None = None
 
 
 def _refuse_repeated_models(models: Sequence[str]) -> None:
@@ -1336,6 +1360,7 @@ async def _dispatch(
     cassette_corpus_id: str | None,
     overlays: Mapping[str, Any] | None,
     apparatus_settings: Mapping[str, Any] | None,
+    case_set: CaseSetRef | None = None,
 ) -> _Dispatched:
     """Load a launch's template, find its kind's launcher, and make the refusals that read them.
 
@@ -1353,10 +1378,12 @@ async def _dispatch(
         cassette_corpus_id: The capture run a replay serves, already checked against the mode.
         overlays: The launch's overlays, unvalidated.
         apparatus_settings: The launch's apparatus settings, unvalidated.
+        case_set: The case set the launch targets, or ``None``.
 
     Returns:
         The template, its kind, that kind's registry entry, the overlays and the template's kind spec as
-        the kind's models validated them, and the apparatus settings validated against the kind.
+        the kind's models validated them, the apparatus settings validated against the kind, and the case set
+        with its cases.
 
     Raises:
         NotFoundError: The template is not found.
@@ -1411,6 +1438,18 @@ async def _dispatch(
         )
         _refuse_a_corpus_that_cannot_serve(corpus_run, cassette_corpus_id, template=template, scope_id=scope_id)
     _refuse_repeated_models(models)
+    resolved_set: tuple[CaseSet, tuple[EvalTestCase, ...]] | None = None
+    if case_set is not None:
+        if n_variations > 0:
+            raise ValidationFailedError(
+                f"case_set={case_set.label!r} names the cases to run and n_variations={n_variations} asks for new "
+                "ones; a launch runs one or the other"
+            )
+        stored, cases = await run_blocking(
+            eval_host.blocking_executor,
+            partial(resolve_case_set, eval_host.storage, case_set, template=template, scope_id=scope_id),
+        )
+        resolved_set = (stored, tuple(cases))
     # The registry entry is the launcher, so a kind the host registered is a kind this launch
     # dispatches — there is no chain of kind comparisons here for a new kind to be missing from.
     return _Dispatched(
@@ -1420,6 +1459,7 @@ async def _dispatch(
         resolved.overlays,
         resolved.kind_spec,
         resolved.apparatus_settings,
+        resolved_set,
     )
 
 
@@ -1445,6 +1485,7 @@ async def start_run(
     launch_group: LaunchGroup | None = None,
     admission: AdmissionTicket | None = None,
     cell_timeout_s: float | None = None,
+    case_set: CaseSetRef | None = None,
 ) -> list[EvalRun]:
     """Refuse what no kind can run, admit the launch, and dispatch each arm to its kind's launcher.
 
@@ -1504,6 +1545,11 @@ async def start_run(
             (:attr:`LaunchSettings.max_cell_timeout_s`, or the kind's own deadline when the host declares none,
             so an undeclared host can only be lowered). The run's job budget is sized from it, and the run
             records it with its origin (``EvalRun.cell_timeout_s``, ``cell_timeout_s_origin``).
+        case_set: A named, versioned case set of the template to run in place of the kind's own choice of cases
+            (:func:`~threetears.evals.run.case_sets.mint_case_set`). Every arm runs exactly its cases, in its
+            order, and each run records it (``EvalRun.case_set``). Refused beside ``n_variations`` (a launch runs
+            the set's cases or new ones, not both), and when the set is another template's or a case of it no
+            longer resolves.
 
     **Every arm is priced before any launcher runs, by one rule.** Before calling the launcher this asks
     the kind what each arm will run (:attr:`LaunchableKind.plan_arm` — the template's stored cases it
@@ -1560,6 +1606,7 @@ async def start_run(
         launch_group=launch_group,
         admission=admission,
         cell_timeout_s=cell_timeout_s,
+        case_set=case_set,
     )
 
 
@@ -1724,6 +1771,7 @@ async def _start_run(
     admission: AdmissionTicket | None,
     priced: _PricedArms | None = None,
     cell_timeout_s: float | None = None,
+    case_set: CaseSetRef | None = None,
 ) -> list[EvalRun]:
     """:func:`start_run` under a settings snapshot its caller read — the launch's own, or a battery's.
 
@@ -1762,6 +1810,7 @@ async def _start_run(
         cassette_corpus_id=cassette_corpus_id,
         overlays=overlays,
         apparatus_settings=apparatus_settings,
+        case_set=case_set,
     )
 
     async def prepare(group: LaunchGroup, dispatched: _Dispatched) -> list[EvalRun]:
@@ -1971,6 +2020,8 @@ def _arm_requests(
             launch_group=group,
             settings=settings,
             cell_timeout_s=cell_timeout_s,
+            case_set=dispatched.case_set[0] if dispatched.case_set is not None else None,
+            case_set_cases=dispatched.case_set[1] if dispatched.case_set is not None else (),
         )
         for arm_model in arm_models
     ]
@@ -2333,6 +2384,7 @@ async def quote_launch(
     scope_id: str,
     case_count: int | None = None,
     cell_timeout_s: float | None = None,
+    case_set: CaseSetRef | None = None,
 ) -> LaunchQuote:
     """What :func:`start_run` with the same arguments would make of its arms' prices — read-only.
 
@@ -2366,6 +2418,7 @@ async def quote_launch(
         case_count: A case count to quote every planned arm at in place of its plan's, for a hypothetical
             grid; ``None`` quotes each at its plan, as the launch prices it.
         cell_timeout_s: As :func:`start_run` takes it; refused as the launch refuses it, and prices nothing.
+        case_set: As :func:`start_run` takes it; resolved and refused as the launch resolves and refuses it.
 
     Returns:
         The quote.
@@ -2404,6 +2457,7 @@ async def quote_launch(
         cassette_corpus_id=cassette_corpus_id,
         overlays=overlays,
         apparatus_settings=apparatus_settings,
+        case_set=case_set,
     )
     # A provisional group: nothing joins it, and its id stamps only a budget nothing is admitted to.
     planned = await _planned_arms(
@@ -2721,6 +2775,14 @@ def _refuse_wiring_the_request_contradicts(request: LaunchRequest, wiring: KindW
             f"{request.template.id!r} in scope {request.scope_id!r}; a run's cases are its template's, in its scope, "
             "or its results name cases nothing in that scope resolves"
         )
+    if request.case_set is not None and (frozen := [case.id for case in wiring.test_cases]) != list(
+        request.case_set.test_case_ids
+    ):
+        raise ValueError(
+            f"the launch targets case set {request.case_set.ref.label!r} ({', '.join(request.case_set.test_case_ids)}) "
+            f"and kind {kind!r}'s launcher froze {', '.join(frozen) or 'no cases'}; a launcher freezes the set's "
+            "cases (LaunchRequest.cases_or)"
+        )
     if request.candidate_model is not None and wiring.default_candidate_model is not None:
         raise ValueError(
             f"kind {kind!r}'s launcher supplied a default model ({wiring.default_candidate_model!r}) for an arm the "
@@ -2920,6 +2982,7 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                 candidate_model=candidate_model,
                 k_runs=request.k_runs,
                 test_case_ids=[case.id for case in test_cases],
+                case_set=request.case_set.ref if request.case_set is not None else None,
                 variation_counts=wiring.variation_counts,
                 candidate_kind=request.kind,
                 # A launch is the act of fixing a rig and measuring against it, so every run it starts

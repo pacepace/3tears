@@ -146,6 +146,7 @@ from threetears.evals.run.simulator import (
 )
 from threetears.evals.run.witnessed import WitnessedJudging, record_witnessed_cell, stamp_witnessed_judge
 from threetears.evals.run.budget import AccountExhaustedError, BudgetStoppedError, CapBreach, EvalRunCostCap
+from threetears.evals.run.case_sets import mint_case_set, resolve_case_set
 from threetears.evals.run.ceilings import (
     CeilingRaisedError,
     refuse_raised_ceiling,
@@ -303,6 +304,8 @@ __all__ = [
     "set_run_archived",
     "start_run",
     "start_universal_battery",
+    "mint_case_set",
+    "resolve_case_set",
     "sweep_abandoned_runs",
     "update_judge_config",
     "update_rubric_dim",

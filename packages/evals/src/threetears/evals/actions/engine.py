@@ -23,6 +23,11 @@ from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts import OutOfRunPurpose
 from threetears.evals.ops import (
     AnalysisDeleted,
+    CaseSetLine,
+    CaseSetListing,
+    CaseSetMint,
+    case_set_mint,
+    case_sets_list,
     AnalysisGenerationEstimate,
     AnalysisLine,
     AnalysisListing,
@@ -261,6 +266,18 @@ class RunArchiveParams(EvalBaseModel):
 
     run_id: RunId
     archived: Archived = True
+
+
+class CaseSetMintParams(CaseSetMint):
+    """``case_set_mint`` — the operation's own arguments, declared once on :class:`~threetears.evals.ops.CaseSetMint`."""
+
+
+class CaseSetsListParams(EvalBaseModel):
+    """``case_sets_list``."""
+
+    case_set_filter: Annotated[str | None, Field(min_length=1, description="List only this case set's versions.")] = (
+        None
+    )
 
 
 class CampaignsListParams(EvalBaseModel):
@@ -503,6 +520,22 @@ async def _run_archive(host: OpsHost, caller: Caller, params: RunArchiveParams) 
     eval_host = host.eval_host
     return await run_blocking(
         eval_host.blocking_executor, run_archive, eval_host, params.run_id, caller.scope_id, archived=params.archived
+    )
+
+
+async def _case_set_mint(host: OpsHost, caller: Caller, params: CaseSetMintParams) -> CaseSetLine:
+    eval_host = host.eval_host
+    arguments = CaseSetMint.model_validate(params.model_dump())
+    return await run_blocking(eval_host.blocking_executor, case_set_mint, eval_host, arguments, caller.scope_id)
+
+
+async def _case_sets_list(host: OpsHost, caller: Caller, params: CaseSetsListParams) -> CaseSetListing:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor,
+        partial(case_sets_list, name=params.case_set_filter),
+        eval_host,
+        caller.scope_id,
     )
 
 
@@ -768,6 +801,33 @@ def engine_actions() -> tuple[Action, ...]:
             handler=_runs_list,
             render=render.render_runs,
             example={"status": "completed"},
+        ),
+        Action(
+            name="case_sets_list",
+            summary="List the scope's named case sets, every version — what a launch can target by name.",
+            workflow=DISCOVER,
+            permission="read",
+            params=CaseSetsListParams,
+            result=CaseSetListing,
+            handler=_case_sets_list,
+            render=render.render_case_sets,
+            example={},
+        ),
+        Action(
+            name="case_set_mint",
+            summary="Store the next version of a named case set: a template's cases, frozen in order.",
+            workflow=RUN,
+            permission="write",
+            params=CaseSetMintParams,
+            result=CaseSetLine,
+            handler=_case_set_mint,
+            render=render.render_case_set,
+            example={"case_set": "smoke", "template_id": "tmpl-1", "test_case_ids": ["case-1", "case-2"]},
+            detail=(
+                "Append-only: a new name starts at v1 and every change is the next version, so a launch naming "
+                "smoke v1 (run_launch's case_set_name and case_set_version) runs the same cases however the template "
+                "changes. A list the latest version already holds is refused."
+            ),
         ),
         Action(
             name="campaigns_list",

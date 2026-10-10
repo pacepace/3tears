@@ -95,7 +95,14 @@ from threetears.observe import get_logger
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from threetears.evals.contracts.models import EvalResult, EvalRun, GoalStateOutcome, LatencyMetrics, RunCompleteness
+    from threetears.evals.contracts.models import (
+        CaseSetRef,
+        EvalResult,
+        EvalRun,
+        GoalStateOutcome,
+        LatencyMetrics,
+        RunCompleteness,
+    )
 
 log = get_logger(__name__)
 
@@ -5837,6 +5844,11 @@ class SeriesPoint(EvalBaseModel):
     n_cases: int = 0
     epoch: int = 1
     epoch_boundary: bool = False
+    #: The named case set every run in this point's epoch was launched against, as ``name vN``, or ``None`` when
+    #: they were not all launched against one set (or any). A label on the epoch, which is still decided by the
+    #: frozen case ids (:func:`_suite_epoch_key`): ``smoke v1`` then ``smoke v2`` is a boundary because the ids
+    #: changed, and this says which named set changed into which.
+    epoch_label: str | None = None
     is_baseline: bool = False
     delta_from_baseline: float | None = None
     regression: RegressionFlag | None = None
@@ -6099,6 +6111,25 @@ def _suite_epoch_key(run: EvalRun) -> tuple[str, tuple[str, ...]]:
     return (run.template_id or "", tuple(sorted(run.test_case_ids)))
 
 
+def _label_epochs_by_case_set(points: list[SeriesPoint], runs: Mapping[str, EvalRun]) -> None:
+    """Label each epoch ``name vN`` where every run in it was launched against that one case set.
+
+    An epoch mixing runs launched against a set with runs launched without one — or against two versions
+    holding identical ids — keeps no label: the name would describe only some of its points.
+
+    Args:
+        points: One series' points, in order, epochs already numbered.
+        runs: The series' runs by id.
+    """
+    by_epoch: dict[int, set[CaseSetRef | None]] = {}
+    for point in points:
+        by_epoch.setdefault(point.epoch, set()).add(runs[point.run_id].case_set)
+    for point in points:
+        refs = by_epoch[point.epoch]
+        only = next(iter(refs)) if len(refs) == 1 else None
+        point.epoch_label = only.label if only is not None else None
+
+
 def compute_history(
     runs: list[EvalRun],
     results: list[EvalResult],
@@ -6348,6 +6379,7 @@ def compute_history(
             prev_epoch_key = epoch_key
             prev_per_case = per_case
 
+        _label_epochs_by_case_set(points, runs_in_series)
         first = rows[0].result
         # Unpacked from the group key rather than re-derived off a row, on
         # `_frontier_point`'s reasoning: the key is what placed these rows together, so

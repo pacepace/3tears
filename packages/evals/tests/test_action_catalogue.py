@@ -89,6 +89,8 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "templates_list": "read",
         "runs_list": "read",
         "campaigns_list": "read",
+        "case_sets_list": "read",
+        "case_set_mint": "write",
         "run_launch": "spend",
         "launch_estimate": "read",
         "job_poll": "read",

@@ -43,6 +43,7 @@ from threetears.evals.contracts.models import (
     NON_TERMINAL_RUN_STATUSES,
     CalibrationRating,
     CassetteKey,
+    CaseSet,
     CatalogRubricDim,
     EvalCassette,
     EvalResult,
@@ -56,6 +57,7 @@ from threetears.evals.contracts.models import (
     JudgeConfig,
     RubricDimTombstone,
     JudgeConfigTombstone,
+    case_set_doc_id,
     eval_trace_doc_id,
 )
 from threetears.evals.contracts.out_of_run import OutOfRunPurpose, OutOfRunSpend, OutOfRunSpendStore
@@ -118,6 +120,7 @@ EVAL_DOC_TYPES = (
     "eval_cassette",
     "calibration_rating",
     "eval_out_of_run_spend",
+    "case_set",
 )
 
 
@@ -414,6 +417,26 @@ class DefinitionStore(Protocol):
         ...
 
 
+class CaseSetStore(Protocol):
+    """Named, versioned case sets, and the test cases they name — what minting and resolving a set reads."""
+
+    def save_case_set(self, case_set: CaseSet, /) -> None:
+        """See :meth:`EvalStorage.save_case_set`."""
+        ...
+
+    def load_case_set(self, name: str, version: int, scope_id: str, /) -> CaseSet | None:
+        """See :meth:`EvalStorage.load_case_set`."""
+        ...
+
+    def query_case_sets(self, scope_id: str, /, *, name: str | None = None) -> list[CaseSet]:
+        """See :meth:`EvalStorage.query_case_sets`."""
+        ...
+
+    def load_test_cases_by_ids(self, test_case_ids: list[str], scope_id: str, /) -> list[EvalTestCase]:
+        """See :meth:`EvalStorage.load_test_cases_by_ids`."""
+        ...
+
+
 class CassetteStore(Protocol):
     """The recordings a capture run made and a replay run is served."""
 
@@ -706,6 +729,40 @@ class EvalStorage:
             RubricDimTombstone,
             self._store.by_doc_type("rubric_dim_tombstone", scope_id, order_by="deleted_at", descending=True),
         )
+
+    # =========================================================================
+    # CaseSet — named, versioned, append-only case lists
+    # =========================================================================
+
+    def save_case_set(self, case_set: CaseSet) -> None:
+        """Store a new version of a case set, refusing one whose ``(scope, name, version)`` exists.
+
+        Append-only: a stored version is never rewritten, so a name and version mean one list of cases for as
+        long as the store holds it. Changing a set is minting ``version + 1``
+        (:func:`~threetears.evals.run.case_sets.mint_case_set`). The check reads before it writes; the store
+        port has no create-if-absent write, so two writers minting the same version at the same instant can
+        both pass it, and the later write lands — the window a host serialises minting against if it allows
+        concurrent writers to one name.
+
+        Raises:
+            ConflictError: That version of that set is already stored.
+        """
+        if self._store.get(case_set.id, case_set.scope_id) is not None:
+            raise ConflictError(
+                f"case set {case_set.name!r} v{case_set.version} already exists in scope {case_set.scope_id!r}; a "
+                "case set is append-only — mint the next version instead of rewriting this one"
+            )
+        self._save(case_set.to_dict())
+
+    def load_case_set(self, name: str, version: int, scope_id: str) -> CaseSet | None:
+        """One version of a case set by name, or ``None`` when that version is not stored in the scope."""
+        return self._load(CaseSet, case_set_doc_id(name, version), scope_id)
+
+    def query_case_sets(self, scope_id: str, *, name: str | None = None) -> list[CaseSet]:
+        """Every case set in a scope (or every version of one name), newest version first within a name."""
+        field_eq: dict[str, Any] = {} if name is None else {"name": name}
+        sets = self._hydrate_all(CaseSet, self._store.by_doc_type("case_set", scope_id, **field_eq))
+        return sorted(sets, key=lambda case_set: (case_set.name, -case_set.version))
 
     # =========================================================================
     # EvalCampaign — the analysis hub
@@ -1598,8 +1655,16 @@ if TYPE_CHECKING:
     def _eval_storage_satisfies_every_port(storage: EvalStorage) -> None:
         """Hold :class:`EvalStorage` to each run-side port, so a drifted signature fails typecheck."""
         ports: tuple[
-            JobStore, RunStore, ResultStore, RunRecordStore, DefinitionStore, CassetteStore, OutOfRunSpendStore
+            JobStore,
+            RunStore,
+            ResultStore,
+            RunRecordStore,
+            DefinitionStore,
+            CassetteStore,
+            OutOfRunSpendStore,
+            CaseSetStore,
         ] = (
+            storage,
             storage,
             storage,
             storage,
@@ -1613,6 +1678,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "EVAL_DOC_TYPES",
+    "CaseSetStore",
     "CassetteStore",
     "DefinitionStore",
     "EvalStorage",

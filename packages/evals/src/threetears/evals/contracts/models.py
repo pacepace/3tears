@@ -151,6 +151,10 @@ each judged guardrail (a boundary rubric dimension) is held to. A campaign, or a
 stored before it carries none and reads as declaring none: its judged guardrails are held at zero change, exactly
 as they were decided then, so no stored decision moves.
 
+**Within v8, not a bump**: ``CaseSet`` joined as a new stored type and ``EvalRun.case_set`` as an OPTIONAL field
+(#676). A store written before them holds no sets, and a run stored before carries None: it was launched over its
+template's cases, which is what None says, and history epochs it by its frozen ids as before.
+
 **Within v8, not a bump**: ``EvalRun.cell_timeout_s`` and ``cell_timeout_s_origin`` joined as OPTIONAL fields (#649)
 — the per-cell deadline the run's cells ran under and whether the launch, the kind or the engine's default set it.
 A run stored before them carries None for both and reads as "deadline not recorded", never as today's default:
@@ -1703,6 +1707,111 @@ class JudgeConfigTombstone(EvalDocumentModel):
 # =============================================================================
 
 
+def case_set_doc_id(name: str, version: int) -> str:
+    """The stored id of version ``version`` of the case set ``name`` — one document per ``(scope, name, version)``.
+
+    Args:
+        name: The set's name.
+        version: Its version.
+
+    Returns:
+        The id.
+    """
+    return f"case_set:{name}:v{version}"
+
+
+class CaseSetRef(EvalBaseModel):
+    """Which named, versioned case set a run was launched against: a label on its frozen case ids.
+
+    Not an identity of its own: the run's case-set identity stays the frozen ids (``case_basis``), so two runs
+    over the same ids are one suite version whatever they were launched by. This names it.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str = Field(min_length=1, description="The case set's name, unique within its scope.")
+    version: int = Field(ge=1, description="The set's version, minted from 1; a change mints the next.")
+
+    @property
+    def label(self) -> str:
+        """How every surface names it: ``name vN``."""
+        return f"{self.name} v{self.version}"
+
+
+class CaseSet(EvalDocumentModel):
+    """A named, versioned, frozen list of one template's test cases — what a launch can target by name.
+
+    **Append-only.** A version, once stored, is never rewritten: storing a ``(scope, name, version)`` that exists
+    is refused (:meth:`~threetears.evals.contracts.storage.EvalStorage.save_case_set`), and changing a set means
+    minting ``version + 1`` (:func:`~threetears.evals.run.case_sets.mint_case_set`). So ``smoke v3`` names the
+    same cases on launch day and a year later, while the template itself stays editable.
+
+    **A launch input, not a second identity.** A launch naming a set runs exactly its cases and stamps the run
+    with :class:`CaseSetRef`; the run's apparatus class still derives from its frozen ids, as for any run, so
+    the name labels that identity rather than competing with it — which keeps the campaign's "no battery
+    pointer" decision (:mod:`threetears.evals.contracts.campaign`). Not called a battery: that is the
+    universal-template set.
+    """
+
+    id: str = Field(default="", description="Derived from name and version (``case_set_doc_id``); set on mint.")
+    doc_type: Literal["case_set"] = "case_set"
+    schema_version: SchemaVersion = EVAL_SCHEMA_VERSION
+    scope_id: str = Field(min_length=1)
+
+    name: str = Field(min_length=1, description="The set's name, unique within its scope across its versions.")
+    version: int = Field(ge=1, description="Minted from 1; each change to the set is the next version.")
+    template_id: str = Field(min_length=1, description="The template whose cases these are; every version shares it.")
+    test_case_ids: list[str] = Field(
+        min_length=1, description="The frozen cases, in order — every one a case of the template in the scope."
+    )
+    tracked: bool = Field(
+        default=True,
+        description="Whether the set is followed over time (a standing suite) or was made for one launch. Metadata "
+        "only: both are stored, versioned and launched alike.",
+    )
+    created_at: str = Field(default_factory=utc_now_iso)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _stamp_derived_id(cls, data: Any) -> Any:
+        """Fill the id from name and version when the writer leaves it out."""
+        if (
+            isinstance(data, Mapping)
+            and not data.get("id")
+            and isinstance(name := data.get("name"), str)
+            and isinstance(version := data.get("version"), int)
+        ):
+            return {**data, "id": case_set_doc_id(name.strip(), version)}
+        return data
+
+    @model_validator(mode="after")
+    def _derived_id_and_distinct_cases(self) -> Self:
+        """Refuse an id other than the derived one, and a case listed twice.
+
+        Raises:
+            ValueError: The id is not the one derived from name and version, or a case id repeats.
+        """
+        derived = case_set_doc_id(self.name, self.version)
+        if self.id != derived:
+            raise ValueError(f"a case set's id is derived from its name and version ({derived!r}); got {self.id!r}")
+        if repeated := sorted({case_id for case_id in self.test_case_ids if self.test_case_ids.count(case_id) > 1}):
+            raise ValueError(f"a case set lists each case once; {', '.join(repeated)} repeat")
+        return self
+
+    @property
+    def ref(self) -> CaseSetRef:
+        """The label a run launched against this set records."""
+        return CaseSetRef(name=self.name, version=self.version)
+
+    @field_validator("doc_type")
+    @classmethod
+    def check_doc_type(cls, v: str) -> str:
+        """Reject documents loaded into the wrong model class."""
+        if v != "case_set":
+            raise ValueError(f"doc_type must be 'case_set', got '{v}'")
+        return v
+
+
 class EvalTestCase(EvalDocumentModel):
     """Concrete, immutable inputs generated from an ``EvalTemplate``.
 
@@ -2802,6 +2911,14 @@ class EvalRun(EvalDocumentModel):
             "disclosure that cannot be reconstructed from storage afterwards. Zero is the "
             "honest record of a run that stayed inside its ceiling; None means no ledger "
             "counted: the run's loop never started, or it ran with no ledger at all."
+        ),
+    )
+    case_set: CaseSetRef | None = Field(
+        default=None,
+        description=(
+            "The named, versioned case set this run was launched against, or None for a run launched over its "
+            "template's cases directly (or stored before case sets existed). A label on test_case_ids, which the "
+            "run froze from it: the case-set identity is still those ids. History labels an epoch by it."
         ),
     )
     cell_timeout_s: float | None = Field(
@@ -4631,6 +4748,9 @@ __all__ = [
     "ApparatusSettingValue",
     "MeteredCallOrigin",
     "CellTimeoutOrigin",
+    "CaseSet",
+    "CaseSetRef",
+    "case_set_doc_id",
     "CANDIDATE_SPEAKER",
     "DEFAULT_JUDGE_TEMPERATURE",
     "EVAL_SCHEMA_VERSION",

@@ -18,6 +18,7 @@ from pydantic import ValidationError
 from threetears.evals.contracts.base import EvalBaseModel, EvalDocumentModel
 from threetears.evals.contracts.models import (
     EVAL_SCHEMA_VERSION,
+    CaseSet,
     CassetteKey,
     EvalCassette,
     EvalResult,
@@ -351,6 +352,7 @@ def _out_of_run_spend() -> OutOfRunSpend:
 #: than slipping past both refusals.
 _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
     "CalibrationRating": make_calibration_rating,
+    "CaseSet": lambda: CaseSet(scope_id="uni-1", name="smoke", version=1, template_id="t-1", test_case_ids=["c-1"]),
     "CatalogRubricDim": make_rubric_dim,
     "EvalAnalysis": make_analysis,
     "EvalAnalysisAttempt": make_analysis_attempt,
