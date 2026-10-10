@@ -339,7 +339,8 @@ so any run of that configuration counts toward it. `compare` sets it from `contr
 What a comparison reports for each arm against the control, per reading. The **delta** is the arm's mean minus
 the control's, over the cases the test read. Its **interval** is where the true difference plausibly lies, widened so
 that every interval tested together holds at once, 95% of the time. The **p (Holm-adjusted)** is the p-value
-corrected for every comparison in its family; a verdict reads only that p. See
+corrected for every comparison in its family. A separation needs that p below 0.05 and an interval that excludes
+zero. See
 [reading a comparison](reading-reports.md#reading-a-comparison).
 
 #### Verdict

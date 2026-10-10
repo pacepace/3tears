@@ -236,6 +236,12 @@ def _cases_phrase(reading: ResolvedReading) -> str:
     return f"{reading.n_cases} case{'' if reading.n_cases == 1 else 's'}"
 
 
+def _fewer_cases(a: ResolvedReading, b: ResolvedReading) -> int | None:
+    """The smaller of two readings' case counts — the n a pair of them can be read on — or None where either
+    recorded none (a reading with no independent cases counted states no n rather than its observations)."""
+    return None if a.n_cases is None or b.n_cases is None else min(a.n_cases, b.n_cases)
+
+
 def _interval(reading: ResolvedReading, *, banded: bool = True) -> dict[str, Any]:
     """A reading's interval in the payload's ``ci`` shape, or a refusal when it has none.
 
@@ -350,9 +356,11 @@ def _delta_table(ref: DeltaTableRef, surface: DecisionSurface, labels: dict[str,
                 "delta": b.mean - a.mean,
                 "materiality": materiality(facts.materiality_threshold if facts else None, b.mean - a.mean),
                 "scale": scale,
-                # The smaller arm bounds any test the pair could support; the bundle carries no
-                # paired statistic, so no test was run and the row says so through `significant`.
-                "n": min(a.n, b.n),
+                # Cases, never observations: a case is the draw every interval and test reads, and a
+                # case judged three times is one. The smaller arm bounds any test the pair could
+                # support; the bundle carries no paired statistic, so no test was run and the row
+                # says so through `significant`.
+                "n": _fewer_cases(a, b),
                 "paired": False,
                 "d_z": None,
                 "p": None,
@@ -376,14 +384,14 @@ def _distribution_group(reading: ResolvedReading, label: str) -> dict[str, Any]:
     """
     interval = _interval(reading, banded=False)
     if not _below_band_floor(reading):
-        return {"label": label, "ci": interval, "n": reading.n}
+        return {"label": label, "ci": interval, "n": reading.n_cases}
     if not reading.case_means or len(reading.case_means) < 2:
         raise UnresolvableReference(
             f"reference names {reading.measure_id!r} at cell {reading.cell_ref!r}, which has "
             f"{_cases_phrase(reading)}, fewer than the {stats.SMALL_N_BAND_FLOOR} an interval band is drawn from, "
             "and its per-case values were not recorded — this analysis was stored before they were"
         )
-    return {"label": label, "samples": list(reading.case_means), "n": reading.n}
+    return {"label": label, "samples": list(reading.case_means), "n": reading.n_cases}
 
 
 def _distribution(ref: DistributionRef, surface: DecisionSurface, labels: dict[str, str]) -> dict[str, Any]:
@@ -403,7 +411,7 @@ def _null_result(ref: NullResultRef, surface: DecisionSurface, labels: dict[str,
     return {
         "caption": ref.caption,
         "groups": [
-            {"label": labels[reading.cell_ref], "ci": _interval(reading), "n": reading.n} for reading in readings
+            {"label": labels[reading.cell_ref], "ci": _interval(reading), "n": reading.n_cases} for reading in readings
         ],
         "metric": surface.measure_heading(ref.measure_id, ref.reading),
         "unit": readings[0].unit,
@@ -418,7 +426,7 @@ def _breakdown(ref: BreakdownRef, surface: DecisionSurface, labels: dict[str, st
     return {
         "caption": ref.caption,
         "parts": [
-            {"label": surface.measure_heading(part.measure_id), "value": part.mean, "n": part.n} for part in parts
+            {"label": surface.measure_heading(part.measure_id), "value": part.mean, "n": part.n_cases} for part in parts
         ],
         "unit": _shared_unit(parts, "breakdown"),
     }
@@ -471,7 +479,7 @@ def _attribution(
             "delta": b.mean - a.mean,
             "a": a.mean,
             "b": b.mean,
-            "n": min(a.n, b.n),
+            "n": _fewer_cases(a, b),
         }
     unit = _shared_unit(readings, "attribution")
     # Whether the remainder may be stated is the one rule the bundle's divergence lens also asks —
@@ -678,7 +686,7 @@ def _position_point(
         return None, (
             f"{_cases_phrase(reading)} there, fewer than the {stats.SMALL_N_BAND_FLOOR} an interval is drawn from"
         )
-    return {"position": position.key, "ci": _interval(reading), "n": reading.n}, ""
+    return {"position": position.key, "ci": _interval(reading), "n": reading.n_cases}, ""
 
 
 def _quality_bar(surface: DecisionSurface, quality: ReadingRef) -> float | None:
@@ -726,7 +734,7 @@ def _sweep_ranking(
     configs, dimensions = _sweep_configs(surface, cells, variant_index)
 
     unsorted: list[dict[str, Any]] = [
-        {"config": config, "ranked_value": r.mean, "secondary_value": s.mean, "n": r.n}
+        {"config": config, "ranked_value": r.mean, "secondary_value": s.mean, "n": r.n_cases}
         for config, r, s in zip(configs, ranked, secondary, strict=True)
     ]
     rows = sorted(unsorted, key=lambda row: -row["ranked_value"])

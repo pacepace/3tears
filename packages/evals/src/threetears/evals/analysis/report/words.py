@@ -186,7 +186,7 @@ EVIDENCE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("arm", "Arm"),
     ("measure", "Measure"),
     ("value", "Value"),
-    ("n", "n"),
+    ("cases", "Cases"),
     ("spread", "Spread"),
 )
 
@@ -214,7 +214,9 @@ def evidence_rows(
             "arm": arm(row.cell_ref),
             "measure": surface.measure_heading(row.measure_id, row.reading),
             "value": row.value,
-            "n": row.n,
+            # Cases, never observations: the count every interval is read over. An analysis stored before rows
+            # recorded it shows none rather than its observation count under this heading.
+            "cases": row.n_cases,
             "spread": row.dispersion,
         }
         for row in evidence

@@ -168,9 +168,9 @@ class TestTheCampaignFamilyHoldsTheFamilyWiseError:
         """One reading of four moves by d_z = 1.2 at 10 cases; the other three do not move.
 
         The family error over the three unmoved readings stays at most α; the moved one is found at
-        least as often as a Bonferroni test at α/4 finds it (Holm's first step IS that test, and its later
-        steps only add rejections), computed from the noncentral t; and it is called a regression — the
-        wrong direction — at most α/2 of the time.
+        least as often as a Bonferroni test at α/4 finds it, computed from the noncentral t (a separation needs
+        its Bonferroni interval to exclude 0, which is that test, #597); and it is called a regression — the
+        wrong direction — at most α/2 of the time. No separation is ever read beside an interval reaching 0.
         """
         rng = random.Random("family-partial-null")
         design = ClusteredDesign(n_cases=10, repeats=3, between_case_sd=1.0, repeat_sd=0.5)
@@ -179,6 +179,12 @@ class TestTheCampaignFamilyHoldsTheFamilyWiseError:
         for _ in range(self.REPLICATES):
             family = _campaign_family(rng, design, contrasts=1, readings=4, reading_correlation=0.5, effects=effects)
             verdicts = family_verdicts(family)
+            assert not any(
+                v.verdict in ("improved", "regressed")
+                and v.interval is not None
+                and v.interval[0] <= 0 <= v.interval[1]
+                for v in verdicts
+            ), "a separation beside an interval that includes 0 (#597)"
             found += verdicts[0].verdict == "improved"
             wrong_way += verdicts[0].verdict == "regressed"
             null_errors += any(

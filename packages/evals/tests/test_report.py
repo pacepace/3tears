@@ -44,6 +44,7 @@ from threetears.evals.analysis import (
     report_json_schema,
     report_markdown,
 )
+from threetears.evals.analysis.references import resolve_reading
 from threetears.evals.analysis.report import SCHEMA_PATH
 from threetears.evals.contracts.campaign import EvalAnalysis, Viz
 from threetears.evals.contracts.errors import NotFoundError
@@ -88,7 +89,7 @@ class TestTheToyAnalysisSerializesThreeWays:
 
         assert markdown.startswith(f"# {analysis.document.headline}\n")
         assert f"### 1. {finding.title}" in markdown
-        assert "**Evidence**" in markdown and "| Arm | Measure | Value | n | Spread |" in markdown
+        assert "**Evidence**" in markdown and "| Arm | Measure | Value | Cases | Spread |" in markdown
         chart = _chart(report)
         assert f"**Chart: {chart.title}** (delta_table)" in markdown
         assert "the wide chunk is the slower one" in markdown
@@ -165,7 +166,24 @@ class TestTheToyReportsContent:
 
         assert table.finding == 0
         assert [row["value"] for row in table.rows] == [row.value for row in evidence]
-        assert [row["n"] for row in table.rows] == [row.n for row in evidence]
+        assert [row["cases"] for row in table.rows] == [row.n_cases for row in evidence]
+
+    async def test_the_delta_tables_n_is_the_smaller_arms_cases_never_its_observations(
+        self, toy: tuple[Any, EvalAnalysis, Report]
+    ) -> None:
+        _, analysis, _ = toy
+        chart = analysis.resolutions[0].chart
+        assert chart is not None and chart.type == "delta_table"
+        surface = analysis.decision_surface
+        for row, ref in zip(chart.payload["rows"], chart.ref["measures"], strict=True):
+            readings = [
+                resolve_reading(surface, chart.ref[side], ref["measure_id"], ref["reading"])
+                for side in ("a_cell", "b_cell")
+            ]
+            assert all(reading.n_cases is not None and reading.n_cases < reading.n for reading in readings), (
+                "the toy repeats each case"
+            )
+            assert row["n"] == min(reading.n_cases or 0 for reading in readings)
 
     async def test_the_chart_is_its_intent_never_a_renderers_spec(self, toy: tuple[Any, Any, Report]) -> None:
         _, _, report = toy

@@ -561,7 +561,16 @@ class EvidenceRow(EvalDocumentModel):
             "point estimate, and its evidence is a distribution, which this row cannot carry honestly."
         )
     )
-    n: int = Field(ge=0, description="Samples behind the value, filled by code.")
+    n: int = Field(ge=0, description="Observations behind the value, filled by code: a case judged k times counts k.")
+    n_cases: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Distinct test cases behind the value, filled by code: the independent draws its interval is read "
+            "over, and the count a reader is shown. None on an analysis stored before it, read as not recorded "
+            "(never as `n`, which counts observations)."
+        ),
+    )
     dispersion: str = Field(description="Spread of the value, filled by code.")
     judged_tier: JudgedEvidenceTier | None = Field(
         default=None,

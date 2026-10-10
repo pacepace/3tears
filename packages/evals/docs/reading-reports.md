@@ -116,8 +116,9 @@ the control on each reading, under one rig.
 - **Delta, the means, and "Cases tested"** are all over the cases the test read. A case only one arm ran is
   left out of a paired test, and the row counts it, so a mean here can differ from the cell's own mean.
 - **The interval on delta** comes from the same test, at `1 − 0.05/m` for a family of `m` tested rows
-  (Bonferroni). All of a family's intervals cover together at least 95% of the time. One that excludes zero
-  always comes with a separation. A separation Holm's later steps find can still touch zero.
+  (Bonferroni). All of a family's intervals cover together at least 95% of the time. A separation needs both
+  an adjusted p below 0.05 and an interval that excludes zero, so the two never disagree: a row Holm's later
+  steps would separate while its interval still touches zero reads not separated, its p below 0.05 notwithstanding.
 - **Hedges' g** is the standardized difference, corrected for small samples. Cohen's d reads 0.88 for a
   true 0.5 at three paired cases; g reads 0.5. There is none at two pairs, where no unbiased estimate exists.
 - **p (Holm-adjusted)** is corrected within the family: one per declared question (the readings on its

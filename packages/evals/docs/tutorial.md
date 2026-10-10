@@ -218,7 +218,7 @@ Each row of the contrasts table compares one arm with the control on one reading
 
 | Verdict | Means | What to do |
 |---|---|---|
-| separated: printed **improved on the control** or **regressed from the control** | the adjusted p is below 0.05 | act on it, unless the row says *immaterial*: real, but smaller than a margin you declared |
+| separated: printed **improved on the control** or **regressed from the control** | the adjusted p is below 0.05 and the interval excludes 0 | act on it, unless the row says *immaterial*: real, but smaller than a margin you declared |
 | **not separated from the control** | the cases could not tell the arms apart | add cases, above all hard ones. It never means "no difference" |
 | **equivalent to the control** | a test showed the difference is inside a margin you declared | treat the arms as interchangeable on this reading. Only this verdict says "good enough", and it needs a margin: see below |
 | **untested** | no test could decide, for example with fewer than two cases on a side | fix what the row names, usually too few cases |

@@ -149,7 +149,12 @@ class BreakdownPart(BaseModel):
     )
     value: float = Field(description="The part's magnitude, in the payload's `unit`.")
     n: int | None = Field(
-        default=None, ge=0, description="Observations behind this part, when the payload counts them."
+        default=None,
+        ge=0,
+        description=(
+            "Test cases behind this part, when the payload counts them; a case judged k times is one."
+            " A payload compiled before 0.66 counted observations here."
+        ),
     )
 
     @field_validator("value")
@@ -342,7 +347,11 @@ class DistributionGroup(BaseModel):
         default=None, description="Pre-binned counts, drawn as a density strip."
     )
     ci: ConfidenceInterval | None = Field(default=None, description="The group's interval — never a spread-free point.")
-    n: int | None = Field(default=None, ge=0, description="Observations behind the group.")
+    n: int | None = Field(
+        default=None,
+        ge=0,
+        description="Test cases behind the group; a case judged k times is one. A payload compiled before 0.66 counted observations here.",
+    )
 
     @field_validator("samples")
     @classmethod
@@ -442,7 +451,11 @@ class NullResultArm(BaseModel):
 
     label: str = Field(min_length=1, description="The arm's name.")
     ci: ConfidenceInterval = Field(description="The arm's interval — this type has nothing to draw without it.")
-    n: int | None = Field(default=None, ge=0, description="Observations behind the arm.")
+    n: int | None = Field(
+        default=None,
+        ge=0,
+        description="Test cases behind the arm; a case judged k times is one. A payload compiled before 0.66 counted observations here.",
+    )
 
 
 class NullResultPayload(_VizPayload):
@@ -546,7 +559,10 @@ class DeltaRow(BaseModel):
     n: int | None = Field(
         default=None,
         ge=0,
-        description="Sample size behind `delta`/`p`, when the test has a single one (an unpaired test has two).",
+        description=(
+            "Test cases behind `delta`/`p` (the smaller arm's), never observations: a case judged k times is one."
+            " A payload compiled before 0.66 counted observations here."
+        ),
     )
     paired: bool = Field(
         default=False,
@@ -658,7 +674,11 @@ class AttributionMovement(BaseModel):
     delta: float = Field(description="The signed movement from level A to level B, in the payload's `unit`.")
     a: float | None = Field(default=None, description="The measure's value at level A, when the payload states levels.")
     b: float | None = Field(default=None, description="The measure's value at level B, when the payload states levels.")
-    n: int | None = Field(default=None, ge=0, description="Observations behind this movement.")
+    n: int | None = Field(
+        default=None,
+        ge=0,
+        description="Test cases behind this movement (the smaller arm's). A payload compiled before 0.66 counted observations here.",
+    )
 
     @model_validator(mode="after")
     def _the_movement_is_drawable_and_reconciles(self) -> AttributionMovement:
@@ -1169,7 +1189,11 @@ class SweepRow(BaseModel):
         description="The companion measure — held within a tolerance, or free and its range stated. Never absent: the "
         "invariant is that its spread is always stated, and a missing value makes the spread unstatable."
     )
-    n: int | None = Field(default=None, ge=0, description="Observations behind this configuration.")
+    n: int | None = Field(
+        default=None,
+        ge=0,
+        description="Test cases behind this configuration. A payload compiled before 0.66 counted observations here.",
+    )
     label: str | None = Field(
         default=None, description="A name for the configuration, where it has one beyond its levels."
     )
@@ -1470,7 +1494,11 @@ class TimeseriesPoint(BaseModel):
 
     position: str = Field(min_length=1, description="The time position this point sits at — one of `positions`.")
     ci: ConfidenceInterval = Field(description="The estimate and its interval at that position.")
-    n: int | None = Field(default=None, ge=0, description="Observations behind the point.")
+    n: int | None = Field(
+        default=None,
+        ge=0,
+        description="Test cases behind the point. A payload compiled before 0.66 counted observations here.",
+    )
 
 
 class TimeseriesSeries(BaseModel):

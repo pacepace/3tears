@@ -26,7 +26,7 @@ import math
 import random
 from collections.abc import Callable
 
-from threetears.evals.analysis import inter_judge_agreement, judge_drift
+from threetears.evals.analysis import JudgeDriftDimension, inter_judge_agreement, judge_drift
 from threetears.evals.contracts.models import EvalResult, RubricScore, SecondJudge, SecondJudgeScore, SecondJudging
 from packages.evals.tests.factories import make_eval_result
 from packages.evals.tests.simulation_support import TOLERANCE_Z, at_least, at_most, draw_rater_pairs
@@ -80,6 +80,16 @@ def _shifted(rng: random.Random, dim: str, case: str) -> tuple[int, int]:
     return first, first + 1 + rng.choice((-1, 0, 1))
 
 
+def _agrees(row: JudgeDriftDimension) -> bool:
+    """The verdict says what the interval says: ``separated`` exactly when the interval excludes 0, and the adjusted p
+    below α exactly then too (#597)."""
+    if row.interval is None:
+        return row.verdict == "untested" and row.p_adjusted is None
+    excludes = row.interval[0] > 0 or row.interval[1] < 0
+    assert row.p_adjusted is not None
+    return (row.verdict == "separated") is excludes and (row.p_adjusted < _ALPHA) is excludes
+
+
 def _false_separation_rate(
     seed: str,
     draw: Callable[[random.Random, str, str], tuple[int, int]],
@@ -92,6 +102,7 @@ def _false_separation_rate(
     hits = 0
     for _ in range(replicates):
         drift = judge_drift(_results(rng, n_cases, repeats, draw))
+        assert all(_agrees(row) for row in drift.dimensions)
         hits += any(row.verdict == "separated" for row in drift.dimensions)
     return hits / replicates
 
@@ -117,6 +128,7 @@ class TestNoDriftIsCalledDriftAtMostAlpha:
                 return first, first + signs[(dim, case)]
 
             drift = judge_drift(_results(rng, 10, 3, draw))
+            assert all(_agrees(row) for row in drift.dimensions)
             hits += any(row.verdict == "separated" for row in drift.dimensions)
         assert hits / replicates <= at_most(_ALPHA, replicates), f"false separation {hits / replicates:.3f}"
 
@@ -132,6 +144,9 @@ class TestAKnownShiftIsCoveredAndSeparated:
             rows = {row.rubric_dim: row for row in judge_drift(_results(rng, 20, 1, _shifted)).dimensions}
             moved = rows["dim.a"]
             assert moved.interval is not None and moved.interval_level is not None
+            # Before #597's fix 2.8% of these replicates showed a Holm 'separated' beside a Bonferroni interval
+            # reaching 0.
+            assert all(_agrees(row) for row in rows.values())
             covered += moved.interval[0] <= 1.0 <= moved.interval[1]
             separated += moved.verdict == "separated" and (moved.delta or 0) > 0
         nominal = 1 - _ALPHA / 2
@@ -169,9 +184,10 @@ class TestInterJudgeKappaIsTheKnownOne:
 
 
 def test_a_uniform_move_still_states_its_bounds() -> None:
-    """Every case moved by exactly +1: no t interval exists, so the bounded test's interval stands in. It covers +1
-    at 20 cases, where it is still wide enough to reach 0 (the bounded test over differences in ±4 pays for its
-    validity at every n), and excludes 0 by 40."""
+    """Every case moved by exactly +1: no t interval exists, so the bounded test reads both the interval and the
+    verdict (#597). At 20 cases its interval covers +1 but still reaches 0 (the bounded test over differences in ±4
+    pays for its validity at every n), so the reading is 'not separated', never 'separated' beside it; by 40 the
+    interval excludes 0 and the reading separates."""
 
     def uniform(rng: random.Random, dim: str, case: str) -> tuple[int, int]:
         first = rng.choice((1, 2, 3, 4))
@@ -181,7 +197,9 @@ def test_a_uniform_move_still_states_its_bounds() -> None:
         drift = judge_drift(_results(random.Random("uniform"), n_cases, 1, uniform))
         rows = {row.rubric_dim: row for row in drift.dimensions}
         moved = rows["dim.a"]
-        assert moved.verdict == "separated" and moved.interval is not None
+        assert moved.interval is not None
         assert moved.interval[0] <= 1.0 <= moved.interval[1]
         assert (moved.interval[0] > 0) is excludes_zero
+        assert moved.verdict == ("separated" if excludes_zero else "not_separated")
+        assert all(_agrees(row) for row in rows.values())
         assert rows["dim.b"].verdict == "not_separated"
