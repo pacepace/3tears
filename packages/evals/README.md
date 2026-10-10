@@ -463,6 +463,7 @@ receive, an exception you catch, a literal you annotate with — is exported fro
 |---|---|
 | look up a term, or see how the pieces fit | [Concepts](docs/concepts.md) |
 | build a good classifier eval set: the labels, the kinds of case a set needs (boundaries, lookalikes, contrast pairs, context), how many, and how to read the results. Start here if you have not built an eval before | [Designing a classifier eval set](docs/designing-classifier-evals.md) |
+| choose a campaign's design before spending on it: which arms answer your question (an A/B, a grid, a cost frontier), the control, and how many cases and repeats | [Choosing a campaign design](docs/choosing-a-design.md) |
 | run evals from a terminal, or under your own CLI | [The command line](docs/command-line.md) |
 | wire the engine into your app: host, store, kind, launcher, worlds, cassettes | [Adopting the engine](docs/adopting-a-host.md) |
 | know what a launch will cost, and what stops it | [Cost and budgets](docs/cost-and-budgets.md) |

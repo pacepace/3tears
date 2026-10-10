@@ -10,7 +10,8 @@ Each finding is a rule, its reason and an *Evidence:* line; "replicated" means t
 campaigns or arm pairs showed it. The Evidence lines summarise campaigns run in that private application; the
 campaigns themselves are not published. Every "in simulation" figure is reproducible from the package's
 known-answer suite (`packages/evals/tests/test_sim_*.py` and `test_simulated_*.py`, on
-`tests/simulation_support.py`). Terms are as [Concepts](concepts.md) defines them.
+`tests/simulation_support.py`). Terms are as [Concepts](concepts.md) defines them. To choose the arms, the
+control, k and the case count for a question, start with [Choosing a campaign design](choosing-a-design.md).
 **pass^k** is the chance that k attempts at a case all pass: per case C(c, k) / C(n, k) from c passes in
 n ≥ k repeats, averaged over the cases measured that deep (field `pass_hat_k`). It is not pass@k, the chance
 that at least one of k passes.
@@ -22,12 +23,16 @@ readings move. A smaller difference is not a finding. Stability tracks how mecha
 one anchored on an observable order reproduced exactly, and one judging "the right artefact" moved most.
 *Evidence:* agent with tools and retrieval sub-agent, re-runs at n=12 per dimension and at k=1 then k=3, 2 campaigns, 2026-08 and 2026-09, 4 of 6 dimensions within 0.2 and 2 moving 0.5–0.7, latency moving 12%, replicated.
 
-**Add cases before repeats.** k (default 3) measures consistency and cases measure coverage, so five cases at
-k=3 are not fifteen independent draws. The engine computes every reading's interval over the cases, so five
-cases at k=3 get the width of five draws, not fifteen; repeats narrow it only as far as they steady each case.
+**Add cases before repeats, unless the reading is pass^k.** k (default 3) measures consistency and cases
+measure coverage, so five cases at k=3 are not fifteen independent draws. The engine computes every reading's
+interval over the cases, so five cases at k=3 get the width of five draws, not fifteen; repeats narrow it only
+as far as they steady each case.
 At n=5 a paired t-test reaches p < 0.05 only once the observed standardised difference d_z passes about 1.24,
 and it has 80% power only for a true d_z near 1.7, so "not separated" there says almost nothing. Size the bank
-from a measured effect: 80% power needs about 17 cases for d_z ≈ 0.74 and about 34 for d_z ≈ 0.50.
+from a measured effect: 80% power needs about 17 cases for d_z ≈ 0.74 and about 34 for d_z ≈ 0.50. The
+exception is pass^k, and with it the frontier: a case counts toward pass^k only once it has run k times, so set
+k to the depth the question needs first, then add cases
+([Choosing a campaign design](choosing-a-design.md#how-many-cases-how-many-repeats)).
 *Evidence:* agent with tools, two independent arm pairs at n=5, 2026-08, pass^k 0.2 → 0.8 gave p=0.174 and p=0.629, replicated; in simulation (2026-09) a 95% interval over observations from 5 cases × k=3 covered the truth 70.3% of the time, against 94.3% over case means; from 2 to 15 cases at k=1 to 5 the engine's interval over cases covered 95% on average for a mean, every configuration within Monte-Carlo error, and at least 96% for a rate, against as little as 51% and 67% over observations (`tests/test_sim_reading_intervals.py`, 2026-10).
 
 **A small bank misses whole failure classes.** A hand-picked handful covers the cases its author thought of. See
@@ -97,8 +102,9 @@ the word to its own budget, and the engine names a confound when two arms' reaso
 result, not a low score; never retry it as transient.
 *Evidence:* three subjects, 2026-08 to 2026-10, replicated. A classifier parsed 3 of 6 at a 32-token cap with reasoning on, 6 of 6 with it off, and 6 of 6 at a 512 cap for 10–90× the tokens. At effort "low" one model spent 0.28–0.48 of its completion reasoning and another 0.68–1.00. Turning reasoning off cut the agent's p95 time to first action from 163 s to 37 s on one model.
 
-**Change one thing at a time; a judge change voids a before/after.** The engine never pools observations
-across [apparatus classes](concepts.md#apparatus-class).
+**In a before/after, change one thing at a time; a judge change voids it.** The engine never pools
+observations across [apparatus classes](concepts.md#apparatus-class). A grid that varies several levers on
+purpose is a different design ([Choosing a campaign design](choosing-a-design.md#start-from-the-question)).
 *Evidence:* agent with tools, 2026-07, a dimension rose 2.7 → 4.4 when a fix and a judge swap landed together, while the four dimensions judged identically moved between −0.3 and +0.5; ruled unanswerable, single campaign.
 
 **Give every arm the same inputs by construction.** A key-wise overlay leaves keys it omits as they were. The
