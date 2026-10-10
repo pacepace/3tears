@@ -575,12 +575,14 @@ def _frontier(ref: FrontierRef, surface: DecisionSurface, labels: dict[str, str]
             "latency_ms": latency.mean if latency else None,
             "dominated": dominance == "dominated",
             "dominance": dominance,
-            "disqualified": False,
+            # The frontier lens's boundary pillar, copied (#613): an arm that breached a guardrail is drawn crossed.
+            "disqualified": bool(breached),
+            "disqualified_reason": (f"breached {', '.join(breached)} against the control" if breached else None),
         }
         for cell, quality, cost, latency in zip(cells, qualities, costs, latencies, strict=True)
-        for dominance in [
-            None if standings is None else standings.get(require_cell(surface, cell).variant_key, "untested")
-        ]
+        for variant in [require_cell(surface, cell).variant_key]
+        for dominance in [None if standings is None else standings.get(variant, "untested")]
+        for breached in [(surface.frontier_disqualified or {}).get(variant, [])]
     ]
     cost_unit = surface.measures[cost_id].unit if cost_id in surface.measures else None
     return {

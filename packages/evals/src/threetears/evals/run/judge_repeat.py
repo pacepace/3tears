@@ -46,7 +46,7 @@ from threetears.evals.contracts.models import (
     RepeatedScore,
 )
 from threetears.evals.contracts.offload import run_blocking
-from threetears.evals.contracts.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
+from threetears.evals.contracts.out_of_run import AdmittedCall, OutOfRunBudget, OutOfRunPurpose, PlannedCall
 from threetears.evals.contracts.provider import JSON_OBJECT_RESPONSE_FORMAT
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS
 from threetears.evals.run.judge_service import JudgeService, judge_clients_for_run
@@ -141,23 +141,29 @@ class JudgeRepeatReport(EvalBaseModel):
     cap_usd: float | None
 
 
-class _BudgetedJudgeClient:
-    """A judge client whose every call goes through the repeat's out-of-run budget, as admitted.
+class BudgetedJudgeClient:
+    """A judge client whose every call goes through an out-of-run budget, as admitted.
 
     The judge service is handed these in place of the host's clients, so the call
     :func:`~threetears.evals.run.judge.run_judge_llm` sends — first attempt and parse retry alike — is made
-    only if an admission priced for exactly that prompt is waiting, and is ledgered however it ends.
+    only if an admission priced for exactly that prompt is waiting, and is ledgered however it ends. A judge
+    repeat and a second judge (:mod:`threetears.evals.run.judge_second`) both send through it, each under its
+    own ledger purpose.
     """
 
-    def __init__(self, inner: BoundCompletionClient, budget: OutOfRunBudget) -> None:
+    def __init__(
+        self, inner: BoundCompletionClient, budget: OutOfRunBudget, purpose: OutOfRunPurpose = "judge"
+    ) -> None:
         """Wrap ``inner`` so its calls are made through ``budget``.
 
         Args:
             inner: The host's judge client, which this owns from here and releases.
-            budget: The repeat's budget.
+            budget: The budget the calls are admitted against.
+            purpose: The ledger purpose each call is admitted and written under.
         """
         self._inner = inner
         self._budget = budget
+        self._purpose: OutOfRunPurpose = purpose
         self._pending: list[AdmittedCall] = []
 
     @property
@@ -176,7 +182,7 @@ class _BudgetedJudgeClient:
         Raises:
             ValidationFailedError: See :meth:`OutOfRunBudget.admit`.
         """
-        admitted = self._budget.admit(self._inner, "judge", calls)
+        admitted = self._budget.admit(self._inner, self._purpose, calls)
         self._pending.extend(admitted)
         return admitted
 
@@ -286,7 +292,7 @@ class _Prepared:
     service: JudgeService
     contexts: list[JudgeContext]
     #: Per budgeted client, every call it may make, each as many times as one dim can be attempted.
-    calls: list[tuple[_BudgetedJudgeClient, list[PlannedCall]]]
+    calls: list[tuple[BudgetedJudgeClient, list[PlannedCall]]]
 
 
 async def _prepare(
@@ -313,15 +319,15 @@ async def _prepare(
     )
     inner = judge_clients_for_run(clients, collected.judge_model)
 
-    def budgeted(model: str | None, temperature: float | None) -> _BudgetedJudgeClient:
-        return _BudgetedJudgeClient(inner(model, temperature), budget)
+    def budgeted(model: str | None, temperature: float | None) -> BudgetedJudgeClient:
+        return BudgetedJudgeClient(inner(model, temperature), budget)
 
     configs: dict[str, JudgeConfig] = {}
     for planned in collected.planned:
         configs.update(planned.inputs.configs)
     service = JudgeService(client_factory=budgeted, configs=configs, failure_describer=host.failure_describer)
     contexts: list[JudgeContext] = []
-    by_client: dict[int, tuple[_BudgetedJudgeClient, list[PlannedCall]]] = {}
+    by_client: dict[int, tuple[BudgetedJudgeClient, list[PlannedCall]]] = {}
     for planned in collected.planned:
         context = build_judge_context(
             template=planned.inputs.template,
@@ -335,15 +341,17 @@ async def _prepare(
             template=planned.inputs.template, judge_service=service, context=context, only=frozenset(planned.dims)
         )
         for request in requests:
-            client: _BudgetedJudgeClient = service.client_for(request)
-            by_client.setdefault(id(client), (client, []))[1].extend([_planned_call(request)] * JUDGE_CALL_ATTEMPTS)
+            client: BudgetedJudgeClient = service.client_for(request)
+            by_client.setdefault(id(client), (client, []))[1].extend(
+                [planned_judge_call(request)] * JUDGE_CALL_ATTEMPTS
+            )
     return _Prepared(
         collected=collected, budget=budget, service=service, contexts=contexts, calls=list(by_client.values())
     )
 
 
-def _planned_call(request: JudgeRequest) -> PlannedCall:
-    """The call a judge request sends, as :func:`~threetears.evals.run.judge.run_judge_llm` sends it."""
+def planned_judge_call(request: JudgeRequest) -> PlannedCall:
+    """The call a judge request sends — what an admission prices — as :func:`~threetears.evals.run.judge.run_judge_llm` sends it."""
     return PlannedCall(
         system=request.system_prompt, user=request.user_prompt, response_format=JSON_OBJECT_RESPONSE_FORMAT
     )
@@ -577,9 +585,11 @@ def _record(storage: EvalStorage, result_id: str, scope_id: str, repeat: JudgeRe
 
 
 __all__ = [
+    "BudgetedJudgeClient",
     "JudgeRepeatEstimate",
     "JudgeRepeatReport",
     "JudgeRepeatSkip",
     "estimate_judge_repeat",
+    "planned_judge_call",
     "repeat_judge_scores",
 ]

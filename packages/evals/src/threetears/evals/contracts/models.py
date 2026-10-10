@@ -166,6 +166,16 @@ each judged guardrail (a boundary rubric dimension) is held to. A campaign, or a
 stored before it carries none and reads as declaring none: its judged guardrails are held at zero change, exactly
 as they were decided then, so no stored decision moves.
 
+**Within v8, not a bump**: ``EvalResult.judge_seconds`` joined as an OPTIONAL field (#646, #597) — a second judge's
+scores of the result's stored evidence (:class:`SecondJudging`), each beside the first score it pairs with. A result
+stored before it carries none and reads as "no second judge was asked", which is what it means: no agreement and no
+drift is read from it, never a zero.
+
+**Within v8, not a bump**: ``DecisionSurface.frontier_disqualified`` joined as an OPTIONAL field (#613) — the arms the
+frontier disqualified on its boundary pillar, each with the guardrail dimensions it breached. A surface frozen before
+it carries None and reads as "not recorded": its frontier chart marks no arm disqualified, as it did when frozen,
+because the frontier then disqualified none.
+
 **Within v8, not a bump**: ``EvalRun.declared_margins`` joined as an OPTIONAL field (#698) — the margins a launch
 declared on core rate measures (accuracy). A run stored before it carries none and reads as declaring none, so no
 comparison over it reads a margin it never declared.
@@ -4247,6 +4257,125 @@ class JudgeRepeat(EvalDocumentModel):
         return scores
 
 
+class SecondJudge(EvalDocumentModel):
+    """A judge other than the one a run was scored by: a model, the prompt per dimension, and a temperature.
+
+    The three things a judge's identity is made of (:class:`~threetears.evals.analysis.JudgeKey`), named for a
+    second opinion on stored evidence (:func:`~threetears.evals.run.ask_second_judge`). Every dimension is sent to
+    ``model``, whatever model a prompt's config names: the second judge is the one named here.
+    """
+
+    model: str = Field(min_length=1, description="The model every dimension is sent to.")
+    config_ids: dict[DimName, str] | None = Field(
+        default=None,
+        description=(
+            "dim -> the versioned JudgeConfig whose prompt asks for that dimension. None = the prompts the run "
+            "recorded, so only the model (and the temperature, when set) differ. A dimension absent from a map "
+            "given here is asked with the built-in prompt."
+        ),
+    )
+    temperature: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=2.0,
+        description=(
+            "The temperature every call is requested at. None = what each dimension's prompt asks for (its "
+            "config's temperature, else the default every unconfigured dimension is judged at). Each score "
+            "records what was actually sent."
+        ),
+    )
+
+
+class SecondJudgeScore(EvalDocumentModel):
+    """One dimension's stored judge score beside a second judge's answer to the same question.
+
+    The pair inter-judge agreement and judge drift are read from. Both halves are carried here, as a
+    :class:`RepeatedScore` carries its pair, so a re-judge that later rewrites the result's score does not split it.
+    """
+
+    dim: DimName = Field(min_length=1, description="The dimension asked.")
+    scale: RubricScale = Field(description="The scale the first score was on, and the second judge was asked on.")
+    first_score: int = Field(description="The score the result held on the dimension when the second judge was asked.")
+    first_served_model: str | None = Field(
+        description="The model that served the first score, as its response named it; None when it named none."
+    )
+    first_judge_config_id: str | None = Field(
+        description="The versioned JudgeConfig that asked for the first score; None = the built-in prompt."
+    )
+    first_judge_temperature: JudgeTemperature | None = Field(
+        default=None, description="The temperature the first score was sent at; None when it recorded none."
+    )
+    second: RubricScore | None = Field(
+        default=None, description="The second judge's score, when it scored the dimension."
+    )
+    error: str | None = Field(default=None, description="Why the second judge's call failed, when it did.")
+    cannot_tell: ModelProse | None = Field(
+        default=None, description="The second judge's reason, when it answered it could not score the dimension."
+    )
+
+    @model_validator(mode="after")
+    def _one_answer_on_the_scale(self) -> Self:
+        """Refuse a pair with no second answer or two, a first score off its scale, or a second on another dim or scale.
+
+        Raises:
+            ValueError: Not exactly one of ``second``, ``error`` and ``cannot_tell`` is set, ``first_score`` is
+                off ``scale``, or ``second`` scores another dimension or scale.
+        """
+        answers = [name for name in ("second", "error", "cannot_tell") if getattr(self, name) is not None]
+        if len(answers) != 1:
+            raise ValueError(
+                f"a second judge's score carries exactly one of second, error and cannot_tell; got {answers}"
+            )
+        low, high = SCALES[self.scale].scores
+        if not low <= self.first_score <= high:
+            raise ValueError(f"first_score {self.first_score} is off the {self.scale} scale [{low}, {high}]")
+        if self.second is not None and (self.second.dim != self.dim or self.second.scale != self.scale):
+            raise ValueError(
+                f"the second judge scored {self.second.dim!r} on {self.second.scale!r}, not {self.dim!r} on {self.scale!r}"
+            )
+        return self
+
+
+class SecondJudging(EvalDocumentModel):
+    """A second judge's scores of one result's stored evidence, recorded beside the scores the run's judge gave.
+
+    A measurement of the JUDGE — how far a second judge agrees with the first (inter-judge agreement), or how far
+    a changed judge moves the scores (drift) — never a change to the result: the scores every lens reads stay the
+    ones the cell was judged with, and this entry is the only place the second judge's answers live.
+
+    **Its spend is not here, and never on the result's ``cost_usd``.** Each call is priced before it is made and
+    written to the out-of-run ledger under purpose ``second_judge``, stamped with the run — measurement cost on its
+    own line.
+    """
+
+    judged_at: str = Field(default_factory=utc_now_iso)
+    pass_id: str = Field(
+        min_length=1,
+        description="The operation that asked: every result one pass sampled carries the same id, and its own sample.",
+    )
+    judge: SecondJudge = Field(description="The second judge, as the operation named it.")
+    sample_fraction: float = Field(
+        gt=0.0, le=1.0, description="The share of the run's judgeable results the pass sampled."
+    )
+    sample_seed: int = Field(description="The seed the sample was drawn with, so it can be drawn again.")
+    scores: list[SecondJudgeScore] = Field(
+        min_length=1, description="One entry per dimension asked, in dimension order."
+    )
+    judge_config_ids: dict[DimName, str] = Field(
+        default_factory=dict,
+        description="dim -> the versioned JudgeConfig that asked the second judge. Absent = the built-in prompt.",
+    )
+
+    @field_validator("scores")
+    @classmethod
+    def _each_dim_once(cls, scores: list[SecondJudgeScore]) -> list[SecondJudgeScore]:
+        """Refuse a pass asking one dimension twice of one result."""
+        dims = [score.dim for score in scores]
+        if repeated := sorted({dim for dim in dims if dims.count(dim) > 1}):
+            raise ValueError(f"a second judge asks each dimension once; repeated: {repeated}")
+        return scores
+
+
 class EvalResult(EvalDocumentModel):
     """One test case x one model x one k-iteration.
 
@@ -4381,6 +4510,10 @@ class EvalResult(EvalDocumentModel):
     # Repeats of this result's judge scores, oldest first — see :class:`JudgeRepeat`. A measurement
     # of the judge, never a change to the scores above. Empty for a result nobody repeated.
     judge_repeats: list[JudgeRepeat] = Field(default_factory=list)
+
+    # A second judge's scores of this result's evidence, oldest first — see :class:`SecondJudging`. A measurement of
+    # the judge, never a change to the scores above. Empty for a result no second judge was asked about.
+    judge_seconds: list[SecondJudging] = Field(default_factory=list)
 
     # Cost. The blended spend over ``cost_roles``, derived from ``usage`` by
     # :func:`threetears.evals.contracts.usage_capture.blended_cost` at every exit of a cell.
@@ -4927,6 +5060,9 @@ __all__ = [
     "JudgeConfigTombstone",
     "RubricProposal",
     "RepeatedScore",
+    "SecondJudge",
+    "SecondJudgeScore",
+    "SecondJudging",
     "RubricScore",
     "RunCompleteness",
     "SchemaVersion",

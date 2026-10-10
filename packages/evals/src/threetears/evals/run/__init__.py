@@ -120,6 +120,13 @@ from threetears.evals.run.judge_repeat import (
     estimate_judge_repeat,
     repeat_judge_scores,
 )
+from threetears.evals.run.judge_second import (
+    SecondJudgeEstimate,
+    SecondJudgeReport,
+    SecondJudgeSkip,
+    estimate_second_judge,
+    ask_second_judge,
+)
 from threetears.evals.run.rejudge import reproducible_judge_inputs
 from threetears.evals.run.runner import (
     CellContext,
@@ -326,4 +333,9 @@ __all__ = [
     "JudgeRepeatReport",
     "JudgeRepeatSkip",
     "estimate_judge_repeat",
+    "SecondJudgeEstimate",
+    "SecondJudgeReport",
+    "SecondJudgeSkip",
+    "estimate_second_judge",
+    "ask_second_judge",
 ]

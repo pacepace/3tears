@@ -58,6 +58,9 @@ from threetears.evals.analysis.agreement import (
     judge_evidence_tiers,
     judge_key,
     judge_self_agreement,
+    InterJudgeAgreement,
+    InterJudgeDimension,
+    inter_judge_agreement,
     tier_for_judges,
 )
 from threetears.evals.contracts.evidence_tiers import (
@@ -68,6 +71,7 @@ from threetears.evals.contracts.evidence_tiers import (
     JudgedEvidenceTier,
     JudgeEvidenceTier,
 )
+from threetears.evals.analysis.judge_drift import JudgeDrift, judge_drift
 from threetears.evals.analysis.arms import arm_names, surface_order
 from threetears.evals.analysis.contention import (
     contended_latency_sentence,
@@ -120,6 +124,7 @@ from threetears.evals.analysis.stats import (
     LevelDifference,
     clustered_standard_error,
     composite_significance,
+    contrast_samples,
     difference_interval,
     equivalence_untested_reason,
     exact_decimal,
@@ -234,7 +239,7 @@ from threetears.evals.contracts.usage_capture import (
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.contracts.host.measures import MeasureRegistry
     from threetears.evals.contracts.campaign import EvalCampaign
-    from threetears.evals.contracts.models import EvalCaseStratum, EvalRun
+    from threetears.evals.contracts.models import EvalCaseStratum, EvalRun, SecondJudge
 
 
 class CampaignReadStore(Protocol):
@@ -1369,6 +1374,64 @@ class JudgedMeasure(EvalDocumentModel):
         default_factory=list,
         description="One entry per cell carrying a score on this dimension, ordered by (variant_key, apparatus_class_id).",
     )
+    second_judges: list[InterJudgeDimension] = Field(
+        default_factory=list,
+        description=(
+            "How far each second judge asked about the member runs agreed with their judge on this dimension — n, exact "
+            "agreement, kappa and its bounds (`inter_judge_agreement`), beside the scores it qualifies. Empty when no "
+            "second judge was asked: agreement between judges is then unmeasured, not perfect."
+        ),
+    )
+
+
+class JudgeIdentityLevel(EvalDocumentModel):
+    """One judge the member runs were scored by, as each run recorded it at launch, and the runs and arms under it."""
+
+    judge_model: str = Field(
+        min_length=1, description="The run's judge pin: the model every unconfigured dim was sent to."
+    )
+    judge_config_ids: dict[str, str] = Field(
+        default_factory=dict,
+        description="dim -> the versioned JudgeConfig the run pinned; absent = the built-in prompt.",
+    )
+    judge_temperature: float | None = Field(
+        default=None, description="The temperature unconfigured dims were requested at; None = not recorded."
+    )
+    run_ids: list[str] = Field(min_length=1, description="The member runs judged this way, sorted.")
+    variant_keys: list[str] = Field(default_factory=list, description="The arms those runs measured, sorted.")
+
+
+class JudgeDriftLink(EvalDocumentModel):
+    """A drift reading that spans a judge change: evidence of one side re-scored by the other side's judge."""
+
+    from_level: int = Field(ge=0, description="The index in `levels` whose runs' evidence was re-scored.")
+    to_level: int = Field(ge=0, description="The index in `levels` whose judge re-scored it.")
+    run_ids: list[str] = Field(min_length=1, description="The runs whose stored evidence was re-scored, sorted.")
+    pass_ids: list[str] = Field(min_length=1, description="The second-judge passes read, sorted.")
+    drift: JudgeDrift = Field(description="How far each dimension moved between the two judges on the same evidence.")
+
+
+class JudgeChange(EvalDocumentModel):
+    """Whether the member runs were judged by more than one judge, which, and the drift readings that span the change."""
+
+    levels: list[JudgeIdentityLevel] = Field(
+        default_factory=list,
+        description=(
+            "Each judge the judged member runs recorded, ordered by model, configs and temperature. More than one is a "
+            "judge change: a judged difference between arms on different levels may be the judge, not the subject."
+        ),
+    )
+    drift_links: list[JudgeDriftLink] = Field(
+        default_factory=list,
+        description=(
+            "Drift readings among the member runs that re-scored one level's evidence under another level's judge. "
+            "Empty when none exists — then nothing measured how far the judge change alone moves the scores."
+        ),
+    )
+    sentence: str | None = Field(
+        default=None,
+        description="The sentence to quote about the change; None when every judged member run had one judge.",
+    )
 
 
 class TokenRollup(EvalDocumentModel):
@@ -2398,6 +2461,33 @@ class AnalysisContextBundle(EvalDocumentModel):
             "finding citing one stands on it."
         ),
     )
+    inter_judge_agreement: InterJudgeAgreement = Field(
+        default_factory=InterJudgeAgreement,
+        description=(
+            "How a second judge's scores of the member runs' stored evidence agreed with their judge's, per judged "
+            "dimension, first judge and second judge: n, distinct results, exact agreement, and kappa "
+            "(quadratic-weighted on 1-5, unweighted on pass/fail) with its confidence bounds — read exactly as "
+            "`judge_agreement` is. An undefined kappa says why, never 0. Empty when no second judge was asked. Each "
+            "judged dimension's rows are also on its `judged_measures` entry."
+        ),
+    )
+    judge_drift: JudgeDrift = Field(
+        default_factory=JudgeDrift,
+        description=(
+            "How far each judged dimension's scores moved when a second judge re-scored the member runs' stored "
+            "evidence: the movement over cases, its interval, and separated / not separated / untested, Holm-adjusted "
+            "over the dimensions. It detects movement between two judges, never which judge is right."
+        ),
+    )
+    judge_change: JudgeChange = Field(
+        default_factory=JudgeChange,
+        description=(
+            "Each judge the judged member runs were scored by (model pin, configs, temperature), the runs and arms "
+            "under each, and the drift readings that span a change. When there is more than one, quote `sentence`: a "
+            "judged difference between arms judged differently may be the judge's, and where `drift_links` is empty "
+            "nothing measured how much."
+        ),
+    )
     goal_check_proofs: list[GoalCheckProofReading] = Field(
         default_factory=list,
         description=(
@@ -3308,8 +3398,9 @@ def _scalar_leaves(model: BaseModel) -> Iterator[tuple[str, float | str]]:
 #: and walking it would pool that as a second cost observation of the cell, beside the prose
 #: of its timestamp, prior error and model reported as measurements the registry lost. A repeat
 #: of the judge's scores is a measurement of the JUDGE, read by ``judge_self_agreement``; walking
-#: it would pool a repeat's score as a second observation of the candidate's cell.
-RECORD_CARRIERS: frozenset[str] = frozenset({"judge_rescores", "judge_repeats"})
+#: it would pool a repeat's score as a second observation of the candidate's cell. A second judge's scores are the
+#: same: a measurement of the judges, read by ``inter_judge_agreement`` and ``judge_drift``.
+RECORD_CARRIERS: frozenset[str] = frozenset({"judge_rescores", "judge_repeats", "judge_seconds"})
 
 
 def _carrier_leaves(result: EvalResult, *, profile: HostProfile) -> Iterator[tuple[str, float | str, bool, str, str]]:
@@ -7180,6 +7271,14 @@ def assemble_context_bundle(
             archived_run_ids=None,
             rubric_threshold=profile.bars.pass_threshold(campaign.behavior),
             profile=profile,
+            # The boundary pillar: each contestant's guardrail dimensions held against the campaign's control arm,
+            # at the margins it declares, by the rule the bundle's guardrails are decided by (#613).
+            control_variant_key=design.control_arm.variant_key if design.control_arm is not None else None,
+            guardrail_margins=(
+                {entry.dimension: entry.margin for entry in campaign.declared_design.guardrail_margins}
+                if campaign.declared_design is not None
+                else None
+            ),
         ),
         frontier_bar_withheld=frontier_bar_withheld,
         telemetry=_telemetry_rollup(runs, results, budget, profile=profile),
@@ -7252,6 +7351,9 @@ def assemble_context_bundle(
     bundle.judge_evidence_tiers = judge_evidence_tiers(
         bundle.judge_agreement, bundle.judge_self_agreement, _judged_keys(results)
     )
+    bundle.inter_judge_agreement = inter_judge_agreement(results)
+    bundle.judge_drift = judge_drift(results)
+    bundle.judge_change = _judge_change(runs, results_by_run)
     bundle.goal_check_proofs = goal_check_proofs_of(runs, results)
     # Judged quality and the bars, per cell. Both read the cell algebra's own grouping, so every
     # per-arm number here describes observations the bundle already calls one arm, and neither
@@ -7264,9 +7366,18 @@ def assemble_context_bundle(
         contended_ids,
         declared=campaign.declared_design is not None and campaign.declared_design.measure_latency,
     )
-    bundle.judged_measures = _judged_measures(
-        projection.records, results_by_cell, campaign.declared_design, tiers=bundle.judge_evidence_tiers
-    )
+    bundle.judged_measures = [
+        measure.model_copy(
+            update={
+                "second_judges": [
+                    row for row in bundle.inter_judge_agreement.dimensions if row.rubric_dim == measure.name
+                ]
+            }
+        )
+        for measure in _judged_measures(
+            projection.records, results_by_cell, campaign.declared_design, tiers=bundle.judge_evidence_tiers
+        )
+    ]
     bundle.bar_adjudications = _bar_adjudications(
         campaign.behavior,
         campaign.declared_design,
@@ -8255,14 +8366,10 @@ def _test_samples(
     of a contrast, a comparison's and a guardrail's alike.
 
     Returns:
-        ``(control sample, contrast sample, paired)``, the two aligned by case when paired.
+        ``(control sample, contrast sample, paired)``, the two aligned by case when paired
+        (:func:`~threetears.evals.analysis.stats.contrast_samples`, the rule the frontier's boundary pillar reads too).
     """
-    shared = sorted(set(control_values) & set(contrast_values))
-    paired = len(shared) >= 2
-    # Unpaired, each side in its cases' sorted order too: a bounded test bets in an order fixed before the values.
-    a = [control_values[case] for case in (shared if paired else sorted(control_values))]
-    b = [contrast_values[case] for case in (shared if paired else sorted(contrast_values))]
-    return a, b, paired
+    return contrast_samples(control_values, contrast_values)
 
 
 class _Tested(NamedTuple):
@@ -8839,6 +8946,103 @@ def _guardrails_of(
     )
 
 
+#: What a judge change across the member runs means for a judged comparison, quoted when there is one.
+_JUDGE_CHANGE_SENTENCE = (
+    "The judged member runs were scored by {n} different judges (model, prompts or temperature), so a judged "
+    "difference between arms judged differently may be the judge's rather than the subject's."
+)
+_JUDGE_CHANGE_DRIFT = (
+    " A drift reading re-scored one side's evidence under the other side's judge ({links}); read its movement before "
+    "attributing a judged difference to the subject."
+)
+_JUDGE_CHANGE_NO_DRIFT = (
+    " Nothing measured how far the judge change alone moves the scores: re-score one side's stored evidence under "
+    "the other side's judge (judge_drift_check) to read it."
+)
+
+
+def _judge_identity(run: EvalRun) -> tuple[str, tuple[tuple[str, str], ...], float | None] | None:
+    """A judged run's judge as it recorded it at launch — pin, configs, temperature — or None for an unjudged run."""
+    if run.judge_model is None:
+        return None
+    return run.judge_model, tuple(sorted((run.judge_config_ids or {}).items())), run.judge_temperature
+
+
+def _names_level(
+    judge: SecondJudge,
+    level: tuple[str, tuple[tuple[str, str], ...], float | None],
+    own: tuple[str, tuple[tuple[str, str], ...], float | None],
+) -> bool:
+    """Whether a second judge is the judge ``level`` names, asked of a run judged as ``own``.
+
+    The model must be the level's pin; the prompts are the run's own when the second judge named none; and its
+    temperature, when it named none, is what each prompt asks for — the run's own sampling.
+    """
+    configs = own[1] if judge.config_ids is None else tuple(sorted(judge.config_ids.items()))
+    temperature = own[2] if judge.temperature is None else judge.temperature
+    return judge.model == level[0] and configs == level[1] and temperature == level[2]
+
+
+def _judge_change(runs: Sequence[EvalRun], results_by_run: Mapping[str, Sequence[EvalResult]]) -> JudgeChange:
+    """Each judge the judged member runs recorded, and every drift reading among them that spans two of them."""
+    by_level: dict[tuple[str, tuple[tuple[str, str], ...], float | None], list[EvalRun]] = {}
+    for run in runs:
+        if (identity := _judge_identity(run)) is not None:
+            by_level.setdefault(identity, []).append(run)
+    ordered = sorted(by_level, key=lambda level: (level[0], level[1], "" if level[2] is None else str(level[2])))
+    levels = [
+        JudgeIdentityLevel(
+            judge_model=level[0],
+            judge_config_ids=dict(level[1]),
+            judge_temperature=level[2],
+            run_ids=sorted(run.id for run in by_level[level]),
+            variant_keys=sorted(
+                {key for run in by_level[level] if (key := variant_key_of_run(results_by_run.get(run.id, [])))}
+            ),
+        )
+        for level in ordered
+    ]
+    if len(levels) < 2:
+        return JudgeChange(levels=levels)
+    links = []
+    for source_index, source in enumerate(ordered):
+        for target_index, target in enumerate(ordered):
+            if source_index == target_index:
+                continue
+            spanning = [
+                (run, judging.pass_id)
+                for run in by_level[source]
+                for result in results_by_run.get(run.id, [])
+                for judging in result.judge_seconds
+                if _names_level(judging.judge, target, source)
+            ]
+            if not spanning:
+                continue
+            pass_ids = sorted({pass_id for _, pass_id in spanning})
+            run_ids = sorted({run.id for run, _ in spanning})
+            read = [
+                result.model_copy(update={"judge_seconds": [j for j in result.judge_seconds if j.pass_id in pass_ids]})
+                for run_id in run_ids
+                for result in results_by_run.get(run_id, [])
+            ]
+            links.append(
+                JudgeDriftLink(
+                    from_level=source_index,
+                    to_level=target_index,
+                    run_ids=run_ids,
+                    pass_ids=pass_ids,
+                    drift=judge_drift(read),
+                )
+            )
+    sentence = _JUDGE_CHANGE_SENTENCE.format(n=len(levels))
+    if links:
+        named = ", ".join(f"level {link.from_level} under level {link.to_level}'s judge" for link in links)
+        sentence += _JUDGE_CHANGE_DRIFT.format(links=named)
+    else:
+        sentence += _JUDGE_CHANGE_NO_DRIFT
+    return JudgeChange(levels=levels, drift_links=links, sentence=sentence)
+
+
 def _judged_by_cell(judged_measures: list[JudgedMeasure]) -> dict[_CellKey, list[JudgedReading]]:
     """The judged measures transposed — each cell's readings, one per dimension it was scored on.
 
@@ -9244,6 +9448,12 @@ def bundle_decision_surface(bundle: AnalysisContextBundle) -> DecisionSurface:
         dimensions=cell_dimension_facts(bundle),
         time_axis=bundle.time_axis,
         frontier_dominance=_frontier_dominance(bundle.frontier),
+        frontier_disqualified={
+            point.variant_key: list(point.disqualified_by)
+            for subject in bundle.frontier.subjects
+            for point in subject.points
+            if point.disqualified_by
+        },
         rubric_threshold=bundle.frontier.rubric_threshold,
         guardrails=bundle.guardrails,
     )

@@ -36,15 +36,6 @@ comparison separates them"). State that aliasing with an interaction (C = A⊕B)
 
 *Evidence:* agent with tools, 22 runs, 1 campaign, 2026-07, single campaign.
 
-### The frontier does not read guardrails
-
-Tracked in [#613](https://github.com/pacepace/3tears/issues/613).
-
-The frontier, which ranks contestants against an absolute bar with no control, leaves boundary dimensions
-out of pass^k and the composite but does not disqualify a contestant on one, and says so
-(`TwoPillarDisclosure`). Fix: a frontier rule for the boundary pillar. (A judged guardrail's margin is now
-declared on its campaign, `CampaignDesign.guardrail_margins`, [#697](https://github.com/pacepace/3tears/issues/697).)
-
 ### Equivalence needs a declared range (accepted limit)
 
 Decided in [#695](https://github.com/pacepace/3tears/issues/695): a measure that declares a margin and no
@@ -77,21 +68,6 @@ unbounded measure be adopted, so the t breach is kept and the gap recorded as a 
 `tests/test_simulated_guardrails.py`. On a declared range the breach is the bounded test's, and holds its rate.
 
 ## Judging
-
-### No check for judge drift across configurations
-
-Tracked in [#597](https://github.com/pacepace/3tears/issues/597).
-
-A judge is a model and its config, and evidence tiers are keyed that way (see
-[evidence tiers](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers)). A re-judge
-or repeat refuses to run under an apparatus the run did not record, so nothing re-scores stored evidence
-under a new config to show how far the judge moved. The ruled design re-scores a frozen transcript set
-whenever a judge config changes: it detects movement, not which judge is right. Without it a before/after
-spanning a judge change cannot be answered. One judged dimension rose from 2.7 to 4.4 when a subject fix
-and a judge swap landed together, while unchanged dimensions moved −0.3 to +0.5; "did the fix work" was
-ruled permanently unanswerable.
-
-*Evidence:* agent with tools, one before/after pair, 2026-07, 2.7→4.4 on the changed judge vs −0.3 to +0.5 on unchanged ones, single campaign.
 
 ### The judge temperature policy is not measured
 
