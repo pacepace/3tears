@@ -558,6 +558,23 @@ renderer.png(chart)             # or rasterised, for a surface that cannot run a
 Drawing a spec needs nothing past the core; only `png` and `svg` need the extra. Nothing in the core
 imports the adapter.
 
+To draw every chart of a report at once, use `report_charts` (from `threetears.evals.ops`) with any
+renderer:
+
+```python
+charts = report_charts(campaign_report(host, campaign_id, scope_id), renderer)
+for drawn in charts.drawn:       # block position, finding, chart type, and the renderer's drawing
+    ...
+for refused in charts.refused:   # block position, finding, chart type, cause and reason
+    ...
+```
+
+Each chart that cannot be drawn is refused on its own, and every other chart is still drawn. The cause is
+`undrawable` when the report could not decide the stored chart into an intent (its block's reason is
+carried), or `refused_by_renderer` when the renderer raised a `ValueError` on the intent. State a refusal
+where the chart would have been. A missing chart otherwise reads as a finding that carried none. Anything
+else a renderer raises is a defect in the renderer, and propagates.
+
 The packaged palette is a brand-neutral default with a light and a dark variant (`packaged_palette("light")`,
 `packaged_palette("dark")`), a published categorical palette ordered so the four validated slots can be told
 apart as a set. The package's tests hold text to 4.5:1 against the chart surface, slot 1 (every single-series

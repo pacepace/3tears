@@ -1857,6 +1857,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`parse_job_id(job_id: str) -> tuple[JobKind, str, str | None]`
 - **`pivot_text`** · function · A pivot as text: what was computed, each cell with its denominators, and every caveat the table carries.
   <br>`pivot_text(table: PivotTable) -> str`
+- **`report_charts`** · function · Draw every chart block of `report` with `renderer`, refusing each chart that cannot be drawn on its own.
+  <br>`report_charts(report: Report, renderer: ChartRenderer[DrawingT]) -> ReportCharts[DrawingT]`
 - **`report_read`** · function · The campaign's report, serialized in one form — the same report the command line's `report` prints.
   <br>`report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat) -> ReportDocument`
 - **`reporter_case_archive`** · function · Retire a reporter case, or restore one: a retired case is never launched again and stays readable.
@@ -1921,8 +1923,10 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`CaseSetLine`** · model · One version of a named case set.
 - **`CaseSetListing`** · model · A scope's case sets, every version, newest version first within a name.
 - **`CaseSetMint`** · model · What minting a case set's next version names: the set, its template and its cases in order.
+- **`ChartRefusal`** · model · One chart of a report that was not drawn, and why — stated where the chart would have been.
 - **`DetectableEffect`** · model · The smallest difference one reading's comparison would find, or why none can be stated.
 - **`DetectableEffects`** · model · What a launch could detect: per reading, the smallest difference its paired comparison would find.
+- **`DrawnChart`** · dataclass · One chart of a report, drawn.
 - **`InsightDeleted`** · model · What deleting an insight removed: the one insight, never the analysis that minted it.
 - **`InsightDetail`** · model · One insight in full — as stored — and where it stands.
 - **`InsightLine`** · model · One insight in the ledger, as a listing shows it.
@@ -1942,6 +1946,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`RegressionAlert`** · model · One regression the watch found on the step into a completed run: who, which measure, which step, and why.
 - **`RegressionSink`** · protocol · The host's delivery of a regression: a page, a message, a ticket. The engine ships none.
 - **`RegressionWatch`** · dataclass · Checks a completed run's measures against its contestant's history, and delivers each regression.
+- **`ReportCharts`** · dataclass · Every chart of a report: the ones drawn and the ones refused, each in report order.
 - **`ReportDocument`** · model · A campaign's report, serialized in one form.
 - **`ReporterCaseEntry`** · model · One readable case of a reporter template, with whether a launch runs it.
 - **`ReporterCaseFreeze`** · model · What freezing a reporter case names: the reporter template, the campaign, and optionally its memo and labels.
@@ -1969,6 +1974,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 
 **Types**
 
+- **`ChartRefusalCause`** · literal · Why a chart was not drawn: `undrawable` — the report could not decide the stored chart into an intent, and its block says why; `refused_by_renderer` — the intent was decided and the renderer refused to draw it.
+  <br>`'undrawable'` | `'refused_by_renderer'`
 - **`InsightStandingName`** · literal · Where an insight stands, read from the analysis that minted it at every read and never stamped on the insight (`insight_standing`): `live` — fed to later generations as prior context; `retracted` — its analysis is archived, so no generation reads it; `orphaned` — its analysis was deleted, so it is still read but its provenance cannot be followed.
   <br>`'live'` | `'retracted'` | `'orphaned'`
 - **`JobKind`** · literal · What a job's work is: a launched run, an analysis generation, or a sweep launching its arms in order.
