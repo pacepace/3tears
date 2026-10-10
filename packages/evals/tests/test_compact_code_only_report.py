@@ -59,8 +59,8 @@ CASES = [
     {"text": "an oak", "label": "plant"},
 ]
 
-CONTROL_ARM = "model=control (control)"
-CANDIDATE_ARM = "model=candidate"
+CONTROL_ARM = "candidate=control (control)"
+CANDIDATE_ARM = "candidate=candidate"
 
 
 def _expected(case: Mapping[str, Any]) -> str:
@@ -157,7 +157,7 @@ class TestPerLabelStatisticsAreOneTable:
 
         markdown = report_markdown(comparison.report)
         assert "**Per-label precision, recall and F1**" in markdown
-        assert "| animal | model=candidate | — | 0 [" in markdown
+        assert "| animal | candidate=candidate | — | 0 [" in markdown
 
     async def test_no_per_label_chart_and_no_notice_for_one(self) -> None:
         report = (await _classifier()).report
@@ -247,7 +247,7 @@ class TestTheArmsTableHasNoColumnNothingFilled:
         arms = _table(report, "arms")
         assert arms is not None
         assert [column.key for column in arms.columns] == ["arm", "levers"]
-        assert [row["arm"] for row in arms.rows] == ["model=candidate", CONTROL_ARM]
+        assert [row["arm"] for row in arms.rows] == ["candidate=candidate", CONTROL_ARM]
         # With no status to order by, the caption names the order the rows are in, not one by status.
         assert arms.order == "by arm"
 
