@@ -105,13 +105,13 @@ def offline_bot(prompt: str) -> Candidate:
 # -----------------------------------------------------------------------------
 
 
-def what_to_do(verdict: str, guardrail: str) -> str:
-    """The decision one arm's capability verdict and guardrail outcome support."""
+def what_to_do(outcome: str, guardrail: str) -> str:
+    """The decision one arm's typed capability outcome and guardrail outcome support."""
     if guardrail == "breached":
         return "do not ship it, whatever it gained."
     if guardrail == "undecided":
         return "not known to be safe: add cases before you ship it."
-    if verdict.startswith("improved"):
+    if outcome == "improved":
         return "a candidate to ship."
     return "safe on the guardrail, but not shown to answer better: keep the current prompt."
 
@@ -129,7 +129,6 @@ async def main() -> Comparison:
         [gives_status, keeps_card_private],
         guardrails={"keeps_card_private": Guardrail(margin=MARGIN, direction="higher_is_better")},
         control="current",
-        scope_id="guardrails",
         k=1,
     )
 
@@ -154,7 +153,7 @@ async def main() -> Comparison:
         (gain,) = [row for row in comparison.contrasts("gives_status") if row["arm"] == arm]
         standing = comparison.guardrail_standing(arm)  # what it breached, is undecided on, and held
         guardrail = "breached" if standing.breached else "undecided" if standing.undecided else "held"
-        print(f"  {arm}: {gain['verdict']}; guardrail {guardrail}: {what_to_do(gain['verdict'], guardrail)}")
+        print(f"  {arm}: {gain['verdict']}; guardrail {guardrail}: {what_to_do(gain['outcome'], guardrail)}")
 
     print("\nWhere the guardrail broke, one reply per arm:")
     for arm in comparison.arms:
