@@ -88,7 +88,11 @@ def test_the_frontier_point_has_no_pass_k_and_no_cost_per_acceptable_outcome() -
     classifier, judged, results = _arms(1688)
     points = {
         p.model: p
-        for p in compute_frontier([classifier, judged], [r for rs in results.values() for r in rs]).subjects[0].points
+        for p in compute_frontier(
+            [classifier, judged], [r for rs in results.values() for r in rs], archived_run_ids=None
+        )
+        .subjects[0]
+        .points
     }
 
     point = points["classifier-model"]

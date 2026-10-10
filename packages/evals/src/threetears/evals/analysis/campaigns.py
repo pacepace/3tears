@@ -436,7 +436,7 @@ def update_campaign(
             f"campaign fields not updatable here: {', '.join(unknown)}. "
             f"Updatable: {', '.join(_CAMPAIGN_UPDATABLE_FIELDS)}. "
             f"Membership and the control designation have their own write paths "
-            f"(campaign_add_runs / campaign_remove_runs / campaign_set_control)"
+            f"(add_runs_to_campaign / remove_runs_from_campaign / set_campaign_control)"
         )
 
     campaign = storage.load_campaign(campaign_id, scope_id)
@@ -773,7 +773,7 @@ def set_campaign_control(
             return campaign
         raise ValidationFailedError(
             f"campaign '{campaign_id}' declares no design, and the control lives on the declaration — "
-            f"declare one first (campaign_update / PATCH with `declared_design`). A control is the "
+            f"declare one first (update_campaign with `declared_design`). A control is the "
             f"reference point of a comparison, so there is nothing for it to reference yet"
         )
     control = None if run_id is None else _resolve_control_variant(storage, campaign, run_id, profile=profile)

@@ -104,7 +104,7 @@ class TestThePooledBasis:
 class TestWhereThePoolIsShown:
     def test_a_pivot_cell_and_its_table_are_marked(self) -> None:
         run, results = _ragged_run()
-        records = project_score_records([run], results, profile=_HOST).records
+        records = project_score_records([run], results, profile=_HOST, archived_run_ids=None).records
         table = compute_pivot(
             records, row_factor="model", column_factor="template_id", metric=METRIC_COMPOSITE, profile=_HOST
         )
@@ -118,13 +118,13 @@ class TestWhereThePoolIsShown:
 
     def test_a_frontier_point_is_marked(self) -> None:
         run, results = _ragged_run()
-        (point,) = compute_frontier([run], results).subjects[0].points
+        (point,) = compute_frontier([run], results, archived_run_ids=None).subjects[0].points
         assert point.composite_basis is not None and point.composite_basis.ragged
         assert point.composite_basis.dimensions == sorted([*_LEFT, *_RIGHT])
 
     def test_a_history_point_is_marked(self) -> None:
         run, results = _ragged_run(test_case_ids=["tc1", "tc2"])
-        out = compute_history([run], results, metric=METRIC_COMPOSITE, profile=_HOST)
+        out = compute_history([run], results, metric=METRIC_COMPOSITE, profile=_HOST, archived_run_ids=None)
         (point,) = out.series[0].points
         assert point.composite_basis is not None and point.composite_basis.ragged
         assert "ragged composite" in history_text(out)

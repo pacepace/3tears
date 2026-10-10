@@ -137,6 +137,7 @@ from threetears.evals.contracts.declaration import (
     JUDGED_MERIT_AXIS,
     BarName,
     CampaignDesign,
+    SweptAxis,
     UnreadableBarName,
     axis_in_question_scope,
     exploratory_reading,
@@ -943,7 +944,8 @@ class RealizedDesign(EvalDocumentModel):
     **The derived twin of the declaration, and the two must not share a name.** The declaration
     (:class:`~threetears.evals.contracts.declaration.CampaignDesign`, on the campaign) says what an
     operator SET OUT to learn; this says what the observations actually show. The delta between
-    them is the coverage story — a declared value with no observations is `unswept` and NAMED,
+    them is the coverage story — a declared value with no observations is NAMED, ``not_run`` in its
+    axis row's ``declared_levels`` (``undetermined`` where some run's level cannot be established),
     where this one can only ever report what happened to run.
 
     They were briefly both called ``CampaignDesign``, in one package, and the collision silently
@@ -1433,7 +1435,9 @@ class RunSummary(EvalDocumentModel):
             "`config_provenance` separates them: a lever whose value could not be established is here "
             "as `unknown` there and absent here, so 'we could not establish this' is never readable as "
             "a level; a lever the campaign never engaged with — declared by the host, never moved, never "
-            "named by a launch, never recovered — is in neither, and says nothing about the experiment."
+            "named by a launch, never recovered — is in neither, and says nothing about the experiment. "
+            "The level `null` is a value the launch SET (it named the lever as null, stamped `overridden`), "
+            "not a missing one."
         ),
     )
     config_provenance: dict[str, str] = Field(
@@ -1517,6 +1521,22 @@ class RunSummary(EvalDocumentModel):
     )
 
 
+class DeclaredLevelCoverage(EvalDocumentModel):
+    """Whether one level the campaign DECLARED for an axis was run — the declaration's delta, by name."""
+
+    display: str = Field(min_length=1, description="The declared level, as the declaration renders it.")
+    content_hash: str = Field(min_length=1, description="The declared level's identity, which runs are joined on.")
+    state: Literal["ran", "not_run", "undetermined"] = Field(
+        description=(
+            "ran = some member run sat at this level. not_run = declared and never run: every member run's "
+            "level on the axis is established and none is this one, so the comparison it was declared for "
+            "was not made. undetermined = no run is known to sit here, but some run's level on the axis "
+            "could not be established (a run that inherited the subject's own setting may be at it), so "
+            "'not run' cannot be claimed."
+        )
+    )
+
+
 class LeverCoverageInput(EvalDocumentModel):
     """Structural coverage of one lever, as the bundle computes it.
 
@@ -1531,7 +1551,8 @@ class LeverCoverageInput(EvalDocumentModel):
 
     name: str = Field(description="Lever name — a dotted factor key or 'model'.")
     levels: list[str] = Field(
-        default_factory=list, description="Distinct observed values ('—' = ran without the override)."
+        default_factory=list,
+        description="Distinct observed values ('—' = ran without the override; 'null' = the launch set it to null).",
     )
     cells: int = Field(ge=0, description="Number of distinct observed levels — how finely the lever was swept.")
     k: int = Field(
@@ -1568,6 +1589,24 @@ class LeverCoverageInput(EvalDocumentModel):
             "requested candidate model answered by more than one model. A "
             "comparison on this lever is marginal, not controlled, for each of these. Empty means nothing else "
             "moved."
+        ),
+    )
+    declared_levels: list[DeclaredLevelCoverage] = Field(
+        default_factory=list,
+        description=(
+            "On a DECLARED axis, every level the declaration names, in its order, each marked ran / not_run / "
+            "undetermined. `levels` lists only what ran, so this is where a declared level that never ran is "
+            "named — a gap in the design as run, distinct from a level nobody declared. Empty on an "
+            "undeclared row."
+        ),
+    )
+    cannot_be_an_arm: str | None = Field(
+        default=None,
+        description=(
+            "Set only on a DECLARED axis the host cannot vary on purpose — an apparatus or label input, or a name "
+            "it never registered: the host's own reason, with its remedy. Such an input never enters the variant "
+            "key, so every run resolves to one arm on it and this row is unswept BY CONSTRUCTION, whatever the "
+            "runs did — a design that cannot be met, never a sweep that did not happen. Null on every other row."
         ),
     )
     mechanism: MechanismCheck = Field(
@@ -2890,6 +2929,9 @@ def _effective_config(run: EvalRun, results: list[EvalResult], *, profile: HostP
     1. **An open family's members** — the levers the launch NAMED. A kind overlay
        ``house_rules={'flanking': 'on'}`` resolves the member ``gm.house_rules.flanking``, which is
        the lever's declared name rather than a carrier path this function flattened for itself.
+       A member named as ``null`` is the level :data:`~threetears.evals.analysis.reporting.NULL_LEVEL`,
+       ``overridden`` — unless the lever has a recovery rule, which reads a null as "not stated"
+       and resolves it in the second pass instead.
     2. **Recovery from observation** — :func:`_observed_model_levers` maps a lever to the usage
        role whose ``model`` is the value that ran. Two or more distinct models under one role
        make the value genuinely ambiguous, which is ``unknown`` rather than a guess at the first.
@@ -2953,8 +2995,14 @@ def _resolve_config(
     flat: dict[str, EffectiveLever] = {}
     for lever in sorted(resolution.overlaid):
         value = resolution.values.get(lever)
-        if value is not None:
-            flat[lever] = EffectiveLever(lever_level(value), "overridden")
+        if value is None and lever in recovery:
+            # A recovery rule gives ``null`` its own meaning — "not stated, read it off what ran" —
+            # so the second pass resolves it, to ``inherited`` or ``unknown``, never to a level.
+            continue
+        # Anywhere else a NAMED null is a level the operator set (``NULL_LEVEL``). Skipping it, as
+        # this once did, dropped the lever from the config, its provenance and the coverage map
+        # together, so a sweep between a value and ``null`` read ``unswept`` (#574).
+        flat[lever] = EffectiveLever(lever_level(value), "overridden")
     for lever, role in recovery.items():
         if lever in flat:
             continue
@@ -2969,7 +3017,9 @@ def _resolve_config(
         # its declaration's reader here would report the run-level projection (the candidate
         # model lever reads the run's whole model LIST) as one observation's level, and a lever
         # whose role never ran genuinely does not apply to the run rather than sitting at
-        # whatever the record happens to hold.
+        # whatever the record happens to hold. ``None`` here is a declaration's reader finding
+        # nothing on this run — the lever does not apply — unlike a launch-named null, which the
+        # first pass has already placed.
         if lever in flat or lever in recovery or value is None:
             continue
         flat[lever] = EffectiveLever(lever_level(value), "overridden")
@@ -6145,6 +6195,57 @@ def _reportable_levers(
     return moved | declared | (engaged & resolved)
 
 
+def _declared_level_coverage(
+    axis: SweptAxis,
+    runs: list[EvalRun],
+    results_by_run: dict[str, list[EvalResult]],
+    *,
+    profile: HostProfile,
+) -> list[DeclaredLevelCoverage]:
+    """Mark each level ``axis`` declares as ran, not run, or undetermined, joined on content identity.
+
+    A run's level on the axis is its variant coordinate where it has one (the engine's own and the
+    host's), else the value the host's registry resolves for it — joined to a declared level by
+    ``content_hash``, the declaration's identity. A resolved value that is itself a digest is
+    compared as one. A run whose level cannot be established (no coordinate, nothing resolved)
+    blocks a ``not_run`` claim on every level no other run matched: it may be sitting at one.
+
+    Args:
+        axis: The declared axis.
+        runs: The campaign's resolved runs.
+        results_by_run: Each run's results.
+        profile: The host whose vocabulary this reads.
+
+    Returns:
+        One entry per declared level, in the declaration's order.
+    """
+    observed: set[str] = set()
+    unestablished = False
+    for run in runs:
+        coordinates = {
+            **profile.engine_levels(run),
+            **(profile.variant_levers(run) if profile.variant_levers is not None else {}),
+        }
+        if (coordinate := coordinates.get(axis.axis_id)) is not None:
+            observed.add(coordinate.content_hash)
+            continue
+        value = profile.sweepables.resolve_levers(run, results_by_run.get(run.id, [])).values.get(axis.axis_id)
+        if value is None:
+            unestablished = True
+            continue
+        observed.add(canonical_digest(value))
+        if isinstance(value, str):
+            observed.add(value)
+    return [
+        DeclaredLevelCoverage(
+            display=level.display,
+            content_hash=level.content_hash,
+            state="ran" if level.content_hash in observed else "undetermined" if unestablished else "not_run",
+        )
+        for level in axis.values
+    ]
+
+
 def _coverage_map(
     runs: list[EvalRun],
     records: list[ScoreRecord],
@@ -6252,7 +6353,8 @@ def _coverage_map(
     levers = _reportable_levers(resolved, records, effective_by_run, declared_design, engaged)
 
     coverage: list[LeverCoverageInput] = []
-    declared = {axis.axis_id for axis in declared_design.axes} if declared_design else set()
+    declared_axes = {axis.axis_id: axis for axis in declared_design.axes} if declared_design else {}
+    declared = set(declared_axes)
     for lever in sorted(levers):
         # Every number below is read over this lever's own cohort, which under a designated
         # control is usually narrower than the campaign — reporting a campaign-wide n or spread
@@ -6280,6 +6382,11 @@ def _coverage_map(
                 result_ids_by_level.setdefault(level, set()).add(record.result_id)
         declared_lever = profile.sweepables.get(lever)
         k = _lever_k_floor(lever, cohort_records, k_by_arm, group_of_run, effective_by_run)
+        # A declared axis is asked the authoring gate's own question. A campaign stored before that
+        # gate, or past it, can still declare an apparatus or label input, and its row is then
+        # `unswept` for a reason no run could change — said here, in the host's words, so the memo
+        # can state the cause rather than report a sweep that never happened (#675).
+        controllable = profile.controllable(lever) if lever in declared else None
         if cells <= 1:
             status: Literal["measured", "thin", "unswept"] = "unswept"
         elif k < _MEASURED_K_FLOOR or n_distinct_results < 2 * cells:
@@ -6301,6 +6408,14 @@ def _coverage_map(
                 # draw. Sizing it would label that row 'campaign' and tell the generator, two
                 # paragraphs after "compare each cell to the control", that no contrast exists.
                 cohort_scope="control_referenced" if _is_control_referenced(lever, design) else "campaign",
+                declared_levels=(
+                    _declared_level_coverage(declared_axes[lever], runs, results_by_run, profile=profile)
+                    if lever in declared_axes
+                    else []
+                ),
+                cannot_be_an_arm=(
+                    controllable.reason if controllable is not None and controllable.state != "covered" else None
+                ),
                 confounded_by=_uncontrolled_dimensions(
                     lever, sorted(cohort), lever_levels, apparatus_levels, folds=folds, profile=profile
                 )
@@ -6790,7 +6905,11 @@ def assemble_context_bundle(
     results_by_run = _failures_as_misses(results_by_run)
     results = [result for run in runs for result in results_by_run[run.id]]
 
-    projection = project_score_records(runs, results, known_run_ids=known_run_ids, profile=profile)
+    # ``archived_run_ids=None`` is true here, not a default: archived members were removed
+    # above, so ``runs`` is the whole corpus these surfaces read and none of it is archived.
+    projection = project_score_records(
+        runs, results, known_run_ids=known_run_ids, archived_run_ids=None, profile=profile
+    )
     budget = compute_program_budget(runs, results)
     # What the campaign was not tuning, read once and shared by all three surfaces that
     # disclose it — the coverage map (where most findings are formed), the divergences, and
@@ -6919,12 +7038,14 @@ def assemble_context_bundle(
         # made of while the bundle beside it reported that difference from the same readers.
         comparison=compute_comparison_sets(runs, results=results, profile=profile),
         # pass^k at the behavior's declared threshold (#642), recorded on the frontier beside every figure,
-        # and ranked against the campaign's bar on pass^k when it declares one (#679).
+        # and ranked against the campaign's bar on pass^k when it declares one (#679). Archived members were
+        # removed before this point, so no archived set is passed (#670).
         frontier=compute_frontier(
             runs,
             results,
             bar=frontier_bar,
             known_run_ids=known_run_ids,
+            archived_run_ids=None,
             rubric_threshold=profile.bars.pass_threshold(campaign.behavior),
         ),
         frontier_bar_withheld=frontier_bar_withheld,
@@ -9101,6 +9222,7 @@ def _telemetry_rollup(
 __all__ = [
     "AnalysisContextBundle",
     "BundleInspection",
+    "DeclaredLevelCoverage",
     "GoalCheckProofReading",
     "LeverCoverageInput",
     "MeasureCollection",

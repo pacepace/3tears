@@ -192,7 +192,7 @@ class TestProjectionCoordinates:
     def test_row_carries_subject_and_cell_coordinates(self):
         run, result = _run_with_results()
 
-        records = project_score_records([run], [result], profile=_JUDGED_HOST).records
+        records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
 
         assert records, "expected at least the cost row"
         row = records[0]
@@ -207,7 +207,7 @@ class TestProjectionCoordinates:
     def test_cost_row_emitted_for_every_projected_result(self):
         run, result = _run_with_results()
 
-        records = project_score_records([run], [result], profile=_JUDGED_HOST).records
+        records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
 
         cost_rows = [r for r in records if r.metric == METRIC_COST_USD]
         assert len(cost_rows) == 1
@@ -217,7 +217,7 @@ class TestProjectionCoordinates:
         run, _ = _run_with_results()
         failed = make_eval_result(eval_run_id=run.id, scope_id=run.scope_id, candidate_error="402")
 
-        records = project_score_records([run], [failed], profile=_JUDGED_HOST).records
+        records = project_score_records([run], [failed], profile=_JUDGED_HOST, archived_run_ids=None).records
 
         assert {r.outcome for r in records} == {"candidate_fail"}
 
@@ -231,7 +231,7 @@ class TestProjectionCoordinates:
             judge_cannot_tell={"reply.refusal": "nothing to refuse", TRANSCRIPT_DIM_ID: "no turns"},
         )
 
-        records = project_score_records([run], [untold], profile=_JUDGED_HOST).records
+        records = project_score_records([run], [untold], profile=_JUDGED_HOST, archived_run_ids=None).records
 
         (composite,) = [r for r in records if r.metric == METRIC_COMPOSITE]
         assert (composite.value, composite.outcome) == (None, "judge_cannot_tell")
@@ -248,7 +248,7 @@ class TestProjectionCoordinates:
         run, _ = _run_with_results()
         failed = make_eval_result(eval_run_id=run.id, scope_id=run.scope_id, infra_error="timeout", cost_usd=0.42)
 
-        records = project_score_records([run], [failed], profile=_JUDGED_HOST).records
+        records = project_score_records([run], [failed], profile=_JUDGED_HOST, archived_run_ids=None).records
 
         cost_rows = [r for r in records if r.metric == METRIC_COST_USD]
         assert [r.value for r in cost_rows] == [0.42]
@@ -256,7 +256,7 @@ class TestProjectionCoordinates:
     def test_result_without_its_run_is_skipped_not_invented(self):
         _, orphan = _run_with_results()
 
-        assert project_score_records([], [orphan], profile=_JUDGED_HOST).records == []
+        assert project_score_records([], [orphan], profile=_JUDGED_HOST, archived_run_ids=None).records == []
 
     def test_a_kinds_overlays_reach_the_row_as_dotted_coordinates(self):
         """Without this the factor set is closed, and a bake-off's varied knob is unpivotable.
@@ -269,7 +269,7 @@ class TestProjectionCoordinates:
             **_overlaid(prompt_style="verbose", page_limit=3, field_aliases={"vendor_name": "supplier"})
         )
 
-        records = project_score_records([run], [result], profile=_JUDGED_HOST).records
+        records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
 
         assert records[0].factors == {
             "candidate_kind": TOY_EXTRACTOR_KIND,
@@ -287,9 +287,9 @@ class TestProjectionCoordinates:
         """
         run, result = _run_with_results()
 
-        assert project_score_records([run], [result], profile=_JUDGED_HOST).records[0].factors == {
-            "candidate_kind": run.candidate_kind
-        }
+        assert project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records[
+            0
+        ].factors == {"candidate_kind": run.candidate_kind}
 
     def test_row_carries_the_pinned_judge_and_simulator_roles(self):
         """The run-pinned roles are first-class coordinates, not only hashed into `context_key`.
@@ -300,7 +300,7 @@ class TestProjectionCoordinates:
         """
         run, result = _run_with_results(judge_model="judge-a", simulator_model="sim-b")
 
-        row = project_score_records([run], [result], profile=_JUDGED_HOST).records[0]
+        row = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records[0]
 
         assert (row.judge_model, row.simulator_model) == ("judge-a", "sim-b")
 
@@ -308,7 +308,7 @@ class TestProjectionCoordinates:
         """A run that pinned no judge (it was not judged) or no simulated user carries None, groupable as "—"."""
         run, result = _run_with_results(judge_model=None, simulator_model=None)
 
-        row = project_score_records([run], [result], profile=_JUDGED_HOST).records[0]
+        row = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records[0]
 
         assert (row.judge_model, row.simulator_model) == (None, None)
 
@@ -325,7 +325,7 @@ class TestProjectionCoordinates:
         result.variant_key = "var-xyz"
         result.identity_version = 7
 
-        records = project_score_records([run], [result], profile=_JUDGED_HOST).records
+        records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
 
         assert records, "expected at least the cost row"
         row = records[0]
@@ -362,7 +362,7 @@ class TestCompositeIsPerObservation:
 
         composites = {
             r.k_iteration: r.value
-            for r in project_score_records([run], results, profile=_JUDGED_HOST).records
+            for r in project_score_records([run], results, profile=_JUDGED_HOST, archived_run_ids=None).records
             if r.metric == METRIC_COMPOSITE
         }
 
@@ -380,7 +380,7 @@ class TestCompositeIsPerObservation:
 
         composites = [
             r.value
-            for r in project_score_records([run], [excluded], profile=_JUDGED_HOST).records
+            for r in project_score_records([run], [excluded], profile=_JUDGED_HOST, archived_run_ids=None).records
             if r.metric == METRIC_COMPOSITE
         ]
 
@@ -393,7 +393,7 @@ class TestCompositeIsPerObservation:
 
         composites = [
             r.value
-            for r in project_score_records([run], [unscored], profile=_JUDGED_HOST).records
+            for r in project_score_records([run], [unscored], profile=_JUDGED_HOST, archived_run_ids=None).records
             if r.metric == METRIC_COMPOSITE
         ]
 
@@ -412,7 +412,7 @@ class TestCompositeIsPerObservation:
         run, _ = _run_with_results()
         excluded = make_eval_result(eval_run_id=run.id, scope_id=run.scope_id, infra_error="boom", cost_usd=0.31)
 
-        records = project_score_records([run], [excluded], profile=_JUDGED_HOST).records
+        records = project_score_records([run], [excluded], profile=_JUDGED_HOST, archived_run_ids=None).records
 
         assert [(r.metric, r.value) for r in records] == [
             (METRIC_COMPOSITE, None),
@@ -427,7 +427,7 @@ class TestCompositeIsPerObservation:
 
         composites = [
             r.value
-            for r in project_score_records([run], [failed], profile=_JUDGED_HOST).records
+            for r in project_score_records([run], [failed], profile=_JUDGED_HOST, archived_run_ids=None).records
             if r.metric == METRIC_COMPOSITE
         ]
 
@@ -452,7 +452,7 @@ class TestGoalStateRows:
 
         rows = [
             r
-            for r in project_score_records([run], [result], profile=_JUDGED_HOST).records
+            for r in project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
             if r.metric == METRIC_GOAL_STATE
         ]
 
@@ -468,7 +468,7 @@ class TestGoalStateRows:
 
         assert not [
             r
-            for r in project_score_records([run], [result], profile=_JUDGED_HOST).records
+            for r in project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
             if r.metric == METRIC_GOAL_STATE
         ]
 
@@ -507,7 +507,9 @@ class TestPerDimensionRows:
         )
 
         rows = [
-            r for r in project_score_records([run], [result], profile=_JUDGED_HOST).records if r.metric == METRIC_SCORE
+            r
+            for r in project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
+            if r.metric == METRIC_SCORE
         ]
 
         assert {(r.rubric_dim, r.value) for r in rows} == {("reply.grounding", 5.0), ("reply.coverage", 2.0)}
@@ -532,7 +534,9 @@ class TestPerDimensionRows:
         )
 
         rows = [
-            r for r in project_score_records([run], [result], profile=_JUDGED_HOST).records if r.metric == METRIC_SCORE
+            r
+            for r in project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
+            if r.metric == METRIC_SCORE
         ]
 
         assert {(r.rubric_dim, r.value) for r in rows} == {("planner.character", 5.0), ("speaker.character", 1.0)}
@@ -557,7 +561,7 @@ class TestPerDimensionRows:
         run, _ = _run_with_results()
         result = self._scored(run, rubric_scores=[RubricScore(dim="reply.grounding", score=5, scale="ordinal")])
 
-        records = project_score_records([run], [result], profile=_JUDGED_HOST).records
+        records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
         composite = next(r for r in records if r.metric == METRIC_COMPOSITE)
         dim_row = next(r for r in records if r.metric == METRIC_SCORE)
 
@@ -575,7 +579,7 @@ class TestPerDimensionRows:
         """A whole-result measure has no dimension; inventing one would make a `rubric_dim` pivot of composites look per-dim."""
         run, result = _run_with_results()
 
-        records = project_score_records([run], [result], profile=_JUDGED_HOST).records
+        records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
 
         assert all(r.rubric_dim is None for r in records if r.metric != METRIC_SCORE)
 
@@ -586,7 +590,7 @@ class TestPerDimensionRows:
 
         rows = [
             r
-            for r in project_score_records([run], [unscored], profile=_JUDGED_HOST).records
+            for r in project_score_records([run], [unscored], profile=_JUDGED_HOST, archived_run_ids=None).records
             if r.metric == METRIC_SCORE
         ]
 
@@ -610,7 +614,7 @@ class TestPerDimensionRows:
             ],
         )
 
-        records = project_score_records([run], [failed], profile=_JUDGED_HOST).records
+        records = project_score_records([run], [failed], profile=_JUDGED_HOST, archived_run_ids=None).records
         composite = next(r.value for r in records if r.metric == METRIC_COMPOSITE)
         dim_rows = [(r.rubric_dim, r.value) for r in records if r.metric == METRIC_SCORE]
 
@@ -624,7 +628,9 @@ class TestPerDimensionRows:
         failed = self._scored(run, candidate_error="402", rubric_scores=[])
 
         rows = [
-            r for r in project_score_records([run], [failed], profile=_JUDGED_HOST).records if r.metric == METRIC_SCORE
+            r
+            for r in project_score_records([run], [failed], profile=_JUDGED_HOST, archived_run_ids=None).records
+            if r.metric == METRIC_SCORE
         ]
 
         assert [(r.rubric_dim, r.value, r.outcome) for r in rows] == [(None, None, "candidate_fail")]
@@ -649,7 +655,7 @@ class TestPerDimensionRows:
             run, rubric_scores=[RubricScore(dim=f"reply.{METRIC_COMPOSITE}", score=5, scale="ordinal")]
         )
 
-        records = project_score_records([run], [colliding], profile=_JUDGED_HOST).records
+        records = project_score_records([run], [colliding], profile=_JUDGED_HOST, archived_run_ids=None).records
 
         assert {r.metric for r in records} == {METRIC_COMPOSITE, METRIC_COST_USD, METRIC_SCORE, METRIC_GOAL_STATE}
         # The dim named after `composite` is a rubric_dim value, so the composite rows
@@ -672,7 +678,7 @@ class TestPerDimensionRows:
             for case in ("tc-1", "tc-2")
         ]
 
-        records = project_score_records([run], results, profile=_JUDGED_HOST).records
+        records = project_score_records([run], results, profile=_JUDGED_HOST, archived_run_ids=None).records
         table = compute_pivot(
             records, row_factor="rubric_dim", column_factor="model", metric=METRIC_SCORE, profile=_JUDGED_HOST
         )
@@ -733,7 +739,7 @@ class TestPerDimensionRows:
         run, _ = _run_with_results()
         results = self._uneven_corpus(run)
 
-        records = project_score_records([run], results, profile=_JUDGED_HOST).records
+        records = project_score_records([run], results, profile=_JUDGED_HOST, archived_run_ids=None).records
         table = compute_pivot(
             records,
             row_factor="rubric_dim",
@@ -761,7 +767,7 @@ class TestPerDimensionRows:
         run, _ = _run_with_results()
         results = self._uneven_corpus(run)
 
-        records = project_score_records([run], results, profile=_JUDGED_HOST).records
+        records = project_score_records([run], results, profile=_JUDGED_HOST, archived_run_ids=None).records
         table = compute_pivot(
             records, row_factor="rubric_dim", column_factor="model", metric=METRIC_SCORE, profile=_JUDGED_HOST
         )
@@ -795,7 +801,7 @@ class TestPerDimensionRows:
             for _ in range(4)
         ]
         unjudged = [self._scored(run, rubric_scores=[]) for _ in range(4)]
-        records = project_score_records([run], judged + unjudged, profile=_JUDGED_HOST).records
+        records = project_score_records([run], judged + unjudged, profile=_JUDGED_HOST, archived_run_ids=None).records
 
         pooled = compute_pivot(
             records, row_factor="model", column_factor="run_id", metric=METRIC_SCORE, profile=_JUDGED_HOST
@@ -836,7 +842,7 @@ class TestPerDimensionRows:
             run,
             rubric_scores=[RubricScore(dim=d, score=4, scale="ordinal") for d in ("reply.grounding", "reply.coverage")],
         )
-        records = project_score_records([run], [result], profile=_JUDGED_HOST).records
+        records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
 
         pooled = compute_pivot(
             records,
@@ -860,7 +866,7 @@ class TestPerDimensionRows:
         """
         run, _ = _run_with_results()
         results = self._uneven_corpus(run)
-        records = project_score_records([run], results, profile=_JUDGED_HOST).records
+        records = project_score_records([run], results, profile=_JUDGED_HOST, archived_run_ids=None).records
 
         pooled = compute_pivot(
             records, row_factor="test_case_id", column_factor="model", metric=METRIC_SCORE, profile=_JUDGED_HOST
@@ -905,7 +911,7 @@ class TestPerDimensionRows:
         run, _ = _run_with_results()
         results = self._uneven_corpus(run)
 
-        records = project_score_records([run], results, profile=_JUDGED_HOST).records
+        records = project_score_records([run], results, profile=_JUDGED_HOST, archived_run_ids=None).records
         table = compute_pivot(
             records, row_factor="rubric_dim", column_factor="model", metric=METRIC_SCORE, profile=_JUDGED_HOST
         )
@@ -924,7 +930,7 @@ class TestPerDimensionRows:
             make_eval_result(eval_run_id=run_b.id, scope_id=run_b.scope_id),
         ]
 
-        records = project_score_records([run_a, run_b], results, profile=_JUDGED_HOST).records
+        records = project_score_records([run_a, run_b], results, profile=_JUDGED_HOST, archived_run_ids=None).records
 
         with pytest.raises(PivotError, match="judge_mediated"):
             compute_pivot(
@@ -935,7 +941,7 @@ class TestPerDimensionRows:
         """A cell claiming 0-1 beside a 1-5 number is how a reader mis-reads a 2 as excellent."""
         run, result = _run_with_results()
 
-        records = project_score_records([run], [result], profile=_JUDGED_HOST).records
+        records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
         table = compute_pivot(
             records, row_factor="rubric_dim", column_factor="model", metric=METRIC_SCORE, profile=_JUDGED_HOST
         )
@@ -947,7 +953,7 @@ class TestPerDimensionRows:
     def test_an_unknown_metric_is_still_refused_naming_what_is_available(self):
         """Adding a metric must not blunt the typo refusal — the closed set is what makes it safe."""
         run, result = _run_with_results()
-        records = project_score_records([run], [result], profile=_JUDGED_HOST).records
+        records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
 
         with pytest.raises(PivotError, match="unknown metric") as excinfo:
             compute_pivot(records, row_factor="model", column_factor="model", metric="scores", profile=_JUDGED_HOST)
@@ -966,7 +972,7 @@ class TestPerDimensionRows:
         """
         run, _ = _run_with_results()
         result = self._scored(run, rubric_scores=[RubricScore(dim="reply.character", score=3, scale="ordinal")])
-        records = project_score_records([run], [result], profile=_JUDGED_HOST).records
+        records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
 
         with pytest.raises(PivotError, match="rubric dimension") as excinfo:
             compute_pivot(
@@ -994,7 +1000,7 @@ class TestPerDimensionRows:
     def test_the_dimension_exports_as_its_own_column(self):
         """The export derives its columns from the model, so the dim must arrive as a pandas column, not a blob."""
         run, result = _run_with_results()
-        records = project_score_records([run], [result], profile=_JUDGED_HOST).records
+        records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
 
         reader = csv.DictReader(io.StringIO(export_records_csv(records)))
         rows = list(reader)
@@ -1058,7 +1064,9 @@ class TestPerDimensionJudgeAttribution:
             The ``METRIC_SCORE`` rows, in projection order.
         """
         return [
-            r for r in project_score_records([run], [result], profile=_JUDGED_HOST).records if r.metric == METRIC_SCORE
+            r
+            for r in project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
+            if r.metric == METRIC_SCORE
         ]
 
     def test_a_dim_with_its_own_judge_names_that_model_while_the_pin_stays_the_pin(self):
@@ -1097,7 +1105,9 @@ class TestPerDimensionJudgeAttribution:
     def test_whole_result_rows_carry_no_dim_judge(self):
         """A composite or cost row spans every dim, so no single model scored it — mirroring `rubric_dim`."""
         run = self._run(effective_judges={"reply.grounding": "gemini-lite"}, effective_judges_source="recorded")
-        records = project_score_records([run], [self._scored(run, "reply.grounding")], profile=_JUDGED_HOST).records
+        records = project_score_records(
+            [run], [self._scored(run, "reply.grounding")], profile=_JUDGED_HOST, archived_run_ids=None
+        ).records
 
         whole_result = [r for r in records if r.metric != METRIC_SCORE]
 
@@ -1211,7 +1221,7 @@ class TestPerDimensionJudgeAttribution:
         result.transcript_score = RubricScore(dim="reply.transcript", score=4, scale="ordinal")
 
         with caplog.at_level(logging.WARNING, logger="threetears.evals.analysis.reporting"):
-            records = project_score_records([run], [result], profile=_JUDGED_HOST).records
+            records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
 
         assert not [r for r in records if r.metric not in ("composite", "cost_usd", METRIC_SCORE, METRIC_GOAL_STATE)], (
             "an unreserved dim must not reach the metric column"
@@ -1241,7 +1251,7 @@ class TestPerDimensionJudgeAttribution:
         result.transcript_score = RubricScore(dim=TRANSCRIPT_DIM_ID, score=4, scale="ordinal")
         result.outcome_score = RubricScore(dim=OUTCOME_DIM_ID, score=3, scale="ordinal")
 
-        rows = project_score_records([run], [result], profile=_JUDGED_HOST).records
+        rows = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
         by_metric = {r.metric: r for r in rows if r.metric in (TRANSCRIPT_DIM_ID, OUTCOME_DIM_ID)}
 
         assert by_metric[TRANSCRIPT_DIM_ID].rubric_dim_judge_model == "gemini-lite"
@@ -1291,7 +1301,10 @@ class TestPerDimensionJudgeAttribution:
             effective_judges_source="recorded",
         )
         records = project_score_records(
-            [run], [self._scored(run, "reply.house_style", "reply.selection_fit")], profile=_JUDGED_HOST
+            [run],
+            [self._scored(run, "reply.house_style", "reply.selection_fit")],
+            profile=_JUDGED_HOST,
+            archived_run_ids=None,
         ).records
 
         reader = csv.DictReader(io.StringIO(export_records_csv(records)))
@@ -1311,7 +1324,9 @@ class TestSubjectPartition:
         run_a, result_a = _run_with_results(subject_id="ent-maple", subject_label="Maple")
         run_b, result_b = _run_with_results(subject_id="ent-bea", subject_label="Bea")
 
-        records = project_score_records([run_a, run_b], [result_a, result_b], profile=_JUDGED_HOST).records
+        records = project_score_records(
+            [run_a, run_b], [result_a, result_b], profile=_JUDGED_HOST, archived_run_ids=None
+        ).records
 
         assert {r.subject_id for r in records} == {"ent-maple", "ent-bea"}
 
@@ -1319,7 +1334,7 @@ class TestSubjectPartition:
         """A rename must not split one subject; two same-named subjects must not merge."""
         renamed, result = _run_with_results(subject_id="ent-maple", subject_label="Maple Prime")
 
-        records = project_score_records([renamed], [result], profile=_JUDGED_HOST).records
+        records = project_score_records([renamed], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
 
         assert {r.subject_id for r in records} == {"ent-maple"}
         assert {r.subject_label for r in records} == {"Maple Prime"}
@@ -1335,7 +1350,7 @@ class TestSubjectPartition:
         run, result = _run_with_results(subject_id="ent-snapshot")
         result.subject_id = "ent-per-result"
 
-        records = project_score_records([run], [result], profile=_JUDGED_HOST).records
+        records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
 
         assert {r.subject_id for r in records} == {"ent-per-result"}
 
@@ -1344,7 +1359,7 @@ class TestSubjectPartition:
         run, result = _run_with_results(subject_id="ent-snapshot")
         result.subject_id = "   "
 
-        records = project_score_records([run], [result], profile=_JUDGED_HOST).records
+        records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
 
         assert records, "a whitespace attribution swallowed the run's real identity"
         assert {r.subject_id for r in records} == {"ent-snapshot"}
@@ -1366,7 +1381,7 @@ class TestSubjectPartition:
         """Two exclusion classes, kept apart — they mean different things to a reader."""
         _, orphan = _run_with_results()
 
-        projection = project_score_records([], [orphan], profile=_JUDGED_HOST)
+        projection = project_score_records([], [orphan], profile=_JUDGED_HOST, archived_run_ids=None)
 
         assert projection.exclusions.results_without_run == 1
         assert projection.exclusions.total == 1
@@ -1375,7 +1390,7 @@ class TestSubjectPartition:
         """Zero must be reachable, or a non-zero count carries no information."""
         run, result = _run_with_results()
 
-        assert project_score_records([run], [result], profile=_JUDGED_HOST).exclusions.total == 0
+        assert project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).exclusions.total == 0
 
     def test_a_run_the_caller_filtered_out_is_not_reported_as_unplaceable(self):
         """A filtered subset and an unplaceable row are different facts.
@@ -1389,7 +1404,7 @@ class TestSubjectPartition:
         _, filtered_out = _run_with_results()
 
         projection = project_score_records(
-            [], [filtered_out], known_run_ids={filtered_out.eval_run_id}, profile=_JUDGED_HOST
+            [], [filtered_out], known_run_ids={filtered_out.eval_run_id}, profile=_JUDGED_HOST, archived_run_ids=None
         )
 
         assert projection.exclusions.results_outside_queried_runs == 1
@@ -1400,7 +1415,9 @@ class TestSubjectPartition:
         """The benign class must not swallow the real one — that would be the same bug inverted."""
         _, orphan = _run_with_results()
 
-        projection = project_score_records([], [orphan], known_run_ids={"some-other-run"}, profile=_JUDGED_HOST)
+        projection = project_score_records(
+            [], [orphan], known_run_ids={"some-other-run"}, profile=_JUDGED_HOST, archived_run_ids=None
+        )
 
         assert projection.exclusions.results_without_run == 1
         assert projection.exclusions.results_outside_queried_runs == 0
@@ -1409,7 +1426,7 @@ class TestSubjectPartition:
         """`known_run_ids=None` asserts `runs` is the whole corpus, so nothing was filtered."""
         _, orphan = _run_with_results()
 
-        projection = project_score_records([], [orphan], profile=_JUDGED_HOST)
+        projection = project_score_records([], [orphan], profile=_JUDGED_HOST, archived_run_ids=None)
 
         assert projection.exclusions.results_without_run == 1
         assert projection.exclusions.results_outside_queried_runs == 0
@@ -1446,7 +1463,7 @@ class TestPlacementHelper:
     def test_a_placed_result_carries_its_run_and_resolved_subject(self):
         run, result = _run_with_results()
 
-        placed, exclusions = place_results([run], [result], None, source="test")
+        placed, exclusions = place_results([run], [result], None, source="test", archived_run_ids=None)
 
         assert exclusions.total == 0
         assert len(placed) == 1
@@ -1459,7 +1476,7 @@ class TestPlacementHelper:
         run, first = _run_with_results()
         second = make_eval_result(eval_run_id=run.id, scope_id=run.scope_id)
 
-        placed, _ = place_results([run], [first, second], None, source="test")
+        placed, _ = place_results([run], [first, second], None, source="test", archived_run_ids=None)
 
         assert [p.result.id for p in placed] == [first.id, second.id]
 
@@ -1474,6 +1491,7 @@ class TestPlacementHelper:
             [ok, orphan, filtered],
             {ok.eval_run_id, filtered.eval_run_id},
             source="test",
+            archived_run_ids=None,
         )
 
         assert [p.result.id for p in placed] == [ok.id]
@@ -1516,6 +1534,32 @@ class TestPlacementHelper:
         assert exclusions.results_from_archived_runs == 0
         assert exclusions.results_outside_queried_runs == 1
 
+    @pytest.mark.parametrize(
+        "call",
+        [
+            pytest.param(lambda run, result: place_results([run], [result], None, source="test"), id="place_results"),
+            pytest.param(
+                lambda run, result: project_score_records([run], [result], profile=_JUDGED_HOST),
+                id="project_score_records",
+            ),
+            pytest.param(lambda run, result: compute_frontier([run], [result]), id="compute_frontier"),
+            pytest.param(
+                lambda run, result: compute_history([run], [result], profile=_JUDGED_HOST), id="compute_history"
+            ),
+        ],
+    )
+    def test_a_caller_that_never_states_archival_is_refused(self, call):
+        """No default, so forgetting archival is a ``TypeError``, not a ``status`` filter blamed.
+
+        With a ``None`` default, a caller that narrowed its cohort and omitted the
+        set got every archived run counted as its own filter's exclusion, with
+        advice to widen ``status`` that can never reach an archived run (#670).
+        """
+        run, result = _run_with_results()
+
+        with pytest.raises(TypeError, match="archived_run_ids"):
+            call(run, result)
+
     def test_both_callers_report_identical_exclusion_accounting(self):
         """project_score_records and frontier must drop the same rows for the same reasons.
 
@@ -1532,8 +1576,10 @@ class TestPlacementHelper:
         results = [ok, orphan, filtered]
         known = {ok.eval_run_id, filtered.eval_run_id}
 
-        proj = project_score_records(runs, results, known_run_ids=known, profile=_JUDGED_HOST).exclusions
-        front = compute_frontier(runs, results, known_run_ids=known).exclusions
+        proj = project_score_records(
+            runs, results, known_run_ids=known, profile=_JUDGED_HOST, archived_run_ids=None
+        ).exclusions
+        front = compute_frontier(runs, results, known_run_ids=known, archived_run_ids=None).exclusions
 
         assert proj.model_dump() == front.model_dump()
 
@@ -1891,7 +1937,7 @@ class TestPivotDisclosure:
         ]
 
         table = compute_pivot(
-            project_score_records([run], failures, profile=_JUDGED_HOST).records,
+            project_score_records([run], failures, profile=_JUDGED_HOST, archived_run_ids=None).records,
             row_factor="model",
             column_factor="template_id",
             metric=METRIC_COMPOSITE,
@@ -1916,7 +1962,7 @@ class TestPivotDisclosure:
         ]
 
         table = compute_pivot(
-            project_score_records([run], results, profile=_JUDGED_HOST).records,
+            project_score_records([run], results, profile=_JUDGED_HOST, archived_run_ids=None).records,
             row_factor="model",
             column_factor="template_id",
             metric=METRIC_COMPOSITE,
@@ -2434,7 +2480,7 @@ class TestPivotPoolingDisclosures:
 
     @staticmethod
     def _cost_pivot(runs, results, *, column_factor="template_id", row_factor="model", metric=METRIC_COST_USD):
-        projection = project_score_records(runs, results, profile=_JUDGED_HOST)
+        projection = project_score_records(runs, results, profile=_JUDGED_HOST, archived_run_ids=None)
         return compute_pivot(
             projection.records,
             row_factor=row_factor,
@@ -2532,7 +2578,9 @@ class TestPivotPoolingDisclosures:
         seeded = self._result(
             run, case="tc-2", async_deliveries=[AsyncDelivery(tool="scout", status="delivered", substituted=True)]
         )
-        projection = project_score_records([run], [self._result(run, case="tc-1"), seeded], profile=_JUDGED_HOST)
+        projection = project_score_records(
+            [run], [self._result(run, case="tc-1"), seeded], profile=_JUDGED_HOST, archived_run_ids=None
+        )
 
         cell = self._cost_pivot([run], [self._result(run, case="tc-1"), seeded]).cells[0]
 
@@ -2574,7 +2622,9 @@ class TestPivotPoolingDisclosures:
         replayed, _ = _run_with_results(id="run-replay", cassette_mode="replay")
         results = [self._result(live, case="tc-1"), self._result(replayed, case="tc-2", cost_roles=self.PRICED)]
 
-        export = export_projection(project_score_records([live, replayed], results, profile=_JUDGED_HOST), fmt="csv")
+        export = export_projection(
+            project_score_records([live, replayed], results, profile=_JUDGED_HOST, archived_run_ids=None), fmt="csv"
+        )
 
         rows = [row for row in csv.DictReader(io.StringIO(export.body)) if row["metric"] == METRIC_COST_USD]
         assert {row["run_id"]: row["cassette_mode"] for row in rows} == {"run-live": "off", "run-replay": "replay"}
@@ -2918,7 +2968,10 @@ class TestClosedSetsAreClosed:
 
         run, result = _run_with_results()
         emitted = {
-            record.metric for record in reporting.project_score_records([run], [result], profile=_JUDGED_HOST).records
+            record.metric
+            for record in reporting.project_score_records(
+                [run], [result], profile=_JUDGED_HOST, archived_run_ids=None
+            ).records
         }
 
         assert emitted, "the fixture must project at least one row for this to mean anything"
@@ -2957,7 +3010,9 @@ class TestModelShapes:
         reason, which is worse than absent.
         """
         run, result = _run_with_results()
-        valid = project_score_records([run], [result], profile=_JUDGED_HOST).records[0].model_dump()
+        valid = (
+            project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records[0].model_dump()
+        )
 
         with pytest.raises(ValidationError):
             ScoreRecord.model_validate({**valid, "definitely_not_a_field": 1})
@@ -2971,7 +3026,7 @@ class TestModelShapes:
 
     def test_score_record_round_trips_through_its_own_dump(self):
         run, result = _run_with_results()
-        row = project_score_records([run], [result], profile=_JUDGED_HOST).records[0]
+        row = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records[0]
 
         assert ScoreRecord.model_validate(row.model_dump()) == row
 
@@ -3071,7 +3126,7 @@ class TestProgramBudget:
         # failed run's spend is absent from its cost rows — the exact spend budget
         # counts and quality drops.
         quality = project_score_records(
-            [completed], results, known_run_ids={completed.id, failed.id}, profile=_JUDGED_HOST
+            [completed], results, known_run_ids={completed.id, failed.id}, profile=_JUDGED_HOST, archived_run_ids=None
         )
         cost_rows = [r for r in quality.records if r.metric == METRIC_COST_USD]
         assert [r.value for r in cost_rows] == [0.10]
@@ -3292,7 +3347,7 @@ class TestExport:
 
     def test_csv_carries_every_declared_coordinate_as_a_column(self):
         run, result = _run_with_results(judge_model="judge-a", simulator_model="sim-b")
-        records = project_score_records([run], [result], profile=_JUDGED_HOST).records
+        records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
 
         text = export_records_csv(records)
 
@@ -3325,7 +3380,7 @@ class TestExport:
     def test_open_factor_keys_flatten_to_their_own_columns(self):
         """A bake-off's varied knob is a first-class pandas column, not a nested blob."""
         run, result = _run_with_results(**_overlaid(prompt_style="verbose", field_aliases={"vendor_name": "supplier"}))
-        records = project_score_records([run], [result], profile=_JUDGED_HOST).records
+        records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
 
         reader = csv.DictReader(io.StringIO(export_records_csv(records)))
         header = reader.fieldnames or []
@@ -3341,7 +3396,7 @@ class TestExport:
         # An infra-excluded result composites to None, so its composite row carries no value.
         run, _ = _run_with_results()
         failed = make_eval_result(eval_run_id=run.id, scope_id=run.scope_id, infra_error="timeout")
-        records = project_score_records([run], [failed], profile=_JUDGED_HOST).records
+        records = project_score_records([run], [failed], profile=_JUDGED_HOST, archived_run_ids=None).records
 
         reader = csv.DictReader(io.StringIO(export_records_csv(records)))
         rows = {row["metric"]: row for row in reader}
@@ -3352,7 +3407,9 @@ class TestExport:
         """Columns stay aligned across rows even when only some runs carried an override — the pandas ingest contract."""
         with_factor, r1 = _run_with_results(**_overlaid(prompt_style="terse"))
         without_factor, r2 = _run_with_results(subject_id="ent-maple")
-        records = project_score_records([with_factor, without_factor], [r1, r2], profile=_JUDGED_HOST).records
+        records = project_score_records(
+            [with_factor, without_factor], [r1, r2], profile=_JUDGED_HOST, archived_run_ids=None
+        ).records
 
         reader = csv.DictReader(io.StringIO(export_records_csv(records)))
         rows = list(reader)
@@ -3366,7 +3423,7 @@ class TestExport:
     def test_csv_neutralizes_a_formula_injection_in_a_user_authored_field(self):
         """A leading =/+/-/@ in an operator-authored override can't smuggle a spreadsheet formula."""
         run, result = _run_with_results(**_overlaid(instructions="=cmd|'/C calc'!A1"))
-        records = project_score_records([run], [result], profile=_JUDGED_HOST).records
+        records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
 
         reader = csv.DictReader(io.StringIO(export_records_csv(records)))
         rows = list(reader)
@@ -3378,7 +3435,11 @@ class TestExport:
         """The guard forces formulas to text yet leaves legitimate numbers verbatim for pandas."""
 
         run, result = _run_with_results()
-        dumped = project_score_records([run], [result], profile=_JUDGED_HOST).records[0].model_dump(mode="json")
+        dumped = (
+            project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None)
+            .records[0]
+            .model_dump(mode="json")
+        )
 
         def exported(value: str) -> str:
             """The cell ``value`` becomes as a subject label, in the JSON-safe dump the export also accepts."""
@@ -3388,7 +3449,7 @@ class TestExport:
         def exported_factor(value: str) -> str:
             """The cell ``value`` becomes as an overlay, an open-coordinate column."""
             run, result = _run_with_results(**_overlaid(instructions=value))
-            records = project_score_records([run], [result], profile=_JUDGED_HOST).records
+            records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
             return next(csv.DictReader(io.StringIO(export_records_csv(records))))["extractor.instructions"]
 
         # Formula payloads — every trigger char, none of them a number — get quoted.
@@ -3409,7 +3470,7 @@ class TestExport:
 
     def test_json_export_round_trips_the_whole_projection(self):
         run, result = _run_with_results(judge_model="judge-a")
-        projection = project_score_records([run], [result], profile=_JUDGED_HOST)
+        projection = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None)
 
         body = serialize_export(projection, fmt="json")
 
@@ -3420,13 +3481,13 @@ class TestExport:
 
     def test_csv_serialization_matches_the_shared_helper(self):
         run, result = _run_with_results()
-        projection = project_score_records([run], [result], profile=_JUDGED_HOST)
+        projection = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None)
 
         assert serialize_export(projection, fmt="csv") == export_records_csv(projection.records)
 
     def test_an_unknown_format_is_refused_not_defaulted(self):
         run, result = _run_with_results()
-        projection = project_score_records([run], [result], profile=_JUDGED_HOST)
+        projection = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None)
 
         with pytest.raises(ExportError, match="unknown export format"):
             serialize_export(projection, fmt="parquet")
@@ -3482,7 +3543,7 @@ class TestExportCarriesACodeGradedRunsOwnGrade:
         Returns:
             The parsed CSV rows.
         """
-        projection = project_score_records([run], results, profile=_JUDGED_HOST)
+        projection = project_score_records([run], results, profile=_JUDGED_HOST, archived_run_ids=None)
         return list(csv.DictReader(io.StringIO(serialize_export(projection, fmt="csv"))))
 
     def test_a_reader_can_name_the_case_this_arm_missed(self):
@@ -3523,7 +3584,9 @@ class TestExportCarriesACodeGradedRunsOwnGrade:
         code_run, code_results = self._code_graded()
         judged_run, judged_result = _run_with_results(subject_id="ent-other")
 
-        projection = project_score_records([code_run, judged_run], [*code_results, judged_result], profile=_JUDGED_HOST)
+        projection = project_score_records(
+            [code_run, judged_run], [*code_results, judged_result], profile=_JUDGED_HOST, archived_run_ids=None
+        )
         rows = list(csv.DictReader(io.StringIO(serialize_export(projection, fmt="csv"))))
 
         composites = [row for row in rows if row["metric"] == "composite"]
@@ -3537,7 +3600,11 @@ class TestExportCarriesACodeGradedRunsOwnGrade:
         run, result = _run_with_results()
 
         header = csv.DictReader(
-            io.StringIO(serialize_export(project_score_records([run], [result], profile=_JUDGED_HOST), fmt="csv"))
+            io.StringIO(
+                serialize_export(
+                    project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None), fmt="csv"
+                )
+            )
         ).fieldnames
 
         assert not [column for column in (header or []) if column.startswith("host_measure:")]
@@ -3545,7 +3612,7 @@ class TestExportCarriesACodeGradedRunsOwnGrade:
     def test_the_grade_rides_the_json_export_too(self):
         """CSV and JSON are one seam, so the grade cannot reach only the flat form."""
         run, results = self._code_graded()
-        projection = project_score_records([run], results, profile=_JUDGED_HOST)
+        projection = project_score_records([run], results, profile=_JUDGED_HOST, archived_run_ids=None)
 
         reparsed = ScoreProjection.model_validate(json.loads(serialize_export(projection, fmt="json")))
 
@@ -3576,7 +3643,7 @@ class TestExportCarriesACodeGradedRunsOwnGrade:
 
         with pytest.raises(PivotError, match="not a coordinate"):
             compute_pivot(
-                project_score_records([run], results, profile=_JUDGED_HOST).records,
+                project_score_records([run], results, profile=_JUDGED_HOST, archived_run_ids=None).records,
                 metric="composite",
                 row_factor="host_measures",
                 column_factor="model",
@@ -4666,7 +4733,9 @@ class TestHistoryLatencyExcludesTheHarnesssOwnCells:
             infra_error="apparatus: cassette miss in replay mode",
         )
 
-        result = compute_history([run], [healthy, broken], metric=METRIC_TOTAL_MS, profile=_JUDGED_HOST)
+        result = compute_history(
+            [run], [healthy, broken], metric=METRIC_TOTAL_MS, profile=_JUDGED_HOST, archived_run_ids=None
+        )
 
         points = [point for series in result.series for point in series.points]
         assert len(points) == 1, "expected one run, one point"
@@ -4700,7 +4769,9 @@ class TestHistoryLatencyExcludesTheHarnesssOwnCells:
             candidate_error="the provider refused the request",
         )
 
-        result = compute_history([run], [fast, slow_failure, refused], metric=METRIC_TOTAL_MS, profile=_JUDGED_HOST)
+        result = compute_history(
+            [run], [fast, slow_failure, refused], metric=METRIC_TOTAL_MS, profile=_JUDGED_HOST, archived_run_ids=None
+        )
 
         points = [point for series in result.series for point in series.points]
         assert points[0].value == pytest.approx(500.0)
@@ -4721,7 +4792,9 @@ class TestHistoryCostKeepsEveryDollarSpent:
             run, model="m1", variant_key="vk-a", test_case_id="tc3", infra_error="cassette miss"
         ).model_copy(update={"cost_usd": 0.002})
 
-        result = compute_history([run], [answered, refused, faulted], metric=METRIC_COST_USD, profile=_JUDGED_HOST)
+        result = compute_history(
+            [run], [answered, refused, faulted], metric=METRIC_COST_USD, profile=_JUDGED_HOST, archived_run_ids=None
+        )
 
         points = [point for series in result.series for point in series.points]
         assert points[0].value == pytest.approx((0.004 + 0.0001 + 0.002) / 3)
@@ -4741,7 +4814,7 @@ class TestHistoryCostKeepsEveryDollarSpent:
         results = [answered, refused, faulted]
 
         (cell,) = compute_pivot(
-            project_score_records([run], results, profile=_JUDGED_HOST).records,
+            project_score_records([run], results, profile=_JUDGED_HOST, archived_run_ids=None).records,
             row_factor="model",
             column_factor="variant_key",
             metric=METRIC_COST_USD,
@@ -4749,7 +4822,9 @@ class TestHistoryCostKeepsEveryDollarSpent:
         ).cells
         (point,) = [
             point
-            for series in compute_history([run], results, metric=METRIC_COST_USD, profile=_JUDGED_HOST).series
+            for series in compute_history(
+                [run], results, metric=METRIC_COST_USD, profile=_JUDGED_HOST, archived_run_ids=None
+            ).series
             for point in series.points
         ]
         from threetears.evals.contracts.scoring import compute_cost_summary
@@ -4788,7 +4863,7 @@ class TestFrontierLatencyExcludesTheHarnesssOwnCells:
             infra_error="apparatus: cassette miss in replay mode",
         )
 
-        out = compute_frontier([run], [healthy, broken])
+        out = compute_frontier([run], [healthy, broken], archived_run_ids=None)
         point = _point_by_model(out.subjects[0], "m1")
 
         assert point.mean_total_ms == pytest.approx(1000.0), (
@@ -4824,7 +4899,7 @@ class TestFrontierLatencyExcludesTheHarnesssOwnCells:
             candidate_error="the provider refused the request",
         )
 
-        out = compute_frontier([run], [fast, slow_failure, refused])
+        out = compute_frontier([run], [fast, slow_failure, refused], archived_run_ids=None)
         point = _point_by_model(out.subjects[0], "m1")
 
         assert point.mean_total_ms == pytest.approx(500.0), (
@@ -4844,7 +4919,7 @@ class TestFrontierLatencyExcludesTheHarnesssOwnCells:
             infra_error="apparatus: cassette miss in replay mode",
         )
 
-        out = compute_frontier([run], [broken])
+        out = compute_frontier([run], [broken], archived_run_ids=None)
         point = _point_by_model(out.subjects[0], "m1")
 
         assert point.mean_total_ms is None, "an all-excluded point must report latency unknown, never a winning zero"
@@ -4868,7 +4943,7 @@ class TestFrontierCostLeavesOutAFaultedCell:
             infra_error="apparatus: cassette miss in replay mode",
         )
 
-        point = _point_by_model(compute_frontier([run], [*whole, faulted]).subjects[0], "m1")
+        point = _point_by_model(compute_frontier([run], [*whole, faulted], archived_run_ids=None).subjects[0], "m1")
 
         assert point.production_replicating_cost == pytest.approx(0.10)
         assert point.n_cost == 2
@@ -4884,7 +4959,7 @@ class TestFrontierCostComposition:
         results = [_fr_result(run, model="m1", variant_key="vk-a", test_case_id="tc1", roles={"candidate": 0.1})]
         results[0].cost_roles = self.UNPRICED
 
-        out = compute_frontier([run], results)
+        out = compute_frontier([run], results, archived_run_ids=None)
 
         assert out.subjects[0].points[0].cost_compositions == [self.UNPRICED]
 
@@ -4896,7 +4971,7 @@ class TestFrontierCostComposition:
         cheap.cost_roles = self.UNPRICED
         dear.cost_roles = [*self.UNPRICED, "external"]
 
-        out = compute_frontier([run], [cheap, dear])
+        out = compute_frontier([run], [cheap, dear], archived_run_ids=None)
 
         by_model = {p.model: p for p in out.subjects[0].points}
         assert by_model["m1"].cost_compositions == [self.UNPRICED]
@@ -4914,7 +4989,7 @@ class TestFrontierSubjectPartition:
             _fr_result(run_b, model="m", variant_key="vk-b", test_case_id="tc1", roles={"candidate": 0.1}),
         ]
 
-        result = compute_frontier([run_a, run_b], results)
+        result = compute_frontier([run_a, run_b], results, archived_run_ids=None)
 
         assert [pf.subject_id for pf in result.subjects] == ["ent-a", "ent-b"]
         assert all(len(pf.points) == 1 for pf in result.subjects)
@@ -4929,7 +5004,7 @@ class TestFrontierSubjectPartition:
             _fr_result(run_b, model="m", variant_key="shared", test_case_id="tc1", roles={"candidate": 0.1}),
         ]
 
-        result = compute_frontier([run_a, run_b], results)
+        result = compute_frontier([run_a, run_b], results, archived_run_ids=None)
 
         assert len(result.subjects) == 2
         assert {pf.subject_id for pf in result.subjects} == {"ent-a", "ent-b"}
@@ -4945,7 +5020,7 @@ class TestFrontierGroupsByVariant:
             _fr_result(run, model="sonnet", variant_key="vk-2", test_case_id="tc1", roles={"candidate": 0.2}),
         ]
 
-        result = compute_frontier([run], results)
+        result = compute_frontier([run], results, archived_run_ids=None)
 
         points = result.subjects[0].points
         assert len(points) == 2
@@ -4991,7 +5066,7 @@ class TestBothLensesGateOnTheIdentityVersion:
             ),
         ]
 
-        points = compute_frontier([run], results).subjects[0].points
+        points = compute_frontier([run], results, archived_run_ids=None).subjects[0].points
 
         assert len(points) == 2, "two predicate versions of one key pooled as a single contestant"
         assert {p.variant_identity_version for p in points} == {9, 10}
@@ -5018,7 +5093,7 @@ class TestBothLensesGateOnTheIdentityVersion:
             ),
         ]
 
-        points = compute_frontier([run], results).subjects[0].points
+        points = compute_frontier([run], results, archived_run_ids=None).subjects[0].points
 
         assert len(points) == 1, "one contestant was split on a version both its observations share"
         assert points[0].variant_identity_version == 10
@@ -5032,7 +5107,7 @@ class TestBothLensesGateOnTheIdentityVersion:
             ),
         ]
 
-        result = compute_history([run], results, metric=METRIC_TOTAL_MS, profile=_JUDGED_HOST)
+        result = compute_history([run], results, metric=METRIC_TOTAL_MS, profile=_JUDGED_HOST, archived_run_ids=None)
 
         assert len(result.series) == 2, "one series trended two predicate versions as one contestant"
         assert {series.variant_identity_version for series in result.series} == {9, 10}
@@ -5048,7 +5123,7 @@ class TestBothLensesGateOnTheIdentityVersion:
             ),
         ]
 
-        result = compute_history([run], results, metric=METRIC_TOTAL_MS, profile=_JUDGED_HOST)
+        result = compute_history([run], results, metric=METRIC_TOTAL_MS, profile=_JUDGED_HOST, archived_run_ids=None)
 
         assert len(result.series) == 1
 
@@ -5075,7 +5150,7 @@ class TestBothLensesGateOnTheIdentityVersion:
             ),
         ]
 
-        points = compute_frontier([run], results).subjects[0].points
+        points = compute_frontier([run], results, archived_run_ids=None).subjects[0].points
         dominated = [p for p in points if p.dominated]
 
         assert len(dominated) == 1, "the cheaper current-predicate arm should dominate its superseded twin"
@@ -5111,7 +5186,7 @@ class TestBothLensesGateOnTheIdentityVersion:
             ),
         ]
 
-        points = compute_frontier([run], results).subjects[0].points
+        points = compute_frontier([run], results, archived_run_ids=None).subjects[0].points
 
         assert [p.variant_identity_version for p in points] == [2, 10], "adjacent twin rows must order by predicate"
 
@@ -5125,7 +5200,9 @@ class TestBothLensesGateOnTheIdentityVersion:
             _fr_result(run, model="sonnet", variant_key="vk-1", test_case_id="tc1", total_ms=200.0, identity_version=2),
         ]
 
-        series = compute_history([run], results, metric=METRIC_TOTAL_MS, profile=_JUDGED_HOST).series
+        series = compute_history(
+            [run], results, metric=METRIC_TOTAL_MS, profile=_JUDGED_HOST, archived_run_ids=None
+        ).series
 
         assert [s.variant_identity_version for s in series] == [2, 10]
 
@@ -5150,7 +5227,7 @@ class TestASupersededPredicateSaysSo:
             )
         ]
 
-        point = compute_frontier([run], results).subjects[0].points[0]
+        point = compute_frontier([run], results, archived_run_ids=None).subjects[0].points[0]
 
         assert point.identity_version_disclosure is not None
         assert "v1" in point.identity_version_disclosure
@@ -5169,7 +5246,7 @@ class TestASupersededPredicateSaysSo:
             )
         ]
 
-        point = compute_frontier([run], results).subjects[0].points[0]
+        point = compute_frontier([run], results, archived_run_ids=None).subjects[0].points[0]
 
         assert point.identity_version_disclosure is None
 
@@ -5179,7 +5256,7 @@ class TestASupersededPredicateSaysSo:
         # Eight cases, every one passed: enough for the pass^k interval to clear 0.5.
         results = _fr_cases(run, 8, model="sonnet", variant_key="vk-old", roles={"candidate": 0.1}, identity_version=1)
 
-        subject = compute_frontier([run], results, bar=0.5).subjects[0]
+        subject = compute_frontier([run], results, bar=0.5, archived_run_ids=None).subjects[0]
 
         assert subject.verdict is not None
         assert subject.verdict.identity_version_disclosure == subject.points[0].identity_version_disclosure
@@ -5197,7 +5274,9 @@ class TestASupersededPredicateSaysSo:
             )
         ]
 
-        series = compute_history([run], results, metric=METRIC_TOTAL_MS, profile=_JUDGED_HOST).series[0]
+        series = compute_history(
+            [run], results, metric=METRIC_TOTAL_MS, profile=_JUDGED_HOST, archived_run_ids=None
+        ).series[0]
 
         assert series.identity_version_disclosure is not None
 
@@ -5231,7 +5310,7 @@ class TestAMixedPredicateCorpusExplainsItself:
             ),
         ]
 
-        result = compute_frontier([run], results)
+        result = compute_frontier([run], results, archived_run_ids=None)
 
         assert result.identity_version_span == [9, 10]
         assert result.identity_span_disclosure is not None
@@ -5250,7 +5329,7 @@ class TestAMixedPredicateCorpusExplainsItself:
             )
         ]
 
-        result = compute_frontier([run], results)
+        result = compute_frontier([run], results, archived_run_ids=None)
 
         assert result.identity_version_span == [10]
         assert result.identity_span_disclosure is None, "there is no split to explain"
@@ -5265,11 +5344,13 @@ class TestAMixedPredicateCorpusExplainsItself:
             ),
         ]
 
-        assert compute_history([run], results, metric=METRIC_TOTAL_MS, profile=_JUDGED_HOST).identity_version_span == [
+        assert compute_history(
+            [run], results, metric=METRIC_TOTAL_MS, profile=_JUDGED_HOST, archived_run_ids=None
+        ).identity_version_span == [
             9,
             10,
         ]
-        assert compute_frontier([run], results).identity_version_span == [9, 10]
+        assert compute_frontier([run], results, archived_run_ids=None).identity_version_span == [9, 10]
 
     def test_the_span_names_only_predicates_this_answer_rests_on(self):
         """A subject filter narrows the span with it, or the caveat points at rows the answer never used."""
@@ -5294,7 +5375,7 @@ class TestAMixedPredicateCorpusExplainsItself:
             ),
         ]
 
-        result = compute_frontier([maple, other], results, subject_id="ent-maple")
+        result = compute_frontier([maple, other], results, subject_id="ent-maple", archived_run_ids=None)
 
         assert result.identity_version_span == [10], "the span named a predicate no ranked row was keyed under"
         assert result.identity_span_disclosure is None
@@ -5325,7 +5406,7 @@ class TestFrontierCassetteSpan:
     def test_a_pooled_point_carries_the_disclosure(self):
         runs, results = self._corpus()
 
-        point = compute_frontier(runs, results).subjects[0].points[0]
+        point = compute_frontier(runs, results, archived_run_ids=None).subjects[0].points[0]
 
         assert point.n_results == 2, "the two arms must still pool — this fix discloses, it does not split"
         assert point.cassette_mode_disclosure is not None
@@ -5338,7 +5419,7 @@ class TestFrontierCassetteSpan:
             _fr_result(run_b, model="flash", variant_key="vk-1", test_case_id="c2", roles={"candidate": 0.02}),
         ]
 
-        point = compute_frontier([run_a, run_b], results).subjects[0].points[0]
+        point = compute_frontier([run_a, run_b], results, archived_run_ids=None).subjects[0].points[0]
 
         assert point.cassette_mode_disclosure is None
 
@@ -5355,7 +5436,10 @@ class TestFrontierCassetteSpan:
             _fr_result(replay, model="flash", variant_key="vk-mixed", test_case_id="c1", roles={"candidate": 0.02}),
         ]
 
-        points = {p.variant_key: p for p in compute_frontier([capture, replay], results).subjects[0].points}
+        points = {
+            p.variant_key: p
+            for p in compute_frontier([capture, replay], results, archived_run_ids=None).subjects[0].points
+        }
 
         assert points["vk-clean"].cassette_mode_disclosure is None
         assert points["vk-mixed"].cassette_mode_disclosure is None
@@ -5369,7 +5453,7 @@ class TestFrontierCassetteSpan:
         """
         runs, results = self._corpus()
 
-        verdict = compute_frontier(runs, results, bar=0.0).subjects[0].verdict
+        verdict = compute_frontier(runs, results, bar=0.0, archived_run_ids=None).subjects[0].verdict
 
         assert verdict is not None
         assert verdict.cassette_mode_disclosure is not None
@@ -5379,7 +5463,7 @@ class TestFrontierCassetteSpan:
         # Two cases: a pass^k interval, which a bar is read by, needs two.
         results = _fr_cases(run, 2, model="flash", variant_key="vk-1", roles={"candidate": 0.02})
 
-        verdict = compute_frontier([run], results, bar=0.0).subjects[0].verdict
+        verdict = compute_frontier([run], results, bar=0.0, archived_run_ids=None).subjects[0].verdict
 
         assert verdict is not None
         assert verdict.cassette_mode_disclosure is None
@@ -5413,7 +5497,7 @@ class TestFrontierTemplateSpan:
     def test_a_pooled_point_carries_the_disclosure(self):
         runs, results = self._corpus()
 
-        point = compute_frontier(runs, results).subjects[0].points[0]
+        point = compute_frontier(runs, results, archived_run_ids=None).subjects[0].points[0]
 
         assert point.n_results == 2, "the two suites must still pool — this fix discloses, it does not split"
         assert point.template_span_disclosure is not None
@@ -5429,7 +5513,7 @@ class TestFrontierTemplateSpan:
         """
         runs, results = self._corpus()
 
-        point = compute_frontier(runs, results).subjects[0].points[0]
+        point = compute_frontier(runs, results, archived_run_ids=None).subjects[0].points[0]
 
         assert point.template_span == ["multi_turn_tools_v1 (1 run)", "single_turn_plain_v1 (1 run)"]
         assert point.template_span_disclosure is not None
@@ -5444,7 +5528,7 @@ class TestFrontierTemplateSpan:
             _fr_result(run_b, model="flash", variant_key="vk-1", test_case_id="c2", roles={"candidate": 0.01}),
         ]
 
-        point = compute_frontier([run_a, run_b], results).subjects[0].points[0]
+        point = compute_frontier([run_a, run_b], results, archived_run_ids=None).subjects[0].points[0]
 
         assert point.template_span == []
         assert point.template_span_disclosure is None
@@ -5453,7 +5537,9 @@ class TestFrontierTemplateSpan:
         """pass^k is what the bar is applied to, so naming only cost would miss the verdict."""
         runs, results = self._corpus()
 
-        disclosure = compute_frontier(runs, results).subjects[0].points[0].template_span_disclosure
+        disclosure = (
+            compute_frontier(runs, results, archived_run_ids=None).subjects[0].points[0].template_span_disclosure
+        )
 
         assert disclosure is not None
         assert "pass^k" in disclosure
@@ -5468,7 +5554,7 @@ class TestFrontierTemplateSpan:
             _fr_result(run_b, model="flash", variant_key="vk-1", test_case_id="c2", roles={"candidate": 0.01}),
         ]
 
-        point = compute_frontier([run_a, run_b], results).subjects[0].points[0]
+        point = compute_frontier([run_a, run_b], results, archived_run_ids=None).subjects[0].points[0]
 
         assert point.template_span_disclosure is None
 
@@ -5485,7 +5571,12 @@ class TestFrontierTemplateSpan:
             _fr_result(ad_hoc, model="flash", variant_key="vk-1", test_case_id="c2", roles={"candidate": 0.01}),
         ]
 
-        disclosure = compute_frontier([templated, ad_hoc], results).subjects[0].points[0].template_span_disclosure
+        disclosure = (
+            compute_frontier([templated, ad_hoc], results, archived_run_ids=None)
+            .subjects[0]
+            .points[0]
+            .template_span_disclosure
+        )
 
         assert disclosure is not None
         assert "ad-hoc (no template)" in disclosure
@@ -5503,7 +5594,9 @@ class TestFrontierTemplateSpan:
             _fr_result(hard, model="flash", variant_key="vk-other", test_case_id="c1", roles={"candidate": 0.01}),
         ]
 
-        points = {p.variant_key: p for p in compute_frontier([easy, hard], results).subjects[0].points}
+        points = {
+            p.variant_key: p for p in compute_frontier([easy, hard], results, archived_run_ids=None).subjects[0].points
+        }
 
         assert points["vk-clean"].template_span_disclosure is None
         assert points["vk-other"].template_span_disclosure is None
@@ -5525,7 +5618,7 @@ class TestFrontierTemplateSpan:
             for index in range(4)
         ]
 
-        verdict = compute_frontier([easy, hard], results, bar=0.5).subjects[0].verdict
+        verdict = compute_frontier([easy, hard], results, bar=0.5, archived_run_ids=None).subjects[0].verdict
 
         assert verdict is not None
         assert verdict.template_span_disclosure is not None
@@ -5545,7 +5638,7 @@ class TestFrontierTemplateSpan:
             for index in range(8)
         ]
 
-        verdict = compute_frontier([easy, hard], results, bar=0.7).subjects[0].verdict
+        verdict = compute_frontier([easy, hard], results, bar=0.7, archived_run_ids=None).subjects[0].verdict
 
         assert verdict is not None
         assert verdict.model == "cheap"
@@ -5555,7 +5648,7 @@ class TestFrontierTemplateSpan:
         run = _fr_run(template_id="tpl-1")
         results = _fr_cases(run, 2, model="flash", variant_key="vk-1", roles={"candidate": 0.01})
 
-        verdict = compute_frontier([run], results, bar=0.0).subjects[0].verdict
+        verdict = compute_frontier([run], results, bar=0.0, archived_run_ids=None).subjects[0].verdict
 
         assert verdict is not None
         assert verdict.template_span_disclosure is None
@@ -5597,7 +5690,7 @@ class TestFrontierDomination:
     def test_dominated_point_is_flagged_with_its_dominator(self):
         run, results = self._corpus()
 
-        pf = compute_frontier([run], results).subjects[0]
+        pf = compute_frontier([run], results, archived_run_ids=None).subjects[0]
 
         pricey = _point_by_model(pf, "pricey")
         assert pricey.dominated is True and pricey.dominance == "dominated"
@@ -5610,7 +5703,7 @@ class TestFrontierDomination:
     def test_non_dominated_points_are_not_flagged(self):
         run, results = self._corpus()
 
-        pf = compute_frontier([run], results).subjects[0]
+        pf = compute_frontier([run], results, archived_run_ids=None).subjects[0]
 
         assert _point_by_model(pf, "cheap").dominated is False
         assert _point_by_model(pf, "fast").dominated is False
@@ -5631,7 +5724,7 @@ class TestFrontierDomination:
             *_fr_cases(run, 8, model="pricey", variant_key="vk-pricey", roles={"candidate": 1.0}, total_ms=50),
         ]
 
-        pf = compute_frontier([run], results).subjects[0]
+        pf = compute_frontier([run], results, archived_run_ids=None).subjects[0]
 
         assert _point_by_model(pf, "pricey").dominated is False
         assert _point_by_model(pf, "pricey").dominance == "not_separated"
@@ -5650,7 +5743,7 @@ class TestFrontierDomination:
             ),
         ]
 
-        pf = compute_frontier([run], results).subjects[0]
+        pf = compute_frontier([run], results, archived_run_ids=None).subjects[0]
 
         assert _point_by_model(pf, "pricey").dominance == "untested"
         assert _point_by_model(pf, "cheap").dominance == "untested"
@@ -5665,7 +5758,7 @@ class TestFrontierDomination:
             ),
         ]
 
-        pf = compute_frontier([run], results).subjects[0]
+        pf = compute_frontier([run], results, archived_run_ids=None).subjects[0]
 
         assert _point_by_model(pf, "pricey").dominance == "untested"
         assert _point_by_model(pf, "pricey").dominated is False
@@ -5673,7 +5766,7 @@ class TestFrontierDomination:
     def test_dominated_point_is_retained_not_dropped(self):
         run, results = self._corpus()
 
-        pf = compute_frontier([run], results).subjects[0]
+        pf = compute_frontier([run], results, archived_run_ids=None).subjects[0]
 
         assert {p.model for p in pf.points} == {"cheap", "pricey", "fast"}
 
@@ -5697,7 +5790,7 @@ class TestFrontierDomination:
             ),
         ]
 
-        pf = compute_frontier([run], results).subjects[0]
+        pf = compute_frontier([run], results, archived_run_ids=None).subjects[0]
         dominated = next(p for p in pf.points if p.variant_key == "vk-c")
 
         assert [(d.model, d.variant_key) for d in dominated.dominated_by] == [
@@ -5722,7 +5815,7 @@ class TestFrontierDomination:
             ),
         ]
 
-        pf = compute_frontier([run], results).subjects[0]
+        pf = compute_frontier([run], results, archived_run_ids=None).subjects[0]
 
         assert _point_by_model(pf, "measured").dominated is False
         assert _point_by_model(pf, "unmeasured").dominated is False
@@ -5741,7 +5834,7 @@ class TestFrontierCostIsProductionReplicating:
             roles={"candidate": 0.30, "inner_agent": 0.10, "judge": 5.0, "simulator": 2.0},
         )
 
-        point = compute_frontier([run], [result]).subjects[0].points[0]
+        point = compute_frontier([run], [result], archived_run_ids=None).subjects[0].points[0]
 
         # 0.30 (candidate) + 0.10 (inner_agent); judge 5.0 and simulator 2.0 excluded.
         assert point.production_replicating_cost == pytest.approx(0.40)
@@ -5753,7 +5846,7 @@ class TestFrontierCostIsProductionReplicating:
             _fr_result(run, model="m", variant_key="vk", test_case_id="c2", roles={"candidate": 0.5}, passes=False),
         ]
 
-        point = compute_frontier([run], results).subjects[0].points[0]
+        point = compute_frontier([run], results, archived_run_ids=None).subjects[0].points[0]
 
         # cost 0.5, pass^1 0.5 → 0.5 / 0.5 = 1.0
         assert point.pass_hat_k == pytest.approx(0.5)
@@ -5763,7 +5856,7 @@ class TestFrontierCostIsProductionReplicating:
         run = _fr_run()
         result = _fr_result(run, model="m", variant_key="vk", test_case_id="c1", roles={"candidate": 0.5}, passes=False)
 
-        point = compute_frontier([run], [result]).subjects[0].points[0]
+        point = compute_frontier([run], [result], archived_run_ids=None).subjects[0].points[0]
 
         assert point.pass_hat_k == 0.0
         assert point.cost_per_acceptable_outcome is None
@@ -5780,7 +5873,7 @@ class TestFrontierPartialCost:
             _fr_result(run, model="m", variant_key="vk", test_case_id="c2", roles=None),
         ]
 
-        point = compute_frontier([run], results).subjects[0].points[0]
+        point = compute_frontier([run], results, archived_run_ids=None).subjects[0].points[0]
 
         assert point.production_replicating_cost == pytest.approx(0.20)
         assert point.n_cost == 1
@@ -5794,7 +5887,7 @@ class TestFrontierPartialCost:
             _fr_result(run, model="m", variant_key="vk", test_case_id="c2", roles=None),
         ]
 
-        point = compute_frontier([run], results).subjects[0].points[0]
+        point = compute_frontier([run], results, archived_run_ids=None).subjects[0].points[0]
 
         assert point.production_replicating_cost is None
         assert point.n_cost == 0
@@ -5826,7 +5919,7 @@ class TestFrontierAllFailedVariantRanksAtZero:
             *_fr_cases(run, 2, model="fails", variant_key="vk-fails", passes=False, roles={"candidate": 0.2}),
         ]
 
-        result = compute_frontier([run], results, bar=0.0)
+        result = compute_frontier([run], results, bar=0.0, archived_run_ids=None)
         pf = result.subjects[0]
 
         assert _point_by_model(pf, "rig").pass_hat_k is None
@@ -5846,7 +5939,7 @@ class TestFrontierAllFailedVariantRanksAtZero:
             ),
         ]
 
-        pf = compute_frontier([run], results).subjects[0]
+        pf = compute_frontier([run], results, archived_run_ids=None).subjects[0]
         broken = _point_by_model(pf, "broken")
 
         assert broken.pass_hat_k == 0.0
@@ -5872,7 +5965,7 @@ class TestFrontierBar:
     def test_no_bar_yields_no_verdict_and_no_invented_default(self):
         run, results = self._corpus()
 
-        result = compute_frontier([run], results, bar=None)
+        result = compute_frontier([run], results, bar=None, archived_run_ids=None)
 
         assert result.bar is None
         assert all(pf.verdict is None for pf in result.subjects)
@@ -5880,12 +5973,12 @@ class TestFrontierBar:
     def test_bar_is_echoed_back(self):
         run, results = self._corpus()
 
-        assert compute_frontier([run], results, bar=0.8).bar == pytest.approx(0.8)
+        assert compute_frontier([run], results, bar=0.8, archived_run_ids=None).bar == pytest.approx(0.8)
 
     def test_verdict_is_the_cheapest_variant_above_bar(self):
         run, results = self._corpus()
 
-        pf = compute_frontier([run], results, bar=0.8).subjects[0]
+        pf = compute_frontier([run], results, bar=0.8, archived_run_ids=None).subjects[0]
 
         # a and b both pass, their intervals wholly above 0.8; c fails, its interval wholly below. Cheapest
         # of {a: 0.5, b: 0.3} is b.
@@ -5912,7 +6005,7 @@ class TestFrontierBar:
             ),
         ]
 
-        verdict = compute_frontier([run], results, bar=0.8).subjects[0].verdict
+        verdict = compute_frontier([run], results, bar=0.8, archived_run_ids=None).subjects[0].verdict
 
         assert verdict is not None and verdict.model == "a"
         assert verdict.cost_decision == "not_separated"
@@ -5944,7 +6037,7 @@ class TestFrontierBar:
             ),
         ]
 
-        verdict = compute_frontier([run], results, bar=0.3).subjects[0].verdict
+        verdict = compute_frontier([run], results, bar=0.3, archived_run_ids=None).subjects[0].verdict
 
         assert verdict is not None and verdict.model == "a"
         assert verdict.cost_decision == "untested"
@@ -5955,7 +6048,7 @@ class TestFrontierBar:
         run, results = self._corpus()
         results = [r for r in results if r.model != "a"]
 
-        verdict = compute_frontier([run], results, bar=0.8).subjects[0].verdict
+        verdict = compute_frontier([run], results, bar=0.8, archived_run_ids=None).subjects[0].verdict
 
         assert verdict is not None and verdict.model == "b"
         assert (verdict.cost_decision, verdict.tied_with) == ("only_cleared", [])
@@ -5972,7 +6065,7 @@ class TestFrontierBar:
             *_fr_cases(run, 20, model="deep", variant_key="vk-deep", roles={"candidate": 0.30}),
         ]
 
-        pf = compute_frontier([run], results, bar=0.8).subjects[0]
+        pf = compute_frontier([run], results, bar=0.8, archived_run_ids=None).subjects[0]
 
         assert _point_by_model(pf, "thin").pass_hat_k == 1.0
         assert _point_by_model(pf, "thin").bar_decision == "undecided"
@@ -5985,7 +6078,7 @@ class TestFrontierBar:
             _fr_result(run, model="a", variant_key="vk-a", test_case_id="c1", roles={"candidate": 0.5}, passes=False),
         ]
 
-        pf = compute_frontier([run], results, bar=0.5).subjects[0]
+        pf = compute_frontier([run], results, bar=0.5, archived_run_ids=None).subjects[0]
 
         assert pf.n_cleared_bar == 0
         assert pf.verdict is None
@@ -6000,7 +6093,7 @@ class TestFrontierBarValidation:
         result = _fr_result(run, model="m", variant_key="vk", test_case_id="c1", roles={"candidate": 0.1})
 
         with pytest.raises(FrontierError):
-            compute_frontier([run], [result], bar=bad_bar)
+            compute_frontier([run], [result], bar=bad_bar, archived_run_ids=None)
 
 
 class TestFrontierPassHatKPoolsRepeatRuns:
@@ -6022,7 +6115,7 @@ class TestFrontierPassHatKPoolsRepeatRuns:
             _fr_result(second, model="m", variant_key="vk", test_case_id="c1", passes=False),
         ]
 
-        point = compute_frontier([first, second], results).subjects[0].points[0]
+        point = compute_frontier([first, second], results, archived_run_ids=None).subjects[0].points[0]
 
         assert (point.k, point.pass_hat_k, point.n_pass_cases) == (1, 0.5, 1)
         assert [(p["k"], p["pass_hat_k"], p["n_cases"]) for p in point.pass_hat_k_curve] == [(1, 0.5, 1), (2, 0.0, 1)]
@@ -6034,7 +6127,7 @@ class TestFrontierPassHatKPoolsRepeatRuns:
             _fr_result(second, model="m", variant_key="vk", test_case_id="c1", passes=False),
         ]
 
-        point = compute_frontier([first, second], results).subjects[0].points[0]
+        point = compute_frontier([first, second], results, archived_run_ids=None).subjects[0].points[0]
 
         assert (point.pass_hat_k, point.n_pass_cases) == (0.5, 2)
         assert len(point.pass_hat_k_curve) == 1
@@ -6070,7 +6163,7 @@ class TestFrontierPassHatKPoolsRepeatRuns:
             ),
         ]
 
-        pf = compute_frontier([deep, pilot], results, bar=0.5).subjects[0]
+        pf = compute_frontier([deep, pilot], results, bar=0.5, archived_run_ids=None).subjects[0]
 
         assert pf.k == 1
         assert _point_by_model(pf, "deep").pass_hat_k == pytest.approx(2 / 3)
@@ -6088,7 +6181,7 @@ class TestFrontierPassHatKPoolsRepeatRuns:
             for i, p in enumerate((True, False), start=1)
         ]
 
-        point = compute_frontier([run], results).subjects[0].points[0]
+        point = compute_frontier([run], results, archived_run_ids=None).subjects[0].points[0]
 
         assert (point.k, point.pass_hat_k) == (2, 0.0)
         assert point.cost_per_acceptable_outcome == pytest.approx(0.5 / 0.5)
@@ -6106,7 +6199,7 @@ class TestFrontierHonestSampleSize:
             _fr_result(run, model="thick", variant_key="vk-thick", test_case_id="c3", roles={"candidate": 0.1}),
         ]
 
-        pf = compute_frontier([run], results).subjects[0]
+        pf = compute_frontier([run], results, archived_run_ids=None).subjects[0]
 
         assert _point_by_model(pf, "thin").n_results == 1
         assert _point_by_model(pf, "thin").n_pass_cases == 1
@@ -6120,7 +6213,7 @@ class TestFrontierHonestSampleSize:
             _fr_result(run, model="m", variant_key="vk", test_case_id="c2", passes=False, roles={"candidate": 0.1}),
         ]
 
-        point = compute_frontier([run], results).subjects[0].points[0]
+        point = compute_frontier([run], results, archived_run_ids=None).subjects[0].points[0]
 
         # two case-means (0.75 and 0.25) → a real SEM, not None
         assert point.mean_composite == pytest.approx(0.5)
@@ -6135,7 +6228,7 @@ class TestFrontierTwoPillarDisclosure:
         run = _fr_run()
         result = _fr_result(run, model="m", variant_key="vk", test_case_id="c1", roles={"candidate": 0.1})
 
-        disclosure = compute_frontier([run], [result]).two_pillar
+        disclosure = compute_frontier([run], [result], archived_run_ids=None).two_pillar
 
         assert disclosure.boundary_pillar_available is False
         assert "capability" in disclosure.verdict_rests_on
@@ -6146,7 +6239,7 @@ class TestFrontierTwoPillarDisclosure:
     def test_disclosure_survives_an_empty_corpus(self):
         # Even with nothing to rank, the answer must state the pillar is absent —
         # so "nothing was disqualified" can never be read as "nothing was checked".
-        result = compute_frontier([], [])
+        result = compute_frontier([], [], archived_run_ids=None)
 
         assert result.subjects == []
         assert result.two_pillar.boundary_pillar_available is False
@@ -6160,7 +6253,7 @@ class TestFrontierExclusions:
         orphan = _fr_result(run, model="m", variant_key="vk", test_case_id="c1", roles={"candidate": 0.1})
         orphan.eval_run_id = "run-that-does-not-exist"
 
-        result = compute_frontier([run], [orphan])
+        result = compute_frontier([run], [orphan], archived_run_ids=None)
 
         assert result.subjects == []
         assert result.exclusions.results_without_run == 1
@@ -6183,7 +6276,7 @@ class TestFrontierExclusions:
             _fr_result(run_b, model="m", variant_key="vk-b", test_case_id="c1", roles={"candidate": 0.1}),
         ]
 
-        out = compute_frontier([run_a, run_b], results, subject_id="ent-a")
+        out = compute_frontier([run_a, run_b], results, subject_id="ent-a", archived_run_ids=None)
 
         assert [pf.subject_id for pf in out.subjects] == ["ent-a"]
         assert out.n_filtered_out == 1
@@ -6261,12 +6354,15 @@ class TestTheReservedAxesCountLikeEveryJudgedScore:
 
         rows = {
             r.metric: r.value
-            for r in project_score_records([run], results, profile=_JUDGED_HOST).records
+            for r in project_score_records([run], results, profile=_JUDGED_HOST, archived_run_ids=None).records
             if r.metric in (METRIC_TRANSCRIPT, METRIC_OUTCOME)
         }
         assert rows == {METRIC_TRANSCRIPT: 1.0, METRIC_OUTCOME: 1.0}
         assert (
-            compute_history([run], results, metric=METRIC_TRANSCRIPT, profile=_JUDGED_HOST).series[0].points[0].value
+            compute_history([run], results, metric=METRIC_TRANSCRIPT, profile=_JUDGED_HOST, archived_run_ids=None)
+            .series[0]
+            .points[0]
+            .value
             == 1.0
         )
 
@@ -6276,7 +6372,7 @@ class TestTheReservedAxesCountLikeEveryJudgedScore:
 
         rows = {
             r.metric: r.value
-            for r in project_score_records([run], results, profile=_JUDGED_HOST).records
+            for r in project_score_records([run], results, profile=_JUDGED_HOST, archived_run_ids=None).records
             if r.metric in (METRIC_TRANSCRIPT, METRIC_OUTCOME)
         }
         assert rows == {METRIC_TRANSCRIPT: None, METRIC_OUTCOME: None}
@@ -6295,7 +6391,7 @@ class TestAMisStampedDualScoreAxisIsNotAnObservation:
         results[1].transcript_score = RubricScore(dim="conversation.tone", score=1, scale="ordinal")
 
         with caplog.at_level("WARNING"):
-            out = compute_history([run], results, metric=METRIC_TRANSCRIPT, profile=_JUDGED_HOST)
+            out = compute_history([run], results, metric=METRIC_TRANSCRIPT, profile=_JUDGED_HOST, archived_run_ids=None)
 
         point = out.series[0].points[0]
         assert point.value == 5.0, f"a mis-stamped row entered the series (got {point.value})"
@@ -6307,7 +6403,7 @@ class TestAMisStampedDualScoreAxisIsNotAnObservation:
         run, results = _hist_run(cases=["c1", "c2"], outcome=5, created_at="2026-07-01T00:00:00Z")
         results[1].outcome_score = RubricScore(dim=TRANSCRIPT_DIM_ID, score=1, scale="ordinal")
 
-        out = compute_history([run], results, metric=METRIC_OUTCOME, profile=_JUDGED_HOST)
+        out = compute_history([run], results, metric=METRIC_OUTCOME, profile=_JUDGED_HOST, archived_run_ids=None)
 
         assert out.series[0].points[0].value == 5.0
         assert out.series[0].points[0].n == 1
@@ -6330,7 +6426,9 @@ class TestHistoryDualScoreAxes:
         run_a, res_a = _hist_run(cases=["c1", "c2"], transcript=4, created_at="2026-07-01T00:00:00Z")
         run_b, res_b = _hist_run(cases=["c1", "c2"], transcript=2, created_at="2026-07-02T00:00:00Z")
 
-        out = compute_history([run_a, run_b], res_a + res_b, metric=METRIC_TRANSCRIPT, profile=_JUDGED_HOST)
+        out = compute_history(
+            [run_a, run_b], res_a + res_b, metric=METRIC_TRANSCRIPT, profile=_JUDGED_HOST, archived_run_ids=None
+        )
 
         points = out.series[0].points
         assert [point.value for point in points] == [4.0, 2.0], "the 1-5 axis, not the 0-1 composite scale"
@@ -6340,7 +6438,9 @@ class TestHistoryDualScoreAxes:
         run_a, res_a = _hist_run(cases=["c1", "c2"], outcome=5, created_at="2026-07-01T00:00:00Z")
         run_b, res_b = _hist_run(cases=["c1", "c2"], outcome=3, created_at="2026-07-02T00:00:00Z")
 
-        out = compute_history([run_a, run_b], res_a + res_b, metric=METRIC_OUTCOME, profile=_JUDGED_HOST)
+        out = compute_history(
+            [run_a, run_b], res_a + res_b, metric=METRIC_OUTCOME, profile=_JUDGED_HOST, archived_run_ids=None
+        )
 
         assert [point.value for point in out.series[0].points] == [5.0, 3.0]
 
@@ -6349,8 +6449,12 @@ class TestHistoryDualScoreAxes:
         run_a, res_a = _hist_run(cases=["c1", "c2"], transcript=4, outcome=5, created_at="2026-07-01T00:00:00Z")
         run_b, res_b = _hist_run(cases=["c1", "c2"], transcript=4, outcome=2, created_at="2026-07-02T00:00:00Z")
 
-        transcript = compute_history([run_a, run_b], res_a + res_b, metric=METRIC_TRANSCRIPT, profile=_JUDGED_HOST)
-        outcome = compute_history([run_a, run_b], res_a + res_b, metric=METRIC_OUTCOME, profile=_JUDGED_HOST)
+        transcript = compute_history(
+            [run_a, run_b], res_a + res_b, metric=METRIC_TRANSCRIPT, profile=_JUDGED_HOST, archived_run_ids=None
+        )
+        outcome = compute_history(
+            [run_a, run_b], res_a + res_b, metric=METRIC_OUTCOME, profile=_JUDGED_HOST, archived_run_ids=None
+        )
 
         assert [point.value for point in transcript.series[0].points] == [4.0, 4.0]
         assert [point.value for point in outcome.series[0].points] == [5.0, 2.0]
@@ -6359,8 +6463,10 @@ class TestHistoryDualScoreAxes:
         """A point holds the MEAN of the axis, which is a different quantity from one score."""
         run, results = _hist_run(cases=["c1"], transcript=4, outcome=3, created_at="2026-07-01T00:00:00Z")
 
-        transcript = compute_history([run], results, metric=METRIC_TRANSCRIPT, profile=_JUDGED_HOST)
-        outcome = compute_history([run], results, metric=METRIC_OUTCOME, profile=_JUDGED_HOST)
+        transcript = compute_history(
+            [run], results, metric=METRIC_TRANSCRIPT, profile=_JUDGED_HOST, archived_run_ids=None
+        )
+        outcome = compute_history([run], results, metric=METRIC_OUTCOME, profile=_JUDGED_HOST, archived_run_ids=None)
 
         assert transcript.measure.name == "mean_transcript_score"
         assert outcome.measure.name == "mean_outcome_score"
@@ -6374,7 +6480,11 @@ class TestHistoryDualScoreAxes:
         unjudged_run, unjudged = _hist_run(cases=["c1"], created_at="2026-07-02T00:00:00Z")
 
         out = compute_history(
-            [judged_run, unjudged_run], judged + unjudged, metric=METRIC_TRANSCRIPT, profile=_JUDGED_HOST
+            [judged_run, unjudged_run],
+            judged + unjudged,
+            metric=METRIC_TRANSCRIPT,
+            profile=_JUDGED_HOST,
+            archived_run_ids=None,
         )
 
         points = out.series[0].points
@@ -6393,7 +6503,7 @@ class TestHistoryDualScoreAxes:
         results[1].transcript_score = RubricScore(dim=TRANSCRIPT_DIM_ID, score=1, scale="ordinal")
         results[1].infra_error = "apparatus: cassette miss in replay mode"
 
-        out = compute_history([run], results, metric=METRIC_TRANSCRIPT, profile=_JUDGED_HOST)
+        out = compute_history([run], results, metric=METRIC_TRANSCRIPT, profile=_JUDGED_HOST, archived_run_ids=None)
 
         point = out.series[0].points[0]
         assert point.value == 5.0, f"the harness's own cell entered a regression series (got {point.value})"
@@ -6405,7 +6515,7 @@ class TestHistoryDualScoreAxes:
         results[1].transcript_score = RubricScore(dim=TRANSCRIPT_DIM_ID, score=1, scale="ordinal")
         results[1].candidate_error = "the candidate returned nothing"
 
-        out = compute_history([run], results, metric=METRIC_TRANSCRIPT, profile=_JUDGED_HOST)
+        out = compute_history([run], results, metric=METRIC_TRANSCRIPT, profile=_JUDGED_HOST, archived_run_ids=None)
 
         assert out.series[0].points[0].value == 3.0
 
@@ -6423,7 +6533,12 @@ class TestHistoryWithholdsAttributionOnAScenarioBoundAxis:
         run_a, res_a = _hist_run(cases=cases, created_at="2026-07-01T00:00:00Z", **{k: v[0] for k, v in scores.items()})
         run_b, res_b = _hist_run(cases=cases, created_at="2026-07-02T00:00:00Z", **{k: v[1] for k, v in scores.items()})
         return compute_history(
-            [run_a, run_b], res_a + res_b, metric=metric, min_absolute_change=0.05, profile=_JUDGED_HOST
+            [run_a, run_b],
+            res_a + res_b,
+            metric=metric,
+            min_absolute_change=0.05,
+            profile=_JUDGED_HOST,
+            archived_run_ids=None,
         )
 
     def test_a_declining_outcome_series_flags_and_withholds_attribution(self):
@@ -6474,7 +6589,7 @@ class TestHistoryWithholdsAttributionOnAScenarioBoundAxis:
         )
 
         for row_name in sorted(reporting.HISTORY_METRICS):
-            out = compute_history([run], results, metric=row_name, profile=_JUDGED_HOST)
+            out = compute_history([run], results, metric=row_name, profile=_JUDGED_HOST, archived_run_ids=None)
             expected = out.measure.transferability_class == "scenario_bound"
             assert (out.attribution_disclosure is not None) is expected, (
                 f"{row_name!r} resolves to {out.measure.name!r} at class "
@@ -6483,7 +6598,7 @@ class TestHistoryWithholdsAttributionOnAScenarioBoundAxis:
 
     def test_the_disclosure_survives_an_answer_with_no_series(self):
         """A property of the MEASURE, so an empty corpus still carries it."""
-        out = compute_history([], [], metric=METRIC_OUTCOME, profile=_JUDGED_HOST)
+        out = compute_history([], [], metric=METRIC_OUTCOME, profile=_JUDGED_HOST, archived_run_ids=None)
 
         assert out.series == []
         assert out.attribution_disclosure is not None
@@ -6516,7 +6631,9 @@ class TestHistoryCassetteStep:
             for run, mode in ((run_a, mode_a), (run_b, mode_b))
         )
         return (
-            compute_history([run_a, run_b], res_a + res_b, metric=METRIC_COMPOSITE, profile=_JUDGED_HOST)
+            compute_history(
+                [run_a, run_b], res_a + res_b, metric=METRIC_COMPOSITE, profile=_JUDGED_HOST, archived_run_ids=None
+            )
             .series[0]
             .points
         )
@@ -6560,7 +6677,7 @@ class TestHistory:
         """A point resting on 3 cases must not read like one resting on 30."""
         run, results = _hist_run(cases=["c1", "c2", "c3"], score=5, created_at="2026-07-01T00:00:00Z")
 
-        out = compute_history([run], results, metric=METRIC_COMPOSITE, profile=_JUDGED_HOST)
+        out = compute_history([run], results, metric=METRIC_COMPOSITE, profile=_JUDGED_HOST, archived_run_ids=None)
 
         point = out.series[0].points[0]
         assert point.value == 1.0
@@ -6573,7 +6690,11 @@ class TestHistory:
         next_run, next_results = _hist_run(cases=["c1", "c2", "c3"], score=1, created_at="2026-07-02T00:00:00Z")
 
         out = compute_history(
-            [base_run, next_run], base_results + next_results, metric=METRIC_COMPOSITE, profile=_JUDGED_HOST
+            [base_run, next_run],
+            base_results + next_results,
+            metric=METRIC_COMPOSITE,
+            profile=_JUDGED_HOST,
+            archived_run_ids=None,
         )
 
         points = out.series[0].points
@@ -6587,7 +6708,9 @@ class TestHistory:
         run_a, res_a = _hist_run(cases=["c1", "c2", "c3"], score=5, created_at="2026-07-01T00:00:00Z")
         run_b, res_b = _hist_run(cases=["c1", "c2", "c3", "c4"], score=5, created_at="2026-07-02T00:00:00Z")
 
-        out = compute_history([run_a, run_b], res_a + res_b, metric=METRIC_COMPOSITE, profile=_JUDGED_HOST)
+        out = compute_history(
+            [run_a, run_b], res_a + res_b, metric=METRIC_COMPOSITE, profile=_JUDGED_HOST, archived_run_ids=None
+        )
 
         points = out.series[0].points
         assert points[0].epoch == 1
@@ -6610,7 +6733,9 @@ class TestHistory:
         for r in res_b:
             r.cost_roles = [*unpriced, "external"]
 
-        out = compute_history([run_a, run_b], res_a + res_b, metric=METRIC_COST_USD, profile=_JUDGED_HOST)
+        out = compute_history(
+            [run_a, run_b], res_a + res_b, metric=METRIC_COST_USD, profile=_JUDGED_HOST, archived_run_ids=None
+        )
 
         points = out.series[0].points
         assert points[0].cost_compositions == [unpriced]
@@ -6622,7 +6747,7 @@ class TestHistory:
         for r in results:
             r.cost_roles = ["candidate", "inner_agent", "judge", "simulator"]
 
-        out = compute_history([run], results, metric=METRIC_COMPOSITE, profile=_JUDGED_HOST)
+        out = compute_history([run], results, metric=METRIC_COMPOSITE, profile=_JUDGED_HOST, archived_run_ids=None)
 
         assert out.series[0].points[0].cost_compositions == []
 
@@ -6631,7 +6756,9 @@ class TestHistory:
         run_a, res_a = _hist_run(cases=["c1", "c2"], score=5, created_at="2026-07-01T00:00:00Z")
         run_b, res_b = _hist_run(cases=["c1", "c2"], score=4, created_at="2026-07-02T00:00:00Z")
 
-        out = compute_history([run_a, run_b], res_a + res_b, metric=METRIC_COMPOSITE, profile=_JUDGED_HOST)
+        out = compute_history(
+            [run_a, run_b], res_a + res_b, metric=METRIC_COMPOSITE, profile=_JUDGED_HOST, archived_run_ids=None
+        )
 
         points = out.series[0].points
         assert [p.epoch for p in points] == [1, 1]
@@ -6643,7 +6770,12 @@ class TestHistory:
         run_b, res_b = _hist_run(cases=cases, score=2, created_at="2026-07-02T00:00:00Z")
 
         out = compute_history(
-            [run_a, run_b], res_a + res_b, metric=METRIC_COMPOSITE, min_absolute_change=0.05, profile=_JUDGED_HOST
+            [run_a, run_b],
+            res_a + res_b,
+            metric=METRIC_COMPOSITE,
+            min_absolute_change=0.05,
+            profile=_JUDGED_HOST,
+            archived_run_ids=None,
         )
 
         flag = out.series[0].points[1].regression
@@ -6663,7 +6795,12 @@ class TestHistory:
         run_b, res_b = _hist_run(cases=cases, cost=0.101, created_at="2026-07-02T00:00:00Z")
 
         out = compute_history(
-            [run_a, run_b], res_a + res_b, metric=METRIC_COST_USD, min_absolute_change=0.05, profile=_JUDGED_HOST
+            [run_a, run_b],
+            res_a + res_b,
+            metric=METRIC_COST_USD,
+            min_absolute_change=0.05,
+            profile=_JUDGED_HOST,
+            archived_run_ids=None,
         )
 
         flag = out.series[0].points[1].regression
@@ -6688,6 +6825,7 @@ class TestHistory:
             min_absolute_change=0.1,
             min_relative_change=0.2,
             profile=_JUDGED_HOST,
+            archived_run_ids=None,
         )
 
         flag = out.series[0].points[1].regression
@@ -6702,7 +6840,12 @@ class TestHistory:
         run_b, res_b = _hist_run(cases=["c1", "c2", "c3", "c4"], score=2, created_at="2026-07-02T00:00:00Z")
 
         out = compute_history(
-            [run_a, run_b], res_a + res_b, metric=METRIC_COMPOSITE, min_absolute_change=0.05, profile=_JUDGED_HOST
+            [run_a, run_b],
+            res_a + res_b,
+            metric=METRIC_COMPOSITE,
+            min_absolute_change=0.05,
+            profile=_JUDGED_HOST,
+            archived_run_ids=None,
         )
 
         flag = out.series[0].points[1].regression
@@ -6713,7 +6856,7 @@ class TestHistory:
     def test_a_single_point_series_has_no_regression_flag(self):
         run, results = _hist_run(cases=["c1", "c2"], score=5, created_at="2026-07-01T00:00:00Z")
 
-        out = compute_history([run], results, metric=METRIC_COMPOSITE, profile=_JUDGED_HOST)
+        out = compute_history([run], results, metric=METRIC_COMPOSITE, profile=_JUDGED_HOST, archived_run_ids=None)
 
         points = out.series[0].points
         assert len(points) == 1
@@ -6724,7 +6867,9 @@ class TestHistory:
         run_a, res_a = _hist_run(cases=["c1"], score=5, created_at="2026-07-01T00:00:00Z", subject_id="ent-a")
         run_b, res_b = _hist_run(cases=["c1"], score=5, created_at="2026-07-01T00:00:00Z", subject_id="ent-b")
 
-        out = compute_history([run_a, run_b], res_a + res_b, metric=METRIC_COMPOSITE, profile=_JUDGED_HOST)
+        out = compute_history(
+            [run_a, run_b], res_a + res_b, metric=METRIC_COMPOSITE, profile=_JUDGED_HOST, archived_run_ids=None
+        )
 
         assert sorted({s.subject_id for s in out.series}) == ["ent-a", "ent-b"]
 
@@ -6733,14 +6878,16 @@ class TestHistory:
         run_a, res_a = _hist_run(cases=["c1"], score=5, created_at="2026-07-01T00:00:00Z", variant_key="vk-1")
         run_b, res_b = _hist_run(cases=["c1"], score=3, created_at="2026-07-02T00:00:00Z", variant_key="vk-2")
 
-        out = compute_history([run_a, run_b], res_a + res_b, metric=METRIC_COMPOSITE, profile=_JUDGED_HOST)
+        out = compute_history(
+            [run_a, run_b], res_a + res_b, metric=METRIC_COMPOSITE, profile=_JUDGED_HOST, archived_run_ids=None
+        )
 
         assert sorted({s.variant_key for s in out.series}) == ["vk-1", "vk-2"]
 
     def test_cost_series_uses_the_lower_is_better_direction(self):
         run, results = _hist_run(cases=["c1", "c2"], cost=0.05, created_at="2026-07-01T00:00:00Z")
 
-        out = compute_history([run], results, metric=METRIC_COST_USD, profile=_JUDGED_HOST)
+        out = compute_history([run], results, metric=METRIC_COST_USD, profile=_JUDGED_HOST, archived_run_ids=None)
 
         assert out.higher_is_better is False
         assert out.measure.unit == "usd"
@@ -6768,7 +6915,9 @@ class TestHistory:
         )
         no_latency = make_eval_result(eval_run_id=run.id, scope_id=run.scope_id, test_case_id="c3")  # latency is None
 
-        out = compute_history([run], [measured, null_total, no_latency], metric="total_ms", profile=_JUDGED_HOST)
+        out = compute_history(
+            [run], [measured, null_total, no_latency], metric="total_ms", profile=_JUDGED_HOST, archived_run_ids=None
+        )
 
         point = out.series[0].points[0]
         assert point.value == 120.0  # the one measured case, not diluted by the two unmeasured ones
@@ -6784,7 +6933,7 @@ class TestHistory:
         )
         no_latency = make_eval_result(eval_run_id=run.id, scope_id=run.scope_id, test_case_id="c1")
 
-        out = compute_history([run], [no_latency], metric="total_ms", profile=_JUDGED_HOST)
+        out = compute_history([run], [no_latency], metric="total_ms", profile=_JUDGED_HOST, archived_run_ids=None)
 
         point = out.series[0].points[0]
         assert point.value is None
@@ -6794,7 +6943,7 @@ class TestHistory:
         run, results = _hist_run(cases=["c1"], score=5, created_at="2026-07-01T00:00:00Z")
 
         with pytest.raises(HistoryError, match="unknown history metric"):
-            compute_history([run], results, metric="compsite", profile=_JUDGED_HOST)
+            compute_history([run], results, metric="compsite", profile=_JUDGED_HOST, archived_run_ids=None)
 
     def test_score_is_still_refused_and_the_refusal_names_where_it_does_aggregate(self):
         """`score` is not a typo — it is a real measure this surface cannot series.
@@ -6809,7 +6958,7 @@ class TestHistory:
         run, results = _hist_run(cases=["c1"], score=5, created_at="2026-07-01T00:00:00Z")
 
         with pytest.raises(HistoryError) as refusal:
-            compute_history([run], results, metric=METRIC_SCORE, profile=_JUDGED_HOST)
+            compute_history([run], results, metric=METRIC_SCORE, profile=_JUDGED_HOST, archived_run_ids=None)
 
         message = str(refusal.value)
         assert "DIMENSION" in message, "must say why: the measure is per-dimension, not per-run"
@@ -6821,7 +6970,7 @@ class TestHistory:
         run, results = _hist_run(cases=["c1"], score=5, created_at="2026-07-01T00:00:00Z")
 
         with pytest.raises(HistoryError) as refusal:
-            compute_history([run], results, metric=METRIC_GOAL_STATE, profile=_JUDGED_HOST)
+            compute_history([run], results, metric=METRIC_GOAL_STATE, profile=_JUDGED_HOST, archived_run_ids=None)
 
         message = str(refusal.value)
         assert "ONE goal-state check" in message
@@ -6841,7 +6990,12 @@ class TestHistory:
         run_b, res_b = _hist_run(cases=["c1"], score=5, created_at="2026-07-01T00:00:00Z", subject_id="ent-b")
 
         out = compute_history(
-            [run_a, run_b], res_a + res_b, metric=METRIC_COMPOSITE, subject_id="ent-a", profile=_JUDGED_HOST
+            [run_a, run_b],
+            res_a + res_b,
+            metric=METRIC_COMPOSITE,
+            subject_id="ent-a",
+            profile=_JUDGED_HOST,
+            archived_run_ids=None,
         )
 
         assert [s.subject_id for s in out.series] == ["ent-a"]
@@ -6866,8 +7020,8 @@ class TestTheCatalogNameIsTheNameTheSurfacesAccept:
     def test_history_accepts_the_catalog_name_for_the_composite_series(self):
         run, results = _hist_run(cases=["c1", "c2"], score=5, created_at="2026-07-01T00:00:00Z")
 
-        catalog = compute_history([run], results, metric="mean_composite", profile=_JUDGED_HOST)
-        short = compute_history([run], results, metric=METRIC_COMPOSITE, profile=_JUDGED_HOST)
+        catalog = compute_history([run], results, metric="mean_composite", profile=_JUDGED_HOST, archived_run_ids=None)
+        short = compute_history([run], results, metric=METRIC_COMPOSITE, profile=_JUDGED_HOST, archived_run_ids=None)
 
         assert catalog.model_dump() == short.model_dump()
 
@@ -6890,14 +7044,14 @@ class TestTheCatalogNameIsTheNameTheSurfacesAccept:
                 "describe it, so `list_metrics` never publishes it and the alias points at nothing"
             )
 
-            out = compute_history([run], results, metric=catalog_name, profile=_JUDGED_HOST)
+            out = compute_history([run], results, metric=catalog_name, profile=_JUDGED_HOST, archived_run_ids=None)
 
             assert out.metric == row_name
             assert out.measure.name == catalog_name
 
     def test_pivot_accepts_the_catalog_name_for_what_a_cell_holds(self):
         run, result = _run_with_results()
-        records = project_score_records([run], [result], profile=_JUDGED_HOST).records
+        records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
 
         catalog = compute_pivot(
             records, row_factor="rubric_dim", column_factor="model", metric="mean_score", profile=_JUDGED_HOST
@@ -6910,7 +7064,7 @@ class TestTheCatalogNameIsTheNameTheSurfacesAccept:
 
     def test_every_projected_measure_is_reachable_by_the_name_the_catalog_publishes(self):
         run, result = _run_with_results()
-        records = project_score_records([run], [result], profile=_JUDGED_HOST).records
+        records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
 
         for row_name in sorted(reporting.PROJECTED_METRICS):
             catalog_name = _catalog_name_of(row_name)
@@ -6948,14 +7102,14 @@ class TestTheCatalogNameIsTheNameTheSurfacesAccept:
         run, results = _hist_run(cases=["c1"], score=5, created_at="2026-07-01T00:00:00Z")
 
         with pytest.raises(HistoryError, match="unknown history metric"):
-            compute_history([run], results, metric="pass_hat_k", profile=_JUDGED_HOST)
+            compute_history([run], results, metric="pass_hat_k", profile=_JUDGED_HOST, archived_run_ids=None)
 
     def test_the_refusal_names_both_vocabularies(self):
         """The refusal an operator reads must name the catalog name, or it sends them in a circle."""
         run, results = _hist_run(cases=["c1"], score=5, created_at="2026-07-01T00:00:00Z")
 
         with pytest.raises(HistoryError) as excinfo:
-            compute_history([run], results, metric="compsite", profile=_JUDGED_HOST)
+            compute_history([run], results, metric="compsite", profile=_JUDGED_HOST, archived_run_ids=None)
 
         message = str(excinfo.value)
         for row_name in reporting.HISTORY_METRICS:
@@ -6964,7 +7118,7 @@ class TestTheCatalogNameIsTheNameTheSurfacesAccept:
 
     def test_the_pivot_refusal_names_both_vocabularies(self):
         run, result = _run_with_results()
-        records = project_score_records([run], [result], profile=_JUDGED_HOST).records
+        records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
 
         with pytest.raises(PivotError) as excinfo:
             compute_pivot(
@@ -6985,7 +7139,9 @@ class TestTheCatalogNameIsTheNameTheSurfacesAccept:
         """
         run, results = _hist_run(cases=["c1"], score=5, latency_ms=1200.0, created_at="2026-07-01T00:00:00Z")
 
-        out = compute_history([run], results, metric=reporting.METRIC_TOTAL_MS, profile=_JUDGED_HOST)
+        out = compute_history(
+            [run], results, metric=reporting.METRIC_TOTAL_MS, profile=_JUDGED_HOST, archived_run_ids=None
+        )
 
         assert out.measure.name == "mean_total_ms"
         assert out.measure.higher_is_better is False
@@ -7122,7 +7278,7 @@ class TestTheFrontierWithholdsASubstitutedContestantsCost:
             )
         ]
 
-        point = compute_frontier([run], results).subjects[0].points[0]
+        point = compute_frontier([run], results, archived_run_ids=None).subjects[0].points[0]
 
         # Not 0.40 — withheld. A result with nothing to contribute is ABSENT from the
         # mean rather than entering it as a zero, so the figure is unmeasured, not cheap.
@@ -7141,7 +7297,7 @@ class TestTheFrontierWithholdsASubstitutedContestantsCost:
             )
         ]
 
-        point = compute_frontier([run], results).subjects[0].points[0]
+        point = compute_frontier([run], results, archived_run_ids=None).subjects[0].points[0]
 
         assert point.production_replicating_cost == pytest.approx(0.40)
 
@@ -7307,7 +7463,7 @@ class TestAggregatorsDiscloseShortRuns:
     def test_the_projection_carries_the_sentence_for_a_short_run(self, status, completeness):
         run, results = _short_run(status, completeness)
 
-        projection = project_score_records([run], results, profile=_JUDGED_HOST)
+        projection = project_score_records([run], results, profile=_JUDGED_HOST, archived_run_ids=None)
 
         assert run.id in projection.completeness_disclosures
         assert DEGRADED_RUN_CLAUSE in projection.completeness_disclosures[run.id]
@@ -7317,7 +7473,9 @@ class TestAggregatorsDiscloseShortRuns:
         """Every cell pools the shorter denominator, so the table states it once."""
         short, short_results = _short_run(status, completeness)
         whole, whole_results = _short_run("completed", COMPLETE, model="opus")
-        projection = project_score_records([short, whole], [*short_results, *whole_results], profile=_JUDGED_HOST)
+        projection = project_score_records(
+            [short, whole], [*short_results, *whole_results], profile=_JUDGED_HOST, archived_run_ids=None
+        )
 
         table = compute_pivot(
             projection.records,
@@ -7341,7 +7499,7 @@ class TestAggregatorsDiscloseShortRuns:
         short, short_results = _short_run(status, completeness)
         whole, whole_results = _short_run("completed", COMPLETE, model="opus")
 
-        result = compute_frontier([short, whole], [*short_results, *whole_results])
+        result = compute_frontier([short, whole], [*short_results, *whole_results], archived_run_ids=None)
 
         assert short.id in result.completeness_disclosures
         assert whole.id not in result.completeness_disclosures
@@ -7356,7 +7514,9 @@ class TestAggregatorsDiscloseShortRuns:
         whole, whole_results = _short_run("completed", COMPLETE, created_at="2026-08-01T00:00:00Z")
         short, short_results = _short_run(status, completeness, created_at="2026-08-02T00:00:00Z")
 
-        result = compute_history([whole, short], [*whole_results, *short_results], profile=_JUDGED_HOST)
+        result = compute_history(
+            [whole, short], [*whole_results, *short_results], profile=_JUDGED_HOST, archived_run_ids=None
+        )
 
         assert short.id in result.completeness_disclosures
         assert result.n_degraded_observations == 2
@@ -7372,7 +7532,7 @@ class TestAggregatorsDiscloseShortRuns:
     def test_a_corpus_of_whole_runs_discloses_nothing_on_any_surface(self, surface):
         """The note is a warning; a surface that always shows one has trained the reader to skip it."""
         run, results = _short_run("completed", COMPLETE)
-        projection = project_score_records([run], results, profile=_JUDGED_HOST)
+        projection = project_score_records([run], results, profile=_JUDGED_HOST, archived_run_ids=None)
 
         if surface == "pivot":
             answer = compute_pivot(
@@ -7384,9 +7544,9 @@ class TestAggregatorsDiscloseShortRuns:
                 profile=_JUDGED_HOST,
             )
         elif surface == "frontier":
-            answer = compute_frontier([run], results)
+            answer = compute_frontier([run], results, archived_run_ids=None)
         else:
-            answer = compute_history([run], results, profile=_JUDGED_HOST)
+            answer = compute_history([run], results, profile=_JUDGED_HOST, archived_run_ids=None)
 
         assert answer.completeness_disclosures == {}
         assert answer.n_degraded_observations == 0
@@ -7395,7 +7555,7 @@ class TestAggregatorsDiscloseShortRuns:
     def test_a_run_with_no_completeness_record_is_not_warned_about(self, surface):
         """Absence of a record is not evidence of a shortfall — the rule `completeness_disclosure` sets."""
         run, results = _short_run("completed", None)
-        projection = project_score_records([run], results, profile=_JUDGED_HOST)
+        projection = project_score_records([run], results, profile=_JUDGED_HOST, archived_run_ids=None)
 
         if surface == "pivot":
             answer = compute_pivot(
@@ -7407,9 +7567,9 @@ class TestAggregatorsDiscloseShortRuns:
                 profile=_JUDGED_HOST,
             )
         elif surface == "frontier":
-            answer = compute_frontier([run], results)
+            answer = compute_frontier([run], results, archived_run_ids=None)
         else:
-            answer = compute_history([run], results, profile=_JUDGED_HOST)
+            answer = compute_history([run], results, profile=_JUDGED_HOST, archived_run_ids=None)
 
         assert answer.completeness_disclosures == {}
 
@@ -7417,7 +7577,7 @@ class TestAggregatorsDiscloseShortRuns:
         """A recommendation drawn from a short pool has to say so where the recommendation is."""
         short, short_results = _short_run("budget_stopped", SHORT_RUN_SHAPES[0][1])
 
-        result = compute_frontier([short], short_results, bar=0.0)
+        result = compute_frontier([short], short_results, bar=0.0, archived_run_ids=None)
 
         verdict = result.subjects[0].verdict
         assert verdict is not None
@@ -7427,7 +7587,9 @@ class TestAggregatorsDiscloseShortRuns:
         """A caveat about a run the table never averaged is one the reader cannot check."""
         short, short_results = _short_run("cancelled", SHORT_RUN_SHAPES[1][1], subject_id="ent-other")
         whole, whole_results = _short_run("completed", COMPLETE)
-        projection = project_score_records([short, whole], [*short_results, *whole_results], profile=_JUDGED_HOST)
+        projection = project_score_records(
+            [short, whole], [*short_results, *whole_results], profile=_JUDGED_HOST, archived_run_ids=None
+        )
 
         table = compute_pivot(
             projection.records,
@@ -7700,7 +7862,7 @@ class TestARefusalNamesTheMeasureTheCallerTyped:
 
         def refusal(metric: str) -> str:
             with pytest.raises(HistoryError) as excinfo:
-                compute_history([run], results, metric=metric, profile=_JUDGED_HOST)
+                compute_history([run], results, metric=metric, profile=_JUDGED_HOST, archived_run_ids=None)
             return str(excinfo.value)
 
         aliased = refusal("mean_score")
@@ -7729,7 +7891,7 @@ class TestGoalStatePivots:
                 ],
             )
         ]
-        return project_score_records([run], results, profile=_JUDGED_HOST).records
+        return project_score_records([run], results, profile=_JUDGED_HOST, archived_run_ids=None).records
 
     def test_with_goal_check_on_an_axis_each_cell_is_one_checks_rate(self):
         table = compute_pivot(

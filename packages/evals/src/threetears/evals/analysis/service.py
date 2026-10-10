@@ -912,7 +912,7 @@ def inspect_campaign_bundle(
     """Assemble a campaign's context bundle and return it, without generating.
 
     The dry run: what a generation launched right now would read. This is the
-    surface an operator checks a design against — ``campaign_set_control``
+    surface an operator checks a design against — ``set_campaign_control``
     designates a control, but whether the derivation produced a
     one-factor-at-a-time shape, and which lever each cell moved, was previously
     observable only by paying for a generation.

@@ -69,7 +69,7 @@ def test_identical_contestants_are_not_flagged_dominated_beyond_alpha() -> None:
     flagged = 0
     for _ in range(replicates):
         runs, results = _identical_contestants(rng, n_cases=5, repeats=3)
-        (subject,) = compute_frontier(runs, results).subjects
+        (subject,) = compute_frontier(runs, results, archived_run_ids=None).subjects
         assert len(subject.points) == 2
         flagged += any(point.dominated for point in subject.points)
     rate = flagged / replicates
@@ -126,7 +126,7 @@ def _second_flagged_share(seed: str, replicates: int, **truth: float) -> float:
     flagged = 0
     for _ in range(replicates):
         runs, results = _two_contestants(rng, n_cases=8, repeats=3, **truth)  # type: ignore[arg-type]
-        (subject,) = compute_frontier(runs, results).subjects
+        (subject,) = compute_frontier(runs, results, archived_run_ids=None).subjects
         second = next(point for point in subject.points if point.model == "model-two")
         flagged += second.dominated
     return flagged / replicates
@@ -159,7 +159,7 @@ def test_the_frontier_states_pass_k_with_the_interval_over_its_cases() -> None:
     """Wiring: the point's interval is :func:`case_rate_interval` over its per-case unbiased estimates."""
     rng = random.Random("frontier-interval-wiring")
     runs, results = _identical_contestants(rng, n_cases=6, repeats=3)
-    (subject,) = compute_frontier(runs, results).subjects
+    (subject,) = compute_frontier(runs, results, archived_run_ids=None).subjects
     for point in subject.points:
         by_case: dict[str, list[bool]] = {}
         for result in results:
@@ -265,7 +265,7 @@ def _shown_cheapest(seed: str, replicates: int, cost_factors: Sequence[float]) -
     picks: dict[str, int] = {}
     for _ in range(replicates):
         runs, results = _priced_contestants(rng, n_cases=8, repeats=3, cost_factors=cost_factors)
-        (subject,) = compute_frontier(runs, results, bar=0.5).subjects
+        (subject,) = compute_frontier(runs, results, bar=0.5, archived_run_ids=None).subjects
         assert subject.verdict is not None and subject.n_cleared_bar == len(cost_factors)
         if subject.verdict.cost_decision == "shown_cheapest":
             named += 1

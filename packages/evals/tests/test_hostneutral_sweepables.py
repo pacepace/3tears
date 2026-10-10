@@ -170,6 +170,11 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
     # index (#581); neither moves a key. Each frontier point names what its composite was meaned over and marks a
     # ragged pool (#638), every pass^k records the behavior's declared pass threshold it was computed at (#642),
     # and an attempt with nothing for pass^k to conjoin is left out as unmeasured rather than read as a fail (#688).
+    # A lever the launch named as null is the level `null`, stamped overridden, or a recovery where the lever has a
+    # recovery rule — never a lever missing from the run's config, so a stored campaign with a null overlay
+    # re-assembles with a config entry and a `null` level where it had none (#574). A declared axis on an input the
+    # host cannot vary carries the host's reason on its coverage row as `cannot_be_an_arm` (#675), and every declared
+    # axis row names each declared level as ran, not_run or undetermined in `declared_levels` (#690).
     ((47, 11), _CORE_V24 | {"judge_request_settings", "simulator_request_settings", "judge_temperature"}),
 )
 

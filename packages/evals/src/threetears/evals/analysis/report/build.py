@@ -1445,6 +1445,26 @@ def _evidence_disclosures(bundle: AnalysisContextBundle) -> list[ReportBlock]:
     for dimension in unverified:
         reason = bundle.confound_catalog[dimension]
         say("comparisons", reason[:1].upper() + reason[1:] + ".")
+    # A declared level that never ran leaves `levels` silently; the row's declared_levels names it.
+    for row in bundle.coverage:
+        not_run = [level.display for level in row.declared_levels if level.state == "not_run"]
+        undetermined = [level.display for level in row.declared_levels if level.state == "undetermined"]
+        if not_run:
+            say("comparisons", f"Declared on axis {row.name} and never run: {_listed(not_run)}.")
+        if undetermined:
+            say(
+                "comparisons",
+                f"Declared on axis {row.name}, and whether any run sat at it cannot be established: "
+                f"{_listed(undetermined)}.",
+            )
+    # A declared axis on an input the host cannot vary is unswept by construction; without its cause the
+    # row reads as a sweep that did not happen.
+    for row in bundle.coverage:
+        if row.cannot_be_an_arm:
+            say(
+                "comparisons",
+                f"Declared axis {row.name} reads unswept whatever the runs did: {row.cannot_be_an_arm.rstrip('.')}.",
+            )
     # An arm keyed by a floating alias can pool numbers from more than one model; a code-only report has no
     # writer to read `arm_served_models`, so the mixture is said here, once per arm.
     for reading in bundle.arm_served_models:
