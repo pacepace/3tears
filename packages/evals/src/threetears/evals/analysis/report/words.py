@@ -18,6 +18,7 @@ from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.viz.intent import Cell
 from threetears.evals.analysis.viz_refs import cell_arm_labels
 from threetears.evals.contracts.campaign import ConfidenceTier, EvalAnalysis, EvidenceRow, EvidenceTier
+from threetears.evals.contracts.analysis_measures import BarDecision
 from threetears.evals.contracts.surface import GuardrailDecision
 
 
@@ -136,6 +137,20 @@ GUARDRAIL_DECISION_WORDS = worded(
 )
 
 
+#: What a bar came to on one cell, as a reader says it.
+BAR_DECISION_WORDS = worded(
+    {
+        "cleared": "cleared: the interval lies wholly on the good side of the bar, less its margin",
+        "missed": "missed: the interval lies wholly on the bad side of the bar, less its margin",
+        "undecided": "undecided: the interval straddles the bar, so not shown cleared",
+        "no_interval": "no interval: fewer than two observations, so not read",
+        "no_data": "no data: no observation of the measure",
+    },
+    BarDecision,
+    "a bar decision",
+)
+
+
 def arm_namer(analysis: EvalAnalysis) -> Callable[[str], str]:
     """Name the arm a cell reference points at, as :func:`~threetears.evals.analysis.arms.arm_label` names it.
 
@@ -213,6 +228,7 @@ def positions(numbers: list[int]) -> str:
 
 __all__ = [
     "ARM_STATUS_WORDS",
+    "BAR_DECISION_WORDS",
     "COMPARISON_VERDICT_WORDS",
     "CONFIDENCE_WORDS",
     "EVIDENCE_COLUMNS",

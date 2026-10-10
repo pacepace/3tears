@@ -14,7 +14,8 @@ are declared, and a campaign declaring none says once that every finding is expl
 
 Mutations that turn this file red: averaging every rubric score in ``result_composite`` again; dropping the
 ``measure.axis == "capability"`` filter in ``_family_readings``; reading ``interval_clears`` with the margin
-on the good side; dropping the ``bounded`` interval in ``guardrail_decision``; emitting the exploratory
+on the good side; dropping the ``bounded`` interval in ``guardrail_decision``, or reading ``held`` off a t
+interval on a reading with no declared range; emitting the exploratory
 sentence when questions are declared, or a per-row label when none are.
 """
 
@@ -28,6 +29,7 @@ from pydantic import ValidationError
 from threetears.evals.analysis.generator import build_user_message
 from threetears.evals.analysis.report import build_code_only_report
 from threetears.evals.analysis.report.model import DisclosureBlock, TableBlock
+from threetears.evals.analysis.stats import GUARDRAIL_HELD_NEEDS_RANGE, GUARDRAIL_OUTSIDE_RANGE
 from threetears.evals.contracts import Question, RubricScore
 from threetears.evals.contracts.host import HostProfile, MeasureRegistry
 from threetears.evals.contracts.metrics import MetricDescriptor
@@ -132,7 +134,7 @@ class TestEachGuardrailIsDecidedAgainstTheControl:
         (check,) = bundle.guardrails.checks
         assert (check.name, check.reading, check.decision) == (BOUNDARY, "judged", "breached")
         assert check.margin == 0.0 and not check.margin_declared
-        assert check.interval_basis == "bounded", "every case flipped alike, so the t interval had no width"
+        assert check.interval_basis == "bounded", "a judged scale is a declared range, so the bounded test decides"
         assert bundle.guardrails.of_arm(check.contrast.variant_key).breached == [BOUNDARY]
 
     def test_a_guardrail_at_its_ceiling_on_both_arms_is_undecided_never_held(self):
@@ -162,8 +164,8 @@ class TestEachGuardrailIsDecidedAgainstTheControl:
 # --- a measure may be a guardrail too ------------------------------------------------------------------------
 
 
-def _with_guardrail_measure(*, margin: float | None) -> HostProfile:
-    """The toy host with a destructive-call count declared a guardrail (lower is better)."""
+def _with_guardrail_measure(*, margin: float | None, value_range: tuple[float, float] | None = None) -> HostProfile:
+    """The toy host with a destructive-call count declared a guardrail (lower is better), on ``value_range``."""
     profile = toyhost_profile()
     family = next(d.family for d in TOYHOST_MEASURES if d.name == "field_accuracy")
     destructive = MetricDescriptor(
@@ -177,6 +179,7 @@ def _with_guardrail_measure(*, margin: float | None) -> HostProfile:
         higher_is_better=False,
         materiality_threshold=margin,
         guardrail=True,
+        value_range=value_range,
     )
     return replace(
         profile, measures=MeasureRegistry((*TOYHOST_MEASURES, destructive), families=profile.measures.families)
@@ -200,13 +203,15 @@ class TestAMeasureDeclaredAGuardrail:
         assert MetricDescriptor(**base, higher_is_better=False).guardrail
         assert not MetricDescriptor(**{**base, "guardrail": False}).guardrail, "existing measures are unchanged"
 
-    def _bundle(self, contrast_calls: list[float], *, margin: float | None):
+    def _bundle(
+        self, contrast_calls: list[float], *, margin: float | None, value_range: tuple[float, float] | None = None
+    ):
         control = [{"destructive_calls": 0.0} for _ in range(N)]
         contrast = [{"destructive_calls": value} for value in contrast_calls]
         return two_arm_bundle(
             _scored(CAPABILITY_GAIN, GUARDRAIL_AT_CEILING),
             host_measures=(control, contrast),
-            profile=_with_guardrail_measure(margin=margin),
+            profile=_with_guardrail_measure(margin=margin, value_range=value_range),
         )
 
     def test_more_destructive_calls_on_every_case_breach_it(self):
@@ -219,10 +224,31 @@ class TestAMeasureDeclaredAGuardrail:
             c.name == "destructive_calls" for f in bundle.multiple_comparisons.families for c in f.comparisons
         ), "a guardrail joins no family"
 
-    def test_a_rise_inside_the_declared_margin_is_held(self):
+    def test_a_rise_inside_the_declared_margin_is_held_on_a_declared_range(self):
+        bundle = self._bundle([0.0, 0.1] * 7 + [0.0], margin=1.0, value_range=(0.0, 2.0))
+        (check,) = [check for check in bundle.guardrails.checks if check.name == "destructive_calls"]
+        assert (check.decision, check.interval_basis, check.undecided_reason) == ("held", "bounded", None)
+
+    def test_with_no_declared_range_the_same_rise_is_undecided_and_names_the_remedy(self):
+        """The t interval sits well inside the margin, but with no range no test holds its rate: never held (#695)."""
         bundle = self._bundle([0.0, 0.1] * 7 + [0.0], margin=1.0)
-        checks = {check.name: check for check in bundle.guardrails.checks}
-        assert checks["destructive_calls"].decision == "held"
+        (check,) = [check for check in bundle.guardrails.checks if check.name == "destructive_calls"]
+        assert check.interval is not None and check.interval[1] < 1.0, "the t interval would have read held"
+        assert (check.decision, check.interval_basis) == ("undecided", "t")
+        assert check.undecided_reason == GUARDRAIL_HELD_NEEDS_RANGE
+        assert "declare value_range" in check.undecided_reason and "ranges=" in check.undecided_reason
+        assert bundle.guardrails.of_arm(check.contrast.variant_key).held == []
+
+    def test_with_no_declared_range_a_rise_with_no_spread_names_the_remedy(self):
+        bundle = self._bundle([0.5] * N, margin=1.0)
+        (check,) = [check for check in bundle.guardrails.checks if check.name == "destructive_calls"]
+        assert (check.decision, check.interval) == ("undecided", None)
+        assert check.undecided_reason is not None and check.undecided_reason.endswith(GUARDRAIL_HELD_NEEDS_RANGE)
+
+    def test_a_value_outside_the_declared_range_is_undecided_and_says_so(self):
+        bundle = self._bundle([0.0] * (N - 1) + [3.0], margin=1.0, value_range=(0.0, 2.0))
+        (check,) = [check for check in bundle.guardrails.checks if check.name == "destructive_calls"]
+        assert (check.decision, check.interval, check.undecided_reason) == ("undecided", None, GUARDRAIL_OUTSIDE_RANGE)
 
 
 # --- the reports give guardrails their own section ---------------------------------------------------------

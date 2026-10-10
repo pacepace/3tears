@@ -32,7 +32,7 @@ async def test_offline_the_arm_that_gained_and_breached_is_never_the_one_to_ship
 
     assert isinstance(comparison, Comparison) and list(comparison.arms) == ["current", "friendlier", "careful"]
     for summary in comparison.arms.values():
-        assert summary.status == "completed" and (summary.n_cases, summary.k_runs, summary.n_scored) == (40, 1, 40)
+        assert summary.status == "completed" and (summary.n_cases, summary.k_runs, summary.n_scored) == (50, 1, 50)
     gains = {row["arm"]: row["verdict"] for row in comparison.contrasts("gives_status")}
     assert gains == {"friendlier": "improved on the control", "careful": "improved on the control"}
     assert comparison.contrasts("keeps_card_private") == [], "the guardrail is in no contrast"
@@ -43,8 +43,8 @@ async def test_offline_the_arm_that_gained_and_breached_is_never_the_one_to_ship
     out = capsys.readouterr().out
     assert out.startswith("ANTHROPIC_API_KEY is not set: running OFFLINE")
     assert "claude" not in out.lower() and "haiku" not in out.lower(), "a stand-in's output reads as a model's"
-    assert "  friendlier: 1.00 -> 0.65, interval [-0.5045, -0.1955] at 95%: breached\n" in out
-    assert "  careful: 1.00 -> 1.00, interval [-0.0881, 0.0881] at 95% (bounded: every case moved alike): held" in out
+    assert "  friendlier: 1.00 -> 0.66, interval [-0.5153, -0.2238] at 95%: breached\n" in out
+    assert "  careful: 1.00 -> 1.00, interval [-0.08106, 0.08106] at 95%: held\n" in out
     assert "  friendlier: improved on the control; guardrail breached: do not ship it, whatever it gained.\n" in out
     assert "  careful: improved on the control; guardrail held: a candidate to ship.\n" in out
     assert "card ending" in out.split("Where the guardrail broke")[1], "the example ends by reading a breach"
@@ -53,11 +53,12 @@ async def test_offline_the_arm_that_gained_and_breached_is_never_the_one_to_ship
 
 def test_only_a_held_guardrail_with_a_gain_is_a_candidate_to_ship() -> None:
     module = _load()
-    for verdict in ("improved on the control", "not separated from the control", "regressed from the control"):
-        assert module.what_to_do(verdict, "breached") == "do not ship it, whatever it gained."
-        assert "not known to be safe" in module.what_to_do(verdict, "undecided")
-    assert module.what_to_do("improved on the control", "held") == "a candidate to ship."
-    assert "keep the current prompt" in module.what_to_do("not separated from the control", "held")
+    for outcome in ("improved", "not_separated", "regressed"):  # typed outcomes, never the printed words
+        assert module.what_to_do(outcome, "breached") == "do not ship it, whatever it gained."
+        assert "not known to be safe" in module.what_to_do(outcome, "undecided")
+    assert module.what_to_do("improved", "held") == "a candidate to ship."
+    assert "keep the current prompt" in module.what_to_do("not_separated", "held")
+    assert "keep the current prompt" in module.what_to_do("improved on the control", "held"), "words are no outcome"
 
 
 def _fake_sdk(monkeypatch: pytest.MonkeyPatch, anthropic: ModuleType) -> list[dict[str, Any]]:
@@ -97,7 +98,7 @@ async def test_live_three_prompts_alike_hold_the_guardrail_and_ship_nothing(monk
 
     comparison = await module.main()
 
-    assert len(sent) == 120, "40 questions x 3 prompts, as the docstring says"
+    assert len(sent) == 150, "50 questions x 3 prompts, as the docstring says"
     assert {request["model"] for request in sent} == {module.MODEL}
     assert {row["arm"]: row["outcome"] for row in comparison.guardrails()} == {"friendlier": "held", "careful": "held"}
     assert all(row["verdict"].startswith("not separated") for row in comparison.contrasts("gives_status"))

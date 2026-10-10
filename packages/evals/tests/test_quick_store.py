@@ -112,7 +112,9 @@ async def test_compare_keeps_its_margins_with_a_store(tmp_path: Path) -> None:
     with SqliteDocumentStore(path) as store:
         comparison = await compare(
             CASES,
-            {"current": always_right, "cheaper": misses_one},
+            # Alike on every case: 48 agreeing pairs show a 0.1 margin held whatever order the bounded test bets in.
+            # One miss among them is shown equivalent in 18 of the 48 places it can fall, so it would test luck.
+            {"current": always_right, "cheaper": always_right},
             [correct],
             control="current",
             scope_id="kept",

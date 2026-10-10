@@ -55,8 +55,9 @@ SHUTDOWN_SETTLE_TIMEOUT_S = 5.0
 # cell over the run's whole matrix, in the shuffled order ``runner.cell_execution_order``
 # derives (it was a nested k×model×test_case loop when this was written; the nesting now
 # only BUILDS the cell list, which is then shuffled, so the execution order is no longer
-# nested. The arithmetic below is untouched by that: it depends on the cells being serial
-# and on N being the full matrix, both of which still hold)
+# nested. The arithmetic below is untouched by that: it depends on N being the full matrix and
+# is an upper bound on a run whose cells are serial; a run executing its cells concurrently
+# finishes inside it, and is held to the same bound rather than one that assumes its width)
 # — each bounded by ``RunnerOptions.cell_timeout_s``
 # (600s — already covers candidate turn + delivery drain + judging). So a job's
 # worst-case wall-clock is ``N × cell_timeout_s``; a fixed 3600s backstop falls
@@ -313,35 +314,70 @@ class _GroupSlot:
     runs inside it. The slot is released when every member has ended, including a member cancelled
     before it started — which is why release is counted on :meth:`leave`, called when each member's
     task is done, and not on leaving the ``async with``.
+
+    **A group measuring latency holds the whole manager, and its members take turns.** Side by side,
+    two arms contend for one provider and one box, and every latency they record is read under that
+    contention — stamped ``concurrent`` and kept out of every comparison. So a group whose launch
+    declared latency under test (``exclusive``) takes every slot, so no other run executes beside it,
+    and runs its members one at a time, in the order they were added. It gives up the drift balance of
+    arms measured side by side for latency read with nothing beside it; each run still shuffles its
+    own cells.
     """
 
-    def __init__(self, semaphore: asyncio.Semaphore, members: int) -> None:
+    def __init__(
+        self,
+        semaphore: asyncio.Semaphore,
+        members: int,
+        *,
+        weight: int = 1,
+        exclusive_turn: asyncio.Lock | None = None,
+    ) -> None:
         """Bind the group to the manager's semaphore.
 
         Args:
             semaphore: The manager's concurrency semaphore.
             members: How many jobs the group holds; each must call :meth:`leave` exactly once.
+            weight: How many of the semaphore's slots the group takes: 1, or every slot for a group
+                measuring latency.
+            exclusive_turn: The manager's lock that a group taking every slot acquires them under, so two
+                such groups never each hold part of the semaphore waiting for the rest; given exactly
+                when the group takes every slot, whose members then run one at a time.
         """
         self._semaphore = semaphore
         self._remaining = members
+        self._weight = weight
+        self._exclusive_turn = exclusive_turn
         self._held = False
         self._acquiring = asyncio.Lock()
+        # Members of a group measuring latency run one at a time; the lock is FIFO, so in the order added.
+        self._member_turn = asyncio.Lock() if exclusive_turn is not None else None
 
     @asynccontextmanager
     async def hold(self) -> AsyncIterator[None]:
-        """Enter the group's slot, acquiring it for the group if no member has yet."""
+        """Enter the group's slot, acquiring it for the group if no member has yet — and, for a group
+        measuring latency, wait for this member's turn."""
         async with self._acquiring:
             if not self._held:
-                await self._semaphore.acquire()
+                if self._exclusive_turn is None:
+                    await self._semaphore.acquire()
+                else:
+                    async with self._exclusive_turn:
+                        for _ in range(self._weight):
+                            await self._semaphore.acquire()
                 self._held = True
-        yield
+        if self._member_turn is None:
+            yield
+            return
+        async with self._member_turn:
+            yield
 
     def leave(self) -> None:
         """Record one member's end; the last one out releases the slot."""
         self._remaining -= 1
         if self._remaining == 0 and self._held:
             self._held = False
-            self._semaphore.release()
+            for _ in range(self._weight):
+                self._semaphore.release()
 
 
 class AdmissionTicket:
@@ -474,7 +510,10 @@ class EvalJobManager:
                 ``None`` for nobody. What it raises is logged and never changes the run.
         """
         self._storage = storage
+        self._max_concurrent = max_concurrent
         self._semaphore = asyncio.Semaphore(max_concurrent)
+        # Held while a group measuring latency takes every slot — see :class:`_GroupSlot`.
+        self._exclusive_turn = asyncio.Lock()
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._on_progress = on_progress
         self._job_timeout_s = job_timeout_s
@@ -826,13 +865,18 @@ class EvalJobManager:
             self._detached.pop(job_id, None)
             self._task_keys.pop(job_id, None)
 
-    async def start_group(self, members: Sequence[tuple[EvalRun, WorkFn, float | None]]) -> list[str]:
+    async def start_group(
+        self, members: Sequence[tuple[EvalRun, WorkFn, float | None]], *, measure_latency: bool = False
+    ) -> list[str]:
         """Start several runs as one group: they share one concurrency slot and start together.
 
         Every run is saved before any task starts, so a storage refusal leaves nothing running.
 
         Args:
             members: ``(run, work, job_timeout_s)`` per run; a ``None`` timeout falls back to the manager's default.
+            measure_latency: The group's launch declared latency under test: it takes every concurrency
+                slot, so no other run executes beside it, and its members run one at a time
+                (:class:`_GroupSlot`). Latency-blind otherwise: one slot, members side by side.
 
         Returns:
             The run ids, in the order given.
@@ -864,7 +908,11 @@ class EvalJobManager:
                 )
             raise asyncio.CancelledError
         saving.result()
-        slot = _GroupSlot(self._semaphore, len(members))
+        slot = (
+            _GroupSlot(self._semaphore, len(members), weight=self._max_concurrent, exclusive_turn=self._exclusive_turn)
+            if measure_latency
+            else _GroupSlot(self._semaphore, len(members))
+        )
         for run, work, job_timeout_s in members:
             task = asyncio.create_task(
                 self._run_job(run.id, run.scope_id, work, job_timeout_s, slot=slot),

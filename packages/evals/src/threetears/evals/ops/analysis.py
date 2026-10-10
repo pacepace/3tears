@@ -323,6 +323,67 @@ def analyses_list(host: EvalHost, campaign_id: str, scope_id: str) -> AnalysisLi
     )
 
 
+class UndescribableArmsLine(EvalBaseModel):
+    """One stored analysis holding at least one arm whose levels this build cannot describe."""
+
+    analysis_id: str
+    campaign_id: str
+    archived: bool = Field(description="Whether the analysis is archived.")
+    undescribable_arms: int = Field(description="Arms in its variant index carrying levels_unavailable.")
+    arms: int = Field(description="Arms in its variant index.")
+    reasons: list[str] = Field(description="Each distinct reason its arms give, sorted; an arm may give none.")
+
+
+class UndescribableArmsListing(EvalBaseModel):
+    """The scope's stored analyses that hold an arm whose levels this build cannot describe."""
+
+    scope_id: str
+    analyses_read: int = Field(description="Every stored analysis in the scope that was read, archived included.")
+    analyses: list[UndescribableArmsLine] = Field(
+        description="Those holding at least one undescribable arm, most such arms first."
+    )
+
+
+def analyses_undescribable(host: EvalHost, scope_id: str) -> UndescribableArmsListing:
+    """The scope's analyses holding an arm whose levels this build cannot describe, with each one's count and reasons.
+
+    Derived from each stored analysis's frozen variant index on every read and never stored: a tally kept beside
+    the rows would be a second derivation that drifts. The fleet view of the per-arm disclosure, which matters
+    most after an ``IDENTITY_VERSION`` bump, when every arm stamped before it may become undescribable at once.
+    Every campaign in the scope is read, archived ones and archived analyses included, since an archived analysis
+    can still be read and restored.
+
+    Args:
+        host: The host whose store is read.
+        scope_id: The scope.
+
+    Returns:
+        The listing.
+    """
+    lines: list[UndescribableArmsLine] = []
+    read = 0
+    for campaign in list_campaigns(host.storage, scope_id):
+        for analysis in list_analyses(host.storage, campaign.id, scope_id):
+            read += 1
+            # `levels_unavailable` set, even to an empty reason, is the admission; None is a describable arm.
+            reasons = [
+                entry.levels_unavailable for entry in analysis.variant_index if entry.levels_unavailable is not None
+            ]
+            if reasons:
+                lines.append(
+                    UndescribableArmsLine(
+                        analysis_id=analysis.id,
+                        campaign_id=analysis.campaign_id,
+                        archived=analysis.archived,
+                        undescribable_arms=len(reasons),
+                        arms=len(analysis.variant_index),
+                        reasons=sorted({reason for reason in reasons if reason}),
+                    )
+                )
+    lines.sort(key=lambda line: (-line.undescribable_arms, line.campaign_id, line.analysis_id))
+    return UndescribableArmsListing(scope_id=scope_id, analyses_read=read, analyses=lines)
+
+
 def _generation_settings(host: OpsHost) -> AnalysisGeneration:
     """The host's generation settings, or a refusal saying it generates none here."""
     if host.generation is None:
@@ -351,8 +412,8 @@ async def analysis_estimate(
         The estimate.
 
     Raises:
-        ValidationFailedError: The host generates no analyses here, the bundle has no evidence, or the
-            prompt does not resolve.
+        ValidationFailedError: The host generates no analyses here, the bundle has no evidence, the
+            prompt does not resolve, or the writer model is not one the host allows.
         NotFoundError: No campaign with that id in the scope.
     """
     generation = _generation_settings(host)
@@ -387,7 +448,8 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
 
     Raises:
         ValidationFailedError: The host generates no analyses here, the bundle has no evidence, the
-            prompt does not resolve, or the first call cannot be priced under the enforced cap or is priced
+            prompt does not resolve, the writer model is not one the host allows
+            (``HostProfile.analysis_writer_models``, checked before any provider request), or the first call cannot be priced under the enforced cap or is priced
             above it.
         ConflictError: A generation of this campaign is already running.
         NotFoundError: No campaign with that id in the scope.
@@ -605,7 +667,10 @@ __all__ = [
     "InsightStandingName",
     "ReportDocument",
     "ReportFormat",
+    "UndescribableArmsLine",
+    "UndescribableArmsListing",
     "analyses_list",
+    "analyses_undescribable",
     "analysis_archive",
     "analysis_delete",
     "analysis_estimate",

@@ -10,7 +10,8 @@ and composite, and decided on its own for each arm against the control, ``held``
 **A guardrail declares its margin and its direction, and neither is assumed.** The margin is how much worse
 than the control an arm may be and still hold, in the reading's own units (0.02 is two points on a pass rate);
 the direction is which way is better. ``held`` needs the arm shown no worse than the margin, ``breached``
-needs it shown worse by more, and anything in between is ``undecided``, which is never read as safe.
+needs it shown worse by more, and anything in between is ``undecided``, which is never read as safe. ``held``
+also needs the reading's range: a ``bool`` scorer's is 0 to 1, any other's is declared in ``ranges=``.
 """
 
 from __future__ import annotations
@@ -43,9 +44,11 @@ class Guardrail:
             is scored with higher better, so it takes ``"higher_is_better"``.
 
     A scorer's range is declared beside it, as for any scorer (``compare(ranges=...)``): a pass/fail (``-> bool``)
-    is on 0 to 1 already, and a bounded score declared on its range is too. With a range, two arms that score
-    every case alike — a guardrail at its ceiling — read the interval the range allows rather than ``undecided``
-    for want of one.
+    is on 0 to 1 already, and a score declared on its range is too. **A guardrail on a scorer with no range is never
+    ``held``**: with no range no test of a mean holds its error rate (a rare large drop can hide in a few cases), so
+    such a guardrail can be shown ``breached`` but otherwise reads ``undecided``, its reason naming ``ranges=``. On a
+    range, ``held`` is read off the bounded test, which holds its 2.5% error rate at any number of cases — and so
+    needs the cases to rule out a rare drop: twelve agreeing pass/fail cases do not show a 0.05 margin held.
     """
 
     margin: float

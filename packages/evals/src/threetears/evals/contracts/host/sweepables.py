@@ -1604,9 +1604,16 @@ def _request_settings(settings: Any) -> dict[str, Any] | None:
     Returns:
         The settings as a plain mapping — ``reasoning_max_tokens: None`` and ``reasoning_effort:
         None`` inside it are a recorded level (no reasoning parameter was sent), so the mapping is
-        never blank — or ``None`` when the run carries no stamp.
+        never blank — or ``None`` when the run carries no stamp. ``strict_output`` appears only when
+        True: False is what every stamp stored before the flag reads as, so leaving it out keeps
+        those runs at the level they always had, while a strict stamp reads as a different one.
     """
-    return None if settings is None else settings.model_dump(mode="json")
+    if settings is None:
+        return None
+    level: dict[str, Any] = settings.model_dump(mode="json")
+    if not level["strict_output"]:
+        del level["strict_output"]
+    return level
 
 
 #: The four concepts every LLM product has, and nothing else. A host adds to this; it never
@@ -1718,7 +1725,10 @@ CORE_SWEEPABLES: tuple[Sweepable, ...] = (
         name="judge_request_settings",
         role="apparatus",
         read=lambda run, _results: _request_settings(run.judge_request_settings),
-        reader_prose="the output cap and private-reasoning budget every judge request was sent with",
+        reader_prose=(
+            "the output cap and private-reasoning budget every judge request was sent with, and whether it could "
+            "be routed only to a provider honouring both"
+        ),
         confounds=(
             "the judge was asked with a different output cap or reasoning budget, so the same judge model may have "
             "reasoned differently — or not at all — before scoring"

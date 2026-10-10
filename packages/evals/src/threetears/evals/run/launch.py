@@ -44,6 +44,7 @@ from threetears.evals.contracts.host.world import WorldPlacement
 from threetears.evals.contracts.arguments import normalize_blank
 from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
 from threetears.evals.contracts.host.sweepables import CORE_SWEEPABLES
+from threetears.evals.contracts.metrics import run_margin_refusal
 from threetears.evals.contracts.identity import derive_context_identity, variant_levers_of_run
 from threetears.evals.contracts.models import (
     DEFAULT_JUDGE_TEMPERATURE,
@@ -73,6 +74,7 @@ from threetears.evals.run.jobs import (
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import JudgeService, judge_clients_for_run
 from threetears.evals.run.lifecycle import record_completeness
+from threetears.evals.run.executor import DEFAULT_MAX_CONCURRENT_CELLS, CellExecutor
 from threetears.evals.run.metering import MeteredCallLedger
 from threetears.evals.contracts.offload import run_blocking, wait_through_cancellation
 from threetears.evals.run.check_controls import goal_check_proofs
@@ -125,6 +127,10 @@ class LaunchSettings(BaseModel):
         max_admitted_runs: How many runs may be admitted and unfinished at once across every launch
             — the ceiling admission refuses past rather than queueing behind.
         judge_concurrency: How many judge calls one cell makes at once.
+        max_concurrent_cells: How many of a run's cells execute at once when its launch does not declare
+            latency under test (``measure_latency``). A launch that declares it runs its cells one at a time
+            whatever this says. Defaults to
+            :data:`~threetears.evals.run.executor.DEFAULT_MAX_CONCURRENT_CELLS`; ``1`` runs every run serially.
         enforcement_enabled: Whether the cost and metered-call ceilings are enforced at all.
         max_cost_usd: The run cost ceiling a run inherits when its launch names none.
         max_metered_calls: The metered-call ceiling a run inherits when its launch names none, or
@@ -156,6 +162,7 @@ class LaunchSettings(BaseModel):
     max_launch_arms: int = Field(gt=0)
     max_admitted_runs: int = Field(gt=0)
     judge_concurrency: int = Field(gt=0)
+    max_concurrent_cells: int = Field(default=DEFAULT_MAX_CONCURRENT_CELLS, gt=0)
     enforcement_enabled: bool
     max_cost_usd: float = Field(gt=0)
     max_metered_calls: int | None = Field(gt=0)
@@ -418,7 +425,12 @@ class LaunchHost:
             through it, under an enforced cap. ``None`` for a host that prices no launch: its every arm is then
             unpriceable, which an arm with a cap its launch named proceeds under and one with an inherited cap
             is refused for — never run unpriced under a cap nobody chose.
-        max_concurrent_jobs: How many runs' jobs execute at once in this process.
+        max_concurrent_jobs: How many runs' jobs execute at once in this process. A launch declaring latency
+            under test takes all of them while its runs execute, one run at a time, so nothing executes
+            beside a latency it measures.
+        cell_executor: What runs each run's cells (:class:`~threetears.evals.run.executor.CellExecutor`) — a
+            host's own pool or queue — or ``None`` for the in-process default, which runs them serially or up
+            to :attr:`LaunchSettings.max_concurrent_cells` at once, as each run's launch decided.
         on_job_progress: Called with ``(run id, progress)`` on every progress write — typically a
             broadcast to an operator's view — or ``None``.
         on_run_end: Told each run's recorded terminal status
@@ -438,6 +450,7 @@ class LaunchHost:
     world_placements: Callable[[EvalRun], dict[str, WorldPlacement]] | None = None
     launch_pricer: LaunchPricer | None = None
     max_concurrent_jobs: int = MAX_CONCURRENT_JOBS
+    cell_executor: CellExecutor | None = None
     on_job_progress: Callable[[str, dict[str, Any]], None] | None = None
     on_run_end: RunEndListener | None = None
     job_manager: EvalJobManager = field(init=False, repr=False, compare=False)
@@ -668,6 +681,10 @@ class LaunchGroup:
         """
         self.id = str(uuid.uuid7())
         self.candidate_models = list(candidate_models)
+        #: Whether the group's runs declared latency under test — decided by its first member, and held of
+        #: every other (:meth:`add`). The job manager then gives the group every slot and runs its members
+        #: one at a time.
+        self.measure_latency: bool | None = None
         self.members: list[tuple[EvalRun, WorkFn, float]] = []
         self._teardowns: list[contextlib.AsyncExitStack] = []
         self._resolved: dict[tuple[str, ...], Any] = {}
@@ -696,7 +713,21 @@ class LaunchGroup:
         job_timeout_s: float,
         teardown: contextlib.AsyncExitStack,
     ) -> None:
-        """Hold one prepared run, and what it must release if the group never starts."""
+        """Hold one prepared run, and what it must release if the group never starts.
+
+        Raises:
+            ValueError: The run declares latency under test and the group's other runs do not, or the other way
+                round. Arms measured as one experiment are measured one way: side by side their latency is read
+                under contention, one at a time it is not, and comparing the two would compare the conditions.
+                Nothing is held; the caller releases ``teardown`` with the rest of its refusal.
+        """
+        declared = bool(run.measure_latency)
+        if self.measure_latency is not None and declared != self.measure_latency:
+            raise ValueError(
+                f"launch group {self.id} mixes runs that declare latency under test with runs that do not; launch "
+                "every arm of one group with the same measure_latency, so their latency is read under one condition"
+            )
+        self.measure_latency = declared
         self.members.append((run, work, job_timeout_s))
         self._teardowns.append(teardown)
 
@@ -787,10 +818,16 @@ class LaunchRequest:
         settings: The host's launch settings as the launch read them, once, when it began — what its
             refusals were made under, and what :func:`launch_run` records and enforces the run's ceilings
             and judge concurrency from. A launcher reads the host's settings from here, never afresh.
+        measure_latency: Whether the launch declared latency under test: its run executes its cells one at a time
+            and records it, and its group holds every job slot. ``False``: the cells run up to
+            :attr:`LaunchSettings.max_concurrent_cells` at once, and their latency is stamped read under concurrency.
         refused_goal_checks: Each of the stored template's goal checks the current grammar refuses, with why
             (:func:`~threetears.evals.contracts.models.refused_goal_checks`). ``template`` already leaves them
             out (:func:`~threetears.evals.run.runner.template_as_graded`), so every launcher and every cell
             grades the rest, and the run records these (``EvalRun.refused_goal_checks``).
+        margins: The margins the launch declared on core rate measures, already checked
+            (:func:`~threetears.evals.contracts.metrics.run_margin_refusal`), which the run records
+            (``EvalRun.declared_margins``); empty when it declared none.
     """
 
     template: EvalTemplate
@@ -817,6 +854,8 @@ class LaunchRequest:
     launch_group: LaunchGroup
     settings: LaunchSettings
     refused_goal_checks: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
+    margins: Mapping[str, float] = field(default_factory=lambda: MappingProxyType({}))
+    measure_latency: bool = False
 
     def overlays_as(self, model: type[_Validated]) -> _Validated:
         """The launch's overlays as the kind's own overlay model, typed.
@@ -1445,6 +1484,8 @@ async def start_run(
     scope_id: str,
     launch_group: LaunchGroup | None = None,
     admission: AdmissionTicket | None = None,
+    margins: Mapping[str, float] | None = None,
+    measure_latency: bool = False,
 ) -> list[EvalRun]:
     """Refuse what no kind can run, admit the launch, and dispatch each arm to its kind's launcher.
 
@@ -1499,6 +1540,18 @@ async def start_run(
         admission: A reservation the caller already holds, of which this launch takes its runs'
             share instead of asking for room of its own. Ignored with ``launch_group``, whose
             caller's admission covers it. When omitted, a launch that owns its group is admitted here.
+        margins: Margins on core rate measures (``{"accuracy": 0.05}``), the most two arms may differ on one and
+            still be alike, declared before any result exists. A core measure's descriptor declares none, so
+            this is how a comparison of these runs can read ``equivalent`` on it. Every run records them
+            (``EvalRun.declared_margins``), outside its measurement context; the analysis reads one only when
+            every run of the campaign declares it alike.
+        measure_latency: Declare latency under test. Each run then executes its cells one at a time, and the
+            launch's runs execute one at a time with nothing else beside them, so the latency they record is
+            read clean. ``False`` (the default) runs each run's cells up to the host's
+            :attr:`LaunchSettings.max_concurrent_cells` at once: far faster, and the latency still recorded is
+            stamped read under concurrency and kept out of every comparison, bar and ranking. Every run
+            records the declaration (``EvalRun.measure_latency``) and the width it ran at
+            (``EvalRun.cell_concurrency``).
 
     **Every arm is priced before any launcher runs, by one rule.** Before calling the launcher this asks
     the kind what each arm will run (:attr:`LaunchableKind.plan_arm` — the template's stored cases it
@@ -1528,7 +1581,8 @@ async def start_run(
             kind with no launcher, a launch argument that kind cannot honour, an overlay the kind's
             model refuses (named by field), an apparatus setting the kind does not honour, an arm
             predicted above its cap or unpriceable under an inherited one, a plan the kind refuses to make,
-            or any refusal the kind's launcher makes.
+            a margin on a measure that is not a core rate measure or that is not between 0 and 1, or any
+            refusal the kind's launcher makes.
     """
     # The host's settings, read ONCE for the whole launch: every refusal below and every arm's tail
     # reads this snapshot, so a hot reload part-way cannot refuse, after its generation was paid for, a
@@ -1554,7 +1608,21 @@ async def start_run(
         scope_id=scope_id,
         launch_group=launch_group,
         admission=admission,
+        margins=margins,
+        measure_latency=measure_latency,
     )
+
+
+def _refused_margins_or(margins: Mapping[str, float] | None) -> dict[str, float]:
+    """The launch's run-scoped margins, refusing one no run may declare, before anything is prepared.
+
+    Raises:
+        ValidationFailedError: A margin on a measure that is not a core rate measure, or not between 0 and 1.
+    """
+    declared = dict(margins or {})
+    if refusals := [refusal for name, margin in declared.items() if (refusal := run_margin_refusal(name, margin))]:
+        raise ValidationFailedError("; ".join(refusals))
+    return {name: float(margin) for name, margin in sorted(declared.items())}
 
 
 def _refuse_raised_ceilings(
@@ -1677,6 +1745,8 @@ async def _start_run(
     launch_group: LaunchGroup | None,
     admission: AdmissionTicket | None,
     priced: _PricedArms | None = None,
+    margins: Mapping[str, float] | None = None,
+    measure_latency: bool = False,
 ) -> list[EvalRun]:
     """:func:`start_run` under a settings snapshot its caller read — the launch's own, or a battery's.
 
@@ -1699,6 +1769,7 @@ async def _start_run(
         cassette_mode=cassette_mode,
         cassette_corpus_id=cassette_corpus_id,
     )
+    declared_margins = MappingProxyType(_refused_margins_or(margins))
     dispatch = partial(
         _dispatch,
         host,
@@ -1744,7 +1815,10 @@ async def _start_run(
             cassette_corpus_id=cassette_corpus_id,
             max_cost_usd=max_cost_usd,
             max_metered_calls=max_metered_calls,
+            measure_latency=measure_latency,
         )
+        if declared_margins:
+            requests = [replace(request, margins=declared_margins) for request in requests]
         # Every arm priced before the first launcher runs, whether it generates or not: a launcher is what
         # pays for the generation the arms share and what builds an arm's clients, so pricing an arm after
         # it would refuse a launch already billed. Priced exactly once — here, or by the battery's
@@ -1848,6 +1922,7 @@ def _arm_requests(
     cassette_corpus_id: str | None,
     max_cost_usd: float | None,
     max_metered_calls: int | None,
+    measure_latency: bool = False,
 ) -> list[LaunchRequest]:
     """One request per arm — per model, or one on the kind's default when the launch names none.
 
@@ -1873,6 +1948,7 @@ def _arm_requests(
         cassette_corpus_id: The corpus a replay serves.
         max_cost_usd: The per-run cost-cap override.
         max_metered_calls: The per-run metered-call ceiling override.
+        measure_latency: Whether the launch declared latency under test.
 
     Returns:
         The requests, in arm order, with no arm plan yet.
@@ -1919,6 +1995,7 @@ def _arm_requests(
             arm_price=None,
             launch_group=group,
             settings=settings,
+            measure_latency=measure_latency,
         )
         for arm_model in arm_models
     ]
@@ -2531,7 +2608,7 @@ async def launch_as_group(
                 attached = True
                 if cancelled_while_attaching:
                     raise asyncio.CancelledError
-            await job_manager.start_group(group.members)
+            await job_manager.start_group(group.members, measure_latency=bool(group.measure_latency))
         except BaseException:
             log.warning("%s group=%s abandoned before starting", event, group.id)
             await group.abandon()
@@ -2865,6 +2942,7 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                 overlays=freeze(request.overlays),
                 kind_spec=freeze(request.kind_spec),
                 apparatus_settings=dict(request.apparatus_settings),
+                declared_margins=dict(request.margins),
                 # The world and the tool bound the template states, frozen as this run launched them:
                 # the template is editable, and the runner hands the candidate the template's seed.
                 resolved_world_seed=dict(template.world_seed.namespaces),
@@ -2880,6 +2958,14 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                 refused_goal_checks=refused_checks,
                 cassette_mode=request.cassette_mode,
                 cassette_corpus_id=request.cassette_corpus_id,
+                # Whether latency is under test, and the width the cells execute at, which follows from it: one
+                # at a time when it is, up to the host's width (never more than the matrix) when it is not.
+                measure_latency=request.measure_latency,
+                cell_concurrency=(
+                    1
+                    if request.measure_latency
+                    else max(1, min(settings.max_concurrent_cells, len(test_cases) * request.k_runs))
+                ),
                 simulator_model=wiring.simulator_model,
                 turn_budget_s=wiring.turn_budget_s,
                 # How each apparatus role was ASKED, stamped from the one value the host's client
@@ -2986,8 +3072,8 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
             external_rates=wiring.external_rates,
             cell_timeout_s=wiring.cell_timeout_s if wiring.cell_timeout_s is not None else DEFAULT_CELL_TIMEOUT_S,
             # Measurement-condition probe (R4): the job manager is the only thing that can
-            # see a SECOND job executing beside this one, which is the contention that
-            # corrupts a latency pool — cells within a run are serial. The run is this job
+            # see a SECOND job executing beside this one, which is contention that corrupts a
+            # latency pool as the run's own concurrent cells do (``max_concurrent_cells``). The run is this job
             # manager's job, so the probe is the run's rather than the host's: a run executed
             # outside a job manager records no execution_mode rather than a guessed one.
             # Runs EXECUTING, never runs queued for a slot: a queued run calls no provider, and
@@ -2998,6 +3084,9 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
             # under a ceiling that was in force, which is a different fact from nobody
             # having counted.
             metered_calls=metered_calls,
+            # The width the run records, so what it executed at and what it says it did are one value.
+            max_concurrent_cells=run.cell_concurrency or 1,
+            cell_executor=host.cell_executor,
         )
 
         # The loop the work function runs, bound now rather than looked up when the job starts it:
@@ -3078,9 +3167,10 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                     # worth reporting.
                     await teardown.aclose()
 
-        # Size the job's wall-clock backstop to the matrix. Cells run
-        # sequentially, each capped at options.cell_timeout_s, so a fixed 3600s
-        # cap guillotines any matrix past ~6 cells; scale it with N instead.
+        # Size the job's wall-clock backstop to the matrix. Each cell is capped at
+        # options.cell_timeout_s, so a fixed 3600s cap guillotines a serial matrix past ~6
+        # cells; scale it with N instead. Sized as if serial whatever the width: an upper
+        # bound a concurrent run finishes inside, never a tighter one that assumes its width.
         n_results = len(test_cases) * run.k_runs
         job_timeout_s = adaptive_job_timeout_s(n_results, per_result_s=options.cell_timeout_s)
         log.info(
@@ -3144,6 +3234,7 @@ async def start_universal_battery(
     apparatus_settings: Mapping[str, Any] | None = None,
     max_cost_usd: float | None = None,
     preflight: BatteryPreflight,
+    measure_latency: bool = False,
 ) -> list[str]:
     """Launch the operator-curated boundary battery against one subject.
 
@@ -3205,6 +3296,7 @@ async def start_universal_battery(
         max_cost_usd: Optional per-run cost-cap override for every run the battery launches, as
             :func:`start_run` takes it; must be ``> 0`` and at most the host's configured ceiling. Also the cap
             each template's arms are priced against before anything launches.
+        measure_latency: Declare latency under test for every template's runs, as :func:`start_run` takes it.
         preflight: The host's pre-flight, prepared once for the subject and models and then asked
             of every template before any launches, after the engine's own pricing. It checks what only the
             host's launchers know; a generation's calls and every template's arms the battery prices itself.
@@ -3448,10 +3540,11 @@ async def start_universal_battery(
                     launch_group=group,
                     admission=None,
                     priced=priced[template.id],
+                    measure_latency=measure_latency,
                 )
                 prepared_runs[template.id] = [run.id for run in runs]
             for group in (group_of[template.id] for template in templates):
-                await host.job_manager.start_group(group.members)
+                await host.job_manager.start_group(group.members, measure_latency=bool(group.measure_latency))
                 started.add(group.id)
                 log.info(
                     "eval.start_universal_battery group=%s started runs=%s",

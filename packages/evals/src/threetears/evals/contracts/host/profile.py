@@ -327,6 +327,17 @@ class HostProfile:
     on. A name that is not a registered ``label`` is refused at registration.
     """
 
+    analysis_writer_models: tuple[str, ...] = ()
+    """The model ids this host allows to write a campaign's analysis. Empty: any model.
+
+    An allow-list, not a deny-list: once a host opts in, a model nobody has measured writing the strict
+    analysis contract is refused rather than admitted by default. ``analysis_generate`` (and
+    :func:`~threetears.evals.analysis.generator.generate_analysis`) check the requested model against it
+    before the first provider request, so a writer known unable to produce the contract costs nothing,
+    not a billed call and its billed repair. A reporter run measuring writers is exempt: it exists to
+    find out which models belong here. Ids are compared exactly, as the host's client is asked for them.
+    """
+
     sweepables: SweepableRegistry = field(init=False, repr=False, compare=False)
     """Every input this host's runs carry: :attr:`host_sweepables` plus each kind contract's levers.
 
@@ -394,6 +405,23 @@ class HostProfile:
             The declared contract, or an empty one.
         """
         return next((contract for contract in self.kinds if contract.kind == kind), None) or KindContract(kind)
+
+    def analysis_writer_refusal(self, model: str) -> str | None:
+        """Why ``model`` may not write an analysis for this host, or ``None`` when it may.
+
+        Args:
+            model: The writer model id, as requested or as the host's client resolved its default.
+
+        Returns:
+            The refusal, naming the allowed models; ``None`` when the host declares no list or lists ``model``.
+        """
+        if not self.analysis_writer_models or model in self.analysis_writer_models:
+            return None
+        return (
+            f"model {model!r} is not an analysis writer host {self.host_id!r} allows; it allows "
+            f"{', '.join(repr(allowed) for allowed in self.analysis_writer_models)} "
+            "(HostProfile.analysis_writer_models). Refused before any provider request, so nothing was spent"
+        )
 
     def engine_levels(self, run: EvalRun) -> dict[str, SweepableValue]:
         """The levels the engine resolves for ``run`` itself: its model, its kind and every kind contract's levers.
