@@ -17,12 +17,15 @@ import math
 from collections.abc import Mapping
 from typing import Any
 
+import pytest
+
 from threetears.evals.analysis import inspect_campaign_bundle
 from threetears.evals.contracts import RoleUsageLedger
 from threetears.evals.contracts.host.spend import ExternalSpend
 from threetears.evals.contracts.spend import ExternalRateTable
 from threetears.evals.contracts.usage_capture import blended_cost, production_replicating_cost
 from threetears.evals.quick import Answer, compare
+from threetears.evals.ops import dollars_text
 from threetears.evals.run import list_results
 
 SCOPE = "cost-precision-tests"
@@ -116,3 +119,24 @@ async def test_cheap_spend_survives_the_result_the_run_summary_and_the_bundle() 
     # Full precision still fingerprints deterministically: the same evidence assembles to the same bytes.
     again = inspect_campaign_bundle(comparison.host, comparison.campaign_id, SCOPE).bundle
     assert again.fingerprint() == bundle.fingerprint()
+
+
+@pytest.mark.parametrize(
+    ("amount", "shown"),
+    [
+        (0, "$0"),
+        (12.345, "$12.35"),
+        (1.2, "$1.20"),
+        (0.5, "$0.50"),
+        (0.1, "$0.10"),
+        (0.0999, "$0.0999"),
+        (0.0123, "$0.0123"),
+        (0.06, "$0.0600"),
+        (0.00016, "$0.000160"),
+        (1.2345678e-05, "$0.0000123"),
+    ],
+)
+def test_spend_reads_as_dollars_and_cents_from_ten_cents_up_and_three_significant_figures_below(
+    amount: float, shown: str
+) -> None:
+    assert dollars_text(amount) == shown

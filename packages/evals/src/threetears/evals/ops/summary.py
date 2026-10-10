@@ -78,24 +78,29 @@ from threetears.evals.run import get_run, list_results
 
 
 def dollars_text(amount: float) -> str:
-    """Spend as a person reads it: cents for whole calls' worth, three significant figures below a cent.
+    """Spend as a person reads it: dollars and cents from ten cents up, three significant figures below.
 
     A cheap model's call costs a few hundred-thousandths of a dollar, so a fixed number of decimals either
     shows it as $0.000000 or pads every larger amount with noise, and a general format shows it in
-    exponent notation ($3e-05), which no one reads as money; the stored value is never rounded. Public
-    because two surfaces print spend — a run's summary and the agent-facing rendering of its results —
-    and one rule for both is what keeps one amount from reading two ways.
+    exponent notation ($3e-05), which no one reads as money; the stored value is never rounded. From ten
+    cents up, two decimals already carry two significant figures or more, and a third digit ($0.500) reads as
+    noise; below, rounding to the cent would erase the difference between two cheap runs ($0.0123 and
+    $0.0149 are not both $0.01). Public because two surfaces print spend — a run's summary and the
+    agent-facing rendering of its results — and one rule for both is what keeps one amount from reading two
+    ways.
 
     Args:
         amount: Dollars, as stored.
 
     Returns:
-        The amount with its dollar sign: ``$0`` for zero, two decimals from a cent up, three significant
-        figures below.
+        The amount with its dollar sign: ``$0`` for zero, two decimals from ten cents up (``$0.50``,
+        ``$1.20``), three significant figures below (``$0.0123``, ``$0.000160``).
     """
     if amount == 0:
         return "$0"
-    decimals = max(2, 2 - math.floor(math.log10(abs(amount))))
+    if abs(amount) >= 0.1:
+        return f"${amount:.2f}"
+    decimals = 2 - math.floor(math.log10(abs(amount)))
     return f"${amount:.{decimals}f}"
 
 
