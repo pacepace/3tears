@@ -543,6 +543,8 @@ The host contract — what a consuming product declares, and what the engine nev
   <br>`obligation_rows(declared: WorldDimension) -> frozenset[ObligationRow]`
 - **`obligations`** · function · The per-dimension checks this dimension's shape owes, derived and never declared.
   <br>`obligations(declared: WorldDimension) -> tuple[CheckName, ...]`
+- **`pass_threshold_label`** · function · How every surface names pass^k: its depth and the bar a criterion had to clear, e.g. `pass^k (k=3, criterion >= 4 of 5)`.
+  <br>`pass_threshold_label(k: int | None, threshold: int) -> str`
 - **`require_resolved_colour`** · function · The palette's one colour check: `value` is resolved sRGB hex (`#rrggbb`), or a refusal.
   <br>`require_resolved_colour(where: str, value: object) -> str`
 - **`schema_violations`** · function · Every way `value` fails `schema`, each naming the path it fails at.
@@ -580,6 +582,7 @@ The host contract — what a consuming product declares, and what the engine nev
 - **`NominalScale`** · model · Unordered categories. Two levels are different, and neither is larger.
 - **`Ordinal`** · dataclass · Mark a `Literal` or `Enum` field as ordered: its levels rank in the order they are declared.
 - **`OrdinalScale`** · model · Ordered but unspaced — `small` / `medium` / `large`.
+- **`PassThreshold`** · dataclass · The 1–5 level a capability criterion must reach for an attempt to pass, for one behavior.
 - **`ProfileRegistrationError`** · exception · Two of a host's registries contradict each other, raised where both are in hand.
 - **`RegistrationError`** · exception · A declaration contradicts what this module promises, raised where it is written.
 - **`ResolvedLevers`** · dataclass · What one run's levers are called and what it ran them at.
@@ -656,6 +659,8 @@ The host contract — what a consuming product declares, and what the engine nev
 - **`CANDIDATE_MODEL_LEVER`** · constant (str) · The one name the candidate model answers to, everywhere — a DECLARED COORDINATE of every observation (`ScoreRecord.model`) as well as the core lever below, which is why it is the only lever a reporting lens resolves off the observation rather than off the run.
   <br>`= 'model'`
 - **`CHART_FONT_CHARACTERS`** · constant (str) · The characters a `ChartFont`'s metrics must cover: printable ASCII, space to tilde.
+- **`DEFAULT_PASS_THRESHOLD`** · constant (int) · The 1–5 level a criterion must reach for pass^k where the behavior declares no threshold of its own.
+  <br>`= 3`
 - **`SERIES_SLOTS`** · constant (int) · How many categorical colour slots a palette supplies before it recycles — the width of the vocabulary, and so exactly how many `ChartPalette.series` colours a palette declares.
   <br>`= 8`
 - **`SHARED_CORE`** · constant (SweepableRegistry) · The registry a host extends. Nothing here names a product.
@@ -2482,9 +2487,9 @@ The engine's own measures (`METRIC_DESCRIPTORS`), grouped by family in the order
 | `p` | — | — | — | The p-value the significance verdict was thresholded against. |
 | `pass_hat_k` | higher | — | — | pass^k (τ-bench): the chance that k attempts at a case ALL pass — never pass@k, the chance that at least one does. |
 | `mean_composite` | higher | — | — | Average judged quality, threshold-free — a regression often shows here before cases start failing pass^k. |
-| `pass_hat_k_a` | higher | — | — | Reliability (pass^k at the shared depth k) for run A. |
-| `pass_hat_k_b` | higher | — | — | Reliability (pass^k at the shared depth k) for run B. |
-| `pass_hat_k_delta` | higher | — | — | Change in reliability (pass^k at the shared depth k) from run A to run B. |
+| `pass_hat_k_a` | higher | — | — | Reliability (pass^k at the shared depth k, each 1-5 criterion at or above the compare's recorded rubric_threshold of 5) for run A. |
+| `pass_hat_k_b` | higher | — | — | Reliability (pass^k at the shared depth k, each 1-5 criterion at or above the compare's recorded rubric_threshold of 5) for run B. |
+| `pass_hat_k_delta` | higher | — | — | Change in reliability (pass^k at the shared depth k, each 1-5 criterion at or above the compare's recorded rubric_threshold of 5) from run A to run B. |
 | `composite_a` | higher | — | — | Mean composite quality for run A. |
 | `composite_b` | higher | — | — | Mean composite quality for run B. |
 | `composite_delta` | higher | — | — | Change in mean composite quality from run A to run B. |

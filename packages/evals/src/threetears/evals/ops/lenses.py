@@ -46,7 +46,7 @@ from threetears.evals.analysis.reporting import (
 )
 from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
-from threetears.evals.contracts.host import EvalHost
+from threetears.evals.contracts.host import DEFAULT_PASS_THRESHOLD, EvalHost, pass_threshold_label
 from threetears.evals.contracts.metrics import measure_title
 from threetears.evals.contracts.models import EvalRun, EvalTemplate
 from threetears.evals.contracts.out_of_run import OutOfRunPurpose, OutOfRunSpend
@@ -998,7 +998,8 @@ def runs_compared_text(compared: RunsCompared) -> str:
         f"run {compared.baseline_run_id} ({arm.get('model_a')}) against run {compared.candidate_run_id} "
         f"({arm.get('model_b')}); "
         + (f"paired over {arm.get('n_pairs')} shared case(s)" if paired else "unpaired: no case scored in both"),
-        f"pass^k at k={format_number(arm.get('k'))}: {format_number(arm.get('pass_hat_k_a'))} vs "
+        f"{pass_threshold_label(arm.get('k'), view.get('rubric_threshold', DEFAULT_PASS_THRESHOLD))}: "
+        f"{format_number(arm.get('pass_hat_k_a'))} vs "
         f"{format_number(arm.get('pass_hat_k_b'))} (delta {format_signed(arm.get('pass_hat_k_delta'))}; "
         f"{arm.get('count_a')} vs {arm.get('count_b')} case(s))",
         f"mean composite: {format_number(arm.get('composite_a'))} vs {format_number(arm.get('composite_b'))} "

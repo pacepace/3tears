@@ -4372,6 +4372,12 @@ class FrontierResult(EvalBaseModel):
     """
 
     bar: float | None = None
+    #: The 1–5 level a capability criterion had to reach for an attempt to pass, in every pass^k here
+    #: (#642): the behavior's declared threshold
+    #: (:meth:`~threetears.evals.contracts.host.BarRegistry.pass_threshold`) where the caller had one, else 3.
+    #: A frontier stored before this was recorded defaults to 3, which is the threshold every pass^k was
+    #: computed at then.
+    rubric_threshold: int = 3
     subjects: list[SubjectFrontier] = []
     two_pillar: TwoPillarDisclosure = TwoPillarDisclosure()
     n_results: int = 0
@@ -5058,7 +5064,9 @@ def compute_frontier(
         subject_id: When set, restrict to this subject; other subjects' results
             are counted as ``n_filtered_out`` rather than dropped silently.
         rubric_threshold: Forwarded to pass^k — a rubric score at or above it
-            counts as a passing dimension.
+            counts as a passing dimension — and recorded on the answer
+            (:attr:`FrontierResult.rubric_threshold`). A campaign's bundle passes its
+            behavior's declared threshold.
         known_run_ids: Every run id in the corpus, so a result excluded by the
             caller's own run filter (in ``known_run_ids`` but not ``runs``) is
             counted as filtered-on-request rather than unplaceable. See
@@ -5238,6 +5246,7 @@ def compute_frontier(
 
     return FrontierResult(
         bar=bar,
+        rubric_threshold=rubric_threshold,
         subjects=subjects,
         n_results=n_considered,
         n_filtered_out=n_filtered_out,

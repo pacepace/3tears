@@ -1480,7 +1480,11 @@ _SEED: tuple[MetricDescriptor, ...] = (
         description=(
             "pass^k (τ-bench): the chance that k attempts at a case ALL pass — never pass@k, the chance that at "
             "least one does. An attempt passes only if it cleared every capability rubric dimension and every "
-            "goal-state check; a boundary dimension is a guardrail and is decided apart. Unbiased at any depth; infra-excluded attempts count toward no case's n."
+            "goal-state check; a boundary dimension is a guardrail and is decided apart. A 1-5 criterion clears at "
+            "or above the pass threshold recorded beside the figure (`rubric_threshold`): the behavior's "
+            "host-declared threshold (`PassThreshold`, registered with its bars), 3 where it declares none; a "
+            "pass/fail criterion clears on its pass. Unbiased at any depth; infra-excluded attempts count toward no "
+            "case's n."
         ),
     ),
     _d(
@@ -1778,7 +1782,12 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
 )
 
-_SEED = _SEED + _compare_trio("pass_hat_k", "Reliability (pass^k at the shared depth k)", "scenario_bound")
+_SEED = _SEED + _compare_trio(
+    "pass_hat_k",
+    "Reliability (pass^k at the shared depth k, each 1-5 criterion at or above the compare's recorded "
+    "rubric_threshold of 5)",
+    "scenario_bound",
+)
 _SEED = _SEED + _compare_trio("composite", "Mean composite quality", "judge_mediated")
 
 #: The engine's own measures, each one's descriptor keyed by its name.

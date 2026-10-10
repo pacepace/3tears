@@ -166,6 +166,8 @@ class TestWhereThePoolIsShown:
             )
         )
         assert "composite bases differ" in text and "(ragged)" in text
+        assert compared["rubric_threshold"] == 3
+        assert "pass^k (k=1, criterion >= 3 of 5)" in text, "the printed pass^k states the threshold it used"
 
 
 def test_a_lever_dispersion_built_from_a_ragged_pool_says_so() -> None:

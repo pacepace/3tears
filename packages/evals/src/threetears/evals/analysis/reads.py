@@ -1076,7 +1076,7 @@ def compare_two_runs(
 
     Returns:
         ``{"run_id_a", "run_id_b", "comparison_basis",
-        "composite_comparability", "comparison": {"arm": {...},
+        "composite_comparability", "rubric_threshold", "comparison": {"arm": {...},
         "per_template": [...]}, "subject_detail_a",
         "subject_detail_b"}``. ``comparison_basis`` says only whether the
         two runs share a template — it is NOT the significance basis.
@@ -1241,6 +1241,8 @@ def compare_two_runs(
         # unpaired, so read each row's own `paired` for that.
         "comparison_basis": "shared-template-intersection" if shared_template else "independent",
         "composite_comparability": comparability,
+        # The 1–5 level a criterion had to reach in both pass^k figures (#642).
+        "rubric_threshold": rubric_threshold,
         "comparison": {"arm": arm, "per_template": per_template},
         "subject_detail_a": subject_detail(run_a),
         "subject_detail_b": subject_detail(run_b),

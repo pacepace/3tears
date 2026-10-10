@@ -6660,7 +6660,13 @@ def assemble_context_bundle(
         # Called without them, this surface was blind to exactly the difference a judge A/B is
         # made of while the bundle beside it reported that difference from the same readers.
         comparison=compute_comparison_sets(runs, results=results, profile=profile),
-        frontier=compute_frontier(runs, results, known_run_ids=known_run_ids),
+        # pass^k at the behavior's declared threshold (#642), recorded on the frontier beside every figure.
+        frontier=compute_frontier(
+            runs,
+            results,
+            known_run_ids=known_run_ids,
+            rubric_threshold=profile.bars.pass_threshold(campaign.behavior),
+        ),
         telemetry=_telemetry_rollup(runs, results, budget, profile=profile),
         coverage=coverage,
         declared_design=campaign.declared_design,
@@ -8504,6 +8510,7 @@ def bundle_decision_surface(bundle: AnalysisContextBundle) -> DecisionSurface:
         dimensions=cell_dimension_facts(bundle),
         time_axis=bundle.time_axis,
         frontier_dominance=_frontier_dominance(bundle.frontier),
+        rubric_threshold=bundle.frontier.rubric_threshold,
         guardrails=bundle.guardrails,
     )
 
