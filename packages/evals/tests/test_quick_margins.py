@@ -28,7 +28,7 @@ import pytest
 
 from threetears.evals.analysis import DisclosureBlock, TableBlock, inspect_campaign_bundle
 from threetears.evals.contracts import RUN_MARGIN_MEASURES, run_margin_refusal
-from threetears.evals.quick import Comparison, callable_host, compare
+from threetears.evals.quick import Answer, Comparison, callable_host, compare
 
 #: Enough cases for two arms that agree on every one to be shown within 0.1 of each other.
 CASES = [{"n": index} for index in range(48)]
@@ -156,7 +156,7 @@ class TestNoMargin:
         assert _row(comparison, "correct")["verdict"].startswith("not separated")
         (line,) = _no_margin_lines(comparison)
         assert "Correct score" in line and "not separated never means the arms are alike" in line
-        assert "compare(margins=...)" in line
+        assert "compare(margins={'correct': ...})" in line
         blocks = comparison.report.blocks
         table = next(i for i, b in enumerate(blocks) if isinstance(b, TableBlock) and b.name == "comparisons")
         assert blocks[table - 1].text == line, "the line sits directly above the contrasts it explains"
@@ -171,7 +171,8 @@ class TestNoMargin:
             k=2,
         )
         (line,) = _no_margin_lines(comparison)
-        assert "No margin is declared on Accuracy" in line and "Declare one with compare(margins=...)" in line
+        assert "No margin is declared on Accuracy" in line
+        assert "Declare a margin on Accuracy with compare(margins={'accuracy': ...})" in line
         assert "scorer" not in line, "accuracy takes a margin of its own: no duplicate scorer is needed"
 
 
@@ -343,3 +344,27 @@ class TestADeclaredRange:
     async def test_beside_a_host_of_your_own_is_refused(self) -> None:
         with pytest.raises(ValueError, match="pass one or the other"):
             await _compare(ranges={"correct": (0, 1)}, host=callable_host([correct]))
+
+
+class TestTheNoMarginLineAdvisesEachKindOfMeasure:
+    """The line names each measure with the advice that applies to it, and never tells a core measure to take a
+    scorer's margin."""
+
+    async def test_scorers_accuracy_and_an_engine_measure_each_get_their_own_advice(self) -> None:
+        async def priced(case: Mapping[str, Any]) -> Answer:
+            return Answer("right", model="m", input_tokens=10, output_tokens=1, cost_usd=0.001 * (1 + case["n"] % 2))
+
+        comparison = await compare(
+            CASES,
+            {"current": priced, "cheaper": priced},
+            [correct],
+            expected=lambda case: "right",
+            control="current",
+            scope_id="no-margin-kinds",
+            k=1,
+        )
+        (line,) = _no_margin_lines(comparison)
+        assert "Declare a margin on Correct score by the scorer's name with compare(margins={'correct': ...})" in line
+        assert "Declare a margin on Accuracy with compare(margins={'accuracy': ...})" in line
+        assert "No comparison can declare one on Production cost" in line
+        assert "Production cost by the scorer's name" not in line and "Production cost with compare" not in line

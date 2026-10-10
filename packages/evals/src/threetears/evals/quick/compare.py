@@ -72,7 +72,7 @@ from threetears.evals.contracts import (
     utc_now_iso,
 )
 from threetears.evals.contracts.host import CANDIDATE_MODEL_LEVER, EvalHost
-from threetears.evals.contracts.metrics import METRIC_DESCRIPTORS, run_margin_refusal
+from threetears.evals.contracts.metrics import METRIC_DESCRIPTORS, RUN_MARGIN_MEASURES, run_margin_refusal
 from threetears.evals.ops.summary import CaseResult, EvalSummary, self_judging_text
 from threetears.evals.quick.guardrails import Guardrail
 from threetears.evals.quick.judged import Judge
@@ -602,20 +602,40 @@ def _with_no_margin_disclosed(report: Report, bundle: AnalysisContextBundle) -> 
     )
     if not names:
         return report
-    # The scorers among them with no range: a margin on one is refused unless its range comes with it.
-    unranged = [name for name in names if name not in METRIC_DESCRIPTORS]
-    headings = ", ".join(catalog[name].reader_name or name for name in names)
+    # Each kind of measure takes its margin a different way, or none at all, so each group gets its own advice.
+    scorers = [name for name in names if name not in METRIC_DESCRIPTORS]
+    rates = [name for name in names if name in RUN_MARGIN_MEASURES]
+    fixed = [name for name in names if name in METRIC_DESCRIPTORS and name not in RUN_MARGIN_MEASURES]
+
+    def heading(group: list[str]) -> str:
+        return ", ".join(catalog[name].reader_name or name for name in group)
+
+    advice = []
+    if scorers:
+        advice.append(
+            f"Declare a margin on {heading(scorers)} by the scorer's name with compare(margins={{{scorers[0]!r}: ...}})"
+            + (
+                "; a scorer that returns a number, not a bool, takes its range beside it, with ranges=."
+                if any(catalog[name].family == "mechanical" and catalog[name].value_range is None for name in scorers)
+                else "."
+            )
+        )
+    if rates:
+        advice.append(
+            f"Declare a margin on {heading(rates)} with compare(margins={{{rates[0]!r}: ...}}), which records it on "
+            "every arm's run."
+        )
+    if fixed:
+        advice.append(
+            f"No comparison can declare one on {heading(fixed)}: the engine owns "
+            f"{'its' if len(fixed) == 1 else 'their'} description, and only accuracy takes a margin of the runs'."
+        )
     disclosure = DisclosureBlock(
         section="surface",
         source="comparisons",
-        text=f"No margin is declared on {headings}, so no contrast on {'it' if len(names) == 1 else 'them'} can read "
-        "equivalent, and not separated never means the arms are alike. "
-        + "Declare one with compare(margins=...)."
-        + (
-            " A scorer that returns a number, not a bool, takes its range beside its margin, with ranges=."
-            if any(catalog[name].family == "mechanical" and catalog[name].value_range is None for name in unranged)
-            else ""
-        ),
+        text=f"No margin is declared on {heading(list(names))}, so no contrast on "
+        f"{'it' if len(names) == 1 else 'them'} can read equivalent, and not separated never means the arms are "
+        "alike. " + " ".join(advice),
     )
     blocks = list(report.blocks)
     at = next(
