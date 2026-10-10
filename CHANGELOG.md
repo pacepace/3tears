@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Repository: agent attribution in a commit fails CI
+
+- **Added, `scripts/check-attribution.sh`**, run by CI's `check` job on every pull request over the
+  commits it adds: a `Co-Authored-By` naming an agent, an Anthropic noreply address, a "Generated
+  with" footer or a `Claude-Session` trailer fails the PR (CLAUDE.md, "No agent attribution").
+  `--message <file>` checks one message, for a commit-msg hook. Commits already on the base are
+  never examined. Six commits on `feature/reports` landed with such trailers before the check
+  existed (f6d43aa0 and 5440a306 with `Co-Authored-By`; 4d575851, f114794c, d5897cd7 and a491ab0a
+  with `Claude-Session`). They are not rewritten, which would take a force-push of a shared branch;
+  `scripts/attribution-exemptions.txt` exempts them by full hash.
+
 ### Coordination: a lease on a bucket it was handed, whose key lapses with its holder; snapshot write claims held on it
 
 - **Added, `KVLease(None, bucket=...)`**: a lease over a bucket already bound (one another owner
