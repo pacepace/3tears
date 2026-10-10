@@ -689,7 +689,7 @@ class TestTheIntent:
             "Mean (s)",
             "Low (s)",
             "High (s)",
-            "n",
+            "Cases",
         ]
 
     def test_the_table_drawn_from_a_bundle_matches_the_bundles_numbers(self) -> None:

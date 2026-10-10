@@ -185,7 +185,7 @@ class TestNoColumnThatSaysNothing:
 
         markdown = report_markdown(report)
         assert "| Shape |" not in markdown and SHAPE_UNKNOWN not in markdown
-        assert "| Group | Mean | Low | High | n |" in markdown
+        assert "| Group | Mean | Low | High | Cases |" in markdown
         page = report_html(report)
         assert '<th scope="col">Shape</th>' not in page
         assert '<th scope="col">Group</th><th scope="col">Mean</th>' in page

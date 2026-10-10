@@ -99,7 +99,7 @@ def distribution_intent(payload: DistributionPayload) -> ChartIntent:
         )
     # An absent `n` is stated by absence, never as a column of em dashes.
     if any(group.n is not None for group in payload.groups):
-        columns.append(ChartColumn(key="n", header="n"))
+        columns.append(ChartColumn(key="n", header="Cases"))
     columns.append(ChartColumn(key="shape", header="Shape"))
     unplaceable = [group.label for group in payload.groups if group.buckets and not group.samples and not _edged(group)]
     return ChartIntent(
@@ -201,7 +201,7 @@ def _binned_intent(payload: DistributionPayload, identity: ChartIdentity, scale:
     bins = list(dict.fromkeys(str(row["range"]) for row in data))
     columns = [ChartColumn(key="label", header="Group")]
     if any(group.n is not None for group in payload.groups):
-        columns.append(ChartColumn(key="n", header="n"))
+        columns.append(ChartColumn(key="n", header="Cases"))
     columns.append(ChartColumn(key="shape", header="Shape"))
     title = payload.x_label or "Distribution"
     return ChartIntent(
