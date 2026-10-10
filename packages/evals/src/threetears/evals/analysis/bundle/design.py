@@ -909,4 +909,7 @@ def _declared_level_names(index: list[VariantIndexEntry], declared: CampaignDesi
     return renamed
 
 
-__all__: list[str] = []
+__all__ = [
+    "SurfaceFold",
+    "world_dimension_key",
+]

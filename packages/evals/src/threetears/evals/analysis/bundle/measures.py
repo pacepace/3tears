@@ -1007,4 +1007,6 @@ def _measure_summary(
 
 __all__ = [
     "goal_check_proofs_of",
+    "in_population",
+    "RECORD_CARRIERS",
 ]

@@ -791,6 +791,7 @@ def _run_margins(runs: Sequence[EvalRun]) -> tuple[dict[str, float], str | None]
 
 __all__ = [
     "assemble_context_bundle",
+    "CampaignReadStore",
     "MeasureCollection",
     "MeasureSummary",
 ]

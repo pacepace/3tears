@@ -170,4 +170,6 @@ def _frontier_dominance(frontier: FrontierResult) -> dict[str, FrontierDominance
 
 __all__ = [
     "bundle_decision_surface",
+    "cell_dimension_facts",
+    "cell_measure_facts",
 ]

@@ -193,5 +193,8 @@ def _sorted_insights(insights: list[EvalInsight]) -> list[EvalInsight]:
 
 __all__ = [
     "insight_restatement_key",
+    "insight_standing",
+    "InsightStanding",
+    "retracted_insights",
     "superseding_insights",
 ]

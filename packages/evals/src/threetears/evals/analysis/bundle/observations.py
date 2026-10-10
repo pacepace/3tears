@@ -273,4 +273,7 @@ def variant_key_of_run(results: Sequence[EvalResult]) -> str | None:
     return results[0].variant_key if results else None
 
 
-__all__: list[str] = []
+__all__ = [
+    "CELL_ID_NEUTRAL",
+    "variant_key_of_run",
+]

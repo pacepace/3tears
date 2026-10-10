@@ -277,4 +277,6 @@ def _lever_value(record: ScoreRecord, lever: str, effective_by_run: dict[str, di
     return _INHERITED_DEFAULT_LEVEL if effective is None else effective.value
 
 
-__all__: list[str] = []
+__all__ = [
+    "EffectiveLever",
+]

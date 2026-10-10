@@ -562,4 +562,7 @@ def _scope_divergences(
 __all__ = [
     "component_carrier",
     "measure_movement",
+    "WITHHELD_DIFFERENT_POPULATIONS",
+    "WITHHELD_OPPOSITE_DIRECTIONS",
+    "WITHHELD_UNKNOWN_POPULATION",
 ]
