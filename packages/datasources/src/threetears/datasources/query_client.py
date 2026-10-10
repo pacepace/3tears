@@ -1362,7 +1362,7 @@ async def read_all(
 
     size = page_size
     for _ in range(max_pages):
-        predicate, params = _filtered(filters, *_keyset_predicate(key, cursor))
+        predicate, params = _filtered(filters, key, cursor)
         # LIMIT size + 1: the extra row is a SENTINEL, not data. Getting it
         # back proves more rows exist; not getting it proves they do not. That is
         # the has-more signal, and it is computed HERE from a row count we asked
@@ -1529,75 +1529,96 @@ async def _proven(
     return rows
 
 
-def _filtered(where: Mapping[str, str], predicate: str, params: list[Any]) -> tuple[str, list[Any]]:
-    """the ``WHERE`` fragment that keeps only ``where``'s rows, and after them the keyset predicate.
+def _filtered(where: Mapping[str, str], key: Sequence[str], cursor: tuple[Any, ...] | None) -> tuple[str, list[Any]]:
+    """the ``WHERE`` fragment that keeps only ``where``'s rows, and of them those after ``cursor``.
 
-    The filters' values are bound first, as ``$1..$n``, and the keyset predicate's placeholders
-    are renumbered after them, so each placeholder still names its own parameter.
+    The filters' values are bound first, as ``$1..$n``, and the keyset condition is numbered from
+    ``$n+1`` as it is built, so each placeholder names its own parameter.
 
     :param where: equality filters, column -> value; columns are TRUSTED identifiers
     :ptype where: Mapping[str, str]
-    :param predicate: the keyset fragment (`` WHERE ...``) or empty
-    :ptype predicate: str
-    :param params: the keyset fragment's parameters
-    :ptype params: list[Any]
-    :return: the combined fragment and parameters
+    :param key: the ordering columns, TRUSTED identifiers
+    :ptype key: Sequence[str]
+    :param cursor: the last key read, or ``None`` for the first page
+    :ptype cursor: tuple[Any, ...] | None
+    :return: the fragment (empty when there is nothing to keep out) and its parameters
     :rtype: tuple[str, list[Any]]
     """
-    if not where:
-        return predicate, params
     # unquoted, as the relation and key columns in the same statement are (sql_fragments.as_written)
-    filters, values = equality_conditions(where, quote=as_written)
-    shift = len(values)
-    keyset = re.sub(r"\$(\d+)", lambda m: f"${int(m.group(1)) + shift}", predicate.removeprefix(" WHERE "))
-    combined = f" WHERE ({filters}) AND ({keyset})" if keyset else f" WHERE {filters}"
-    return combined, [*values, *params]
+    filters, values = equality_conditions(where, quote=as_written) if where else ("", [])
+    keyset, params = _keyset_predicate(key, cursor, first=len(values) + 1)
+    if filters and keyset:
+        return f" WHERE ({filters}) AND ({keyset})", [*values, *params]
+    if filters or keyset:
+        return f" WHERE {filters or keyset}", [*values, *params]
+    return "", []
 
 
-def _keyset_predicate(key: Sequence[str], cursor: tuple[Any, ...] | None) -> tuple[str, list[Any]]:
-    """build the ``WHERE`` fragment selecting rows strictly after ``cursor``.
+def keyset_condition(
+    key: Sequence[str], values: Sequence[Any], *, earlier: str, last: str, first: int = 1
+) -> tuple[str, list[Any]]:
+    """the condition comparing a row's key with ``values`` column by column: the one keyset builder.
 
-    Nested OR rather than a row constructor, for portability across every
-    datasource type the platform admits. For key ``(a, b)`` the shape is::
+    Nested OR rather than a row constructor, for portability across every datasource type the
+    platform admits. For key ``(a, b)``, ``earlier=">"`` and ``last=">="`` the shape is::
 
-        WHERE (a > $1) OR (a = $2 AND b > $3)
+        (a > $1) OR (a = $2 AND b >= $3)
 
-    Values bind as parameters, so a cursor value never reaches the SQL as text.
+    Values bind as parameters, so a key value never reaches the SQL as text. Every page read --
+    :func:`read_all`'s next page, a partitioned read's page bounds -- builds its keyset here, so a
+    rule about the shape reaches all of them at once.
 
-    **``$N``, not ``?``, and the distinction is the whole reason page two
-    executes.** Every driver normalises placeholders through
-    :func:`threetears.datasources.drivers.sql_fragments.translate_placeholders`, which
-    recognises ``$N`` alone -- rewriting it to ``%s``, ``:N`` or ``@pN`` for the
-    engine in front of it. A ``?`` is not a placeholder to any of them, so it
-    travels to the engine verbatim and the bound values arrive with nothing to
-    bind to.
+    **``$N``, not ``?``, and the distinction is the whole reason page two executes.** Every driver
+    normalises placeholders through
+    :func:`threetears.datasources.drivers.sql_fragments.translate_placeholders`, which recognises
+    ``$N`` alone -- rewriting it to ``%s``, ``:N`` or ``@pN`` for the engine in front of it. A ``?``
+    is not a placeholder to any of them, so it travels to the engine verbatim and the bound values
+    arrive with nothing to bind to.
 
-    Page one hid that for as long as it existed: with no cursor this returns no
-    fragment and no parameters, so single-page reads and every relation smaller
-    than one page succeed. The failure arms on the day a relation outgrows a
+    :param key: the ordering columns, TRUSTED identifiers
+    :ptype key: Sequence[str]
+    :param values: the key values compared against, one per column
+    :ptype values: Sequence[Any]
+    :param earlier: the comparison for every column but the last (``>`` after, ``<`` before)
+    :ptype earlier: str
+    :param last: the comparison for the last column (``>``, ``>=``, ``<``)
+    :ptype last: str
+    :param first: the first placeholder's number, after any parameters bound before it
+    :ptype first: int
+    :return: the condition (no ``WHERE``, no outer parentheses) and its parameters, in placeholder order
+    :rtype: tuple[str, list[Any]]
+    """
+    clauses: list[str] = []
+    params: list[Any] = []
+    for index, column in enumerate(key):
+        operator = last if index == len(key) - 1 else earlier
+        # numbered in emission order, so the Nth placeholder names the Nth parameter appended
+        # just below and the two cannot drift apart
+        terms = [f"{prior} = ${first + len(params) + offset}" for offset, prior in enumerate(key[:index])]
+        params.extend(values[:index])
+        terms.append(f"{column} {operator} ${first + len(params)}")
+        params.append(values[index])
+        clauses.append(f"({' AND '.join(terms)})")
+    return " OR ".join(clauses), params
+
+
+def _keyset_predicate(key: Sequence[str], cursor: tuple[Any, ...] | None, *, first: int = 1) -> tuple[str, list[Any]]:
+    """the condition selecting rows strictly after ``cursor``: :func:`keyset_condition`, every column ``>``.
+
+    Page one hid the placeholder-style failure (see :func:`keyset_condition`) for as long as it
+    existed: with no cursor this returns no condition and no parameters, so single-page reads and
+    every relation smaller than one page succeed. The failure arms on the day a relation outgrows a
     page.
 
     :param key: the ordering columns, TRUSTED identifiers
     :ptype key: Sequence[str]
     :param cursor: the last key read, or ``None`` for the first page
     :ptype cursor: tuple[Any, ...] | None
-    :return: the ``WHERE`` fragment (empty for page one) and its parameters
+    :param first: the first placeholder's number
+    :ptype first: int
+    :return: the condition (empty for page one) and its parameters
     :rtype: tuple[str, list[Any]]
     """
     if cursor is None:
         return "", []
-
-    clauses: list[str] = []
-    params: list[Any] = []
-    for index, column in enumerate(key):
-        # numbered in emission order, so the Nth placeholder names the Nth
-        # parameter appended just below and the two cannot drift apart.
-        equalities = " AND ".join(
-            f"{earlier} = ${len(params) + offset + 1}" for offset, earlier in enumerate(key[:index])
-        )
-        comparison = f"{column} > ${len(params) + index + 1}"
-        clauses.append(f"({equalities} AND {comparison})" if equalities else f"({comparison})")
-        params.extend(cursor[:index])
-        params.append(cursor[index])
-
-    return f" WHERE {' OR '.join(clauses)}", params
+    return keyset_condition(key, cursor, earlier=">", last=">", first=first)

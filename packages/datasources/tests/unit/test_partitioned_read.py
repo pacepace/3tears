@@ -14,12 +14,18 @@ from uuid import uuid7
 
 import pytest
 
-from threetears.datasources.partitioned_read import DEFAULT_PART_CONCURRENCY, fingerprint_parts, read_parts
+from threetears.datasources.partitioned_read import (
+    DEFAULT_PART_CONCURRENCY,
+    fingerprint_parts,
+    read_partitions,
+    read_parts,
+)
 from threetears.datasources.query_client import (
     DatasourceQueryError,
     DatasourceQueryResult,
     IncompleteReadError,
     RelationFingerprintResult,
+    keyset_condition,
 )
 
 _STATES = [f"S{index:02d}" for index in range(12)]
@@ -216,3 +222,71 @@ async def test_a_concurrency_below_one_is_refused() -> None:
             parts=[{"state": "S00"}],
             concurrency=0,
         )
+
+
+class TestOneKeysetBuilder:
+    """``read_all``'s next page and a partitioned read's page bounds come from the one keyset builder."""
+
+    def test_after_a_key_is_strictly_after_it_numbered_from_the_first_placeholder(self) -> None:
+        assert keyset_condition(["a", "b"], [1, 2], earlier=">", last=">", first=3) == (
+            "(a > $3) OR (a = $4 AND b > $5)",
+            [1, 1, 2],
+        )
+
+    def test_a_page_bound_is_at_or_above_its_start_and_below_the_next(self) -> None:
+        assert keyset_condition(["a", "b"], ["x", 5], earlier=">", last=">=") == (
+            "(a > $1) OR (a = $2 AND b >= $3)",
+            ["x", "x", 5],
+        )
+        assert keyset_condition(["a"], ["y"], earlier="<", last="<", first=4) == ("(a < $4)", ["y"])
+
+    async def test_a_partitioned_reads_pages_bind_every_bound_in_placeholder_order(self) -> None:
+        rows = [{"state": "VA", "race": race, "n": n} for race, n in (("r1", 1), ("r1", 2), ("r2", 1))]
+        pages: list[tuple[str, list[Any]]] = []
+
+        # parity-exempt: the read rail as a partitioned read uses it, answering page bounds from real rows
+        class _Rail:
+            def forwarded_identity_token(self) -> str:
+                return "fake-identity-token"
+
+            async def relation_fingerprint_groups(
+                self, *_: Any, **__: Any
+            ) -> dict[str | None, RelationFingerprintResult]:
+                return {"VA": RelationFingerprintResult(row_count=3, digest="d")}
+
+            async def query(self, datasource: str, sql: str, params: list[Any] | None = None, **_: Any) -> Any:
+                bound = list(params or [])
+                if "ROW_NUMBER()" in sql:
+                    starts = [{"part__": "VA", "race": "r1", "n": 1}, {"part__": "VA", "race": "r2", "n": 1}]
+                    return DatasourceQueryResult(rows=starts, row_count=2, truncated=False, correlation_id=uuid7())
+                pages.append((sql, bound))
+                # (race, n) >= its start, and < the next start when the SQL names one
+                lower = (bound[2], bound[3])
+                upper = (bound[5], bound[6]) if len(bound) > 4 else None
+                found = [
+                    r for r in rows if lower <= (r["race"], r["n"]) and (upper is None or (r["race"], r["n"]) < upper)
+                ]
+                return DatasourceQueryResult(rows=found, row_count=len(found), truncated=False, correlation_id=uuid7())
+
+        read = [
+            part
+            async for part in read_partitions(
+                _Rail(),  # type: ignore[arg-type]
+                "w",
+                columns=["state", "race", "n"],
+                relation="s.r",
+                key=["race", "n"],
+                partition_by="state",
+                page_size=2,
+            )
+        ]
+
+        assert read == [("VA", rows)]
+        first, second = sorted(pages, key=lambda page: len(page[1]), reverse=True)
+        assert (
+            "WHERE state = $1 AND ((race > $2) OR (race = $3 AND n >= $4)) AND ((race < $5) OR (race = $6 AND n < $7))"
+            in first[0]
+        )
+        assert first[1] == ["VA", "r1", "r1", 1, "r2", "r2", 1]
+        assert "WHERE state = $1 AND ((race > $2) OR (race = $3 AND n >= $4)) ORDER BY" in second[0]
+        assert second[1] == ["VA", "r2", "r2", 1]

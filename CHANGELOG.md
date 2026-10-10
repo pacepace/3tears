@@ -43,6 +43,12 @@ per part, one round trip after another; the round trips, not the bytes, were the
   `DatasourceQueryClient.relation_fingerprint_groups`), each equal to the fingerprint of that value's
   rows alone. `Driver.relation_fingerprint_groups` (Redshift, Postgres; others refuse with
   `DriverFingerprintGroupsUnsupportedError`, answered `FINGERPRINT_GROUPS_UNSUPPORTED`).
+- **Added, `threetears.core.fingerprint.fingerprint_sql`** (and `postgres_fingerprint_sql(group_by=)`):
+  one statement builder, whole or grouped, around an engine's per-row number. Postgres and Redshift
+  each name only that number, and both their single and grouped fingerprints are built by it, so a
+  group's digest is the whole statement's for its rows by construction (a grouped statement is the
+  whole one with the group column added, nothing else changed). Redshift's single and grouped
+  fingerprints share one body, its boolean-column answer kept and forgotten in one place.
 - **Added, a partitioned export**: `DatasourceExportRequest.partition_by` has the warehouse write one
   directory of files per value (`UNLOAD ... PARTITION BY (column) INCLUDE`), still one statement,
   one destination, one manifest. `threetears.datasources.partitioned_export.export_partitions` reads
@@ -52,6 +58,10 @@ per part, one round trip after another; the round trips, not the bytes, were the
 - **Added, `partitioned_read.read_partitions`**: the rail's counterpart. One statement answers every
   page start of a batch of parts; the pages are read side by side under the datasource's cap; each
   batch is fingerprinted again in one ask before its parts are handed back.
+- **Added, `query_client.keyset_condition`**: the one nested-OR keyset builder, per-column comparison
+  and first placeholder number given. `read_all`'s next page (its filters numbered first, the keyset
+  after them, with no renumbering pass) and `read_partitions`' page bounds both build from it, so a
+  rule about the shape (the `$N` placeholder style among them) reaches every page read at once.
 - **Wire, both orders**: `group_by`, `where_in` and `partition_by` are left off a request that does not
   ask for them, so an older hub sees what it knows; one that is asked for them refuses
   (`MALFORMED_REQUEST`), and a caller asks part by part instead.
