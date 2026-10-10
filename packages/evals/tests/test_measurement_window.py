@@ -14,15 +14,14 @@ import pytest
 
 from threetears.evals.analysis import reporting
 from threetears.evals.analysis.reporting import (
-    BADGE_MEASUREMENT_WINDOWS_DISJOINT,
     DISJOINT_WINDOWS_CLAUSE,
     MAX_INLINE_MEASUREMENT_WINDOWS,
     MeasurementWindow,
-    compute_comparison_sets,
     disjoint_window_pairs,
     measurement_window,
     measurement_window_disclosure,
 )
+from threetears.evals.analysis.lenses.comparison_sets import BADGE_MEASUREMENT_WINDOWS_DISJOINT, compute_comparison_sets
 from threetears.evals.analysis.reads import comparison_sets
 from threetears.evals.schema import SubjectSnapshot
 from threetears.evals.schema.models import EvalResult, EvalRun

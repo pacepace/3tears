@@ -18,14 +18,6 @@ from pydantic import ValidationError
 
 from threetears.evals.analysis import reporting
 from threetears.evals.analysis.reporting import (
-    BADGE_CASE_SET_DIFFERS,
-    BADGE_CASE_SET_UNRESOLVED,
-    BADGE_CASSETTE_MODE_DIFFERS,
-    BADGE_CONTEXT_DIFFERS,
-    BADGE_CONTEXT_INCOMPLETE,
-    BADGE_MEASUREMENT_WINDOWS_DISJOINT,
-    BADGE_ROLES_DIFFER,
-    BADGE_TOOL_CONFIG_DIFFERS,
     CASSETTE_SPAN_CLAUSE,
     METRIC_COMPOSITE,
     METRIC_COST_USD,
@@ -39,17 +31,27 @@ from threetears.evals.analysis.reporting import (
     WEIGHTING_SAMPLE_WEIGHTED,
     WITHHELD_PARTS_EXCEED_WHOLE,
     WITHHELD_UNMEASURED_COMPONENT,
-    ComparisonSet,
     LatencyPartition,
     ScoreProjection,
     ScoreRecord,
     cassette_mode_disclosure,
-    compute_comparison_sets,
     decompose_total_ms,
-    difference_was_declared_at_launch,
     dim_judge_model,
     place_results,
     project_score_records,
+)
+from threetears.evals.analysis.lenses.comparison_sets import (
+    BADGE_CASE_SET_DIFFERS,
+    BADGE_CASE_SET_UNRESOLVED,
+    BADGE_CASSETTE_MODE_DIFFERS,
+    BADGE_CONTEXT_DIFFERS,
+    BADGE_CONTEXT_INCOMPLETE,
+    BADGE_MEASUREMENT_WINDOWS_DISJOINT,
+    BADGE_ROLES_DIFFER,
+    BADGE_TOOL_CONFIG_DIFFERS,
+    ComparisonSet,
+    compute_comparison_sets,
+    difference_was_declared_at_launch,
 )
 from threetears.evals.analysis.lenses.cost_estimate import CostEstimateError, PredictedValue, compute_estimate_cost
 from threetears.evals.analysis.lenses.pivot import (

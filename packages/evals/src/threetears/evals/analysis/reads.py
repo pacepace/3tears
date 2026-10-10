@@ -43,11 +43,11 @@ from threetears.evals.analysis.contention import marked_latency_sentence, withhe
 from threetears.evals.analysis.reporting import (
     DEFAULT_WEIGHTING,
     METRIC_COMPOSITE,
-    compute_comparison_sets,
     pooled_composite_basis,
     pooled_served_models,
     project_score_records,
 )
+from threetears.evals.analysis.lenses.comparison_sets import compute_comparison_sets
 from threetears.evals.analysis.lenses.cost_estimate import CostEstimate, PlannedCost
 from threetears.evals.analysis.lenses.pivot import PivotError, PivotTable, compute_pivot
 from threetears.evals.analysis.lenses.frontier import FrontierError, compute_frontier, normalize_bar
