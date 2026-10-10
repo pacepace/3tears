@@ -20,6 +20,13 @@ within OKLab dE 3 of a slot under simulated colour-vision deficiency). So the bo
 structural, :data:`_COLUMN_GAP` px of the chart surface between every two columns, rather
 than a hue choice no palette can guarantee.
 
+**Every row names its configuration in the figure itself.** Three panels in one row: the
+barcode, a fixed label column carrying each configuration's identity, and the ranking. The
+label column's width comes out of the ranking panel, never the barcode, and the panels are
+separated by the ``panel_gap`` token like every other multi-panel figure here. A name that
+does not fit the column whole is drawn on its own line above its mark instead — the
+compiler's one row-label rule (``_Categories``), never truncated and never shrunk.
+
 **Two ink vocabularies, and they never share a scale.** An ordered lever's levels
 run low to high, so they take the ordered ramp by rank, which Vega samples at
 however many steps the sweep has. A categorical lever's levels have no order, so
@@ -40,18 +47,19 @@ from threetears.evals.vega.compiler import (
     VEGA_LITE_SCHEMA,
     MarkValue,
     ValueAxis,
+    _Categories,
     _identity,
+    _name_font_size,
     _number,
     _title_spec,
     _value_axis,
-    plot_size,
     point_radius,
     value_label_layers,
 )
 from threetears.evals.analysis.viz.intent import ChartIntent
 from threetears.evals.contracts.host import ChartFont
 from threetears.evals.analysis.viz.intents.sweep_ranking import CONFIG_FIELD, LEVER_KEY_PREFIX
-from threetears.evals.vega.palette import CONTEXT_STYLE, SEQUENTIAL_RANGE, geometry
+from threetears.evals.vega.palette import CONTEXT_STYLE, SEQUENTIAL_RANGE, font_weights, geometry
 from threetears.evals.analysis.viz.payloads import ABSENT_LEVEL
 from threetears.evals.vega.spec_policy import RANKING_SPEC_NAME
 
@@ -74,10 +82,6 @@ _LEVEL_FIELD = "level"
 #: otherwise draw its first two levels indistinguishably — encoding the arithmetic
 #: gap between levels, which the sweep never measured, instead of the order.
 _RANK_FIELD = "rank"
-
-#: The gap between the barcode and the ranking, in px. Zero down a column is
-#: what fuses it; this is the separation between the glyph and the measurement.
-_PANEL_GAP = 16
 
 #: The gap between two barcode columns, in px: enough chart surface that cells of two
 #: levers never read as one block, whatever their inks (see the module header).
@@ -121,12 +125,29 @@ def compile_sweep_ranking(intent: ChartIntent, *, font: ChartFont | None = None)
     keys = _identity(intent).order
     ranked_title = _value_axis(intent, "ranked").quantity
     sizes = geometry()
-    _, height = plot_size(max(len(keys), 1))
-    identity = {"field": _ROW_FIELD, "type": "nominal", "sort": keys, "axis": None}
+    # The compiler's own row-label decision: the shared prefix stripped, then measured against the gutter bound
+    # every other figure names its rows inside. A name that fits is drawn in a label column; one that does not
+    # takes its own line above its mark, never truncated and never shrunk.
+    categories = _Categories.of(CONFIG_FIELD, keys, font=font)
+    _, height = categories.plot_size()
+    # `axis: None` because the identity is drawn by the label column (or above the mark), never by an axis: an
+    # axis on the ranking panel would draw outside the panel's width and break the width budget below.
+    identity = {"field": _ROW_FIELD, "type": "nominal", "sort": categories.drawn(), "axis": None}
+    # Every layout dimension from the token block. The label column's width comes out of the ranking panel,
+    # never the barcode: narrower cells degrade the fused-glyph reading the chart exists for.
+    gap = sizes["panel_gap"]
+    label_width = 0 if categories.above else sizes["gutter_left"]
+    ranking_width = (
+        sizes["figure_width"]
+        - sizes["gutter_right"]
+        - sizes["gutter_left"]
+        - gap
+        - (label_width + gap if label_width else 0)
+    )
 
     marks = [
         {
-            _ROW_FIELD: entry[CONFIG_FIELD],
+            _ROW_FIELD: categories.display[str(entry[CONFIG_FIELD])],
             _DIMENSION_FIELD: name,
             _LEVEL_FIELD: entry[f"{LEVER_KEY_PREFIX}{name}"],
             _RANK_FIELD: _level_rank(str(entry[f"{LEVER_KEY_PREFIX}{name}"]), ramps.get(name)),
@@ -135,10 +156,14 @@ def compile_sweep_ranking(intent: ChartIntent, *, font: ChartFont | None = None)
         for name in levers
     ]
     ranking: list[dict[str, Any]] = [
-        {_ROW_FIELD: entry[CONFIG_FIELD], "ranked": entry["ranked"], "secondary": entry["secondary"]}
+        {
+            _ROW_FIELD: categories.display[str(entry[CONFIG_FIELD])],
+            "ranked": entry["ranked"],
+            "secondary": entry["secondary"],
+        }
         for entry in intent.data
     ]
-    value_axis = ValueAxis.position(ranked_title, [_number(entry["ranked"]) for entry in ranking], sizes["plot_width"])
+    value_axis = ValueAxis.position(ranked_title, [_number(entry["ranked"]) for entry in ranking], ranking_width)
     # Rendered here rather than by a Vega `format`: the two renderers must draw the
     # same characters. `filled=False`: the ranking panel draws POINTS, so a label
     # placed inward sits on the chart surface. `radius`: the point is centred on the
@@ -154,11 +179,18 @@ def compile_sweep_ranking(intent: ChartIntent, *, font: ChartFont | None = None)
         for entry in ranking
     ]
     barcode = _barcode_panel(marks, identity, levers, set(ramps), height)
+    ranked = _ranking_panel(ranking, identity, value_axis, labels, height, ranking_width, font=font)
+    names = categories.label_layer(clearance_above=_POINT_RADIUS)
+    if names is not None:
+        ranked["layer"].append(names)
+    panels = [barcode, ranked] if categories.above else [barcode, _label_column(categories, identity, height), ranked]
     return {
         "$schema": VEGA_LITE_SCHEMA,
         "title": _title_spec(intent.title, sizes["figure_width"], intent.footnote, font=font),
-        "hconcat": [barcode, _ranking_panel(ranking, identity, value_axis, labels, height, font=font)],
-        "spacing": _PANEL_GAP,
+        "hconcat": panels,
+        # The token every multi-panel figure here separates its panels by: the glyph, the names and the
+        # measurement are three elements of one row, and zero down a column is what fuses the glyph itself.
+        "spacing": gap,
         # The rows must line up across the two panels or the barcode describes a
         # different configuration from the mark beside it. Vega-Lite resolves a
         # concat's positional scales independently by default.
@@ -320,6 +352,39 @@ def _barcode_panel(
     }
 
 
+def _label_column(categories: _Categories, identity: dict[str, Any], height: int) -> dict[str, Any]:
+    """The names: each configuration's identity, on its own row, between the glyph and the measurement.
+
+    Without it nothing in the drawn figure says which configuration a row is: the barcode's cells carry
+    levels in colour and the ranking carries a number. Only drawn when every name fits the column whole
+    (:class:`~threetears.evals.vega.compiler._Categories` measured that); otherwise the names ride above
+    their marks in the ranking panel instead.
+
+    Args:
+        categories: The figure's measured row labels.
+        identity: The row encoding every panel aligns on.
+        height: The panel height in px, shared with the panels beside it.
+
+    Returns:
+        The label column view.
+    """
+    return {
+        "data": {"values": [{_ROW_FIELD: name} for name in categories.drawn()]},
+        "width": geometry()["gutter_left"],
+        "height": height,
+        "mark": {
+            "type": "text",
+            "align": "left",
+            "baseline": "middle",
+            # The name step, as everywhere a category name is drawn: the size `categories` measured the fit at.
+            "fontSize": _name_font_size(),
+            "fontWeight": font_weights()["label"],
+        },
+        # x in the column's own pixels, so every name starts on one left edge beside the glyph.
+        "encoding": {"y": identity, "x": {"value": 0}, "text": {"field": _ROW_FIELD, "type": "nominal"}},
+    }
+
+
 def _cell_tooltip() -> list[dict[str, str]]:
     """What a barcode cell says when a reader asks it directly.
 
@@ -339,6 +404,7 @@ def _ranking_panel(
     value_axis: ValueAxis,
     labels: list[MarkValue],
     height: int,
+    width: float,
     *,
     font: ChartFont | None = None,
 ) -> dict[str, Any]:
@@ -355,6 +421,7 @@ def _ranking_panel(
         value_axis: The ranked measure's axis.
         labels: Each mark's value and where its mark ends.
         height: The panel height in px, shared with the barcode beside it.
+        width: The panel width in px — the figure's width less the barcode, the label column and the gaps.
         font: The typeface the chart is laid out in; ``None`` for the packaged face.
 
     Returns:
@@ -368,7 +435,7 @@ def _ranking_panel(
         # the rule unreachable on the one chart it was written for.
         "name": RANKING_SPEC_NAME,
         "data": {"values": ranking},
-        "width": geometry()["plot_width"],
+        "width": width,
         "height": height,
         "layer": [
             {

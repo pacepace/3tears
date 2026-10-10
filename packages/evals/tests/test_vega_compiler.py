@@ -454,6 +454,16 @@ class TestFigureGeometry:
         spec = compile_chart(viz_type, EVERY_TYPE[viz_type]).spec
         sizes = geometry()
         widths = set(_sizes(spec, "width"))
+        if viz_type == "sweep_ranking":
+            # The one figure whose gutter-width glyph is followed by a gutter-width NAME column (#659): the
+            # names' width comes out of the value plot, never the glyph. What survives of the rule is the edge
+            # the figures share: the panels and their token gaps end exactly where every other value plot ends.
+            *columns, ranking = spec["hconcat"]
+            assert [column["width"] for column in columns] == [sizes["gutter_left"]] * len(columns)
+            drawn = sum(panel["width"] for panel in spec["hconcat"]) + spec["spacing"] * len(columns)
+            assert drawn == sizes["gutter_left"] + sizes["plot_width"], "the value plot's right edge moved"
+            assert spec["spacing"] == sizes["panel_gap"]
+            return
         assert sizes["plot_width"] in widths, f"{viz_type} draws no plot at the column width"
         assert widths <= {sizes["plot_width"], sizes["gutter_left"]}, (
             f"{viz_type} declares a width that is neither the plot nor the gutter: {sorted(widths)}"
@@ -3580,7 +3590,7 @@ class TestSweepRankingRanksAndNeverManufacturesItsFinding:
         # The layers share one sort list, so reverse by object identity — reversing
         # "each layer" would reverse the same list twice and restore the original.
         seen: set[int] = set()
-        for layer in broken["hconcat"][1]["layer"]:
+        for layer in broken["hconcat"][-1]["layer"]:
             order = (layer.get("encoding") or {}).get("y", {}).get("sort")
             if isinstance(order, list) and id(order) not in seen:
                 seen.add(id(order))
@@ -3697,6 +3707,52 @@ class TestSweepRankingRanksAndNeverManufacturesItsFinding:
         assert spec["resolve"]["scale"]["y"] == "shared"
 
 
+class TestSweepRankingNamesEveryRowInTheFigure:
+    """#659: a row must be identifiable from the drawn figure alone, and the layout comes from tokens."""
+
+    @staticmethod
+    def _width(spec: dict) -> float:
+        """The drawn width of the concatenated panels: every panel plus the spacing between them."""
+        panels = spec["hconcat"]
+        return sum(panel["width"] for panel in panels) + spec["spacing"] * (len(panels) - 1)
+
+    def test_a_label_column_names_every_configuration_and_the_figure_stays_in_its_width(self):
+        spec = compile_chart("sweep_ranking", SWEEP_RANKING).spec
+        barcode, names, ranking = spec["hconcat"]
+        assert names["mark"]["type"] == "text"
+        assert names["encoding"]["text"]["field"] == names["encoding"]["y"]["field"]
+        drawn = [entry[names["encoding"]["text"]["field"]] for entry in names["data"]["values"]]
+        ranked = [entry[ranking["layer"][0]["encoding"]["y"]["field"]] for entry in ranking["data"]["values"]]
+        assert drawn == ranked == names["encoding"]["y"]["sort"], "one name per drawn row, in the drawn order"
+        assert all(" · " in name for name in drawn), "the name is the configuration's identity, not an index"
+        assert names["width"] == geometry()["gutter_left"], "a fixed column, the bound the names were measured at"
+        assert barcode["width"] == geometry()["gutter_left"], "the column's width comes out of the ranking"
+        sizes = geometry()
+        assert self._width(spec) + sizes["gutter_right"] <= sizes["figure_width"]
+        assert check_spec(spec) == []
+
+    def test_the_panel_spacing_is_the_panel_gap_token(self):
+        assert compile_chart("sweep_ranking", SWEEP_RANKING).spec["spacing"] == geometry()["panel_gap"]
+
+    def test_a_name_too_long_for_the_column_rides_above_its_mark_whole(self):
+        """Never truncated, never shrunk: the column gives its width back and the name takes its own line."""
+        payload = copy.deepcopy(SWEEP_RANKING)
+        for row in payload["rows"]:
+            row["config"]["model"] = f"anthropic/claude-a-very-long-build-identifier-{row['config']['model']}"
+        spec = compile_chart("sweep_ranking", payload).spec
+        barcode, ranking = spec["hconcat"]
+        [names] = [
+            layer
+            for layer in ranking["layer"]
+            if (layer.get("mark") or {}).get("type") == "text"
+            and layer["encoding"]["text"]["field"] == layer["encoding"]["y"]["field"]
+        ]
+        assert all("very-long-build" in entry[names["encoding"]["text"]["field"]] for entry in names["data"]["values"])
+        sizes = geometry()
+        assert self._width(spec) + sizes["gutter_right"] == sizes["figure_width"]
+        assert check_spec(spec) == []
+
+
 def _passes(transforms: list[dict], mark: dict) -> bool:
     """Whether a barcode layer's filters admit a datum.
 
@@ -3756,7 +3812,7 @@ class TestSweepRankingStatesWhatTheBarcodeCannotSay:
         # Drawn from the sweep the slice was taken from, so the reader can read off
         # the secondary values WHY nothing qualified rather than facing a blank frame.
         assert len(chart.rows) == len(SWEEP_RANKING["rows"])
-        assert chart.spec["hconcat"][1]["data"]["values"], "an empty frame is the bug this branch exists to avoid"
+        assert chart.spec["hconcat"][-1]["data"]["values"], "an empty frame is the bug this branch exists to avoid"
 
     def test_an_inferred_orderedness_is_admitted_rather_than_presented_as_fact(self):
         chart = compile_chart("sweep_ranking", SWEEP_RANKING)
@@ -3906,12 +3962,12 @@ class TestSweepRankingNeverTruncatesSilently:
 
     def test_a_sweep_at_the_bound_draws_every_configuration(self):
         chart = compile_chart("sweep_ranking", self._wide(12))
-        assert len(chart.spec["hconcat"][1]["data"]["values"]) == 12
+        assert len(chart.spec["hconcat"][-1]["data"]["values"]) == 12
         assert "not drawn" not in _disclosed(chart)
 
     def test_a_sweep_past_the_bound_keeps_the_top_ten_and_says_what_it_dropped(self):
         chart = compile_chart("sweep_ranking", self._wide(13))
-        assert len(chart.spec["hconcat"][1]["data"]["values"]) == 10
+        assert len(chart.spec["hconcat"][-1]["data"]["values"]) == 10
         assert "3 further configurations ranked between" in _disclosed(chart)
         # The band is stated, not just the count — a reader needs to know whether
         # what was dropped could have changed the verdict.
