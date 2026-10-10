@@ -1394,7 +1394,7 @@ Batteries: run an eval in one call, and drive the engine from a command line.
 - **`build_parser`** · function · The command line's parser.
   <br>`build_parser(prog: str = 'python -m threetears.evals', *, takes_host: bool = True, commands: Sequence[HostCommand] = ()) -> argparse.ArgumentParser`
 - **`callable_host`** · function · The least host there is: the shared core, one measure per scorer, no world, an in-memory store.
-  <br>`callable_host(scorers: Sequence[Scorer] = (), *, levers: Sequence[str] = (), world: World | None = None) -> EvalHost`
+  <br>`callable_host(scorers: Sequence[Scorer] = (), *, levers: Sequence[str] = (), world: World | None = None, arms: bool = False) -> EvalHost`
 - **`callable_kind_contracts`** · function · The contracts of both callable kinds, declaring `levers` as each run's levels beside its model.
   <br>`callable_kind_contracts(levers: Sequence[str] = ()) -> tuple[KindContract, KindContract]`
 - **`compare`** · async function · Run each candidate over every case `k` times as one arm, test every arm against `control`, and report.
@@ -1453,6 +1453,8 @@ Batteries: run an eval in one call, and drive the engine from a command line.
 
 **Constants**
 
+- **`ARM_LEVER`** · constant (str) · The lever a single-factor `compare` names its arms on, declared by `callable_host(arms=True)`: each arm's run states its name as its level, so the report calls the arm `candidate=<name>` rather than calling the name a model.
+  <br>`= 'candidate'`
 - **`CALLABLE_KIND`** · constant (str) · The kind `run_eval` launches, as its template names it.
   <br>`= 'callable'`
 - **`CALLABLE_KIND_CONTRACT`** · constant (KindContract) · The callable kind's contract: no overlays, no spec, and no rig seat — nothing in a `run_eval` run is graded by a model or talks to a simulated user.
@@ -1472,6 +1474,8 @@ Batteries: run an eval in one call, and drive the engine from a command line.
   <br>`= 'callable-judged'`
 - **`JUDGED_CALLABLE_KIND_CONTRACT`** · constant (KindContract) · The judged callable kind's contract: no overlays, no spec, and the engine's judge seated — its runs are graded by a model, so who judged them is part of what two of them are compared on, and a run judged by another model or under other judge configs is a confound rather than a blank.
 - **`JUDGED_CALLABLE_UNSEATED`** · constant (frozenset) · What a judged `run_eval` run never has as a level of its rig: the simulator (by role or by any pinned dimension) and the spend ceiling, a condition beside the run as `CALLABLE_UNSEATED` says.
+- **`SHARED_ARM_MODEL`** · constant (str) · The candidate model every arm of a single-factor `compare` shares when its arms are named on `ARM_LEVER`: the arms' names are not models, and a lever every arm shares splits none of them.
+  <br>`= 'callable'`
 - **`UNUSABLE_ANSWER`** · constant (str) · The predicted label a classifier's answer is counted under when it is not a usable label: not a string, or a blank one.
   <br>`= '(unusable answer)'`
 
@@ -1504,7 +1508,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`campaign_create(host: EvalHost, definition: CampaignDefinition, scope_id: str, *, created_by: str) -> CampaignLine`
 - **`campaigns_list`** · function · The scope's campaigns.
   <br>`campaigns_list(host: EvalHost, scope_id: str, *, archived: bool | None = None) -> CampaignListing`
-- **`dollars_text`** · function · Spend as a person reads it: cents for whole calls' worth, three significant figures below a cent.
+- **`dollars_text`** · function · Spend as a person reads it: dollars and cents from ten cents up, three significant figures below.
   <br>`dollars_text(amount: float) -> str`
 - **`estimate_text`** · function · An estimate as text: the launch priced, each arm's price and outcome, and the total.
   <br>`estimate_text(estimate: LaunchEstimate) -> str`
