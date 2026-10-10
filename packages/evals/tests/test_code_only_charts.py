@@ -136,7 +136,7 @@ class TestUnobservedCost:
         comparison = await _compare(right, guess_priced)
         (said,) = _cost_disclosures(comparison)
         assert said.startswith("Cost was not measured in 1 of 2 cells") and said.endswith(
-            "Unmeasured: model=candidate."
+            "Unmeasured: candidate=candidate."
         )
         bundle = inspect_campaign_bundle(comparison.host, comparison.campaign_id, SCOPE).bundle
         (unmeasured,) = bundle.cost_unmeasured_cells
