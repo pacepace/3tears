@@ -41,6 +41,7 @@ from threetears.evals.quick import run_cli
 from threetears.evals.analysis import JudgeTemperatureComparison, read_judge_temperatures
 from threetears.evals.run import (
     borderline_dims,
+    estimate_judge_repeat,
     estimate_judge_temperature_comparison,
     judge_at_two_temperatures,
 )
@@ -182,7 +183,7 @@ class _Kind:
         return CandidateOutput(output=[{"rendered": "elsewhere"}], judge_evidence=_EVIDENCE)
 
 
-async def _judged_run(judge: _Judge, *, cases: int = 4) -> tuple[EvalHost, str]:
+async def _judged_run(judge: _Judge, *, cases: int = 4, **run_fields: Any) -> tuple[EvalHost, str]:
     """Run ``cases`` judged cells through the real runner, stored as a finished run would be."""
     host = toyhost_host(clients=lambda role, model, *, temperature=None: judge.client(temperature))
     template = EvalTemplate(
@@ -209,7 +210,7 @@ async def _judged_run(judge: _Judge, *, cases: int = 4) -> tuple[EvalHost, str]:
         judge_model=_JUDGE,
         status="completed",
         effective_judges=built.effective_judges,
-        judge_request_settings=JUDGE_REQUEST_SETTINGS,
+        **{"judge_request_settings": JUDGE_REQUEST_SETTINGS, **run_fields},
     )
     host.storage.save_eval_run(run)
     for case in test_cases:
@@ -413,6 +414,55 @@ class TestAClientThatIgnoresTemperature:
         assert not comparison.comparable
         assert [read.recorded for read in comparison.settings] == [["unrecorded"], ["unrecorded"]]
         assert [read.off_setting for read in comparison.settings] == [6, 6]
+
+
+#: The judge request settings a run recorded before ``strict_output`` joined the engine's defaults.
+_PRE_STRICT_SETTINGS = JUDGE_REQUEST_SETTINGS.model_copy(update={"strict_output": False})
+
+
+class TestAPreTemperatureRunIsReplayedAsRecorded:
+    """A run judged before #633 recorded no temperature, and before strict_output was asked with older settings.
+
+    Neither matters to this comparison: it forces its own temperature on both sides and pairs nothing with the run's
+    scores. A judge REPEAT, whose answers pair with the run's, still refuses such a run.
+    """
+
+    async def test_a_run_with_no_recorded_temperature_and_older_settings_is_compared_at_the_forced_temperatures(self):
+        judge = _Judge()
+        host, run_id = await _judged_run(judge, judge_temperature=None, judge_request_settings=_PRE_STRICT_SETTINGS)
+        with pytest.raises(ValidationFailedError):
+            await estimate_judge_repeat(host, run_id, _SCOPE, out_of_run_cap_usd=None)
+
+        comparison = await compare_judge_temperatures(host, run_id, _SCOPE, out_of_run_cap_usd=None, repeats=2)
+
+        assert comparison.comparable and comparison.cases == 3
+        assert set(judge.requested) == {DEFAULT_JUDGE_TEMPERATURE, None}
+        sent = [temperature for temperature, _ in judge.calls]
+        assert sent.count(DEFAULT_JUDGE_TEMPERATURE) == sent.count(None) == 3 * 2
+        assert [read.recorded for read in comparison.settings] == [["0"], [MODEL_DEFAULT_TEMPERATURE]]
+
+    async def test_a_run_whose_template_was_edited_since_is_still_refused(self):
+        judge = _Judge()
+        host, run_id = await _judged_run(judge, judge_temperature=None, judge_request_settings=_PRE_STRICT_SETTINGS)
+        run = host.storage.load_eval_run(run_id, _SCOPE)
+        assert run is not None
+        template = host.storage.load_template(run.template_id, _SCOPE)
+        assert template is not None
+        host.storage.save_template(
+            template.model_copy(update={"intent": "a different encounter", "updated_at": "9999"})
+        )
+
+        with pytest.raises(ValidationFailedError, match="edited"):
+            await compare_judge_temperatures(host, run_id, _SCOPE, out_of_run_cap_usd=None, repeats=2)
+        assert judge.calls == []
+
+    async def test_a_run_that_recorded_no_request_settings_is_still_refused(self):
+        judge = _Judge()
+        host, run_id = await _judged_run(judge, judge_temperature=None, judge_request_settings=None)
+
+        with pytest.raises(ValidationFailedError, match="request settings"):
+            await compare_judge_temperatures(host, run_id, _SCOPE, out_of_run_cap_usd=None, repeats=2)
+        assert judge.calls == []
 
 
 class TestEveryCallIsMetered:

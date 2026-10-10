@@ -34,7 +34,17 @@ from packages.evals.tests.factories import (
 from threetears.evals.kernel.campaign import EvalSweep, SweepArmRecord
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile, JudgeProfileAgreement
 from threetears.evals.schema.base import EvalBaseModel
-from threetears.evals.schema.models import CaseSet, CassetteKey, EvalCassette, JudgeConfigTombstone, RubricDimTombstone
+from threetears.evals.schema.models import (
+    CaseSet,
+    CassetteKey,
+    EvalCassette,
+    JudgeConfigTombstone,
+    JudgeEvidence,
+    RubricDim,
+    RubricDimTombstone,
+    RubricScore,
+    label_key_of,
+)
 from threetears.evals.schema.out_of_run_spend import OutOfRunSpend
 
 __all__ = ["doc_type_of", "sampled_model_names", "stored_models", "stored_sample"]
@@ -111,11 +121,21 @@ def _out_of_run_spend() -> OutOfRunSpend:
     )
 
 
+#: The label key a sampled judge score and the rating of it carry (#628): the sample result's tone score, read
+#: off one rendered output on the tone dimension's definition.
+_LABEL_KEY = label_key_of(
+    JudgeEvidence(case_material="a customer asks about the queue", artifact="assistant: two tickets are waiting"),
+    RubricDim(name="conversation.tone", description="Warm and on topic.", scale="ordinal"),
+)
+
+
 #: A valid instance of every stored model, by name. Keyed by the derived population below, so a
 #: stored model added without a row here fails :func:`test_every_stored_model_has_a_sample` rather
 #: than slipping past both refusals and the core's frozen fixtures.
 _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
-    "CalibrationRating": make_calibration_rating,
+    "CalibrationRating": lambda: make_calibration_rating(
+        output_fingerprint=_LABEL_KEY.output_fingerprint, criterion_fingerprint=_LABEL_KEY.criterion_fingerprint
+    ),
     "EvalSweep": lambda: EvalSweep(
         scope_id="uni-1",
         campaign_id="c-1",
@@ -150,7 +170,17 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
     "EvalCampaign": make_campaign,
     "EvalCassette": _cassette,
     "EvalInsight": make_insight,
-    "EvalResult": make_eval_result,
+    "EvalResult": lambda: make_eval_result(
+        rubric_scores=[
+            RubricScore(
+                dim="conversation.tone",
+                score=4,
+                scale="ordinal",
+                output_fingerprint=_LABEL_KEY.output_fingerprint,
+                criterion_fingerprint=_LABEL_KEY.criterion_fingerprint,
+            )
+        ]
+    ),
     "EvalRun": make_eval_run,
     "EvalTemplate": make_template,
     "EvalTestCase": make_test_case,

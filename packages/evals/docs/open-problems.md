@@ -50,25 +50,6 @@ unbounded measure be adopted, so the t breach is kept and the gap recorded as a 
 
 ## Judging
 
-### The judge temperature policy is not measured
-
-Tracked in [#633](https://github.com/pacepace/3tears/issues/633).
-
-Every judge call now asks for temperature 0 unless a config says otherwise, and the temperature
-sent is part of the judge's identity, so the split the issue found is gone. What was not done is the measurement
-the issue asked the policy to rest on: borderline-case score variance across repeats at each setting.
-
-The harness for it exists: `judge_at_two_temperatures` read by `read_judge_temperatures` (the `judge_temperature` action, and
-`python -m threetears.evals judge-temperature RUN --max-cost-usd DOLLARS`) re-judges a run's borderline cases at 0
-and at the provider's default and reports per-dimension variance and self-agreement side by side, with the case
-count and the spend ([Step 10](judges-and-calibration.md#step-10-measure-what-temperature-does-to-the-judge)). It is
-tested only against scripted judges. **Outstanding: the run itself, with real judges** on a host's real borderline
-cases, which needs spend signed off. Until it is run, how much temperature moves a judge's scores is unknown; what
-is known is that the two are never pooled. When it has been run, record the figures here and close the issue.
-
-*Evidence:* one probe in a private host application, 2026-09: scores stable across attempts at the provider default (a refusal scored
-5, a detailed answer 4); says nothing about borderline cases.
-
 ### A tier's bounds are conservative on a 1-5 scale
 
 A tier is decided on score bounds for kappa

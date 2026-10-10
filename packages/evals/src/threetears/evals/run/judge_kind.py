@@ -57,6 +57,7 @@ from threetears.evals.kernel.judge_cases import (
     JudgeTrial,
     JudgeTrialOutcome,
     judge_case_of,
+    judge_case_payload,
 )
 from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger
 from threetears.evals.run.case_sets import mint_case_set
@@ -315,7 +316,7 @@ def freeze_judge_cases(
                             id=case_id,
                             scope_id=scope_id,
                             template_id=template.id,
-                            host_payload={JUDGE_CASE_KEY: case.model_dump(mode="json")},
+                            host_payload=judge_case_payload(case),
                             # The criterion is what a judge campaign's readings split by, so every measure of a cell is
                             # summarised per criterion beside the pooled figure.
                             stratum=dim,
@@ -724,8 +725,16 @@ def _template_cases(storage: EvalStorage, template: EvalTemplate, scope_id: str)
     return [
         case
         for case in storage.query_test_cases(scope_id, template_id=template.id)
-        if not case.archived and JUDGE_CASE_KEY in (case.host_payload or {})
+        if not case.archived and _carries_a_judge_case(case)
     ]
+
+
+def _carries_a_judge_case(case: EvalTestCase) -> bool:
+    """Whether a stored case carries a judge case this build can read; an unreadable one is not run."""
+    try:
+        return judge_case_of(case) is not None
+    except ValueError:
+        return False
 
 
 def launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKind:

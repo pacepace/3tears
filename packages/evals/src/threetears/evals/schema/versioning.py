@@ -50,7 +50,11 @@ CORE_BASELINE_VERSION: Final[int] = 8
 #: - **v8** — the baseline, the first public release's evidence core: every core document as eval schema v8
 #:   stored it, including each optional field v8 gained after it was first written (the notes below list
 #:   them). A field a v8 document predates reads as the note says, as it always did.
-CORE_SCHEMA_VERSION: int = 8
+#: - **v9** — a judge score and a calibration rating carry the label key of what was read (#628):
+#:   ``RubricScore.output_fingerprint`` / ``criterion_fingerprint`` (stamped by the judge) and the same pair on
+#:   ``CalibrationRating`` (copied from the rated score), both OPTIONAL. Additive: the v8 step is the identity,
+#:   and a v8 document reads with neither — a score judged before the stamp, and a rating read by its result alone.
+CORE_SCHEMA_VERSION: int = 9
 """The core version this build writes, and the newest a read of a core document accepts.
 
 How each value a core document stored at v8 predates reads — a field v8 gained after the document was
@@ -265,7 +269,8 @@ CORE_ADDRESSING_FIELDS: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
         "eval_run": _ADDRESSED_EVERYWHERE | {"status", "archived", "created_at"},
         "eval_result": _ADDRESSED_EVERYWHERE | {"eval_run_id", "test_case_id", "model"},
         "eval_trace": _ADDRESSED_EVERYWHERE,
-        "calibration_rating": _ADDRESSED_EVERYWHERE | {"run_id", "result_id", "rated_at"},
+        "calibration_rating": _ADDRESSED_EVERYWHERE
+        | {"run_id", "result_id", "rated_at", "output_fingerprint", "criterion_fingerprint"},
         "eval_out_of_run_spend": _ADDRESSED_EVERYWHERE | {"purpose", "launch_group_id", "template_id", "created_at"},
         "eval_template": _ADDRESSED_EVERYWHERE | {"name", "archived", "universal"},
         "judge_config": _ADDRESSED_EVERYWHERE | {"rubric_dim_id", "archived", "created_at"},
@@ -298,7 +303,17 @@ class CoreUpgrader:
 
 #: The registered steps, oldest first: ``[s.from_version for s in CORE_UPGRADERS]`` is
 #: ``range(CORE_BASELINE_VERSION, CORE_SCHEMA_VERSION)``. A constant, so no import registers a step.
-CORE_UPGRADERS: tuple[CoreUpgrader, ...] = ()
+CORE_UPGRADERS: tuple[CoreUpgrader, ...] = (
+    CoreUpgrader(
+        from_version=8,
+        doc_types=frozenset({"eval_result", "calibration_rating"}),
+        reason=(
+            "v9 adds the optional label key (output_fingerprint, criterion_fingerprint) to a judge score and a "
+            "calibration rating; a v8 document has neither, which v9 reads as not stamped"
+        ),
+        upgrade=lambda document: document,
+    ),
+)
 
 
 class CoreVersionRefused(ValueError):

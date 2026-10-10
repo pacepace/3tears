@@ -901,6 +901,126 @@ class RubricDim(EvalDocumentModel):
         return self
 
 
+# =============================================================================
+# Label keys — what a judged score, and a label of it, are bound to (#628)
+# =============================================================================
+
+#: A full sha256 hex digest, as :func:`~threetears.evals.schema.hashing.canonical_digest` writes one.
+_SHA256_HEX = r"^[0-9a-f]{64}$"
+
+
+class LabelKey(NamedTuple):
+    """What a judged score was given on, and so what a person's label of it holds for: an output and a criterion.
+
+    A label is a person's answer to "how does THIS output read on THIS criterion". Bound to a result, it is
+    reusable only by judges that score that stored result; bound to this key, it holds for every judgement of a
+    byte-identical output under the same criterion — another run's result, a re-shaped result, or a frozen
+    judge case — because that is the question the person answered. Both halves are digests, so the key travels
+    without the output's text.
+
+    Built by :func:`label_key_of`; stamped on each :class:`RubricScore` the judge returns and on each
+    :class:`CalibrationRating` written of it.
+    """
+
+    #: :func:`fingerprint_judged_output` of the evidence the judge (and the rater) read.
+    output_fingerprint: str
+    #: :func:`fingerprint_criterion` of the dimension it was read on.
+    criterion_fingerprint: str
+
+
+def fingerprint_judged_output(evidence: JudgeEvidence) -> str:
+    """The fingerprint of a judged output: the digest of the evidence a judge reads, exactly as the kind rendered it.
+
+    **What is fingerprinted is the whole** :class:`JudgeEvidence` — its ``subject``, ``case_material`` and
+    ``artifact`` — because that is what the judge was sent and what a rater reads beside the output: the same
+    artifact judged against other case material, or as another candidate's, is another question. The three
+    strings are hashed verbatim through the package's canonical JSON (whitespace is part of what was read, so
+    nothing is normalised), which is what "byte-identical judged output" means here. The scenario's intent,
+    variation and goal-state outcomes, which the engine places beside the evidence in a judge prompt, are the
+    case's context rather than the output and are not part of it; nor is the judge's prompt, which is the
+    judge's, not the output's.
+
+    Args:
+        evidence: What the judge reads, as stored on the cell's trace (or frozen on a judge case).
+
+    Returns:
+        A 64-character sha256 hex digest, domain-separated from every other digest the package takes.
+    """
+    return canonical_digest({"judged_output": evidence.model_dump(mode="json")})
+
+
+def fingerprint_criterion(dim: RubricDim | str) -> str:
+    """The fingerprint of a criterion: the digest of the words and scale a dimension is judged on.
+
+    **The criterion is the dimension's definition, not its id.** A template rubric dimension contributes its
+    ``name``, ``description``, ``scale`` and ``scoring_guide`` — the fields
+    :class:`~threetears.evals.analysis.reporter_kind.LabelCriterion` freezes for a reporter label, plus the name
+    the judge is told it is scoring. Templates are edited in place, so a dimension id outlives its wording; a
+    label keyed by the id would follow an output to a dimension that now asks something else, and be read as
+    agreement with a question nobody put to the person. Keyed by the definition, a reworded dimension (or one
+    moved to another scale) is a new criterion that no earlier label claims. Its ``axis`` is left out: it says
+    how a score is read (capability or guardrail), not what was asked.
+
+    A reserved dual-score axis (:data:`TRANSCRIPT_DIM_ID`, :data:`OUTCOME_DIM_ID`) has no stored definition —
+    the engine states it — so its criterion is its id and its 1-5 scale.
+
+    Args:
+        dim: A template rubric dimension, or a reserved axis id.
+
+    Returns:
+        A 64-character sha256 hex digest.
+
+    Raises:
+        ValueError: ``dim`` is a string that is not a reserved axis id: a template dimension's name alone does
+            not say what it asks.
+    """
+    if isinstance(dim, str):
+        if dim not in RESERVED_DIM_IDS:
+            raise ValueError(
+                f"{dim!r} is not a reserved axis id; a template dimension's criterion is its definition, so pass the "
+                "RubricDim"
+            )
+        return canonical_digest({"criterion": {"name": dim, "scale": "ordinal"}})
+    return canonical_digest(
+        {
+            "criterion": {
+                "name": dim.name,
+                "description": dim.description,
+                "scale": dim.scale,
+                "scoring_guide": dict(dim.scoring_guide),
+            }
+        }
+    )
+
+
+def label_key_of(evidence: JudgeEvidence, dim: RubricDim | str) -> LabelKey:
+    """The label key of one judgement: ``evidence`` read on ``dim``.
+
+    The one call both sides use — the judge stamping its score, and anything that holds a frozen (output,
+    criterion) pair and wants the labels people gave it (``EvalStorage.query_calibration_ratings(label_key=...)``).
+
+    Args:
+        evidence: What was read.
+        dim: The template dimension, or reserved axis id, it was read on.
+
+    Returns:
+        The key.
+    """
+    return LabelKey(fingerprint_judged_output(evidence), fingerprint_criterion(dim))
+
+
+def _label_key_halves(output: str | None, criterion: str | None, owner: str) -> LabelKey | None:
+    """The label key two optional fields hold, refusing one without the other.
+
+    Raises:
+        ValueError: Exactly one of the two is set: an output with no criterion (or the reverse) binds a label
+            to nothing a lookup could match.
+    """
+    if (output is None) != (criterion is None):
+        raise ValueError(f"a {owner}'s output_fingerprint and criterion_fingerprint are set together or not at all")
+    return None if output is None or criterion is None else LabelKey(output, criterion)
+
+
 class GoalStateOutcome(EvalDocumentModel):
     """One judge-free fact a candidate's execution established, and whether it held.
 
@@ -1002,14 +1122,39 @@ class RubricScore(EvalDocumentModel):
             "provider's default); compared as unknown, never as a match."
         ),
     )
+    output_fingerprint: str | None = Field(
+        default=None,
+        pattern=_SHA256_HEX,
+        description=(
+            "The fingerprint of the evidence the judge read for this score (fingerprint_judged_output), stamped by "
+            "the judge (#628). With criterion_fingerprint it is the score's label key: a person's rating of a "
+            "byte-identical output on the same criterion pairs with this score whichever result it was given on. "
+            "None = judged before the stamp; such a score pairs only with ratings of its own result."
+        ),
+    )
+    criterion_fingerprint: str | None = Field(
+        default=None,
+        pattern=_SHA256_HEX,
+        description=(
+            "The fingerprint of the dimension's definition the judge was asked to apply (fingerprint_criterion): "
+            "its name, description, scale and scoring guide, so a reworded dimension is a new criterion. Set "
+            "together with output_fingerprint, or not at all."
+        ),
+    )
 
     @model_validator(mode="after")
     def _score_is_on_the_scale(self) -> RubricScore:
-        """Refuse a score its own scale cannot hold."""
+        """Refuse a score its own scale cannot hold, and half a label key."""
         low, high = SCALES[self.scale].scores
         if isinstance(self.score, bool) or not low <= self.score <= high:
             raise ValueError(f"score {self.score!r} is not on the {self.scale} scale of {self.dim!r}")
+        _label_key_halves(self.output_fingerprint, self.criterion_fingerprint, "rubric score")
         return self
+
+    @property
+    def label_key(self) -> LabelKey | None:
+        """What this score was given on — the output read and the criterion applied — or None when not stamped."""
+        return _label_key_halves(self.output_fingerprint, self.criterion_fingerprint, "rubric score")
 
     @property
     def normalized(self) -> float:
@@ -1189,6 +1334,14 @@ class CalibrationRating(CoreDocumentModel):
 
     One per ``(result, dimension, rater, rater_kind)``: the ``id`` is derived from the four, and a stored
     id that disagrees with its own fields is refused.
+
+    **Also bound to what was read** (#628): ``output_fingerprint`` and ``criterion_fingerprint`` are the
+    :class:`LabelKey` of the judge score it rates, copied from that score when the rating is written. The key
+    is a second address, not a second identity — the id stays the result's — and it is what lets the label hold
+    for every judgement of a byte-identical output on the same criterion: a judge reading another result, in
+    another run, whose evidence is the same, and a frozen judge case looked up by the key
+    (``EvalStorage.query_calibration_ratings(label_key=...)``). A rating of a score judged before scores were
+    stamped carries no key and is read by its result alone, as every rating was.
     """
 
     doc_type: Literal["calibration_rating"] = "calibration_rating"
@@ -1225,6 +1378,25 @@ class CalibrationRating(CoreDocumentModel):
     )
     reason: str = Field(min_length=1, description="The rater's own words for the score — the evidence for it.")
     rated_at: str = Field(default_factory=utc_now_iso)
+    output_fingerprint: str | None = Field(
+        default=None,
+        pattern=_SHA256_HEX,
+        description=(
+            "The fingerprint of the judged output the rater read (fingerprint_judged_output), copied from the rated "
+            "judge score's stamp (#628). With criterion_fingerprint it binds the label to that output on that "
+            "criterion, so it pairs with every judge score of a byte-identical output on the same criterion. None "
+            "= the rated score was judged before scores were stamped; the rating is then read by its result alone."
+        ),
+    )
+    criterion_fingerprint: str | None = Field(
+        default=None,
+        pattern=_SHA256_HEX,
+        description=(
+            "The fingerprint of the rated dimension's definition (fingerprint_criterion), copied from the rated "
+            "score: a label never follows an output to a dimension whose wording or scale changed. Set together "
+            "with output_fingerprint, or not at all."
+        ),
+    )
 
     @field_validator("doc_type")
     @classmethod
@@ -1234,12 +1406,18 @@ class CalibrationRating(CoreDocumentModel):
             raise ValueError(f"doc_type must be 'calibration_rating', got '{v}'")
         return v
 
+    @property
+    def label_key(self) -> LabelKey | None:
+        """The output and criterion this label holds for, or None when the rated score carried no key."""
+        return _label_key_halves(self.output_fingerprint, self.criterion_fingerprint, "calibration rating")
+
     @model_validator(mode="after")
     def _score_on_scale_and_id_derived(self) -> CalibrationRating:
-        """Refuse a score its scale cannot hold, and an id that is not the one its fields derive."""
+        """Refuse a score its scale cannot hold, half a label key, and an id that is not the one its fields derive."""
         low, high = SCALES[self.scale].scores
         if not low <= self.score <= high:
             raise ValueError(f"score {self.score!r} is not on the {self.scale} scale of {self.rubric_dim!r}")
+        _label_key_halves(self.output_fingerprint, self.criterion_fingerprint, "calibration rating")
         derived = _calibration_rating_id(self.result_id, self.rubric_dim, self.rater, self.rater_kind)
         if self.id != derived:
             raise ValueError(
@@ -4976,6 +5154,7 @@ __all__ = [
     "JudgeRepeat",
     "JudgeRescore",
     "JudgedArtifact",
+    "LabelKey",
     "Precondition",
     "PreconditionOutcome",
     "ProposedDimSuggestion",
@@ -4993,6 +5172,9 @@ __all__ = [
     "SchemaVersion",
     "WorldSeed",
     "VariationAxis",
+    "fingerprint_criterion",
+    "fingerprint_judged_output",
+    "label_key_of",
     "resolve_effective_judges",
     "scored_dim_ids",
 ]

@@ -99,6 +99,9 @@ dimension states another. Each score records what its call was actually sent at 
 separately per temperature, and a repeat at another temperature is not paired. On the quick path your client
 builds the request, so send temperature 0 and report it as `CompletionResult.temperature`. How much temperature
 moves your judge's scores is measured, not assumed: see [Step 10](#step-10-measure-what-temperature-does-to-the-judge).
+Measured on one real judge (#633), 0 was no steadier than the provider's default on borderline cases, and neither
+removed the spread. The policy stays 0 because it is a stated, recorded value, not because it makes a judge
+deterministic ([what the measurement found](#what-the-measurement-found)).
 
 ## Step 5: collect person ratings
 
@@ -120,6 +123,35 @@ for result in results:  # in practice: the results a person has read
 result again replaces that rater's rating. Only `rater_kind="person"` counts as agreement with people. A rating
 an agent wrote is listed as `rated_by_an_agent` and never pooled.
 
+### A rating is bound to what was read, not only to the result
+
+The judge stamps every score with a **label key** (`RubricScore.label_key`): a fingerprint of the evidence it read
+and a fingerprint of the criterion it applied. `rate_result` copies the rated score's key onto the rating
+(`CalibrationRating.output_fingerprint` and `criterion_fingerprint`). So the label holds for every judgement of a
+byte-identical output on the same criterion: another run's result, a result under another judge, or a frozen judge
+case.
+
+- **The output** is the whole `JudgeEvidence` the kind rendered: `subject`, `case_material` and `artifact`,
+  hashed verbatim (`fingerprint_judged_output`). One changed byte, whitespace included, is another output. The
+  scenario intent, variation and goal outcomes are context the engine adds around the evidence, so they are not
+  part of it.
+- **The criterion** is the dimension's definition, not its id: its name, description, scale and scoring guide
+  (`fingerprint_criterion`). Templates are edited in place, so an id outlives its wording. A label keyed by the id
+  would follow an output to a dimension that now asks something else. When you reword a dimension or move it to
+  another scale, you get a new criterion, and no earlier label claims it. The rubric axis is not part of the
+  criterion. A reserved transcript or outcome axis is its id and its 1-5 scale.
+
+To find the labels of an output you hold, build its key and read the store:
+
+```python
+from threetears.evals.schema import label_key_of
+
+key = label_key_of(evidence, rubric_dim)  # a JudgeEvidence, and a RubricDim or reserved axis id
+labels = host.storage.query_calibration_ratings(scope_id, label_key=key)
+```
+
+A score judged before the stamp has no key, and so does its rating. Such a rating is read by its result alone.
+
 ## Step 6: read agreement: kappa
 
 ```python
@@ -137,6 +169,13 @@ net of what chance alone would give from each side's score distribution: 0 is ch
 same score: then it is undefined, not perfect. With several people, the judge is set against each person and the
 kappas are pooled so that each distinct result weighs 1. `results` counts those distinct results, and the tier
 floors count them too. `agreement.unpaired` names every rating that could not be paired, and why.
+
+A rating pairs with its own result's score, and with every other result's score that carries the same label key.
+A label enters each judge's agreement once. Within one judge group a rating pairs with its own result when that
+result is in the group, and otherwise with the first matching result. A label found by both routes, or on several
+identical outputs under one judge, is still one person's one answer, so it adds one pair and not one pair per copy.
+A rating whose own result was deleted still pairs when its key reaches a result that was read. A campaign bundle
+reads its member runs' ratings, plus any rating in the scope whose key matches a key its judge scores carry.
 
 ## Step 7: evidence tiers, and how many ratings they take
 
@@ -349,6 +388,49 @@ Its off-setting scores are counted and left out of that side's figures, never re
 out-of-run cap before the first is sent: the cap the command names with `--max-cost-usd` (`--no-cap` waives it out
 loud), or the host's own for the action. Calls are ledgered under purpose `judge` and stamped with the run
 (`python -m threetears.evals spend --purpose judge`). The comparison reports its case count, calls and cost.
+
+### What the measurement found
+
+Run on 2026-10-10 in a private host application, against its own judged runs (#633):
+
+- **Setup.** Judge `openai/gpt-6-luna`, a reasoning model behind OpenRouter. Seven finished persona runs, 50
+  borderline (result, dimension) cases over 25 results, and 5 repeats at each setting: 500 calls, $0.19. The
+  priced ceiling was about 240 times that, because every call is admitted at its full output cap and retries.
+- **Dimensions.** The two scored on every persona run, `__outcome__` (19 cases) and `__transcript__` (23 cases),
+  plus 8 cases over three host dimensions (2 to 4 each). All are on 1-5. No pass/fail dimension was borderline,
+  since no repeat or second judge had disagreed on one.
+- **Answers.** Every answer recorded the temperature it was sent at (0 on one side, `model_default` on the other).
+  Both sides were comparable, with no failed call and no "can't tell".
+
+| Dimension | Cases | Mean score variance, 0 / default | Unstable cases, 0 / default | Agreement with first answer, 0 / default |
+|---|---|---|---|---|
+| `__outcome__` | 19 | 0.274 / 0.242 | 16 / 15 | 39% / 64% |
+| `__transcript__` | 23 | 0.157 / 0.126 | 13 / 12 | 67% / 71% |
+| three host dims | 8 | 0.163 / 0.188 | 5 / 4 | 59% / 75% |
+| all | 50 | 0.202 / 0.180 | 34 / 31 | 56% / 69% |
+
+**Temperature 0 did not steady this judge.** Paired case by case, the variance at 0 minus the variance at the
+default was +0.022 (95% bootstrap interval −0.026 to +0.076). 0 was lower on 11 cases, higher on 12 and tied on 27.
+The interval rules out 0 making a material difference: at best it cut mean variance by 0.026 against a base of
+0.18. Both settings left one answer in four to six off the case's most common score: the modal share was 0.75 and
+0.73 on `__outcome__`, and 0.82 and 0.85 on `__transcript__`. The mean score moved +0.04 between the settings.
+The lower agreement with the first answer at 0 comes from that statistic, not from temperature: it scores every
+answer against one draw, so a first answer that happens to be off the mode counts against all four repeats. The
+variances, which use every answer, do not differ. The reasoning model most likely samples its private reasoning
+whatever temperature its answer is requested at, so 0 cannot make it repeatable.
+
+**The policy stays at 0.** The data gives no reason to move off it: 0 cost nothing in consistency here. Nor does it
+support any claim for 0 beyond this. What 0 buys is a judge identity that can be stated and reproduced. The
+provider's default is whatever that provider uses, which differs across providers and can change without
+notice. On a judge model that honours temperature, 0 can only narrow the sampling. What 0 does not buy is
+determinism. On a judge like this one, measure the residual spread with a judge repeat (Step 8) and lean on
+self-agreement, not on the temperature.
+
+**Limits.** One judge model. The three host dimensions have too few cases each to be read alone. The runs
+predated recorded judge temperatures, and were judged with request settings from before `strict_output`, a
+setting that host's client does not send. So their judge inputs were reproduced as recorded rather than refused,
+and both sides sent the host's current request settings, differing by temperature alone. A judge that honours temperature (a non-reasoning model)
+may still show a difference, and the command above measures it on yours.
 
 ## Evaluating a judge as a subject
 
