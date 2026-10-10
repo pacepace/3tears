@@ -207,6 +207,8 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "schema/subject.py",
     "schema/external_spend.py",
     "schema/traces.py",
+    # Which stored documents are kept and how an old one is upgraded: the engine's own version policy.
+    "schema/versioning.py",
     "analysis/bundle.py",
     "analysis/gen_prompt.py",
     # The gen package's public root, its exports scanned. Declared module by module, like

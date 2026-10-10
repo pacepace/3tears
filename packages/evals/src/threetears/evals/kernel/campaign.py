@@ -33,7 +33,8 @@ from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier, JudgedTie
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import compute_variant_key
 from threetears.evals.schema.base import EvalDocumentModel
-from threetears.evals.schema.models import EVAL_SCHEMA_VERSION, SchemaVersion, utc_now_iso
+from threetears.evals.schema.models import SchemaVersion, utc_now_iso
+from threetears.evals.schema.versioning import REGENERABLE_SCHEMA_VERSION
 from threetears.evals.schema.prose import ModelProse
 from threetears.evals.kernel.surface import DecisionSurface
 from threetears.observe import get_logger
@@ -202,7 +203,7 @@ class EvalCampaign(EvalDocumentModel):
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["eval_campaign"] = "eval_campaign"
-    schema_version: SchemaVersion = EVAL_SCHEMA_VERSION
+    schema_version: SchemaVersion = REGENERABLE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     name: str = Field(min_length=1, description="Operator-facing campaign name.")
@@ -809,7 +810,7 @@ class EvalAnalysis(EvalDocumentModel):
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["eval_analysis"] = "eval_analysis"
-    schema_version: SchemaVersion = EVAL_SCHEMA_VERSION
+    schema_version: SchemaVersion = REGENERABLE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     campaign_id: str = Field(
@@ -997,7 +998,7 @@ class EvalAnalysisAttempt(EvalDocumentModel):
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["eval_analysis_attempt"] = "eval_analysis_attempt"
-    schema_version: SchemaVersion = EVAL_SCHEMA_VERSION
+    schema_version: SchemaVersion = REGENERABLE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     campaign_id: str = Field(
@@ -1127,7 +1128,7 @@ class EvalSweep(EvalDocumentModel):
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["eval_sweep"] = "eval_sweep"
-    schema_version: SchemaVersion = EVAL_SCHEMA_VERSION
+    schema_version: SchemaVersion = REGENERABLE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     campaign_id: str = Field(min_length=1, description="The campaign every arm's run joins as it is created.")
@@ -1160,7 +1161,7 @@ class EvalInsight(EvalDocumentModel):
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["eval_insight"] = "eval_insight"
-    schema_version: SchemaVersion = EVAL_SCHEMA_VERSION
+    schema_version: SchemaVersion = REGENERABLE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     subject_id: str = Field(min_length=1, description="Reference to the subject the insight is about.")

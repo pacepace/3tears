@@ -84,6 +84,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "analysis/viz_refs.py": {},
     "kernel/__init__.py": {},
     "schema/__init__.py": {},
+    "schema/versioning.py": {},
     "kernel/analysis_measures.py": {},
     "kernel/arguments.py": {},
     "kernel/authored.py": {},

@@ -20,7 +20,7 @@ being exported from a public root. Code inside the package imports its own modul
 
 from __future__ import annotations
 
-from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel
+from threetears.evals.schema.base import CoreDocumentModel, EvalBaseModel, EvalDocumentModel
 from threetears.evals.schema.call_ledger import PASS_ACTION, PASS_TOOL, CallLedger, RecordedCall, is_pass
 from threetears.evals.schema.completion import (
     BoundCompletionClient,
@@ -116,7 +116,6 @@ from threetears.evals.schema.models import (
     CaseSet,
     CaseSetRef,
     case_set_doc_id,
-    EVAL_SCHEMA_VERSION,
     EvalCassette,
     EvalCaseStratum,
     EvalRunStamp,
@@ -153,6 +152,15 @@ from threetears.evals.schema.values import (
     Scale,
 )
 from threetears.evals.schema.world_events import Firings, WorldEvent, WorldEventCause, WorldEventKind
+from threetears.evals.schema.versioning import (
+    CORE_ADDRESSING_FIELDS,
+    CORE_BASELINE_VERSION,
+    CORE_DOC_TYPES,
+    CORE_SCHEMA_VERSION,
+    CORE_UPGRADERS,
+    REGENERABLE_SCHEMA_VERSION,
+    CoreUpgrader,
+)
 
 __all__ = [
     "CANDIDATE_SPEAKER",
@@ -160,7 +168,14 @@ __all__ = [
     "DEFAULT_LAUNCH_K_RUNS",
     "EVAL_DOC_TYPES",
     "WorldPlacement",
-    "EVAL_SCHEMA_VERSION",
+    "CORE_ADDRESSING_FIELDS",
+    "CORE_BASELINE_VERSION",
+    "CORE_DOC_TYPES",
+    "CORE_SCHEMA_VERSION",
+    "CORE_UPGRADERS",
+    "REGENERABLE_SCHEMA_VERSION",
+    "CoreDocumentModel",
+    "CoreUpgrader",
     "JSON_OBJECT_RESPONSE_FORMAT",
     "MODEL_DEFAULT_TEMPERATURE",
     "NON_TERMINAL_RUN_STATUSES",

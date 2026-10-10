@@ -18,8 +18,9 @@ import uuid
 from typing import TYPE_CHECKING, Literal, Protocol, Self
 
 from pydantic import Field, field_validator, model_validator
-from threetears.evals.schema.base import EvalDocumentModel
-from threetears.evals.schema.models import EVAL_SCHEMA_VERSION, SchemaVersion, utc_now_iso
+from threetears.evals.schema.base import CoreDocumentModel
+from threetears.evals.schema.models import CoreSchemaVersion, utc_now_iso
+from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION
 from threetears.evals.schema.completion import StopReason
 
 if TYPE_CHECKING:
@@ -42,7 +43,7 @@ OutOfRunPurpose = Literal["variation", "proposer", "analysis", "judge", "second_
 OutOfRunOutcome = Literal["completed", "raised"]
 
 
-class OutOfRunSpend(EvalDocumentModel):
+class OutOfRunSpend(CoreDocumentModel):
     """One call the engine made outside any run, as it was admitted and as the provider reported it.
 
     Written by :meth:`OutOfRunBudget.generate` for every call it makes, never rewritten. **Missing is
@@ -51,7 +52,7 @@ class OutOfRunSpend(EvalDocumentModel):
     """
 
     doc_type: Literal["eval_out_of_run_spend"] = "eval_out_of_run_spend"
-    schema_version: SchemaVersion = EVAL_SCHEMA_VERSION
+    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     scope_id: str = Field(min_length=1, description="The scope the work was for, which its ledger lives in.")
     purpose: OutOfRunPurpose

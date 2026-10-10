@@ -10,10 +10,13 @@ Four managed shapes carry an evaluation:
 - ``EvalResult`` — one test case x one model x one k-iteration: goal-state
   outcomes, rubric scores, cost, and what the candidate's kind reported.
 
-Schema rule: every stored entity carries ``schema_version`` (:data:`EVAL_SCHEMA_VERSION`), and
-a read is strict — an unknown field, a missing required one, or a document written under another
-schema version is refused, never coerced. Stored eval documents are disposable: across a schema
-change they are dropped and regenerated, not migrated.
+Schema rule: every stored entity carries ``schema_version``, and a read is strict — an unknown field
+or a missing required one is refused, never coerced. The evidence core (the template, test case, run,
+result, trace, calibration rating, case set and the definitions with their tombstones) is kept: a stored
+read of an older core version upgrades it through registered upgraders, and a newer or pre-release
+version is refused. A regenerable document (the cassette here; the campaign, analysis and insight
+documents in the kernel) written under another version is refused and regenerated.
+:mod:`~threetears.evals.schema.versioning` holds both versions, their ledgers, and the rules.
 """
 
 from __future__ import annotations
@@ -42,12 +45,19 @@ from pydantic import (
     model_validator,
 )
 
-from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel, VerbatimJsonObject, VerbatimObject
+from threetears.evals.schema.base import (
+    CoreDocumentModel,
+    EvalBaseModel,
+    EvalDocumentModel,
+    VerbatimJsonObject,
+    VerbatimObject,
+)
 from threetears.evals.schema.call_ledger import CallLedger, RecordedCall
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.goal_grammar import DSLError, extract_paths, parse, referenced_fires
 from threetears.evals.schema.external_spend import ExternalSpend
 from threetears.evals.schema.subject import SubjectSnapshot
+from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION, REGENERABLE_SCHEMA_VERSION
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.schema.judge_attribution import JudgeAttributionSource, JudgeAttributionState, attribution_state
 from threetears.evals.schema.prose import ModelProse
@@ -57,162 +67,8 @@ from threetears.observe import get_logger
 log = get_logger(__name__)
 
 
-EVAL_SCHEMA_VERSION: int = 8
-"""The schema version every stored eval document is written under, and the only one a read accepts.
-
-Bump it when a stored shape changes so that a document written before the change would not mean
-what it says after it — a field renamed, retyped, removed or made required. A bump is a drop:
-documents written under the old version are refused on read (:data:`SchemaVersion`) and deleted,
-never migrated, because a read path that coerces old evidence outlives the evidence by years.
-
-**v6** is the scope-and-kind contract: one opaque ``scope_id`` on every stored document, kind-owned launch
-overlays and template ``kind_spec``, kind-rendered judge evidence, kind-owned result payloads
-(``async_deliveries``, ``kind_payload``, ``candidate_instance_id``), and every field its writers
-set required — no field is read as "absent because older" — and a run naming one
-``candidate_model`` (with its one ``variant_levers`` map) where it carried a list. Nothing written
-before it loads. (The required fields and the one-model run joined v6 before it was first released,
-so they share its number; the one stored value the required fields change is
-``GenerationProvenance.cell_model_version``, which the generator had never written. So did the
-cassette corpus — ``EvalCassette`` keyed by corpus and occurrence, ``EvalRun.cassette_corpus_id`` in
-place of ``cassette_version`` on the run and the result — and the background-work spend
-``AsyncDelivery`` carries; and ``WorldEvent.event``, the identity of the event a firing names, required
-on every firing so a firing's ``armed`` is the event's provenance rather than the dimension's.)
-
-**v7**: a calibration rating records who KIND of rater wrote it (``CalibrationRating.rater_kind``, a person or
-an agent), required, so an agent's rating is never read as a person's. A rating written before it says
-nothing about which it was, so nothing written under v6 loads.
-
-**v8**: judged readings carry a code-decided evidence tier (PD-13). A stored analysis's judged evidence rows
-(``EvidenceRow.judged_tier``) and its decision surface's judged readings (``JudgedReading.evidence_tier``)
-carry a tier, required; the finding tier ``directional`` is gone from ``EvidenceTier``; a repeated judge score
-records the config that asked for the score it repeats (``RepeatedScore.first_judge_config_id``, required),
-so a repeat under one judge prompt never measures another. A v7 analysis holding a judged reading cannot say
-what tier it stood on, so nothing written under v7 loads.
-
-**Within v8, not a bump**: ``RubricScore.axis`` joined as an OPTIONAL field — the rubric axis the judge
-stamped from the dimension's definition, so a boundary (guardrail) score stays out of the composite and
-pass^k. A score judged before it carries None, and is read as capability, which is how it was read then:
-its result's composite does not move, and the bundle names the dimensions read that way
-(``GuardrailReadings.unstamped_dimensions``) rather than presenting them as known capability.
-
-**Within v8, not a bump**: ``EvalResult.turns_delivered`` joined as an OPTIONAL field — how many turns the
-candidate delivered, which decides whether a model failure's time and spend are a turn's. A result written
-before it carries none and still means what it says; it reads as None, "nothing counted", and every reader
-falls back to the failure's cause alone (``delivered_a_turn``). It, and the decision surface's
-``CellFacts.n_candidate_failed`` and ``n_no_turn`` (and their ``StratumFacts`` twins), None on an analysis
-frozen before them, are deliberate exceptions to v6's "no field is read as absent because older": requiring
-them would drop every stored document to learn counts the old ones never had, and their honest reading is
-"unknown", which None states. ``EvalAnalysis.judged_tier_rule`` joined the same way: the rule its judged tiers
-were decided by, None on an analysis stored before tiers were decided on the agreement's interval — whose tiers
-were the point estimate against the bar, and are rendered as that, never as the interval rule's claim. And
-``EvalRun.goal_check_proofs``: whether each goal check was shown, at launch, to beat doing nothing; None on a run
-launched before it, read as unproven. And ``GenerationProvenance.bundle_schema_version`` and
-``.host_declarations_digest``: the bundle shape and the host's declarations a generation ran over, None on an
-analysis stored before them, read as "cannot say" — never as the current version.
-
-**Within v8, not a bump: fields retired** (``__retired_fields__``, read only by a stored read — see
-:mod:`threetears.evals.schema.base`). ``LeverCoverage.confidence`` is removed: it was a fixed lookup on the
-lever's ``status``, so a stored analysis loses nothing when the key is discarded on read. ``EvalCampaign.status``
-(open / closed) is removed: nothing could change it after creation and nothing enforced it, so a stored
-campaign's ``closed`` froze nothing and discarding it changes no membership and no analysis; the one thing it
-fed, ``list_campaigns``'s ``status`` filter, is gone with it. ``CampaignDesign.controls`` is renamed ``held_fixed``
-(one letter from ``control``, it named a different thing), and the bundle's ``controls_reading`` with it
-(``held_fixed_reading``): a stored campaign, an analysis's ``design_snapshot`` and a reporter case's frozen bundle
-read the old key under the new name, value unchanged.
-
-**Within v8, not a bump**: ``EvidenceRow.n_cases`` joined as an OPTIONAL field — the distinct test cases behind an
-evidence row's value, which a report's evidence table shows (``n`` counts observations, a case judged k times
-counting k). A row stored before it carries None and reads as not recorded: its table cell is empty, never its
-observation count under the cases heading.
-
-**Within v8, not a bump**: ``RubricDimTombstone`` joined as a new stored type — the record a rubric dim delete
-leaves so the definition seed does not write the key back. A store written before it holds none, which reads as
-"no key was deleted since": a dim deleted before then is still written back at the next seed, as it was then.
-
-**Within v8, not a bump**: ``RoleUsage.served_model`` joined as an OPTIONAL field — the model the provider's
-response named as having answered the row's calls, which for a candidate launched on a floating alias is the
-only record of which model produced its numbers. A row stored before it carries None and reads as "not
-recorded", never as the alias in ``model``: the analysis names such an arm's served model unknown rather than
-the one requested.
-
-**Within v8, not a bump**: the judge's temperature joined as OPTIONAL fields (#633) — ``RubricScore.judge_temperature``
-(what the call was sent at), ``EvalRun.judge_temperature`` (what a dimension with no config was requested at) and
-``RepeatedScore.first_judge_temperature``. A document stored before them carries None and reads as not recorded:
-its unconfigured dimensions were requested at the provider's default, which is not today's 0, so such a run's
-roles component is not composable, its scores' judge reads unknown, and nothing pools it with a run judged at 0.
-
-**Within v8, not a bump**: ``EvalRun.measure_latency`` and ``EvalRun.cell_concurrency`` joined as OPTIONAL fields
-(#701) — whether the launch declared latency under test, and how many of the run's cells executed at once. A run
-stored before them carries None in both: its cells executed one at a time (the runner of that build had no other
-way), so its ``cell_concurrency`` reads as 1, and whether it declared latency reads as not recorded — never as
-declared. Whether another RUN executed beside it is what its results' ``execution_mode`` says, as it always was.
-``CampaignDesign.measure_latency`` joined the same way, defaulting to False: a campaign (or an analysis's design
-snapshot) stored before it reads as not declaring latency under test, which is what it declared — a stored
-design asking about latency still loads, and is refused only when it is declared again.
-
-``JudgeConfigTombstone`` joined the same way, for a judge config's slot; a config deleted before it is written
-back at the next seed. ``EvalRun`` gained ``goal_check_proof_rules`` (None on a run stored before it, read as rules
-1, so its ``proven`` checks read unproven) and ``refused_goal_checks`` (None, not recorded), and ``EvalResult``
-gained ``judge_cannot_tell_boundary`` (empty, its can't-tells read as capability) — all optional within v8.
-
-**Within v8, not a bump**: ``ClientRequestSettings.strict_output`` joined as a defaulted field (#686) — whether a
-role's requests were to be routed only to providers honouring every parameter sent. A stamp stored before it
-carries none and reads False, "no such requirement was stated", which is what the engine sent then. Its apparatus
-level (``judge_request_settings`` / ``simulator_request_settings``) leaves the flag out while it is False, so a
-stored run's level is unchanged; a judge stamp carrying True reads as a different level from one stored before.
-
-**Within v8, not a bump**: ``CampaignDesign.guardrail_margins`` joined as an OPTIONAL field (#697) — the margin
-each judged guardrail (a boundary rubric dimension) is held to. A campaign, or an analysis's design snapshot,
-stored before it carries none and reads as declaring none: its judged guardrails are held at zero change, exactly
-as they were decided then, so no stored decision moves.
-
-**Within v8, not a bump**: ``CampaignDesign.crossing`` and ``CampaignDesign.skipped_cells`` joined as OPTIONAL
-fields (#654) — which combinations of the declared levels a design meant to run. A campaign, or an analysis's
-design snapshot, stored before them carries None and an empty list, and reads as declaring nothing about
-combinations: no cell is read as skipped by design or as missing, exactly as before.
-
-**Within v8, not a bump**: ``EvalResult.judge_seconds`` joined as an OPTIONAL field (#646, #597) — a second judge's
-scores of the result's stored evidence (:class:`SecondJudging`), each beside the first score it pairs with. A result
-stored before it carries none and reads as "no second judge was asked", which is what it means: no agreement and no
-drift is read from it, never a zero.
-
-**Within v8, not a bump**: ``DecisionSurface.frontier_disqualified`` joined as an OPTIONAL field (#613) — the arms the
-frontier disqualified on its boundary pillar, each with the guardrail dimensions it breached. A surface frozen before
-it carries None and reads as "not recorded": its frontier chart marks no arm disqualified, as it did when frozen,
-because the frontier then disqualified none.
-
-**Within v8, not a bump**: ``EvalRun.declared_margins`` joined as an OPTIONAL field (#698) — the margins a launch
-declared on core rate measures (accuracy). A run stored before it carries none and reads as declaring none, so no
-comparison over it reads a margin it never declared.
-
-**Within v8, not a bump**: ``EvalRun.declared_measures`` joined as an OPTIONAL field — how the launching host
-declared each of its own measures to be read (direction, merit axis, guardrail, margin, range). A run stored before
-it carries none, and a campaign of such runs is read on the reading host's declarations, as every campaign was.
-**Within v8, not a bump**: ``MeasureSummary.case_means`` and ``JudgedReading.case_means`` joined as OPTIONAL fields
-(#677) — each case's mean, recorded only below 5 cases, where a chart draws the cases as points instead of an
-interval band. An analysis stored before them carries None and reads as not recorded: its small cells draw no band
-and no points, and the chart is refused with that reason rather than drawn from the interval.
-
-**Within v8, not a bump**: ``CaseSet`` joined as a new stored type and ``EvalRun.case_set`` as an OPTIONAL field
-(#676). A store written before them holds no sets, and a run stored before carries None: it was launched over its
-template's cases, which is what None says, and history epochs it by its frozen ids as before.
-
-**Within v8, not a bump**: ``ConversationSpec.world_rounds`` joined as an OPTIONAL field, and ``actors`` may be empty
-when world rounds supply every round (#578). A template stored before it carries none, and reads as it did: every
-round is the actors'.
-
-**Within v8, not a bump**: ``EvalSweep`` joined as a new stored type (#632) — the record of a multi-arm launch
-run arm after arm. A store written before it holds none, which reads as "no sweep was started".
-
-**Within v8, not a bump**: ``EvalRun.cell_timeout_s`` and ``cell_timeout_s_origin`` joined as OPTIONAL fields (#649)
-— the per-cell deadline the run's cells ran under and whether the launch, the kind or the engine's default set it.
-A run stored before them carries None for both and reads as "deadline not recorded", never as today's default:
-the kind's wiring may have set another.
-"""
-
-
 def _current_schema_only(version: int) -> int:
-    """Refuse a document written under any schema version but this build's.
+    """Refuse a regenerable document written under any schema version but this build's.
 
     Args:
         version: The document's ``schema_version``.
@@ -221,19 +77,48 @@ def _current_schema_only(version: int) -> int:
         The version, unchanged.
 
     Raises:
-        ValueError: ``version`` is not :data:`EVAL_SCHEMA_VERSION`.
+        ValueError: ``version`` is not :data:`~threetears.evals.schema.versioning.REGENERABLE_SCHEMA_VERSION`.
     """
-    if version != EVAL_SCHEMA_VERSION:
+    if version != REGENERABLE_SCHEMA_VERSION:
         raise ValueError(
-            f"this document was written under eval schema v{version} and this build reads v{EVAL_SCHEMA_VERSION} "
-            "only; stored eval documents are dropped across a schema change, never migrated"
+            f"this document was written under eval schema v{version} and this build reads "
+            f"v{REGENERABLE_SCHEMA_VERSION} only; a regenerable document is regenerated across a schema change, "
+            "never migrated"
         )
     return version
 
 
-#: The ``schema_version`` field type of every stored eval entity: defaulted to the current version on
+#: The ``schema_version`` field type of every regenerable stored document: defaulted to the current version on
 #: write, and refusing any other on read.
 SchemaVersion = Annotated[int, AfterValidator(_current_schema_only)]
+
+
+def _current_core_only(version: int) -> int:
+    """Refuse a core document at any version but the current one once its stored read has upgraded it.
+
+    A stored read reaches here already upgraded (:meth:`~threetears.evals.schema.base.CoreDocumentModel.from_dict`),
+    so this refuses only a construction or a payload naming an old or future version.
+
+    Args:
+        version: The document's ``schema_version``.
+
+    Returns:
+        The version, unchanged.
+
+    Raises:
+        ValueError: ``version`` is not :data:`~threetears.evals.schema.versioning.CORE_SCHEMA_VERSION`.
+    """
+    if version != CORE_SCHEMA_VERSION:
+        raise ValueError(
+            f"a core document is built at core v{CORE_SCHEMA_VERSION}, not v{version}; an older stored one is "
+            "upgraded by its stored read (from_dict), never by construction"
+        )
+    return version
+
+
+#: The ``schema_version`` field type of every core stored document: the current core version, which a stored
+#: read of an older document reaches through its upgraders.
+CoreSchemaVersion = Annotated[int, AfterValidator(_current_core_only)]
 
 
 def _finite_setting(value: str | bool | int | float) -> str | bool | int | float:
@@ -1283,7 +1168,7 @@ def _derived_rating_id(data: dict[str, Any]) -> str:
 RaterKind = Literal["person", "agent"]
 
 
-class CalibrationRating(EvalDocumentModel):
+class CalibrationRating(CoreDocumentModel):
     """A rater's score for one judged dimension of one result — a person's, or an agent's.
 
     A person's is the human side of judge calibration. Only a person's rating is agreement with people; an agent's (``rater_kind="agent"``) is stored and listed,
@@ -1306,7 +1191,7 @@ class CalibrationRating(EvalDocumentModel):
     """
 
     doc_type: Literal["calibration_rating"] = "calibration_rating"
-    schema_version: SchemaVersion = EVAL_SCHEMA_VERSION
+    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1, description="The scope of the rated result.")
     run_id: str = Field(min_length=1, description="The run the rated result belongs to, read off the result.")
     result_id: str = Field(min_length=1, description="The rated result.")
@@ -1368,7 +1253,7 @@ class CalibrationRating(EvalDocumentModel):
 # =============================================================================
 
 
-class EvalTemplate(EvalDocumentModel):
+class EvalTemplate(CoreDocumentModel):
     """Abstract scenario blueprint — subject-agnostic, domain-level.
 
     Templates declare WHAT to test (``intent``, ``tools_required``) and HOW
@@ -1392,7 +1277,7 @@ class EvalTemplate(EvalDocumentModel):
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["eval_template"] = "eval_template"
-    schema_version: SchemaVersion = EVAL_SCHEMA_VERSION
+    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     # Identity
@@ -1550,7 +1435,7 @@ class EvalTemplate(EvalDocumentModel):
 # =============================================================================
 
 
-class JudgeConfig(EvalDocumentModel):
+class JudgeConfig(CoreDocumentModel):
     """Versioned judge configuration for one rubric dimension.
 
     A single-dimension judge's prompt, model, and decoding params, captured as
@@ -1573,7 +1458,7 @@ class JudgeConfig(EvalDocumentModel):
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["judge_config"] = "judge_config"
-    schema_version: SchemaVersion = EVAL_SCHEMA_VERSION
+    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     name: str = Field(min_length=1)
@@ -1620,7 +1505,7 @@ class JudgeConfig(EvalDocumentModel):
 # =============================================================================
 
 
-class CatalogRubricDim(EvalDocumentModel):
+class CatalogRubricDim(CoreDocumentModel):
     """A reusable rubric dimension in the shared catalog.
 
     Distinct from the embedded :class:`RubricDim` value object that
@@ -1651,7 +1536,7 @@ class CatalogRubricDim(EvalDocumentModel):
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["rubric_dim"] = "rubric_dim"
-    schema_version: SchemaVersion = EVAL_SCHEMA_VERSION
+    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     key: str = Field(min_length=1, description="Stable version-group slug; re-authoring keeps the key, mints a new id.")
@@ -1731,7 +1616,7 @@ def stored_variation(params: Mapping[str, Any]) -> dict[str, str]:
     }
 
 
-class RubricDimTombstone(EvalDocumentModel):
+class RubricDimTombstone(CoreDocumentModel):
     """The record that a rubric dim key was deleted, so a seed never writes it back.
 
     Seeding fills empty slots only (:func:`~threetears.evals.run.definition_seed.seed_eval_definitions`),
@@ -1747,7 +1632,7 @@ class RubricDimTombstone(EvalDocumentModel):
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["rubric_dim_tombstone"] = "rubric_dim_tombstone"
-    schema_version: SchemaVersion = EVAL_SCHEMA_VERSION
+    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     key: str = Field(min_length=1, description="The deleted dim's version-group key — the seed's slot.")
@@ -1763,7 +1648,7 @@ class RubricDimTombstone(EvalDocumentModel):
         return v
 
 
-class JudgeConfigTombstone(EvalDocumentModel):
+class JudgeConfigTombstone(CoreDocumentModel):
     """The record that a judge config slot was deleted, so a seed never writes it back.
 
     :class:`RubricDimTombstone`'s mechanism for the seed's judge-config slot, ``(rubric_dim_id, name)``: a
@@ -1776,7 +1661,7 @@ class JudgeConfigTombstone(EvalDocumentModel):
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["judge_config_tombstone"] = "judge_config_tombstone"
-    schema_version: SchemaVersion = EVAL_SCHEMA_VERSION
+    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     rubric_dim_id: str = Field(min_length=1, description="The dim the deleted config scored — half the seed's slot.")
@@ -1829,7 +1714,7 @@ class CaseSetRef(EvalBaseModel):
         return f"{self.name} v{self.version}"
 
 
-class CaseSet(EvalDocumentModel):
+class CaseSet(CoreDocumentModel):
     """A named, versioned, frozen list of one template's test cases — what a launch can target by name.
 
     **Append-only.** A version, once stored, is never rewritten: storing a ``(scope, name, version)`` that exists
@@ -1846,7 +1731,7 @@ class CaseSet(EvalDocumentModel):
 
     id: str = Field(default="", description="Derived from name and version (``case_set_doc_id``); set on mint.")
     doc_type: Literal["case_set"] = "case_set"
-    schema_version: SchemaVersion = EVAL_SCHEMA_VERSION
+    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     name: str = Field(min_length=1, description="The set's name, unique within its scope across its versions.")
@@ -1903,7 +1788,7 @@ class CaseSet(EvalDocumentModel):
         return v
 
 
-class EvalTestCase(EvalDocumentModel):
+class EvalTestCase(CoreDocumentModel):
     """Concrete, immutable inputs generated from an ``EvalTemplate``.
 
     Once persisted, a test case's content never mutates.  ``variation_params`` freezes
@@ -1920,7 +1805,7 @@ class EvalTestCase(EvalDocumentModel):
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["eval_test_case"] = "eval_test_case"
-    schema_version: SchemaVersion = EVAL_SCHEMA_VERSION
+    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     # Lineage
@@ -2570,7 +2455,7 @@ class MeasureDeclaration(EvalBaseModel):
     value_range: tuple[float, float] | None = None
 
 
-class EvalRun(EvalDocumentModel):
+class EvalRun(CoreDocumentModel):
     """One execution of a template (or explicit test case set) against one candidate model.
 
     **A run is one arm.** It names exactly one ``candidate_model``, so a run read as "one arm at a
@@ -2609,7 +2494,7 @@ class EvalRun(EvalDocumentModel):
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["eval_run"] = "eval_run"
-    schema_version: SchemaVersion = EVAL_SCHEMA_VERSION
+    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     # What runs
@@ -4064,7 +3949,7 @@ def eval_trace_doc_id(result_id: str) -> str:
     return f"{result_id}:trace"
 
 
-class EvalTrace(EvalDocumentModel):
+class EvalTrace(CoreDocumentModel):
     """The candidate's output, what its judge read, and the OTel spans — stored beside a result, not inside it.
 
     ``trace`` carries the candidate's output exactly as its kind handed it back (for a
@@ -4099,7 +3984,7 @@ class EvalTrace(EvalDocumentModel):
 
     id: str = Field(min_length=1)
     doc_type: Literal["eval_trace"] = "eval_trace"
-    schema_version: SchemaVersion = EVAL_SCHEMA_VERSION
+    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
     #: The result this belongs to. Stored rather than derived from ``id`` so the
     #: document answers "whose is this" on its own.
@@ -4412,7 +4297,7 @@ class SecondJudging(EvalDocumentModel):
         return scores
 
 
-class EvalResult(EvalDocumentModel):
+class EvalResult(CoreDocumentModel):
     """One test case x one model x one k-iteration.
 
     **This is the analysis-shaped record and it carries no debug payload.** The
@@ -4432,7 +4317,7 @@ class EvalResult(EvalDocumentModel):
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["eval_result"] = "eval_result"
-    schema_version: SchemaVersion = EVAL_SCHEMA_VERSION
+    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     # Lineage
@@ -4915,7 +4800,7 @@ class EvalCassette(EvalDocumentModel):
 
     id: str = Field(min_length=1)
     doc_type: Literal["eval_cassette"] = "eval_cassette"
-    schema_version: SchemaVersion = EVAL_SCHEMA_VERSION
+    schema_version: SchemaVersion = REGENERABLE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     corpus_id: str = Field(min_length=1)
@@ -5048,7 +4933,7 @@ __all__ = [
     "case_set_doc_id",
     "CANDIDATE_SPEAKER",
     "DEFAULT_JUDGE_TEMPERATURE",
-    "EVAL_SCHEMA_VERSION",
+    "CoreSchemaVersion",
     "MODEL_DEFAULT_TEMPERATURE",
     "JudgeTemperature",
     "NON_TERMINAL_RUN_STATUSES",

@@ -8,17 +8,18 @@ diff-visible on its own terms.
 
 **Reads are strict, and so is construction.** ``extra="forbid"`` refuses an unknown key on every
 path — a kwarg typed in code, a key in a stored document, a field in a payload a host supplied.
-There is no tolerant read, save the one narrow exception below: stored eval documents are
-disposable, so a document written under a shape this build does not declare is dropped and
-regenerated, never migrated or filtered on the way in. A filter would turn "this document is from
+There is no tolerant read and no filter on the way in: a filter would turn "this document is from
 another schema" into a quietly different document, which is the one outcome worse than refusing it.
-``schema_version`` on the stored models says which schema wrote a document, and a read refuses any
-other (:data:`~threetears.evals.schema.models.EVAL_SCHEMA_VERSION`).
+``schema_version`` on the stored models says which schema wrote a document, and the two kinds of
+stored document read it differently (:mod:`~threetears.evals.schema.versioning`):
 
-That stance has a known cost, stated so it is a decision rather than an oversight: when two
-builds share one store, the older refuses what the newer wrote. While one build writes and reads
-every eval document that is a typo caught early; the second concurrent writer is when it has to
-be re-decided.
+- **A core document is kept** (:class:`CoreDocumentModel`). Its stored read upgrades an older core
+  version step by step through registered upgraders before validating, and refuses a version it
+  cannot read: one from a newer build, one from before the first release, or one that is not a number.
+- **A regenerable document is refused at any other version**, and regenerated from the core.
+
+When two builds share one store, the older refuses what the newer wrote, by name. That is the
+deliberate cost of never guessing what a newer field means.
 
 **One narrow exception: a field retired within a schema version.** A confusable name can be renamed,
 and a field that carried nothing (a value no writer could vary, or one no reader consumed) removed,
@@ -30,7 +31,8 @@ refused, by name and with its replacement, because a caller writing today's docu
 spell yesterday's; and a document carrying both the old and the new name is refused, since it cannot
 say which it meant. A rename loses nothing. A removal is allowed only where discarding the value
 changes what no stored document means; a field that carried evidence still needs a version bump.
-Each retirement is listed in :data:`~threetears.evals.schema.models.EVAL_SCHEMA_VERSION`'s notes.
+Each retirement is listed in :data:`~threetears.evals.schema.models.REGENERABLE_SCHEMA_VERSION`'s notes. A core
+type never retires a field this way: every change to a core shape is a version bump with an upgrader.
 
 **The JSON pair is a transport API.** Every eval store path goes through :meth:`to_dict`, so
 :meth:`to_json` / :meth:`from_json` serve a consumer that moves these models over a wire.
@@ -64,6 +66,7 @@ from typing import Annotated, Any, ClassVar, Self
 
 from pydantic import (
     BaseModel,
+    ValidationError,
     ConfigDict,
     JsonValue,
     PlainValidator,
@@ -73,6 +76,7 @@ from pydantic import (
     model_validator,
 )
 
+from threetears.evals.schema.versioning import CoreVersionRefused, upgrade_core_document
 from threetears.observe import get_logger
 
 log = get_logger(__name__)
@@ -333,8 +337,57 @@ class EvalDocumentModel(EvalBaseModel):
         return {key: value for key, value in data.items() if key not in derived}
 
 
+class CoreDocumentModel(EvalDocumentModel):
+    """A stored document in the evidence core: kept across releases, and upgraded when read at an older version.
+
+    Its stored read, :meth:`from_dict`, upgrades the document through
+    :data:`~threetears.evals.schema.versioning.CORE_UPGRADERS` to the current core version before
+    validating it, so every validator — the model's own and its bases' — sees today's shape. Upgrading
+    before validation rather than in a ``before`` validator is deliberate: pydantic runs a concrete
+    model's own ``before`` validators ahead of one it inherits, so an inherited upgrade could not
+    promise to run first. A refusal (a newer build's version, a pre-release version, or no version
+    number at all) is raised as a ``ValidationError`` on ``schema_version``, so every caller that
+    isolates an unreadable stored document already isolates it.
+
+    Every other path is strict as before: constructing a core document, or validating a payload,
+    at any version but the current one is refused by the ``schema_version`` field itself.
+    """
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Self:
+        """Read a stored core document, upgrading it to the current core version first.
+
+        Args:
+            data: The stored document, as the store returned it.
+
+        Returns:
+            Model instance, at the current core version.
+
+        Raises:
+            ValidationError: The document's version is not one this build reads, or the upgraded
+                document fails validation.
+        """
+        if isinstance(data, Mapping):
+            try:
+                data = upgrade_core_document({"doc_type": cls.model_fields["doc_type"].default, **data})
+            except CoreVersionRefused as refused:
+                raise ValidationError.from_exception_data(
+                    cls.__name__,
+                    [
+                        {
+                            "type": "value_error",
+                            "loc": ("schema_version",),
+                            "input": data.get("schema_version"),
+                            "ctx": {"error": refused},
+                        }
+                    ],
+                ) from refused
+        return super().from_dict(data)
+
+
 __all__ = [
     "STORED_READ",
+    "CoreDocumentModel",
     "EvalBaseModel",
     "EvalDocumentModel",
     "VerbatimJsonObject",

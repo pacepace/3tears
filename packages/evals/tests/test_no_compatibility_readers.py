@@ -1,9 +1,11 @@
 """The fields every writer sets are required, and the reads that used to fill their absence are gone.
 
-Stored eval documents are written under one schema version and refused under any other
-(``EVAL_SCHEMA_VERSION``), so no document this build can read lacks a field this build's writers
-set. Each "this field predates…" fallback was therefore a branch for a state nothing can produce,
-and each was deleted with its field made required. These tests pin the refusal side of that: a
+A regenerable document is refused under any schema version but this build's
+(``REGENERABLE_SCHEMA_VERSION``), and a core document is upgraded to this build's core version before
+it is validated (``CORE_UPGRADERS``), so no document this build can read lacks a field this build's
+writers set — after the upgrade. Each "this field predates…" fallback was therefore a branch for a
+state nothing can produce, and each was deleted with its field made required; a field a future core
+version requires is filled, or named as not recorded, by that version's upgrader, never by a reader. These tests pin the refusal side of that: a
 document — or a construction — missing one of those fields is refused by name, rather than read as
 an older document would once have been read.
 

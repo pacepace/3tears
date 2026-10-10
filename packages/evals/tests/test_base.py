@@ -1,9 +1,10 @@
 """The eval engine's own model bases: their stance, pinned, and reads as strict as construction.
 
 The stance is spelled once in ``threetears.evals.schema.base`` and pinned literally below, so a
-change to it is diff-visible on its own terms. Stored eval documents are disposable, so there is no
-tolerant read: a stored document carrying a field the model does not declare, or written under
-another schema version, is refused — and the last tests here assert that through real storage.
+change to it is diff-visible on its own terms. There is no tolerant read: a stored document carrying a
+field the model does not declare is refused, and so is one at a version this build does not read — any
+other version for a regenerable document, a newer or pre-release one for a core document — and the last
+tests here assert that through real storage.
 """
 
 from __future__ import annotations
@@ -15,9 +16,9 @@ from typing import Any, ClassVar
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel
+from threetears.evals.schema.base import CoreDocumentModel, EvalBaseModel, EvalDocumentModel
+from threetears.evals.schema.versioning import CORE_BASELINE_VERSION, CORE_SCHEMA_VERSION, REGENERABLE_SCHEMA_VERSION
 from threetears.evals.schema.models import (
-    EVAL_SCHEMA_VERSION,
     CaseSet,
     CassetteKey,
     EvalCassette,
@@ -301,14 +302,18 @@ def test_a_stored_nested_field_the_model_does_not_declare_is_refused():
         storage.load_eval_result(result.id, result.scope_id)
 
 
-@pytest.mark.parametrize("version", [EVAL_SCHEMA_VERSION - 1, EVAL_SCHEMA_VERSION + 1])
-def test_a_document_written_under_another_schema_version_is_refused(version: int):
-    """A shape-compatible document from another schema still does not load: the version says it is not this one."""
+@pytest.mark.parametrize(
+    ("version", "why"),
+    [(CORE_BASELINE_VERSION - 1, "before the first public release"), (CORE_SCHEMA_VERSION + 1, "by a newer build")],
+)
+def test_a_core_document_at_a_version_this_build_does_not_read_is_refused(version: int, why: str):
+    """A shape-compatible core document from before the baseline or from a newer build does not load, saying which."""
     result, storage, store = _stored_result()
     _tamper(store, result, schema_version=version)
 
-    with pytest.raises(ValidationError, match=f"eval schema v{version}"):
+    with pytest.raises(ValidationError, match=f"core v{version}") as refused:
         storage.load_eval_result(result.id, result.scope_id)
+    assert why in str(refused.value)
 
 
 # =============================================================================
@@ -409,16 +414,57 @@ def test_every_stored_model_refuses_a_field_it_does_not_declare(model: type[Eval
         model.from_dict({**document, "written_by_a_newer_build": True})
 
 
-@pytest.mark.parametrize("version", [EVAL_SCHEMA_VERSION - 1, EVAL_SCHEMA_VERSION + 1])
-@pytest.mark.parametrize("model", stored_models(), ids=lambda model: model.__name__)
-def test_every_stored_model_refuses_a_document_from_another_schema_version(
+def _regenerable_models() -> list[type[EvalBaseModel]]:
+    return [model for model in stored_models() if not issubclass(model, CoreDocumentModel)]
+
+
+def _core_models() -> list[type[EvalBaseModel]]:
+    return [model for model in stored_models() if issubclass(model, CoreDocumentModel)]
+
+
+@pytest.mark.parametrize("version", [REGENERABLE_SCHEMA_VERSION - 1, REGENERABLE_SCHEMA_VERSION + 1])
+@pytest.mark.parametrize("model", _regenerable_models(), ids=lambda model: model.__name__)
+def test_every_regenerable_model_refuses_a_document_from_another_schema_version(
     model: type[EvalBaseModel], version: int
 ) -> None:
-    """A stored document from another schema does not load, whichever model it is."""
+    """A regenerable document from another schema does not load, whichever model it is: it is regenerated."""
     document = _stored_document(model)
 
     with pytest.raises(ValidationError, match=f"eval schema v{version}"):
         model.from_dict({**document, "schema_version": version})
+
+
+@pytest.mark.parametrize("version", [CORE_BASELINE_VERSION - 1, CORE_SCHEMA_VERSION + 1, "8", None])
+@pytest.mark.parametrize("model", _core_models(), ids=lambda model: model.__name__)
+def test_every_core_model_refuses_a_document_at_a_version_it_does_not_read(
+    model: type[EvalBaseModel], version: object
+) -> None:
+    """A core document from before the baseline, from a newer build, or with no version number does not load."""
+    document = _stored_document(model)
+
+    with pytest.raises(ValidationError, match=r"core v|not a core version number"):
+        model.from_dict({**document, "schema_version": version})
+
+
+@pytest.mark.parametrize("version", range(CORE_BASELINE_VERSION, CORE_SCHEMA_VERSION + 1))
+@pytest.mark.parametrize("model", _core_models(), ids=lambda model: model.__name__)
+def test_every_core_model_reads_a_document_at_every_version_from_the_baseline(
+    model: type[EvalBaseModel], version: int
+) -> None:
+    """A core document at any version from the baseline to this build's reads, at this build's version."""
+    document = _stored_document(model)
+
+    assert model.from_dict({**document, "schema_version": version}).schema_version == CORE_SCHEMA_VERSION  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("version", [CORE_SCHEMA_VERSION - 1, CORE_SCHEMA_VERSION + 1])
+@pytest.mark.parametrize("model", _core_models(), ids=lambda model: model.__name__)
+def test_a_core_model_is_built_only_at_the_current_version(model: type[EvalBaseModel], version: int) -> None:
+    """Only the stored read upgrades: a construction or payload naming another core version is refused."""
+    document = _stored_document(model)
+
+    with pytest.raises(ValidationError, match=f"not v{version}"):
+        model.model_validate({**document, "schema_version": version})
 
 
 # --- a field retired within a schema version -------------------------------------------------------
