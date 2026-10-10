@@ -50,6 +50,29 @@ unbounded measure be adopted, so the t breach is kept and the gap recorded as a 
 
 ## Judging
 
+### The judge temperature policy is not measured
+
+Tracked in [#633](https://github.com/pacepace/3tears/issues/633).
+
+Every judge call asks for temperature 0 unless a config says otherwise, and the temperature sent is part of the
+judge's identity, so scores at different temperatures are never pooled. What is not done is the measurement the
+issue asked the policy to rest on: borderline-case score variance across repeats at each setting.
+
+The harness exists: `judge_at_two_temperatures` with `read_judge_temperatures` (the `judge_temperature` action, and
+`python -m threetears.evals judge-temperature RUN --max-cost-usd DOLLARS`) re-judges a run's borderline cases at 0
+and at the provider's default and reports per-dimension variance and self-agreement side by side
+([Step 10](judges-and-calibration.md#step-10-measure-what-temperature-does-to-the-judge)). It has been run once, on
+2026-10-10, and that run is void: its judge accepts no temperature, the provider dropped it silently and the host's
+client reported the requested value as sent, so both sides were the provider default
+([the void run](judges-and-calibration.md#the-2026-10-10-run-is-void)). **Outstanding: a run on a judge whose
+provider honours temperature**, through a client that reports the temperature it actually sent. Until then, how
+much temperature moves a judge's scores is unknown. When it has been run, record the figures in Step 10 and close
+the issue.
+
+On a judge that accepts no temperature (`openai/gpt-6-luna`, for one), the policy's 0 is requested but never
+applied. By design, its runs stamp `judge_temperature=0` (the request) while its scores record `model_default`
+(what was sent).
+
 ### A tier's bounds are conservative on a 1-5 scale
 
 A tier is decided on score bounds for kappa
