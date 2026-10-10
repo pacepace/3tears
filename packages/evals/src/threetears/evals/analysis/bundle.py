@@ -131,6 +131,7 @@ from threetears.evals.analysis.stats import (
     GUARDRAIL_HELD_NEEDS_RANGE,
     guardrail_decision,
     holm_adjust,
+    interval_permits_separation,
     interval_clears,
     level_difference,
     no_spread_p,
@@ -8557,7 +8558,8 @@ def _family_disclosure(
         sentence = (
             f"{family_size} comparison{'s' if family_size != 1 else ''} {asked} carried a p and "
             f"{'were' if family_size != 1 else 'was'}{equivalence} corrected together by Holm's method at "
-            f"α={format_number(alpha)}; a separation stands only where the adjusted p is below it. Each interval "
+            f"α={format_number(alpha)}; a separation stands only where the adjusted p is below it and the interval "
+            f"excludes zero. Each interval "
             f"is at {format_number(100 * (1 - alpha / family_size))}%, so the family's intervals hold together at "
             f"{format_number(100 * (1 - alpha))}%."
         )
@@ -8573,9 +8575,15 @@ def _corrected_family(question_id: str | None, axes: list[MeritAxis], tested: li
     count (:func:`~threetears.evals.analysis.stats.holm_adjust`'s ``max_true``): a comparison's two
     hypotheses — no difference, a difference of at least the margin — cannot both be true, so the family's
     error stays at α over every verdict it can reach. Each interval is at ``1 − α/m`` (Bonferroni over the
-    ``m`` separations), which holds the family's intervals together at ``1 − α`` and keeps them consistent
-    with the verdicts: one that excludes zero has ``m · p_raw < α`` and so a separation; one inside the margin
-    has a TOST p below ``α/2m`` and so an equivalence.
+    ``m`` separations), which holds the family's intervals together at ``1 − α``.
+
+    **A separation is read off its interval as well as its adjusted p** (#597): ``improved`` or ``regressed``
+    needs the interval, where one exists, to exclude zero. Holm's later steps reject some comparisons whose
+    Bonferroni interval still reaches zero, and a reader must never see a separation beside an interval that
+    includes no change. An interval that excludes zero has ``m · p_raw < α``, which Holm always rejects, so the
+    rule is Bonferroni's wherever an interval exists: a subset of Holm's rejections, so the family's error stays
+    at α, at the cost of the separations Holm alone would add. Where no t interval exists (every case moved by
+    one amount) the adjusted p decides alone, and no interval is shown to contradict it.
 
     Args:
         question_id: The question the family serves, or None for the campaign-wide family.
@@ -8596,23 +8604,24 @@ def _corrected_family(question_id: str | None, axes: list[MeritAxis], tested: li
         if one.p_raw is not None and interval_level is not None:
             p_adjusted = next(adjusted)
             equivalence_p_adjusted = next(adjusted) if one.equivalence_p_raw is not None else None
+            control_sample, contrast_sample = one.samples
+            interval = difference_interval(
+                control_sample,
+                contrast_sample,
+                paired=comparison.test == "paired",
+                confidence=interval_level,
+                value_range=one.value_range,
+            )
             verdict: ComparisonVerdict = "not_separated"
-            if p_adjusted < SIGNIFICANCE_ALPHA and comparison.delta:
+            if p_adjusted < SIGNIFICANCE_ALPHA and comparison.delta and interval_permits_separation(interval):
                 verdict = "improved" if (comparison.delta > 0) == comparison.higher_is_better else "regressed"
             elif equivalence_p_adjusted is not None and equivalence_p_adjusted < SIGNIFICANCE_ALPHA:
                 verdict = "equivalent"
-            control_sample, contrast_sample = one.samples
             comparison = comparison.model_copy(
                 update={
                     "p_adjusted": p_adjusted,
                     "equivalence_p_adjusted": equivalence_p_adjusted,
-                    "interval": difference_interval(
-                        control_sample,
-                        contrast_sample,
-                        paired=comparison.test == "paired",
-                        confidence=interval_level,
-                        value_range=one.value_range,
-                    ),
+                    "interval": interval,
                     "verdict": verdict,
                 }
             )

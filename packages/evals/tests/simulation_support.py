@@ -34,6 +34,7 @@ from threetears.evals.analysis.stats import (
     difference_interval,
     exact_decimal,
     holm_adjust,
+    interval_permits_separation,
     paired_equivalence,
     separation_p,
 )
@@ -391,7 +392,9 @@ def family_verdicts(
     (:func:`~threetears.evals.analysis.stats.paired_equivalence`). Every separation p and TOST p is
     Holm-adjusted together, the multiplier capped at the separation count
     (:func:`~threetears.evals.analysis.stats.holm_adjust`); a comparison separates when its adjusted p is
-    below α and its delta is nonzero, in the direction its sign and ``higher_is_better`` give, and is
+    below α, its delta is nonzero and its interval, where one exists, excludes zero
+    (:func:`~threetears.evals.analysis.stats.interval_permits_separation`), in the direction its sign and
+    ``higher_is_better`` give, and is
     otherwise equivalent when its adjusted TOST p is below α. Its interval is at ``1 − α/m`` over the ``m``
     separations (:func:`~threetears.evals.analysis.stats.difference_interval`).
 
@@ -427,11 +430,11 @@ def family_verdicts(
             continue
         p_adjusted = next(adjusted)
         equivalence_adjusted = next(adjusted) if equivalence_p is not None else None
+        interval = difference_interval(a, b, paired=paired, confidence=1.0 - SIGNIFICANCE_ALPHA / m)
         verdict = "not_separated"
-        if p_adjusted < SIGNIFICANCE_ALPHA and delta:
+        if p_adjusted < SIGNIFICANCE_ALPHA and delta and interval_permits_separation(interval):
             verdict = "improved" if (delta > 0) == higher_is_better else "regressed"
         elif equivalence_adjusted is not None and equivalence_adjusted < SIGNIFICANCE_ALPHA:
             verdict = "equivalent"
-        interval = difference_interval(a, b, paired=paired, confidence=1.0 - SIGNIFICANCE_ALPHA / m)
         verdicts.append(FamilyVerdict(p_raw, p_adjusted, verdict, interval, equivalence_adjusted))
     return verdicts

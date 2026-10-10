@@ -1128,6 +1128,23 @@ def difference_interval(
     return low, high
 
 
+def interval_permits_separation(interval: tuple[float, float] | None) -> bool:
+    """Whether a separation may stand beside this interval on the difference: it excludes zero, or there is none.
+
+    A family's verdict is read off a Holm-adjusted p and its interval is Bonferroni's at ``1 − α/m``; Holm's
+    later steps reject some comparisons whose Bonferroni interval still reaches zero. A separation is never
+    shown beside an interval that includes no change (#597), so a caller requires this as well as the p. Where
+    no interval exists (no t: every case moved by one amount) nothing is shown to contradict the p.
+
+    Args:
+        interval: The interval on the difference the verdict is shown beside, or None.
+
+    Returns:
+        False exactly when the interval includes zero.
+    """
+    return interval is None or interval[0] > 0.0 or interval[1] < 0.0
+
+
 def _constant_split_p(n_a: int, n_b: int) -> float:
     """The exact two-sided permutation p of two unpaired samples, each constant and the two different.
 
@@ -2138,6 +2155,7 @@ __all__ = [
     "equivalence_untested_reason",
     "exact_decimal",
     "bounded_difference_interval",
+    "interval_permits_separation",
     "bounded_mean_lower_bound",
     "guardrail_decision",
     "hedges_j",

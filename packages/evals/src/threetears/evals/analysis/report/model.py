@@ -161,7 +161,7 @@ VERDICT_OUTCOMES: dict[str, frozenset[str]] = {
 }
 
 #: Why a verdict came out as it did, as a code a program branches on (``reason_detail`` says it in words where
-#: there is more to say). A contrast: ``separated`` (its Holm-adjusted p is below α), ``inside_margin`` (the
+#: there is more to say). A contrast: ``separated`` (its Holm-adjusted p is below α and its interval excludes 0), ``inside_margin`` (the
 #: equivalence test shows the difference inside the margin), ``no_margin`` (not separated, and with no margin it
 #: could not be shown equivalent), ``margin_untested`` (not separated, a margin is declared and no equivalence test
 #: could run: no declared range, or an unpaired test), ``not_inside_margin`` (not separated, and the equivalence
