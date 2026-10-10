@@ -6,6 +6,41 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: a second judge, a drift check and a temperature comparison run as jobs (breaking)
+
+`judge_second`, `judge_drift_check` and `judge_temperature` made every judge call inside the action's call: about
+one per result per scored dimension for a second judge, and selected dimensions × `repeats` × 2 for a comparison.
+A host that budgets a call's wall time by the model requests it makes while the caller waits refused any of them
+with more than one call. They now follow the job contract, as `analysis_generate`, `run_launch` and
+`sweep_launch` do. Long work in the catalogue has always been a job, and none of those ever had an in-call twin,
+so the three actions keep their names and change their result rather than gaining `_start` siblings.
+
+- **The three actions are `long_running` and return `JobsStarted`.** The call makes no model request. It runs the
+  work's own estimate (`estimate_second_judge`, `estimate_judge_temperature_comparison`), the same collection,
+  sample or selection, calls and admission the spend makes, and refuses on whatever it refuses before any job
+  starts: an unknown run, one still running, nothing eligible, the reproducibility checks, calls the out-of-run cap
+  cannot admit. Only the judge calls run in the job, which admits them again before its first: a run that changed
+  in between ends the job `failed`, saying why, with nothing spent. The parameters are unchanged. The `_estimate`
+  actions still answer in the call.
+- **The job contract has a fourth kind, `judge`** (`JobKind`), with ids `judge:<id>` (`JUDGE_JOB_PREFIX`,
+  `judge_job_id`) whose `target_id` is the run. `JobStatus` gains `judge_action`, and its `progress` reads
+  `results_total`, `results_done`, `max_calls` and `calls_made`. Once the job ends, `second_judge` (a
+  `SecondJudgeRead`) or `judge_temperature` (a `JudgeTemperatureComparison`) carries what the call used to return,
+  read off the job's record by the work's own readers. `job_cancel` stops the job before its next judge call. Its
+  calls stay on the out-of-run ledger, and the partial report's `stopped` says it was cancelled: a second judge keeps
+  the results it recorded, and a comparison keeps the whole results it answered.
+- **`EvalJudgeJob`** (new stored type, `eval_judge_job`, regenerable within v8) is that record, with
+  `JudgeJobAction` and `JudgeJobOutcome`. It holds the `SecondJudgeReport`, whose second scores are on the results
+  as before, or the `JudgeTemperatureAnswers`, which are stored nowhere else. `EvalStorage.save_judge_job` and
+  `load_judge_job` read and write it.
+- **Breaking, in `threetears.evals.ops`:** `judge_second`, `judge_drift_check` and `judge_temperature` return
+  `JobsStarted`. Code that wants the report in the foreground calls the run layer, as the `judge-temperature`
+  command still does: `ask_second_judge` then `read_second_judge` (new), or `judge_at_two_temperatures` then
+  `read_judge_temperatures`. `ask_second_judge` and `judge_at_two_temperatures` take an optional `on_progress`,
+  handed the report so far after each result and the partial report on cancellation.
+- `SecondJudgeReport` and `SecondJudgeSkip` move to `threetears.evals.kernel`, so the job's record can hold them.
+  `threetears.evals.run` still exports both.
+
 ### 3tears-evals: the context bundle and the reporting projection are split by concern (#612)
 
 `analysis/bundle.py` (about 10,400 lines) and `analysis/reporting.py` (about 8,000) each held a dozen concerns

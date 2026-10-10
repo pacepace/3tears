@@ -8,10 +8,14 @@ handed to an agent stays answerable after a restart — the answer is then that 
 
 **The job id names its record.** ``run:<run id>`` for a launched run (one per arm),
 ``analysis:<campaign id>:<attempt id>`` for a generation — the attempt is filed under its campaign, so
-the id carries both — and ``sweep:<sweep id>`` for a sweep, whose record
-(:class:`~threetears.evals.kernel.campaign.EvalSweep`) names its arms and their runs. :func:`parse_job_id`
-is the one reader of that shape. A sweep is live to a caller only under its own scope's task key
-(:func:`sweep_key`), as a generation is.
+the id carries both — ``sweep:<sweep id>`` for a sweep, whose record
+(:class:`~threetears.evals.kernel.campaign.EvalSweep`) names its arms and their runs, and ``judge:<job id>`` for a
+judge job — a second judge's pass, a drift check or a temperature comparison — whose record
+(:class:`~threetears.evals.kernel.EvalJudgeJob`) carries its progress and, once it ends, what it handed back, which
+its poll reads into the report the action names (:class:`~threetears.evals.ops.SecondJudgeRead`,
+:class:`~threetears.evals.analysis.JudgeTemperatureComparison`). :func:`parse_job_id` is the one reader of that
+shape. A sweep and a judge job are live to a caller only under their own scope's task key (:func:`sweep_key`,
+:func:`judge_key`), as a generation is.
 
 **A job is answered only inside the caller's scope.** A run job's run is read scoped, and a generation is
 live to a caller only when its task holds the exclusivity key of the campaign AND scope the caller names
@@ -31,17 +35,21 @@ from typing import Any, Literal
 
 from pydantic import Field
 
+from threetears.evals.analysis.judge_temperature import JudgeTemperatureComparison, read_judge_temperatures
 from threetears.evals.analysis.service import list_analysis_attempts
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.campaign import EvalSweep
+from threetears.evals.kernel.judge_jobs import EvalJudgeJob, JudgeJobAction
 from threetears.evals.schema.models import EvalRun
 from threetears.evals.ops.host import OpsHost
+from threetears.evals.ops.judge_reads import SecondJudgeRead, read_second_judge
 from threetears.evals.run.lifecycle import get_run, repair_abandoned_run, require_cancellable
 from threetears.evals.kernel.offload import run_blocking
 
-#: What a job's work is: a launched run, an analysis generation, or a sweep launching its arms in order.
-JobKind = Literal["run", "analysis", "sweep"]
+#: What a job's work is: a launched run, an analysis generation, a sweep launching its arms in order, or a judge job
+#: re-judging a finished run's stored evidence (``judge_second``, ``judge_drift_check``, ``judge_temperature``).
+JobKind = Literal["run", "analysis", "sweep", "judge"]
 
 #: Where a job stands. ``running`` — still going (a run ``pending`` or ``running``, a generation live);
 #: ``completed`` — ended with what it was for; ``stopped`` — a run ended short by its budget or its
@@ -59,6 +67,9 @@ ANALYSIS_JOB_PREFIX = "analysis:"
 
 #: The prefix of a sweep's job id.
 SWEEP_JOB_PREFIX = "sweep:"
+
+#: The prefix of a judge job's id.
+JUDGE_JOB_PREFIX = "judge:"
 
 #: A run's stored status, as the job state it is.
 _RUN_STATES: dict[str, JobState] = {
@@ -84,9 +95,12 @@ class JobHandle(EvalBaseModel):
     """A started job: the id to poll, and what it is working on."""
 
     job_id: str = Field(description="The id to poll and cancel the job by.")
-    kind: JobKind = Field(description="What the job's work is: a launched run, an analysis generation, or a sweep.")
+    kind: JobKind = Field(
+        description="What the job's work is: a launched run, an analysis generation, a sweep, or a judge job."
+    )
     target_id: str = Field(
-        description="The run the job runs, the campaign the generation analyses, or the campaign a sweep's runs join."
+        description="The run the job runs, the campaign the generation analyses, the campaign a sweep's runs join, "
+        "or the run a judge job re-judges."
     )
     label: str = Field(default="", description="A short line naming the work (the run's model, the campaign).")
 
@@ -107,12 +121,23 @@ class JobStatus(EvalBaseModel):
     done: bool = Field(description="Whether the job has left the running state for good.")
     progress: dict[str, Any] = Field(
         default_factory=dict,
-        description="The run's last progress write, or a sweep's arms launched and finished; empty else.",
+        description="The run's last progress write, a sweep's arms launched and finished, or a judge job's results "
+        "asked and calls made; empty else.",
     )
     run_id: str | None = None
     campaign_id: str | None = None
     analysis_id: str | None = Field(default=None, description="The analysis a completed generation stored.")
     sweep_id: str | None = Field(default=None, description="The sweep a sweep job runs.")
+    judge_action: JudgeJobAction | None = Field(default=None, description="The action a judge job was started by.")
+    second_judge: SecondJudgeRead | None = Field(
+        default=None,
+        description="A judge_second or judge_drift_check job's report once it has ended, completed or cancelled (then "
+        "partial): what the synchronous action returned.",
+    )
+    judge_temperature: JudgeTemperatureComparison | None = Field(
+        default=None,
+        description="A judge_temperature job's comparison once it has ended, completed or cancelled (then partial).",
+    )
     detail: str | None = Field(default=None, description="Why it ended other than completed, when the record says.")
 
 
@@ -217,6 +242,88 @@ async def _sweep_status(host: OpsHost, sweep_id: str, scope_id: str) -> JobStatu
     )
 
 
+def judge_job_id(job_id: str) -> str:
+    """The job id of a judge job: its record's id."""
+    return f"{JUDGE_JOB_PREFIX}{job_id}"
+
+
+def judge_key(job_id: str, scope_id: str) -> str:
+    """The task key a judge job runs under: the scope is in it, so only its own scope sees it live."""
+    return f"eval-judge:{scope_id}:{job_id}"
+
+
+def _live_judge(host: OpsHost, job_id: str, scope_id: str) -> bool:
+    """Whether this process runs judge job ``job_id`` in ``scope_id`` — another scope's job reads as none."""
+    return job_id in host.launch.job_manager.active_task_ids(judge_key(job_id, scope_id))
+
+
+def judge_progress(record: EvalJudgeJob) -> dict[str, Any]:
+    """A judge job's progress: the results asked of those admitted, and the calls made of the most admitted.
+
+    Args:
+        record: Its record.
+
+    Returns:
+        ``{"results_total", "results_done", "max_calls", "calls_made"}``.
+    """
+    return {
+        "results_total": record.results_total,
+        "results_done": record.results_done,
+        "max_calls": record.max_calls,
+        "calls_made": record.calls_made,
+    }
+
+
+async def _judge_status(host: OpsHost, job_id: str, scope_id: str) -> JobStatus:
+    """A judge job's status: its record, whether this process still runs it, and once it has ended, its report.
+
+    Args:
+        host: The host whose job manager runs the job and whose store holds its record and the run's results.
+        job_id: The record's id.
+        scope_id: The caller's scope.
+
+    Returns:
+        The status; an ended job carries the report its action names, read off the record by the work's own readers.
+
+    Raises:
+        NotFoundError: No judge job with that id in the scope.
+    """
+    eval_host = host.eval_host
+    live = _live_judge(host, job_id, scope_id)
+    record = await run_blocking(eval_host.blocking_executor, eval_host.storage.load_judge_job, job_id, scope_id)
+    if record is None:
+        raise NotFoundError("judge_job", job_id)
+    state: JobState = "running" if record.outcome == "running" else record.outcome
+    detail = record.detail
+    if state == "running" and not live:
+        state = "lost"
+        detail = (
+            "the judge job reads running but nothing in this process is running it — the process that started it "
+            "ended; every call it made is on the out-of-run ledger, carrying the run's id"
+        )
+    done = state in TERMINAL_JOB_STATES
+    second: SecondJudgeRead | None = None
+    temperature: JudgeTemperatureComparison | None = None
+    if done and state != "lost":
+        if record.second_judge is not None:
+            second = await read_second_judge(eval_host, record.second_judge, scope_id)
+        if record.temperature_answers is not None:
+            temperature = read_judge_temperatures(record.temperature_answers)
+    return JobStatus(
+        job_id=judge_job_id(record.id),
+        kind="judge",
+        state=state,
+        status=record.outcome,
+        done=done,
+        progress=judge_progress(record),
+        run_id=record.run_id,
+        judge_action=record.action,
+        second_judge=second,
+        judge_temperature=temperature,
+        detail=detail if state != "completed" else None,
+    )
+
+
 def run_job_id(run_id: str) -> str:
     """The job id of a launched run."""
     return f"{RUN_JOB_PREFIX}{run_id}"
@@ -234,7 +341,8 @@ def parse_job_id(job_id: str) -> tuple[JobKind, str, str | None]:
         job_id: An id :func:`run_job_id` or :func:`analysis_job_id` made.
 
     Returns:
-        ``("run", run_id, None)``, ``("analysis", campaign_id, attempt_id)`` or ``("sweep", sweep_id, None)``.
+        ``("run", run_id, None)``, ``("analysis", campaign_id, attempt_id)``, ``("sweep", sweep_id, None)`` or
+        ``("judge", job_id, None)``.
 
     Raises:
         ValidationFailedError: The id is neither shape — a typed or truncated id, which names no job.
@@ -243,6 +351,8 @@ def parse_job_id(job_id: str) -> tuple[JobKind, str, str | None]:
         return "run", job_id[len(RUN_JOB_PREFIX) :], None
     if job_id.startswith(SWEEP_JOB_PREFIX) and job_id[len(SWEEP_JOB_PREFIX) :]:
         return "sweep", job_id[len(SWEEP_JOB_PREFIX) :], None
+    if job_id.startswith(JUDGE_JOB_PREFIX) and job_id[len(JUDGE_JOB_PREFIX) :]:
+        return "judge", job_id[len(JUDGE_JOB_PREFIX) :], None
     if job_id.startswith(ANALYSIS_JOB_PREFIX):
         # The attempt id is a uuid and holds no colon, so the LAST colon splits it from a campaign id
         # that might hold one.
@@ -250,8 +360,8 @@ def parse_job_id(job_id: str) -> tuple[JobKind, str, str | None]:
         if colon and campaign_id and attempt_id:
             return "analysis", campaign_id, attempt_id
     raise ValidationFailedError(
-        f"job id {job_id!r} names no job: a job id is 'run:<run id>', 'analysis:<campaign id>:<attempt id>' or "
-        "'sweep:<sweep id>', exactly as the start returned it"
+        f"job id {job_id!r} names no job: a job id is 'run:<run id>', 'analysis:<campaign id>:<attempt id>', "
+        "'sweep:<sweep id>' or 'judge:<job id>', exactly as the start returned it"
     )
 
 
@@ -301,7 +411,7 @@ async def job_poll(host: OpsHost, job_id: str, scope_id: str) -> JobStatus:
 
     Raises:
         ValidationFailedError: The id names no job.
-        NotFoundError: A run job whose run is not in the scope.
+        NotFoundError: A run job whose run, a sweep job whose sweep, or a judge job whose record is not in the scope.
     """
     kind, target_id, attempt_id = parse_job_id(job_id)
     manager, eval_host = host.launch.job_manager, host.eval_host
@@ -311,6 +421,8 @@ async def job_poll(host: OpsHost, job_id: str, scope_id: str) -> JobStatus:
         return _run_status(run, live=live)
     if kind == "sweep":
         return await _sweep_status(host, target_id, scope_id)
+    if kind == "judge":
+        return await _judge_status(host, target_id, scope_id)
     assert attempt_id is not None  # parse_job_id names an attempt for every analysis job
     if _live_generation(host, target_id, attempt_id, scope_id):
         return JobStatus(
@@ -364,9 +476,9 @@ async def job_cancel(host: OpsHost, job_id: str, scope_id: str, *, reason: str |
         The job's status after the request.
 
     Raises:
-        ValidationFailedError: The id names no job, the job has already ended, or it is a generation no task
-            runs under the campaign and scope the caller names (another scope's generation reads as none).
-        NotFoundError: A run job whose run is not in the scope.
+        ValidationFailedError: The id names no job, the job has already ended, or it is a generation, sweep or judge
+            job no task runs under the scope the caller names (another scope's job reads as none).
+        NotFoundError: A run job whose run, a sweep job whose sweep, or a judge job whose record is not in the scope.
         ConflictError: An abandoned run's repair lost its write race; nothing was repaired.
     """
     kind, target_id, attempt_id = parse_job_id(job_id)
@@ -388,6 +500,15 @@ async def job_cancel(host: OpsHost, job_id: str, scope_id: str, *, reason: str |
                 f"sweep job {job_id!r} is not running here (it reads {status.state}); there is nothing to cancel"
             )
         return await job_poll(host, job_id, scope_id)
+    if kind == "judge":
+        # The job stops before its next judge call and records what it did; every call already made stays on the
+        # out-of-run ledger.
+        if not _live_judge(host, target_id, scope_id) or not manager.cancel_task(target_id):
+            status = await job_poll(host, job_id, scope_id)
+            raise ValidationFailedError(
+                f"judge job {job_id!r} is not running here (it reads {status.state}); there is nothing to cancel"
+            )
+        return await job_poll(host, job_id, scope_id)
     assert attempt_id is not None  # parse_job_id names an attempt for every analysis job
     if not _live_generation(host, target_id, attempt_id, scope_id) or not manager.cancel_task(attempt_id):
         status = await job_poll(host, job_id, scope_id)
@@ -399,6 +520,7 @@ async def job_cancel(host: OpsHost, job_id: str, scope_id: str, *, reason: str |
 
 __all__ = [
     "ANALYSIS_JOB_PREFIX",
+    "JUDGE_JOB_PREFIX",
     "RUN_JOB_PREFIX",
     "SWEEP_JOB_PREFIX",
     "TERMINAL_JOB_STATES",
@@ -410,6 +532,9 @@ __all__ = [
     "analysis_job_id",
     "generation_key",
     "job_cancel",
+    "judge_job_id",
+    "judge_key",
+    "judge_progress",
     "parse_job_id",
     "job_poll",
     "run_job_id",

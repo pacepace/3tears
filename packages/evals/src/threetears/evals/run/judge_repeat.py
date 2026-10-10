@@ -373,6 +373,24 @@ def planned_judge_call(request: JudgeRequest) -> PlannedCall:
     )
 
 
+def cancelled_partway(done: int, total: int, asking: str | None) -> str:
+    """Why a re-judging of stored evidence stopped short when it was cancelled — a second judge's pass or a comparison.
+
+    Args:
+        done: The results it finished asking about.
+        total: The results it was admitted to ask about.
+        asking: The result whose calls were in flight when the cancel landed, or ``None`` between results.
+
+    Returns:
+        The ``stopped`` line its report carries.
+    """
+    where = f" while asking about result '{asking}', whose answers are not kept" if asking is not None else ""
+    return (
+        f"cancelled after {done} of {total} result(s){where}; no further call was made, and every call made is on "
+        "the out-of-run ledger (a call cut off in flight may land there after this report was taken)"
+    )
+
+
 async def estimate_judge_repeat(
     host: EvalHost,
     run_id: str,
@@ -605,6 +623,7 @@ __all__ = [
     "JudgeRepeatEstimate",
     "JudgeRepeatReport",
     "JudgeRepeatSkip",
+    "cancelled_partway",
     "estimate_judge_repeat",
     "planned_judge_call",
     "repeat_judge_scores",

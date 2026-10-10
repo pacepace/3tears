@@ -138,6 +138,9 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "run_launch",
         "sweep_launch",
         "analysis_generate",
+        "judge_second",
+        "judge_drift_check",
+        "judge_temperature",
     }
 
 

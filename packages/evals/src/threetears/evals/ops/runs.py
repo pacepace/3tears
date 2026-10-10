@@ -12,12 +12,9 @@ from typing import Annotated, Any
 
 from pydantic import Field, model_validator
 
-from threetears.evals.analysis.agreement import InterJudgeAgreement, inter_judge_agreement
-from threetears.evals.analysis.judge_drift import JudgeDrift, judge_drift
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.schema.models import DEFAULT_LAUNCH_K_RUNS, CaseSet, CaseSetRef, EvalRun, SecondJudge
-from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.jobs import JobHandle, JobsStarted, run_job_id
 from threetears.evals.analysis.summary import EvalSummary, summarize_run
@@ -34,16 +31,12 @@ from threetears.evals.run.judge_repeat import (
 from threetears.evals.run.judge_second import (
     DEFAULT_SECOND_JUDGE_SEED,
     SecondJudgeEstimate,
-    SecondJudgeReport,
-    ask_second_judge,
     estimate_second_judge,
 )
-from threetears.evals.analysis.judge_temperature import JudgeTemperatureComparison, read_judge_temperatures
 from threetears.evals.kernel.judge_temperature import DEFAULT_TEMPERATURE_REPEATS, TemperatureSelection
 from threetears.evals.run.judge_temperature import (
     JudgeTemperatureEstimate,
     estimate_judge_temperature_comparison,
-    judge_at_two_temperatures,
 )
 from threetears.evals.run.lifecycle import get_run
 from threetears.evals.run.ratings import rate_result
@@ -562,65 +555,6 @@ async def judge_temperature_estimate(
     )
 
 
-async def judge_temperature(
-    host: OpsHost,
-    run_id: str,
-    scope_id: str,
-    *,
-    selection: TemperatureSelection = "borderline",
-    repeats: int = DEFAULT_TEMPERATURE_REPEATS,
-    result_ids: list[str] | None = None,
-) -> JudgeTemperatureComparison:
-    """Re-judge a finished run's borderline cases at the pinned temperature and at the provider default (#633).
-
-    The measurement the judge temperature policy rests on: per dimension, score variance across repeats and the
-    judge's self-agreement at each setting, side by side: :func:`~threetears.evals.run.judge_at_two_temperatures` asks,
-    :func:`~threetears.evals.analysis.read_judge_temperatures` reads.
-    Every call is priced and admitted against the host's out-of-run cap before the first is sent, and ledgered under
-    purpose ``judge``. Nothing is written to the results.
-
-    Args:
-        host: The host: its store, its judge clients and its out-of-run cap.
-        run_id: The finished run.
-        scope_id: The scope it lives in.
-        selection: ``borderline`` (the default) or ``all`` scored dims.
-        repeats: Calls per dim at each temperature.
-        result_ids: The results to draw from; ``None`` for every result of the run.
-
-    Returns:
-        The comparison.
-
-    Raises:
-        NotFoundError: No run with that id, or a record it names does not load.
-        ValidationFailedError: The comparison cannot be made, or its calls are priced above the cap or cannot be
-            priced under it — before any call.
-    """
-    answers = await judge_at_two_temperatures(
-        host.eval_host,
-        run_id,
-        scope_id,
-        out_of_run_cap_usd=host.out_of_run_cap(),
-        selection=selection,
-        repeats=repeats,
-        result_ids=result_ids,
-    )
-    return read_judge_temperatures(answers)
-
-
-class SecondJudgeRead(EvalBaseModel):
-    """A second judge's pass over a run, and what its pairs say: agreement between the judges, and drift.
-
-    Both readings are over this pass's pairs only, read off the stored records by the code every other surface reads
-    them with (:func:`~threetears.evals.analysis.inter_judge_agreement`, :func:`~threetears.evals.analysis.judge_drift`).
-    """
-
-    report: SecondJudgeReport = Field(description="What was asked, what was left out, and what it cost.")
-    agreement: InterJudgeAgreement = Field(
-        description="Per-dimension agreement between the run's judge and the second."
-    )
-    drift: JudgeDrift = Field(description="Per-dimension movement from the run's judge to the second, with intervals.")
-
-
 async def judge_second_estimate(
     host: OpsHost,
     run_id: str,
@@ -662,86 +596,6 @@ async def judge_second_estimate(
         seed=seed,
         result_ids=result_ids,
     )
-
-
-async def judge_second(
-    host: OpsHost,
-    run_id: str,
-    scope_id: str,
-    *,
-    judge: SecondJudge,
-    sample_fraction: float = 1.0,
-    seed: int = DEFAULT_SECOND_JUDGE_SEED,
-    result_ids: list[str] | None = None,
-) -> SecondJudgeRead:
-    """Ask a second judge to score a seeded share of a finished run's judged results, and read agreement and drift.
-
-    Every call is priced and admitted against the host's out-of-run cap before the first is sent, and ledgered under
-    purpose ``second_judge`` — measurement cost on its own line, never the candidate's
-    (:func:`~threetears.evals.run.ask_second_judge`). The scores the run was judged with are never changed.
-
-    Args:
-        host: The host: its store, its judge clients and its out-of-run cap.
-        run_id: The finished run.
-        scope_id: The scope it lives in.
-        judge: The second judge: its model, its prompts, its temperature.
-        sample_fraction: The share of the run's judgeable results to ask about, in ``(0, 1]``.
-        seed: The seed the share is drawn with.
-        result_ids: The results to draw from; ``None`` for every result of the run.
-
-    Returns:
-        The pass, and the agreement and drift its pairs read.
-
-    Raises:
-        NotFoundError: No run with that id, or a record it names does not load.
-        ValidationFailedError: The run cannot be asked about, or its calls are priced above the cap or cannot be
-            priced under it — before any call.
-    """
-    eval_host = host.eval_host
-    report = await ask_second_judge(
-        eval_host,
-        run_id,
-        scope_id,
-        judge=judge,
-        out_of_run_cap_usd=host.out_of_run_cap(),
-        sample_fraction=sample_fraction,
-        seed=seed,
-        result_ids=result_ids,
-    )
-    results = await run_blocking(
-        eval_host.blocking_executor, eval_host.storage.query_eval_results_by_run, run_id, scope_id
-    )
-    return SecondJudgeRead(
-        report=report,
-        agreement=inter_judge_agreement(results, pass_id=report.pass_id),
-        drift=judge_drift(results, pass_id=report.pass_id),
-    )
-
-
-async def judge_drift_check(
-    host: OpsHost, run_id: str, scope_id: str, *, judge: SecondJudge, result_ids: list[str] | None = None
-) -> SecondJudgeRead:
-    """Re-score every judged result of a finished run under a changed judge, and read how far each dimension moved.
-
-    :func:`judge_second` over the whole set (``sample_fraction`` 1): the run's judge is the configuration it was
-    scored under, as recorded; ``judge`` is the new one. The stored scores are never changed. The drift detects
-    movement between the two judges, never which one is right.
-
-    Args:
-        host: The host: its store, its judge clients and its out-of-run cap.
-        run_id: The finished run whose stored evidence is re-scored.
-        scope_id: The scope it lives in.
-        judge: The changed judge.
-        result_ids: The frozen set to re-score; ``None`` for every result of the run.
-
-    Returns:
-        The pass, and the drift (and agreement) its pairs read.
-
-    Raises:
-        NotFoundError: No run with that id, or a record it names does not load.
-        ValidationFailedError: As :func:`judge_second`.
-    """
-    return await judge_second(host, run_id, scope_id, judge=judge, sample_fraction=1.0, result_ids=result_ids)
 
 
 def run_delete(host: EvalHost, run_id: str, scope_id: str, *, confirm: str | None) -> RunDeleted:

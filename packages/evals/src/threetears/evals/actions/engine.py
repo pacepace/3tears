@@ -70,8 +70,6 @@ from threetears.evals.ops import (
     RunsBisected,
     RunsCompared,
     ScoreExport,
-    SecondJudgeRead,
-    JudgeTemperatureComparison,
     TemplateListing,
     UndescribableArmsListing,
     analyses_list,
@@ -998,7 +996,7 @@ async def _result_rate(host: OpsHost, caller: Caller, params: ResultRateParams) 
     )
 
 
-async def _judge_second(host: OpsHost, caller: Caller, params: JudgeSecondParams) -> SecondJudgeRead:
+async def _judge_second(host: OpsHost, caller: Caller, params: JudgeSecondParams) -> JobsStarted:
     return await judge_second(
         host,
         params.run_id,
@@ -1022,15 +1020,13 @@ async def _judge_second_estimate(host: OpsHost, caller: Caller, params: JudgeSec
     )
 
 
-async def _judge_drift_check(host: OpsHost, caller: Caller, params: JudgeDriftParams) -> SecondJudgeRead:
+async def _judge_drift_check(host: OpsHost, caller: Caller, params: JudgeDriftParams) -> JobsStarted:
     return await judge_drift_check(
         host, params.run_id, caller.scope_id, judge=params.judge(), result_ids=params.result_ids
     )
 
 
-async def _judge_temperature(
-    host: OpsHost, caller: Caller, params: JudgeTemperatureParams
-) -> JudgeTemperatureComparison:
+async def _judge_temperature(host: OpsHost, caller: Caller, params: JudgeTemperatureParams) -> JobsStarted:
     return await judge_temperature(
         host,
         params.run_id,
@@ -1106,6 +1102,15 @@ DISCOVER = "Find what is there"
 RUN = "Run and watch"
 ANALYSE = "Analyse and report"
 CURATE = "Curate"
+
+#: How every judge job's help opens: what its call waits on, which a host budgeting a call's wall time reads.
+_IN_CALL_JUDGING = (
+    "Makes 0 model requests while the caller waits: every refusal (unknown run, one still running, nothing to "
+    "re-judge, the reproducibility checks, calls the out-of-run cap cannot admit) is decided in the call, by the "
+    "estimate's own code, and only the judge calls run in the job. job_poll reports results_done of results_total and "
+    "calls_made of max_calls; job_cancel stops it before its next judge call, the calls made staying on the ledger "
+    "and the partial report saying it was cancelled. "
+)
 
 
 def engine_actions() -> tuple[Action, ...]:
@@ -1396,21 +1401,23 @@ def engine_actions() -> tuple[Action, ...]:
         ),
         Action(
             name="judge_second",
-            summary="Ask a second judge to score a seeded share of a finished run's judged results; read agreement.",
+            summary="Start a second judge on a seeded share of a finished run's judged results, as a job to poll.",
             workflow=ANALYSE,
             permission="spend",
             params=JudgeSecondParams,
-            result=SecondJudgeRead,
+            result=JobsStarted,
             handler=_judge_second,
-            render=render.render_second_judge,
+            render=render.render_jobs_started,
             example={"run_id": run_id, "second_judge_model": "judge/other", "sample_fraction": 0.5},
+            long_running=True,
             detail=(
-                "The evidence each result's judge read, sent to the second judge: the run's scores are never changed, "
-                "and each second score is recorded beside the first it pairs with. Every call is priced and admitted "
-                "against the host's out-of-run cap before the first is sent, and ledgered under purpose second_judge "
-                "— measurement cost, never the candidate's. Returns per-dimension n, exact agreement and kappa "
-                "(quadratic on 1-5, unweighted on pass/fail; undefined says why), and the drift between the judges. "
-                "judge_second_estimate prices it first without spending."
+                _IN_CALL_JUDGING + "The evidence each result's judge read, sent to the second judge: the run's scores "
+                "are never changed, and each second score is recorded beside the first it pairs with. Every call is "
+                "priced and admitted against the host's out-of-run cap before the job starts, and ledgered under "
+                "purpose second_judge — measurement cost, never the candidate's. job_poll on the ended job carries "
+                "second_judge: per-dimension n, exact agreement and kappa (quadratic on 1-5, unweighted on pass/fail; "
+                "undefined says why), and the drift between the judges. judge_second_estimate prices it first "
+                "without spending."
             ),
         ),
         Action(
@@ -1427,16 +1434,18 @@ def engine_actions() -> tuple[Action, ...]:
         ),
         Action(
             name="judge_drift_check",
-            summary="Re-score every judged result of a run under a changed judge; read how far each dimension moved.",
+            summary="Start re-scoring every judged result of a run under a changed judge, as a job to poll.",
             workflow=ANALYSE,
             permission="spend",
             params=JudgeDriftParams,
-            result=SecondJudgeRead,
+            result=JobsStarted,
             handler=_judge_drift_check,
-            render=render.render_second_judge,
+            render=render.render_jobs_started,
             example={"run_id": run_id, "second_judge_model": "judge/new"},
+            long_running=True,
             detail=(
-                "judge_second over the whole set. The run's judge, as it recorded it, is the first configuration; "
+                _IN_CALL_JUDGING + "judge_second over the whole set, read by job_poll's second_judge once the job "
+                "ends. The run's judge, as it recorded it, is the first configuration; "
                 "the second names the changed one. Each dimension's movement is read over cases with an interval, "
                 "Holm-adjusted over the dimensions: separated, not separated or untested. It detects movement "
                 "between the judges, never which is right. The stored scores are never changed."
@@ -1444,24 +1453,27 @@ def engine_actions() -> tuple[Action, ...]:
         ),
         Action(
             name="judge_temperature",
-            summary="Re-judge a run's borderline cases at temperature 0 and at the provider default; compare spread.",
+            summary="Start re-judging a run's borderline cases at temperature 0 and the provider default, as a job.",
             workflow=ANALYSE,
             permission="spend",
             params=JudgeTemperatureParams,
-            result=JudgeTemperatureComparison,
+            result=JobsStarted,
             handler=_judge_temperature,
-            render=render.render_judge_temperature,
+            render=render.render_jobs_started,
             example={"run_id": run_id, "repeats": 5},
+            long_running=True,
             detail=(
-                "The measurement the judge temperature policy rests on (#633). Each borderline dim (stored score "
+                _IN_CALL_JUDGING + "The measurement the judge temperature policy rests on (#633). Each borderline dim "
+                "(stored score "
                 "inside its scale, or a recorded repeat or second judge disagreed; selection=all for every scored "
                 "dim) is judged `repeats` times at DEFAULT_JUDGE_TEMPERATURE and `repeats` times with no temperature "
-                "sent, from the evidence its judge first read, with the prompt the run recorded. Returns, per "
-                "dimension and side by side, the case count, the mean and largest score variance across repeats, the "
-                "unstable cases, and exact agreement and kappa read by judge_self_agreement; comparable=false says "
-                "when the judge's client did not send the temperature a side names. Every call is priced and "
-                "admitted against the host's out-of-run cap before the first is sent, and ledgered under purpose "
-                "judge. Nothing is written to the results. judge_temperature_estimate prices it first."
+                "sent, from the evidence its judge first read, with the prompt the run recorded. job_poll on the "
+                "ended job carries judge_temperature: per dimension and side by side, the case count, the mean and "
+                "largest score variance across repeats, the unstable cases, and exact agreement and kappa read by "
+                "judge_self_agreement; comparable=false says when the judge's client did not send the temperature a "
+                "side names. Every call is priced and admitted against the host's out-of-run cap before the job "
+                "starts, and ledgered under purpose judge. Nothing is written to the results; the answers are kept "
+                "on the job's record. judge_temperature_estimate prices it first."
             ),
         ),
         Action(

@@ -18,10 +18,24 @@ the terms in [Concepts](concepts.md).
 The operations (`threetears.evals.ops`) run over an `OpsHost`: the `LaunchHost`, plus `AnalysisGeneration`
 (the prompt, output cap and budget a background generation runs under). Each returns a typed model.
 
-Long work is a **job**: `run_launch`, `sweep_launch` and `analysis_generate` return `JobsStarted`, and
-`job_poll` / `job_cancel` take any job id they returned. A job id names the durable record its work writes, so
-it is still answerable after a restart. A job is answered only in the caller's scope: another scope's
-generation or sweep reads `lost` on poll and is refused on cancel.
+Long work is a **job**: `run_launch`, `sweep_launch`, `analysis_generate` and the three judge jobs
+(`judge_second`, `judge_drift_check`, `judge_temperature`) return `JobsStarted`, and `job_poll` / `job_cancel`
+take any job id they returned. A job id names the durable record its work writes, so it is still answerable after
+a restart. A job is answered only in the caller's scope: another scope's generation, sweep or judge job reads
+`lost` on poll (a judge job: not found) and is refused on cancel.
+
+**The judge jobs** re-judge a finished run's stored evidence, and each makes many judge calls: one per scored
+dimension of every result for a second judge, each selected dimension `repeats` times at each of two temperatures
+for a temperature comparison. Their calls make **no model request while the caller waits**, which is what a host
+budgeting a call's wall time by its model requests needs. Everything the spend would refuse is refused in the call,
+by the estimate's own code: an unknown run, one still running, nothing to re-judge, a judging that cannot be
+reproduced, calls the out-of-run cap cannot admit. Only the judge calls run in the job. Its id is
+`judge:<id>`, its `kind` is `judge` and its `target_id` is the run. While it runs, `job_poll` reports `progress`
+(`results_done` of `results_total`, `calls_made` of `max_calls`). Once it ends, the poll carries what the action
+used to return in the call: `second_judge` (the pass, with agreement and drift) for `judge_second` and
+`judge_drift_check`, `judge_temperature` (the comparison) for `judge_temperature`. The job's record keeps it, so a
+later poll answers the same. `job_cancel` stops the job before its next judge call: the calls made stay on the
+ledger, and the partial report's `stopped` says it was cancelled. The `_estimate` actions still answer in the call.
 
 **A sweep** (`sweep_launch`) is for arms that differ in more than the model: each arm names its own model,
 overlays and apparatus settings, and every arm shares the template, subject, `k` and the other settings.

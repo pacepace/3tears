@@ -58,8 +58,8 @@ then never name the host::
 - ``judge-temperature`` re-judges a finished run's borderline cases ``--repeats`` times at the pinned judge
   temperature and as many times at the provider's default, and prints each dimension's score variance and
   self-agreement at the two side by side (:func:`~threetears.evals.run.judge_at_two_temperatures` read by
-  :func:`~threetears.evals.analysis.read_judge_temperatures`, the
-  ``judge_temperature`` action's operation, #633). It SPENDS: the calls are priced against the out-of-run cap the
+  :func:`~threetears.evals.analysis.read_judge_temperatures`, what the ``judge_temperature`` action's job runs,
+  #633), in the foreground: the command waits on its calls and prints the comparison. It SPENDS: the calls are priced against the out-of-run cap the
   command names, ``--max-cost-usd`` (or ``--no-cap``, said out loud), before the first is sent, and ledgered under
   purpose ``judge``. ``--estimate`` prices it and calls nothing. ``--all`` re-judges every scored dim instead of the
   borderline ones, ``--result`` (repeatable) narrows it to those results, and ``--json`` prints the comparison as

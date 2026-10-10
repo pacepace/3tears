@@ -32,6 +32,7 @@ from packages.evals.tests.factories import (
     make_test_case,
 )
 from threetears.evals.kernel.campaign import EvalSweep, SweepArmRecord
+from threetears.evals.kernel.judge_jobs import EvalJudgeJob
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile, JudgeProfileAgreement
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.models import (
@@ -143,6 +144,9 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
         subject_id="s-1",
         arms=[SweepArmRecord(label="a", model="m")],
         max_concurrent_arms=1,
+    ),
+    "EvalJudgeJob": lambda: EvalJudgeJob(
+        scope_id="uni-1", action="judge_temperature", run_id="run-1", results_total=1, max_calls=4
     ),
     "EvalJudgeProfile": lambda: EvalJudgeProfile(
         scope_id="uni-1",

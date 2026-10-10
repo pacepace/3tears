@@ -308,7 +308,11 @@ drift = judge_drift(results, pass_id=report.pass_id)
 ```
 
 `ask_second_judge` comes from `threetears.evals.run`. The actions are `judge_second`, `judge_second_estimate` and
-`judge_drift_check`, which re-scores every result. Agreement is n, exact agreement, and kappa, quadratic-weighted
+`judge_drift_check`, which re-scores every result. `judge_second` and `judge_drift_check` start a job: the call
+refuses whatever the pass would refuse and makes no judge call, and `job_poll` on the ended job carries
+`second_judge`, the report with its agreement and drift
+([Driving it from an agent](agents-and-mcp.md#operations-and-jobs)). `job_cancel` stops it before its next call,
+keeping the second scores already recorded. Agreement is n, exact agreement, and kappa, quadratic-weighted
 on 1–5 and unweighted on pass/fail, computed as agreement with people is. A kappa with nothing to measure is
 reported as undefined, with the reason, never as 0. `run_get` shows each second judge beside the dimension it
 scored.
@@ -338,9 +342,12 @@ python -m threetears.evals judge-temperature RUN --host myapp.evals:build_host -
 python -m threetears.evals judge-temperature RUN --host myapp.evals:build_host --scope dev --max-cost-usd 5 --json > temperature.json
 ```
 
-In code it is two steps: `judge_at_two_temperatures` (priced first by `estimate_judge_temperature_comparison`) from
+The actions are `judge_temperature`, which does it as a job, and `judge_temperature_estimate`, which answers in the
+call. The job's call refuses whatever the comparison would refuse and makes no judge call. Its answers are kept on
+the job's record, and `job_poll` on the ended job carries `judge_temperature`, the comparison. In code it is two
+steps: `judge_at_two_temperatures` (priced first by `estimate_judge_temperature_comparison`) from
 `threetears.evals.run` spends and returns every answer, and `read_judge_temperatures` from `threetears.evals.analysis`
-reads them, spending nothing. The actions are `judge_temperature`, which does both, and `judge_temperature_estimate`:
+reads them, spending nothing:
 
 ```python
 from threetears.evals.analysis import read_judge_temperatures

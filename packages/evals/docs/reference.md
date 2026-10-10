@@ -420,6 +420,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`EvalAnalysisAttempt`** · model · One run of the analysis generator for a campaign, whatever it came to.
 - **`EvalCampaign`** · model · A curated set of eval runs under one subject×behavior — the analysis hub.
 - **`EvalInsight`** · model · A durable, subject-scoped insight extracted from an analysis.
+- **`EvalJudgeJob`** · model · A judge job's own record: what it re-judges, how far it got, how it ended, and what it handed back.
 - **`EvalJudgeProfile`** · model · What one judge was measured to be on one criterion, over frozen cases, by a judge campaign — stored for reuse.
 - **`EvalServiceError`** · exception · Structured error from the eval service layer.
 - **`EvalStorage`** · class · Storage for v1-shape eval documents over one document store.
@@ -477,6 +478,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`RunIndexEntry`** · model · One row of the analysis's run index — a run's config + key metrics.
 - **`RunRecordStore`** · protocol · A run together with its cells: for an operation that reads one and rewrites the other.
 - **`RunStore`** · protocol · The eval runs of a scope: their documents, listings, stamps, archive flag and boot scan.
+- **`SecondJudgeReport`** · model · What a second judge's pass did, what it spent apart from the candidate's cost, and what it read.
+- **`SecondJudgeSkip`** · model · A result of the run that the second judge is not asked about, and why.
 - **`SeedPrompt`** · dataclass · Where one shipped default lives, so a host can register it by import.
 - **`SeedSection`** · dataclass · One section of a seeded prompt template.
 - **`SeedTemplate`** · dataclass · A seeded prompt template: an ordered set of sections and its identity.
@@ -542,6 +545,10 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`'calibrated'` | `'separation'` | `'incidental'` | `'undetermined'`
 - **`JudgedTierRule`** · literal · The rule a stored analysis's judged tiers were decided by.
   <br>`'interval_lower_bound'`
+- **`JudgeJobAction`** · literal · What a judge job does: a second judge over a seeded share (`judge_second`), a second judge over every result under a changed judge (`judge_drift_check`), or the temperature comparison (`judge_temperature`).
+  <br>`'judge_second'` | `'judge_drift_check'` | `'judge_temperature'`
+- **`JudgeJobOutcome`** · literal · Where a judge job stands: `running`; `completed` — every admitted call was made, or the account behind the judge refused one and the work stopped as it does in a call; `failed` — the work raised (its in-job admission refused, say, because the run changed after the call admitted it); `cancelled` — a cancel stopped it, its partial report kept.
+  <br>`'running'` | `'completed'` | `'failed'` | `'cancelled'`
 - **`JudgeTrialOutcome`** · literal · How a trial ended, as far as its readout is concerned.
   <br>`'scored'` | `'cannot_tell'` | `'invalid'` | `'no_reply'`
 - **`JudgingState`** · literal · What the judge produced for this result.
@@ -798,7 +805,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 **Functions**
 
 - **`ask_second_judge`** · async function · Ask a second judge to score a seeded share of a finished run's judged results, and record each beside its scores.
-  <br>`ask_second_judge(host: EvalHost, run_id: str, scope_id: str, *, judge: SecondJudge, out_of_run_cap_usd: float | None, sample_fraction: float = 1.0, seed: int = 0, result_ids: Sequence[str] | None = None) -> SecondJudgeReport`
+  <br>`ask_second_judge(host: EvalHost, run_id: str, scope_id: str, *, judge: SecondJudge, out_of_run_cap_usd: float | None, sample_fraction: float = 1.0, seed: int = 0, result_ids: Sequence[str] | None = None, on_progress: Callable[[SecondJudgeReport], Awaitable[None]] | None = None) -> SecondJudgeReport`
 - **`assert_preconditions`** · function · Assert at t=0 that the world this template presumes actually holds.
   <br>`assert_preconditions(template: EvalTemplate, test_case: EvalTestCase, seeded: Mapping[str, Any], *, world: WorldRegistry | None) -> list[PreconditionOutcome]`
 - **`borderline_dims`** · function · The scored dims of `result` that are borderline: the cases temperature is expected to move.
@@ -862,7 +869,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`grade_goal_checks`** · function · Grade goal checks against a call ledger, an end state and what fired: the one evaluation every caller uses.
   <br>`grade_goal_checks(expressions: Sequence[str], *, ledger: CallLedger, end_state: Mapping[str, Any], fired: Firings | None, variation: Mapping[str, Any], world: WorldRegistry | None) -> list[GoalStateOutcome]`
 - **`judge_at_two_temperatures`** · async function · Re-judge a finished run's borderline cases `repeats` times at each temperature, and return every answer.
-  <br>`judge_at_two_temperatures(host: EvalHost, run_id: str, scope_id: str, *, out_of_run_cap_usd: float | None, selection: TemperatureSelection = 'borderline', repeats: int = 5, result_ids: Sequence[str] | None = None) -> JudgeTemperatureAnswers`
+  <br>`judge_at_two_temperatures(host: EvalHost, run_id: str, scope_id: str, *, out_of_run_cap_usd: float | None, selection: TemperatureSelection = 'borderline', repeats: int = 5, result_ids: Sequence[str] | None = None, on_progress: Callable[[JudgeTemperatureAnswers], Awaitable[None]] | None = None) -> JudgeTemperatureAnswers`
 - **`judge_case_labels`** · function · The person ratings a judge case frozen from `result` on `dim` carries as its labels.
   <br>`judge_case_labels(storage: EvalStorage, scope_id: str, result: EvalResult, dim: str, *, scale: str, label_key: LabelKey | None = None) -> list[CalibrationRating]`
 - **`judge_kind`** · function · The judge kind for one arm, its configs loaded from the store: what a launcher builds per arm.
@@ -1030,8 +1037,6 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`RunnerOptions`** · dataclass · The run's own knobs that don't fit on the run document — per-run values, never host wiring.
 - **`RunRecheck`** · model · What a re-check of one run found, and whether it was written.
 - **`SecondJudgeEstimate`** · model · What asking a second judge about a run would be priced at, against the cap it would be held to — no call made.
-- **`SecondJudgeReport`** · model · What a second judge's pass did, what it spent apart from the candidate's cost, and what it read.
-- **`SecondJudgeSkip`** · model · A result of the run that the second judge is not asked about, and why.
 - **`SeedCorpus`** · dataclass · A host's authored definitions for one scope, already constructed through their production models.
 - **`SeedOutcome`** · dataclass · What one seeding pass did, per doc type.
 - **`SimulatorCall`** · dataclass · One simulator-role model call the driver made, for the cell's `simulator` usage row.
@@ -1083,6 +1088,10 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`= 'minimal'`
 - **`SIMULATOR_REQUEST_SETTINGS`** · constant (ClientRequestSettings) · The simulator role's request settings as ONE value: what the host's client builder applies to the simulated user's client, and what a run launched with a simulated user records as `simulator_request_settings`.
 - **`TEMPLATE_SERVER_FIELDS`** · constant (tuple) · Identity/lifecycle fields the template family owns — never taken from caller input.
+
+**Also exported here**
+
+`SecondJudgeReport` ([`threetears.evals.kernel`](#api-kernel)), `SecondJudgeSkip` ([`threetears.evals.kernel`](#api-kernel))
 
 <a id="api-analysis"></a>
 ### `threetears.evals.analysis`
@@ -1824,8 +1833,10 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`job_poll(host: OpsHost, job_id: str, scope_id: str) -> JobStatus`
 - **`judge_cases_freeze`** · function · Freeze stored judged outputs, their criteria and their labels into cases of a judge template.
   <br>`judge_cases_freeze(host: EvalHost, freeze: JudgeCasesFreeze, scope_id: str) -> JudgeCaseFreezeReport`
-- **`judge_drift_check`** · async function · Re-score every judged result of a finished run under a changed judge, and read how far each dimension moved.
-  <br>`judge_drift_check(host: OpsHost, run_id: str, scope_id: str, *, judge: SecondJudge, result_ids: list[str] | None = None) -> SecondJudgeRead`
+- **`judge_drift_check`** · async function · Start re-scoring every judged result of a finished run under a changed judge as a job, refusing up front.
+  <br>`judge_drift_check(host: OpsHost, run_id: str, scope_id: str, *, judge: SecondJudge, result_ids: list[str] | None = None) -> JobsStarted`
+- **`judge_job_id`** · function · The job id of a judge job: its record's id.
+  <br>`judge_job_id(job_id: str) -> str`
 - **`judge_profiles_list`** · function · The stored judge profiles of a scope, each with the tier it decides.
   <br>`judge_profiles_list(host: EvalHost, scope_id: str, *, rubric_dim: str | None = None) -> JudgeProfileListing`
 - **`judge_profiles_record`** · function · Record the profile of every judge and criterion a judge campaign's runs measured.
@@ -1834,12 +1845,12 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`judge_repeat(host: OpsHost, run_id: str, scope_id: str, *, result_ids: list[str] | None = None) -> JudgeRepeatReport`
 - **`judge_repeat_estimate`** · async function · What repeating a finished run's judge scores would be priced at, against the host's out-of-run cap — no call made.
   <br>`judge_repeat_estimate(host: OpsHost, run_id: str, scope_id: str, *, result_ids: list[str] | None = None) -> JudgeRepeatEstimate`
-- **`judge_second`** · async function · Ask a second judge to score a seeded share of a finished run's judged results, and read agreement and drift.
-  <br>`judge_second(host: OpsHost, run_id: str, scope_id: str, *, judge: SecondJudge, sample_fraction: float = 1.0, seed: int = 0, result_ids: list[str] | None = None) -> SecondJudgeRead`
+- **`judge_second`** · async function · Check a second judge's pass over a finished run, admit its calls against the host's out-of-run cap, then start it as a job.
+  <br>`judge_second(host: OpsHost, run_id: str, scope_id: str, *, judge: SecondJudge, sample_fraction: float = 1.0, seed: int = 0, result_ids: list[str] | None = None) -> JobsStarted`
 - **`judge_second_estimate`** · async function · What asking a second judge about a finished run would be priced at, against the host's out-of-run cap — no call.
   <br>`judge_second_estimate(host: OpsHost, run_id: str, scope_id: str, *, judge: SecondJudge, sample_fraction: float = 1.0, seed: int = 0, result_ids: list[str] | None = None) -> SecondJudgeEstimate`
-- **`judge_temperature`** · async function · Re-judge a finished run's borderline cases at the pinned temperature and at the provider default (#633).
-  <br>`judge_temperature(host: OpsHost, run_id: str, scope_id: str, *, selection: TemperatureSelection = 'borderline', repeats: int = 5, result_ids: list[str] | None = None) -> JudgeTemperatureComparison`
+- **`judge_temperature`** · async function · Check a judge temperature comparison over a finished run, admit its calls, then start it as a job (#633).
+  <br>`judge_temperature(host: OpsHost, run_id: str, scope_id: str, *, selection: TemperatureSelection = 'borderline', repeats: int = 5, result_ids: list[str] | None = None) -> JobsStarted`
 - **`judge_temperature_estimate`** · async function · What comparing a finished run's judge at the pinned temperature and the provider default would cost — no call.
   <br>`judge_temperature_estimate(host: OpsHost, run_id: str, scope_id: str, *, selection: TemperatureSelection = 'borderline', repeats: int = 5, result_ids: list[str] | None = None) -> JudgeTemperatureEstimate`
 - **`launch_estimate`** · async function · What `run_launch` with `arguments` would cost, priced by the launch's own rule.
@@ -1848,6 +1859,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`parse_job_id(job_id: str) -> tuple[JobKind, str, str | None]`
 - **`pivot_text`** · function · A pivot as text: what was computed, each cell with its denominators, and every caveat the table carries.
   <br>`pivot_text(table: PivotTable) -> str`
+- **`read_second_judge`** · async function · Read a second judge's pass off its run's stored results: the agreement and drift of its pairs alone.
+  <br>`read_second_judge(host: EvalHost, report: SecondJudgeReport, scope_id: str) -> SecondJudgeRead`
 - **`report_read`** · function · The campaign's report, serialized in one form — the same report the command line's `report` prints.
   <br>`report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat) -> ReportDocument`
 - **`reporter_case_archive`** · function · Retire a reporter case, or restore one: a retired case is never launched again and stays readable.
@@ -1962,8 +1975,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 
 - **`InsightStandingName`** · literal · Where an insight stands, read from the analysis that minted it at every read and never stamped on the insight (`insight_standing`): `live` — fed to later generations as prior context; `retracted` — its analysis is archived, so no generation reads it; `orphaned` — its analysis was deleted, so it is still read but its provenance cannot be followed.
   <br>`'live'` | `'retracted'` | `'orphaned'`
-- **`JobKind`** · literal · What a job's work is: a launched run, an analysis generation, or a sweep launching its arms in order.
-  <br>`'run'` | `'analysis'` | `'sweep'`
+- **`JobKind`** · literal · What a job's work is: a launched run, an analysis generation, a sweep launching its arms in order, or a judge job re-judging a finished run's stored evidence (`judge_second`, `judge_drift_check`, `judge_temperature`).
+  <br>`'run'` | `'analysis'` | `'sweep'` | `'judge'`
 - **`JobState`** · literal · Where a job stands.
   <br>`'running'` | `'completed'` | `'stopped'` | `'failed'` | `'cancelled'` | `'lost'`
 - **`ReportFormat`** · literal · The forms a report is read in: Markdown (the memo, and what an agent reads), its canonical JSON (what the published schema validates) and HTML that reads without any script.
@@ -1977,6 +1990,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 
 - **`ANALYSIS_JOB_PREFIX`** · constant (str) · The prefix of an analysis generation's job id.
   <br>`= 'analysis:'`
+- **`JUDGE_JOB_PREFIX`** · constant (str) · The prefix of a judge job's id.
+  <br>`= 'judge:'`
 - **`RUN_JOB_PREFIX`** · constant (str) · The prefix of a launched run's job id.
   <br>`= 'run:'`
 - **`SWEEP_JOB_PREFIX`** · constant (str) · The prefix of a sweep's job id.
@@ -2566,10 +2581,10 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `campaign_create` | `write` | `name`, `subject_id`, `behavior`, `description?`, `run_ids?`, `declared_design?`, `control_from_run_id?` | Create a campaign over runs in the scope, for an analysis to read. |
 | `analysis_generate` | `spend`, job | `campaign_id`, `model?` | Generate a campaign's analysis with a paid model call, as a job to poll. |
 | `analysis_estimate` | `read` | `campaign_id`, `model?` | Price a campaign's analysis generation against the host's out-of-run cap, without spending. |
-| `judge_second` | `spend` | `run_id`, `second_judge_model`, `second_judge_config_ids?`, `second_judge_temperature?`, `result_ids?`, `sample_fraction?`, `sample_seed?` | Ask a second judge to score a seeded share of a finished run's judged results; read agreement. |
+| `judge_second` | `spend`, job | `run_id`, `second_judge_model`, `second_judge_config_ids?`, `second_judge_temperature?`, `result_ids?`, `sample_fraction?`, `sample_seed?` | Start a second judge on a seeded share of a finished run's judged results, as a job to poll. |
 | `judge_second_estimate` | `read` | `run_id`, `second_judge_model`, `second_judge_config_ids?`, `second_judge_temperature?`, `result_ids?`, `sample_fraction?`, `sample_seed?` | Price a second judge's pass over a run against the host's out-of-run cap, without spending. |
-| `judge_drift_check` | `spend` | `run_id`, `second_judge_model`, `second_judge_config_ids?`, `second_judge_temperature?`, `result_ids?` | Re-score every judged result of a run under a changed judge; read how far each dimension moved. |
-| `judge_temperature` | `spend` | `run_id`, `selection?`, `repeats?`, `result_ids?` | Re-judge a run's borderline cases at temperature 0 and at the provider default; compare spread. |
+| `judge_drift_check` | `spend`, job | `run_id`, `second_judge_model`, `second_judge_config_ids?`, `second_judge_temperature?`, `result_ids?` | Start re-scoring every judged result of a run under a changed judge, as a job to poll. |
+| `judge_temperature` | `spend`, job | `run_id`, `selection?`, `repeats?`, `result_ids?` | Start re-judging a run's borderline cases at temperature 0 and the provider default, as a job. |
 | `judge_temperature_estimate` | `read` | `run_id`, `selection?`, `repeats?`, `result_ids?` | Price a judge temperature comparison against the host's out-of-run cap, without spending. |
 | `analyses_list` | `read` | `campaign_id` | List a campaign's stored analyses. |
 | `insights_list` | `read` | `subject_filter?`, `campaign_filter?` | List the scope's insights — the durable claims analyses minted — newest first. |

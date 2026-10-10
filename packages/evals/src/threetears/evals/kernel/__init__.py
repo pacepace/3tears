@@ -217,6 +217,8 @@ from threetears.evals.kernel.metrics import (
     MetricDataType,
     TransferabilityClass,
 )
+from threetears.evals.kernel.judge_jobs import EvalJudgeJob, JudgeJobAction, JudgeJobOutcome
+from threetears.evals.kernel.judge_second import SecondJudgeReport, SecondJudgeSkip
 from threetears.evals.kernel.judge_temperature import (
     DEFAULT_TEMPERATURE_REPEATS,
     MIN_TEMPERATURE_REPEATS,
@@ -473,6 +475,11 @@ __all__ = [
     "MIN_TEMPERATURE_REPEATS",
     "TEMPERATURE_SETTINGS",
     "JudgeTemperatureAnswers",
+    "EvalJudgeJob",
+    "JudgeJobAction",
+    "JudgeJobOutcome",
+    "SecondJudgeReport",
+    "SecondJudgeSkip",
     "TemperatureAnswer",
     "TemperatureCaseAnswers",
     "TemperatureSelection",
