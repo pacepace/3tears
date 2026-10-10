@@ -30,7 +30,7 @@ for is the judge under test, and its spend is recorded under the ``judge`` role 
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -65,6 +65,7 @@ __all__ = [
     "JudgeTrial",
     "JudgeTrialOutcome",
     "judge_case_of",
+    "judge_case_payload",
     "judge_trial_of",
 ]
 
@@ -178,6 +179,21 @@ class JudgeCase(EvalBaseModel):
         return canonical_digest(self.model_dump(mode="json"))
 
 
+def judge_case_payload(case: JudgeCase) -> dict[str, Any]:
+    """The ``host_payload`` a judge ``EvalTestCase`` carries: this module's own schema, under its own key.
+
+    The one writer of the payload :func:`judge_case_of` reads back, so the judge kind reads no key it does not own
+    (the self-keyed lane of the engine's opaque-payload gate, which the reporter kind's case takes too).
+
+    Args:
+        case: The case to store.
+
+    Returns:
+        The payload.
+    """
+    return {JUDGE_CASE_KEY: case.model_dump(mode="json")}
+
+
 def judge_case_of(test_case: EvalTestCase) -> JudgeCase | None:
     """The judge case a test case carries, or ``None`` when it carries none.
 
@@ -190,11 +206,11 @@ def judge_case_of(test_case: EvalTestCase) -> JudgeCase | None:
     Raises:
         ValueError: It holds something there that is not a judge case this build can read.
     """
-    raw = (test_case.host_payload or {}).get(JUDGE_CASE_KEY)
-    if raw is None:
+    payload = test_case.host_payload
+    if not isinstance(payload, dict) or JUDGE_CASE_KEY not in payload:
         return None
     try:
-        return JudgeCase.model_validate(raw)
+        return JudgeCase.model_validate(payload[JUDGE_CASE_KEY])
     except ValidationError as exc:
         raise ValueError(f"test case {test_case.id!r} carries an unreadable judge case: {exc}") from exc
 

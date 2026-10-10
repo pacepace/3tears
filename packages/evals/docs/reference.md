@@ -316,6 +316,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`goal_check_of(name: str) -> str | None`
 - **`judge_case_of`** · function · The judge case a test case carries, or `None` when it carries none.
   <br>`judge_case_of(test_case: EvalTestCase) -> JudgeCase | None`
+- **`judge_case_payload`** · function · The `host_payload` a judge `EvalTestCase` carries: this module's own schema, under its own key.
+  <br>`judge_case_payload(case: JudgeCase) -> dict[str, Any]`
 - **`judge_trial_of`** · function · The judge trial a result's `kind_payload` carries, or `None` when it carries none this build can read.
   <br>`judge_trial_of(kind_payload: object) -> JudgeTrial | None`
 - **`list_metrics`** · function · List every measure a host can describe, optionally filtered by family and/or scope.
