@@ -158,7 +158,8 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
     # cells are laid out control first, as the reference, then every other arm alphabetically by name (#645); the
     # declaration's `controls` is renamed `held_fixed`, and the bundle's `controls_reading` with it
     # (`held_fixed_reading`); the bundle names the candidate's served model per arm and as a confound where one
-    # requested id was answered by more than one model (#684). The temperature each judge call was actually sent
+    # requested id was answered by more than one model (#684); the frontier takes the campaign's bar on pass^k and a
+    # judged bar's verdict carries its judges' evidence tier (#679). The temperature each judge call was actually sent
     # at joins the judge's apparatus (#633), so the cell model moves: an observation that recorded one no longer
     # pools with one that did not. A cell whose runs recorded none keeps the id it had (CELL_ID_NEUTRAL), so a
     # stored analysis's cell references still resolve.

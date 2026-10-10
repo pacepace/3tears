@@ -548,6 +548,9 @@ def _bar_value(bar: BarAdjudication, cell: CellFacts, factor: float) -> SurfaceV
     if verdict.decided_on_the_mean:
         # Stored before bars read intervals: the word is the old point comparison, and says so.
         text += ", decided on the mean"
+    if verdict.judge_evidence_tier is not None:
+        # A judged bar's verdict is as good as the judges behind it, and says which tier they stand on.
+        text += f", judge tier {verdict.judge_evidence_tier}"
     return SurfaceValue(value=value, sem=sem, n=verdict.n, verdict=_VERDICT_OF[verdict.decision], text=text)
 
 

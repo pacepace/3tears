@@ -82,6 +82,15 @@ table block):
   its rigs by id.
 - With no control row, no row is the reference, and the caption says that instead.
 
+A bar on a judged dimension is only as trustworthy as its judges, so its verdict carries
+`judge_evidence_tier` and the cell states it beside the value (`3.5 ± 0.25 (n=6), judge tier separation`).
+A bar on a measured quantity or a goal check has none, and neither does a verdict stored before the tier
+was recorded. A bar on `pass_hat_k` gets no row verdict, because no cell carries pass^k. The frontier reads
+it instead, decides each contestant's pass^k interval against it by the same three-valued rule, and names
+the variants below it (`frontier.bar`, each point's `bar_decision`). A bar on any other measure is never
+passed to the frontier: `frontier_bar_withheld` says which bars exist and that the frontier's `n_cleared_bar`
+is then no count.
+
 Read which arm the evidence favours from the contrasts against the control and the analysis's decisions,
 never from which row is on top. The results by stratum follow the same order, and so does the analysis
 writer's `cell_measures`, so when the control was measured its first cell (`c1`) is the control's.

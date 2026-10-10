@@ -148,6 +148,7 @@ from threetears.evals.contracts.identity import IDENTITY_VERSION, resolve_varian
 from threetears.evals.contracts.metrics import (
     ACCURACY_MEASURE,
     CONFUSION_CELL_MEASURE,
+    FRONTIER_RANKING_MEASURE,
     MATCH_MEASURE,
     AttributionScope,
     ClassifierStatistic,
@@ -1163,12 +1164,72 @@ class ScopeDivergence(EvalDocumentModel):
 
 
 #: What the frontier lens's clearing count means when no bar was passed to it — nothing. The
-#: sentence the MCP frontier render states for the same condition, carried on the bundle.
+#: sentence the MCP frontier render states for the same condition, carried on the bundle, and followed by
+#: why no bar was passed (:func:`_frontier_bar`).
 _FRONTIER_BAR_WITHHELD = (
     "withheld — no bar was supplied to the frontier lens, so it names no verdict and each subject's "
     "n_cleared_bar is a default of 0, not a count of arms that failed a bar. The bars this campaign is "
     "held to are adjudicated in bar_adjudications."
 )
+
+
+def _frontier_bar(
+    behavior: str, design: CampaignDesign | None, *, profile: HostProfile
+) -> tuple[float | None, str | None]:
+    """The bar the frontier is given, or why it is given none.
+
+    The frontier ranks on pass^k (:data:`~threetears.evals.contracts.metrics.FRONTIER_RANKING_MEASURE`) and
+    reads a bar only on it, while a campaign's bars may name any measure. So it takes the campaign's
+    effective bar on that measure — the declared one, else the host's registered one, exactly as
+    :func:`_applicable_bars` resolves every bar — and none otherwise; a bar on another measure is adjudicated
+    per cell in ``bar_adjudications`` and is never translated onto pass^k. The frontier reads the bar on each
+    contestant's pass^k interval by the three-valued rule every bar is read by
+    (:func:`~threetears.evals.analysis.stats.interval_clears`), with no margin, which is pass^k's own: its
+    descriptor declares none.
+
+    **More than one effective bar on pass^k is refused, not picked between**, as is one the frontier cannot
+    read — lower-is-better, or a threshold outside pass^k's range [0, 1] (a host's registered bar is not
+    range-checked where it is registered) — and the reason says so.
+
+    Args:
+        behavior: The campaign's behavior, the scope a registered bar is keyed under.
+        design: The campaign's declaration.
+        profile: The host whose registered bars apply.
+
+    Returns:
+        ``(bar, None)`` when the frontier takes a bar, else ``(None, reason)``: the withheld sentence followed
+        by which bars exist, and on what measure, or why the one on pass^k was not passed.
+    """
+    bars = _applicable_bars(behavior, design, profile=profile)
+    on_ranking = [bar for bar in bars if bar[0] == FRONTIER_RANKING_MEASURE]
+
+    def named(bar: tuple[str, float, bool, str]) -> str:
+        measure_id, threshold, higher_is_better, source = bar
+        return f"{measure_id} {'≥' if higher_is_better else '≤'} {format_number(threshold)} ({source})"
+
+    if len(on_ranking) == 1:
+        _, threshold, higher_is_better, _ = on_ranking[0]
+        if higher_is_better and 0.0 <= threshold <= 1.0:
+            return threshold, None
+        why = (
+            f"The one bar on {FRONTIER_RANKING_MEASURE}, {named(on_ranking[0])}, is not one the frontier can read: "
+            "pass^k is a probability whose higher end is better, so its bar is a threshold in [0, 1] to reach."
+        )
+    elif on_ranking:
+        why = (
+            f"{len(on_ranking)} bars name {FRONTIER_RANKING_MEASURE}, the measure the frontier ranks on — "
+            f"{'; '.join(named(bar) for bar in on_ranking)} — and it takes one, so it was given none rather than "
+            "a pick between them."
+        )
+    elif bars:
+        why = (
+            f"The frontier ranks on {FRONTIER_RANKING_MEASURE} and reads a bar only on it; this campaign's bars are "
+            f"on other measures — {'; '.join(named(bar) for bar in bars)} — so none was passed to it."
+        )
+    else:
+        why = "This campaign is held to no bar, declared or registered."
+    return None, f"{_FRONTIER_BAR_WITHHELD} {why}"
+
 
 #: Why a judged dimension sits beside the ranking surface rather than on it. One sentence for every
 #: dimension, because the reason is a property of how judged scores are produced and not of any
@@ -2005,10 +2066,13 @@ class AnalysisContextBundle(EvalDocumentModel):
     frontier_bar_withheld: str | None = Field(
         default=None,
         description=(
-            "Set when the frontier lens was given no bar, which is how this bundle always assembles it. "
-            "Its verdict is then withheld and each subject's `n_cleared_bar` is a default of 0 rather than "
-            "a count of arms that failed anything — quoting it as one reports a comparison nobody made. "
-            "The bars this campaign is held to are adjudicated in `bar_adjudications`."
+            "Set when the frontier lens was given no bar: the campaign's effective bar (declared, else registered) "
+            "is passed to it only when one names `pass_hat_k`, the measure it ranks on, and `frontier.bar` is then "
+            "set and each point's `bar_decision` names the variants below it. Otherwise its verdict is withheld "
+            "and each subject's `n_cleared_bar` is a default of 0 rather than a count of arms that failed "
+            "anything — quoting it as one reports a comparison nobody made. The sentence ends with why: which bars "
+            "exist and on what measure, or why the one on pass^k could not be passed. The bars this campaign is "
+            "held to are adjudicated in `bar_adjudications`."
         ),
     )
     telemetry: TelemetryRollup = Field(description="Campaign-wide descriptive telemetry.")
@@ -6633,6 +6697,8 @@ def assemble_context_bundle(
     ]
     retracted = retracted_insights(ledger, lambda analysis_id: storage.analysis_archived(analysis_id, scope_id))
 
+    # The campaign's effective bar on the measure the frontier ranks on, or why it takes none.
+    frontier_bar, frontier_bar_withheld = _frontier_bar(campaign.behavior, campaign.declared_design, profile=profile)
     bundle = AnalysisContextBundle(
         campaign_id=campaign.id,
         subject_id=campaign.subject_id,
@@ -6651,7 +6717,8 @@ def assemble_context_bundle(
         # Called without them, this surface was blind to exactly the difference a judge A/B is
         # made of while the bundle beside it reported that difference from the same readers.
         comparison=compute_comparison_sets(runs, results=results, profile=profile),
-        frontier=compute_frontier(runs, results, known_run_ids=known_run_ids),
+        frontier=compute_frontier(runs, results, bar=frontier_bar, known_run_ids=known_run_ids),
+        frontier_bar_withheld=frontier_bar_withheld,
         telemetry=_telemetry_rollup(runs, results, budget, profile=profile),
         coverage=coverage,
         declared_design=campaign.declared_design,
@@ -6728,7 +6795,13 @@ def assemble_context_bundle(
         projection.records, results_by_cell, campaign.declared_design, tiers=bundle.judge_evidence_tiers
     )
     bundle.bar_adjudications = _bar_adjudications(
-        campaign.behavior, campaign.declared_design, results_by_cell, projection.records, profile=profile
+        campaign.behavior,
+        campaign.declared_design,
+        results_by_cell,
+        projection.records,
+        tiers=bundle.judge_evidence_tiers,
+        frontier_bar=frontier_bar,
+        profile=profile,
     )
     bundle.verdict_order = _verdict_order(bundle.bar_adjudications, campaign.declared_design)
     # The decision surface, over the same grouping and the same population the bars were read over,
@@ -6791,11 +6864,6 @@ def assemble_context_bundle(
         profile=profile,
     )
     bundle.reading_scope = _reading_scope(campaign.declared_design, bundle.measure_catalog, bundle.judged_measures)
-    # The frontier is always assembled without a bar, so its per-subject clearing count is a
-    # default rather than a count. Said on the bundle, because a zero with no sentence beside it
-    # was quoted as "no arm cleared the bar".
-    if bundle.frontier.bar is None:
-        bundle.frontier_bar_withheld = _FRONTIER_BAR_WITHHELD
     # Divergences pair measures by unit, which only the catalog knows, so they are derived
     # after it — and from the same descriptors the generator will read, never a second lookup
     # that could disagree with what the bundle says a measure is.
@@ -7182,12 +7250,38 @@ def _bar_reading(
     )
 
 
+def _judged_bar_tier(
+    bar: BarName,
+    members: list[EvalResult],
+    judged_rows: dict[str, list[ScoreRecord]],
+    *,
+    tiers: list[JudgeEvidenceTier],
+) -> JudgedEvidenceTier | None:
+    """The evidence tier a judged bar's verdict on one cell stands on, or None for a bar no judge scored.
+
+    The weakest tier among the judges that served the very scores :func:`_bar_reading` read for the cell — its
+    non-faulted results' values on the bar's dimension — by
+    :func:`~threetears.evals.analysis.agreement.tier_for_judges`, the lookup every judged arm's tier is read by.
+    """
+    if bar.kind != "judged":
+        return None
+    served = [
+        judge
+        for result in _non_faulted(members)
+        for dimension, _ in _judged_values(judged_rows.get(result.id, []))
+        if dimension == bar.name and (judge := judge_key(result, dimension)) is not None
+    ]
+    return tier_for_judges(tiers, served)
+
+
 def _bar_adjudications(
     behavior: str,
     design: CampaignDesign | None,
     results_by_cell: dict[_CellKey, list[EvalResult]],
     records: list[ScoreRecord],
     *,
+    tiers: list[JudgeEvidenceTier],
+    frontier_bar: float | None,
     profile: HostProfile,
 ) -> list[BarAdjudication]:
     """Adjudicate every applicable bar against every cell.
@@ -7200,13 +7294,17 @@ def _bar_adjudications(
     host's registered bar — which no gate saw — be resolved by the same rule.
 
     Every kind is read over the same population, each cell's non-faulted results; see
-    :class:`BarVerdict`.
+    :class:`BarVerdict`. A verdict on a judged dimension carries the evidence tier of the judges behind it
+    (:func:`_judged_bar_tier`); every other verdict carries None.
 
     Args:
         behavior: The campaign's behavior.
         design: The campaign's declaration.
         results_by_cell: Each cell's results.
         records: The assembly's score projection rows, where a judged dimension's name survives.
+        tiers: The judges' evidence tiers (``judge_evidence_tiers``).
+        frontier_bar: The bar the frontier was given (:func:`_frontier_bar`), or None. A bar on pass^k carries
+            no cell verdict, and its reason says whether the frontier read it.
         profile: The host whose vocabulary this reads.
 
     Returns:
@@ -7236,6 +7334,18 @@ def _bar_adjudications(
         if isinstance(resolved, UnreadableBarName):
             state = "not_numeric" if resolved.refusal == "not_numeric" else "names_no_stored_measure"
             reason = resolved.reason
+            if measure_id == FRONTIER_RANKING_MEASURE:
+                # Not "never read": no cell carries pass^k, and the frontier is where a bar on it is read.
+                reason = (
+                    f"{measure_id} is a rate over a contestant's cases that no single result carries, so no cell "
+                    "verdict is given on it here. "
+                    + (
+                        "The frontier read this bar on each contestant's pass^k interval: see frontier.bar and each "
+                        "point's bar_decision."
+                        if frontier_bar is not None
+                        else "The frontier was given no bar either; frontier_bar_withheld says why."
+                    )
+                )
         else:
             readings = {
                 key: _bar_reading(resolved, members, judged_rows, profile=profile)
@@ -7268,6 +7378,7 @@ def _bar_adjudications(
                             cleared=None
                             if interval is None
                             else interval_clears(interval, threshold, margin=margin, higher_is_better=higher_is_better),
+                            judge_evidence_tier=_judged_bar_tier(resolved, members, judged_rows, tiers=tiers),
                         )
                     )
             else:

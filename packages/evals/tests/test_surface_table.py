@@ -535,6 +535,21 @@ class TestBarColumns:
         assert value.verdict == "clears"
         assert value.text == "3.5 ± 0.25 (n=6), decided on the mean"
 
+    def test_a_judged_bars_verdict_states_its_judges_tier_beside_it(self) -> None:
+        """A judged bar is as trustworthy as the judges behind it, and the cell says which tier they stand on (#679)."""
+        surface = two_arm_surface()
+        surface.bars[0].verdicts = [
+            verdict(c, 3.5, 0.25, True).model_copy(update={"judge_evidence_tier": "separation"}) for c in surface.cells
+        ]
+        value = build_surface_table(analysis(surface)).rows[0].values[0]
+        assert value.text == "3.5 ± 0.25 (n=6), judge tier separation"
+
+    def test_a_measured_bars_verdict_names_no_tier(self) -> None:
+        surface = two_arm_surface()
+        surface.bars[0].verdicts = [verdict(c, 3.5, 0.25, True) for c in surface.cells]
+        value = build_surface_table(analysis(surface)).rows[0].values[0]
+        assert value.text == "3.5 ± 0.25 (n=6)"
+
     def test_a_merit_value_carries_no_verdict_word(self) -> None:
         table = build_surface_table(analysis(two_arm_surface()))
         merit = [

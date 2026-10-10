@@ -471,6 +471,8 @@ The engine's contracts: the stored shapes, and the vocabulary every other packag
 - **`EVAL_DOC_TYPES`** · constant (tuple) · Every `doc_type` the engine writes — the set the operator wipe sweeps.
 - **`EVAL_SCHEMA_VERSION`** · constant (int) · The schema version every stored eval document is written under, and the only one a read accepts.
   <br>`= 8`
+- **`FRONTIER_RANKING_MEASURE`** · constant (str) · The measure the frontier ranks contestants on, and so the one measure a campaign bar is passed to the frontier on.
+  <br>`= 'pass_hat_k'`
 - **`GOAL_STATE_FAMILY`** · constant (str) · A goal-state check's verdict: code compared against what the candidate did.
   <br>`= 'goal_state'`
 - **`HOST_PRODUCED_MEASURES`** · constant (frozenset) · The core measures the ENGINE declares and a host's candidate kind writes: a classifier kind lands `match` and `confusion_cell` on each result's `host_measures`, and the engine only reads them.
@@ -1913,7 +1915,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `run_summaries` | `list[RunSummary]` | `[]` | Per-run digests (run_id order). |
 | `comparison` | `ComparisonSetsResult` | required | reporting.compute_comparison_sets over the member runs. |
 | `frontier` | `FrontierResult` | required | reporting.compute_frontier — empty (no subjects) when the data can't seat a ranking yet. |
-| `frontier_bar_withheld` | `str \| None` | `None` | Set when the frontier lens was given no bar, which is how this bundle always assembles it. |
+| `frontier_bar_withheld` | `str \| None` | `None` | Set when the frontier lens was given no bar: the campaign's effective bar (declared, else registered) is passed to it only when one names `pass_hat_k`, the measure it ranks on, and `frontier.bar` is then set and each point's `bar_decision` names the variants below it. |
 | `telemetry` | `TelemetryRollup` | required | Campaign-wide descriptive telemetry. |
 | `coverage` | `list[LeverCoverageInput]` | `[]` | Per-lever structural coverage map (the analysis's spine). |
 | `scope_divergences` | `list[ScopeDivergence]` | `[]` | Lever changes where the whole-run measure moved by a different amount than the isolating measure, the difference itself tested and Holm-corrected within the lever — each one is a finding. |

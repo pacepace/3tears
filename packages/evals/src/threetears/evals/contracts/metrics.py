@@ -122,6 +122,7 @@ __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why th
     "CONFUSION_SEPARATOR",
     "CLASSIFIER_TRACK_MEASURES",
     "DUAL_AXIS_FAMILY",
+    "FRONTIER_RANKING_MEASURE",
     "ENGINE_FAMILIES",
     "GOAL_STATE_FAMILY",
     "MATCH_MEASURE",
@@ -2133,6 +2134,11 @@ def describe_goal_check_rate(expression: str) -> MetricDescriptor:
 
 #: The core measure a classification's confusion-matrix cell is reported under.
 CONFUSION_CELL_MEASURE = "confusion_cell"
+
+#: The measure the frontier ranks contestants on, and so the one measure a campaign bar is passed to the frontier
+#: on. No single result carries it, so no cell verdict is given on a bar naming it: the frontier reads that bar
+#: on each contestant's pass^k interval instead (``FrontierPoint.bar_decision``).
+FRONTIER_RANKING_MEASURE = "pass_hat_k"
 
 #: The core measure one classification's verdict is reported under — the one a classifier kind lands on
 #: ``host_measures``, a bool.

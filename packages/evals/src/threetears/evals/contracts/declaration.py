@@ -46,6 +46,7 @@ from threetears.evals.contracts.host.bars import Bar, BarRegistrationError, cont
 from threetears.evals.contracts.host.values import Scale, SweepableValue
 from threetears.evals.contracts.metrics import (
     DERIVED_PER_RESULT_MEASURES,
+    FRONTIER_RANKING_MEASURE,
     METRIC_DESCRIPTORS,
     MeritAxis,
     MetricDescriptor,
@@ -206,7 +207,10 @@ class BarOverride(EvalDocumentModel):
             "declares, or a reserved dual-score axis), or a goal-state check the template declares, spelled "
             "exactly as the template writes it. Anything else — a run-level statistic, a judge-mediated "
             "summary, a composite, a categorical or directionless measure, an undescribed name — is refused "
-            "at authoring time, because no verdict could ever be given on it."
+            "at authoring time, because no verdict could ever be given on it. The one composite admitted is "
+            "`pass_hat_k`, the measure the frontier ranks on, with a threshold in [0, 1]: no cell carries it, and "
+            "the analysis bundle passes the bar to the frontier, which reads it on each contestant's pass^k "
+            "interval."
         ),
     )
     threshold: float = Field(description="The value the measure must reach for this campaign.")
@@ -913,7 +917,11 @@ def refuse_an_undeclarable_design(
     every name a bar may carry is enumerable and this can refuse rather than guess. A name the
     registry describes is still refused when no result carries it with a direction: a run-level
     statistic (``mean_total_ms``), a judge-mediated summary (``mean_score``), a composite
-    (``pass_hat_k``), a categorical, a raw count or a diagnostic. A phase-timing key is carried too,
+    (``mean_composite``), a categorical, a raw count or a diagnostic. **The one exception is**
+    :data:`~threetears.evals.contracts.metrics.FRONTIER_RANKING_MEASURE` (``pass_hat_k``): no cell
+    carries it, but the bundle passes a bar on it to the frontier, which reads it on each contestant's
+    pass^k interval, so it is admitted with a threshold in pass^k's range ``[0, 1]`` and its direction
+    checked against the engine's descriptor. A phase-timing key is carried too,
     but no catalogue describes one, so a bar on it has no descriptor to be read against and is
     refused with the rest. **What the gate cannot see**: a host measure is admitted on the host's
     declaration alone, since nothing in a descriptor says whether the host's kind lands it on a
@@ -986,11 +994,25 @@ def refuse_an_undeclarable_design(
     # Before either bar-against-a-standard check, because both presume the bar names something:
     # a threshold on a name no result carries is never compared with anything, and the campaign
     # reads as held to a standard it cannot be held to.
+    # A bar on the frontier's ranking measure is the one bar no cell carries and something still reads: the
+    # bundle passes it to the frontier, which decides each contestant's pass^k interval against it. It is held
+    # to pass^k's own range here, since the frontier refuses a threshold outside it.
     unreadable = [
         (override, reading)
         for override in design.bars
-        if isinstance(reading := resolved[override.measure_id], UnreadableBarName)
+        if override.measure_id != FRONTIER_RANKING_MEASURE
+        and isinstance(reading := resolved[override.measure_id], UnreadableBarName)
     ]
+    out_of_range = [
+        override.threshold
+        for override in design.bars
+        if override.measure_id == FRONTIER_RANKING_MEASURE and not 0.0 <= override.threshold <= 1.0
+    ]
+    if out_of_range:
+        raise ValueError(
+            f"a bar on {FRONTIER_RANKING_MEASURE} is read by the frontier against pass^k, a probability, so its "
+            f"threshold must lie in [0, 1]; this campaign declares {', '.join(repr(t) for t in out_of_range)}"
+        )
     if unreadable:
         # The author's own declared value, echoed as written: a refusal quotes its input rather than
         # restating it under the reader-facing number rule, which lives outside the contracts set.
@@ -1020,7 +1042,7 @@ def refuse_an_undeclarable_design(
             f"a bar must name something this campaign's results will carry and a verdict can be given on — "
             f"{named}. {minted}. Reserved judged axes: {', '.join(sorted(RESERVED_DIM_IDS))}. "
             f"Measures a result carries with a direction (the engine's core and host '{profile.host_id}''s "
-            f"catalogue): {', '.join(readable)}"
+            f"catalogue): {', '.join(readable)}. And {FRONTIER_RANKING_MEASURE}, which the frontier reads"
         )
 
     for override in design.bars:
@@ -1081,6 +1103,14 @@ def refuse_an_undeclarable_design(
         if isinstance(reading := resolved[override.measure_id], BarName)
         and contradicts_descriptor(reading.descriptor, override.direction == "higher_is_better")
     ]
+    contradicted.extend(
+        f"{FRONTIER_RANKING_MEASURE} is declared higher-is-better by the engine and this campaign declares the opposite"
+        for override in design.bars
+        if override.measure_id == FRONTIER_RANKING_MEASURE
+        and contradicts_descriptor(
+            METRIC_DESCRIPTORS[FRONTIER_RANKING_MEASURE], override.direction == "higher_is_better"
+        )
+    )
     if contradicted:
         raise ValueError(
             f"host '{profile.host_id}' describes these measures differently from the bars this campaign "
