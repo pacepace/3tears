@@ -21,8 +21,8 @@ from pydantic import BaseModel, ConfigDict
 
 from packages.evals.tests.factories import DEFAULT_KIND, make_eval_run, make_template, make_test_case
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
-from threetears.evals.contracts.candidate_kind import CandidateOutput, CandidateTelemetry, CellSink, VariantConfig
-from threetears.evals.contracts.cassettes import (
+from threetears.evals.kernel.candidate_kind import CandidateOutput, CandidateTelemetry, CellSink, VariantConfig
+from threetears.evals.kernel.cassettes import (
     ActionSeam,
     CellCassettes,
     DeliveryRecorder,
@@ -30,9 +30,9 @@ from threetears.evals.contracts.cassettes import (
     DeliverySeam,
     ToolWrap,
 )
-from threetears.evals.contracts.host.apparatus import ApparatusError
-from threetears.evals.contracts.host.eval_host import EvalHost
-from threetears.evals.contracts.models import (
+from threetears.evals.kernel.host.apparatus import ApparatusError
+from threetears.evals.kernel.host.eval_host import EvalHost
+from threetears.evals.schema.models import (
     AsyncDelivery,
     AsyncExternalSpend,
     CassetteKey,
@@ -41,8 +41,8 @@ from threetears.evals.contracts.models import (
     JudgedArtifact,
     RoleUsage,
 )
-from threetears.evals.contracts.spend import ExternalRateTable
-from threetears.evals.contracts.usage_capture import count_substituted_deliveries, production_replicating_cost
+from threetears.evals.kernel.spend import ExternalRateTable
+from threetears.evals.kernel.usage_capture import count_substituted_deliveries, production_replicating_cost
 from threetears.evals.run.cassette_proxy import DELIVERY_ACTION, ReplayReportDefect, params_hash
 from threetears.evals.run.runner import EveryCellApparatusFailedError, RunnerOptions, execute_run
 
@@ -60,7 +60,7 @@ class _Report(BaseModel):
     findings: str
 
 
-# parity-with: threetears.evals.contracts.cassettes.ToolLike
+# parity-with: threetears.evals.kernel.cassettes.ToolLike
 class _FakeDice:
     """Rolls answered from the model the session runs on, so two models' rolls never coincide."""
 
@@ -82,7 +82,7 @@ class _FakeDice:
         return _Roll(total=self._next)
 
 
-# parity-with: threetears.evals.contracts.cassettes.DeliverySeam
+# parity-with: threetears.evals.kernel.cassettes.DeliverySeam
 class _FakeScouts:
     """The asynchronous tool: each scout is started now and reports after its own latency."""
 
@@ -127,7 +127,7 @@ class _FakeScouts:
             ticket.delivered(report)
 
 
-# parity-with: threetears.evals.contracts.cassettes.CassetteSeams
+# parity-with: threetears.evals.kernel.cassettes.CassetteSeams
 class _FakeSession:
     """One prepared game-master session: its dice, its scouts, and the seams it exposes."""
 
@@ -152,7 +152,7 @@ class _FakeSession:
         self.tools = wrap(self.tools)
 
 
-# parity-with: threetears.evals.contracts.candidate_kind.CandidateKind
+# parity-with: threetears.evals.kernel.candidate_kind.CandidateKind
 class _FakeGmKind:
     """One instance for every cell, as an adopter writes it: ``prepare`` wires what it is handed.
 
@@ -338,7 +338,7 @@ async def test_background_work_spend_reaches_the_result_and_its_production_cost(
     assert production_replicating_cost(result.usage, substituted_deliveries=0) == pytest.approx(0.022)
 
 
-# parity-with: threetears.evals.contracts.candidate_kind.CandidateKind
+# parity-with: threetears.evals.kernel.candidate_kind.CandidateKind
 class _FakeDoubleReportingKind(_FakeGmKind):
     """Reports its background work's spend twice: on the delivery and as its own telemetry row."""
 
@@ -354,7 +354,7 @@ async def test_a_kind_reporting_background_spend_on_its_telemetry_too_is_refused
         await _execute(host, _run(), _FakeDoubleReportingKind())
 
 
-# parity-with: threetears.evals.contracts.candidate_kind.CandidateKind
+# parity-with: threetears.evals.kernel.candidate_kind.CandidateKind
 class _FakeScoutStillOutKind(_FakeGmKind):
     """Starts a scout, reports it in flight with what it has spent so far, and outlives the deadline."""
 
@@ -404,7 +404,7 @@ async def test_an_undelivered_scout_s_spend_survives_the_cell_deadline() -> None
 # =============================================================================
 
 
-# parity-with: threetears.evals.contracts.candidate_kind.CandidateKind
+# parity-with: threetears.evals.kernel.candidate_kind.CandidateKind
 class _FakeRigBreaksMidSceneKind(_FakeGmKind):
     """Sends the slow north scout under a capture, reports it in flight, then meets a rig fault.
 
@@ -461,7 +461,7 @@ async def test_an_apparatus_fault_mid_capture_closes_the_cells_cassettes_and_kee
     assert recorded is not None and recorded.outcome == "undelivered"
 
 
-# parity-with: threetears.evals.contracts.candidate_kind.CandidateKind
+# parity-with: threetears.evals.kernel.candidate_kind.CandidateKind
 class _FakeBreaksWhilePreparingKind(_FakeGmKind):
     """Wires its cassettes, starts a scout while setting the scene, then meets a rig fault in ``prepare``.
 
@@ -509,7 +509,7 @@ async def test_an_apparatus_fault_in_prepare_still_closes_the_cells_cassettes() 
 # =============================================================================
 
 
-# parity-with: threetears.evals.contracts.candidate_kind.CandidateKind
+# parity-with: threetears.evals.kernel.candidate_kind.CandidateKind
 class _FakeReportingKind(_FakeGmKind):
     """Reports exactly the background work it was built with, beside its own priced call."""
 

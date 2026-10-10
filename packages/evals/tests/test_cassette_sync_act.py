@@ -1,8 +1,8 @@
 """The action seam records and replays the same way whether the candidate awaits its tools or blocks on them.
 
 A host whose tools run as plain blocking calls inside its own turn loop declares a
-:class:`~threetears.evals.contracts.cassettes.SyncActionSeam` and drives its tools through ``act_sync``;
-one that awaits declares an :class:`~threetears.evals.contracts.cassettes.ActionSeam` and calls ``act``.
+:class:`~threetears.evals.kernel.cassettes.SyncActionSeam` and drives its tools through ``act_sync``;
+one that awaits declares an :class:`~threetears.evals.kernel.cassettes.ActionSeam` and calls ``act``.
 Every behaviour below runs on BOTH paths over the same fixture — the same tools, the same answers, the
 same session — so a rule that holds on one and not the other fails here. The tools answer both ways
 from one answer function, and the replay table is built so every live answer differs from the captured
@@ -19,8 +19,8 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from packages.evals.tests.factories import memory_storage
-from threetears.evals.contracts import SyncActionSeam, SyncToolLike, SyncToolWrap, ToolWrap
-from threetears.evals.contracts.cassettes import (
+from threetears.evals.kernel import SyncActionSeam, SyncToolLike, SyncToolWrap, ToolWrap
+from threetears.evals.kernel.cassettes import (
     ActionSeam,
     CassetteCorrupt,
     CassetteExhausted,
@@ -28,7 +28,7 @@ from threetears.evals.contracts.cassettes import (
     CassetteSeams,
     DeliverySeam,
 )
-from threetears.evals.contracts.storage import EvalStorage
+from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.run.cassette_proxy import CassetteCell, CassetteLane, CassetteProxy
 
 _SCOPE = "table-1"
@@ -58,7 +58,7 @@ class RulesAnswer(_Strict):
     text: str
 
 
-# parity-with: threetears.evals.contracts.cassettes.SyncToolLike
+# parity-with: threetears.evals.kernel.cassettes.SyncToolLike
 class FakeDualTool:
     """A tool answering both ways from one answer function, logging every live call on either."""
 

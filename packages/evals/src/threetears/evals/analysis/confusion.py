@@ -1,7 +1,7 @@
 """A classifier's confusion matrix and the per-label statistics it yields, counted once for every surface.
 
 A classifier lands one ``confusion_cell`` per observation (``expected → predicted``,
-:func:`~threetears.evals.contracts.confusion_cell`). Counted, those cells are its confusion matrix
+:func:`~threetears.evals.kernel.confusion_cell`). Counted, those cells are its confusion matrix
 (:func:`confusion_matrix`), and from the matrix each label's precision, recall and F1 follow
 (:func:`label_statistics`). The analysis bundle and the run summary both read them from here, so a
 label's precision is one computation wherever it is printed.
@@ -12,7 +12,7 @@ recall take :func:`~threetears.evals.analysis.stats.proportion_interval`, which 
 interval wherever every case was classified once.
 
 **Labels are kept exactly as given.** These models do not strip their strings, unlike every model
-on :class:`~threetears.evals.contracts.base.EvalBaseModel`: a label is free text, and ``"positive "``
+on :class:`~threetears.evals.schema.base.EvalBaseModel`: a label is free text, and ``"positive "``
 stripped to ``"positive"`` would count a wrong answer as a right one.
 """
 
@@ -23,7 +23,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from pydantic import BaseModel, ConfigDict
 
 from threetears.evals.analysis.stats import proportion_interval
-from threetears.evals.contracts.metrics import confusion_of
+from threetears.evals.kernel.metrics import confusion_of
 
 
 class ConfusionCount(BaseModel):
@@ -89,7 +89,7 @@ def confusion_matrix(cells: Mapping[str, int]) -> list[ConfusionCount]:
 
     Returns:
         One count per ``(expected, predicted)`` pair. A value that is not a confusion cell
-        (:func:`~threetears.evals.contracts.metrics.confusion_of` reads no two labels from it) is in no cell.
+        (:func:`~threetears.evals.kernel.metrics.confusion_of` reads no two labels from it) is in no cell.
     """
     pairs: dict[tuple[str, str], int] = {}
     for cell, count in cells.items():
@@ -109,7 +109,7 @@ def label_statistics(observations: Iterable[tuple[str, str]]) -> list[LabelStati
 
     Args:
         observations: One ``(confusion_cell value, test case id)`` per observation. A value that is not a
-            confusion cell (:func:`~threetears.evals.contracts.metrics.confusion_of` reads no two labels
+            confusion cell (:func:`~threetears.evals.kernel.metrics.confusion_of` reads no two labels
             from it) is in no count, as in :func:`confusion_matrix`.
 
     Returns:

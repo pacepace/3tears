@@ -503,7 +503,7 @@ def field_table(model: type, *, full: bool) -> Iterator[str]:
 
 
 def configuration_section() -> Iterator[str]:
-    from threetears.evals.contracts.host import HostProfile
+    from threetears.evals.kernel.host import HostProfile
     from threetears.evals.run import LaunchSettings
 
     yield anchor("configuration")
@@ -593,21 +593,22 @@ def rst_to_markdown(doc: str, heading: str) -> Iterator[str]:
 
 
 def goal_language_section() -> Iterator[str]:
-    from threetears.evals.contracts import dsl
+    from threetears.evals.kernel import dsl
+    from threetears.evals.schema import goal_grammar
 
     yield anchor("goal-checks")
     yield "## The goal-check language"
     yield ""
-    yield md_text(paragraphs(dsl.__doc__)[0])
+    yield md_text(paragraphs(goal_grammar.__doc__)[0])
     yield ""
-    yield from rst_to_markdown(typing.cast(str, dsl.__doc__), "####")
+    yield from rst_to_markdown(typing.cast(str, goal_grammar.__doc__), "####")
     yield ""
     yield anchor("goal-check-functions")
     yield "### Functions"
     yield ""
     yield "| Function | Arguments | Description |"
     yield "|---|---|---|"
-    for name, arguments, description in goal_functions(inspect.getsource(dsl)):
+    for name, arguments, description in goal_functions(inspect.getsource(goal_grammar), inspect.getsource(dsl)):
         yield f"| `{name}` | `{arguments}` | {cell(md_text(description))} |"
     yield ""
 
@@ -624,28 +625,28 @@ _SHARED_HANDLERS = {
 _SUPPLIED = {"ledger", "ctx", "predicate", "call", "func_name", "node"}
 
 
-def goal_functions(source: str) -> list[tuple[str, str, str]]:
+def goal_functions(grammar_source: str, evaluator_source: str) -> list[tuple[str, str, str]]:
     """(name, arguments, description) for each function the goal-check language admits, read from its source.
 
     Read from the module's text, as a documentation generator reads it, rather than by importing the module's
     private names: the function set is the frozenset the parser admits calls against, and each description is
     the first line of the handler that evaluates it. A function with no handler to read stops the generator.
     """
-    tree = ast.parse(source)
     names: list[str] = []
     handlers: dict[str, ast.FunctionDef] = {}
-    for node in tree.body:
+    for node in ast.parse(evaluator_source).body:
         if isinstance(node, ast.FunctionDef):
             handlers[node.name] = node
-        elif "_BUILTINS" in _assigned_names(node) and isinstance(node, ast.Assign):
+    for node in ast.parse(grammar_source).body:
+        if "_BUILTINS" in _assigned_names(node) and isinstance(node, ast.Assign):
             names = sorted(ast.literal_eval(node.value.args[0]))  # type: ignore[attr-defined]
     if not names:
-        raise SystemExit("the goal-check language's function set (_BUILTINS in contracts/dsl.py) was not found")
+        raise SystemExit("the goal-check language's function set (_BUILTINS in schema/goal_grammar.py) was not found")
     rows = []
     for name in names:
         handler = handlers.get(_SHARED_HANDLERS.get(name, f"_builtin_{name}"))
         if handler is None:
-            raise SystemExit(f"goal-check function {name!r} has no handler in contracts/dsl.py to document it from")
+            raise SystemExit(f"goal-check function {name!r} has no handler in kernel/dsl.py to document it from")
         if name in ("any", "all"):
             arguments = "<body> for it in <path>"
         else:
@@ -767,7 +768,7 @@ def command_help(parser: argparse.ArgumentParser, command: str) -> str:
 
 
 def measures_section() -> Iterator[str]:
-    from threetears.evals.contracts import METRIC_DESCRIPTORS
+    from threetears.evals.kernel import METRIC_DESCRIPTORS
 
     yield anchor("measures")
     yield "## Measures"

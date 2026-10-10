@@ -27,9 +27,10 @@ from typing import Any, Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from threetears.evals.contracts.host.style import SERIES_SLOTS, VALIDATED_SLOTS
-from threetears.evals.contracts.prose import ModelProse
-from threetears.evals.contracts.metrics import Materiality, MeasureScale
+from threetears.evals.analysis.reporting import NULL_LEVEL
+from threetears.evals.kernel.host.style import SERIES_SLOTS, VALIDATED_SLOTS
+from threetears.evals.schema.prose import ModelProse
+from threetears.evals.kernel.metrics import Materiality, MeasureScale
 
 
 #: How far a breakdown's parts may miss the `total` they claim to make up, as a
@@ -148,7 +149,12 @@ class BreakdownPart(BaseModel):
     )
     value: float = Field(description="The part's magnitude, in the payload's `unit`.")
     n: int | None = Field(
-        default=None, ge=0, description="Observations behind this part, when the payload counts them."
+        default=None,
+        ge=0,
+        description=(
+            "Test cases behind this part, when the payload counts them; a case judged k times is one."
+            " A payload compiled before 0.66 counted observations here."
+        ),
     )
 
     @field_validator("value")
@@ -341,7 +347,11 @@ class DistributionGroup(BaseModel):
         default=None, description="Pre-binned counts, drawn as a density strip."
     )
     ci: ConfidenceInterval | None = Field(default=None, description="The group's interval — never a spread-free point.")
-    n: int | None = Field(default=None, ge=0, description="Observations behind the group.")
+    n: int | None = Field(
+        default=None,
+        ge=0,
+        description="Test cases behind the group; a case judged k times is one. A payload compiled before 0.66 counted observations here.",
+    )
 
     @field_validator("samples")
     @classmethod
@@ -441,7 +451,11 @@ class NullResultArm(BaseModel):
 
     label: str = Field(min_length=1, description="The arm's name.")
     ci: ConfidenceInterval = Field(description="The arm's interval — this type has nothing to draw without it.")
-    n: int | None = Field(default=None, ge=0, description="Observations behind the arm.")
+    n: int | None = Field(
+        default=None,
+        ge=0,
+        description="Test cases behind the arm; a case judged k times is one. A payload compiled before 0.66 counted observations here.",
+    )
 
 
 class NullResultPayload(_VizPayload):
@@ -545,7 +559,10 @@ class DeltaRow(BaseModel):
     n: int | None = Field(
         default=None,
         ge=0,
-        description="Sample size behind `delta`/`p`, when the test has a single one (an unpaired test has two).",
+        description=(
+            "Test cases behind `delta`/`p` (the smaller arm's), never observations: a case judged k times is one."
+            " A payload compiled before 0.66 counted observations here."
+        ),
     )
     paired: bool = Field(
         default=False,
@@ -657,7 +674,11 @@ class AttributionMovement(BaseModel):
     delta: float = Field(description="The signed movement from level A to level B, in the payload's `unit`.")
     a: float | None = Field(default=None, description="The measure's value at level A, when the payload states levels.")
     b: float | None = Field(default=None, description="The measure's value at level B, when the payload states levels.")
-    n: int | None = Field(default=None, ge=0, description="Observations behind this movement.")
+    n: int | None = Field(
+        default=None,
+        ge=0,
+        description="Test cases behind this movement (the smaller arm's). A payload compiled before 0.66 counted observations here.",
+    )
 
     @model_validator(mode="after")
     def _the_movement_is_drawable_and_reconciles(self) -> AttributionMovement:
@@ -706,7 +727,7 @@ class AttributionPayload(_VizPayload):
     simultaneously disowns.
 
     **A quantified remainder is earned by declared containment, never by a shared
-    unit.** ``contained_by`` carries :attr:`~threetears.evals.contracts.metrics.MetricDescriptor.contained_by`
+    unit.** ``contained_by`` carries :attr:`~threetears.evals.kernel.metrics.MetricDescriptor.contained_by`
     for the part — the measure catalog's declaration of which whole it is a
     component of — as DATA, so a stored analysis keeps rendering when the catalog
     moves under it. Milliseconds of detached background work are disjoint from the
@@ -837,7 +858,7 @@ class AttributionPayload(_VizPayload):
 class FrontierVizPoint(BaseModel):
     """One contestant's position on cost against quality.
 
-    Named for the chart rather than for the lens: :class:`threetears.evals.analysis.reporting.FrontierPoint`
+    Named for the chart rather than for the lens: :class:`threetears.evals.analysis.lenses.frontier.FrontierPoint`
     is the computed contestant, carrying every denominator its axes were drawn over.
     This is the handful of numbers a picture places, and the two must not be confused
     when one is being read for the other.
@@ -998,6 +1019,14 @@ class FrontierPayload(_VizPayload):
 #: hues rather than as a ramp.
 ABSENT_LEVEL = "—"
 
+#: The levels a numeric lever may carry that are not points on its scale: the absence
+#: sentinel, and :data:`~threetears.evals.analysis.reporting.NULL_LEVEL`, the level a lever
+#: overlaid to ``null`` resolves to (#574). Neither parses as a number, so either one would
+#: flip a genuinely numeric knob (``null / 6 / 12``) to categorical and draw every level as
+#: a hue. Both are set apart before orderedness is inferred; the absence draws in the
+#: neutral and ``null`` as its own marked cell (#694).
+OFF_SCALE_LEVELS: frozenset[str] = frozenset({ABSENT_LEVEL, NULL_LEVEL})
+
 
 class ResolvedDimension(NamedTuple):
     """A swept lever, and the single settled answer about how its levels draw.
@@ -1041,9 +1070,12 @@ def infer_ordered(levels: Iterable[str]) -> bool:
         levels: Every level the dimension takes, the absence sentinel included.
 
     Returns:
-        Whether every level that is actually a level parses as a number.
+        Whether every level that is actually a level parses as a number. The off-scale
+        levels (:data:`OFF_SCALE_LEVELS`) are set apart first, so a ``null`` beside numeric
+        levels leaves the knob ordered, while a lever whose only stated levels are
+        ``null`` (or words) has no order to draw.
     """
-    stated = [level for level in levels if level != ABSENT_LEVEL]
+    stated = [level for level in levels if level not in OFF_SCALE_LEVELS]
     if not stated:
         # Every configuration left this lever alone, so there is no order to have.
         return False
@@ -1157,7 +1189,11 @@ class SweepRow(BaseModel):
         description="The companion measure — held within a tolerance, or free and its range stated. Never absent: the "
         "invariant is that its spread is always stated, and a missing value makes the spread unstatable."
     )
-    n: int | None = Field(default=None, ge=0, description="Observations behind this configuration.")
+    n: int | None = Field(
+        default=None,
+        ge=0,
+        description="Test cases behind this configuration. A payload compiled before 0.66 counted observations here.",
+    )
     label: str | None = Field(
         default=None, description="A name for the configuration, where it has one beyond its levels."
     )
@@ -1458,7 +1494,11 @@ class TimeseriesPoint(BaseModel):
 
     position: str = Field(min_length=1, description="The time position this point sits at — one of `positions`.")
     ci: ConfidenceInterval = Field(description="The estimate and its interval at that position.")
-    n: int | None = Field(default=None, ge=0, description="Observations behind the point.")
+    n: int | None = Field(
+        default=None,
+        ge=0,
+        description="Test cases behind the point. A payload compiled before 0.66 counted observations here.",
+    )
 
 
 class TimeseriesSeries(BaseModel):
@@ -1658,6 +1698,7 @@ __all__ = [
     "SERIES_SLOTS",
     "VALIDATED_SLOTS",
     "ABSENT_LEVEL",
+    "OFF_SCALE_LEVELS",
     "PAYLOAD_MODELS",
     "AttributionMovement",
     "AttributionPayload",

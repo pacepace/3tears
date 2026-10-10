@@ -25,10 +25,10 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-import threetears.evals.contracts as contracts
-from threetears.evals.contracts.candidate_kind import CandidateOutput, CandidateTelemetry
-from threetears.evals.contracts.models import GoalStateOutcome, JudgedArtifact, JudgeEvidence, RubricDim
-from threetears.evals.contracts.provider import INCOMPLETE_STOP_REASONS, withhold_failure_detail
+import threetears.evals.schema as schema
+from threetears.evals.kernel.candidate_kind import CandidateOutput, CandidateTelemetry
+from threetears.evals.schema.models import GoalStateOutcome, JudgedArtifact, JudgeEvidence, RubricDim
+from threetears.evals.kernel.provider import INCOMPLETE_STOP_REASONS, withhold_failure_detail
 from threetears.evals.run.judge import run_judge_llm
 from threetears.evals.run.judge_service import JudgeContext, JudgeService
 
@@ -209,4 +209,4 @@ class TestTheKindContractCarriesTheNewFields:
         assert CandidateTelemetry().untimed_reason is None
 
     def test_the_evidence_type_is_part_of_the_published_contract(self) -> None:
-        assert {"JudgeEvidence", "JudgedArtifact"} <= set(contracts.__all__)
+        assert {"JudgeEvidence", "JudgedArtifact"} <= set(schema.__all__)

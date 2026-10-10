@@ -17,7 +17,7 @@ is pinned here holds for FastMCP (``test_fastmcp_transport.py``) and any adapter
 
 from __future__ import annotations
 
-from threetears.evals.contracts import DEFAULT_LAUNCH_K_RUNS
+from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS
 
 from typing import Any
 
@@ -34,7 +34,7 @@ from threetears.evals.actions import (
     read_only_tools,
     standard_tools,
 )
-from threetears.evals.contracts.base import EvalBaseModel
+from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.ops import JobsStarted, OpsHost, RunLine
 from packages.evals.tests.ops_support import CALLER, ops_fixture
 
@@ -89,7 +89,10 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "templates_list": "read",
         "runs_list": "read",
         "campaigns_list": "read",
+        "case_sets_list": "read",
+        "case_set_mint": "write",
         "run_launch": "spend",
+        "sweep_launch": "spend",
         "launch_estimate": "read",
         "job_poll": "read",
         "job_cancel": "write",
@@ -99,13 +102,27 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "campaign_create": "write",
         "analysis_generate": "spend",
         "analysis_estimate": "read",
+        "judge_second": "spend",
+        "judge_second_estimate": "read",
+        "judge_drift_check": "spend",
+        "judge_temperature": "spend",
+        "judge_temperature_estimate": "read",
         "analyses_list": "read",
+        "insights_list": "read",
+        "insight_get": "read",
+        "analyses_undescribable": "read",
         "report_read": "read",
+        "bars_propose": "read",
         "reporter_case_freeze": "write",
         "reporter_cases_list": "read",
+        "judge_cases_freeze": "write",
+        "judge_profiles_record": "write",
+        "judge_profiles_list": "read",
         "scope_pivot": "read",
         "runs_compare": "read",
+        "runs_bisect": "read",
         "scope_history": "read",
+        "scope_frontier": "read",
         "scope_out_of_run_spend": "read",
         "scope_export": "read",
         "run_archive": "write",
@@ -115,15 +132,20 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "reporter_case_archive": "write",
         "run_delete": "destructive",
         "analysis_delete": "destructive",
+        "insight_delete": "destructive",
     }
-    assert {action.name for action in engine_actions() if action.long_running} == {"run_launch", "analysis_generate"}
+    assert {action.name for action in engine_actions() if action.long_running} == {
+        "run_launch",
+        "sweep_launch",
+        "analysis_generate",
+    }
 
 
 def test_the_standard_tools_split_on_class_and_take_the_hosts_prefix() -> None:
     evals, admin = eval_catalogue().mount_all(standard_tools("lab"))
     assert (evals.name, admin.name) == ("lab", "lab_admin")
     assert {action.permission for action in evals.actions} == {"read", "spend", "write"}
-    assert [action.name for action in admin.actions] == ["run_delete", "analysis_delete"]
+    assert [action.name for action in admin.actions] == ["run_delete", "analysis_delete", "insight_delete"]
     assert evals.hints.open_world and not evals.hints.destructive and not evals.hints.read_only
     assert admin.hints.destructive
 

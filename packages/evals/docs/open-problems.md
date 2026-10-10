@@ -2,18 +2,12 @@
 
 **For** anyone planning work on the engine, or wondering whether a weakness in a report is known. **Answers:**
 what is missing today and why it matters. Each entry is a gap in today's code, or a limit chosen on purpose and marked as such: what is missing, why it
-matters, and the fix where one is known. Each has a tracking issue; the change that closes it deletes its entry. The figures behind several entries are in [measuring soundly](measuring-soundly.md),
-and the outside sources in [prior art](prior-art.md).
+matters, and the fix where one is known. Each has a tracking issue; the change that closes it deletes its entry,
+except a limit decided on purpose, which stays, marked "Decided in" its issue with the decision, so the record
+survives. The figures behind several entries are in [measuring soundly](measuring-soundly.md), and the outside
+sources in [prior art](prior-art.md).
 
 ## Measurement
-
-### No power pre-flight
-
-Tracked in [#594](https://github.com/pacepace/3tears/issues/594).
-
-A launch is priced before it runs (see [cost and budgets](cost-and-budgets.md)), but nothing says what
-effect the campaign can detect, and power depends on variance components nobody measures in advance. Fix: a pre-flight beside the price ("with N cases
-and k repeats this campaign can detect Δ ≥ x"), using variance from earlier runs of the same template.
 
 ### The between-arm correlation is not reported
 
@@ -22,78 +16,39 @@ Tracked in [#595](https://github.com/pacepace/3tears/issues/595).
 Pairing on the frozen case helps only as far as the arms' per-case results correlate; Miller recommends
 reporting the correlation so a reader sees what pairing bought. The engine pairs but reports none.
 
-### Factors that move together are not grouped
 
-Tracked in [#596](https://github.com/pacepace/3tears/issues/596).
+### Equivalence needs a declared range (accepted limit)
 
-The bundle lists each varying factor as a
-[confound](design-rationale.md#confounds-qualify-never-suppress) but not which moved together. In one campaign four factors moved in lockstep across all 22 runs, and
-no comparison could separate them. The design: hash each factor's partition of the runs. Factors with identical
-partitions are aliased and are reported as one group ("these four move together across all 22 runs; no
-comparison separates them"). State that aliasing with an interaction (C = A⊕B) is not checked.
+Decided in [#695](https://github.com/pacepace/3tears/issues/695): a measure that declares a margin and no
+`value_range` is never tested for equivalence, so it never reads `equivalent`.
 
-*Evidence:* agent with tools, 22 runs, 1 campaign, 2026-07, single campaign.
+With no declared range no test of a mean holds its error rate at a few cases (an unbounded value can hide a rare
+large move). The paired t-test the engine used there claimed `equivalent` 11-13% of the time against 5% on skewed
+coarse values. Every engine measure with a margin declares its range, so this binds host measures. Such a
+comparison still reads `improved`, `regressed` or `not_separated`; its equivalence is untested, with the reason
+"declare value_range on this measure to test equivalence", and a report says so once per measure. Fix, on the
+host's side: declare the measure's range.
 
-### A judged guardrail has no margin, and the frontier does not read guardrails
+### A guardrail is held only on a declared range (accepted limit)
 
-Tracked in [#613](https://github.com/pacepace/3tears/issues/613).
+Decided with the fix that made `held` a bounded test's claim (no issue filed yet; tracked with
+[#697](https://github.com/pacepace/3tears/issues/697)'s guardrail pillar): a guardrail on a reading that declares no
+`value_range` is never read `held`.
 
-A boundary dimension declares no margin, so it is held at zero change: `held` needs the arm shown no worse
-at all, and at fifteen cases a pass/fail guardrail at its ceiling reads `undecided` (the interval runs to
-about ±0.22). Measures take their `materiality_threshold`; a judged dimension has nowhere to declare one.
-The frontier, which ranks contestants against an absolute bar with no control, leaves boundary dimensions
-out of pass^k and the composite but does not disqualify a contestant on one, and says so
-(`TwoPillarDisclosure`). Fix: a declared margin per judged guardrail, and a frontier rule for the boundary
-pillar.
+`held` is a claim of safety. With no declared range no test of a mean holds its error rate at a few cases, and the
+t interval the engine read it off claimed `held` up to 9.5% of the time against 2.5% at the margin on skewed coarse
+values. Such a guardrail now reads `undecided`, with the reason "declare value_range on this measure (on compare(),
+ranges= beside the scorer)". Fix, on the host's side: declare the reading's range. A pass/fail scorer and a judged
+scale declare theirs already.
 
-### An arm's production-replicating cost does not name what its runs moved
-
-Tracked in [#571](https://github.com/pacepace/3tears/issues/571).
-
-A run's production-replicating cost carries its production footing: what the run moved off the subject's
-production configuration, what could not be checked, and that it moved nothing when it did (see
-[cost and budgets](cost-and-budgets.md)). The figures that pool runs by arm do not yet: a decision-surface
-cell's cost, a cost contrast and a frontier point's cost axis. Each reads the same spend over an arm's runs,
-which share the arm's levers, so the arm's footing is its runs' (or a disagreement to disclose). Fix: carry
-the union of the arm's run footings beside each pooled cost, saying where the runs disagree.
+**The breach on such a reading is still the t interval's, and its rate is not guaranteed.** Simulated at 30 cases
+with no margin, on 1-5 differences that are -1 on most cases and +4 on one in five (an arm no worse than the
+control that looks worse in most samples), it read `breached` 4.1% of the time against 2.5%. A false breach blocks
+a good arm, which is the lesser harm, and refusing every breach without a range would let a blatant regression on an
+unbounded measure be adopted, so the t breach is kept and the gap recorded as a strict xfail in
+`tests/test_simulated_guardrails.py`. On a declared range the breach is the bounded test's, and holds its rate.
 
 ## Judging
-
-### No check for judge drift across configurations
-
-Tracked in [#597](https://github.com/pacepace/3tears/issues/597).
-
-A judge is a model and its config, and evidence tiers are keyed that way (see
-[evidence tiers](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers)). A re-judge
-or repeat refuses to run under an apparatus the run did not record, so nothing re-scores stored evidence
-under a new config to show how far the judge moved. The ruled design re-scores a frozen transcript set
-whenever a judge config changes: it detects movement, not which judge is right. Without it a before/after
-spanning a judge change cannot be answered. One judged dimension rose from 2.7 to 4.4 when a subject fix
-and a judge swap landed together, while unchanged dimensions moved −0.3 to +0.5; "did the fix work" was
-ruled permanently unanswerable.
-
-*Evidence:* agent with tools, one before/after pair, 2026-07, 2.7→4.4 on the changed judge vs −0.3 to +0.5 on unchanged ones, single campaign.
-
-### The judge temperature policy is not measured
-
-Tracked in [#633](https://github.com/pacepace/3tears/issues/633).
-
-Every judge call now asks for temperature 0 unless a config says otherwise, and the temperature
-sent is part of the judge's identity, so the split the issue found is gone. What was not done is the measurement
-the issue asked the policy to rest on: borderline-case score variance across repeats at each setting, which
-`repeat_judge_scores` can produce for a judge at 0 and one at the provider's default. Until it is run, how much
-temperature moves a judge's scores is unknown; what is known is that the two are never pooled.
-
-*Evidence:* one probe in a private host application, 2026-09: scores stable across attempts at the provider default (a refusal scored
-5, a detailed answer 4); says nothing about borderline cases.
-
-### Human labels and judge scores are not combined
-
-Tracked in [#598](https://github.com/pacepace/3tears/issues/598).
-
-Calibration ratings (`CalibrationRating`) decide a judge's tier, but the estimate itself uses judge
-scores alone. Prediction-powered inference (Angelopoulos et al. 2023) combines a small human-labelled set
-with many judge scores into an estimate whose interval stays valid when the judge is biased. Not built.
 
 ### A tier's bounds are conservative on a 1-5 scale
 
@@ -110,7 +65,8 @@ separation needs 120 results.
 
 ### Pairwise judging (declined for now)
 
-Tracked in [#599](https://github.com/pacepace/3tears/issues/599).
+Decided in [#599](https://github.com/pacepace/3tears/issues/599): declined for now. Every judged score stays a
+single-trial score.
 
 All judging scores one trial alone. For subjective comparisons (tone, style), practitioners find pairwise
 judging with position swap more reliable. It was deliberately not adopted, but "is arm B better than arm
@@ -131,28 +87,11 @@ contribution removed, which makes a two-arm fold testable.
 
 ### A shared third-party quota can still be exhausted (accepted limit)
 
-Tracked in [#600](https://github.com/pacepace/3tears/issues/600).
+Decided in [#600](https://github.com/pacepace/3tears/issues/600): an accepted limit. The ceiling stays in memory
+and per run, and a cross-run, host-declared per-provider quota is not planned.
 
 The per-run metered-call ceiling (`run/metering.py`) refuses calls past a run's limit. It is in memory
 and per run, so concurrent runs, out-of-run calls and the host's live traffic can exhaust one provider
 quota together. Rejected when the ceiling shipped: a credit cap (provider-specific), folding credits into
 the dollar cap (fails open with no rate card), a separate eval provider key. A fix needs a per-provider
 quota the host declares, shared across runs.
-
-## Testing the engine
-
-### No paid analysis-generation lane
-
-Tracked in [#602](https://github.com/pacepace/3tears/issues/602).
-
-The analysis generator is exercised only against stubs, and a prompt, schema or fixture defect looks the
-same until a real model writes an analysis. Fix: an
-opt-in lane that generates one analysis with a real model whenever the generator or its prompt changes.
-
-### No memory-bound probe
-
-Tracked in [#603](https://github.com/pacepace/3tears/issues/603).
-
-A run's peak memory should be bounded by its matrix, not its total trace volume. Fixes in the runner and
-scoring hold this today; no test does. Fix: a probe that runs a large
-synthetic matrix and asserts peak memory. Reinstate the accumulation to prove it fails.

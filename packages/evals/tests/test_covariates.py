@@ -11,14 +11,14 @@ from __future__ import annotations
 
 import pytest
 
-from threetears.evals.contracts.covariates import (
+from threetears.evals.kernel.covariates import (
     count_dropped_tool_calls,
     count_refused_tool_attaches,
     count_truncated_rounds,
     derive_covariates,
     fold_phase_timings,
 )
-from threetears.evals.contracts.models import RoleUsage
+from threetears.evals.schema.models import RoleUsage
 
 
 def _candidate(**kwargs) -> RoleUsage:

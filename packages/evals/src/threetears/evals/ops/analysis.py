@@ -4,7 +4,7 @@ A generation is the analysis side's long work, and it follows the same job contr
 (:mod:`threetears.evals.ops.jobs`): :func:`analysis_generate` checks and builds everything before it
 spends — so a refused generation raises to its caller and costs nothing — then starts the paid call as a
 background task and returns its job. The job's record is the
-:class:`~threetears.evals.contracts.campaign.EvalAnalysisAttempt` the generation writes however it ends.
+:class:`~threetears.evals.kernel.campaign.EvalAnalysisAttempt` the generation writes however it ends.
 
 One generation per campaign runs at a time: a second is refused while the first is live, BEFORE it
 prepares, because preparing builds a client and resolves the prompt — work a refused request need not
@@ -17,28 +17,30 @@ from typing import Any, Literal
 
 from pydantic import Field
 
+from threetears.evals.analysis.bundle.insights import InsightStanding, insight_standing
+from threetears.evals.analysis.bar_proposals import propose_bars
 from threetears.evals.analysis.campaigns import create_campaign, list_campaigns
-from threetears.evals.analysis.report import Report, ReportBasis, report_html, report_markdown
+from threetears.evals.analysis.numbers import format_number
+from threetears.evals.analysis.report import ReportBasis
+from threetears.evals.analysis.report.serialize import ReportFormat, serialize_report
 from threetears.evals.analysis.service import (
     AnalysisGenerationEstimate,
     campaign_report,
+    describe_insight_id_filters,
     estimate_analysis_generation,
     get_analysis,
     list_analyses,
+    list_insights,
     prepare_analysis_generation,
     run_analysis_generation,
 )
-from threetears.evals.contracts.base import EvalBaseModel, VerbatimText
-from threetears.evals.contracts.campaign import EvalAnalysis, EvalCampaign
-from threetears.evals.contracts.errors import ConflictError, ValidationFailedError
-from threetears.evals.contracts.host import EvalHost
+from threetears.evals.schema.base import EvalBaseModel, VerbatimText
+from threetears.evals.kernel.campaign import ConfidenceTier, EvalAnalysis, EvalCampaign, EvalInsight
+from threetears.evals.kernel.errors import ConflictError, NotFoundError, ValidationFailedError
+from threetears.evals.kernel.host import EvalHost
 from threetears.evals.ops.host import AnalysisGeneration, OpsHost
 from threetears.evals.ops.jobs import JobHandle, JobsStarted, analysis_job_id, generation_key
-from threetears.evals.run.curation import delete_analysis, set_analysis_archived, set_campaign_archived
-
-#: The forms a report is read in: Markdown (the memo, and what an agent reads), its canonical JSON (what
-#: the published schema validates) and HTML that reads without any script.
-ReportFormat = Literal["markdown", "json", "html"]
+from threetears.evals.run.curation import delete_analysis, delete_insight, set_analysis_archived, set_campaign_archived
 
 
 class CampaignLine(EvalBaseModel):
@@ -65,8 +67,8 @@ DECLARED_DESIGN_DESCRIPTION = (
     "({stimulus: controlled|uncontrolled, stimulus_reason (required when uncontrolled), apparatus: "
     "commissioned|witnessed}), and optionally questions ([{id, text, merit_axes?}]), bars ([{measure_id, threshold, "
     "direction}], no looser than the registered ones), merit_priority and intended_repetitions. Validated and gated "
-    "as every campaign declaration is; omitted, the campaign is undeclared and its analysis infers the design from "
-    "the runs. Its control is named by control_from_run_id."
+    "as every campaign declaration is. Optional: omitted, the campaign is exploratory — its report and analysis "
+    "say once that its readings confirm nothing, and its design is inferred from the runs. Its control is named by control_from_run_id."
 )
 
 #: What the control run is, said once for the operation and the action.
@@ -80,7 +82,8 @@ CONTROL_RUN_DESCRIPTION = (
 class CampaignDefinition(EvalBaseModel):
     """What creating a campaign names: what it is called, its subject and behaviour, its runs, and what it set out to learn.
 
-    The declared design is optional: a campaign created without one is undeclared, a state every reader handles.
+    The declared design is optional: a campaign created without one is exploratory, which its report and analysis
+    say once at the top, and its analysis reads a design inferred from the runs, never one presented as declared.
     """
 
     name: str
@@ -130,6 +133,65 @@ class AnalysisDeleted(EvalBaseModel):
 
     analysis_id: str
     campaign_id: str
+
+
+#: Where an insight stands, read from the analysis that minted it at every read and never stamped on the
+#: insight (:func:`~threetears.evals.analysis.bundle.insights.insight_standing`): ``live`` — fed to later
+#: generations as prior context; ``retracted`` — its analysis is archived, so no generation reads it;
+#: ``orphaned`` — its analysis was deleted, so it is still read but its provenance cannot be followed.
+InsightStandingName = Literal["live", "retracted", "orphaned"]
+
+
+class InsightLine(EvalBaseModel):
+    """One insight in the ledger, as a listing shows it."""
+
+    id: str
+    subject_id: str
+    statement: str
+    confidence: ConfidenceTier
+    scope: str = Field(description="Where the insight applies, as the analysis wrote it (free text).")
+    observed_at: str
+    source_campaign_id: str
+    source_analysis_id: str
+    standing: InsightStandingName = Field(
+        description="live (fed to later generations as prior context), retracted (its analysis is archived) or "
+        "orphaned (its analysis was deleted; still read, provenance lost)."
+    )
+
+
+class InsightListing(EvalBaseModel):
+    """The scope's insights, newest observation first, and the filters they were read under."""
+
+    subject_id: str | None = Field(description="The subject filter, when one narrowed the read.")
+    source_campaign_id: str | None = Field(description="The campaign filter, when one narrowed the read.")
+    filters: str = Field(description="The id filters that narrowed the read, in words; empty when none did.")
+    insights: list[InsightLine]
+
+
+class InsightDetail(EvalBaseModel):
+    """One insight in full — as stored — and where it stands."""
+
+    insight: EvalInsight
+    standing: InsightStandingName
+
+
+class InsightDeleted(EvalBaseModel):
+    """What deleting an insight removed: the one insight, never the analysis that minted it."""
+
+    insight_id: str
+    source_campaign_id: str
+
+
+def _standing_of(insight: EvalInsight, standing: InsightStanding) -> InsightStandingName:
+    if insight.id in standing.retracted:
+        return "retracted"
+    if insight.id in standing.orphaned:
+        return "orphaned"
+    return "live"
+
+
+def _insight_standing(host: EvalHost, insights: list[EvalInsight], scope_id: str) -> InsightStanding:
+    return insight_standing(insights, lambda analysis_id: host.storage.analysis_archived(analysis_id, scope_id))
 
 
 def _campaign_line(campaign: EvalCampaign) -> CampaignLine:
@@ -260,6 +322,67 @@ def analyses_list(host: EvalHost, campaign_id: str, scope_id: str) -> AnalysisLi
     )
 
 
+class UndescribableArmsLine(EvalBaseModel):
+    """One stored analysis holding at least one arm whose levels this build cannot describe."""
+
+    analysis_id: str
+    campaign_id: str
+    archived: bool = Field(description="Whether the analysis is archived.")
+    undescribable_arms: int = Field(description="Arms in its variant index carrying levels_unavailable.")
+    arms: int = Field(description="Arms in its variant index.")
+    reasons: list[str] = Field(description="Each distinct reason its arms give, sorted; an arm may give none.")
+
+
+class UndescribableArmsListing(EvalBaseModel):
+    """The scope's stored analyses that hold an arm whose levels this build cannot describe."""
+
+    scope_id: str
+    analyses_read: int = Field(description="Every stored analysis in the scope that was read, archived included.")
+    analyses: list[UndescribableArmsLine] = Field(
+        description="Those holding at least one undescribable arm, most such arms first."
+    )
+
+
+def analyses_undescribable(host: EvalHost, scope_id: str) -> UndescribableArmsListing:
+    """The scope's analyses holding an arm whose levels this build cannot describe, with each one's count and reasons.
+
+    Derived from each stored analysis's frozen variant index on every read and never stored: a tally kept beside
+    the rows would be a second derivation that drifts. The fleet view of the per-arm disclosure, which matters
+    most after an ``IDENTITY_VERSION`` bump, when every arm stamped before it may become undescribable at once.
+    Every campaign in the scope is read, archived ones and archived analyses included, since an archived analysis
+    can still be read and restored.
+
+    Args:
+        host: The host whose store is read.
+        scope_id: The scope.
+
+    Returns:
+        The listing.
+    """
+    lines: list[UndescribableArmsLine] = []
+    read = 0
+    for campaign in list_campaigns(host.storage, scope_id):
+        for analysis in list_analyses(host.storage, campaign.id, scope_id):
+            read += 1
+            # `levels_unavailable` set, even to an empty reason, is the admission; None is a describable arm.
+            reasons = [
+                entry.levels_unavailable for entry in analysis.variant_index if entry.levels_unavailable is not None
+            ]
+            if reasons:
+                lines.append(
+                    UndescribableArmsLine(
+                        analysis_id=analysis.id,
+                        campaign_id=analysis.campaign_id,
+                        archived=analysis.archived,
+                        undescribable_arms=len(reasons),
+                        arms=len(analysis.variant_index),
+                        reasons=sorted({reason for reason in reasons if reason}),
+                    )
+                )
+    lines.sort(key=lambda line: (-line.undescribable_arms, line.campaign_id, line.analysis_id))
+    return UndescribableArmsListing(scope_id=scope_id, analyses_read=read, analyses=lines)
+
+
 def _generation_settings(host: OpsHost) -> AnalysisGeneration:
     """The host's generation settings, or a refusal saying it generates none here."""
     if host.generation is None:
@@ -288,8 +411,8 @@ async def analysis_estimate(
         The estimate.
 
     Raises:
-        ValidationFailedError: The host generates no analyses here, the bundle has no evidence, or the
-            prompt does not resolve.
+        ValidationFailedError: The host generates no analyses here, the bundle has no evidence, the
+            prompt does not resolve, or the writer model is not one the host allows.
         NotFoundError: No campaign with that id in the scope.
     """
     generation = _generation_settings(host)
@@ -324,7 +447,8 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
 
     Raises:
         ValidationFailedError: The host generates no analyses here, the bundle has no evidence, the
-            prompt does not resolve, or the first call cannot be priced under the enforced cap or is priced
+            prompt does not resolve, the writer model is not one the host allows
+            (``HostProfile.analysis_writer_models``, checked before any provider request), or the first call cannot be priced under the enforced cap or is priced
             above it.
         ConflictError: A generation of this campaign is already running.
         NotFoundError: No campaign with that id in the scope.
@@ -373,25 +497,6 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
     )
 
 
-def serialize_report(report: Report, format: ReportFormat) -> str:
-    """A report in one of its three forms.
-
-    Args:
-        report: The report.
-        format: ``markdown``, ``json`` (canonical, what the published schema validates) or ``html``.
-
-    Returns:
-        The serialized report.
-    """
-    match format:
-        case "markdown":
-            return report_markdown(report)
-        case "html":
-            return report_html(report)
-        case "json":
-            return report.to_canonical_json()
-
-
 def report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat) -> ReportDocument:
     """The campaign's report, serialized in one form — the same report the command line's ``report`` prints.
 
@@ -421,6 +526,105 @@ def report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: Repo
     )
 
 
+class ProposedBar(EvalBaseModel):
+    """One bar a baseline proposes, for a person to adopt, tighten or leave.
+
+    Attributes:
+        measure: The measure the bar is on, a host-declared one.
+        threshold: The proposed threshold, in the measure's unit.
+        higher_is_better: Which side of ``threshold`` clears it.
+        rationale: How the threshold was seeded from the incumbent's measurement.
+        vacuous: Whether nothing could fail it — adopting it as written registers no standard.
+        vacuous_reason: Why it is vacuous; ``None`` when it discriminates.
+    """
+
+    measure: str
+    threshold: float
+    higher_is_better: bool
+    rationale: str
+    vacuous: bool
+    vacuous_reason: str | None
+
+
+class BarProposals(EvalBaseModel):
+    """What a baseline campaign proposes as its behavior's bars. Read-only: nothing here is registered.
+
+    Attributes:
+        campaign_id: The baseline campaign measured.
+        behavior: The behavior every proposal governs, the campaign's.
+        variant_key: The incumbent: the baseline's one cell.
+        proposals: One per declared measure with a better end that could be seeded, in measure-name order.
+        not_proposed: ``{reading: why}`` for every reading the cell carries that no bar could be proposed on.
+    """
+
+    campaign_id: str
+    behavior: str
+    variant_key: str
+    proposals: list[ProposedBar]
+    not_proposed: dict[str, str]
+
+
+def bars_propose(host: EvalHost, campaign_id: str, scope_id: str) -> BarProposals:
+    """Propose a bar on every measure a single-cell baseline campaign measured its incumbent on.
+
+    :func:`~threetears.evals.analysis.bar_proposals.propose_bars`, read through: each proposal seeded from the
+    incumbent's measured interval and flagged vacuous where nothing could fail it, and every reading nothing
+    could be proposed on named with why. **Nothing is registered**: a bar reaches a registry only when a person
+    writes it into the host's registrations, since :class:`~threetears.evals.kernel.host.BarRegistry` has no
+    mutation API.
+
+    Args:
+        host: The host whose measures, bars and store this reads.
+        campaign_id: The baseline campaign.
+        scope_id: The scope it lives in.
+
+    Returns:
+        The proposals.
+
+    Raises:
+        NotFoundError: No campaign with that id in the scope.
+        ValidationFailedError: The campaign measured no cell or more than one: a baseline is one configuration
+            under one rig.
+    """
+    proposed = propose_bars(host, campaign_id, scope_id=scope_id)
+    return BarProposals(
+        campaign_id=proposed.campaign_id,
+        behavior=proposed.behavior,
+        variant_key=proposed.variant_key,
+        proposals=[
+            ProposedBar(
+                measure=proposal.bar.measure,
+                threshold=proposal.bar.threshold,
+                higher_is_better=proposal.bar.higher_is_better,
+                rationale=proposal.bar.rationale,
+                vacuous=proposal.vacuous,
+                vacuous_reason=proposal.reason or None,
+            )
+            for proposal in proposed.proposals
+        ],
+        not_proposed=dict(proposed.not_proposed),
+    )
+
+
+def bar_proposals_text(proposals: BarProposals) -> str:
+    """Proposals as a person reads them: each bar with its seed and any vacuity, then what was not proposed."""
+    lines = [
+        f"bar proposals for behavior {proposals.behavior!r} from baseline campaign {proposals.campaign_id} "
+        f"(incumbent {proposals.variant_key}); nothing is registered — adopt a bar by writing it into the host's "
+        "registrations"
+    ]
+    for bar in proposals.proposals:
+        side = ">=" if bar.higher_is_better else "<="
+        flag = f" — VACUOUS, do not adopt as written: {bar.vacuous_reason}" if bar.vacuous else ""
+        lines.append(f"- {bar.measure} {side} {format_number(bar.threshold)}{flag}")
+        lines.append(f"  seeded from {bar.rationale}")
+    if not proposals.proposals:
+        lines.append("- no bar could be proposed")
+    for reading, why in sorted(proposals.not_proposed.items()):
+        lines.append(f"- not proposed on {reading}: {why}")
+    return "\n".join(lines)
+
+
 def analysis_delete(host: EvalHost, analysis_id: str, scope_id: str, *, confirm: str | None) -> AnalysisDeleted:
     """Destroy a stored analysis — its insights stay; archive is the reversible answer.
 
@@ -442,24 +646,122 @@ def analysis_delete(host: EvalHost, analysis_id: str, scope_id: str, *, confirm:
     return AnalysisDeleted(analysis_id=removed["analysis_id"], campaign_id=removed["campaign_id"])
 
 
+def insights_list(
+    host: EvalHost, scope_id: str, *, subject_id: str | None = None, source_campaign_id: str | None = None
+) -> InsightListing:
+    """The scope's insight ledger, newest observation first, each with where it stands.
+
+    Over :func:`~threetears.evals.analysis.list_insights`: both filters match ids exactly, and an id that
+    matches nothing is an answer (that campaign minted no insights), not a refusal.
+
+    Args:
+        host: The host whose store holds the ledger.
+        scope_id: The scope whose ledger is read.
+        subject_id: Only insights about this subject.
+        source_campaign_id: Only insights an analysis of this campaign minted.
+
+    Returns:
+        The listing.
+    """
+    insights = list_insights(host.storage, scope_id, subject_id=subject_id, source_campaign_id=source_campaign_id)
+    standing = _insight_standing(host, insights, scope_id)
+    return InsightListing(
+        subject_id=subject_id,
+        source_campaign_id=source_campaign_id,
+        filters=describe_insight_id_filters(subject_id, source_campaign_id),
+        insights=[
+            InsightLine(
+                id=insight.id,
+                subject_id=insight.subject_id,
+                statement=insight.statement,
+                confidence=insight.confidence,
+                scope=insight.scope,
+                observed_at=insight.observed_at,
+                source_campaign_id=insight.source_campaign_id,
+                source_analysis_id=insight.source_analysis_id,
+                standing=_standing_of(insight, standing),
+            )
+            for insight in insights
+        ],
+    )
+
+
+def insight_get(host: EvalHost, insight_id: str, scope_id: str) -> InsightDetail:
+    """One insight in full: everything stored on it, and where it stands.
+
+    Args:
+        host: The host whose store holds the ledger.
+        insight_id: The insight.
+        scope_id: The scope it lives in.
+
+    Returns:
+        The insight and its standing.
+
+    Raises:
+        NotFoundError: No insight with that id in the scope.
+    """
+    insight = host.storage.load_insight(insight_id, scope_id)
+    if insight is None:
+        raise NotFoundError("insight", insight_id)
+    return InsightDetail(insight=insight, standing=_standing_of(insight, _insight_standing(host, [insight], scope_id)))
+
+
+def insight_delete(host: EvalHost, insight_id: str, scope_id: str, *, confirm: str | None) -> InsightDeleted:
+    """Destroy one insight — the intended answer to a wrong one, since an insight has no archive.
+
+    A live insight is fed to every later generation over its subject as prior context, so a wrong one keeps
+    steering analyses until it is gone (:func:`~threetears.evals.run.delete_insight`). Archiving its analysis
+    retracts every insight that analysis minted; this removes one.
+
+    Args:
+        host: The host whose store holds the ledger.
+        insight_id: The insight.
+        scope_id: The scope it lives in.
+        confirm: Must echo ``insight_id``.
+
+    Returns:
+        What was removed.
+
+    Raises:
+        NotFoundError: No insight with that id in the scope — refused before ``confirm`` is read.
+        ValidationFailedError: ``confirm`` does not echo the id.
+        StorageError: The delete failed.
+    """
+    removed = delete_insight(host.storage, insight_id, scope_id, confirm=confirm)
+    return InsightDeleted(insight_id=removed["insight_id"], source_campaign_id=removed["source_campaign_id"])
+
+
 __all__ = [
     "AnalysisDeleted",
     "AnalysisGenerationEstimate",
     "AnalysisLine",
     "AnalysisListing",
+    "BarProposals",
     "CampaignDefinition",
     "CampaignLine",
     "CampaignListing",
+    "InsightDeleted",
+    "InsightDetail",
+    "InsightLine",
+    "InsightListing",
+    "InsightStandingName",
+    "ProposedBar",
     "ReportDocument",
-    "ReportFormat",
+    "UndescribableArmsLine",
+    "UndescribableArmsListing",
     "analyses_list",
+    "analyses_undescribable",
     "analysis_archive",
     "analysis_delete",
     "analysis_estimate",
     "analysis_generate",
+    "bar_proposals_text",
+    "bars_propose",
     "campaign_archive",
     "campaign_create",
     "campaigns_list",
+    "insight_delete",
+    "insight_get",
+    "insights_list",
     "report_read",
-    "serialize_report",
 ]

@@ -1,0 +1,14 @@
+{
+  "archived": false,
+  "created_at": "2026-10-10T08:11:19.752118+00:00",
+  "description": "",
+  "doc_type": "judge_config",
+  "id": "01a124dd-d348-7004-9306-2566294ef20a",
+  "model": "",
+  "name": "tone-v1",
+  "prompt_template": "Score the tone.",
+  "rubric_dim_id": "conversation.tone",
+  "schema_version": 8,
+  "scope_id": "uni-1",
+  "temperature": 0.0
+}

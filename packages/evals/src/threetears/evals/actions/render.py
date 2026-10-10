@@ -21,19 +21,31 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
-from threetears.evals.contracts import GoalStateOutcome, ResultOutcome, counted_goal_verdicts
-from threetears.evals.contracts.errors import EvalServiceError
+from threetears.evals.schema import GoalStateOutcome
+from threetears.evals.kernel import ResultOutcome, counted_goal_verdicts
+from threetears.evals.kernel.errors import EvalServiceError
 from threetears.evals.ops import (
     AnalysisDeleted,
+    JudgeProfileEntry,
+    JudgeProfileListing,
+    JudgeProfileRecording,
+    CaseSetLine,
+    CaseSetListing,
     AnalysisGenerationEstimate,
     AnalysisLine,
     AnalysisListing,
+    BarProposals,
     CampaignLine,
     CampaignListing,
     LaunchEstimate,
     EvalSummary,
     FrozenReporterCase,
+    FrontierResult,
     HistoryResult,
+    InsightDeleted,
+    InsightDetail,
+    InsightLine,
+    InsightListing,
     JobsStarted,
     JobStatus,
     OutOfRunSpendReport,
@@ -48,20 +60,29 @@ from threetears.evals.ops import (
     RunDeleted,
     RunLine,
     RunListing,
+    RunsBisected,
     RunsCompared,
     ScoreExport,
+    SecondJudgeRead,
     TemplateListing,
+    bar_proposals_text,
+    UndescribableArmsListing,
     dollars_text,
     estimate_text,
+    format_number,
     export_text,
+    frontier_text,
     history_text,
     out_of_run_spend_text,
     pivot_text,
+    runs_bisected_text,
     runs_compared_text,
 )
 
 if TYPE_CHECKING:
     from threetears.evals.actions.catalogue import Action, MountedTool
+    from threetears.evals.ops import JudgeTemperatureComparison
+    from threetears.evals.run import JudgeCaseFreezeReport, JudgeTemperatureEstimate, SecondJudgeEstimate
 
 
 # --- help --------------------------------------------------------------------------------------------
@@ -231,7 +252,11 @@ def _compact(value: Any) -> str:
 
 def _result_line(line: ResultLine) -> str:
     """One result on one line: where it sits, its condition, and its headline measures."""
-    parts = [f"{line.condition.value} ({line.termination})", f"cost {_usd(line.cost_usd)}"]
+    parts = [
+        f"{line.condition.value} ({line.termination})",
+        f"cost {_usd(line.cost_usd)}",
+        f"total_ms {_ms(line.total_ms)}",
+    ]
     if line.goal_checks:
         passed = "not counted" if line.goal_checks_passed is None else f"{line.goal_checks_passed}/{line.goal_checks}"
         parts.append(f"goal checks {passed}")
@@ -279,7 +304,7 @@ def _goal_check_line(outcome: GoalStateOutcome, counted: bool | None, condition:
     """One goal check as evaluated, and as every rate counts it when the two differ.
 
     A candidate failure counts every check failed and a harness fault counts none
-    (:func:`~threetears.evals.contracts.counted_goal_verdicts`), so a check that evaluated True on such a
+    (:func:`~threetears.evals.kernel.counted_goal_verdicts`), so a check that evaluated True on such a
     result says both, rather than reading as a pass the listing's count does not hold.
     """
     evaluated = "passed" if outcome.passed else "failed"
@@ -293,8 +318,28 @@ def _goal_check_line(outcome: GoalStateOutcome, counted: bool | None, condition:
     return f"goal check {outcome.expression}: {verdict}" + (f" — {outcome.detail}" if outcome.detail else "")
 
 
+def _ms(value: float | None) -> str:
+    return "absent" if value is None else f"{format_number(value)}ms"
+
+
+def _latency_lines(detail: ResultDetail) -> list[str]:
+    """The stored latency block, an absent component shown as absent, then the remainder as the partition read it."""
+    latency = detail.result.latency
+    if latency is None:
+        stored = "latency: none recorded"
+    else:
+        stored = "latency: " + ", ".join(
+            f"{name} {_ms(getattr(latency, name))}"
+            for name in ("total_ms", "llm_ms", "tool_ms", "async_wait_ms", "judge_ms")
+        )
+    partition = detail.latency_partition
+    if partition.withheld is not None:
+        return [stored, f"orchestration_ms withheld: {partition.withheld}"]
+    return [stored, f"orchestration_ms {_ms(partition.orchestration_ms)} (total_ms less llm_ms and tool_ms)"]
+
+
 def _record_lines(detail: ResultDetail) -> list[str]:
-    """The record part: errors, spend and usage rows, checks and scores, then what the kind stored."""
+    """The record part: errors, spend, latency and usage rows, checks and scores, then what the kind stored."""
     result, condition = detail.result, detail.condition
     lines = [
         f"{label}: {error}"
@@ -306,6 +351,7 @@ def _record_lines(detail: ResultDetail) -> list[str]:
         if error
     ]
     lines.append(f"cost {_usd(result.cost_usd)} over {', '.join(result.cost_roles) or 'no role'}")
+    lines += _latency_lines(detail)
     lines.append(f"usage ({len(result.usage)} row(s)):")
     lines += [f"- {_compact(row.model_dump(mode='json', exclude_none=True))}" for row in result.usage]
     counted = counted_goal_verdicts(result)
@@ -413,6 +459,20 @@ def render_campaign(campaign: CampaignLine) -> str:
     )
 
 
+def render_case_set(case_set: CaseSetLine) -> str:
+    """One version of a case set on one line."""
+    tracked = "" if case_set.tracked else ", one-off"
+    return (
+        f"- {case_set.label}: template {case_set.template_id}, {len(case_set.test_case_ids)} case(s) "
+        f"({', '.join(case_set.test_case_ids)}){tracked}"
+    )
+
+
+def render_case_sets(listing: CaseSetListing) -> str:
+    """A scope's case sets, every version."""
+    return "\n".join([f"case sets ({len(listing.case_sets)})", *(render_case_set(c) for c in listing.case_sets)])
+
+
 def render_campaigns(listing: CampaignListing) -> str:
     """A scope's campaigns."""
     return "\n".join([f"campaigns ({len(listing.campaigns)})", *(render_campaign(c) for c in listing.campaigns)])
@@ -431,6 +491,22 @@ def render_analyses(listing: AnalysisListing) -> str:
     return "\n".join(lines)
 
 
+def render_undescribable_arms(listing: UndescribableArmsListing) -> str:
+    """The scope's analyses holding an arm whose levels this build cannot describe."""
+    lines = [
+        f"analyses in scope {listing.scope_id} holding an arm this build cannot describe: "
+        f"{len(listing.analyses)} of {listing.analyses_read}"
+    ]
+    for line in listing.analyses:
+        why = "; ".join(line.reasons) or "no reason recorded"
+        archived = ", archived" if line.archived else ""
+        lines.append(
+            f"- {line.analysis_id} (campaign {line.campaign_id}{archived}): "
+            f"{line.undescribable_arms} of {line.arms} arm(s) — {why}"
+        )
+    return "\n".join(lines)
+
+
 def render_analysis_estimate(estimate: AnalysisGenerationEstimate) -> str:
     """A generation's price before it starts: its first call's ceiling against the cap, and whether it would start."""
     ceiling = (
@@ -445,9 +521,82 @@ def render_analysis_estimate(estimate: AnalysisGenerationEstimate) -> str:
     )
 
 
+def render_bar_proposals(proposals: BarProposals) -> str:
+    """Each proposed bar with its seed and any vacuity, then every reading nothing could be proposed on."""
+    return bar_proposals_text(proposals)
+
+
 def render_report(document: ReportDocument) -> str:
     """The report itself, in the form asked for — which already says whether it is an analysis or code-only."""
     return document.body
+
+
+def render_judge_case_freeze(report: JudgeCaseFreezeReport) -> str:
+    """A judge case freeze's receipt: each case, the set listing them, and every result it skipped."""
+    created = sum(1 for case in report.cases if case.created)
+    lines = [
+        f"{len(report.cases)} judge case(s) of template {report.template_id} ({created} new, "
+        f"{len(report.cases) - created} already stored)"
+        + (f"; case set {report.case_set.label}" if report.case_set is not None else ""),
+    ]
+    lines += [
+        f"- {case.test_case_id}: {case.dim} on result {case.source_result_id} (run {case.source_run_id}), "
+        f"{case.labels} label(s)"
+        for case in report.cases
+    ]
+    if report.skipped:
+        lines.append(f"skipped ({len(report.skipped)})")
+        lines += [f"- {skip.result_id}: {skip.reason}" for skip in report.skipped]
+    return "\n".join(lines)
+
+
+def _judge_profile_line(entry: JudgeProfileEntry) -> str:
+    """One stored judge profile as a line: the judge, the criterion, what it was measured on and when, its tier."""
+    profile = entry.profile
+    judge = profile.judge_model + (f", config {profile.judge_config_id}" if profile.judge_config_id else "")
+    temperature = profile.judge_temperature
+    judge += f", temperature {temperature if isinstance(temperature, str) else format_number(temperature)}"
+    measures = []
+    for label, agreement in (("labels", profile.label_agreement), ("repeats", profile.self_agreement)):
+        if agreement is None:
+            measures.append(f"{label} not measured")
+        else:
+            measures.append(
+                f"{label} {format_number(agreement.agreement)} over {format_number(agreement.results)} cases"
+            )
+    measures.append(f"parse validity {format_number(profile.parse_validity)}")
+    line = (
+        f"- {profile.rubric_dim} ({judge}), criterion {profile.criterion_digest[:12]}: {entry.tier} — "
+        f"{'; '.join(measures)}; measured at {profile.measured_at} on {format_number(profile.cases)} cases "
+        f"(case set {profile.case_set_fingerprint[:12]}, runs {', '.join(profile.run_ids)})"
+    )
+    if entry.replaced_measured_at is not None:
+        line += f"; replaced the profile measured at {entry.replaced_measured_at}"
+    return line
+
+
+def render_judge_profile_recording(recording: JudgeProfileRecording) -> str:
+    """A judge profile recording's receipt: each profile written, then what was measured and not recorded."""
+    lines = [f"{len(recording.profiles)} judge profile(s) recorded"]
+    lines += [_judge_profile_line(entry) for entry in recording.profiles]
+    if recording.skipped:
+        lines.append(f"not recorded ({len(recording.skipped)})")
+        lines += [
+            f"- {skip.rubric_dim} ({skip.judge_model or 'unnamed judge'}): {skip.reason}" for skip in recording.skipped
+        ]
+    if recording.unread:
+        lines.append(f"results left out ({len(recording.unread)})")
+        lines += [f"- {unread.result_id}: {unread.reason}" for unread in recording.unread]
+    return "\n".join(lines)
+
+
+def render_judge_profiles(listing: JudgeProfileListing) -> str:
+    """The stored judge profiles, one line each."""
+    if not listing.profiles:
+        return "No judge profile is stored."
+    return "\n".join(
+        [f"{len(listing.profiles)} judge profile(s)"] + [_judge_profile_line(entry) for entry in listing.profiles]
+    )
 
 
 def render_reporter_case(case: FrozenReporterCase) -> str:
@@ -523,6 +672,16 @@ def render_runs_compared(compared: RunsCompared) -> str:
     return runs_compared_text(compared)
 
 
+def render_runs_bisected(bisected: RunsBisected) -> str:
+    """Two runs' inputs split: each difference with both values, each undecided input, and every disclosure."""
+    return runs_bisected_text(bisected)
+
+
+def render_frontier(result: FrontierResult) -> str:
+    """Each subject's variants on quality, cost and latency, and the cheapest that clears the bar."""
+    return frontier_text(result)
+
+
 def render_history(result: HistoryResult) -> str:
     """Each contestant's series, with each step's regression verdict and the test behind it."""
     return history_text(result)
@@ -551,10 +710,114 @@ def render_result_rated(rated: ResultRated) -> str:
     )
 
 
+def _bounds(interval: tuple[float, float] | None) -> str:
+    """An interval as ``[low, high]``, or a word saying there is none."""
+    return "no interval" if interval is None else f"[{interval[0]:.3g}, {interval[1]:.3g}]"
+
+
+def render_second_judge(read: SecondJudgeRead) -> str:
+    """A second judge's pass: what it asked and spent apart from the candidate, then agreement and drift per dim."""
+    report = read.report
+    cost = _usd(report.cost_usd) if report.cost_usd is not None else "unpriced"
+    lines = [
+        f"second judge {report.judge.model} on run {report.run_id} (pass {report.pass_id}): asked about "
+        f"{len(report.judged)} of {report.eligible} judgeable result(s) (fraction {report.sample_fraction:g}, seed "
+        f"{report.sample_seed}); {report.scores_paired} score(s) paired, {report.scores_unanswered} unanswered; "
+        f"{report.calls_made} call(s), {cost} — measurement cost, ledgered under second_judge, never the candidate's",
+    ]
+    if report.stopped:
+        lines.append(f"stopped: {report.stopped}")
+    lines += [f"skipped {skip.result_id}: {skip.reason}" for skip in report.skipped]
+    lines += [f"unwritten {result_id}: paid for, record not stored" for result_id in report.unwritten]
+    lines.append("agreement between the judges")
+    for row in read.agreement.dimensions:
+        kappa = (
+            f"kappa ({row.kappa_weighting}) {row.kappa:.3g}, bounds {_bounds(row.agreement_interval)}"
+            if row.kappa is not None
+            else f"kappa {row.kappa_undefined}"
+        )
+        lines.append(f"- {row.rubric_dim}: n={row.n}, exact agreement {row.exact_agreement:.0%}, {kappa}")
+    lines.append(read.drift.disclosure)
+    for drift in read.drift.dimensions:
+        delta = "n/a" if drift.delta is None else f"{drift.delta:+.3g}"
+        lines.append(
+            f"- {drift.rubric_dim}: {drift.verdict}, movement {delta} over {drift.n_cases} case(s), "
+            f"{_bounds(drift.interval)}"
+        )
+    return "\n".join(lines)
+
+
+def render_second_judge_estimate(estimate: SecondJudgeEstimate) -> str:
+    """A second judge's price before it starts, against the cap, and whether it would start."""
+    ceiling = _usd(estimate.ceiling_usd) if estimate.ceiling_usd is not None else "unpriceable"
+    cap = _usd(estimate.cap_usd) if estimate.cap_usd is not None else "none enforced"
+    verdict = "would start" if estimate.would_start else f"would be refused: {estimate.refusal}"
+    return (
+        f"estimate: second judge {estimate.judge.model} on run {estimate.run_id} — {len(estimate.sampled)} of "
+        f"{estimate.eligible} judgeable result(s), {estimate.dims} dim(s), at most {estimate.max_calls} call(s) priced "
+        f"at up to {ceiling}; out-of-run cap {cap}; {verdict}."
+    )
+
+
+def render_judge_temperature(comparison: JudgeTemperatureComparison) -> str:
+    """A judge temperature comparison: what it re-judged and spent, then each dimension's two settings side by side."""
+    return comparison.render()
+
+
+def render_judge_temperature_estimate(estimate: JudgeTemperatureEstimate) -> str:
+    """A judge temperature comparison's price before it starts, against the cap, and whether it would start."""
+    return estimate.render()
+
+
 def render_run_deleted(deleted: RunDeleted) -> str:
     """What deleting a run removed."""
     detached = ", ".join(deleted.campaigns_detached) or "none"
     return f"deleted run {deleted.run_id}, its {deleted.results_deleted} result(s); detached from campaigns: {detached}"
+
+
+def _insight_line(insight: InsightLine) -> str:
+    standing = "" if insight.standing == "live" else f", {insight.standing}"
+    return (
+        f"- {insight.id}: {insight.statement} ({insight.confidence}{standing}; subject {insight.subject_id}, "
+        f"campaign {insight.source_campaign_id or '-'}, analysis {insight.source_analysis_id or '-'})"
+    )
+
+
+def render_insights(listing: InsightListing) -> str:
+    """The scope's insights, saying what narrowed the read — an empty filtered read names what it searched."""
+    narrowed = f" ({listing.filters})" if listing.filters else ""
+    if not listing.insights:
+        return f"no insights{narrowed}"
+    lines = [f"insights{narrowed} ({len(listing.insights)})"]
+    lines += [_insight_line(insight) for insight in listing.insights]
+    return "\n".join(lines)
+
+
+def render_insight(detail: InsightDetail) -> str:
+    """One insight in full."""
+    insight = detail.insight
+    runs = ", ".join(insight.evidence_run_ids) or "none"
+    results = ", ".join(insight.evidence_result_ids) or "none"
+    models = ", ".join(f"{role}={model}" for role, model in sorted(insight.model_versions.items())) or "none"
+    lines = [
+        f"insight {insight.id} ({detail.standing}, {insight.confidence})",
+        f"statement: {insight.statement}",
+        f"subject: {insight.subject_id} ({insight.subject_kind or 'no kind'})",
+        f"scope: {insight.scope or '-'}",
+        f"evidence runs: {runs}",
+        f"evidence results: {results}",
+        f"model versions: {models}",
+        f"observed at: {insight.observed_at}",
+        f"minted by: analysis {insight.source_analysis_id or '-'} of campaign {insight.source_campaign_id or '-'}",
+        f"retired when: {insight.invalidation_trigger or '-'}",
+    ]
+    return "\n".join(lines)
+
+
+def render_insight_deleted(deleted: InsightDeleted) -> str:
+    """What deleting an insight removed."""
+    campaign = deleted.source_campaign_id or "no campaign"
+    return f"deleted insight {deleted.insight_id} (minted from {campaign}); no later analysis reads it"
 
 
 def render_analysis_deleted(deleted: AnalysisDeleted) -> str:
@@ -580,11 +843,16 @@ __all__ = [
     "render_results",
     "render_campaign",
     "render_campaigns",
+    "render_bar_proposals",
     "render_estimate",
     "render_export",
     "render_help_index",
     "render_help_page",
+    "render_frontier",
     "render_history",
+    "render_insight",
+    "render_insight_deleted",
+    "render_insights",
     "render_job_status",
     "render_jobs_started",
     "render_pivot",

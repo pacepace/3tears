@@ -23,7 +23,7 @@ from typing import Any, Self
 import pytest
 
 from threetears.evals.analysis import DisclosureBlock, report_markdown
-from threetears.evals.contracts import StopReason
+from threetears.evals.schema import StopReason
 from threetears.evals.quick import Answer, Judge, callable_host, compare, run_eval
 from threetears.evals.run import get_run, list_results
 
@@ -58,7 +58,7 @@ def _score(system: str, user: str) -> str:
     )
 
 
-# parity-with: threetears.evals.contracts.CompletionClient
+# parity-with: threetears.evals.schema.CompletionClient
 class _FakeJudgeClient:
     """A judge client that takes the temperature it is asked for and reports it as the one it sent."""
 
@@ -86,7 +86,7 @@ class _FakeJudgeClient:
         await self.aclose()
 
 
-# parity-with: threetears.evals.contracts.CompletionClient
+# parity-with: threetears.evals.schema.CompletionClient
 class _FakeFixedTemperatureClient:
     """A judge client whose ``generate`` takes no temperature: it sends none, and says so on each reply."""
 

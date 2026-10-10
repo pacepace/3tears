@@ -111,6 +111,19 @@ campaign = create_campaign(
 | `intended_repetitions` | The repeats per case you meant each cell to get. A cell that falls short is named in `bundle.short_cells`. | the frontier, and any cell you want checked |
 | `questions` | What you set out to learn. Their `merit_axes` set the Holm families, and a reading no question covers is [exploratory](reading-reports.md#readings-no-question-asked-about-exploratory). | a confirmatory answer |
 | `bars`, `merit_priority` | Thresholds tighter than the host's, and the tie-break order between merit axes. | a bar verdict, a tie-break |
+| `crossing`, `skipped_cells` | Which combinations of levels (cells) you meant to run: `full`, or `star` (each axis's first level is the centre; cells moving more than one axis from it are skipped), less any `skipped_cells`. `bundle.declared_crossing` then reads a skipped cell as `skipped_by_design`, never a gap, and an unrun cell you meant to run as `not_run`. With neither, no cell is read either way. | a partial grid |
+
+**Declare a design when you know the question; explore when you do not.** The design is optional. Declare
+one when the question is settled before the runs: you know which lever you are comparing, against which
+control, and what answer would change what you do. Only a declared question can confirm anything, so a
+decision you will act on needs one. Leave it out when you are learning how to run evals, or testing an
+intuition you cannot yet put as a question. A campaign with no design is **exploratory**: its report and its
+bundle say so once, at the top, and its readings confirm nothing. Its analysis reads the design inferred from
+the runs, and never calls that design declared. Do not declare a design you do not have just to get past this:
+a made-up question makes leads read as answers, which is worse than declaring none. When an exploratory
+campaign finds something worth knowing, declare a design for the campaign that tests it. A design that names
+an axis your host cannot vary is refused naming `declarable_axes()`, which lists the levers and open families
+your host accepts.
 
 **The control is a variant, not an earlier baseline run.** It is a configuration, resolved through any member
 run that carries it. A run of the incumbent from last month is not a control: run the control in the same
@@ -190,10 +203,15 @@ The cheaper arm may still be good enough; 20 rooms cannot say. To decide it, add
 Before you rely on it, check two things:
 
 - **Every arm must run under one subject.** The frontier never ranks across subjects. On the quick path,
-  `compare` makes each model its own subject, and so is each arm named without `factors`. So its frontier
-  ranks only arms that share a model, as here. On your own host, run every arm under the subject it measures.
+  every arm of one `compare` runs under the comparison's subject (its name), so its models and its named arms
+  rank on one frontier. On your own host, run every arm under the subject it measures.
 - **pass^k needs goal checks or a judge.** An arm graded by neither, such as a classifier scored only by
-  `expected=`, counts every attempt as a fail and reads pass^k 0. Read such an arm from the contrasts.
+  `expected=`, has no pass^k: `pass_hat_k` is `None`, `n_pass_no_criterion` counts its attempts, and no bar
+  is decided on it. Read such an arm from the contrasts.
+
+The same frontier is the `scope_frontier` action and the `frontier` command
+([The command line](command-line.md#frontier)); `scope_frontier` in `threetears.evals.ops` returns it as a
+`FrontierResult`.
 
 The bundle carries a frontier too (`bundle.frontier`). Check `bundle.frontier_bar_withheld` before reading
 its clearing counts.

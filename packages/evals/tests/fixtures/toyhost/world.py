@@ -47,7 +47,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from threetears.evals.contracts.host import Triggered, WorldDimension, WorldRegistry
+from threetears.evals.kernel.host import Triggered, WorldDimension, WorldRegistry
 
 #: What the extractor is shown, per surface. ``perceived_by`` on a dimension names one of these.
 _DOCUMENT_SURFACE = "document_header"
@@ -263,7 +263,7 @@ def toyhost_world(
     """A world registry bound to a fresh :class:`ToyWorld`.
 
     Built through the real registration path, so every refusal in
-    :class:`~threetears.evals.contracts.host.world.WorldRegistry` runs over this fixture on every construction.
+    :class:`~threetears.evals.kernel.host.world.WorldRegistry` runs over this fixture on every construction.
     A fresh state each call, so a test that seeds one cannot leak into the next through a
     module-level singleton.
 

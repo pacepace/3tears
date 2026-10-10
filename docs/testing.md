@@ -77,6 +77,24 @@ already saw; this is the one that shows what a real model does. The release runs
 tagging anything that touches `packages/models`, and pastes the line the script records into
 the release PR (`docs/releasing.md`, "Cutting a release").
 
+## The evals paid lane: one analysis by a real model
+
+`packages/evals/tests/test_paid_analysis_generation.py` (marker `paid`) assembles the toy host's
+bundle and has a real model write its analysis with the seed writer prompt and the authored
+response schema. It asserts the analysis round-trips the stored contract, every finding's evidence
+resolved to a reading code filled in, and no repair loop exhausted; a second test sends the contract
+with a required field removed and asserts the lane fails. Every other generator test answers with a
+fixtured completion, so a prompt, schema or fixture defect shows up only here.
+
+It spends money, so it is opt-in: `THREETEARS_EVALS_PAID=1 ./scripts/test.sh evals -m paid -rs`,
+with `ANTHROPIC_API_KEY` set. Without the flag, or without a key, both tests skip; they never fail
+for want of one. `THREETEARS_EVALS_PAID_MODEL` picks the writer (default `claude-opus-5-5`). Each call
+is priced at its worst case before it is sent and refused unsent past the lane's ceiling
+(`SPEND_CEILING_USD`, $5; a typical run is two calls at well under a dollar each on the default
+writer). CI runs it (`.github/workflows/evals-paid.yml`) on a PR touching `analysis/generator.py`,
+`analysis/gen_prompt.py`, `contracts/authored.py` or the toy-host fixture, behind the `evals-paid`
+environment's approval gate; there a missing key fails the job rather than skipping.
+
 ## Test fakes
 
 A test fake is any class named `Fake<Name>` or `_Fake<Name>` under a `tests/` directory. Every one

@@ -25,7 +25,7 @@ import pytest
 
 from threetears.evals.analysis.confusion import LabelStatistics, label_statistics
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
-from threetears.evals.contracts.metrics import confusion_cell
+from threetears.evals.kernel.metrics import confusion_cell
 from packages.evals.tests.simulation_support import at_least, draw_confusion
 
 _LABELS = ("negative", "neutral", "positive")

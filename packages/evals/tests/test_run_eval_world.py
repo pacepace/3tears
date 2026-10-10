@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts import RecordedCall
+from threetears.evals.schema import RecordedCall
 from threetears.evals.quick import Dimension, ToolRefused, World, WorldTool, WorldTools, callable_host, run_eval
 from threetears.evals.run import get_result_trace, list_results, list_runs, list_templates
 
@@ -261,7 +261,7 @@ async def test_a_well_formed_quick_world_passes_the_engine_s_own_conformance_kit
     Every dimension's ``perception_ab`` then read nothing on the ``view`` surface and failed, so the engine's own
     world could not pass the kit a host is told to run.
     """
-    from threetears.evals.contracts.host.world_conformance import check_world_conformance
+    from threetears.evals.kernel.host.world_conformance import check_world_conformance
 
     world = room()
     report = await check_world_conformance(world.registry, expressions=[LIT_IFF_DARK])
@@ -346,7 +346,8 @@ async def test_a_check_the_grammar_refuses_is_refused_by_the_quick_path() -> Non
 
 def test_authoring_on_a_quick_world_host_closes_its_tools_parameters_from_their_schemas() -> None:
     """The quick host described no tool parameters, so authoring refused even an enum-closed comparison on it."""
-    from threetears.evals.contracts import EvalTemplate, ValidationFailedError
+    from threetears.evals.schema import EvalTemplate
+    from threetears.evals.kernel import ValidationFailedError
     from threetears.evals.run.authoring import refuse_unsupplied_world
 
     world = noting_room()

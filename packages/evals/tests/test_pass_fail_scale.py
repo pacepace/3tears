@@ -2,7 +2,7 @@
 
 New criteria are pass/fail rather than 1-5. A pass is stored as 1 and a fail as 0, so a
 dimension's mean is its pass rate, and every consumer reads the score through the one predicate
-pair on :class:`~threetears.evals.contracts.models.RubricScore` rather than re-deriving 1-5 arithmetic. Each
+pair on :class:`~threetears.evals.schema.models.RubricScore` rather than re-deriving 1-5 arithmetic. Each
 rule below is asserted beside its 1-5 counterpart, so a check that ignored the scale cannot pass.
 """
 
@@ -15,19 +15,21 @@ from typing import Any, get_args
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.analysis.reporting import PivotError, compute_pivot, project_score_records
-from threetears.evals.contracts.declaration import resolve_bar_name
-from threetears.evals.contracts.host import MeasureRegistry
-from threetears.evals.contracts.models import (
+from threetears.evals.analysis.reporting import project_score_records
+from threetears.evals.analysis.lenses.pivot import PivotError, compute_pivot
+from threetears.evals.kernel.declaration import resolve_bar_name
+from threetears.evals.kernel.host import MeasureRegistry
+from threetears.evals.schema.models import (
     SCALES,
     JudgedArtifact,
     JudgeEvidence,
     RubricDim,
     RubricScale,
     RubricScore,
+    label_key_of,
 )
-from threetears.evals.contracts.provider import withhold_failure_detail
-from threetears.evals.contracts.scoring import compute_dimension_summary, compute_pass_hat_k, result_composite
+from threetears.evals.kernel.provider import withhold_failure_detail
+from threetears.evals.kernel.scoring import compute_dimension_summary, compute_pass_hat_k, result_composite
 from threetears.evals.run.judge import SCALE_READERS, run_judge_llm
 from threetears.evals.run.judge_service import JudgeContext, JudgeService
 from packages.evals.tests.factories import make_eval_result, make_eval_run
@@ -172,18 +174,27 @@ class TestTheJudgeService:
             client_factory=lambda m, t: judge, failure_describer=withhold_failure_detail
         ).score_dimension(dim, _context())
 
-        assert outcome.score == RubricScore(dim="x.arc", scale="pass_fail", axis="capability", score=1, reasoning="r")
+        key = label_key_of(_context().judge_evidence, dim)
+        assert outcome.score == RubricScore(
+            dim="x.arc", scale="pass_fail", axis="capability", score=1, reasoning="r",
+            output_fingerprint=key.output_fingerprint, criterion_fingerprint=key.criterion_fingerprint,
+        )  # fmt: skip
         (system,) = judge.systems
         assert "Answer pass or fail." in system and "1 (worst) to 5 (best)" not in system
         assert "  pass: P" in system and "  fail: F" in system
 
     async def test_an_ordinal_dimension_is_still_asked_for_one_to_five(self):
         judge = _Judge(4)
+        dim = RubricDim(name="x.arc", description="d", scale="ordinal")
         outcome = await JudgeService(
             client_factory=lambda m, t: judge, failure_describer=withhold_failure_detail
-        ).score_dimension(RubricDim(name="x.arc", description="d", scale="ordinal"), _context())
+        ).score_dimension(dim, _context())
 
-        assert outcome.score == RubricScore(dim="x.arc", score=4, reasoning="r", scale="ordinal", axis="capability")
+        key = label_key_of(_context().judge_evidence, dim)
+        assert outcome.score == RubricScore(
+            dim="x.arc", score=4, reasoning="r", scale="ordinal", axis="capability",
+            output_fingerprint=key.output_fingerprint, criterion_fingerprint=key.criterion_fingerprint,
+        )  # fmt: skip
         assert "1 (worst) to 5 (best)" in judge.systems[0]
 
     async def test_a_number_given_to_a_pass_fail_dimension_scores_nothing(self):

@@ -39,7 +39,7 @@ from typing import Any, Literal, get_args
 from pydantic import BaseModel, ValidationError
 
 from threetears.evals.actions import render
-from threetears.evals.contracts.errors import EvalServiceError
+from threetears.evals.kernel.errors import EvalServiceError
 from threetears.evals.ops import JobsStarted, OpsHost
 
 #: What an action does to the world, which decides the tools that may mount it.
@@ -365,7 +365,7 @@ class MountedTool:
     async def call(self, arguments: Mapping[str, Any], *, host: OpsHost, caller: Caller) -> ActionOutcome:
         """Carry out one call: select the action, hold it to its parameters, run it, render what it returns.
 
-        A refusal the engine raises (:class:`~threetears.evals.contracts.EvalServiceError`) is a refused
+        A refusal the engine raises (:class:`~threetears.evals.kernel.EvalServiceError`) is a refused
         call, rendered with its reason. Anything else the handler raises propagates: it is a defect, and
         the transport's error path is where a defect belongs.
 

@@ -3,7 +3,7 @@
 **The core ships no charting library.** It decides what a chart says — a
 :class:`~threetears.evals.analysis.viz.intent.ChartIntent` — and a renderer, supplied by the host or
 installed as an adapter, decides how it looks. :class:`ChartRenderer` is that contract: a renderer is
-constructed with its host's palette (:class:`~threetears.evals.contracts.host.ChartPalette`), draws an intent into its own form, and reads back out of that form
+constructed with its host's palette (:class:`~threetears.evals.kernel.host.ChartPalette`), draws an intent into its own form, and reads back out of that form
 the data it actually placed. The package's own Vega-Lite renderer is one such adapter
 (``threetears.evals.vega``, the ``[vega]`` extra); the core never imports it.
 
@@ -54,7 +54,7 @@ class ChartRenderer(Protocol[DrawingT]):
     """A chart renderer: a host's palette, bound at construction, applied to any intent.
 
     How a renderer is constructed is not part of this contract: what it shares with every other renderer
-    is the palette it is handed (:class:`~threetears.evals.contracts.host.ChartPalette`, renderer-neutral)
+    is the palette it is handed (:class:`~threetears.evals.kernel.host.ChartPalette`, renderer-neutral)
     and the two operations below. What it turns the palette into — a Vega-Lite config, a stylesheet — is
     its own.
     """

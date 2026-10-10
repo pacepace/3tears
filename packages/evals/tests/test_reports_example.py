@@ -36,7 +36,7 @@ async def test_it_writes_the_report_its_evidence_and_its_charts_into_the_directo
     verdicts = await _load().main(tmp_path)
 
     # Neither arm reports its spend, so cost was not measured and is not tested: accuracy is the one verdict.
-    assert verdicts == {("candidate", "Accuracy"): "improved on the control"}
+    assert verdicts == {("candidate", "Accuracy"): "improved"}
     for name in ("report.md", "report.html", "bundle.json"):
         assert (tmp_path / name).stat().st_size > 0, name
     markdown = (tmp_path / "report.md").read_text(encoding="utf-8")
@@ -56,7 +56,7 @@ async def test_it_writes_the_report_its_evidence_and_its_charts_into_the_directo
         assert all(svg.read_text(encoding="utf-8").startswith("<svg") for svg in svgs)
         assert (tmp_path / "charts.html").stat().st_size > 0
     out = capsys.readouterr().out
-    assert "\ncandidate on Accuracy: improved on the control" in out
+    assert "\ncandidate on Accuracy: improved (improved on the control)\ngate passed: all 1 verdict(s) decided" in out
     assert str(tmp_path.resolve()) in out
 
 

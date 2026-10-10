@@ -26,7 +26,7 @@ from threetears.evals.vega.arms.null_result import compile_null_result
 from threetears.evals.vega.arms.sweep_ranking import compile_sweep_ranking
 from threetears.evals.vega.arms.timeseries import compile_timeseries
 from threetears.evals.analysis.viz.intent import ChartIntent
-from threetears.evals.contracts.host import ChartFont
+from threetears.evals.kernel.host import ChartFont
 
 
 class Arm(Protocol):

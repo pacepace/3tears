@@ -18,10 +18,20 @@ the terms in [Concepts](concepts.md).
 The operations (`threetears.evals.ops`) run over an `OpsHost`: the `LaunchHost`, plus `AnalysisGeneration`
 (the prompt, output cap and budget a background generation runs under). Each returns a typed model.
 
-Long work is a **job**: `run_launch` and `analysis_generate` return `JobsStarted`, and `job_poll` /
-`job_cancel` take any job id either returned. A job id names the durable record its work writes, so it is
-still answerable after a restart. A job is answered only in the caller's scope: another scope's
-generation reads `lost` on poll and is refused on cancel.
+Long work is a **job**: `run_launch`, `sweep_launch` and `analysis_generate` return `JobsStarted`, and
+`job_poll` / `job_cancel` take any job id they returned. A job id names the durable record its work writes, so
+it is still answerable after a restart. A job is answered only in the caller's scope: another scope's
+generation or sweep reads `lost` on poll and is refused on cancel.
+
+**A sweep** (`sweep_launch`) is for arms that differ in more than the model: each arm names its own model,
+overlays and apparatus settings, and every arm shares the template, subject, `k` and the other settings.
+Every arm is refused up front if its launch would be. The arms run one at a time, so no arm shares another's
+provider load; `max_concurrent_arms` raises that. To compare latency, also declare `measure_latency`, which
+every arm's launch takes. Each run joins the named campaign
+as it is created. Its one job's progress counts the arms launched and finished, and one `job_cancel` stops
+the arm in flight and launches none after it. An arm refused at its launch, or whose run ends `failed`, ends
+the sweep `failed`. The judge and simulator are the sweep's. Where it names none, the first arm's resolved
+ones hold for the rest, so a role default that moves mid-sweep cannot split the arms.
 
 On a host that enforces its ceilings (`LaunchSettings.enforcement_enabled`), every spend operation is bounded
 in dollars before it spends: a launch by the per-run ceiling, an analysis generation and a judge repeat by the
@@ -58,12 +68,14 @@ ones it accepts. `read_only_tools(prefix)` mounts a tool an agent can only read 
 `run_get` says how a run came out; it does not say what one cell did. Two read actions do:
 
 - `results_list` pages one run's results as light rows (ordered by case, then repeat): each row's case,
-  repeat, model, variant, condition (`ok`, `candidate_fail` or `infra_exclude`), cost, goal checks as every
+  repeat, model, variant, condition (`ok`, `candidate_fail` or `infra_exclude`), cost, `total_ms`, goal checks as every
   rate counts them, judge scores and host measures. `condition_filter` narrows to one condition; `total`,
   `next_offset` and `limit` (default 50, at most 200) page it.
 - `result_get` reads one result back as stored, with one `part` of its trace:
   - `record`, the default: the result record with its per-role usage rows and every error field, and its
-    condition with the sentence every surface shows for it. Each goal check is shown as evaluated, and
+    condition with the sentence every surface shows for it. Its latency follows: the five stored components
+    (an unmeasured one reads `absent`, never zero) and the `orchestration_ms` remainder of `total_ms`, or the
+    sentence saying why that split is withheld. Each goal check is shown as evaluated, and
     also as counted when the two differ: a candidate failure counts every check failed, and a harness
     fault counts none. Then come the output documents exactly as the kind stored them, the call ledger
     and the world's end state.
@@ -99,3 +111,20 @@ frozen case, never a generated one.
 - `reporter_case_archive` retires a case or restores it.
 
 The template then launches through `run_launch`, by the reporter kind the host registers.
+
+## Judge campaigns: evaluating a judge itself
+
+A judge campaign (the `judge` kind) makes a judge configuration the subject: its model, its prompt per criterion and
+its temperature. It starts from frozen cases, never generated ones.
+
+- `judge_cases_freeze` (write) freezes judged runs (`judged_run_ids`)'s stored outputs into cases of a judge template: per judged dim of
+  each result, the evidence its judge read and the person ratings given on it as labels. With `into_case_set`, it mints
+  the set a launch targets. It answers with each case and every result it skipped, with why.
+- Then `run_launch` the judge template, one arm per judge: the arm's model, and its `config_ids` and `temperature`
+  as overlays. The trials call only the judge, and their spend is recorded under the `judge` role.
+  See [judges and calibration](judges-and-calibration.md#evaluating-a-judge-as-a-subject).
+- `judge_profiles_record` (write) stores, from the campaign's finished runs (`judge_run_ids`), one profile per judge
+  and criterion: both agreements, parse validity, the cases and runs it was measured on, and when. Any campaign that
+  judge scores then reads its evidence tier from the profile where its own evidence decides none, and says so.
+  `judge_profiles_list` (read) lists them. See
+  [storing a judge's profile](judges-and-calibration.md#storing-a-judges-profile-for-other-campaigns).

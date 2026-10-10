@@ -13,18 +13,16 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from threetears.evals.contracts.dsl import (
-    DSLError,
+from threetears.evals.schema.goal_grammar import DSLError, extract_text_matches, parse
+from threetears.evals.kernel.dsl import (
     call_parameter_matches,
     evaluate,
-    extract_text_matches,
-    parse,
     undefined_call_references,
     world_prose_matches,
 )
-from threetears.evals.contracts.errors import ValidationFailedError
+from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.run.authoring import create_template
-from threetears.evals.contracts.call_ledger import CallLedger
+from threetears.evals.schema.call_ledger import CallLedger
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
 

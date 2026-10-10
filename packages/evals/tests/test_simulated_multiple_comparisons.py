@@ -27,7 +27,8 @@ import pytest
 
 from threetears.evals.analysis import AnalysisContextBundle, ComparisonFamily, assemble_context_bundle
 from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA, holm_adjust
-from threetears.evals.contracts import EvalCampaign, EvalResult, Question
+from threetears.evals.kernel import EvalCampaign, Question
+from threetears.evals.schema import EvalResult
 from packages.evals.tests.factories import fixture_variant_key, make_eval_result, make_eval_run, minimal_declaration
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
@@ -168,9 +169,9 @@ class TestTheCampaignFamilyHoldsTheFamilyWiseError:
         """One reading of four moves by d_z = 1.2 at 10 cases; the other three do not move.
 
         The family error over the three unmoved readings stays at most α; the moved one is found at
-        least as often as a Bonferroni test at α/4 finds it (Holm's first step IS that test, and its later
-        steps only add rejections), computed from the noncentral t; and it is called a regression — the
-        wrong direction — at most α/2 of the time.
+        least as often as a Bonferroni test at α/4 finds it, computed from the noncentral t (a separation needs
+        its Bonferroni interval to exclude 0, which is that test, #597); and it is called a regression — the
+        wrong direction — at most α/2 of the time. No separation is ever read beside an interval reaching 0.
         """
         rng = random.Random("family-partial-null")
         design = ClusteredDesign(n_cases=10, repeats=3, between_case_sd=1.0, repeat_sd=0.5)
@@ -179,6 +180,12 @@ class TestTheCampaignFamilyHoldsTheFamilyWiseError:
         for _ in range(self.REPLICATES):
             family = _campaign_family(rng, design, contrasts=1, readings=4, reading_correlation=0.5, effects=effects)
             verdicts = family_verdicts(family)
+            assert not any(
+                v.verdict in ("improved", "regressed")
+                and v.interval is not None
+                and v.interval[0] <= 0 <= v.interval[1]
+                for v in verdicts
+            ), "a separation beside an interval that includes 0 (#597)"
             found += verdicts[0].verdict == "improved"
             wrong_way += verdicts[0].verdict == "regressed"
             null_errors += any(
@@ -195,10 +202,11 @@ class TestTheCampaignFamilyHoldsTheFamilyWiseError:
 class TestEveryVerdictTheFamilyReaches:
     """Equivalence verdicts and intervals join the family, and its error stays at α over all of them.
 
-    Four readings at 10 cases: two that do not move, with a wide margin, so the arms are often (rightly)
-    shown equivalent while any separation called on them is false; and two that move by exactly their
-    margin, the boundary where an equivalence claim is false as often as it can be while the separation is
-    real. Every verdict that could be wrong is counted.
+    Four readings: two that do not move, with a wide margin, so the arms are often (rightly) shown
+    equivalent while any separation called on them is false; and two that move by exactly their margin, the
+    boundary where an equivalence claim is false as often as it can be while the separation is real. Every
+    verdict that could be wrong is counted. Equivalence is tested only on a declared range (#695), so the
+    normal readings, which declare none, reach no equivalent verdict, and the pass-rate readings do.
     """
 
     #: 3,000 replicates: SE at α is 0.0040, a 4-SE band of ±0.016.
@@ -229,7 +237,84 @@ class TestEveryVerdictTheFamilyReaches:
         assert uncovered / self.REPLICATES <= at_most(SIGNIFICANCE_ALPHA, self.REPLICATES), (
             f"the intervals failed to cover together {uncovered / self.REPLICATES:.4f} of the time"
         )
-        assert equivalences / (2 * self.REPLICATES) > 0.5, "the fixture must reach the equivalent verdict"
+        assert equivalences == 0, "a margin with no declared range is never tested for equivalence (#695)"
+
+    #: 1,500 replicates: SE at α is 0.0056, a 4-SE band of ±0.023.
+    BOUNDED_REPLICATES = 1500
+
+    def test_on_a_declared_range_equivalence_joins_the_family_and_its_error_stays_at_alpha(self) -> None:
+        """Pass rates over 30 cases at five repeats, on their declared range [0, 1] with a margin of 0.3."""
+        rng = random.Random("family-equivalence-bounded")
+        margin, shifts = 0.3, [0.0, 0.0, 0.3, -0.3]
+        cases = [f"case-{index}" for index in range(30)]
+        wrong = equivalences = 0
+        for _ in range(self.BOUNDED_REPLICATES):
+            family = []
+            for shift in shifts:
+                # Each case's own rate, in [0.3, 0.7] so a shift of ±0.3 stays a probability and the true
+                # difference is exactly the shift.
+                rates = {case: rng.uniform(0.3, 0.7) for case in cases}
+                control = {case: sum(rng.random() < rates[case] for _ in range(5)) / 5 for case in cases}
+                contrast = {case: sum(rng.random() < rates[case] + shift for _ in range(5)) / 5 for case in cases}
+                family.append((control, contrast, True))
+            verdicts = family_verdicts(family, margins=[margin] * 4, value_ranges=[(0.0, 1.0)] * 4)
+            wrong += any(v.verdict in ("improved", "regressed") for v in verdicts[:2]) or any(
+                v.verdict == "equivalent" for v in verdicts[2:]
+            )
+            equivalences += sum(v.verdict == "equivalent" for v in verdicts[:2])
+        assert wrong / self.BOUNDED_REPLICATES <= at_most(SIGNIFICANCE_ALPHA, self.BOUNDED_REPLICATES), (
+            f"family-wise error over every verdict {wrong / self.BOUNDED_REPLICATES:.4f} against α={SIGNIFICANCE_ALPHA}"
+        )
+        assert equivalences / (2 * self.BOUNDED_REPLICATES) > 0.5, "the fixture must reach the equivalent verdict"
+
+
+class TestIdenticalArmsOnPassFailAnswers:
+    """Two identical arms answering a label bank, graded pass/fail twice over: a scorer and accuracy.
+
+    The shape a quick comparison of two prompts that change nothing has: each case has the answer it usually
+    gets (right on about three cases in four), every answer departs from it one time in twelve, to another
+    label, each case is run twice (k=2), and the family holds the scorer's pass rate and the classifier's
+    accuracy, which read the same answers. The values are coarse (a case's mean is 0, 1/2 or 1) and mostly
+    tied, the regime a t-test is least sure of. No difference exists, so ANY ``improved`` or ``regressed``
+    is a false separation, and the family's chance of one must stay at most α at every bank size.
+
+    Through ``compare()`` itself, 1,500 seeded comparisons per bank size gave 0.004 (12 cases), 0.023 (24)
+    and 0.021 (48); this runs the same rule fast.
+    """
+
+    #: 3,000 replicates: SE at α is 0.0040, a 4-SE band of ±0.016.
+    REPLICATES = 3000
+    LABELS = 4
+    DEPARTS = 1 / 12
+
+    def _arm(self, rng: random.Random, usual_right: Sequence[bool], repeats: int) -> dict[str, float]:
+        """Each case's pass rate over its repeats; a departure from a right usual answer is wrong, and from a
+        wrong one is right one time in three (it lands on one of the other three labels)."""
+        rates = {}
+        for case, right in enumerate(usual_right):
+            passes = 0
+            for _ in range(repeats):
+                if rng.random() < self.DEPARTS:
+                    passes += (not right) and rng.randrange(self.LABELS - 1) == 0
+                else:
+                    passes += right
+            rates[f"case-{case}"] = passes / repeats
+        return rates
+
+    @pytest.mark.parametrize("n_cases", [12, 24, 48])
+    def test_the_family_separates_them_at_most_alpha_of_the_time(self, n_cases: int) -> None:
+        rng = random.Random(f"identical-pass-fail-{n_cases}")
+        errors = 0
+        for _ in range(self.REPLICATES):
+            usual_right = [rng.random() < 0.75 for _ in range(n_cases)]
+            control, contrast = self._arm(rng, usual_right, 2), self._arm(rng, usual_right, 2)
+            # The scorer and accuracy read the same answers, so the family holds one comparison twice.
+            family = [(control, contrast, True), (control, contrast, True)]
+            errors += any(v.verdict in ("improved", "regressed") for v in family_verdicts(family))
+        rate = errors / self.REPLICATES
+        assert rate <= at_most(SIGNIFICANCE_ALPHA, self.REPLICATES), (
+            f"{n_cases} cases x 2: family-wise false separation {rate:.4f} against α={SIGNIFICANCE_ALPHA}"
+        )
 
 
 # --- the bundle applies the rule ----------------------------------------------------------------------
@@ -239,6 +324,8 @@ _ARMS = ("control-model", "contrast-one", "contrast-two")
 #: The two readings the seeded campaigns carry: the toy host's own quality measures, one better high and
 #: one better low, so the verdict's direction is exercised both ways.
 _READINGS = {"field_accuracy": True, "fields_stripped": False}
+#: The readings' declared ranges in the toy host: a rate is bounded, a count is not.
+_RANGES: dict[str, tuple[float, float]] = {"field_accuracy": (0.0, 1.0)}
 
 
 def _seeded_campaign(
@@ -340,11 +427,13 @@ class TestTheBundleAppliesTheRule:
                 {"contrast-one": range(7, 13)},
                 ("contrast-one", "unpaired", "improved"),
             ),
-            # No spread: every case moved by one amount, so no t exists and the exact sign-flip p decides —
-            # the mirror reads it through separation_p as the bundle does, never as untested.
-            ("every case moved by one amount", 8, 1, 0.25, None, ("contrast-one", "paired", "improved")),
+            # No spread: every case moved by one amount, so no t exists. On field_accuracy's declared range the
+            # bounded test decides, and eight cases moved 0.25 on a 0-1 rate cannot show a mean moved (#597);
+            # fields_stripped declares no range and is not separated. The mirror reads both as the bundle does.
+            ("every case moved by one amount", 8, 1, 0.25, None, ("contrast-one", "paired", "not_separated")),
+            ("every one of forty cases moved by one amount", 40, 1, 0.25, None, ("contrast-one", "paired", "improved")),
         ],
-        ids=["null-paired", "clear-paired", "partly-shared", "one-shared-unpaired", "no-spread-paired"],
+        ids=["null-paired", "clear-paired", "partly-shared", "one-shared-unpaired", "no-spread-paired", "no-spread-40"],
     )
     def test_each_comparison_is_the_rule(
         self,
@@ -359,7 +448,7 @@ class TestTheBundleAppliesTheRule:
         ``field_accuracy`` — asserted so a seeded campaign that drifted off its branch fails rather than
         passing over the easy case."""
         rng = random.Random(f"bundle-rule-{label}")
-        noise = 0.0 if label == "every case moved by one amount" else 1.0
+        noise = 0.0 if label.startswith("every") else 1.0
         bundle, written = _seeded_campaign(
             rng, n_cases=n_cases, repeats=repeats, shift=shift, cases_of=cases_of, noise=noise
         )
@@ -376,7 +465,8 @@ class TestTheBundleAppliesTheRule:
                     _READINGS[comparison.name],
                 )
                 for comparison in family.comparisons
-            ]
+            ],
+            value_ranges=[_RANGES.get(comparison.name) for comparison in family.comparisons],
         )
         for comparison, rule in zip(family.comparisons, expected, strict=True):
             where = f"{label}: {names[comparison.contrast.variant_key]} on {comparison.name}"

@@ -3,22 +3,22 @@
 A candidate whose answer depends on what a tool said — a search, a price, a dice roll — is compared
 fairly only when every arm faced the same tool answers. The engine's cassettes do that (``cassette_mode``
 ``'capture'`` records what the tools answered, ``'replay'`` serves the recording in place of running
-them), through the seams a kind supplies (:mod:`threetears.evals.contracts.cassettes`). This module is
+them), through the seams a kind supplies (:mod:`threetears.evals.kernel.cassettes`). This module is
 those seams for a candidate that is a plain function:
 
 - **A tool is a plain function** (:data:`Tool`) of keyword arguments that returns a JSON value, sync or
   async. ``run_eval(..., tools={"search": search})`` declares it, and the candidate is then called with
   the case and its tools (:data:`ToolUsingCandidate`): ``await tools["search"](query="...")``.
 - **Each declared tool is one recorded action.** :class:`CellTools` adapts every function to the
-  engine's :class:`~threetears.evals.contracts.cassettes.ToolLike` and is the cell's
-  :class:`~threetears.evals.contracts.cassettes.ActionSeam`, so a cassette run wraps every one of them
+  engine's :class:`~threetears.evals.kernel.cassettes.ToolLike` and is the cell's
+  :class:`~threetears.evals.kernel.cassettes.ActionSeam`, so a cassette run wraps every one of them
   and a replay calls none. A recording is keyed by the tool, its keyword arguments and which time the
   cell asked it, as every cassette is.
 - **The candidate meets the same tools in every mode.** With cassettes off they run live through the
   same adapter, so what a candidate sees does not change when a run starts recording or replaying.
 - **A miss is the rig's, even when the candidate swallows it.** A replay asked something its capture
-  never recorded raises :class:`~threetears.evals.contracts.CassetteMiss` (an
-  :class:`~threetears.evals.contracts.host.ApparatusError`) at the candidate's ``await``. A candidate
+  never recorded raises :class:`~threetears.evals.kernel.CassetteMiss` (an
+  :class:`~threetears.evals.kernel.host.ApparatusError`) at the candidate's ``await``. A candidate
   catching every exception would absorb it into an ordinary answer, so the cell remembers the fault and
   :meth:`CellTools.raise_any_fault` re-raises it once the candidate is done, and the engine excludes the
   cell rather than scoring the candidate's manner toward a broken corpus.
@@ -37,8 +37,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, JsonValue, ValidationError
 
-from threetears.evals.contracts.cassettes import Recordable, ToolLike, ToolWrap
-from threetears.evals.contracts.host import ApparatusError
+from threetears.evals.kernel.cassettes import Recordable, ToolLike, ToolWrap
+from threetears.evals.kernel.host import ApparatusError
 
 #: A tool a candidate calls: a function of keyword arguments returning a JSON value, sync or async. The
 #: keyword arguments are what a recording is keyed by, so a call is made with keywords only.
@@ -61,7 +61,7 @@ class ToolAnswer(BaseModel):
 
 
 class FunctionTool:
-    """A plain function as the engine's :class:`~threetears.evals.contracts.cassettes.ToolLike`: one action, its own name."""
+    """A plain function as the engine's :class:`~threetears.evals.kernel.cassettes.ToolLike`: one action, its own name."""
 
     def __init__(self, name: str, function: Tool) -> None:
         """Bind the function to the name the candidate calls it by.
@@ -106,7 +106,7 @@ class CellTools:
 
     Built by the callable kind's ``prepare`` for every cell of a run whose candidate declares tools, and
     handed to the cell's ``cassettes.wire`` when the run records or replays. It is its own
-    :class:`~threetears.evals.contracts.cassettes.ActionSeam`: every tool is a recorded one, and none
+    :class:`~threetears.evals.kernel.cassettes.ActionSeam`: every tool is a recorded one, and none
     answers in the background, so it declares no delivery seam.
     """
 

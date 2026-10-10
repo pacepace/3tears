@@ -44,9 +44,9 @@ from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.surface_table import SURFACE_PROVENANCE
 from threetears.evals.analysis.viz.intent import chart_intent
 from threetears.evals.analysis.viz.intents.distribution import SHAPE_UNKNOWN
-from threetears.evals.contracts.analysis_measures import MeasureSummary
-from threetears.evals.contracts.authored import AuthoredAnalysis
-from threetears.evals.contracts.metrics import classifier_label_of
+from threetears.evals.kernel.analysis_measures import MeasureSummary
+from threetears.evals.kernel.authored import AuthoredAnalysis
+from threetears.evals.kernel.metrics import classifier_label_of
 from threetears.evals.quick import Comparison, compare
 from packages.evals.tests.test_surface_table import CANDIDATE, analysis, key, two_arm_surface
 
@@ -172,14 +172,20 @@ class TestPerLabelStatisticsAreOneTable:
 
 class TestNoColumnThatSaysNothing:
     async def test_an_interval_only_chart_prints_no_shape_column_and_its_intent_keeps_the_shape(self) -> None:
-        report = (await _classifier()).report
+        # Five cases, the fewest a chart draws an interval band from: below that it draws the cases (#677).
+        five = [*CASES, {"text": "a fern", "label": "plant"}]
+        report = (
+            await compare(
+                five, {"control": right, "candidate": guess}, expected=_expected, control="control", scope_id=SCOPE, k=2
+            )
+        ).report
         (chart,) = [block for block in report.blocks if isinstance(block, ChartBlock)]
         assert chart.intent is not None
         assert {row["shape"] for row in chart.intent.rows} == {SHAPE_UNKNOWN}, "the intent still says it, per row"
 
         markdown = report_markdown(report)
         assert "| Shape |" not in markdown and SHAPE_UNKNOWN not in markdown
-        assert "| Group | Mean | Low | High | n |" in markdown
+        assert "| Group | Mean | Low | High | Cases |" in markdown
         page = report_html(report)
         assert '<th scope="col">Shape</th>' not in page
         assert '<th scope="col">Group</th><th scope="col">Mean</th>' in page

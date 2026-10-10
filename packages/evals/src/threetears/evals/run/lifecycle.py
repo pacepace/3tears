@@ -20,11 +20,11 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
-from threetears.evals.contracts.base import EvalBaseModel
-from threetears.evals.contracts.errors import ConflictError, NotFoundError, StorageError, ValidationFailedError
-from threetears.evals.contracts.models import NON_TERMINAL_RUN_STATUSES, EvalRun, utc_now_iso
-from threetears.evals.contracts.result_condition import ResultOutcome, classify_result
-from threetears.evals.contracts.scoring import reconstruct_completeness, summarize_completeness
+from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.kernel.errors import ConflictError, NotFoundError, StorageError, ValidationFailedError
+from threetears.evals.schema.models import NON_TERMINAL_RUN_STATUSES, EvalRun, utc_now_iso
+from threetears.evals.kernel.result_condition import ResultOutcome, classify_result
+from threetears.evals.kernel.scoring import reconstruct_completeness, summarize_completeness
 from threetears.evals.run.judge_service import JudgeService, judge_clients_for_run
 from threetears.evals.run.rejudge import apply_rejudge, failed_judge_dims, reproducible_judge_inputs
 from threetears.evals.run.run_document import update_eval_run
@@ -32,12 +32,12 @@ from threetears.evals.run.runner import build_judge_context, judge_dims
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.models import EvalResult, RunCompleteness
-    from threetears.evals.contracts.host.eval_host import EvalHost
-    from threetears.evals.contracts.scoring import CellSummary
+    from threetears.evals.schema.models import EvalResult, RunCompleteness
+    from threetears.evals.kernel.host.eval_host import EvalHost
+    from threetears.evals.kernel.scoring import CellSummary
     from threetears.evals.run.jobs import EvalJobManager
     from threetears.evals.run.metering import MeteredCallTally
-    from threetears.evals.contracts.storage import JobStore, RunRecordStore, RunStore
+    from threetears.evals.kernel.storage import JobStore, RunRecordStore, RunStore
 
 log = get_logger(__name__)
 
@@ -415,7 +415,7 @@ async def rejudge_result(
     The dims re-asked are the ones the result holds neither a score nor a recorded "can't tell"
     for (see :func:`~threetears.evals.run.rejudge.failed_judge_dims`) — a can't-tell is the
     judge's answer and is never re-asked — and the outcomes land where the
-    judge phase would have put them, with a :class:`~threetears.evals.contracts.models.JudgeRescore`
+    judge phase would have put them, with a :class:`~threetears.evals.schema.models.JudgeRescore`
     recording the re-judge on the result (:func:`~threetears.evals.run.rejudge.apply_rejudge`).
 
     **It re-asks the same judge the same question, or refuses.** What the judge reads about the
@@ -592,7 +592,7 @@ def record_completeness(
     disclose. The one stop this cannot reach is a hard kill, which leaves no
     frame to run a ``finally``; those runs are reclaimed in a later process,
     where the counts have to be reconstructed from storage instead
-    (:func:`~threetears.evals.contracts.scoring.reconstruct_completeness`).
+    (:func:`~threetears.evals.kernel.scoring.reconstruct_completeness`).
 
     Runs BEFORE the job manager stamps the terminal status (which does its own
     read-modify-write of the same document), so the record is in the document

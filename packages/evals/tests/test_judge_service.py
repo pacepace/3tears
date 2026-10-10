@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts.models import (
+from threetears.evals.schema.models import (
     DEFAULT_JUDGE_TEMPERATURE,
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
@@ -25,7 +25,7 @@ from threetears.evals.contracts.models import (
     JudgeEvidence,
     RubricDim,
 )
-from threetears.evals.contracts.provider import INCOMPLETE_STOP_REASONS, withhold_failure_detail
+from threetears.evals.kernel.provider import INCOMPLETE_STOP_REASONS, withhold_failure_detail
 from threetears.evals.run.judge import CANNOT_TELL, run_judge_llm
 from threetears.evals.run.judge_service import JudgeContext, JudgeOutcome, JudgeService, fold_judge_outcomes
 from packages.evals.tests.llm_client_fakes import ReleasableClientMixin

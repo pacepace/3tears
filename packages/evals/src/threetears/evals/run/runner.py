@@ -3,8 +3,8 @@
 :func:`execute_run` runs a run's matrix — each ``(test_case × model × k_iteration)`` once, in a
 shuffled order derived from the run's id (:func:`cell_execution_order`) — and :func:`run_one_result`
 runs one cell: it asks the template's candidate kind for a candidate, judges what it produced, and
-builds the :class:`~threetears.evals.contracts.models.EvalResult` and its sibling
-:class:`~threetears.evals.contracts.models.EvalTrace`. Nothing here knows what a subject is.
+builds the :class:`~threetears.evals.schema.models.EvalResult` and its sibling
+:class:`~threetears.evals.schema.models.EvalTrace`. Nothing here knows what a subject is.
 
 The candidate-kind seam
 -----------------------
@@ -13,13 +13,13 @@ Everything that differs between one evaluable subject and another lives behind o
 :func:`run_one_result` dispatches on ``template.candidate_kind``
 **exactly once**, at the top of the cell, and everything after that point — judging, goal-state
 recording, usage capture, the cell summary, storage — reads a
-:class:`~threetears.evals.contracts.candidate_kind.CandidateOutput`. The protocol is
-:mod:`threetears.evals.contracts.candidate_kind`; every implementation belongs to whoever owns its
+:class:`~threetears.evals.kernel.candidate_kind.CandidateOutput`. The protocol is
+:mod:`threetears.evals.kernel.candidate_kind`; every implementation belongs to whoever owns its
 subject, and reaches the runner as a :class:`KindFactory` on :attr:`RunnerOptions.candidate_kinds`
 with its collaborators already bound. A host's kinds live in its own adapter; the one this
 package ships is the reporter kind, :mod:`threetears.evals.analysis.reporter_kind`.
 
-The host reaches this loop only through the :class:`~threetears.evals.contracts.host.eval_host.EvalHost`
+The host reaches this loop only through the :class:`~threetears.evals.kernel.host.eval_host.EvalHost`
 it is handed — its storage, trace sink, cell timeout, failure describer, blocking-I/O executor and
 vocabulary — and through the run's options: the kind factories and values such as the rate table, the
 metered-call ledger and the judge concurrency. That is what lets any host run a trial through the same
@@ -37,10 +37,10 @@ For each cell:
 3. ``invoke`` it. The kind reports its output, its mechanical facts, its telemetry and its errors —
    the candidate's own failures and the rig's apart — and, through the cell's sink, what it is waiting
    on and how to read what it has spent so far, so a cell its deadline cancels is still recorded.
-   An :class:`~threetears.evals.contracts.host.apparatus.ApparatusError` out of ``prepare`` or
+   An :class:`~threetears.evals.kernel.host.apparatus.ApparatusError` out of ``prepare`` or
    ``invoke`` is recorded the same way, as that one cell excluded, and the run goes on.
 4. Run the rubric judge, when a judge service is wired and the cell produced something to judge.
-5. Build one :class:`~threetears.evals.contracts.models.EvalResult`, and one trace document beside it.
+5. Build one :class:`~threetears.evals.schema.models.EvalResult`, and one trace document beside it.
 
 A cell cut off before step 5 — by its deadline, its run's cancel, or an apparatus fault — is built
 from its sink instead (``_cut_short_cell``): the spend it had reported, its errors with the cut's own
@@ -60,11 +60,11 @@ from contextlib import (
     contextmanager,
     nullcontext,
 )
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
 
-from threetears.evals.contracts.candidate_kind import (
+from threetears.evals.kernel.candidate_kind import (
     CandidateKind,
     CandidateKindDefect,
     CandidateOutput,
@@ -73,24 +73,24 @@ from threetears.evals.contracts.candidate_kind import (
     UnknownCandidateKind,
     VariantConfig,
 )
-from threetears.evals.contracts.covariates import (
+from threetears.evals.kernel.covariates import (
     count_delivered_turns,
     count_dropped_tool_calls,
     count_refused_tool_attaches,
     count_truncated_rounds,
     derive_covariates,
 )
-from threetears.evals.contracts.dsl import evaluate_with_detail
-from threetears.evals.contracts.errors import StorageError
-from threetears.evals.contracts.host.apparatus import ApparatusError
-from threetears.evals.contracts.host.eval_host import EvalHost
-from threetears.evals.contracts.host.spend import ExternalSpend
-from threetears.evals.contracts.host.subject import SubjectSnapshot
-from threetears.evals.contracts.host.timeouts import EvalCellTimeout
-from threetears.evals.contracts.host.traces import CellIdentity, CellTrace, TraceSink
-from threetears.evals.contracts.identity import DerivedVariantIdentity, resolve_variant_identity
-from threetears.evals.contracts.metrics import ACCURACY_MEASURE, MATCH_MEASURE, undeclarable_host_measures
-from threetears.evals.contracts.models import (
+from threetears.evals.kernel.dsl import evaluate_with_detail
+from threetears.evals.kernel.errors import StorageError
+from threetears.evals.kernel.host.apparatus import ApparatusError
+from threetears.evals.kernel.host.eval_host import EvalHost
+from threetears.evals.schema.external_spend import ExternalSpend
+from threetears.evals.schema.subject import SubjectSnapshot
+from threetears.evals.kernel.host.timeouts import EvalCellTimeout
+from threetears.evals.schema.traces import CellIdentity, CellTrace, TraceSink
+from threetears.evals.kernel.identity import DerivedVariantIdentity, resolve_variant_identity
+from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, undeclarable_host_measures
+from threetears.evals.schema.models import (
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
     AsyncDelivery,
@@ -112,11 +112,11 @@ from threetears.evals.contracts.models import (
     scored_dim_ids,
     utc_now_iso,
 )
-from threetears.evals.contracts.scoring import CellSummary, boundary_dim_names
-from threetears.evals.contracts.call_ledger import CallLedger
-from threetears.evals.contracts.world_events import Firings, WorldEvent
-from threetears.evals.contracts.world_session import WorldSession
-from threetears.evals.contracts.usage_capture import (
+from threetears.evals.kernel.scoring import CellSummary, boundary_dim_names
+from threetears.evals.schema.call_ledger import CallLedger
+from threetears.evals.schema.world_events import Firings, WorldEvent
+from threetears.evals.kernel.world_session import WorldSession
+from threetears.evals.kernel.usage_capture import (
     ExternalRateTable,
     RoleUsageLedger,
     async_delivery_usage,
@@ -124,6 +124,7 @@ from threetears.evals.contracts.usage_capture import (
     cell_cost,
 )
 from threetears.evals.run.cassette_proxy import CassetteCell, CassetteLane
+from threetears.evals.run.executor import CellExecutor, InProcessCellExecutor
 from threetears.evals.run.judge_service import (
     JudgeContext,
     JudgeOutcome,
@@ -132,11 +133,11 @@ from threetears.evals.run.judge_service import (
     fold_judge_outcomes,
 )
 from threetears.evals.run.metering import MeteredCallLedger, MeteredCallTally
-from threetears.evals.contracts.offload import run_blocking, wait_through_cancellation
+from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.host.world import WorldRegistry
+    from threetears.evals.kernel.host.world import WorldRegistry
     from threetears.evals.run.budget import CapBreach
 
 log = get_logger(__name__)
@@ -159,7 +160,7 @@ class RunnerOptions:
     """The run's own knobs that don't fit on the run document — per-run values, never host wiring.
 
     What every run of a host shares — its storage, tracing, cell timeout, executor and failure
-    describer — is the :class:`~threetears.evals.contracts.host.eval_host.EvalHost` the loop is
+    describer — is the :class:`~threetears.evals.kernel.host.eval_host.EvalHost` the loop is
     handed. What is here is decided per run: the kinds a launch bound for it, its ceilings and
     rates, its ledger, its probe of the job it runs in, and a test's pinned cell order.
     """
@@ -180,10 +181,10 @@ class RunnerOptions:
     # can legitimately run longer than the default has its launch raise this to match.
     cell_timeout_s: float = DEFAULT_CELL_TIMEOUT_S
     # Measurement-condition probe: returns how many eval jobs are executing
-    # right now, INCLUDING this one. Cells inside a run are structurally serial, so the
-    # contention that corrupts a latency pool comes from a concurrent JOB — which today means
-    # a second RUN, and the job manager is the only thing that can see one — so the launch that
-    # handed the run to a job manager supplies it, per run. The example that
+    # right now, INCLUDING this one. The contention that corrupts a latency pool comes from a
+    # concurrent JOB — which today means a second RUN, and the job manager is the only thing that
+    # can see one — or from this run's own cells running side by side, which the run knows itself
+    # (``max_concurrent_cells``). The launch that handed the run to a job manager supplies the probe, per run. The example that
     # used to stand here, a template-generation job spending on the same provider account, is
     # an instance the tree no longer has: that path went with the v6 eval surface. The probe
     # is unchanged, because what it measures is jobs, not runs, and the next non-run job
@@ -222,6 +223,28 @@ class RunnerOptions:
     # driving. An empty table wires nothing, so a template naming any kind raises rather than
     # being quietly re-routed.
     candidate_kinds: Mapping[str, KindFactory] = field(default_factory=dict)
+    # How many of the run's cells may execute at once. ``1`` — the default for every caller that
+    # builds its own options, and what a launch declaring latency under test (``measure_latency``)
+    # sets — runs them strictly one after another, so a cell's wall-clock is read with nothing else
+    # of its run beside it. Above 1 the run executes its cells concurrently, and every cell it
+    # records is stamped measured under concurrency (``execution_mode``), which keeps its latency out
+    # of every comparison. :func:`execute_run` narrows it to the run's own matrix, so a run of one
+    # cell is serial whatever was asked.
+    max_concurrent_cells: int = 1
+    # What runs the cells (:class:`~threetears.evals.run.executor.CellExecutor`): a host's own pool or
+    # queue, or ``None`` for the in-process default, which covers serial and concurrent alike.
+    cell_executor: CellExecutor | None = None
+
+    def __post_init__(self) -> None:
+        """Refuse a width no run can execute at.
+
+        Raises:
+            ValueError: ``max_concurrent_cells`` is below 1.
+        """
+        if self.max_concurrent_cells < 1:
+            raise ValueError(
+                f"a run executes at least one cell at a time; got max_concurrent_cells={self.max_concurrent_cells}"
+            )
 
 
 @dataclass(frozen=True)
@@ -260,7 +283,7 @@ class KindFactory(Protocol):
     The one shape a kind reaches the runner in (:attr:`RunnerOptions.candidate_kinds`). A host
     binds the kind's collaborators when it builds the factory — a client, a subject factory, the
     host's own subject object — and the runner supplies the cell. A kind that needs nothing per
-    cell returns the same instance every time, which :class:`~threetears.evals.contracts.candidate_kind.CandidateKind`
+    cell returns the same instance every time, which :class:`~threetears.evals.kernel.candidate_kind.CandidateKind`
     permits because it holds no state between cells.
     """
 
@@ -279,7 +302,7 @@ class CellOutcome(NamedTuple):
     They are separate because ``trace`` and ``otel_trace`` are most of a stored
     result's bytes and no list, aggregate or cost path reads them — so the analysis
     record stays narrow and the payload lives in a sibling
-    :class:`~threetears.evals.contracts.models.EvalTrace` keyed by the result's id.
+    :class:`~threetears.evals.schema.models.EvalTrace` keyed by the result's id.
 
     A :class:`~typing.NamedTuple` rather than a dataclass so a caller that only wants
     the result can unpack and ignore the rest (``result, _ = await run_one_result(...)``)
@@ -411,7 +434,7 @@ class ErrorLedger:
         Infra, because the scoring question is the same one — a broken rig is not the
         candidate's failure and must not be scored as one. The extra flag is what makes
         it *stop*, and that matters for a reason the classification alone does not cover:
-        :func:`~threetears.evals.contracts.result_condition.classify_result` gives ``candidate_error``
+        :func:`~threetears.evals.kernel.result_condition.classify_result` gives ``candidate_error``
         precedence over ``infra_error``, so a cell that keeps driving turns after the rig
         broke can pick up a candidate LLM error and be relabelled a candidate failure —
         a harness fault attributed to the candidate. It also stops paying for turns whose
@@ -569,7 +592,7 @@ class _CellSink:
     spent, or of what it was waiting on, cannot be taken from its return value.
     The run loop builds one of these per cell, hands it down through :func:`run_one_result` to
     the kind's ``invoke`` — the kind-facing half is
-    :class:`~threetears.evals.contracts.candidate_kind.CellSink` — and reads it in its own timeout
+    :class:`~threetears.evals.kernel.candidate_kind.CellSink` — and reads it in its own timeout
     arm, which reads nothing else about the cell.
 
     It holds two things the kind reports — :attr:`pending` and how to read the candidate side
@@ -595,7 +618,7 @@ class _CellSink:
     #: deadline's own charge.
     errors: ErrorLedger = field(default_factory=ErrorLedger)
     #: How to read the candidate side so far, as the kind registered it — see
-    #: :meth:`~threetears.evals.contracts.candidate_kind.CellSink.report_progress`.
+    #: :meth:`~threetears.evals.kernel.candidate_kind.CellSink.report_progress`.
     progress: Callable[[], CandidateOutput] | None = None
     #: The judge phase, once it has begun — what it reads and every dim it asks — so a cell cut
     #: off while it is judged keeps the evidence and can name the dims that did not finish.
@@ -614,6 +637,10 @@ class _CellSink:
     #: The breach the kind's own question reached, once it has — the cell is then cut short by the
     #: run's ceiling, and the run stops ``budget_stopped`` once the cell is saved.
     budget_breach: CapBreach | None = None
+    #: The spend the cell last reported to the cap and its result has not yet recorded — ``None`` when
+    #: part of it could not be priced. What a run executing its cells side by side adds to every other
+    #: cell's question of the cap, so the cap sees all the spend in flight, not one cell's.
+    reported_usd: float | None = 0.0
     #: The one reading taken, once :meth:`side` has taken it.
     _read: CandidateOutput | None = None
 
@@ -669,6 +696,7 @@ class _CellSink:
         """
         if self.budget_gate is None:
             return False
+        self.reported_usd = spent_usd
         breach = self.budget_gate(spent_usd)
         if breach is not None and self.budget_breach is None:
             self.budget_breach = breach
@@ -740,11 +768,11 @@ class _CellTraceScopes:
 
     **The runner owns the harvest and a kind owns only the extents**, and that split is the
     no-host-shapes rule made structural: the host-shaped span payload never crosses the
-    candidate-kind seam (see :mod:`threetears.evals.contracts.candidate_kind`), while the decision of
+    candidate-kind seam (see :mod:`threetears.evals.kernel.candidate_kind`), while the decision of
     *where* each window opens stays with the code that knows which work is a turn and which
     is apparatus.
 
-    This is the engine side of :class:`~threetears.evals.contracts.candidate_kind.CellSpanWindow`, which
+    This is the engine side of :class:`~threetears.evals.kernel.candidate_kind.CellSpanWindow`, which
     is the whole of what a kind is handed — structurally, so the two scopes are all a kind
     can reach, and the sink, the cell identity and the record stay on this side of the seam.
 
@@ -855,6 +883,50 @@ async def run_one_result(
     judge_model: str | None = None,
     sink: _CellSink | None = None,
 ) -> CellOutcome:
+    """Run one ``(test_case, model, k)`` and return the two documents it produced — see :func:`_run_one_result`.
+
+    The cell runs inside its own slice of the run's metered-call ledger
+    (:meth:`~threetears.evals.run.metering.MeteredCallLedger.cell`), opened here so the slice is the
+    cell's own calls whether or not the run's other cells are calling beside it.
+    """
+    with options.metered_calls.cell() if options.metered_calls is not None else nullcontext():
+        return await _run_one_result(
+            host,
+            template=template,
+            test_case=test_case,
+            subject_id=subject_id,
+            model=model,
+            k_iteration=k_iteration,
+            eval_run_id=eval_run_id,
+            scope_id=scope_id,
+            judge_service=judge_service,
+            options=options,
+            variant=variant,
+            cassettes=cassettes,
+            subject_snapshot=subject_snapshot,
+            judge_model=judge_model,
+            sink=sink,
+        )
+
+
+async def _run_one_result(
+    host: EvalHost,
+    *,
+    template: EvalTemplate,
+    test_case: EvalTestCase,
+    subject_id: str,
+    model: str,
+    k_iteration: int,
+    eval_run_id: str,
+    scope_id: str,
+    judge_service: JudgeService | None,
+    options: RunnerOptions,
+    variant: DerivedVariantIdentity,
+    cassettes: CassetteLane | None = None,
+    subject_snapshot: SubjectSnapshot | None = None,
+    judge_model: str | None = None,
+    sink: _CellSink | None = None,
+) -> CellOutcome:
     """Run one ``(test_case, model, k)`` and return the two documents it produced.
 
     Pure-function-style: no persistence here, caller decides when to save. Returns a
@@ -865,7 +937,7 @@ async def run_one_result(
     **The candidate is built and driven behind one seam**: this
     function dispatches on ``template.candidate_kind`` exactly once, and everything after
     that point — judging, goal-state recording, usage capture, the cell summary, storage —
-    reads a :class:`~threetears.evals.contracts.candidate_kind.CandidateOutput` and knows nothing about
+    reads a :class:`~threetears.evals.kernel.candidate_kind.CandidateOutput` and knows nothing about
     subjects, simulators or worlds. That is what makes one refactor cover every kind of
     subject rather than one.
 
@@ -895,7 +967,7 @@ async def run_one_result(
     ``variant`` is this cell's resolved contestant identity, computed once per
     model by the caller (which holds the run) and stamped onto every result
     this function returns, successful or not. Required: every result carries the key
-    (:func:`~threetears.evals.contracts.identity.resolve_variant_identity`).
+    (:func:`~threetears.evals.kernel.identity.resolve_variant_identity`).
 
     ``judge_model`` is the judge the run records, stamped onto the result on every exit. The run
     loop passes ``run.judge_model``, the one carrier of that fact; a direct caller passes the
@@ -1026,7 +1098,7 @@ async def run_one_result(
             # The judge phase follows ``invoke``, so it never began; nothing is left unfinished.
             unfinished_judging=None,
             metered_calls_refused=_cell_metered_refusals(
-                metered_cell_tally(options.metered_calls, metered_baseline),
+                metered_cell_tally(options.metered_calls),
                 side.telemetry.metered_calls_refused if side is not None else None,
             ),
         )
@@ -1093,15 +1165,12 @@ async def run_one_result(
             "nothing for a judge to read, and this run wires a judge service; pass no judge service, or wire a kind "
             "that renders what a judge reads"
         )
-    # Baseline for this CELL's slice of the run's metered-call ledger, taken before the kind
-    # builds anything and read again after it returns. It lives at the dispatch site rather
-    # than inside a kind because the ledger belongs to the RUN: a kind that never thought to
-    # count is the default case, and a per-kind count is a line every future kind has to
-    # remember. ``ClassifierKind`` did not, and every classifier cell stored ``None`` under a
-    # ledger that was in force — the value ``EvalResult.metered_calls_refused`` documents as
-    # meaning nobody counted. Cells are structurally serial, so a before/after pair around the
-    # whole dispatch is exactly what this cell did, ``prepare`` included.
-    metered_baseline = options.metered_calls.tally() if options.metered_calls is not None else None
+    # This CELL's slice of the run's metered-call ledger is its meter, opened by ``run_one_result``
+    # around the whole dispatch, ``prepare`` included, and read after the kind returns. It lives at the
+    # dispatch site rather than inside a kind because the ledger belongs to the RUN: a kind that never
+    # thought to count is the default case, and a per-kind count is a line every future kind has to
+    # remember. ``ClassifierKind`` did not, and every classifier cell stored ``None`` under a ledger that
+    # was in force — the value ``EvalResult.metered_calls_refused`` documents as meaning nobody counted.
     # The cell's handle on the run's cassette lane, already bound to its corpus, template and case,
     # so one kind instance can drive every cell without being told which it is driving.
     cell_cassettes = (
@@ -1210,7 +1279,7 @@ async def run_one_result(
         cell_cassettes.hold(candidate.async_deliveries, complete=True)
     # Held to the declaration before anything below reads the output — see :func:`hold_to_declaration`.
     hold_to_declaration(candidate_kind_name, judged_artifact, candidate)
-    metered_cell = metered_cell_tally(options.metered_calls, metered_baseline)
+    metered_cell = metered_cell_tally(options.metered_calls)
 
     # 3. Below the dispatch: ``output`` + ``mechanical_facts`` + telemetry, and nothing
     # kind-shaped. ``trace`` is the judged artifact AND the stored transcript — one document,
@@ -1504,7 +1573,7 @@ def _ran_its_course(output: CandidateOutput, sink: _CellSink) -> bool:
 
     No error on the output, no breach of the run's cost cap, and a conversation — if the kind held one —
     that stopped on its turn budget. Every other ending may have come before turn 1
-    (:meth:`~threetears.evals.contracts.world_session.WorldSession.require_schedule_announced`).
+    (:meth:`~threetears.evals.kernel.world_session.WorldSession.require_schedule_announced`).
 
     Args:
         output: What the kind returned.
@@ -1526,7 +1595,7 @@ def hold_to_goal_checks(kind_name: str, goal_checks: Sequence[str], output: Cand
     its cells carry no outcome for the checks it skipped, and every per-check rate is computed over
     the cells that happened to grade them while reading as though it covered the run.
 
-    - **An excluded cell** (any ``infra_errors``) is in no rate (:func:`~threetears.evals.contracts.result_condition.counted_goal_verdicts`),
+    - **An excluded cell** (any ``infra_errors``) is in no rate (:func:`~threetears.evals.kernel.result_condition.counted_goal_verdicts`),
       so what it graded is stored as reported.
     - **A failed candidate** (any ``candidate_errors``) may stop before its kind grades anything. A candidate
       failure counts every check as failed — but only the checks a result carries — so each check it did
@@ -1575,7 +1644,7 @@ def hold_to_goal_checks(kind_name: str, goal_checks: Sequence[str], output: Cand
 def refuse_inner_agent_usage(usage: Sequence[RoleUsage]) -> None:
     """Refuse a kind's telemetry that reports its background work's spend a second time.
 
-    Background work reports its spend on its :class:`~threetears.evals.contracts.models.AsyncDelivery`,
+    Background work reports its spend on its :class:`~threetears.evals.schema.models.AsyncDelivery`,
     which the engine folds (:func:`_candidate_side_usage`); a kind reporting ``inner_agent`` rows of
     its own would be counted beside it. Its own function so the runner can refuse before its judge
     phase pays for anything, while the fold itself happens once, when the cell is assembled.
@@ -1598,13 +1667,13 @@ def refuse_engine_derived_host_measures(host_measures: Mapping[str, bool | float
     """Refuse a kind's ``host_measures`` that land a measure the engine derives.
 
     ``accuracy`` is derived from each observation's ``match``
-    (:data:`~threetears.evals.contracts.metrics.ACCURACY_MEASURE`); a kind landing it too would put a
+    (:data:`~threetears.evals.kernel.metrics.ACCURACY_MEASURE`); a kind landing it too would put a
     second producer of one reading beside the engine's, and which one a surface reported would depend
     on the walk's precedence rather than on what was measured. Called by the runner before its judge
     phase pays for anything, and by the assembly every completed cell takes, a witnessed one included.
 
     **Every other engine-owned name is refused too**
-    (:func:`~threetears.evals.contracts.metrics.undeclarable_host_measures`): a core measure (``cost_usd``,
+    (:func:`~threetears.evals.kernel.metrics.undeclarable_host_measures`): a core measure (``cost_usd``,
     ``score`` …) or a name in a namespace the engine mints (``goal_state:…``, ``classifier:…``). A host
     cannot declare one, so a kind landing it reports a value no host described, and the analysis walk would pool it into the engine's own
     observations of that name with ``n`` inflated. Refused rather than dropped: a kind's measures are its own
@@ -1998,13 +2067,16 @@ def _cut_short_cell(
 
 def metered_cell_tally(
     ledger: MeteredCallLedger | None,
-    baseline: MeteredCallTally | None,
+    baseline: MeteredCallTally | None = None,
 ) -> MeteredCallTally | None:
     """One cell's slice of the run's metered-call tally, or ``None`` when nothing counted.
 
-    Cells inside a run execute serially, so the difference between a tally taken before
-    the cell and one taken after IS the cell's contribution — no per-cell ledger, and
-    therefore no way for a per-run ceiling to become a per-cell one N times larger.
+    Inside a cell the runner is running, the slice is the cell's own meter
+    (:meth:`~threetears.evals.run.metering.MeteredCallLedger.cell`), which credits each call to the
+    cell that made it as the ledger decides it — exact whether the run's cells execute serially or
+    side by side, and still one ledger, so a per-run ceiling cannot become a per-cell one N times larger.
+    Outside one, the difference between ``baseline`` and the ledger's tally now is the slice, which
+    holds only while nothing else of the run calls between the two.
 
     ``None`` when the run carries no ledger (every caller that built its own
     ``RunnerOptions``, and every non-eval path), which the caller must not read as
@@ -2017,12 +2089,17 @@ def metered_cell_tally(
 
     Args:
         ledger: The run's ledger, or ``None``.
-        baseline: The tally taken at the top of this cell, or ``None``.
+        baseline: The tally taken at the top of this cell, read only outside a metered cell; ``None``
+            there means nothing counted.
 
     Returns:
         The cell's slice, or ``None``.
     """
-    if ledger is None or baseline is None:
+    if ledger is None:
+        return None
+    if (meter := ledger.open_cell()) is not None:
+        return meter.tally()
+    if baseline is None:
         return None
     return ledger.tally().delta_from(baseline)
 
@@ -2134,7 +2211,7 @@ def _degraded_capture_fields(
     hold is the call that was in flight when the deadline struck, whose spend no response ever
     reported — for a single-call kind that is the whole of it; ``termination`` is what tells a
     reader the total stops there (see
-    :func:`~threetears.evals.contracts.usage_capture.resolve_result_usage`).
+    :func:`~threetears.evals.kernel.usage_capture.resolve_result_usage`).
 
     **Once the kind's ``invoke`` has returned, its whole output is the candidate side's record**
     (:attr:`_CellSink.returned`): a deadline in judging keeps the goal-state facts, host
@@ -2247,13 +2324,13 @@ def _candidate_side_usage(
 ) -> list[RoleUsage]:
     """The candidate side's rows: the kind's own, plus what its background work spent.
 
-    Background work reports its spend on its :class:`~threetears.evals.contracts.models.AsyncDelivery`,
-    so the runner folds it (:func:`~threetears.evals.contracts.usage_capture.async_delivery_usage`)
+    Background work reports its spend on its :class:`~threetears.evals.schema.models.AsyncDelivery`,
+    so the runner folds it (:func:`~threetears.evals.kernel.usage_capture.async_delivery_usage`)
     rather than each kind — work still in flight when the cell ended included, and a substituted
     entry, which can report none, contributing nothing. That is the one path such spend takes: a kind
     reporting ``inner_agent`` rows of its own would be counted beside it, so it is refused. The
     dollars are not summed here: the cell's cost is derived from these rows once, by
-    :func:`~threetears.evals.contracts.usage_capture.cell_cost`.
+    :func:`~threetears.evals.kernel.usage_capture.cell_cost`.
 
     Args:
         usage: The rows the kind reported on its telemetry.
@@ -2300,10 +2377,15 @@ def _warn_on_unreported_async_spend(async_deliveries: list[AsyncDelivery] | None
 
 
 def sample_concurrent_eval_jobs(options: RunnerOptions, previous: int | None = None) -> int | None:
-    """Sample how many eval jobs are executing, keeping the busiest observation so far (R4).
+    """Sample how much eval work is executing beside this cell, keeping the busiest observation so far (R4).
 
-    ``None`` when no probe is wired — recorded as no ``execution_mode`` at all rather than
-    as "serial", because nothing looked. Sampling repeatedly through the cell and keeping
+    The count is the larger of the eval jobs executing (the probe, this one included) and the run's own
+    cell width (:attr:`RunnerOptions.max_concurrent_cells`): a run executing its cells concurrently has
+    that many of its own cells contending for the same provider and the same box, which corrupts a
+    latency pool exactly as a second job does, so its every cell reads ``execution_mode = "concurrent"``.
+
+    ``None`` when no probe is wired and the run's cells are serial — recorded as no ``execution_mode`` at
+    all rather than as "serial", because nothing looked. Sampling repeatedly through the cell and keeping
     the max is what makes the covariate honest across a cell that runs for minutes: a
     second job starting halfway through contaminated this measurement just as surely as
     one that was already running, and boundary samples alone would report it as clean.
@@ -2318,14 +2400,23 @@ def sample_concurrent_eval_jobs(options: RunnerOptions, previous: int | None = N
     result to a telemetry probe would destroy the very evidence the timeout path exists to
     keep. The failure is logged, never swallowed silently.
     """
+    # The run's own width is known, not sampled: a concurrent run is concurrent for every cell it records.
+    own = options.max_concurrent_cells if options.max_concurrent_cells > 1 else None
     if options.concurrent_eval_jobs_probe is None:
-        return previous
+        return _busiest(previous, own)
     try:
         observed = options.concurrent_eval_jobs_probe()
     except Exception:  # prawduct:ok-broad-except — caller-supplied probe; a telemetry read must not fail a cell
         log.warning("Concurrent-eval-job probe raised; recording execution_mode as unmeasured", exc_info=True)
-        return previous
-    return observed if previous is None else max(previous, observed)
+        return _busiest(previous, own)
+    return _busiest(_busiest(previous, observed), own)
+
+
+def _busiest(a: int | None, b: int | None) -> int | None:
+    """The larger of two conditions samples, either of which may be absent."""
+    if a is None:
+        return b
+    return a if b is None else max(a, b)
 
 
 def assert_preconditions(
@@ -2356,7 +2447,7 @@ def assert_preconditions(
     the first turn, against the world its session read back when the seed settled — so no kind has to
     remember to, and a failed presumption is excluded rather than scored as the subject's failure. It
     stays engine API for a kind that wants to refuse earlier, inside its own ``prepare``
-    (:exc:`~threetears.evals.contracts.candidate_kind.CandidatePreparationFailed` with
+    (:exc:`~threetears.evals.kernel.candidate_kind.CandidatePreparationFailed` with
     ``termination="precondition_failed"``): the assertion is pure over the t=0 world, so asking it twice
     gives one answer.
 
@@ -2366,7 +2457,7 @@ def assert_preconditions(
             ``variation.tone`` beside the world.
         seeded: The seeded world, immediately after seeding and before any turn, keyed by declared
             dimension name — read back through the dimensions' ``read`` handles, or named from the
-            seed by :meth:`~threetears.evals.contracts.host.world.WorldRegistry.named`. Read with an
+            seed by :meth:`~threetears.evals.kernel.host.world.WorldRegistry.named`. Read with an
             empty call ledger: at t=0 the candidate has made no call.
         world: The host's world registry (``profile.world``), so a path reads the dimension the
             authoring gate resolved it to.
@@ -2405,7 +2496,7 @@ def _failed_preconditions(
     """The engine's own t=0 assertion of a template's preconditions: the exclusion it makes, or None when they held.
 
     Asserted against the world the cell's session read back the moment its seed settled
-    (:attr:`~threetears.evals.contracts.world_session.WorldSession.seeded_state`). A cell whose kind never seeded
+    (:attr:`~threetears.evals.kernel.world_session.WorldSession.seeded_state`). A cell whose kind never seeded
     through its session has no t=0 world the engine saw, so its presumptions are asserted against an empty one,
     where none is established — excluded rather than scored, since a presumption nobody checked is not one that
     held (:func:`assert_preconditions`).
@@ -2460,7 +2551,7 @@ class GoalCheckUnevaluable(RuntimeError):
 
     The check is a claim about the world, and a check that cannot be evaluated has made no claim.
     Scoring it as failed would put a harness or DSL fault on the candidate's record, so a kind that
-    catches it raises :class:`~threetears.evals.contracts.host.ApparatusError` from ``invoke``, which
+    catches it raises :class:`~threetears.evals.kernel.host.ApparatusError` from ``invoke``, which
     the runner records as an apparatus fault that excludes the cell.
 
     Engine API beside :func:`evaluate_goal_state`, which raises it: a kind catches it to tell a
@@ -2529,7 +2620,7 @@ def grade_goal_checks(
 ) -> list[GoalStateOutcome]:
     """Grade goal checks against a call ledger, an end state and what fired: the one evaluation every caller uses.
 
-    **Callable by every kind.** A kind fills a :class:`~threetears.evals.contracts.call_ledger.CallLedger`
+    **Callable by every kind.** A kind fills a :class:`~threetears.evals.schema.call_ledger.CallLedger`
     as its candidate acts, reads its end state, and grades here; :func:`evaluate_goal_state` is the
     same call over a template's checks. The check-controls gate
     (:mod:`threetears.evals.run.check_controls`) grades a template's control end states through here,
@@ -2543,8 +2634,8 @@ def grade_goal_checks(
         end_state: The world to read, keyed by declared dimension name — a cell's end state, or a
             control end state.
         fired: What fired, read by ``fired()`` and ``fired_armed()`` — a cell's
-            (:attr:`~threetears.evals.contracts.world_session.WorldSession.fired`), a stored result's
-            (:meth:`~threetears.evals.contracts.world_events.Firings.of` its world events), or a control's.
+            (:attr:`~threetears.evals.kernel.world_session.WorldSession.fired`), a stored result's
+            (:meth:`~threetears.evals.schema.world_events.Firings.of` its world events), or a control's.
             Required rather than defaulted: ``None`` says no world events were recorded, and a check
             reading either then raises rather than scoring "nothing fired" for a cell nobody watched.
         variation: The case parameters a check may read as ``variation.*``.
@@ -2554,7 +2645,7 @@ def grade_goal_checks(
     Returns:
         One outcome per expression, in order. A check whose value rests on something the end state
         does not hold is *not established* — never a pass, negated or not — and is recorded failed
-        with a detail starting :data:`~threetears.evals.contracts.dsl.NOT_ESTABLISHED` that names
+        with a detail starting :data:`~threetears.evals.kernel.dsl.NOT_ESTABLISHED` that names
         the paths that resolved to nothing, so a reader can tell it from a check that evaluated False.
 
     Raises:
@@ -2579,7 +2670,7 @@ def template_as_graded(template: EvalTemplate, refused: Mapping[str, str] | None
     A template stored before a grammar rule can carry a check the rule now refuses, and grading it raises in
     every cell — each then a rig fault, with the check's reason buried in a generic apparatus error and every
     other measure of the cell lost with it. The launch freezes the refused checks on the run
-    (:func:`~threetears.evals.contracts.models.refused_goal_checks`); the cells grade the rest, and every surface
+    (:func:`~threetears.evals.schema.models.refused_goal_checks`); the cells grade the rest, and every surface
     counts the refused check as excluded, with its reason.
 
     Args:
@@ -2602,7 +2693,7 @@ def _unevaluated_goal_checks(template: EvalTemplate, *, waiting_on: str) -> list
     A deadline that strikes while the candidate's turn or its background work is pending cancels
     the cell before the goal state is graded, and fails the candidate (``_DEADLINE_CHARGE``). A
     candidate failure counts every goal-state check as failed, and
-    :func:`~threetears.evals.contracts.result_condition.counted_goal_verdicts` is where every per-check rate
+    :func:`~threetears.evals.kernel.result_condition.counted_goal_verdicts` is where every per-check rate
     applies that — but only to the checks a result carries. Carrying them here is what puts this
     cell in those rates; left empty, an arm whose candidate keeps hitting its deadline would show
     per-check pass rates over only the cells it finished, while pass^k counted it as failing.
@@ -2710,7 +2801,7 @@ async def judge_dims(
     no call reads another's output. The judge client builds each request locally, which
     is what makes gathering on the one client the service caches per ``(model,
     temperature)`` sound; the port states the requirement
-    (:class:`~threetears.evals.contracts.provider.CompletionClient`). ``concurrency=1`` reproduces a
+    (:class:`~threetears.evals.schema.completion.CompletionClient`). ``concurrency=1`` reproduces a
     serial phase exactly.
 
     The order is DIMENSION order — transcript axis, outcome axis, then ``template.rubric``
@@ -2762,6 +2853,38 @@ async def judge_dims(
     # cancellation — and must propagate, not be recorded as a score.
     outcomes = await asyncio.gather(*(_judge_one(dim_id, call) for dim_id, call in calls))
     return [(dim_id, oc) for (dim_id, _), oc in zip(calls, outcomes, strict=True)]
+
+
+@dataclass
+class _RunStop:
+    """What stops a run, once one of its cells decided it — the first decision wins.
+
+    A run executing its cells side by side cannot stop by raising from the cell that decided: the
+    cells already running beside it have spent, and are recorded, saved and reported first. So the
+    decision is held here, every cell not yet begun sees it and never starts, and
+    :func:`execute_run` raises it once the last running cell has ended. A serial run reaches the same
+    raise one cell sooner than it used to be raised, with nothing run in between.
+    """
+
+    #: The cost cap's breach the run stops on, when the cap stopped it.
+    breach: CapBreach | None = None
+    #: The provider's refusal of the calling account, when that stopped it.
+    refusal: str | None = None
+
+    @property
+    def decided(self) -> bool:
+        """Whether a cell has stopped the run."""
+        return self.breach is not None or self.refusal is not None
+
+    def budget(self, breach: CapBreach) -> None:
+        """Stop the run on its cost cap, unless something stopped it first."""
+        if not self.decided:
+            self.breach = breach
+
+    def exhausted(self, refusal: str) -> None:
+        """Stop the run on its account's refusal, unless something stopped it first."""
+        if not self.decided:
+            self.refusal = refusal
 
 
 @dataclass
@@ -2844,10 +2967,18 @@ async def execute_run(
     write runs on ``host.blocking_executor``.
 
     Cells are executed in the shuffled order :func:`cell_execution_order` derives
-    from the run's id, not in nested ``k × model × test case`` order. They remain
-    strictly serial, and the produced set is the identical matrix; only the
-    sequence moves, so that drift over the run's duration spreads across the
-    coordinates instead of aligning with one of them.
+    from the run's id, not in nested ``k × model × test case`` order. The produced set is
+    the identical matrix; only the sequence moves, so that drift over the run's duration
+    spreads across the coordinates instead of aligning with one of them.
+
+    **Serial or concurrent.** ``options.max_concurrent_cells`` cells run at once through
+    ``options.cell_executor`` (:mod:`threetears.evals.run.executor`), starting in that order;
+    ``1`` — what a launch declaring latency under test sets — runs each to its end before the
+    next begins. A run executing its cells concurrently stamps every cell ``execution_mode =
+    "concurrent"``, so the latency it recorded is kept out of every comparison. Each cell is
+    the same work either way: its own sink, its own slice of the metered-call ledger, its own
+    cassette handle, world session and trace windows. Two cells of one case do not capture at
+    once, because a capture clears the case's previous recording as it starts.
 
     Returns one :class:`CellSummary` per cell, **not** the results themselves.
     Storage is where a result lives; a caller wanting a transcript, scores or
@@ -2879,10 +3010,15 @@ async def execute_run(
     :class:`~threetears.evals.run.budget.BudgetStoppedError`, carrying that breach so the
     stop reports the ceiling and the spend that crossed it rather than asserting
     that one did. ``None`` from the gate means the run may proceed. The gate takes the spend
-    pending beyond what it has recorded — ``0.0`` between cells — because a running cell asks it
-    too, through its sink (:meth:`_CellSink.cost_cap_reached`), counting what it has spent so far: a
-    cell the cap stops that way is recorded excluded, and the loop raises
-    :class:`~threetears.evals.run.budget.BudgetStoppedError` once that cell is saved.
+    pending beyond what it has recorded — between cells, what the cells still running have reported —
+    because a running cell asks it too, through its sink (:meth:`_CellSink.cost_cap_reached`), counting
+    what it has spent so far plus what every other running cell has reported: a cell the cap stops that
+    way is recorded excluded, and the loop raises :class:`~threetears.evals.run.budget.BudgetStoppedError`
+    once every running cell is saved. **The bound on overshoot**: once the cap is reached no cell
+    starts, and a cell that asks the cap before each paid call makes none after it; so the run's spend
+    exceeds its cap by at most what was already in flight — one call per running cell for a kind that
+    asks before each call, one whole cell per running cell for a kind that never asks. At width 1 that
+    is the one cell (or call) a serial run could always overshoot by.
     Every already-run cell is saved before its successor's check, so nothing
     produced is lost; the job manager translates the raise into the
     ``budget_stopped`` status. ``on_cost`` is invoked with each saved result's
@@ -2891,7 +3027,7 @@ async def execute_run(
     the cap counts as such. Both default ``None`` (no gating / no
     recording) — the pure-function contract for tests and cap-disabled contexts.
 
-    Apparatus faults: a cell an :class:`~threetears.evals.contracts.host.apparatus.ApparatusError`
+    Apparatus faults: a cell an :class:`~threetears.evals.kernel.host.apparatus.ApparatusError`
     ended is recorded excluded and the loop goes on. Only when EVERY cell of the run ended that
     way does the loop raise :class:`EveryCellApparatusFailedError`, after the last cell is saved:
     the rig never worked, so the run measured nothing, and the job manager files it ``failed``.
@@ -2903,8 +3039,8 @@ async def execute_run(
     Account exhaustion: when a cell's candidate, simulator or judge call was refused for the
     calling ACCOUNT (``_CellSink.account_refusal`` — out of credit, or the key refused), that
     cell is saved and reported like any other, and then the loop stops by raising
-    :class:`~threetears.evals.run.budget.AccountExhaustedError`: every model behind the key would get the
-    same answer, so no further cell is launched. The error carries how far the run got and what
+    :class:`~threetears.evals.run.budget.AccountExhaustedError` once the cells still running have ended:
+    every model behind the key would get the same answer, so no further cell is launched. The error carries how far the run got and what
     its delivered results cost, summed from the cells this loop recorded; the job manager
     translates it into the ``exhausted`` status. Unlike the cost cap this needs no caller wiring —
     the refusal is observed, not configured.
@@ -2968,13 +3104,69 @@ async def execute_run(
     # (a box that slows, a neighbouring job, a leak) would otherwise land on the
     # matrix aligned with the coordinate being compared. See
     # :func:`cell_execution_order` for the order's derivation and why its seed is
-    # not a measurement condition.
-    for k, tc in cell_execution_order(run, test_cases, rng=options.cell_order_rng):
+    # not a measurement condition. Cells START in this order however many run at once.
+    order = cell_execution_order(run, test_cases, rng=options.cell_order_rng)
+    # The run's width, narrowed to its own matrix: a run of one cell is serial whatever was asked, and
+    # its cells say so (``execution_mode`` reads the width off these options).
+    width = min(options.max_concurrent_cells, max(len(order), 1))
+    if width != options.max_concurrent_cells:
+        options = replace(options, max_concurrent_cells=width)
+    executor = options.cell_executor if options.cell_executor is not None else InProcessCellExecutor()
+    # The sinks of the cells running now. The cost cap reads them, so a cell asking it — and a cell
+    # about to start — is weighed against every other cell's spend in flight, not its own alone.
+    in_flight: list[_CellSink] = []
+    # What stops the run, once a cell decided it. Later cells see it and never start; the cells
+    # already running finish, are saved and reported, and the stop is raised once they all have.
+    stop = _RunStop()
+    # Callbacks are awaited one at a time, so a host's progress write (a read-modify-write on the run)
+    # never races another cell's.
+    reporting = asyncio.Lock()
+    # A capture clears the case's previous recording as its cell wires up, so two cells of one case
+    # capturing at once would interleave their writes. They take turns; cells of different cases do not.
+    case_turns: dict[str, asyncio.Lock] | None = {} if run.cassette_mode == "capture" and width > 1 else None
+
+    def spend_in_flight(excluding: _CellSink | None) -> float | None:
+        """Spend the running cells have reported and not yet recorded; ``None`` when any of it is unpriced."""
+        pending = 0.0
+        for other in in_flight:
+            if other is excluding:
+                continue
+            if other.reported_usd is None:
+                return None
+            pending += other.reported_usd
+        return pending
+
+    def gate_for(sink: _CellSink) -> Callable[[float | None], CapBreach | None] | None:
+        """The cap as one cell asks it: its own pending spend plus every other cell's in flight."""
+        if budget_gate is None:
+            return None
+        gate = budget_gate
+
+        def ask(spent_usd: float | None) -> CapBreach | None:
+            others = spend_in_flight(sink)
+            return gate(None if spent_usd is None or others is None else spent_usd + others)
+
+        return ask
+
+    async def run_cell(k: int, tc: EvalTestCase) -> None:
+        """One cell of the matrix, waiting its turn on its case first when the run captures."""
+        if stop.decided:
+            return
+        if case_turns is None:
+            await one_cell(k, tc)
+            return
+        async with case_turns.setdefault(tc.id, asyncio.Lock()):
+            await one_cell(k, tc)
+
+    async def one_cell(k: int, tc: EvalTestCase) -> None:
+        # A stop decided while this cell waited for its turn reaches it here too.
+        if stop.decided:
+            return
         # Cost cap: stop gracefully BEFORE spending on the next
-        # cell if this run's accumulated cost has exceeded its cap. Results
-        # already saved below are preserved; the raise becomes a
-        # ``budget_stopped`` run.
-        breach = budget_gate(0.0) if budget_gate is not None else None
+        # cell if this run's accumulated cost — with what the cells already running have
+        # reported — has exceeded its cap. Results already saved are preserved; the stop
+        # becomes a ``budget_stopped`` run.
+        breach = budget_gate(spend_in_flight(None)) if budget_gate is not None else None
         if breach is not None:
             log.warning(
                 "Eval run %s stopping: $%.4f priced spend and %d unpriced result(s) against its $%.4f cap "
@@ -2986,7 +3178,8 @@ async def execute_run(
                 done,
                 total,
             )
-            raise BudgetStoppedError(done, total, breach)
+            stop.budget(breach)
+            return
         # Per-cell timeout: bound the WHOLE result execution (candidate turn + delivery drain +
         # judging) so a hung cell is capped here and the run proceeds to the rest, instead of
         # stalling to the matrix-adaptive eval_job backstop.
@@ -2995,7 +3188,18 @@ async def execute_run(
         # What the record needs survives on ``sink``, which this loop owns, the kind reports
         # into, and the timeout arm reads: the spend already billed, the
         # per-role rows, the output so far, and what the cell was waiting on when it struck.
-        sink = _CellSink(budget_gate=budget_gate)
+        sink = _CellSink()
+        sink.budget_gate = gate_for(sink)
+        in_flight.append(sink)
+        try:
+            await run_and_record(k, tc, sink)
+        finally:
+            # Recorded (``on_cost``) or abandoned with the run: either way its spend is in flight no more.
+            if sink in in_flight:
+                in_flight.remove(sink)
+
+    async def run_and_record(k: int, tc: EvalTestCase, sink: _CellSink) -> None:
+        nonlocal done
         cancelled_in_cell = False
         try:
             async with host.cell_timeout(options.cell_timeout_s):
@@ -3103,6 +3307,9 @@ async def execute_run(
                 unfinished_judging=f"did not finish: {msg}",
             )
             cancelled_in_cell = True
+        # The cell's whole spend is known now and is not recorded until it is saved; until then it is
+        # what this cell has in flight, for every other cell's question of the cap.
+        sink.reported_usd = result.cost_usd
         # A write failure loses the cell — this loop holds no second copy that
         # could stand in for the lost record. Say so loudly and carry the answer
         # on the summary; the run still proceeds, because one unwritable cell is
@@ -3133,17 +3340,20 @@ async def execute_run(
         # Accumulate this cell's spend into the per-run cost cap so the
         # run trips its own cap on the next cell once it's over.
         # Passed as it stands: ``None`` is unpriced spend, which the cap counts
-        # as such and an enforcing cap stops on.
+        # as such and an enforcing cap stops on. Out of the in-flight set in the same step, so the
+        # cap never counts it twice.
+        in_flight.remove(sink)
         if on_cost is not None:
             on_cost(result.cost_usd)
         if cancelled_in_cell or cancelled_while_saving:
             raise asyncio.CancelledError
         if sink.errors.apparatus_failed:
             apparatus_failures.append(sink.errors.infra_error or "an apparatus fault")
-        if callbacks.on_result is not None:
-            await callbacks.on_result(result)
-        if callbacks.on_progress is not None:
-            await callbacks.on_progress({"completed": done, "total": total, "current_model": model})
+        async with reporting:
+            if callbacks.on_result is not None:
+                await callbacks.on_result(result)
+            if callbacks.on_progress is not None:
+                await callbacks.on_progress({"completed": done, "total": total, "current_model": model})
         # The account paying for the run refused one of this cell's calls. The cell is already
         # saved, counted and reported above; every later cell would be refused the same way, so
         # none is launched. Checked after the cell rather than before the next one so a refusal
@@ -3152,39 +3362,50 @@ async def execute_run(
         # the kind returned, the timeout arm from the kind's reading when its deadline struck
         # first) and the judge calls that returned.
         if (refusal := sink.account_refusal) is not None:
-            priced = [summary.cost_usd for summary in summaries if summary.cost_usd is not None]
-            accumulated_usd = sum(priced)
-            unpriced_results = len(summaries) - len(priced)
             log.warning(
-                "Eval run %s stopping: the provider account refused a call after %d/%d results "
-                "($%.4f priced spend, %d unpriced result(s))",
+                "Eval run %s stopping: the provider account refused a call after %d/%d results",
                 run.id,
                 done,
                 total,
-                accumulated_usd,
-                unpriced_results,
             )
-            raise AccountExhaustedError(
-                done, total, accumulated_usd=accumulated_usd, unpriced_results=unpriced_results, detail=refusal
-            )
+            stop.exhausted(refusal)
+            return
         # The cell asked the cap mid-cell and was told it was reached, so it stopped making calls and
         # was recorded excluded. The run stops here rather than at the next cell's gate, so a cut-short
-        # LAST cell still ends the run ``budget_stopped`` rather than ``completed``. The breach the gate
-        # reports now counts the whole cell, which ``on_cost`` has recorded; the one the cell was
-        # stopped on stands in only should that read come back inside the cap.
+        # LAST cell still ends the run ``budget_stopped`` rather than ``completed``.
         if sink.budget_breach is not None:
-            breach = (budget_gate(0.0) if budget_gate is not None else None) or sink.budget_breach
             log.warning(
-                "Eval run %s stopping: its cost cap was reached inside a cell — $%.4f priced spend and %d unpriced "
-                "result(s) against its $%.4f cap after %d/%d results",
+                "Eval run %s stopping: its cost cap was reached inside a cell after %d/%d results",
                 run.id,
-                breach.accumulated_usd,
-                breach.unpriced_results,
-                breach.max_cost_usd,
                 done,
                 total,
             )
-            raise BudgetStoppedError(done, total, breach)
+            stop.budget(sink.budget_breach)
+
+    await executor.execute([partial(run_cell, k, tc) for k, tc in order], width=width)
+
+    if stop.refusal is not None:
+        priced = [summary.cost_usd for summary in summaries if summary.cost_usd is not None]
+        accumulated_usd = sum(priced)
+        unpriced_results = len(summaries) - len(priced)
+        raise AccountExhaustedError(
+            done, total, accumulated_usd=accumulated_usd, unpriced_results=unpriced_results, detail=stop.refusal
+        )
+    if stop.breach is not None:
+        # The breach the gate reports now counts every cell, which ``on_cost`` has recorded; the one the
+        # run was stopped on stands in only should that read come back inside the cap.
+        breach = (budget_gate(0.0) if budget_gate is not None else None) or stop.breach
+        log.warning(
+            "Eval run %s stopped by its cost cap: $%.4f priced spend and %d unpriced result(s) against its $%.4f cap "
+            "after %d/%d results",
+            run.id,
+            breach.accumulated_usd,
+            breach.unpriced_results,
+            breach.max_cost_usd,
+            done,
+            total,
+        )
+        raise BudgetStoppedError(done, total, breach)
 
     # Every cell was excluded by an apparatus fault: the rig never worked, so the run measured
     # nothing at all. Ending it ``completed`` would publish a run with no measurement as a

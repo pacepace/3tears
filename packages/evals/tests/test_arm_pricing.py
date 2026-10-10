@@ -34,9 +34,10 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts import EvalRun, EvalStorage, JudgedArtifact, RubricDim, ValidationFailedError
-from threetears.evals.contracts.judge_attribution import judges_sharing_a_candidate_model
-from threetears.evals.contracts.models import EvalTemplate
+from threetears.evals.schema import EvalRun, JudgedArtifact, RubricDim
+from threetears.evals.kernel import EvalStorage, ValidationFailedError
+from threetears.evals.schema.judge_attribution import judges_sharing_a_candidate_model
+from threetears.evals.schema.models import EvalTemplate
 from threetears.evals.run import (
     ArmPlan,
     ArmPrice,

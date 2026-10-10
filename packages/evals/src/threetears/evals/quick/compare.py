@@ -38,13 +38,20 @@ effect on the second model — is read against a second control over the same ru
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from threetears.evals.analysis import (
+    DEFAULT_FAIL_ON,
+    AnalysisContextBundle,
     DisclosureBlock,
+    GateResult,
+    Verdict,
+    VerdictKind,
+    gate_verdicts,
     Report,
+    ReportSection,
     TableBlock,
     assemble_context_bundle,
     build_code_only_report,
@@ -54,9 +61,19 @@ from threetears.evals.analysis import (
     set_campaign_control,
     variant_key_of_run,
 )
-from threetears.evals.contracts import DEFAULT_LAUNCH_K_RUNS, CassetteMode, utc_now_iso
-from threetears.evals.contracts.host import CANDIDATE_MODEL_LEVER, EvalHost
-from threetears.evals.ops.summary import CaseResult, EvalSummary, self_judging_text
+from threetears.evals.kernel import (
+    ACCURACY_MEASURE,
+    ArmGuardrails,
+    CassetteMode,
+    GuardrailCheck,
+    GuardrailMargin,
+    GuardrailReadings,
+)
+from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS, DocumentStore, utc_now_iso
+from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
+from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, RUN_MARGIN_MEASURES, run_margin_refusal
+from threetears.evals.analysis.summary import CaseResult, EvalSummary, self_judging_text
+from threetears.evals.quick.guardrails import Guardrail
 from threetears.evals.quick.judged import Judge
 from threetears.evals.quick.levers import refuse_unusable_lever_names
 from threetears.evals.quick.one_call import (
@@ -70,6 +87,9 @@ from threetears.evals.quick.one_call import (
     CallableArm,
     run_arms,
     callable_host,
+    quick_scope,
+    refuse_a_store_beside_a_host,
+    refuse_unusable_guardrails,
 )
 from threetears.evals.run import list_results
 from threetears.evals.quick.tools import Tool, ToolUsingCandidate
@@ -113,6 +133,10 @@ class Comparison:
         contrast_measures: The key of the measure each row of the contrasts table reads, row for row — the table
             heads it in words. Empty, or of another length than the table, and :meth:`contrasts` names no key.
         kind: The kind every arm ran — the callable kind, or the judged one — whose levers the campaign's axes name.
+        guardrail_readings: Every guardrail, decided for each arm against the control, as the campaign's evidence
+            bundle decided it; empty when no reading is a guardrail. :meth:`guardrails` reads it row by row and
+            :meth:`guardrail_standing` arm by arm.
+        arm_variants: Each arm's variant key, by its key in :attr:`arms`: what the bundle names the arm by.
     """
 
     campaign_id: str
@@ -126,6 +150,8 @@ class Comparison:
     contrast_arms: tuple[ArmKey | None, ...] = field(default=(), repr=False, compare=False)
     contrast_measures: tuple[str | None, ...] = field(default=(), repr=False, compare=False)
     kind: str = field(default=CALLABLE_KIND, repr=False, compare=False)
+    guardrail_readings: GuardrailReadings = field(default_factory=GuardrailReadings, repr=False, compare=False)
+    arm_variants: dict[ArmKey, str] = field(default_factory=dict, repr=False, compare=False)
 
     def results(self, arm: ArmKey) -> list[CaseResult]:
         """Every result of one arm: each case's answer on each repeat, its grades, and why it failed or was excluded.
@@ -134,7 +160,7 @@ class Comparison:
             arm: The arm, by its key in :attr:`arms` (``"baseline"``, or a tuple of levels with ``factors``).
 
         Returns:
-            The arm's results, as :meth:`~threetears.evals.ops.summary.EvalSummary.results` reads them.
+            The arm's results, as :meth:`~threetears.evals.analysis.summary.EvalSummary.results` reads them.
 
         Raises:
             ValueError: ``arm`` names no arm.
@@ -148,7 +174,7 @@ class Comparison:
             arm: The arm, by its key in :attr:`arms`.
 
         Returns:
-            The arm's misses, as :meth:`~threetears.evals.ops.summary.EvalSummary.misses` reads them.
+            The arm's misses, as :meth:`~threetears.evals.analysis.summary.EvalSummary.misses` reads them.
 
         Raises:
             ValueError: ``arm`` names no arm.
@@ -178,8 +204,9 @@ class Comparison:
             ``control_mean`` and ``arm_mean`` (over the cases the test read), ``cases`` (how many, paired or not,
             and any one side ran that the test left out), ``delta`` (arm minus control), ``interval`` (on the
             delta, simultaneous over the family), ``hedges_g`` (the standardized effect), ``p_adjusted`` (Holm,
-            over the campaign's family) and ``verdict``; empty when
-            the report tested nothing.
+            over the campaign's family), ``verdict`` (in words, printed from ``outcome``) and ``outcome`` (the
+            typed verdict: ``improved``, ``regressed``, ``equivalent``, ``not_separated`` or ``untested``, which
+            code branches on); empty when the report tested nothing.
         """
         rows = [
             row
@@ -187,13 +214,121 @@ class Comparison:
             if isinstance(block, TableBlock) and block.name == "comparisons"
             for row in block.rows
         ]
+        typed = [verdict for verdict in self.report.verdicts if verdict.kind == "contrast"]
         arms = self.contrast_arms if len(self.contrast_arms) == len(rows) else (None,) * len(rows)
         keys = self.contrast_measures if len(self.contrast_measures) == len(rows) else (None,) * len(rows)
+        outcomes = [verdict.outcome for verdict in typed] if len(typed) == len(rows) else [None] * len(rows)
         return [
-            {"arm": arm, "measure_id": key, **row}
-            for row, arm, key in zip(rows, arms, keys, strict=True)
+            {"arm": arm, "measure_id": key, **row, "outcome": outcome}
+            for row, arm, key, outcome in zip(rows, arms, keys, outcomes, strict=True)
             if reading is None or reading in (key, row["reading"])
         ]
+
+    def verdicts(self, reading: str | None = None, *, kind: VerdictKind | None = None) -> list[Verdict]:
+        """The report's typed verdicts: every contrast against the control, guardrail and bar, as code reads them.
+
+        The source of truth for every verdict the report prints, which is rendered from these: branch on
+        :attr:`~threetears.evals.analysis.Verdict.outcome`, never on the words.
+
+        Args:
+            reading: Only the verdicts on this reading, by its key (``"accuracy"``) or as the report heads it
+                (``"Accuracy"``); ``None`` keeps every one.
+            kind: Only ``"contrast"``, ``"guardrail"`` or ``"bar"`` verdicts; ``None`` keeps every kind.
+
+        Returns:
+            The verdicts, guardrails first, then bars, then contrasts, each in its table's row order.
+        """
+        return [
+            verdict
+            for verdict in self.report.verdicts
+            if (reading is None or reading in (verdict.name, verdict.heading))
+            and (kind is None or verdict.kind == kind)
+        ]
+
+    def gate(self, fail_on: Iterable[str] = DEFAULT_FAIL_ON, *, readings: Iterable[str] | None = None) -> GateResult:
+        """Gate a build on this comparison's verdicts, as ``python -m threetears.evals gate`` does on a campaign.
+
+        Args:
+            fail_on: The outcomes that fail it (:data:`~threetears.evals.analysis.GATE_TOKENS`). The default,
+                :data:`~threetears.evals.analysis.DEFAULT_FAIL_ON`, fails on a regressed contrast, a breached
+                guardrail and an undecided guardrail.
+            readings: Only the verdicts on these readings, by key or heading; ``None`` gates every verdict.
+
+        Returns:
+            The gate's result: ``failed`` when a named outcome occurred, ``passed`` only when every verdict was
+            decided and none failed, ``undecided`` otherwise — never a pass.
+
+        Raises:
+            ValueError: A ``fail_on`` name that is no outcome, or a reading no verdict is on.
+        """
+        return gate_verdicts(self.report.verdicts, fail_on=fail_on, readings=readings)
+
+    def guardrails(self, arm: ArmKey | None = None) -> list[dict[str, Any]]:
+        """The rows of the report's "Guardrails against the control" table: each guardrail, for each arm.
+
+        A guardrail (``compare(guardrails=...)``) is decided on its own for each arm against the control, never in
+        the contrasts: ``held`` when the arm is shown no worse than the control by more than the margin,
+        ``breached`` when it is shown worse by more, and ``undecided`` otherwise, which is never safe.
+
+        Args:
+            arm: Only this arm's rows, by its key in :attr:`arms`; ``None`` keeps every arm's.
+
+        Returns:
+            One row per guardrail and arm, keyed ``arm`` (the arm checked, by its key in :attr:`arms`),
+            ``measure_id`` (the guardrail's key: a scorer's name or a judged dimension's), ``outcome`` (``held``,
+            ``breached`` or ``undecided``), ``contrast`` (the arm, as the report names it), and the table's other
+            columns: ``guardrail`` (as the report heads it), ``control_mean`` and ``arm_mean``, ``cases``,
+            ``delta`` (arm minus control), ``interval`` (on the delta), ``margin`` and ``decision`` (the outcome in
+            words, with why when undecided); empty when no reading is a guardrail or no control resolved.
+
+        Raises:
+            ValueError: ``arm`` names no arm.
+        """
+        if arm is not None:
+            _refuse_an_unknown_control(self.arms, arm, said="arm")
+        rows = [
+            row
+            for block in self.report.blocks
+            if isinstance(block, TableBlock) and block.name == "guardrails"
+            for row in block.rows
+        ]
+        checks = self.guardrail_readings.checks
+        if len(checks) != len(rows):
+            return []
+        arm_of_variant = {variant: key for key, variant in self.arm_variants.items()}
+        return [
+            {
+                "arm": arm_of_variant.get(check.contrast.variant_key),
+                "measure_id": check.name,
+                "outcome": check.decision,
+                "contrast": row["arm"],
+                **{key: value for key, value in row.items() if key != "arm"},
+            }
+            for check, row in zip(checks, rows, strict=True)
+            if arm is None or arm_of_variant.get(check.contrast.variant_key) == arm
+        ]
+
+    def guardrail_standing(self, arm: ArmKey) -> ArmGuardrails:
+        """Where one arm stands on every guardrail: breached anywhere, else undecided anywhere, else held.
+
+        An arm with any guardrail ``breached`` is not to be adopted, whatever its contrasts show it gained; one
+        ``undecided`` is not known to be safe, which says nothing either way about whether it is.
+
+        Args:
+            arm: The arm, by its key in :attr:`arms`.
+
+        Returns:
+            The guardrails the arm breached, those it is undecided on, and those it held, each by key; all empty
+            for the control, which no guardrail is checked against itself, and when no reading is a guardrail.
+
+        Raises:
+            ValueError: ``arm`` names no arm.
+        """
+        _refuse_an_unknown_control(self.arms, arm, said="arm")
+        variant = self.arm_variants.get(arm)
+        if variant is None:
+            return ArmGuardrails(breached=[], undecided=[], held=[])
+        return self.guardrail_readings.of_arm(variant)
 
     def against(self, control: ArmKey, *, name: str | None = None, created_by: str = COMPARE_CREATED_BY) -> Comparison:
         """The same runs read against another control: a second campaign over them, with no run repeated.
@@ -230,6 +365,8 @@ class Comparison:
             behavior=campaign.behavior,
             repetitions=repetitions,
             created_by=created_by,
+            guardrail_margins=design.guardrail_margins if design is not None else (),
+            measure_latency=design.measure_latency if design is not None else False,
         )
 
 
@@ -306,6 +443,8 @@ def _declare(
     behavior: str,
     repetitions: int | None,
     created_by: str,
+    guardrail_margins: Sequence[GuardrailMargin] = (),
+    measure_latency: bool = False,
 ) -> Comparison:
     """File the arms' runs as one campaign, one axis per factor, designate ``control``, and read its report.
 
@@ -333,15 +472,24 @@ def _declare(
     design: dict[str, Any] = {"axes": axes, "held_fixed": {"stimulus": "controlled", "apparatus": "commissioned"}}
     if repetitions is not None:
         design["intended_repetitions"] = repetitions
+    if measure_latency:
+        design["measure_latency"] = True
+    if guardrail_margins:
+        design["guardrail_margins"] = [entry.model_dump() for entry in guardrail_margins]
+    filed: dict[str, Any] = {
+        "name": name,
+        "subject_id": name,
+        "behavior": behavior,
+        "run_ids": [summary.run_id for summary in arms.values()],
+        "declared_design": design,
+    }
+    # Every arm ran the one template compare authored, so the campaign names it: a judged guardrail's margin is
+    # declared on a dimension of its rubric, which the declaration gate reads from it.
+    if arms[control].template_id is not None:
+        filed["template_id"] = arms[control].template_id
     campaign = create_campaign(
         host.storage,
-        {
-            "name": name,
-            "subject_id": name,
-            "behavior": behavior,
-            "run_ids": [summary.run_id for summary in arms.values()],
-            "declared_design": design,
-        },
+        filed,
         scope_id=scope_id,
         created_by=created_by,
         profile=host.profile,
@@ -353,10 +501,15 @@ def _declare(
     report = build_code_only_report(
         bundle, measures=host.profile.measures, assembled_at=utc_now_iso(), campaign_name=campaign.name
     )
-    report = _with_self_judging_disclosed(report, arms, factors)
-    arm_of_variant = {
-        variant_key_of_run(list_results(host.storage, summary.run_id, scope_id)): arm for arm, summary in arms.items()
+    arm_variants = {
+        arm: variant
+        for arm, summary in arms.items()
+        if (variant := variant_key_of_run(list_results(host.storage, summary.run_id, scope_id))) is not None
     }
+    arm_of_variant = {variant: arm for arm, variant in arm_variants.items()}
+    report = _with_self_judging_disclosed(report, arms, factors)
+    report = _with_no_margin_disclosed(report, bundle)
+    report = _with_guardrail_standing_disclosed(report, bundle, arm_variants, factors)
     return Comparison(
         campaign_id=campaign.id,
         scope_id=scope_id,
@@ -375,7 +528,126 @@ def _declare(
             tested.name for family in bundle.multiple_comparisons.families for tested in family.comparisons
         ),
         kind=kind,
+        guardrail_readings=bundle.guardrails,
+        arm_variants=arm_variants,
     )
+
+
+def _guardrail_heading(check: GuardrailCheck, bundle: AnalysisContextBundle) -> str:
+    """A guardrail as a reader reads it: a measure by its reader name, a judged dimension by its own."""
+    descriptor = bundle.measure_catalog.get(check.name) if check.reading == "measure" else None
+    return (descriptor.reader_name if descriptor is not None else None) or check.name
+
+
+def _with_guardrail_standing_disclosed(
+    report: Report, bundle: AnalysisContextBundle, arm_variants: Mapping[ArmKey, str], factors: tuple[str, ...]
+) -> Report:
+    """The report with a line, above its contrasts, for each arm a guardrail leaves not shown safe.
+
+    The contrasts table reads capability, and an arm can improve there while it breaches a guardrail, which the
+    table never shows: a reader taking the arm that improved most is told here, where they would pick it, that a
+    breached arm is not adopted whatever it gained, and that an undecided guardrail is not known to be safe. A
+    report with no contrast (every scorer a guardrail) carries the lines under its guardrails table instead.
+    """
+    blocks = list(report.blocks)
+    contrasts = next(
+        (
+            i
+            for i, block in enumerate(blocks)
+            if isinstance(block, TableBlock) and block.name == "comparisons" and block.rows
+        ),
+        None,
+    )
+    disclosures = []
+    for arm, variant in arm_variants.items():
+        said: dict[str, list[str]] = {"breached": [], "undecided": []}
+        for check in bundle.guardrails.checks:
+            if check.contrast.variant_key == variant and check.decision in said:
+                heading = _guardrail_heading(check, bundle)
+                if heading not in said[check.decision]:
+                    said[check.decision].append(heading)
+        said["undecided"] = [name for name in said["undecided"] if name not in said["breached"]]
+        breached, undecided = said["breached"], said["undecided"]
+        if breached:
+            disclosures.append(
+                f"Arm {_label(arm, factors)} breached the guardrail{'s' if len(breached) > 1 else ''} "
+                f"{', '.join(breached)}: it is shown worse than the control by more than the margin, so it is not "
+                + ("adopted, whatever the contrasts below show it gained." if contrasts is not None else "adopted.")
+            )
+        if undecided:
+            disclosures.append(
+                f"Arm {_label(arm, factors)} is undecided on the guardrail{'s' if len(undecided) > 1 else ''} "
+                f"{', '.join(undecided)}, so it is not known to be safe; the guardrails table says why."
+            )
+    if not disclosures:
+        return report
+    section: ReportSection
+    if contrasts is not None:
+        at, section = contrasts, "surface"
+    else:
+        at = 1 + max((i for i, block in enumerate(blocks) if block.section == "guardrails"), default=len(blocks) - 1)
+        section = "guardrails"
+    lines = [DisclosureBlock(section=section, source="guardrails", text=text) for text in disclosures]
+    return report.model_copy(update={"blocks": [*blocks[:at], *lines, *blocks[at:]]})
+
+
+def _with_no_margin_disclosed(report: Report, bundle: AnalysisContextBundle) -> Report:
+    """The report with one line, above its contrasts, naming the measures tested with no margin to be equivalent on.
+
+    ``equivalent`` is the only verdict that says two arms are alike, and it needs a margin declared on the measure;
+    with none, ``not separated`` is the most a contrast can say, and a reader looking for "good enough" should be
+    told why it never appears rather than left to infer it.
+    """
+    catalog = bundle.measure_catalog
+    names = dict.fromkeys(
+        tested.name
+        for family in bundle.multiple_comparisons.families
+        for tested in family.comparisons
+        if tested.name in catalog and tested.reading == "measure" and tested.margin_source is None
+    )
+    if not names:
+        return report
+    # Each kind of measure takes its margin a different way, or none at all, so each group gets its own advice.
+    scorers = [name for name in names if name not in METRIC_DESCRIPTORS]
+    rates = [name for name in names if name in RUN_MARGIN_MEASURES]
+    fixed = [name for name in names if name in METRIC_DESCRIPTORS and name not in RUN_MARGIN_MEASURES]
+
+    def heading(group: list[str]) -> str:
+        return ", ".join(catalog[name].reader_name or name for name in group)
+
+    advice = []
+    if scorers:
+        advice.append(
+            f"Declare a margin on {heading(scorers)} by the scorer's name with compare(margins={{{scorers[0]!r}: ...}})"
+            + (
+                "; a scorer that returns a number, not a bool, takes its range beside it, with ranges=."
+                if any(catalog[name].family == "mechanical" and catalog[name].value_range is None for name in scorers)
+                else "."
+            )
+        )
+    if rates:
+        advice.append(
+            f"Declare a margin on {heading(rates)} with compare(margins={{{rates[0]!r}: ...}}), which records it on "
+            "every arm's run."
+        )
+    if fixed:
+        advice.append(
+            f"No comparison can declare one on {heading(fixed)}: the engine owns "
+            f"{'its' if len(fixed) == 1 else 'their'} description, and only accuracy takes a margin of the runs'."
+        )
+    disclosure = DisclosureBlock(
+        section="surface",
+        source="comparisons",
+        text=f"No margin is declared on {heading(list(names))}, so no contrast on "
+        f"{'it' if len(names) == 1 else 'them'} can read equivalent, and not separated never means the arms are "
+        "alike. " + " ".join(advice),
+    )
+    blocks = list(report.blocks)
+    at = next(
+        (i for i, block in enumerate(blocks) if isinstance(block, TableBlock) and block.name == "comparisons"),
+        len(blocks),
+    )
+    return report.model_copy(update={"blocks": [*blocks[:at], disclosure, *blocks[at:]]})
 
 
 def _with_self_judging_disclosed(
@@ -408,6 +680,33 @@ def _with_self_judging_disclosed(
     return report.model_copy(update={"blocks": [*blocks[:at], *disclosures, *blocks[at:]]})
 
 
+def _split_margins(
+    margins: Mapping[str, float] | None, *, classifies: bool
+) -> tuple[dict[str, float], dict[str, float]]:
+    """``margins=`` split into the runs' (core rate measures, accuracy) and the scorers', refusing what neither takes.
+
+    Raises:
+        ValueError: A margin on a core measure that takes no run margin, one that is not between 0 and 1, or a
+            margin on accuracy for arms that are not classifiers (no ``expected=``), which measure no accuracy.
+    """
+    run_margins: dict[str, float] = {}
+    scorer_margins: dict[str, float] = {}
+    for name, margin in (margins or {}).items():
+        if name not in METRIC_DESCRIPTORS:
+            scorer_margins[name] = margin
+            continue
+        if (refusal := run_margin_refusal(name, margin)) is not None:
+            raise ValueError(f"margins= {refusal}")
+        if name == ACCURACY_MEASURE and not classifies:
+            raise ValueError(
+                "margins= names 'accuracy', which only a classifier's arms measure: pass expected= to grade each "
+                "answer against its label, or declare the margin on a scorer's name"
+            )
+        run_margins[name] = margin
+    return run_margins, scorer_margins
+
+
+# scope-default: unscoped only on the call's own in-memory store; quick_scope refuses it with host= or store=
 async def compare(
     cases: Sequence[Mapping[str, Any]],
     candidates: Mapping[str, Candidate | ToolUsingCandidate | WorldCandidate]
@@ -415,11 +714,12 @@ async def compare(
     scorers: Sequence[Scorer] = (),
     *,
     control: ArmKey,
-    scope_id: str,
+    scope_id: str | None = None,
     expected: ExpectedLabel | None = None,
     judge: Judge | None = None,
     intent: str | None = None,
     host: EvalHost | None = None,
+    store: DocumentStore | None = None,
     k: int = DEFAULT_LAUNCH_K_RUNS,
     name: str | None = None,
     created_by: str = COMPARE_CREATED_BY,
@@ -431,6 +731,10 @@ async def compare(
     seed: CaseSeed | None = None,
     goal_checks: Sequence[str] = (),
     max_cost_usd: float | None = None,
+    margins: Mapping[str, float] | None = None,
+    ranges: Mapping[str, tuple[float, float]] | None = None,
+    guardrails: Mapping[str, Guardrail] | None = None,
+    measure_latency: bool = False,
 ) -> Comparison:
     """Run each candidate over every case ``k`` times as one arm, test every arm against ``control``, and report.
 
@@ -449,7 +753,9 @@ async def compare(
             level is stated on the run as that factor's lever (``callable.<factor>=<level>``).
         scorers: The grades, as :func:`~threetears.evals.quick.run_eval` takes them.
         control: The arm every other arm is tested against, by its key.
-        scope_id: The scope every run and the campaign are stored in.
+        scope_id: The scope every run and the campaign are stored in; with no ``host`` and no ``store``, ``None``
+            stores them in :data:`~threetears.evals.quick.one_call.DEFAULT_QUICK_SCOPE`, in the in-memory store the
+            call builds. A host or a store of your own needs one.
         expected: Declares every candidate a classifier, as :func:`~threetears.evals.quick.run_eval` takes it.
         judge: A model grading every arm's answers on one rubric, as :func:`~threetears.evals.quick.run_eval`
             takes it. ONE judge for every arm — its model, rubric and judge configs — so no difference between
@@ -463,6 +769,10 @@ async def compare(
         host: Where to run and store: ``None`` builds one :func:`~threetears.evals.quick.callable_host` over
             the scorers and the factors other than ``model`` for every arm. A host of the caller's own is held
             to what ``run_eval`` holds it to, and must declare those factors as levers.
+        store: Where the host ``compare`` builds stores every run and the campaign, as
+            :func:`~threetears.evals.quick.run_eval` takes it: ``store=SqliteDocumentStore("evals.sqlite")`` keeps
+            them in a file, and ``margins=``, ``ranges=`` and everything else this call builds work as without it.
+            Never with ``host``.
         k: Repeats per case, per arm.
         name: The campaign's name, which titles its report; ``None`` names it by its arms, control first, or
             by its factors.
@@ -486,17 +796,50 @@ async def compare(
             equal share, as :func:`~threetears.evals.quick.run_eval` caps one. An arm that reaches its share stops
             ``budget_stopped``, and its contrasts read only the cases it finished, the left-out ones disclosed.
             ``None`` (the default) runs every arm uncapped, which each arm's summary states.
+        margins: A margin by measure (``{"accuracy": 0.05}``, ``{"correct": 0.05}``): the most the arms may
+            differ on it and still be alike. A contrast on it then reads ``equivalent`` when an equivalence test
+            shows the difference inside it, the only verdict that says two arms are alike — the way "the cheaper
+            model is good enough" is shown. ``None`` declares none and no margin is ever assumed, so no contrast
+            can read ``equivalent``, which the report says in one line. On a classifier's ``accuracy`` (with
+            ``expected=``) the margin is declared on every arm's run at launch (``EvalRun.declared_margins``), since
+            the engine owns accuracy's descriptor, and the contrast names it as the runs'; it works with any
+            ``host``. On a scorer's measure, by the scorer's name, it is declared on the host compare builds; with
+            a ``host`` of your own, declare those on it instead (``callable_host(margins=...)``). A margin
+            on a scorer that does not return a ``bool`` needs its range in ``ranges``: with no range no
+            equivalence test holds its error rate, so it is refused rather than never tested.
+        ranges: The lowest and highest score a scorer returning a number can give, by the scorer's name
+            (``{"rating": (1, 5)}``). Its intervals stay inside it, a margin on it can be tested, and a score
+            outside it excludes the cell, naming the scorer. A scorer annotated ``-> bool`` is a pass/fail on 0
+            to 1 already. With a ``host`` of your own, declare them on it instead (``callable_host(ranges=...)``).
+        guardrails: The readings no arm may get worse on, by name — a scorer's, or a judge's rubric dimension's —
+            each a :class:`~threetears.evals.quick.Guardrail` with its margin and direction
+            (``{"no_leak": Guardrail(margin=0.02, direction="higher_is_better")}``). A guardrail joins no contrast
+            and no composite: each is decided for each arm against the control, ``held``, ``breached`` or
+            ``undecided``, in the report's guardrails table and :meth:`Comparison.guardrails`, and an arm that
+            breached one is not adopted whatever it gained. A judged dimension named here is scored on the
+            boundary axis, and its margin is declared on the campaign. ``None`` declares none, and nothing is a
+            guardrail but a dimension the judge's rubric already puts on the boundary axis. With a ``host`` of your
+            own, declare a measure ``guardrail`` on it instead.
+        measure_latency: Declare latency under test, as :func:`~threetears.evals.quick.run_eval` takes it: every
+            arm runs its cases one at a time and the arms run one after another. ``False`` (the default) runs
+            each arm's cases several at once and the arms side by side.
 
     Returns:
         The comparison: every arm's summary, the campaign's id and its report.
 
     Raises:
-        ValueError: Fewer than two candidates, a blank arm name, an arm key that is not a level of each
-            factor, factors without ``model`` or with an unusable or repeated name, a ``control`` that names
-            no arm, a ``max_cost_usd`` that is not a positive number, or anything
+        ValueError: No ``scope_id`` with a ``host`` or ``store`` of your own, fewer than two candidates, a blank arm name, an
+            arm key that is not a level of each factor, factors without ``model`` or with an unusable or repeated name, a ``control`` that names
+            no arm, a ``max_cost_usd`` that is not a positive number, a margin that names no scorer and no core rate
+            measure, is not a positive number (below 1 on accuracy), is on accuracy with no ``expected=``, is on a
+            scorer with no range, or is on a scorer and comes with a ``host``, a range that is unusable or
+            comes with a ``host``, a guardrail that is not a ``Guardrail``, names neither a scorer nor a rubric
+            dimension, sits on a scorer given a margin too or comes with a ``host``, a ``store`` with a ``host``, or anything
             :func:`~threetears.evals.quick.run_eval` refuses.
         ValidationFailedError: The launch refused, or the host refuses the campaign's declaration.
     """
+    refuse_a_store_beside_a_host(store, host)
+    scope_id = quick_scope(scope_id, host, store)
     named = _factors(factors)
     if factors is None and (host is None or host.profile.host_sweepables.get(ARM_LEVER) is not None):
         # The arms' names are not models: each is stated as the arm lever's level, every arm at one model.
@@ -507,10 +850,61 @@ async def compare(
         isinstance(max_cost_usd, bool) or not isinstance(max_cost_usd, int | float) or not max_cost_usd > 0
     ):
         raise ValueError(f"max_cost_usd= is a spend ceiling in US dollars: a positive number, not {max_cost_usd!r}")
+    # A margin on a core rate measure (accuracy) is the runs', declared on every arm's run at launch; any other is
+    # a scorer's, declared on the measure of the host compare builds.
+    run_margins, scorer_margins = _split_margins(margins, classifies=expected is not None)
+    if scorer_margins and host is not None:
+        raise ValueError(
+            "margins= declares a scorer's margin on the host compare builds; a host of your own declares them on its "
+            "measures (callable_host(margins=...), or MetricDescriptor.materiality_threshold), so pass one or the "
+            "other. A margin on accuracy is declared on the runs, and works with any host"
+        )
+    if ranges and host is not None:
+        raise ValueError(
+            "ranges= declares ranges on the host compare builds; a host of your own declares them on its measures "
+            "(callable_host(ranges=...), or MetricDescriptor.value_range), so pass one or the other"
+        )
+    guardrails = dict(guardrails or {})
+    if guardrails and host is not None:
+        raise ValueError(
+            "guardrails= declares guardrails on the host compare builds; a host of your own declares a measure a "
+            "guardrail on it (MetricDescriptor(guardrail=True), its materiality_threshold the margin), so pass one or "
+            "the other"
+        )
+    refuse_unusable_guardrails(scorers, guardrails, margins=scorer_margins, ranges=ranges, judge=judge)
+    scorer_names = {getattr(scorer, "__name__", None) for scorer in scorers}
+    judged_guardrails = {
+        judge.dim_name(name): guardrail
+        for name, guardrail in guardrails.items()
+        if judge is not None and name not in scorer_names
+    }
+    if judge is not None and judged_guardrails:
+        # The dimensions named guardrails are scored on the boundary axis, which the judge stamps on every score.
+        judge = replace(
+            judge,
+            rubric=[
+                dim.model_copy(update={"axis": "boundary"}) if dim.name in judged_guardrails else dim
+                for dim in judge.dims
+            ],
+        )
     levers = tuple(factor for factor in named if factor not in _UNPREFIXED)
     if host is None:
-        host = callable_host(scorers, levers=levers, world=world, arms=named == _NAMED_ARMS)
+        host = callable_host(
+            scorers,
+            levers=levers,
+            world=world,
+            arms=named == _NAMED_ARMS,
+            margins=scorer_margins,
+            ranges=ranges,
+            store=store,
+            guardrails={name: guardrail for name, guardrail in guardrails.items() if name in scorer_names},
+        )
     coordinates = {arm: _coordinates(arm, named) for arm in arms_given}
+    if name is None:
+        if len(named) == 1:
+            name = " vs ".join(_label(arm, named) for arm in [control, *(arm for arm in arms_given if arm != control)])
+        else:
+            name = " × ".join(named)
     # Every arm in ONE launch, started together, so the arms are measured side by side rather than one after
     # another: what differs between their runs is their settings, not when they ran.
     summaries = await run_arms(
@@ -534,17 +928,17 @@ async def compare(
         tools=tools,
         cassette_mode=cassette_mode,
         cassette_corpus_id=cassette_corpus_id,
+        measure_latency=measure_latency,
         world=world,
         seed=seed,
         goal_checks=goal_checks,
         max_cost_usd=None if max_cost_usd is None else max_cost_usd / len(arms_given),
+        # The arms are variants of one subject, the comparison, never a subject each: the frontier ranks the
+        # variants of a subject, so a model is a lever it ranks across rather than a subject of its own.
+        subject=name,
+        margins=run_margins or None,
     )
     arms: dict[ArmKey, EvalSummary] = dict(zip(arms_given, summaries, strict=True))
-    if name is None:
-        if len(named) == 1:
-            name = " vs ".join(_label(arm, named) for arm in [control, *(arm for arm in arms if arm != control)])
-        else:
-            name = " × ".join(named)
     return _declare(
         host,
         arms,
@@ -556,6 +950,11 @@ async def compare(
         behavior="classify" if expected is not None else "score",
         repetitions=k,
         created_by=created_by,
+        guardrail_margins=[
+            GuardrailMargin(dimension=dimension, margin=guardrail.margin)
+            for dimension, guardrail in judged_guardrails.items()
+        ],
+        measure_latency=measure_latency,
     )
 
 

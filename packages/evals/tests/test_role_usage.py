@@ -21,10 +21,10 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.contracts.host.spend import ExternalSpend
-from threetears.evals.contracts.models import EvalResult, RoleUsage
-from threetears.evals.contracts.spend import ExternalRateTable
-from threetears.evals.contracts.usage_capture import RoleUsageLedger, blended_cost_roles
+from threetears.evals.schema.external_spend import ExternalSpend
+from threetears.evals.schema.models import EvalResult, RoleUsage
+from threetears.evals.kernel.spend import ExternalRateTable
+from threetears.evals.kernel.usage_capture import RoleUsageLedger, blended_cost_roles
 from packages.evals.tests.factories import result_capture_defaults
 
 #: The rate a priced run in this module is measured against, and the volume the search

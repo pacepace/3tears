@@ -4,11 +4,11 @@ A run document is written by more than one writer as a run finishes — its
 completeness record, its terminal status, and the no-live-job repair path — so a
 conditional write losing its race is the ordinary case, not an incident. This
 module holds the read-modify-write policy that answer needs: :func:`update_eval_run`
-over the two-method :class:`~threetears.evals.contracts.storage.JobStore`.
+over the two-method :class:`~threetears.evals.kernel.storage.JobStore`.
 
-**Why it is not in** :mod:`threetears.evals.contracts.storage`. The policy is about the
+**Why it is not in** :mod:`threetears.evals.kernel.storage`. The policy is about the
 conditional-write protocol, and it names no backend, no tier and no host —
-:class:`~threetears.evals.contracts.storage.EvalStorage` is one implementation of the port it
+:class:`~threetears.evals.kernel.storage.EvalStorage` is one implementation of the port it
 drives, and a test double is another; the policy depends on neither.
 
 The scope argument is named ``scope_id`` here, as it is everywhere in the
@@ -21,9 +21,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, Literal
 
-from threetears.evals.contracts.errors import ConflictError
-from threetears.evals.contracts.models import EvalRun
-from threetears.evals.contracts.storage import JobStore
+from threetears.evals.kernel.errors import ConflictError
+from threetears.evals.schema.models import EvalRun
+from threetears.evals.kernel.storage import JobStore
 from threetears.observe import get_logger
 
 log = get_logger(__name__)
@@ -57,7 +57,7 @@ def update_eval_run(
     """Read a run, apply ``mutate`` to it, and write it back under its own ETag.
 
     The write is conditional, so a concurrent writer refuses it, as a
-    :class:`~threetears.evals.contracts.errors.ConflictError`. A caller that tried
+    :class:`~threetears.evals.kernel.errors.ConflictError`. A caller that tried
     once and gave up lost the edit silently, which is how a finished run came to
     carry no completeness record at all.
 

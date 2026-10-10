@@ -17,10 +17,10 @@ from pathlib import Path
 
 import pytest
 
-from threetears.evals.analysis import numbers, references, reporting, surface_table
+from threetears.evals.analysis import latency_partition, numbers, references, significance, surface_table
 from threetears.evals.analysis.numbers import ABSENT, WHOLE_FROM, format_number, format_signed
 from threetears.evals.analysis.viz import quantities
-from threetears.evals.contracts.models import LatencyMetrics
+from threetears.evals.schema.models import LatencyMetrics
 
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src"
@@ -111,8 +111,8 @@ class TestThereIsOneImplementation:
 
 
 #: The trees and modules whose every number is shown to a reader: the analysis package -- what the
-#: generator writes from, and the reporting module whose significance cells and partition refusals
-#: are printed verbatim. A host's own renders (an operator console, a tool surface) are the host's
+#: generator writes from, and the significance and latency-partition modules, whose significance cells and
+#: partition refusals are printed verbatim. A host's own renders (an operator console, a tool surface) are the host's
 #: to walk on the same terms. A spelling of a number anywhere in them either goes through
 #: :func:`~threetears.evals.analysis.numbers.format_number` / :func:`~threetears.evals.analysis.numbers.format_signed` or is
 #: named below as a deliberate fixed spelling. A module sits here by itself, rather than its whole
@@ -121,9 +121,12 @@ _SPELLING_TREES = ("threetears/evals/analysis",)
 
 #: What sits inside :data:`_SPELLING_TREES` and is not read as a report, so is not walked:
 #: ``numbers.py`` is the rule itself, and ``viz/`` spells numbers only in payload validation messages.
+#: ``out_of_run_spend.py`` is the spend ledger, which spells only dollars, at the four decimals a
+#: per-call price needs.
 _NOT_READ_AS_REPORTS = (
     "threetears/evals/analysis/numbers.py",
     "threetears/evals/analysis/viz",
+    "threetears/evals/analysis/out_of_run_spend.py",
 )
 
 #: Presentation types that choose how many digits a reader sees. ``d`` and ``s`` do not.
@@ -142,6 +145,9 @@ _FIXED_SPELLINGS: dict[tuple[str, str, str], str] = {
     # figures below 10 are what a sentence can use, and the tables beside it keep the one rule.
     ("threetears/evals/analysis/prose_refs.py", "value", ".2g"): "a figure in a sentence",
     ("threetears/evals/analysis/prose_refs.py", "value", ".{}f"): "a figure in a sentence below 1e-4, written out",
+    # Money is spelled in cents from ten cents up, and to three significant figures below.
+    ("threetears/evals/analysis/summary.py", "amount", ".2f"): "dollars, in cents",
+    ("threetears/evals/analysis/summary.py", "amount", ".{}f"): "dollars below ten cents, three figures",
 }
 
 _PRECISION = re.compile(r"\.(\d+|\{\})")
@@ -226,7 +232,7 @@ def _spellings_under(trees: Iterable[str]) -> list[tuple[str, int, str, str]]:
 
 
 class TestTheWidenedModulesRenderByTheRule:
-    """The reporting module's two reader-facing spellings, driven where their old specs disagree.
+    """The significance and latency-partition modules' reader-facing spellings, driven where their old specs disagree.
 
     ``.4g`` and the rule agree on every finite p-value and on any effect size below 1e4, so each
     case sits where they part: the large end, where ``.4g`` and a bare ``:g`` turn to an exponent,
@@ -235,8 +241,8 @@ class TestTheWidenedModulesRenderByTheRule:
 
     def test_a_large_effect_size_is_written_whole(self):
         assert f"{12345.6:.4g}" == "1.235e+04"
-        cell = reporting.format_significance(significant=True, paired=True, p=3e-7, effect=12345.6, n=4)
-        assert cell == f"{reporting.SIGNIFICANT_LABEL} (p={format_number(3e-7)}, d_z=12346, n=4)"
+        cell = significance.format_significance(significant=True, paired=True, p=3e-7, effect=12345.6, n=4)
+        assert cell == f"{significance.SIGNIFICANT_LABEL} (p={format_number(3e-7)}, d_z=12346, n=4)"
 
     def test_a_p_value_that_is_not_a_number_reads_as_absent(self):
         """The one input where ``.4g`` and the rule part on a p-value: ``.4g`` prints ``nan``.
@@ -245,13 +251,15 @@ class TestTheWidenedModulesRenderByTheRule:
         only render a p routed off the rule can be seen from.
         """
         assert f"{math.nan:.4g}" == "nan"
-        cell = reporting.format_significance(significant=False, paired=True, p=math.nan, effect=0.5, n=4)
+        cell = significance.format_significance(significant=False, paired=True, p=math.nan, effect=0.5, n=4)
         assert f"p={ABSENT}, " in cell
 
     def test_a_large_partition_overrun_is_written_whole(self):
         overrun = 1234467.5
         assert f"{overrun:g}" == "1.23447e+06"
-        partition = reporting.decompose_total_ms(LatencyMetrics(total_ms=100.0, llm_ms=overrun + 100.0, tool_ms=0.0))
+        partition = latency_partition.decompose_total_ms(
+            LatencyMetrics(total_ms=100.0, llm_ms=overrun + 100.0, tool_ms=0.0)
+        )
         assert f"total_ms by {format_number(overrun)}ms, " in partition.withheld
         assert format_number(overrun) == "1234468"
 

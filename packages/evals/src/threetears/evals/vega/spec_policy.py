@@ -57,7 +57,8 @@ cleanly — which is why they are mechanical here rather than left to review:
    it reaches, so a cropped axis under one multiplies every ratio a reader takes off
    it — that is refused outright rather than disclosed. A point or an interval states
    a position its labelled ticks already locate, and is left alone; there is no
-   footnote rule here, and the comment beside ``_check_baseline`` records why.
+   footnote rule here, and the comment beside ``_check_baseline`` records why. Which
+   is why a cropped position axis may not suppress those labels.
 9. **Upright text, undashed grid.** Rotated words are read by turning the page, and
    a dashed line is a mark property the reader has learned to read as data.
 10. **A ranking is ordered by a measure it draws.** A block in one column of a sweep is the finding; ordering the rows by that column
@@ -492,6 +493,7 @@ def _check_view(view: _View) -> list[str]:
     violations.extend(_check_direct_labels(view))
     violations.extend(_check_upright_text(view))
     violations.extend(_check_solid_grid(view))
+    violations.extend(_check_cropped_axis_labels(view))
     violations.extend(_check_ranked_by_its_measure(view))
     violations.extend(_check_line_order(view))
     return violations
@@ -637,17 +639,15 @@ def _check_palette(unit: dict[str, Any]) -> list[str]:
         # (:func:`_check_direct_labels`), which has already taken identity off the hue
         # channel by the time the hue channel weakens.
         #
-        # Three re-encodings named, and only two of them can currently be drawn: the
-        # ordered ramp lives in the sweep arm and the facet in the distribution one,
-        # while highlight-plus-context has its token authored and no arm that draws
-        # it. Named anyway, because the advice is the palette rule's own, and the honest
-        # reading of the gap is that a required mechanism is missing rather than that the
-        # advice is wrong. Narrowing the advice here would answer that question by
-        # deleting it.
+        # Two re-encodings named, and both can be drawn: the ordered ramp lives in the
+        # sweep arm and the facet in the distribution one. A third (one series in a
+        # highlight colour against a muted context, for a flat ranking) was once named
+        # here with no arm that drew it; it was withdrawn with its palette token (#678),
+        # so the warning never routes a host to a mechanism that does not exist.
         log.warning(
             "chart draws %d categories against %d palette slots — the palette recycles from slot 1, so series %d "
-            "repeats series 1's hue. Prefer an ordered ramp if the dimension is ordered, a facet if the sweep is "
-            "crossed, or highlight-plus-context if the ranking is flat.",
+            "repeats series 1's hue. Prefer an ordered ramp if the dimension is ordered, or a facet if the sweep "
+            "is crossed.",
             len(domain),
             slots,
             slots + 1,
@@ -932,6 +932,59 @@ def _check_solid_grid(view: _View) -> list[str]:
 # while a point or an interval states a position the ticks label. Recorded here
 # rather than deleted silently, because "this gate used to exist" is the question a
 # reader of `_check_baseline` will have.
+
+
+def _cropped(definition: dict[str, Any]) -> bool:
+    """Whether a quantitative position encoding's scale leaves zero off the axis.
+
+    Read the way :func:`_check_baseline` reads it: a stated two-number domain is the
+    answer and outranks the ``zero`` flag, and without one only ``zero: false`` crops
+    (Vega-Lite includes zero by default on an unbinned quantitative position).
+    """
+    scale = definition.get("scale") or {}
+    domain = scale.get("domain")
+    if isinstance(domain, list) and len(domain) == 2 and all(isinstance(edge, int | float) for edge in domain):
+        return not domain[0] <= 0 <= domain[1]
+    return scale.get("zero") is False
+
+
+def _check_cropped_axis_labels(view: _View) -> list[str]:
+    """A cropped position axis draws its tick labels, which are the crop's only disclosure.
+
+    The comment above records why there is no crop footnote: labelled ticks already say
+    where the axis starts. That argument holds only while the ticks ARE labelled. A
+    point or interval mark on a cropped axis with ``labels: false`` (or no axis at all) states positions on
+    a ruler whose origin the reader cannot find, so it is refused. A zero-based axis
+    may suppress its labels (the distribution marginal's rise axis is ``[0, cell]``,
+    and states shape, not counts).
+
+    Read per frame and per channel, because a layer frame shares its axes: a channel
+    is unlabelled when no unit in the frame draws its labels, so one layer suppressing
+    a duplicate of an axis another layer labels is not a crop left undisclosed.
+    """
+    cropped: dict[str, str] = {}
+    labelled: set[str] = set()
+    for label, node in view.members:
+        for channel, definition in (node.get("encoding") or {}).items():
+            if channel not in ("x", "y") or not isinstance(definition, dict):
+                continue
+            if definition.get("type") != "quantitative":
+                continue
+            axis = definition.get("axis", _LEGEND_UNSET)
+            # `axis: null` draws no axis at all, so it suppresses the labels as surely
+            # as `labels: false` does.
+            if not (axis is None or isinstance(axis, dict) and axis.get("labels") is False):
+                labelled.add(channel)
+            elif _cropped(definition):
+                cropped.setdefault(channel, label)
+    return [
+        (
+            f"axis {channel}{_at(label)} is cropped (its domain leaves out zero) and suppresses its tick labels — "
+            "the labelled ticks are the only disclosure a crop has, so draw them or start the axis at zero"
+        )
+        for channel, label in cropped.items()
+        if channel not in labelled
+    ]
 
 
 def _collect_axis_titles(

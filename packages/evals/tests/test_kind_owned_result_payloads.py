@@ -1,9 +1,9 @@
 """A kind's result payloads: the engine's record of background work, and the kind's own opaque report.
 
-Two carriers leave a kind on :class:`~threetears.evals.contracts.candidate_kind.CandidateOutput` and
-land on :class:`~threetears.evals.contracts.models.EvalResult`:
+Two carriers leave a kind on :class:`~threetears.evals.kernel.candidate_kind.CandidateOutput` and
+land on :class:`~threetears.evals.schema.models.EvalResult`:
 
-- ``async_deliveries`` — one :class:`~threetears.evals.contracts.models.AsyncDelivery` per piece of
+- ``async_deliveries`` — one :class:`~threetears.evals.schema.models.AsyncDelivery` per piece of
   background work (a scout sent ahead: acknowledged at once, delivered turns later on a model of its
   own). Engine vocabulary, so the engine reads it, and its refusals are what keep one entry telling
   one story.
@@ -23,8 +23,8 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.contracts.candidate_kind import CandidateOutput, CellSink
-from threetears.evals.contracts.models import AsyncDelivery, EvalTestCase
+from threetears.evals.kernel.candidate_kind import CandidateOutput, CellSink
+from threetears.evals.schema.models import AsyncDelivery, EvalTestCase
 from threetears.evals.run.runner import RunnerOptions, execute_run
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.kind import (

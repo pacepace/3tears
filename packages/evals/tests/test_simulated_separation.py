@@ -29,6 +29,9 @@ from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
     composite_significance,
     difference_interval,
+    level_difference,
+    paired_change,
+    separation_p,
     t_critical_two_sided,
 )
 from packages.evals.tests.simulation_support import (
@@ -346,3 +349,64 @@ def test_at_least_and_at_most_bracket_the_nominal() -> None:
     """The band helpers are symmetric 4-SE bounds — the arithmetic every comment above quotes."""
     assert at_most(0.05, 4000) == pytest.approx(0.05 + 4 * math.sqrt(0.05 * 0.95 / 4000))
     assert at_least(0.05, 4000) == pytest.approx(0.05 - 4 * math.sqrt(0.05 * 0.95 / 4000))
+
+
+def _counterexample_null(rng: random.Random, n_cases: int) -> tuple[list[float], list[float]]:
+    """Paired 1-5 scores from a judge whose mean did not move: +1 four times in five, −4 the fifth (mean 0).
+
+    A case moving +1 starts at 1-4; the fifth starts at 5 and lands on 1, so every score stays on the scale.
+    """
+    before: list[float] = []
+    after: list[float] = []
+    for _ in range(n_cases):
+        if rng.random() < 0.8:
+            start = float(rng.randint(1, 4))
+            before.append(start)
+            after.append(start + 1.0)
+        else:
+            before.append(5.0)
+            after.append(1.0)
+    return before, after
+
+
+def _separates_by_contrast(a: list[float], b: list[float], value_range: tuple[float, float] | None) -> bool:
+    """A campaign contrast's and the frontier's reading: the separation test's p below α."""
+    p = separation_p(a, b, paired=True, value_range=value_range)
+    return p is not None and p < SIGNIFICANCE_ALPHA
+
+
+def _separates_by_history(a: list[float], b: list[float], value_range: tuple[float, float] | None) -> bool:
+    """The history lens's reading: a directional label from the paired change."""
+    verdict = paired_change(
+        a, b, min_absolute_change=0.0, min_relative_change=0.0, higher_is_better=True, value_range=value_range
+    )
+    return verdict.label in ("improved", "regressed")
+
+
+def _separates_by_levels(a: list[float], b: list[float], value_range: tuple[float, float] | None) -> bool:
+    """The mechanism and scope lenses' reading: the between-level test separates."""
+    tested = level_difference(dict(enumerate(a)), dict(enumerate(b)), value_range=value_range)
+    return tested.separated is True
+
+
+class TestAUniformMoveIsNotReadByTheSignFlip:
+    """#597: every case moving by one amount is not evidence the mean moved, and no path reads it as such.
+
+    The exact sign-flip p tests symmetry, not the mean. Under the counterexample null (a mean that did not move,
+    +1 four times in five and −4 the fifth) ten cases all at +1 arise about one time in nine, and the sign flip
+    states 2^-9 for them. Every path read that pattern as separated before #597: about 12% false separation at
+    ten cases against a nominal 5%. On a declared range the bounded test reads it now, and with no range nothing
+    does, so each path holds α.
+    """
+
+    @pytest.mark.parametrize("value_range", [(1.0, 5.0), None], ids=["declared-range", "no-range"])
+    @pytest.mark.parametrize(
+        "separates",
+        [_separates_by_contrast, _separates_by_history, _separates_by_levels],
+        ids=["contrast-and-frontier", "history", "mechanism-and-scope"],
+    )
+    def test_the_counterexample_null_is_called_separated_at_most_alpha(self, separates, value_range) -> None:
+        replicates = 3000
+        rng = random.Random(f"sign-flip-counterexample-{separates.__name__}-{value_range}")
+        hits = sum(separates(*_counterexample_null(rng, 10), value_range) for _ in range(replicates))
+        assert hits / replicates <= at_most(SIGNIFICANCE_ALPHA, replicates), f"false separation {hits / replicates:.4f}"

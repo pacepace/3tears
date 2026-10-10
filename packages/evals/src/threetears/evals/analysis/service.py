@@ -9,7 +9,7 @@ with its own store and its own bindings; a host's service delegates to them.
 
 **What arrives as an argument.** An operation that reads the host's vocabulary — assembling a
 bundle, generating over one, freezing one — takes the
-:class:`~threetears.evals.contracts.host.EvalHost`: its storage, its profile, the client factory the
+:class:`~threetears.evals.kernel.host.EvalHost`: its storage, its profile, the client factory the
 generator is built from and the describer that says what a provider failure may keep. An operation
 that reads documents alone takes storage, through :class:`AnalysisStore`, which a host's store
 satisfies by having the methods; campaigns and runs are loaded through it, a missing one refused
@@ -32,12 +32,9 @@ import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
-from threetears.evals.analysis.bundle import (
-    BundleInspection,
-    CampaignReadStore,
-    assemble_context_bundle,
-    superseding_insights,
-)
+from threetears.evals.analysis.bundle.assemble import CampaignReadStore, assemble_context_bundle
+from threetears.evals.analysis.bundle.insights import superseding_insights
+from threetears.evals.analysis.bundle.schema import BundleInspection
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal
 from threetears.evals.analysis.generator import MAX_GENERATION_CALLS, GenerationTally, build_user_message, first_request
 from threetears.evals.analysis.generator import generate_analysis as _generate_analysis
@@ -52,34 +49,30 @@ from threetears.evals.analysis.reporter_kind import (
     reporter_case_of,
     reporter_case_payload,
 )
-from threetears.evals.analysis.report import Report, build_code_only_report, build_report
+from threetears.evals.analysis.report import Report, Verdict, build_code_only_report, build_report
 from threetears.evals.analysis.viz.intent import chart_intent
 from threetears.evals.analysis.viz.payloads import PayloadError
 from threetears.evals.analysis.viz.policy import IntentPolicyError
-from threetears.evals.contracts.base import EvalBaseModel
-from threetears.evals.contracts.campaign import EvalAnalysisAttempt
-from threetears.evals.contracts.errors import NotFoundError, ProviderRefusedError, StorageError, ValidationFailedError
-from threetears.evals.contracts.models import EvalTestCase, utc_now_iso
-from threetears.evals.contracts.offload import run_blocking, wait_through_cancellation
-from threetears.evals.contracts.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
-from threetears.evals.contracts.provider import (
-    describe_failure,
-    log_provider_failure,
-    traceback_is_safe,
-)
+from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.kernel.campaign import EvalAnalysisAttempt
+from threetears.evals.kernel.errors import NotFoundError, ProviderRefusedError, StorageError, ValidationFailedError
+from threetears.evals.schema.models import EvalTestCase, utc_now_iso
+from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
+from threetears.evals.kernel.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
+from threetears.evals.kernel.provider import describe_failure, log_provider_failure, traceback_is_safe
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.storage import EvalStorage
-    from threetears.evals.analysis.bundle import AnalysisContextBundle
+    from threetears.evals.kernel.storage import EvalStorage
+    from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
     from threetears.evals.analysis.reporter_bank import ReporterCalibration, ReporterCaseBank
     from threetears.evals.analysis.viz.intent import ChartIntent
-    from threetears.evals.contracts.campaign import AttemptOutcome, EvalAnalysis, EvalCampaign, EvalInsight
-    from threetears.evals.contracts.models import EvalRun, EvalTemplate
-    from threetears.evals.contracts.host.eval_host import EvalHost
+    from threetears.evals.kernel.campaign import AttemptOutcome, EvalAnalysis, EvalCampaign, EvalInsight
+    from threetears.evals.schema.models import EvalRun, EvalTemplate
+    from threetears.evals.kernel.host.eval_host import EvalHost
     from concurrent.futures import Executor
 
-    from threetears.evals.contracts.provider import BoundCompletionClient, CompletionResult
+    from threetears.evals.schema.completion import BoundCompletionClient, CompletionResult
 
 log = get_logger(__name__)
 
@@ -95,15 +88,15 @@ _SCOPE_SAMPLE = 5
 class AnalysisStore(CampaignReadStore, Protocol):
     """The storage calls the analysis service makes — its own, plus the bundle assembly's it hands the store to.
 
-    It extends :class:`~threetears.evals.analysis.bundle.CampaignReadStore` rather than repeating it,
+    It extends :class:`~threetears.evals.analysis.bundle.assemble.CampaignReadStore` rather than repeating it,
     because every function here that assembles a bundle passes this same store to
-    :func:`~threetears.evals.analysis.bundle.assemble_context_bundle`, so a store satisfying this port
+    :func:`~threetears.evals.analysis.bundle.assemble.assemble_context_bundle`, so a store satisfying this port
     has to satisfy that one. ``query_insights`` is declared again, wider: the ledger listing
     filters on the minting campaign as well as the subject, and the bundle's narrower call is one
     this signature accepts.
 
     Structural, so a host's own storage satisfies it by having the methods —
-    :class:`~threetears.evals.contracts.storage.EvalStorage` does. Positional parameters are
+    :class:`~threetears.evals.kernel.storage.EvalStorage` does. Positional parameters are
     positional-only, which lets the port say ``scope_id`` while an implementation names the thing
     it partitions by.
     """
@@ -260,7 +253,7 @@ class BudgetedGenerator:
     The generator is handed this as its client and its :meth:`admit` as its admission hook
     (:func:`~threetears.evals.analysis.generator.generate_analysis`), so the generator never learns what a
     cap is while every call it makes — the repair round-trip, whose prompt exists only once the first output
-    is refused, included — goes through :class:`~threetears.evals.contracts.out_of_run.OutOfRunBudget`'s one
+    is refused, included — goes through :class:`~threetears.evals.kernel.out_of_run.OutOfRunBudget`'s one
     rule: priced on the client before it is made, refused when the price would pass what is left of the cap,
     and written to the out-of-run ledger however it ends.
     """
@@ -359,7 +352,8 @@ async def _assemble(
 
     Raises:
         NotFoundError: No campaign with that id.
-        ValidationFailedError: The bundle has no resolvable runs, or the preset does not exist.
+        ValidationFailedError: The bundle has no resolvable runs, the preset does not exist, or the writer
+            model is not one the host allows (``HostProfile.analysis_writer_models``).
         ValueError: The host supplies no completion clients.
     """
     clients = host.completion_clients("an analysis generation")
@@ -397,6 +391,10 @@ async def _assemble(
             + ")"
         )
 
+    # A requested writer the host does not allow is refused before the prompt is resolved or a client
+    # built; the host's default is checked once the client says which model it resolved to.
+    if model is not None and (ineligible := host.profile.analysis_writer_refusal(model)) is not None:
+        raise ValidationFailedError(ineligible)
     prompt = await resolve_prompt()
     system, user, contract = first_request(bundle, prompt, host.profile)
 
@@ -404,6 +402,9 @@ async def _assemble(
     # pre-spend disclosure log and stored provenance, rather than re-implementing the host's
     # resolution cascade here.
     client = clients("analysis", model)
+    if model is None and (ineligible := host.profile.analysis_writer_refusal(client.model_name)) is not None:
+        await _release(client)
+        raise ValidationFailedError(f"the host's default writer: {ineligible}")
     return _Assembled(
         campaign=campaign,
         bundle=bundle,
@@ -460,7 +461,8 @@ async def estimate_analysis_generation(
 
     Raises:
         NotFoundError: No campaign with that id.
-        ValidationFailedError: The bundle has no resolvable runs, or the preset does not exist.
+        ValidationFailedError: The bundle has no resolvable runs, the preset does not exist, or the writer
+            model is not one the host allows.
         ValueError: The host supplies no completion clients.
     """
     assembled = await _assemble(host, campaign_id, scope_id, model=model, resolve_prompt=resolve_prompt)
@@ -522,7 +524,8 @@ async def prepare_analysis_generation(
 
     Raises:
         NotFoundError: No campaign with that id.
-        ValidationFailedError: The bundle has no resolvable runs, the preset does not exist, or the first call
+        ValidationFailedError: The bundle has no resolvable runs, the preset does not exist, the writer model is
+            not one the host allows, or the first call
             cannot be priced under an enforced cap or is priced above it — the client it built released.
         ValueError: The host supplies no completion clients.
     """
@@ -580,7 +583,7 @@ async def run_analysis_generation(
     """Make the paid generator call(s) for a prepared generation, then store and record the result.
 
     **Every attempt is recorded.** Once the generator is called, the attempt is stored as an
-    :class:`~threetears.evals.contracts.campaign.EvalAnalysisAttempt` however it ends — stored,
+    :class:`~threetears.evals.kernel.campaign.EvalAnalysisAttempt` however it ends — stored,
     refused, failed or cancelled — with what it sent, what it cost and why it ended, read from a
     tally the generator writes as it goes.
 
@@ -1070,6 +1073,32 @@ def campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Report:
     return build_code_only_report(
         bundle, measures=host.profile.measures, assembled_at=assembled_at, campaign_name=campaign.name
     )
+
+
+def campaign_verdicts(host: EvalHost, campaign_id: str, scope_id: str) -> list[Verdict]:
+    """Every verdict code reaches on the campaign's evidence as it stands now, typed — what a CI gate reads.
+
+    The code-only report's :attr:`~threetears.evals.analysis.report.model.Report.verdicts` over the evidence
+    assembled now — each guardrail, each bar on each cell, each contrast against the control — whether or not an
+    analysis was generated: a gate rests on code's verdicts, never on an analyst's words, and an analysis's
+    frozen surface holds no contrast. Costs no model call.
+
+    Args:
+        host: The host whose store holds the campaign, and whose vocabulary its evidence is assembled in.
+        campaign_id: The campaign.
+        scope_id: The scope it lives in.
+
+    Returns:
+        The verdicts, in the report's order.
+
+    Raises:
+        NotFoundError: No campaign with that id in the scope.
+    """
+    campaign = _load_campaign(host.storage, campaign_id, scope_id)
+    bundle = assemble_context_bundle(campaign, storage=host.storage, profile=host.profile)
+    return build_code_only_report(
+        bundle, measures=host.profile.measures, assembled_at=utc_now_iso(), campaign_name=campaign.name
+    ).verdicts
 
 
 def finding_chart_intent(storage: AnalysisStore, analysis_id: str, scope_id: str, finding_id: str) -> ChartIntent:
@@ -1664,6 +1693,7 @@ __all__ = [
     "get_analysis",
     "inspect_analysis_bundle",
     "campaign_report",
+    "campaign_verdicts",
     "inspect_campaign_bundle",
     "list_analyses",
     "list_analysis_attempts",

@@ -1,6 +1,6 @@
 """The cost estimate's prediction band, checked against sweeps whose cost is drawn from a known distribution (#601).
 
-:func:`~threetears.evals.analysis.reporting.compute_estimate_cost` prices a proposed sweep from the history of
+:func:`~threetears.evals.analysis.lenses.cost_estimate.compute_estimate_cost` prices a proposed sweep from the history of
 per-observation costs and brackets the prediction with a ~95% PREDICTION band for the sweep's total. The
 band's claim is about the sweep that will actually run: drawn from the same distribution as the history, its
 realised total falls inside the band 95% of the time.
@@ -22,7 +22,7 @@ from collections.abc import Callable
 
 import pytest
 
-from threetears.evals.analysis.reporting import compute_estimate_cost
+from threetears.evals.analysis.lenses.cost_estimate import compute_estimate_cost
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile

@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts.host import schema_violations
-from threetears.evals.contracts.host.world_schema import UnsupportedSchemaError
+from threetears.evals.kernel.host import schema_violations
+from threetears.evals.kernel.host.world_schema import UnsupportedSchemaError
 
 
 _JOB = {

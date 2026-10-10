@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from threetears.evals.analysis.reporting import format_significance
+from threetears.evals.analysis.significance import format_significance
 from threetears.evals.analysis.viz.intent import ChartAxis, ChartColumn, ChartEncoding, ChartIdentity, ChartIntent
 from threetears.evals.analysis.viz.payloads import DeltaRow, DeltaTablePayload, PayloadError
 from threetears.evals.analysis.viz.quantities import (

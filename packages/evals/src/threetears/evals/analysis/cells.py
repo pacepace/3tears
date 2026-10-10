@@ -47,9 +47,9 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from threetears.evals.contracts.hashing import canonical_digest
-from threetears.evals.contracts.base import EvalDocumentModel
-from threetears.evals.contracts.models import ApparatusProvenance
+from threetears.evals.schema.hashing import canonical_digest
+from threetears.evals.schema.base import EvalDocumentModel
+from threetears.evals.schema.models import ApparatusProvenance
 
 #: The cell model this module implements, stamped onto every analysis generated under it
 #: (``GenerationProvenance.cell_model_version``).
@@ -409,7 +409,7 @@ def apparatus_class_of(
             experiment.
         id_neutral: Dimensions this observation's class lists but its id does not digest, because the
             caller has established that leaving them out cannot make two different classes share an id
-            (the bundle's :data:`~threetears.evals.analysis.bundle.CELL_ID_NEUTRAL` says when). They stay on
+            (the bundle's :data:`~threetears.evals.analysis.bundle.observations.CELL_ID_NEUTRAL` says when). They stay on
             the class — in ``recorded`` or ``unknown_dimensions`` — so the merge rule still refuses to pool
             an unrecorded dimension with a recorded one; only the id is spared a dimension that says
             nothing new, which is what keeps a cell minted before the dimension existed addressable.

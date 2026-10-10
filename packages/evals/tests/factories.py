@@ -21,21 +21,21 @@ from __future__ import annotations
 
 from typing import Any
 
-from threetears.evals.contracts.authored import AuthoredAnalysis
-from threetears.evals.contracts.campaign import (
+from threetears.evals.kernel.authored import AuthoredAnalysis
+from threetears.evals.kernel.campaign import (
     EvalAnalysis,
     EvalAnalysisAttempt,
     EvalCampaign,
     EvalInsight,
     GenerationProvenance,
 )
-from threetears.evals.contracts.declaration import CampaignDesign, ControlDeclaration, SweptAxis
-from threetears.evals.contracts.host import SubjectSnapshot
-from threetears.evals.contracts.host.profile import CANDIDATE_MODEL_LEVER
-from threetears.evals.contracts.host.values import SweepableValue
-from threetears.evals.contracts.hashing import canonical_digest
-from threetears.evals.contracts.identity import IDENTITY_VERSION
-from threetears.evals.contracts.models import (
+from threetears.evals.kernel.declaration import CampaignDesign, ControlDeclaration, SweptAxis
+from threetears.evals.schema import SubjectSnapshot
+from threetears.evals.kernel.host.profile import CANDIDATE_MODEL_LEVER
+from threetears.evals.schema.values import SweepableValue
+from threetears.evals.schema.hashing import canonical_digest
+from threetears.evals.kernel.identity import IDENTITY_VERSION
+from threetears.evals.schema.models import (
     DEFAULT_JUDGE_TEMPERATURE,
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
@@ -57,10 +57,10 @@ from threetears.evals.contracts.models import (
     VariationAxis,
     eval_trace_doc_id,
 )
-from threetears.evals.contracts.storage import EvalStorage
-from threetears.evals.contracts.store_port import omit_paths
-from threetears.evals.contracts.surface import DecisionSurface
-from threetears.evals.contracts.usage_capture import blended_cost_roles
+from threetears.evals.kernel.storage import EvalStorage
+from threetears.evals.schema.store_port import omit_paths
+from threetears.evals.kernel.surface import DecisionSurface
+from threetears.evals.kernel.usage_capture import blended_cost_roles
 from threetears.evals.storage import InMemoryDocumentStore
 
 __all__ = [
@@ -292,7 +292,7 @@ def make_scored_result(
 
     Takes the *scoring inputs* as parameters -- how many goal states passed, which rubric dims
     scored what, and which of the three error slots is filled -- because that is the whole
-    vocabulary a :mod:`threetears.evals.contracts.scoring` test varies. Deliberately does NOT route
+    vocabulary a :mod:`threetears.evals.kernel.scoring` test varies. Deliberately does NOT route
     through :func:`make_eval_result`, whose non-zero ``cost_usd`` default would be a cost nobody
     asked for under a result built to make a point about pass^k.
 

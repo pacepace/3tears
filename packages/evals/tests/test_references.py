@@ -18,8 +18,8 @@ from threetears.evals.analysis.references import (
     resolve_reading,
 )
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, t_critical_two_sided
-from threetears.evals.contracts.analysis_measures import MeasureCollection, MeasureSummary
-from threetears.evals.contracts.surface import (
+from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
+from threetears.evals.kernel.surface import (
     CellFacts,
     DecisionSurface,
     JudgedDimensionFacts,
@@ -121,6 +121,14 @@ def test_a_reading_of_one_case_has_no_interval_and_says_why():
 
     assert (reading.ci_low, reading.ci_high) == (None, None)
     assert reading.dispersion == "unestimable: 4 obs of one case, which has no between-case spread"
+
+
+def test_an_unestimable_spread_counts_cases_never_observations():
+    """Four scores over two cases with no interval say two cases: the count every interval is read over."""
+    reading = resolve_reading(_surface(judged_cases=2, judged_sem=None), _REF, "reply.grounding", "judged")
+
+    assert (reading.ci_low, reading.ci_high) == (None, None)
+    assert reading.dispersion == "unestimable at 2 cases"
 
 
 def test_a_judged_reading_takes_a_t_interval_and_the_quality_axis():

@@ -1,29 +1,25 @@
 """Is each answer helpful, and does it say only what its source supports?
 
-No code grades that, so a model does: a model answers questions about a store policy, and a second call, the
-judge, scores each answer on a rubric, beside a code scorer. New here: ``Judge``, a completion client, its model
-and a rubric, passed to ``run_eval`` as ``judge=``; ``intent=``, what the judge is told each case asks; and
-``Answer``, the candidate's reply plus the tokens and dollars its call spent.
-How far to trust it: ``docs/reading-reports.md``.
+No code grades that, so a model does: a model answers questions about a store policy, and a judge, a second
+model call, grades each answer on a rubric. New here: ``Judge``, passed to ``run_eval`` as ``judge=``: the client
+it calls, that client's model, the rubric, and ``case_material``, what it reads beside each answer. Each dimension
+here is pass/fail, so a fail is a miss and ``summary.misses()`` carries the judge's reason. Read them: offline,
+the script judge fails an honest "I don't know". How far to trust a judge: ``docs/judges-and-calibration.md``.
 
 Run it with ``python packages/evals/examples/llm_judge.py``. With ``ANTHROPIC_API_KEY`` set, Claude answers and
-judges (30 short calls, well under a cent); without it, a keyword matcher answers and a word-overlap script
-judges, and their scores say nothing about Claude.
+judges: 30 short calls (5 questions x 2 repeats, each answered once and judged on 2 dimensions), well under a
+cent. Without it, a keyword matcher answers and a word-overlap script judges; they say nothing about Claude.
 """
 
 import asyncio
 import json
-import os
-from collections import namedtuple
 import re
-from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
-from typing import Any
 
-from threetears.evals.quick import Answer, EvalSummary, Judge, run_eval
+from _live import Completion, claude, online
+from threetears.evals.quick import EvalSummary, Judge, run_eval
 
 MODEL = "claude-haiku-5-5"
-RATES = (0.10, 0.50)  # Haiku 5.5's (input, output) list price, USD per million tokens, for prompts up to 100K
 
 # -----------------------------------------------------------------------------
 # 1. What the candidate answers from, and the questions it is asked.
@@ -48,88 +44,21 @@ SYSTEM = "Answer the customer's question in one or two sentences, using only the
 SYSTEM += "If the policy does not say, tell them you don't know.\n\n" + POLICY
 
 # -----------------------------------------------------------------------------
-# 2. The grades: one code scorer, and the judge's rubric and intent.
+# 2. The judge's rubric, and what it reads beside each answer.
 # -----------------------------------------------------------------------------
 
-
-# The engine reads this docstring's first line: it is the measure's description.
-def concise(case: dict, answer: str) -> bool:
-    """Whether the answer kept to 40 words or fewer."""
-    return len(answer.split()) <= 40
-
-
-RUBRIC = {  # one judge call per answer and dimension, scored 1 (worst) to 5 (best): write what a 5 looks like
+RUBRIC = {  # one judge call per answer and dimension: write what a pass looks like
     "helpful": "The answer directly resolves the customer's question, or clearly says the policy does not cover it.",
     "grounded": "Every claim in the answer is stated in the store policy; nothing is invented or assumed.",
 }
-INTENT = "Answer a customer's question from the store policy."  # what the judge is told each case asks
 
 
-def judged_against(case: dict) -> str:  # what the judge reads beside each answer
+def judged_against(case: dict) -> str:
     return f"Store policy:\n{POLICY}\n\nCustomer question: {case['question']}"
 
 
 # -----------------------------------------------------------------------------
-# 3. The live client: Claude behind the engine's ``CompletionClient`` protocol.
-#
-# The engine calls ``generate(system=, user=, response_format=)`` and reads a ``Completion``'s fields off the
-# reply. It never names a provider, so pricing is the client's job; a cost of None is unpriced, never $0.
-# -----------------------------------------------------------------------------
-
-Completion = namedtuple(
-    "Completion",
-    "content input_tokens output_tokens reasoning_tokens cost_usd price_source model served_model stop_reason "
-    "temperature",
-)
-
-
-def claude_client() -> Any:
-    """Claude as a completion client, shared by the candidate and the judge."""
-    import anthropic  # imported here so the offline path does not need the package
-
-    client = anthropic.AsyncAnthropic()  # reads ANTHROPIC_API_KEY
-
-    async def generate(*, system: str, user: str, response_format: dict | None = None) -> Completion:
-        # The judge's prompt already asks for JSON, so the OpenAI-style ``response_format`` is not sent.
-        response = await client.messages.create(
-            model=MODEL,
-            max_tokens=2048,
-            output_config={"effort": "low"},  # short answers and rubric scores need little thought
-            system=system,
-            messages=[{"role": "user", "content": user}],
-        )
-        usage, details = response.usage, response.usage.output_tokens_details
-        stopped = {"end_turn": "end_turn", "max_tokens": "max_tokens", "refusal": "content_filter"}
-        return Completion(
-            content="".join(block.text for block in response.content if block.type == "text"),
-            input_tokens=usage.input_tokens,
-            output_tokens=usage.output_tokens,
-            reasoning_tokens=details.thinking_tokens if details is not None else None,
-            cost_usd=(usage.input_tokens * RATES[0] + usage.output_tokens * RATES[1]) / 1e6,
-            price_source="anthropic list price, from llm_judge.py",
-            model=MODEL,
-            served_model=response.model,
-            temperature=None,  # none is sent: this request sets an effort, so the model's own sampling applies
-            stop_reason=stopped.get(response.stop_reason or "", "error"),
-        )
-
-    return SimpleNamespace(generate=generate, aclose=client.close)
-
-
-def claude_answerer(claude: Any) -> Callable[[dict], Awaitable[Answer]]:
-    """The candidate: Claude answering from the policy, its spend returned beside the answer."""
-
-    async def answer(case: dict) -> Answer:
-        """Answer a customer's question from the store policy."""
-        reply = await claude.generate(system=SYSTEM, user=case["question"])
-        spent = {"input_tokens": reply.input_tokens, "output_tokens": reply.output_tokens, "cost_usd": reply.cost_usd}
-        return Answer(reply.content, model=MODEL, **spent)
-
-    return answer
-
-
-# -----------------------------------------------------------------------------
-# 4. The OFFLINE stand-ins: scripts, not models.
+# 3. The OFFLINE stand-ins: scripts, not models. Live, both are Claude (``_live.py``).
 # -----------------------------------------------------------------------------
 
 
@@ -138,51 +67,58 @@ def words(text: str) -> set[str]:
 
 
 async def offline_answer(case: dict) -> str:
-    """Offline stand-in candidate: the policy line sharing the most words with the question."""
+    """Answer a customer's question from the store policy."""  # a stand-in: the policy line sharing most words
     asked = words(case["question"]) - {"do", "you", "i", "a", "the", "can", "for", "on"}
     best = max(POLICY.splitlines(), key=lambda line: len(asked & words(line)))
     return best if asked & words(best) else "I don't know; the policy doesn't say."
 
 
-def offline_judge() -> Any:
-    """A word-overlap script behind the same protocol, reading the judge prompt the engine sends."""
-
-    async def generate(*, system: str, user: str, response_format: dict | None = None) -> Completion:
-        dimension = re.search(r'single key "([^"]+)"', system).group(1)
-        material, output = user.split("# Output under review\n", 1)
-        if dimension.endswith("grounded"):  # the share of the answer's words found in the policy and question
-            score = 1 + round(4 * len(words(output) & words(material)) / max(len(words(output)), 1))
-        else:  # helpful: an answer that commits to something beats one that does not
-            score = 2 if "don't know" in output else 4
-        reply = {"reasoning": "offline stand-in: word overlap, not a model", "criteria_scores": {dimension: score}}
-        return Completion(
-            json.dumps(reply), None, None, None, 0.0, "offline stand-in", "offline", None, "end_turn", 0.0
-        )
-
-    return SimpleNamespace(generate=generate)
+async def offline_judge(*, system: str, user: str, response_format: dict | None = None) -> Completion:
+    """A word-overlap script behind the client protocol, reading the judge prompt the engine sends."""
+    dimension = re.search(r'single key "([^"]+)"', system).group(1)
+    material, output = user.split("# Output under review\n", 1)
+    said, source = words(output), words(material)
+    if dimension.endswith("grounded"):  # passes when most of the answer's words are in the policy or question
+        passed = len(said & source) >= 0.8 * len(said)
+        why = f"{len(said & source)} of the answer's {len(said)} words are in the policy or question"
+    else:  # helpful: passes when the answer shares a word with the question, or says the policy does not cover it
+        passed = bool(said & words(material.split("Customer question:")[-1])) or "don't know" in output
+        why = "it answers the question" if passed else "it shares no word with the question"
+    verdict = "pass" if passed else "fail"
+    reply = {"reasoning": f"offline stand-in, word overlap: {why}", "criteria_scores": {dimension: verdict}}
+    return Completion(json.dumps(reply), None, None, None, 0.0, "offline", "offline-judge", None, "end_turn", None)
 
 
 # -----------------------------------------------------------------------------
-# 5. Answer every question twice, grade each answer with the scorer and the judge, and print the summary.
+# 4. Answer every question twice, judge each answer, print the summary, then read every miss.
 # -----------------------------------------------------------------------------
 
 
 async def main() -> EvalSummary:
-    online = bool(os.environ.get("ANTHROPIC_API_KEY"))
-    if online:
+    if online():
         print(f"Running against Claude ({MODEL}).\n")
+        client, model = claude(MODEL), MODEL  # one client, shared by the candidate and the judge
+
+        async def candidate(case: dict) -> str:
+            """Answer a customer's question from the store policy."""
+            return (await client.generate(system=SYSTEM, user=case["question"])).content
     else:
         print("ANTHROPIC_API_KEY is not set: running OFFLINE, with a keyword matcher answering and a script judging.\n")
+        client, model, candidate = SimpleNamespace(generate=offline_judge), "offline-judge", offline_answer
 
-    client = claude_client() if online else offline_judge()
-    candidate, model = (claude_answerer(client), MODEL) if online else (offline_answer, "offline")
     # The judge: a client you own (the run never closes it), the model it calls, the rubric, and what it reads.
-    judge = Judge(client=client, model=model, rubric=RUBRIC, case_material=judged_against)
+    judge = Judge(client=client, model=model, rubric=RUBRIC, scale="pass_fail", case_material=judged_against)
+    # model= names the candidate's model, so the summary can warn when a model judges its own answers.
     summary = await run_eval(
-        CASES, candidate, [concise], judge=judge, intent=INTENT, scope_id="llm-judge", k=2, model=model
+        CASES, candidate, judge=judge, scope_id="llm-judge", k=2, model=MODEL if online() else None
     )
-    print(summary.render())  # each dimension's mean, then the judge's spend and, online, the candidate's
-    if online:
+    print(summary.render())  # each dimension's pass rate, then what the judge spent
+
+    print("\nWhat the judge failed, and why. A judge can be wrong too, so read them:")
+    for miss in summary.misses():
+        print(f"  {miss.input['question']!r}, repeat {miss.repeat}, answered {miss.answer!r}")
+        print(f"    {'; '.join(miss.missed_because)}")
+    if online():
         await client.aclose()
     return summary
 

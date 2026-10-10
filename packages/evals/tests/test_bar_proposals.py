@@ -24,10 +24,11 @@ from dataclasses import replace
 import pytest
 
 from threetears.evals.analysis import BaselineBarProposals, assemble_context_bundle, propose_bars
-from threetears.evals.contracts import EvalCampaign, EvalResult, EvalRun, NotFoundError, ValidationFailedError
-from threetears.evals.contracts import MetricDescriptor
-from threetears.evals.contracts.host import EvalHost, MeasureRegistry
-from threetears.evals.contracts.host.bars import BarRegistrationError
+from threetears.evals.kernel import EvalCampaign, NotFoundError, ValidationFailedError
+from threetears.evals.schema import EvalResult, EvalRun
+from threetears.evals.kernel import MetricDescriptor
+from threetears.evals.kernel.host import EvalHost, MeasureRegistry
+from threetears.evals.kernel.host.bars import BarRegistrationError
 from packages.evals.tests.factories import memory_storage
 from packages.evals.tests.fixtures.toyhost.corpus import (
     TOYHOST_JUDGED_DIMENSION,

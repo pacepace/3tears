@@ -27,7 +27,7 @@ names one model, so no run can name both.
 What the toy host supplies, and nothing more
 --------------------------------------------
 
-Its :class:`~threetears.evals.contracts.host.EvalHost` (``host.py``): the profile, the engine's own
+Its :class:`~threetears.evals.kernel.host.EvalHost` (``host.py``): the profile, the engine's own
 storage over an in-memory document store, and the three services every host names. The runner writes
 each cell through that storage and the analysis reads the same storage back, so runner output feeds
 analysis input through the engine's own store rather than a hand-off the test arranges.
@@ -52,10 +52,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
-from threetears.evals.contracts import (
-    CampaignDesign,
+from threetears.evals.kernel import CampaignDesign, EvalCampaign
+from threetears.evals.schema import (
     ControlEndState,
-    EvalCampaign,
     EvalResult,
     EvalRun,
     EvalTemplate,
@@ -66,7 +65,7 @@ from threetears.evals.contracts import (
     RecordedCall,
     WorldSeed,
 )
-from threetears.evals.contracts.host import CANDIDATE_MODEL_LEVER, EvalHost, WorldRegistry
+from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost, WorldRegistry
 from threetears.evals.run import JudgeService, RunnerOptions, execute_run
 from packages.evals.tests.fixtures.toyhost.corpus import (
     TOYHOST_COST_CEILING_USD,

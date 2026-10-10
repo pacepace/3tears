@@ -19,14 +19,8 @@ import json
 from dataclasses import dataclass
 from typing import Self
 
-from threetears.evals.contracts import (
-    DEFAULT_JUDGE_TEMPERATURE,
-    CompletionClient,
-    EvalTemplate,
-    RubricDim,
-    StopReason,
-    withhold_failure_detail,
-)
+from threetears.evals.schema import DEFAULT_JUDGE_TEMPERATURE, CompletionClient, EvalTemplate, RubricDim, StopReason
+from threetears.evals.kernel import withhold_failure_detail
 from threetears.evals.run import JudgeService
 from packages.evals.tests.fixtures.toyhost.kind import INVOICE_FIELDS
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
@@ -82,10 +76,10 @@ def toyhost_judged_template() -> EvalTemplate:
 
 @dataclass(frozen=True)
 class ToyJudgeCompletion:
-    """One scripted judge reply — a frozen value satisfying :class:`~threetears.evals.contracts.CompletionResult`.
+    """One scripted judge reply — a frozen value satisfying :class:`~threetears.evals.schema.CompletionResult`.
 
     ``stop_reason`` is the engine's word, never a provider's: a real client maps its provider's
-    finish reason (OpenAI's ``stop`` / ``length``) onto :data:`~threetears.evals.contracts.StopReason`.
+    finish reason (OpenAI's ``stop`` / ``length``) onto :data:`~threetears.evals.schema.StopReason`.
     """
 
     content: str
@@ -103,7 +97,7 @@ class ToyJudgeCompletion:
 
 
 class ScriptedJudgeClient:
-    """A judge client satisfying :class:`~threetears.evals.contracts.CompletionClient`, scoring from its prompt."""
+    """A judge client satisfying :class:`~threetears.evals.schema.CompletionClient`, scoring from its prompt."""
 
     def __init__(
         self, *, reports_token_counts: bool = True, temperature: float | None = DEFAULT_JUDGE_TEMPERATURE

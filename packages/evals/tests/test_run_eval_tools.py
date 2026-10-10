@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts import ValidationFailedError
+from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.quick import CandidateTools, callable_host, compare, run_eval
 from threetears.evals.run import get_run, list_runs
 

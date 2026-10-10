@@ -11,7 +11,7 @@ Launching a campaign's arms is not here: it composes the run package with this o
 package may import the other, so the launch is the adapter's and calls these.
 
 **Every writer of an existing campaign holds the campaign write lock**
-(:func:`~threetears.evals.contracts.campaign_writes.serialized_campaign_write`). Campaign documents
+(:func:`~threetears.evals.kernel.campaign_writes.serialized_campaign_write`). Campaign documents
 carry no ETag, so each edit is a blind read-modify-write, and the run-delete cascade in the run
 package detaches runs under the same lock.
 
@@ -29,19 +29,19 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import Field
 
-from threetears.evals.analysis.bundle import variant_key_of_run
-from threetears.evals.contracts.authoring_fields import reject_unknown_authoring_fields
-from threetears.evals.contracts.base import EvalBaseModel
-from threetears.evals.contracts.campaign_writes import serialized_campaign_write
-from threetears.evals.contracts.host.profile import HostProfile
-from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
+from threetears.evals.analysis.bundle.observations import variant_key_of_run
+from threetears.evals.kernel.authoring_fields import reject_unknown_authoring_fields
+from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.kernel.campaign_writes import serialized_campaign_write
+from threetears.evals.kernel.host.profile import HostProfile
+from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.storage import EvalStorage
-    from threetears.evals.contracts.campaign import CampaignView, EvalCampaign
-    from threetears.evals.contracts.declaration import CampaignDesign
-    from threetears.evals.contracts.models import EvalResult, EvalRun, EvalRunStamp, EvalTemplate
+    from threetears.evals.kernel.storage import EvalStorage
+    from threetears.evals.kernel.campaign import CampaignView, EvalCampaign
+    from threetears.evals.kernel.declaration import CampaignDesign
+    from threetears.evals.schema.models import EvalResult, EvalRun, EvalRunStamp, EvalTemplate
 
 log = get_logger(__name__)
 
@@ -53,14 +53,14 @@ class CampaignStore(Protocol):
     themselves, the template a declaration's bars are checked against, and — for the view's
     window and a control's designation — a member run's stamp, the run, and its results.
 
-    **Not composed from** :class:`~threetears.evals.analysis.bundle.CampaignReadStore`, though one
+    **Not composed from** :class:`~threetears.evals.analysis.bundle.assemble.CampaignReadStore`, though one
     member is redeclared from it. That port is the bundle's four reads and writes nothing;
     composing would hand a consumer of the bundle a contract naming campaign writes, and a
     consumer of this family the bundle's insight reads — the union-port problem the curation
     family's port declines for the same reason.
 
     Structural, so a host's own storage satisfies it by having the methods.
-    :class:`~threetears.evals.contracts.storage.EvalStorage` does, with no inheritance and no registration.
+    :class:`~threetears.evals.kernel.storage.EvalStorage` does, with no inheritance and no registration.
     Positional parameters are positional-only, so an implementation's own parameter names never
     have to match the port's.
     """
@@ -172,13 +172,18 @@ def create_campaign(
     fresh ``id`` and ``created_at`` are always assigned, and ``scope_id`` and ``created_by`` come
     from the surface rather than from the caller. ``name`` / ``subject_id`` /
     ``behavior`` are required (non-empty); the rest default per
-    :class:`~threetears.evals.contracts.campaign.EvalCampaign`.
+    :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
 
     **A campaign may be declared as it is created.** A ``declared_design`` in ``definition`` is
     validated by the campaign contract, stamped with its author, and gated as :func:`update_campaign`
     gates one. Its control is a variant key, which nobody types: ``control_from_run_id`` names one of the
     campaign's runs and the key is resolved from it exactly as :func:`set_campaign_control` resolves
     one. A design that types ``control`` itself is held to the key's shape by the contract.
+
+    **The design is optional.** A campaign created without one is exploratory — someone learning to run
+    evals, or testing an intuition with no settled question — and that is derived from
+    ``declared_design is None`` wherever it is read, never stored as a second flag: its report and analysis
+    bundle say so once, and its analysis reads a design inferred from the runs.
 
     Args:
         storage: The campaign store.
@@ -193,7 +198,7 @@ def create_campaign(
             None. Requires a ``declared_design``, and one that does not type ``control`` itself.
 
     Returns:
-        The persisted :class:`~threetears.evals.contracts.campaign.EvalCampaign`.
+        The persisted :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
 
     Raises:
         ValidationFailedError: ``definition`` fails campaign validation, names a run that does
@@ -207,7 +212,7 @@ def create_campaign(
     """
     from pydantic import ValidationError
 
-    from threetears.evals.contracts.campaign import EvalCampaign
+    from threetears.evals.kernel.campaign import EvalCampaign
 
     # `created_by` is IGNORED here rather than refused, and that is deliberate: authorship is
     # recorded by the server, never asked of the caller. Refusing it was once proposed on the
@@ -292,7 +297,7 @@ def _stamp_declaration(design: CampaignDesign, declared_by: str) -> CampaignDesi
     with it — an amended declaration is a new statement of intent, and dating it to when the
     campaign was first declared would put yesterday's date on today's claim. What must NOT
     move is the per-question history, which is why ``asked_at`` lives on the question and is
-    preserved by :func:`~threetears.evals.contracts.declaration.reconcile_question_edits`.
+    preserved by :func:`~threetears.evals.kernel.declaration.reconcile_question_edits`.
 
     Args:
         design: The declaration being written.
@@ -301,7 +306,7 @@ def _stamp_declaration(design: CampaignDesign, declared_by: str) -> CampaignDesi
     Returns:
         The declaration with its authorship stamped.
     """
-    from threetears.evals.contracts.models import utc_now_iso
+    from threetears.evals.schema.models import utc_now_iso
 
     return design.model_copy(update={"declared_by": declared_by, "declared_at": utc_now_iso()})
 
@@ -335,16 +340,21 @@ def _gate_declaration(
 
     Raises:
         ValidationFailedError: An axis the host will not accept — neither a registered
-            lever nor a recognised open-family member — a bar naming neither a described
+            lever nor a recognised open-family member, pointing at :func:`declarable_axes` — a bar naming neither a described
             measure nor a rubric dimension or goal-state check of the campaign's template, a
             bar is looser than the registered incumbent, a bar contradicts the better-direction
             of what it names.
     """
-    from threetears.evals.contracts.declaration import refuse_an_undeclarable_design
+    from threetears.evals.kernel.declaration import UndeclarableAxisError, refuse_an_undeclarable_design
 
     template = storage.load_template(campaign.template_id, campaign.scope_id) if campaign.template_id else None
     try:
         refuse_an_undeclarable_design(design, behavior=campaign.behavior, template=template, profile=profile)
+    except UndeclarableAxisError as e:
+        raise ValidationFailedError(
+            f"invalid campaign design: {str(e).rstrip('.')}. `declarable_axes()` lists every axis this host accepts — its levers and "
+            "the open families whose members it recognises — read from the registry this gate decides with"
+        ) from e
     except ValueError as e:
         raise ValidationFailedError(f"invalid campaign design: {e}") from e
 
@@ -353,7 +363,7 @@ def declarable_axes(profile: HostProfile) -> DeclarableAxes:
     """The axes a campaign may declare on this host, read off the registry the gate decides with.
 
     Read from the same profile the gate
-    (:func:`~threetears.evals.contracts.declaration.refuse_an_undeclarable_design`) is handed: an
+    (:func:`~threetears.evals.kernel.declaration.refuse_an_undeclarable_design`) is handed: an
     offer drawn from any other registry could promise an axis the gate then refuses.
 
     Args:
@@ -401,7 +411,7 @@ def update_campaign(
     Only ``_CAMPAIGN_UPDATABLE_FIELDS`` may be named, and an unrecognised key is refused
     rather than ignored — a silently dropped key reads as an update that worked. Questions
     inside a supplied ``declared_design`` are reconciled rather than replaced
-    (:func:`~threetears.evals.contracts.declaration.reconcile_question_edits`), and the declaration gate
+    (:func:`~threetears.evals.kernel.declaration.reconcile_question_edits`), and the declaration gate
     runs here exactly as it does at creation.
 
     Args:
@@ -415,7 +425,7 @@ def update_campaign(
         profile: The host whose vocabulary this reads.
 
     Returns:
-        The persisted, updated :class:`~threetears.evals.contracts.campaign.EvalCampaign`.
+        The persisted, updated :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
 
     Raises:
         NotFoundError: No campaign with that id in the scope.
@@ -426,8 +436,8 @@ def update_campaign(
     """
     from pydantic import ValidationError
 
-    from threetears.evals.contracts.campaign import EvalCampaign
-    from threetears.evals.contracts.declaration import CampaignDesign, reconcile_question_edits
+    from threetears.evals.kernel.campaign import EvalCampaign
+    from threetears.evals.kernel.declaration import CampaignDesign, reconcile_question_edits
 
     if not updates:
         raise ValidationFailedError("update_campaign requires at least one field to change")
@@ -533,13 +543,13 @@ def get_campaign_view(storage: CampaignStore, campaign_id: str, scope_id: str) -
         scope_id: The scope the campaign and its member runs live in.
 
     Returns:
-        A :class:`~threetears.evals.contracts.campaign.CampaignView` — the campaign
+        A :class:`~threetears.evals.kernel.campaign.CampaignView` — the campaign
         plus its derived window (or ``None``).
 
     Raises:
         NotFoundError: No campaign with that id in the scope.
     """
-    from threetears.evals.contracts.campaign import CampaignView, derive_window
+    from threetears.evals.kernel.campaign import CampaignView, derive_window
 
     campaign = get_campaign(storage, campaign_id, scope_id)
     archived_run_ids: list[str] = []
@@ -622,7 +632,7 @@ def add_runs_to_campaign(storage: CampaignStore, campaign_id: str, scope_id: str
         run_ids: Run ids to add; already-attached ids are ignored.
 
     Returns:
-        The persisted, updated :class:`~threetears.evals.contracts.campaign.EvalCampaign`.
+        The persisted, updated :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
 
     Raises:
         NotFoundError: No campaign with that id in the scope.
@@ -668,7 +678,7 @@ def remove_runs_from_campaign(
         run_ids: Run ids to remove; every one must currently be attached.
 
     Returns:
-        The persisted, updated :class:`~threetears.evals.contracts.campaign.EvalCampaign`.
+        The persisted, updated :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
 
     Raises:
         NotFoundError: No campaign with that id in the scope.
@@ -716,7 +726,7 @@ def set_campaign_control(
     they can see, a member run, and this resolves it: the run's observations are keyed
     through the same predicate the analysis uses, and the key is written to
     ``declared_design.control``. That is the same shape a swept level is authored in
-    (:meth:`~threetears.evals.contracts.declaration.SweptAxis._content_address_authored_levels`)
+    (:meth:`~threetears.evals.kernel.declaration.SweptAxis._content_address_authored_levels`)
     — the surface holding the content addresses it; the surface holding a key sends the key,
     through :func:`update_campaign`.
 
@@ -749,7 +759,7 @@ def set_campaign_control(
         profile: The host whose vocabulary this reads.
 
     Returns:
-        The persisted, updated :class:`~threetears.evals.contracts.campaign.EvalCampaign` — or the
+        The persisted, updated :class:`~threetears.evals.kernel.campaign.EvalCampaign` — or the
         campaign untouched when CLEARING a control on one that declares no design, since
         there is nothing to clear and a refusal would answer the request with its opposite.
 
@@ -815,7 +825,7 @@ def _resolve_control_variant(
         LeverCoordinateError: The run has no results and recorded no lever map (its host assembled
             it without the launch), and the host's variant map disagrees with its own registry.
     """
-    from threetears.evals.contracts.identity import resolve_variant_identity
+    from threetears.evals.kernel.identity import resolve_variant_identity
 
     if run_id not in campaign.run_ids:
         raise ValidationFailedError(

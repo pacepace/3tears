@@ -10,8 +10,8 @@ these are the server half's cases.
 
 from __future__ import annotations
 
-from threetears.evals.contracts.declaration import CampaignDesign, ControlDeclaration, Question, SweptAxis
-from threetears.evals.contracts.host.values import SweepableValue
+from threetears.evals.kernel.declaration import CampaignDesign, ControlDeclaration, Question, SweptAxis
+from threetears.evals.schema.values import SweepableValue
 
 
 def _design(questions: list[Question]) -> CampaignDesign:

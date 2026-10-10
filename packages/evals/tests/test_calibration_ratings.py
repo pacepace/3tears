@@ -28,15 +28,8 @@ from pydantic import ValidationError
 from threetears.evals.analysis import JudgeAgreement, assemble_context_bundle, judge_agreement, reporter_calibration
 from threetears.evals.analysis.reporter_kind import ReporterCase, reporter_case_payload
 from threetears.evals.analysis.stats import cohen_kappa
-from threetears.evals.contracts import (
-    TRANSCRIPT_DIM_ID,
-    CalibrationRating,
-    EvalResult,
-    EvalTestCase,
-    NotFoundError,
-    RubricScore,
-    ValidationFailedError,
-)
+from threetears.evals.schema import TRANSCRIPT_DIM_ID, CalibrationRating, EvalResult, EvalTestCase, RubricScore
+from threetears.evals.kernel import NotFoundError, ValidationFailedError
 from threetears.evals.run import rate_result
 from packages.evals.tests.factories import make_calibration_rating, make_eval_result, make_eval_run, memory_storage
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign

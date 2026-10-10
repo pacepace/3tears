@@ -1,7 +1,7 @@
 """An analysis generation driven through the host: its storage, its vocabulary and its client factory.
 
 The service operations that read the host's vocabulary take the
-:class:`~threetears.evals.contracts.host.EvalHost`; the generator client is built from the host's
+:class:`~threetears.evals.kernel.host.EvalHost`; the generator client is built from the host's
 factory for the ``analysis`` role, not handed in by the caller. These drive the toy host's corpus
 campaign from the engine's own storage through a fixtured client, and pin the refusal of a host that
 supplies no client factory.
@@ -14,7 +14,7 @@ import json
 import pytest
 
 from threetears.evals.analysis import prepare_analysis_generation, run_analysis_generation
-from threetears.evals.contracts.host import EvalHost
+from threetears.evals.kernel.host import EvalHost
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, memo_payload

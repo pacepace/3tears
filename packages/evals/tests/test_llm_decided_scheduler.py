@@ -6,7 +6,7 @@ from __future__ import annotations
 import pytest
 
 from packages.evals.tests.scripted_table import DONE, Raw, ScriptedTable, actor
-from threetears.evals.contracts.models import ROUND_DONE, ConversationSpec, ConversationStopCause
+from threetears.evals.schema.models import ROUND_DONE, ConversationSpec, ConversationStopCause
 from threetears.evals.run.simulator import (
     SCHEDULER_CALL_ATTEMPTS,
     CandidateTurn,

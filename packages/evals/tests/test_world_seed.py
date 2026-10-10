@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts.host import SeedRefused, SeedWrite, WorldDimension, WorldRegistry, check_seed
+from threetears.evals.kernel.host import SeedRefused, SeedWrite, WorldDimension, WorldRegistry, check_seed
 from packages.evals.tests.fixtures.toyhost.world import toyhost_world
 
 

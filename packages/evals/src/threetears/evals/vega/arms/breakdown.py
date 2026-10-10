@@ -27,7 +27,7 @@ from threetears.evals.vega.compiler import (
     value_label_layers,
 )
 from threetears.evals.analysis.viz.intent import ChartIntent
-from threetears.evals.contracts.host import ChartFont
+from threetears.evals.kernel.host import ChartFont
 
 
 def compile_breakdown(intent: ChartIntent, *, font: ChartFont | None = None) -> dict[str, Any]:

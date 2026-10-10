@@ -2,11 +2,11 @@
 
 Five parts, each pinned in both directions:
 
-- **The bundle's time axis** (``analysis/bundle.py``). A campaign spanning two builds the host labels, or
+- **The bundle's time axis** (``analysis/bundle/time_axis.py``). A campaign spanning two builds the host labels, or
   failing that two days, carries one; each position's cells are the decision surface's own algebra over that
   position's runs, so a position reads exactly as a campaign of only its runs would. Positions are ordered
   by when each first ran — never by name, which would put ``0.10`` before ``0.9``.
-- **The host's release label** (``contracts/host/profile.py``). It must name a registered ``label``.
+- **The host's release label** (``kernel/host/profile.py``). It must name a registered ``label``.
 - **The builder** (``analysis/viz_refs.py``). A chart over a surface with no time axis is refused; every
   point is the resolver's reading over its position; a position a cell lacks is a stated gap.
 - **The payload and the intent** (``analysis/viz/payloads.py``, ``analysis/viz/intents/timeseries.py``).
@@ -27,7 +27,8 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis.bundle import assemble_context_bundle, cell_dimension_facts, cell_measure_facts
+from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
+from threetears.evals.analysis.bundle.surface import cell_dimension_facts, cell_measure_facts
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import SoundnessRefusal, UnresolvableReference
 from threetears.evals.analysis.generator import first_request, generate_analysis, prompt_content_version
@@ -35,12 +36,12 @@ from threetears.evals.analysis.references import cell_aliases, resolve_reading
 from threetears.evals.analysis.viz import chart_intent
 from threetears.evals.analysis.viz.payloads import PayloadError, parse_payload
 from threetears.evals.analysis.viz_refs import TimeseriesRef, build_viz_payload, reference_from_chart
-from threetears.evals.contracts.authored import NO_CHART, Chart, MeasureRef
-from threetears.evals.contracts.host.measures import MeasureRegistry
-from threetears.evals.contracts.host.profile import HostProfile, ProfileRegistrationError
-from threetears.evals.contracts.models import EvalResult, EvalRun, utc_now_iso
-from threetears.evals.contracts.analysis_measures import MeasureSummary
-from threetears.evals.contracts.surface import DecisionSurface, MeasureFacts, TimeAxis, TimePosition
+from threetears.evals.kernel.authored import NO_CHART, Chart, MeasureRef
+from threetears.evals.kernel.host.measures import MeasureRegistry
+from threetears.evals.kernel.host.profile import HostProfile, ProfileRegistrationError
+from threetears.evals.schema.models import EvalResult, EvalRun, utc_now_iso
+from threetears.evals.kernel.analysis_measures import MeasureSummary
+from threetears.evals.kernel.surface import DecisionSurface, MeasureFacts, TimeAxis, TimePosition
 from packages.evals.tests.fixtures.toyhost.campaign import (
     TOYHOST_NARROW,
     TOYHOST_WIDE,
@@ -63,7 +64,7 @@ _NAMESPACE = uuid.UUID("0b8e6a52-41d7-4f0e-9c3a-7d25e1f4a9b6")
 DAY_ONE, DAY_TWO = "2026-03-14T09:30:00+00:00", "2026-03-15T09:30:00+00:00"
 
 #: The base wall-clock per arm, before each position's drift.
-_TOTAL_MS = {TOYHOST_NARROW: 900.0, TOYHOST_WIDE: 1400.0}
+_TOTAL_MS = {TOYHOST_NARROW: 900.0, 512: 1100.0, TOYHOST_WIDE: 1400.0}
 
 
 def _release_profile() -> HostProfile:
@@ -71,7 +72,7 @@ def _release_profile() -> HostProfile:
     return dataclasses.replace(toyhost_profile(), release_label="batch_label")
 
 
-def _batches(
+def timeseries_batches(
     positions: list[tuple[str, str | None]],
     *,
     profile: HostProfile,
@@ -112,7 +113,7 @@ def _timed(
     """The toy campaign re-run at each position, assembled."""
     host = profile if profile is not None else toyhost_profile()
     campaign, _ = toyhost_campaign(profile=host)
-    runs, results = _batches(positions, profile=host)
+    runs, results = timeseries_batches(positions, profile=host)
     timed = campaign.model_copy(update={"run_ids": run_ids if run_ids is not None else [run.id for run in runs]})
     return assemble_context_bundle(timed, storage=ToyhostStorage(runs, results), profile=host)
 
@@ -212,7 +213,7 @@ class TestTheBundleEarnsATimeAxis:
     def test_a_run_that_measured_nothing_has_no_place_in_time(self) -> None:
         host = toyhost_profile()
         campaign, _ = toyhost_campaign(profile=host)
-        runs, results = _batches([(DAY_ONE, None), (DAY_TWO, None)], profile=host)
+        runs, results = timeseries_batches([(DAY_ONE, None), (DAY_TWO, None)], profile=host)
         for run in runs[2:]:
             results[run.id] = []
         timed = campaign.model_copy(update={"run_ids": [run.id for run in runs]})
@@ -225,7 +226,7 @@ class TestTheBundleEarnsATimeAxis:
     def test_a_campaign_that_measured_nothing_says_so(self) -> None:
         host = toyhost_profile()
         campaign, _ = toyhost_campaign(profile=host)
-        runs, results = _batches([(DAY_ONE, None), (DAY_TWO, None)], profile=host)
+        runs, results = timeseries_batches([(DAY_ONE, None), (DAY_TWO, None)], profile=host)
         timed = campaign.model_copy(update={"run_ids": [run.id for run in runs]})
 
         bundle = assemble_context_bundle(
@@ -390,12 +391,15 @@ class TestTheBuilder:
             for position, point in zip(surface.time_axis.positions, line["points"], strict=True):
                 at = DecisionSurface(cells=position.cells, measures=surface.measures, dimensions=surface.dimensions)
                 reading = resolve_reading(at, cell, "total_ms")
+                # A point's n is its cases, never its observations: the bundle runs each case k times, so the two
+                # differ here and a point counting observations would fail.
+                assert reading.n_cases is not None and reading.n_cases < reading.n, "the bundle repeats each case"
                 assert point["position"] == position.key
                 assert (point["ci"]["mean"], point["ci"]["low"], point["ci"]["high"], point["n"]) == (
                     reading.mean,
                     reading.ci_low,
                     reading.ci_high,
-                    reading.n,
+                    reading.n_cases,
                 )
         assert parse_payload("timeseries", payload) is not None
 
@@ -458,6 +462,38 @@ class TestTheBuilder:
                 "position": "2026-03-15",
                 "reason": "the cell was not measured there",
             }
+        ]
+
+    def test_a_position_below_the_band_floor_is_a_stated_gap(self) -> None:
+        """A point is drawn as an interval band, so a position over fewer than 5 cases has none (#677)."""
+        bundle = _two_days()
+        surface = _surface(bundle)
+        second = surface.time_axis.positions[1]
+        first_cell = second.cells[0]
+        thin = first_cell.model_copy(
+            update={
+                "measures": first_cell.measures.model_copy(
+                    update={
+                        "measures": [
+                            m.model_copy(update={"n_independent": 3}) if m.name == "total_ms" else m
+                            for m in first_cell.measures.measures
+                        ]
+                    }
+                )
+            }
+        )
+        thinned = surface.time_axis.model_copy(
+            update={
+                "positions": [
+                    surface.time_axis.positions[0],
+                    second.model_copy(update={"cells": [thin, *second.cells[1:]]}),
+                ]
+            }
+        )
+        payload = _build(bundle, _chart([]), surface.model_copy(update={"time_axis": thinned}))
+
+        assert {"position": "2026-03-15", "reason": "3 cases there, fewer than the 5 an interval is drawn from"} in [
+            {key: gap[key] for key in ("position", "reason")} for gap in payload["gaps"]
         ]
 
     def test_no_cell_with_two_points_is_refused(self) -> None:
@@ -654,7 +690,7 @@ class TestTheIntent:
             "Mean (s)",
             "Low (s)",
             "High (s)",
-            "n",
+            "Cases",
         ]
 
     def test_the_table_drawn_from_a_bundle_matches_the_bundles_numbers(self) -> None:
@@ -671,8 +707,9 @@ class TestTheIntent:
                 at = DecisionSurface(cells=position.cells, measures=surface.measures, dimensions=surface.dimensions)
                 reading = resolve_reading(at, ref, "total_ms")
                 row = drawn[(line["label"], position.key)]
+                assert reading.n_cases is not None and reading.n_cases < reading.n, "the bundle repeats each case"
                 assert (row["mean"], row["low"], row["high"], row["n"]) == pytest.approx(
-                    (reading.mean / 1000, reading.ci_low / 1000, reading.ci_high / 1000, reading.n)
+                    (reading.mean / 1000, reading.ci_low / 1000, reading.ci_high / 1000, reading.n_cases)
                 )
 
     def test_the_disclosures_name_the_order_the_intervals_and_each_gap(self) -> None:
@@ -790,3 +827,41 @@ class TestTheMenuOffersTimeOnlyWhereThereIsTime:
         message = json.loads(build_user_message(_two_days()).split("\n", 1)[1])
         cells = message["time_axis"]["positions"][0]["cells"]
         assert all("cell" in cell and "variant_key" not in cell for cell in cells)
+
+
+# =============================================================================
+# Per-case values below the band floor (#677)
+# =============================================================================
+
+
+def _few_cases(cases: int) -> Any:
+    """The toy campaign at one position, each run's results cut to its first ``cases`` test cases."""
+    host = toyhost_profile()
+    campaign, _ = toyhost_campaign(profile=host)
+    runs, results = timeseries_batches([(DAY_ONE, None)], profile=host)
+    kept = sorted({result.test_case_id for rows in results.values() for result in rows})[:cases]
+    trimmed = {run_id: [r for r in rows if r.test_case_id in kept] for run_id, rows in results.items()}
+    scoped = campaign.model_copy(update={"run_ids": [run.id for run in runs]})
+    return assemble_context_bundle(scoped, storage=ToyhostStorage(runs, trimmed), profile=host)
+
+
+class TestASmallCellRecordsItsCases:
+    """Below 5 cases a chart draws the cases, so the bundle carries them; at 5 or more it does not."""
+
+    def test_three_cases_carry_three_case_means(self) -> None:
+        bundle = _few_cases(3)
+        for cell in bundle.cell_measures:
+            numeric = next(m for m in cell.measures.measures if m.name == "total_ms")
+            assert numeric.n_independent == 3
+            assert numeric.case_means is not None and len(numeric.case_means) == 3
+            assert numeric.case_means == sorted(numeric.case_means)
+            for judged in cell.judged:
+                assert judged.n_independent == 3
+                assert judged.case_means is not None and len(judged.case_means) == 3
+        assert all(arm.case_means is not None for measure in bundle.judged_measures for arm in measure.arms)
+
+    def test_five_cases_carry_none(self) -> None:
+        bundle = _few_cases(5)
+        for cell in bundle.cell_measures:
+            assert all(m.case_means is None for m in cell.measures.measures)
+            assert all(j.case_means is None for j in cell.judged)

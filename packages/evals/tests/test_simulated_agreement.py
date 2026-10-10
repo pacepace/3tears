@@ -21,8 +21,8 @@ import pytest
 from threetears.evals.analysis import JudgeKey, judge_agreement, judge_evidence_tiers, judge_self_agreement
 from threetears.evals.analysis.agreement import agreement_interval
 from threetears.evals.analysis.stats import cohen_kappa, kappa_moments
-from threetears.evals.contracts import CalibrationRating, EvalResult, RubricScore
-from threetears.evals.contracts.evidence_tiers import (
+from threetears.evals.schema import CalibrationRating, EvalResult, RubricScore
+from threetears.evals.kernel.evidence_tiers import (
     CALIBRATION_MIN_AGREEMENT,
     CALIBRATION_MIN_RESULTS,
     SEPARATION_MIN_AGREEMENT,

@@ -18,8 +18,8 @@ from threetears.evals.analysis import (
     build_code_only_report,
 )
 from threetears.evals.analysis.report import DisclosureBlock
-from threetears.evals.contracts import SweptAxis
-from threetears.evals.contracts.host import IntervalScale, SweepableValue
+from threetears.evals.kernel import SweptAxis
+from threetears.evals.schema import IntervalScale, SweepableValue
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_AXIS, toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage, toyhost_batch, toyhost_measurements
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile

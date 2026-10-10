@@ -69,7 +69,7 @@ def null_result_intent(payload: NullResultPayload) -> ChartIntent:
     ]
     counted = any(arm.n is not None for arm in payload.groups)
     if counted:
-        columns.append(ChartColumn(key="n", header="n"))
+        columns.append(ChartColumn(key="n", header="Cases"))
     return ChartIntent(
         type="null_result",
         title=title,

@@ -1,6 +1,6 @@
 """The engine's run package: launching and executing a run, judging it, metering it, and storing it.
 
-Of the engine it imports only itself and :mod:`threetears.evals.contracts`; what it needs from a host arrives
+Of the engine it imports only itself, :mod:`threetears.evals.schema` and :mod:`threetears.evals.kernel`; what it needs from a host arrives
 through the ports a host implements.
 
 **This module is the package's public root.** A host imports from here and from no module below
@@ -52,6 +52,7 @@ from threetears.evals.run.jobs import (
     EvalJobManager,
     EvalJobTimeout,
     JobTimeoutFactory,
+    RunEndHook,
     default_job_timeout,
 )
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS, JUDGE_MAX_TOKENS, JUDGE_REQUEST_SETTINGS, run_judge_llm
@@ -95,8 +96,14 @@ from threetears.evals.run.lifecycle import (
     rejudge_result,
     sweep_abandoned_runs,
 )
-from threetears.evals.run.metering import MeteredCallLedger, MeteredCallTally
-from threetears.evals.contracts.offload import run_blocking
+from threetears.evals.run.executor import (
+    DEFAULT_MAX_CONCURRENT_CELLS,
+    CellExecutor,
+    CellWork,
+    InProcessCellExecutor,
+)
+from threetears.evals.run.metering import CellMeter, MeteredCallLedger, MeteredCallTally
+from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.run.reads import get_result, get_result_trace, list_results, list_runs
 from threetears.evals.run.recheck import (
     CheckFlip,
@@ -114,7 +121,31 @@ from threetears.evals.run.judge_repeat import (
     estimate_judge_repeat,
     repeat_judge_scores,
 )
+from threetears.evals.run.judge_temperature import (
+    JudgeTemperatureEstimate,
+    borderline_dims,
+    estimate_judge_temperature_comparison,
+    judge_at_two_temperatures,
+)
+from threetears.evals.run.judge_second import (
+    SecondJudgeEstimate,
+    SecondJudgeReport,
+    SecondJudgeSkip,
+    estimate_second_judge,
+    ask_second_judge,
+)
 from threetears.evals.run.rejudge import reproducible_judge_inputs
+from threetears.evals.run.judge_kind import (
+    FrozenJudgeCase,
+    JudgeCaseFreezeReport,
+    JudgeCaseSkip,
+    JudgeKind,
+    PreparedJudge,
+    freeze_judge_cases,
+    judge_case_labels,
+    judge_kind,
+    launchable_judge_kind,
+)
 from threetears.evals.run.runner import (
     CellContext,
     ErrorLedger,
@@ -146,6 +177,7 @@ from threetears.evals.run.simulator import (
 )
 from threetears.evals.run.witnessed import WitnessedJudging, record_witnessed_cell, stamp_witnessed_judge
 from threetears.evals.run.budget import AccountExhaustedError, BudgetStoppedError, CapBreach, EvalRunCostCap
+from threetears.evals.run.case_sets import mint_case_set, resolve_case_set
 from threetears.evals.run.ceilings import (
     CeilingRaisedError,
     refuse_raised_ceiling,
@@ -173,6 +205,7 @@ __all__ = [
     "SIMULATOR_REASONING_EFFORT",
     "SIMULATOR_REQUEST_SETTINGS",
     "TEMPLATE_SERVER_FIELDS",
+    "DEFAULT_MAX_CONCURRENT_CELLS",
     "AbandonedRunSweepReport",
     "AccountExhaustedError",
     "AdmissionTicket",
@@ -188,6 +221,9 @@ __all__ = [
     "CeilingRaisedError",
     "EvalRunCostCap",
     "CellContext",
+    "CellExecutor",
+    "CellMeter",
+    "CellWork",
     "CheckFlip",
     "CurationStore",
     "ErrorLedger",
@@ -196,10 +232,17 @@ __all__ = [
     "EveryCellApparatusFailedError",
     "FidelityContract",
     "GoalCheckUnevaluable",
+    "InProcessCellExecutor",
     "JobTimeoutFactory",
+    "RunEndHook",
+    "FrozenJudgeCase",
+    "JudgeCaseFreezeReport",
+    "JudgeCaseSkip",
     "JudgeClientFactory",
     "JudgeContext",
     "JudgeInputStore",
+    "JudgeKind",
+    "PreparedJudge",
     "JudgeOutcome",
     "JudgeRequest",
     "JudgeService",
@@ -238,6 +281,10 @@ __all__ = [
     "WorkFn",
     "assert_preconditions",
     "build_judge_context",
+    "freeze_judge_cases",
+    "judge_case_labels",
+    "judge_kind",
+    "launchable_judge_kind",
     "build_judge_service",
     "callers_missing_the_constructor",
     "cancel_run",
@@ -303,6 +350,8 @@ __all__ = [
     "set_run_archived",
     "start_run",
     "start_universal_battery",
+    "mint_case_set",
+    "resolve_case_set",
     "sweep_abandoned_runs",
     "update_judge_config",
     "update_rubric_dim",
@@ -312,4 +361,13 @@ __all__ = [
     "JudgeRepeatReport",
     "JudgeRepeatSkip",
     "estimate_judge_repeat",
+    "SecondJudgeEstimate",
+    "SecondJudgeReport",
+    "SecondJudgeSkip",
+    "estimate_second_judge",
+    "ask_second_judge",
+    "JudgeTemperatureEstimate",
+    "borderline_dims",
+    "estimate_judge_temperature_comparison",
+    "judge_at_two_temperatures",
 ]

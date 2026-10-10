@@ -16,11 +16,11 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts.models import EvalResult, EvalTrace, eval_trace_doc_id
+from threetears.evals.schema.models import EvalResult, EvalTrace, eval_trace_doc_id
 from threetears.evals.run.reads import get_result_trace
-from threetears.evals.contracts.errors import StorageError
-from threetears.evals.contracts.storage import EvalStorage
-from threetears.evals.contracts.store_port import omit_paths
+from threetears.evals.kernel.errors import StorageError
+from threetears.evals.kernel.storage import EvalStorage
+from threetears.evals.schema.store_port import omit_paths
 from packages.evals.tests.factories import make_eval_result, make_eval_trace
 
 
@@ -238,7 +238,7 @@ class TestDeletesTakeThePayloadWithThem:
         store = _storage(repo)
         store.replace_eval_result(make_eval_result(id="res-1", has_trace=True), if_match=None)
 
-        with caplog.at_level(logging.WARNING, logger="threetears.evals.contracts.storage"):
+        with caplog.at_level(logging.WARNING, logger="threetears.evals.kernel.storage"):
             assert store.delete_eval_result("res-1", "uni-1") is True
 
         assert repo.written == []

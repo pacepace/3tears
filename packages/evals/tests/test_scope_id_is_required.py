@@ -20,7 +20,7 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from threetears.evals.analysis.cells import Observation
-from threetears.evals.contracts.models import CassetteKey, EvalCassette
+from threetears.evals.schema.models import CassetteKey, EvalCassette
 
 from packages.evals.tests.factories import (
     make_analysis,

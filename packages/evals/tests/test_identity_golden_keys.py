@@ -29,10 +29,11 @@ from dataclasses import dataclass
 
 import pytest
 
-from threetears.evals.contracts import IDENTITY_VERSION, EvalRun
-from threetears.evals.contracts.host import HostProfile
-from threetears.evals.contracts.identity import derive_context_identity, derive_variant_identity
-import threetears.evals.contracts.identity as identity_module
+from threetears.evals.kernel import IDENTITY_VERSION
+from threetears.evals.schema import EvalRun
+from threetears.evals.kernel.host import HostProfile
+from threetears.evals.kernel.identity import derive_context_identity, derive_variant_identity
+import threetears.evals.kernel.identity as identity_module
 from packages.evals.tests.fixtures.courierhost import COURIER_MODELS, courier_cases, courier_host, courier_run
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.kind import ToyExtractorKind

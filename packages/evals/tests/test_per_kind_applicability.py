@@ -10,10 +10,10 @@ For a kind graded by code it is not an absence at all, and reading it as one gav
 A host-wide declaration was true of one kind and false of the other: with ``judge_model`` declared away
 for the whole host, a judged run whose judge was genuinely unrecoverable lost its ``undecided`` confound
 silently. Each kind contract names the seats in the rig it fills
-(:attr:`~threetears.evals.contracts.host.kinds.KindContract.seats`), and each RUN's own record narrows
+(:attr:`~threetears.evals.kernel.host.kinds.KindContract.seats`), and each RUN's own record narrows
 them: a run naming no judge was not judged, so its rig had no judge seat whatever its kind declares. A
 dimension is omitted only for a cohort in which no run seats it, and where it is kept, a run without the
-seat reads :data:`~threetears.evals.contracts.host.UNSEATED_LEVEL` — a level, not ``undecided`` — so a
+seat reads :data:`~threetears.evals.kernel.host.UNSEATED_LEVEL` — a level, not ``undecided`` — so a
 kind whose templates are judged and code-only alike does not read its code-only runs' judge as unknown.
 
 **Declared as an allow-list, so a new core dimension cannot make a host ``undecided``.** A kind names
@@ -33,8 +33,9 @@ from dataclasses import replace
 import pytest
 
 from threetears.evals.analysis.reads import bisect_runs
-from threetears.evals.contracts import EvalStorage, RubricScore
-from threetears.evals.contracts.host import (
+from threetears.evals.kernel import EvalStorage
+from threetears.evals.schema import RubricScore
+from threetears.evals.kernel.host import (
     SHARED_CORE,
     UNSEATED_LEVEL,
     KindContract,
@@ -42,14 +43,14 @@ from threetears.evals.contracts.host import (
     Sweepable,
     SweepableRegistry,
 )
-from threetears.evals.contracts.host.sweepables import NO_JUDGE_CONFIGS
-from threetears.evals.contracts.host.profile import HostProfile, ProfileRegistrationError
+from threetears.evals.kernel.host.sweepables import NO_JUDGE_CONFIGS
+from threetears.evals.kernel.host.profile import HostProfile, ProfileRegistrationError
 from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRACT
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.sweepables import TOYHOST_SWEEPABLE_REGISTRY
 from packages.evals.tests.factories import make_eval_result, make_eval_run
-from threetears.evals.contracts.models import EvalRun
+from threetears.evals.schema.models import EvalRun
 from threetears.evals.storage import InMemoryDocumentStore
 
 #: The apparatus a model-scored, simulator-driven kind would have and the toy extractor does not: the
@@ -228,7 +229,7 @@ def test_bisecting_two_unjudged_unscored_runs_against_a_judged_one_reads_the_con
 
 def test_an_unjudged_run_hashes_alike_whether_it_recorded_no_configs_or_an_empty_set() -> None:
     """The context key follows the seat: ``{}`` and ``None`` on an unjudged run are one condition; a config is not."""
-    from threetears.evals.contracts.identity import derive_context_identity
+    from threetears.evals.kernel.identity import derive_context_identity
 
     profile = _with_kinds(TOY_EXTRACTOR_CONTRACT, _JUDGED_CONTRACT)
 
@@ -414,7 +415,7 @@ def test_bisecting_a_judged_and_a_code_only_run_of_one_kind_reads_the_judge_as_a
 def test_a_bundle_over_a_judged_and_a_code_only_run_of_one_kind_records_no_unknown_judge() -> None:
     """The cell partition and the confound scan read the code-only run's judge as unseated, never undecided."""
     from threetears.evals.analysis import assemble_context_bundle
-    from threetears.evals.contracts import EvalCampaign
+    from threetears.evals.kernel import EvalCampaign
     from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 
     profile = _with_kinds(TOY_EXTRACTOR_CONTRACT, _JUDGED_CONTRACT)

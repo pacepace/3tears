@@ -45,7 +45,7 @@ opaque bytes with no name given falls back to its digest's prefix (`sha256:<12>`
 `scale` is nominal, ordinal or interval, not a bare rank, because a lever swept at 0.1 / 0.4 / 0.85 drawn
 as ranks 1 / 2 / 3 puts the knee in the wrong place.
 
-Rules that came with it (`contracts/identity.py`):
+Rules that came with it (`kernel/identity.py`):
 
 - **Hash resolved config, never the request.** A launch parameter of `None` meaning "role default" would
   compare equal across a change to that default. Whether a value was named or inherited is recorded, never
@@ -110,16 +110,22 @@ forbidden in capitals and done anyway), so each rule below is computed into the 
   engine folds the surface into the knob where the runs show it moved with the knob alone; a fold no two arms
   could test is disclosed as `unverified_fold`
   ([open problems](open-problems.md#a-fold-with-one-arm-per-knob-level-is-untested)).
+- **Factors that moved together are one group.** Factors that split the runs identically are reported once,
+  as `aliased_factors` ("these four move together across all 22 runs; no comparison separates them"). Every
+  pair of varying factors is checked, and a pair that co-varies outside a group gets a pivot whose unrun
+  combinations read `not_run`; `factor_pairs` says how many pairs were examined. Aliasing with an
+  interaction (C = A⊕B) is not checked, and the bundle says so.
 - **Assert the knob moved before reading the outcome.** A lever names the measure it acts on, and the
   bundle reports it `moved`, `inert` or `unchecked`: see
   [Did a lever take effect](reading-reports.md#did-a-lever-take-effect-mechanism-checks-and-observed-mechanisms).
 
   *Evidence:* agent with tools, reasoning-effort sweep, setting confirmed sent, 0 reasoning tokens in every arm, 2026-09, single campaign.
 - **Significance has three states:** separated, `not_separated`, and `untested`: no test could decide
-  (fewer than two cases a side, a gap with zero spread over too few cases for the exact sign-flip test to
-  reach α, or an arm that took no turn). The frontier's dominance and cheapest-pick read the same three, and
-  so does the history's step-to-step change flag. Zero spread is decided on each value's written decimal, so a
-  float residue never passes for a spread.
+  (fewer than two cases a side, or an arm that took no turn). The frontier's dominance and cheapest-pick read
+  the same three, and so does the history's step-to-step change flag. A gap with zero spread (every case moved
+  by one amount) is read by the bounded test on the measure's declared range; with no range it is
+  `not_separated` and says to declare one, since the exact sign-flip test tests symmetry, not the mean. Zero
+  spread is decided on each value's written decimal, so a float residue never passes for a spread.
   Collapsing the last two retires a lever nobody tested. A fourth, `equivalent`, is a claim of its own: an equivalence test against a declared margin.
 - **Subtract a part from a whole only under declared containment** (`MetricDescriptor.contained_by`) and
   when the declared parts exhaust it. One remainder of about 95 seconds described no wall-clock at all,
@@ -203,7 +209,7 @@ what exists; the words around it are never read, so a figure typed into a senten
 is appended from the parser's constants, because a copy in a stored prompt went stale.
 
 **Typed shape, freeform content** (2026-09-25). A strict schema derived from the stored analysis was
-refused by some providers as a grammar too large. The authored document (`contracts/authored.py`) types
+refused by some providers as a grammar too large. The authored document (`kernel/authored.py`) types
 only its parts (findings, decisions, question answers, next steps), their order, links by position and
 the readings code fills, under a measured slot budget; everything said is prose. The evidence tier is read
 off the readings a finding names, never chosen by the writer.

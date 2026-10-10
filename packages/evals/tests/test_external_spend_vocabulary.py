@@ -20,9 +20,9 @@ from __future__ import annotations
 
 import pytest
 
-from threetears.evals.contracts.host.spend import ExternalSpend
-from threetears.evals.contracts.spend import ExternalRateTable
-from threetears.evals.contracts.usage_capture import RoleUsageLedger
+from threetears.evals.schema.external_spend import ExternalSpend
+from threetears.evals.kernel.spend import ExternalRateTable
+from threetears.evals.kernel.usage_capture import RoleUsageLedger
 
 
 class TestPricingComesFromASuppliedTable:
@@ -57,7 +57,7 @@ class TestPricingComesFromASuppliedTable:
         assert cheap.rows()[0].cost_usd == pytest.approx(0.02)
         assert dear.rows()[0].cost_usd == pytest.approx(0.04)
 
-    def test_the_contracts_modules_import_no_tool_module(self):
+    def test_the_kernel_modules_import_no_tool_module(self):
         """The structural half of the property, checked at the source.
 
         ``test_extraction_import_boundary.py`` polices the whole package; this names the specific
@@ -75,12 +75,14 @@ class TestPricingComesFromASuppliedTable:
         from packages.evals.tests.import_resolution import absolute_module
 
         root = Path(__file__).resolve().parents[1] / "src"
-        path = root / "threetears" / "evals" / "contracts" / "usage_capture.py"
+        path = root / "threetears" / "evals" / "kernel" / "usage_capture.py"
         tree = ast.parse(path.read_text(encoding="utf-8"))
         imported = {
             absolute_module(path, node, root=root) for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
         } | {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
-        assert any(m.startswith("threetears.evals.contracts") for m in imported), "the walk read no import"
+        assert any(m.startswith(("threetears.evals.schema", "threetears.evals.kernel")) for m in imported), (
+            "the walk read no import"
+        )
         foreign = sorted(
             m
             for m in imported

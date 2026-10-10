@@ -49,10 +49,10 @@ active or archived, as an occupied slot.
 
 **A deleted rubric dim stays deleted.** Deleting is a decision too, and a delete empties the slot,
 so on its own it would hand a seeded dim back to the next boot. ``delete_rubric_dim`` therefore
-leaves a :class:`~threetears.evals.contracts.models.RubricDimTombstone` for the key, and a
+leaves a :class:`~threetears.evals.schema.models.RubricDimTombstone` for the key, and a
 tombstoned key is not written: it is reported under ``deleted``, by key, on every boot.
 ``delete_judge_config`` does the same for a judge config's slot
-(:class:`~threetears.evals.contracts.models.JudgeConfigTombstone`). Templates carry none: no
+(:class:`~threetears.evals.schema.models.JudgeConfigTombstone`). Templates carry none: no
 operation deletes a template, only the storage port's own ``delete_template``, which writes no
 tombstone, so a template deleted straight from the store still empties its slot.
 
@@ -91,9 +91,9 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from threetears.evals.contracts.errors import StorageError, ValidationFailedError
-from threetears.evals.contracts.host.eval_host import EvalHost
-from threetears.evals.contracts.models import CatalogRubricDim, EvalTemplate, JudgeConfig
+from threetears.evals.kernel.errors import StorageError, ValidationFailedError
+from threetears.evals.kernel.host.eval_host import EvalHost
+from threetears.evals.schema.models import CatalogRubricDim, EvalTemplate, JudgeConfig
 from threetears.evals.run.authoring import admit_template
 
 

@@ -16,7 +16,7 @@ ONE run:
   manager translates.
 - Inside a cell, a kind that makes many paid calls of its own asks the same cap through its sink
   before each further one, counting what the cell has spent so far
-  (:meth:`~threetears.evals.contracts.candidate_kind.CellSink.cost_cap_reached`): a conversation's
+  (:meth:`~threetears.evals.kernel.candidate_kind.CellSink.cost_cap_reached`): a conversation's
   simulator does (:func:`~threetears.evals.run.conversation.drive_conversation`). A cell stopped
   that way is excluded, and the run stops ``budget_stopped`` once it is saved.
 - :class:`AccountExhaustedError` is the account-side twin: the provider account behind the
@@ -40,7 +40,7 @@ from threetears.evals.run import ceilings
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.models import CostCapOrigin
+    from threetears.evals.schema.models import CostCapOrigin
 
 log = get_logger(__name__)
 
@@ -268,7 +268,7 @@ class EvalRunCostCap:
         The companion of :meth:`resolve_effective_ceiling`, answering from the same launch and
         recorded beside the number it explains. Delegates to
         :func:`threetears.evals.run.ceilings.resolve_ceiling_origin`, which is the only place a
-        :data:`~threetears.evals.contracts.models.CostCapOrigin` is produced — so a change to that
+        :data:`~threetears.evals.schema.models.CostCapOrigin` is produced — so a change to that
         vocabulary cannot reach the cost cap and miss the metered-call ledger.
 
         Args:
@@ -276,7 +276,7 @@ class EvalRunCostCap:
             enforcement_enabled: Whether the caller enforces eval ceilings at all.
 
         Returns:
-            A :data:`~threetears.evals.contracts.models.CostCapOrigin` value: ``"uncapped"`` when
+            A :data:`~threetears.evals.schema.models.CostCapOrigin` value: ``"uncapped"`` when
             enforcement is off (no ceiling bound the run, whatever the cascade would
             have resolved), else ``"chosen"`` for a launch-supplied ceiling and
             ``"inherited"`` for the configured default.
@@ -308,7 +308,7 @@ class EvalRunCostCap:
 
         The gate :func:`~threetears.evals.run.runner.execute_run` calls before each cell, with nothing
         pending, and the one a running cell asks through its sink
-        (:meth:`~threetears.evals.contracts.candidate_kind.CellSink.cost_cap_reached`) with the spend it
+        (:meth:`~threetears.evals.kernel.candidate_kind.CellSink.cost_cap_reached`) with the spend it
         has made that its result has not yet reported — a conversation's simulator calls
         (:func:`~threetears.evals.run.conversation.drive_conversation`). One rule for both, so the
         cap a cell is stopped by inside is the cap the run is stopped by between cells. Nothing is

@@ -13,12 +13,13 @@ from collections.abc import Callable, Sequence
 from typing import Any, Literal
 
 from threetears.evals.analysis.arms import ArmStatus, arm_label, arm_names
-from threetears.evals.analysis.bundle import ComparisonVerdict
+from threetears.evals.analysis.bundle.schema import ComparisonVerdict
 from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.viz.intent import Cell
 from threetears.evals.analysis.viz_refs import cell_arm_labels
-from threetears.evals.contracts.campaign import ConfidenceTier, EvalAnalysis, EvidenceRow, EvidenceTier
-from threetears.evals.contracts.surface import GuardrailDecision
+from threetears.evals.kernel.campaign import ConfidenceTier, EvalAnalysis, EvidenceRow, EvidenceTier
+from threetears.evals.kernel.analysis_measures import BarDecision
+from threetears.evals.kernel.surface import GuardrailDecision
 
 
 def _literal_values(annotation: Any) -> frozenset[str]:
@@ -136,6 +137,20 @@ GUARDRAIL_DECISION_WORDS = worded(
 )
 
 
+#: What a bar came to on one cell, as a reader says it.
+BAR_DECISION_WORDS = worded(
+    {
+        "cleared": "cleared: the interval lies wholly on the good side of the bar, less its margin",
+        "missed": "missed: the interval lies wholly on the bad side of the bar, less its margin",
+        "undecided": "undecided: the interval straddles the bar, so not shown cleared",
+        "no_interval": "no interval: fewer than two observations, so not read",
+        "no_data": "no data: no observation of the measure",
+    },
+    BarDecision,
+    "a bar decision",
+)
+
+
 def arm_namer(analysis: EvalAnalysis) -> Callable[[str], str]:
     """Name the arm a cell reference points at, as :func:`~threetears.evals.analysis.arms.arm_label` names it.
 
@@ -171,7 +186,7 @@ EVIDENCE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("arm", "Arm"),
     ("measure", "Measure"),
     ("value", "Value"),
-    ("n", "n"),
+    ("cases", "Cases"),
     ("spread", "Spread"),
 )
 
@@ -182,7 +197,7 @@ def evidence_rows(
     """A finding's evidence as table rows, keyed by :data:`EVIDENCE_COLUMNS` — each reading by what a reader calls it.
 
     The measure is headed as the decision surface heads it
-    (:meth:`~threetears.evals.contracts.surface.DecisionSurface.measure_heading`), never by its key unless nothing
+    (:meth:`~threetears.evals.kernel.surface.DecisionSurface.measure_heading`), never by its key unless nothing
     names it; the key stays on the analysis's evidence rows, which every reader of the record can cite.
 
     Args:
@@ -199,7 +214,9 @@ def evidence_rows(
             "arm": arm(row.cell_ref),
             "measure": surface.measure_heading(row.measure_id, row.reading),
             "value": row.value,
-            "n": row.n,
+            # Cases, never observations: the count every interval is read over. An analysis stored before rows
+            # recorded it shows none rather than its observation count under this heading.
+            "cases": row.n_cases,
             "spread": row.dispersion,
         }
         for row in evidence
@@ -213,6 +230,7 @@ def positions(numbers: list[int]) -> str:
 
 __all__ = [
     "ARM_STATUS_WORDS",
+    "BAR_DECISION_WORDS",
     "COMPARISON_VERDICT_WORDS",
     "CONFIDENCE_WORDS",
     "EVIDENCE_COLUMNS",

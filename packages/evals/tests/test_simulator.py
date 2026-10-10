@@ -6,8 +6,8 @@ import json
 
 import pytest
 
-from threetears.evals.contracts.models import ActorPolicy, ConversationSpec, ConversationStopCause, RoleUsage
-from threetears.evals.contracts.usage_capture import CallUsage, RoleUsageLedger
+from threetears.evals.schema.models import ActorPolicy, ConversationSpec, ConversationStopCause, RoleUsage
+from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger
 from threetears.evals.run.simulator import (
     SIMULATED_USER_RESPONSE_FORMAT,
     SIMULATOR_ANSWER_BUDGET_TOKENS,
@@ -93,8 +93,11 @@ def _actor(actor_id: str, **overrides) -> ActorPolicy:
 
 
 def test_a_conversation_requires_at_least_one_actor():
-    """A conversation with nobody on the other side is unrepresentable, so no driver can be built over one."""
-    with pytest.raises(ValueError, match="at least 1 item"):
+    """A conversation with nobody and nothing on the other side is unrepresentable, so no driver can be built over one.
+
+    Since #578 the world can be the other side (``world_rounds``); with no world round either, no round has a stimulus.
+    """
+    with pytest.raises(ValueError, match="needs a world round for every turn"):
         _conversation(actors=[])
 
 

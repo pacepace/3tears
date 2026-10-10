@@ -2,7 +2,7 @@
 
 **For** anyone building their first eval of a classifier, or any feature whose answer code can grade.
 **Answers:** which cases to write, how many, how to feed them to the classifier, and how to read the results.
-It assumes no prior experience with evals.
+It assumes no prior experience with evals. To learn the package itself first, do the [tutorial](tutorial.md).
 
 In short: build the set mostly from hard cases (boundaries between labels, lookalikes, contrast pairs and
 context), give every case a written reason, put at least ten cases behind each label, and run them through
@@ -286,9 +286,10 @@ difference yet. Add cases where the arms disagree, not more cases where both are
 bar on its own. Folded into one score, a large saving can buy back a real loss of accuracy.
 
 **Measure latency on calls that were not competing.** Accuracy and cost do not depend on how many calls run at
-once; latency does. The engine runs a run's cells one at a time but a launch's arms side by side, so arms on
-one provider account compete for it and for its rate limit. For a latency gate, read latency from a small run
-of the arm alone (a serial probe) beside the bulk comparison.
+once; latency does. By default a run executes several cells at once and a launch's arms side by side, and the
+latency they record is marked read under concurrency and never compared. For a latency gate, launch with
+`measure_latency=True` (and declare it on the campaign's design): the cells then run one at a time and the
+arms one after another, with nothing beside them.
 
 **Read the wrong answers.** Open the cases a model missed and read their reasons. In a new case set, many
 "model errors" turn out to be cases that do not follow from the rules, or rules that do not say what was
@@ -346,7 +347,7 @@ cases, as a classifier kind's are.
 
 ### The quick path: `run_eval`
 
-`run_eval` (the [README](../README.md)'s first example) runs a classifier function over a
+`run_eval` (the [tutorial](tutorial.md)'s first step) runs a classifier function over a
 list of cases in one call. Pass `expected=`, a function that returns the label a case expects, and `run_eval`
 grades the function as a classifier:
 
@@ -389,12 +390,7 @@ Its `invoke` calls your production classifier on the test case and lands two cor
 `CandidateOutput.host_measures`:
 
 ```python
-from threetears.evals.contracts import (
-    CONFUSION_CELL_MEASURE,
-    MATCH_MEASURE,
-    CandidateOutput,
-    confusion_cell,
-)
+from threetears.evals.kernel import CONFUSION_CELL_MEASURE, MATCH_MEASURE, CandidateOutput, confusion_cell
 
 predicted = parsed_label or "UNPARSEABLE"
 return CandidateOutput(

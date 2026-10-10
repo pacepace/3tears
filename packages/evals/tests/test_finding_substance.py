@@ -30,17 +30,10 @@ from packages.evals.tests.toyhost_memo import (
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.generator import generate_analysis
-from threetears.evals.contracts.authored import (
-    AuthoredAnalysis,
-    Caveat,
-    Chart,
-    Finding,
-    OffVocabulary,
-    validate_authored,
-)
-from threetears.evals.contracts.campaign import ENGINE_CAVEAT_KINDS, EvalAnalysis, EvidenceRow, GenerationProvenance
-from threetears.evals.contracts.models import utc_now_iso
-from threetears.evals.contracts.surface import DecisionSurface
+from threetears.evals.kernel.authored import AuthoredAnalysis, Caveat, Chart, Finding, OffVocabulary, validate_authored
+from threetears.evals.kernel.campaign import ENGINE_CAVEAT_KINDS, EvalAnalysis, EvidenceRow, GenerationProvenance
+from threetears.evals.schema.models import utc_now_iso
+from threetears.evals.kernel.surface import DecisionSurface
 
 
 _NO_CHART = Chart(type="none", cells=[], measures=[], axis="", note="", caption="")

@@ -25,9 +25,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from threetears.evals.analysis import campaigns
-from threetears.evals.contracts.errors import NotFoundError, StorageError, ValidationFailedError
+from threetears.evals.kernel.errors import NotFoundError, StorageError, ValidationFailedError
 from threetears.evals.run import curation
-from threetears.evals.contracts.storage import EvalStorage
+from threetears.evals.kernel.storage import EvalStorage
 from packages.evals.tests.factories import minimal_declaration
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
@@ -106,8 +106,8 @@ def test_the_archivable_set_named_by_the_default_alternative_matches_the_models(
     between the two groups AND revisit whichever ``delete_*`` sends its callers to the
     default alternative.
     """
-    from threetears.evals.contracts.campaign import EvalAnalysis, EvalCampaign, EvalInsight
-    from threetears.evals.contracts.models import EvalResult, EvalRun
+    from threetears.evals.kernel.campaign import EvalAnalysis, EvalCampaign, EvalInsight
+    from threetears.evals.schema.models import EvalResult, EvalRun
 
     archivable = {EvalRun, EvalAnalysis, EvalCampaign}
     not_archivable = {EvalResult, EvalInsight}

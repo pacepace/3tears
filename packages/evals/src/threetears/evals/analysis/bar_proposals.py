@@ -4,7 +4,7 @@ A behavior's bar should start where the incumbent already performs, so that ship
 worse is a visible regression rather than a matter of opinion. :func:`propose_bars` measures the
 incumbent the way every analysis does — it assembles the baseline campaign's bundle and reads its
 one cell's measures — and hands each measure with a better end to
-:meth:`~threetears.evals.contracts.host.bars.BarRegistry.propose`, which flags a vacuous seed and
+:meth:`~threetears.evals.kernel.host.bars.BarRegistry.propose`, which flags a vacuous seed and
 registers nothing.
 
 **A baseline measures one configuration under one rig.** A campaign of several cells has several
@@ -21,15 +21,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from threetears.evals.analysis.bundle import assemble_context_bundle
+from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, bar_seed
-from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
-from threetears.evals.contracts.host.bars import BarProposal, no_better_end
+from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.host.bars import BarProposal, no_better_end
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.host.eval_host import EvalHost
+    from threetears.evals.kernel.host.eval_host import EvalHost
 
 log = get_logger(__name__)
 
@@ -47,7 +47,8 @@ class BaselineBarProposals:
         not_proposed: ``{reading: why}`` for every reading the cell carries that no bar could be proposed on —
             a measure undeclared by the host, directionless, or with no interval to seed from (fewer than two
             observations), and every judged dimension, since a registered bar names a declared measure and a
-            judged dimension is not one.
+            judged dimension is not one — and for every declared measure with a better end the cell carries no
+            observation of, so each such measure gets either a proposal or a reason.
     """
 
     campaign_id: str
@@ -153,6 +154,13 @@ def propose_bars(host: EvalHost, baseline_campaign_id: str, *, scope_id: str) ->
                 ),
             )
         )
+    measured = {summary.name for summary in cell.measures.measures}
+    for name in measures.names:
+        descriptor = measures.get(name)
+        if name not in measured and descriptor is not None and no_better_end(descriptor) is None:
+            not_proposed[name] = (
+                "the baseline's cell carries no observation of it, so there is no measurement to seed a threshold from"
+            )
     for judged in cell.judged:
         not_proposed[judged.dimension] = (
             "it is a judged dimension, and a registered bar names a measure the host declares — a judge's score is "

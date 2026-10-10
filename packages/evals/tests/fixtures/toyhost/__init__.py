@@ -1,8 +1,8 @@
 """The toy host — a complete eval host for invoice field extraction, as reference code.
 
-A product adopts the engine by declaring a vocabulary (a :class:`~threetears.evals.contracts.host.HostProfile`),
+A product adopts the engine by declaring a vocabulary (a :class:`~threetears.evals.kernel.host.HostProfile`),
 writing the candidate kinds that drive what it evaluates, and handing the engine one
-:class:`~threetears.evals.contracts.host.EvalHost`. This package is all three for one product, built
+:class:`~threetears.evals.kernel.host.EvalHost`. This package is all three for one product, built
 against the engine's public roots alone.
 
 **Domain: invoice field extraction.** No conversation and no simulated user: scalar

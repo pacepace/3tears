@@ -22,9 +22,9 @@ from __future__ import annotations
 
 import pytest
 
-from threetears.evals.contracts.host.profile import HostProfile, ProfileRegistrationError
-from threetears.evals.contracts.host.sweepables import Sweepable, SweepableRegistry
-from threetears.evals.contracts.host.world import WorldDimension, WorldRegistrationError, WorldRegistry
+from threetears.evals.kernel.host.profile import HostProfile, ProfileRegistrationError
+from threetears.evals.kernel.host.sweepables import Sweepable, SweepableRegistry
+from threetears.evals.kernel.host.world import WorldDimension, WorldRegistrationError, WorldRegistry
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.sweepables import TOYHOST_SWEEPABLE_REGISTRY
 from packages.evals.tests.fixtures.toyhost.world import toyhost_world

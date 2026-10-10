@@ -1,0 +1,82 @@
+{
+  "archived": false,
+  "candidate_kind": "test-kind",
+  "conversation": {
+    "actors": [
+      {
+        "id": "shopper",
+        "initial_utterance_template": null,
+        "intent": "probe the subject",
+        "name": null,
+        "policy": "curious tester"
+      }
+    ],
+    "max_speakers_per_round": 1,
+    "max_turns": 10,
+    "sessions": 1,
+    "turn_scheduler": "round_robin",
+    "world_rounds": []
+  },
+  "created_at": "2026-10-10T08:11:19.749268+00:00",
+  "description": "A shopper asks for a bundle of items from two unrelated categories.",
+  "doc_type": "eval_template",
+  "goal_check_controls": null,
+  "goal_state_checks": [
+    "state.shop.cart.length >= 1"
+  ],
+  "id": "01a124dd-d345-7580-a65b-d9ffb64d0b66",
+  "intent": "Probe the subject's response to unusual category pairings.",
+  "kind_spec": {},
+  "name": "category_bundle",
+  "preconditions": [],
+  "rubric": [
+    {
+      "axis": "capability",
+      "description": "Sounds like the subject",
+      "name": "conversation.tone",
+      "scale": "ordinal",
+      "scoring_guide": {}
+    }
+  ],
+  "schema_version": 8,
+  "scope_id": "uni-1",
+  "tools_allowed": null,
+  "tools_required": [
+    "shop",
+    "chat"
+  ],
+  "universal": false,
+  "updated_at": "2026-10-10T08:11:19.749273+00:00",
+  "variation_axes": [
+    {
+      "description": "",
+      "generator": "llm",
+      "name": "category_pair",
+      "stratum": false,
+      "values": []
+    },
+    {
+      "description": "",
+      "generator": "enum",
+      "name": "tone",
+      "stratum": false,
+      "values": [
+        "casual",
+        "cocky"
+      ]
+    }
+  ],
+  "world_seed": {
+    "ambient_perturbation_turns": [],
+    "namespaces": {
+      "chat": {
+        "messages": []
+      },
+      "shop": {
+        "cart": [],
+        "catalog": [],
+        "history": []
+      }
+    }
+  }
+}

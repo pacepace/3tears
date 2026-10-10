@@ -12,8 +12,8 @@ import json
 from typing import Any
 
 from threetears.evals.analysis.generator import generate_analysis
-from threetears.evals.contracts.analysis_measures import MeasureSummary
-from threetears.evals.contracts.models import utc_now_iso
+from threetears.evals.kernel.analysis_measures import MeasureSummary
+from threetears.evals.schema.models import utc_now_iso
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, memo_payload

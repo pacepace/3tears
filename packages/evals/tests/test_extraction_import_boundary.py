@@ -252,7 +252,7 @@ def test_every_module_the_engine_names_is_declared():
     ("source", "allowed"),
     [
         ("import json\n", True),
-        ("from threetears.evals.contracts import models\n", True),
+        ("from threetears.evals.schema import models\n", True),
         ("from pydantic import BaseModel\n", True),
         ("from threetears.observe import get_logger\n", True),
         ("import discodon.config\n", False),
@@ -360,11 +360,11 @@ def test_the_engine_owns_the_apparatus_error_and_the_external_spend_type():
     raiser and a catcher disagree with no import error anywhere. Pinned to the stdlib-only contract
     leaves both sides may name without acquiring a dependency on each other's internals.
     """
-    from threetears.evals.contracts.host.apparatus import ApparatusError
-    from threetears.evals.contracts.host.spend import ExternalSpend
+    from threetears.evals.kernel.host.apparatus import ApparatusError
+    from threetears.evals.schema.external_spend import ExternalSpend
 
-    assert ApparatusError.__module__ == "threetears.evals.contracts.host.apparatus"
-    assert ExternalSpend.__module__ == "threetears.evals.contracts.host.spend"
+    assert ApparatusError.__module__ == "threetears.evals.kernel.host.apparatus"
+    assert ExternalSpend.__module__ == "threetears.evals.schema.external_spend"
 
 
 # ---------------------------------------------------------------------------

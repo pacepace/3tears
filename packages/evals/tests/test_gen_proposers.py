@@ -19,9 +19,9 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts import EvalStorage, OutOfRunBudget
-from threetears.evals.contracts.errors import ValidationFailedError
-from threetears.evals.contracts.models import RubricProposal
+from threetears.evals.kernel import EvalStorage, OutOfRunBudget
+from threetears.evals.kernel.errors import ValidationFailedError
+from threetears.evals.schema.models import RubricProposal
 from threetears.evals.gen import propose_draft
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.llm_client_fakes import ReleasableClientMixin

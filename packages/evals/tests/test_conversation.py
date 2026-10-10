@@ -7,8 +7,8 @@ from collections.abc import Sequence
 import pytest
 
 from packages.evals.tests.scripted_table import DONE, FakeCellSink, Raw, ScriptedTable, actor
-from threetears.evals.contracts.models import ROUND_DONE, ConversationSpec, ConversationStopCause
-from threetears.evals.contracts.usage_capture import RoleUsageLedger
+from threetears.evals.schema.models import ROUND_DONE, ConversationSpec, ConversationStopCause
+from threetears.evals.kernel.usage_capture import RoleUsageLedger
 from threetears.evals.run import drive_conversation
 from threetears.evals.run.simulator import CandidateTurn, SimulatorTurn, TurnDriver
 

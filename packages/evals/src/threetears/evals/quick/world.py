@@ -3,8 +3,8 @@
 The one-call path's candidate answers, and code grades the answer. Some candidates do not answer —
 they *act*: switch a light, file a ticket, move money. What matters then is the state they leave
 behind, and the engine already measures that: a host declares its world
-(:class:`~threetears.evals.contracts.host.WorldRegistry`), each cell seeds it through a
-:class:`~threetears.evals.contracts.WorldSession`, the runner reads it back once the candidate is done,
+(:class:`~threetears.evals.kernel.host.WorldRegistry`), each cell seeds it through a
+:class:`~threetears.evals.kernel.WorldSession`, the runner reads it back once the candidate is done,
 and goal-state checks (``state.<dimension>``, ``calls("<world>.<tool>")``) grade what it holds. This
 module declares that world in a few lines and drives the same machinery:
 
@@ -46,29 +46,25 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any
 
-from threetears.evals.contracts import (
+from threetears.evals.schema import (
     CallLedger,
+    EvalTestCase,
+    JudgedArtifact,
+    WorldSeed,
+    extract_paths,
+    referenced_actions,
+)
+from threetears.evals.kernel import (
     CandidateOutput,
     CandidatePreparationFailed,
     CellCassettes,
     CellSink,
     CellSpanWindow,
-    EvalTestCase,
-    JudgedArtifact,
     VariantConfig,
-    WorldSeed,
     WorldSession,
-    extract_paths,
-    referenced_actions,
 )
-from threetears.evals.contracts.host import (
-    SeedRefused,
-    SubjectSnapshot,
-    WorldDimension,
-    WorldRegistry,
-    check_seed,
-    schema_violations,
-)
+from threetears.evals.kernel.host import SeedRefused, WorldDimension, WorldRegistry, check_seed, schema_violations
+from threetears.evals.schema import SubjectSnapshot
 from threetears.evals.run import CellContext, GoalCheckUnevaluable, evaluate_goal_state, grade_goal_checks
 from threetears.evals.run.check_controls import idle_end_state
 from threetears.observe import get_logger
@@ -280,7 +276,7 @@ class World:
     def action_parameters(self, tool: str, action: str) -> Mapping[str, Any] | None:
         """The parameter schema the candidate is shown for ``<tool>.<action>``, or None for a call this world lacks.
 
-        The host's :attr:`~threetears.evals.contracts.host.HostProfile.action_parameters` reader for a quick world,
+        The host's :attr:`~threetears.evals.kernel.host.HostProfile.action_parameters` reader for a quick world,
         so the goal-check gate reads a tool's parameters from the very schema each call is held to: a comparison
         over an ``enum``-, ``const``- or ``pattern``-closed parameter is a check of structure, and one over a free
         string is a reading of what the model wrote, refused as authoring refuses it.
@@ -298,7 +294,7 @@ class World:
     def tool_actions(self, tool: str) -> frozenset[str]:
         """The actions ``tool`` offers: this world's tools under its own name, none under any other.
 
-        The host's :attr:`~threetears.evals.contracts.host.HostProfile.tool_actions` reader for a quick world.
+        The host's :attr:`~threetears.evals.kernel.host.HostProfile.tool_actions` reader for a quick world.
 
         Args:
             tool: The carrier a check names.

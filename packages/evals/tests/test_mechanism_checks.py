@@ -34,19 +34,18 @@ from threetears.evals.analysis import (
     MechanismCheck,
     assemble_context_bundle,
 )
-from threetears.evals.analysis.bundle import REASONING_SHARE_DIVERGENCE, observed_mechanism_key
-from threetears.evals.contracts import (
+from threetears.evals.analysis.bundle.schema import REASONING_SHARE_DIVERGENCE, observed_mechanism_key
+from threetears.evals.kernel import (
     REASONING_RATIO_KEY,
     CampaignDesign,
     ControlDeclaration,
     EvalCampaign,
-    EvalResult,
-    EvalRun,
     SweptAxis,
     resolve_variant_identity,
 )
-from threetears.evals.contracts.metrics import MeasurePopulation, MetricDescriptor
-from threetears.evals.contracts.host import (
+from threetears.evals.schema import EvalResult, EvalRun
+from threetears.evals.kernel.metrics import MeasurePopulation, MetricDescriptor
+from threetears.evals.kernel.host import (
     MeasureRegistry,
     CANDIDATE_MODEL_LEVER,
     SHARED_CORE,
@@ -55,14 +54,15 @@ from threetears.evals.contracts.host import (
     Interval,
     KindContract,
     KindContractError,
+    MemberActsOn,
     ProfileRegistrationError,
     RegistrationError,
     Sweepable,
     SweepableRegistry,
-    SweepableValue,
     freeze,
 )
-from threetears.evals.contracts.host.sweepables import CORE_ROLES, CORE_SWEEPABLES
+from threetears.evals.schema import SweepableValue
+from threetears.evals.kernel.host.sweepables import CORE_ROLES, CORE_SWEEPABLES
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle, toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRACT, ExtractorOverlays
 from packages.evals.tests.fixtures.toyhost.corpus import (
@@ -216,13 +216,16 @@ def _observed(confounds: Sequence[Confound]) -> list[Confound]:
 class TestALeverIsCheckedAgainstTheMechanismItDeclares:
     """#577: a lever whose declared mechanism did not measurably move gives no evidence it took effect."""
 
-    def test_the_declared_campaign_moved_its_mechanism(self) -> None:
+    def test_the_declared_campaign_s_uniform_shift_needs_a_range_to_be_called(self) -> None:
+        """The toy host's context shifts by one amount on every document, and a token count declares no range: no
+        test of the mean can call that, so the check says so and names the remedy, never ``moved`` (#597)."""
         mechanism = _row(toyhost_bundle(), "chunk_tokens").mechanism
         assert mechanism == MechanismCheck(
-            state="moved",
+            state="unchecked",
             measure=_CONTEXT,
             level_means={"256": 2400.0, "1024": 7600.0},
             level_n={"256": 12, "1024": 12},
+            reason="uniform_move_needs_range",
         )
 
     def test_identical_constants_are_the_degenerate_inert(self) -> None:
@@ -262,23 +265,23 @@ class TestALeverIsCheckedAgainstTheMechanismItDeclares:
         assert mechanism.state == "inert"
 
     def test_clearly_separated_levels_are_moved(self) -> None:
+        # Wider chunks carry more on every document, by an amount that varies with the document: spread to test.
         mechanism = _row(
-            _chunk_sweep(_per_document(_CONTEXT, 3000.0, 40.0), _per_document(_CONTEXT, 9000.0, 40.0)), "chunk_tokens"
+            _chunk_sweep(_per_document(_CONTEXT, 3000.0, 40.0), _per_document(_CONTEXT, 9000.0, 95.0)), "chunk_tokens"
         ).mechanism
         assert mechanism.state == "moved"
         assert mechanism.level_n == {"256": 12, "1024": 12}
 
-    def test_a_constant_gap_with_no_spread_is_moved(self) -> None:
+    def test_a_constant_gap_with_no_spread_and_no_range_is_never_moved(self) -> None:
         mechanism = _row(
             _chunk_sweep(_constant({_CONTEXT: 3000}), _constant({_CONTEXT: 3001})), "chunk_tokens"
         ).mechanism
-        assert mechanism.state == "moved"
+        assert (mechanism.state, mechanism.reason) == ("unchecked", "uniform_move_needs_range")
 
-    @pytest.mark.parametrize(("n_cases", "reading"), [(5, ("unchecked", "too_few_observations")), (6, ("moved", None))])
-    def test_a_constant_gap_is_moved_only_over_enough_cases_for_an_exact_test(
-        self, n_cases: int, reading: tuple[str, str | None]
-    ) -> None:
-        """Every case shifted alike has exact p 2^(1-n): under α from six cases, too few to tell below that."""
+    @pytest.mark.parametrize("n_cases", [5, 6, 12])
+    def test_a_uniform_shift_with_no_range_is_unchecked_at_any_n(self, n_cases: int) -> None:
+        """Every case shifted alike: the exact sign-flip test called six cases ``moved``, but it tests symmetry, not
+        the mean, and a token count declares no range for the bounded test to read (#597)."""
         documents = TOYHOST_DOCUMENTS[:n_cases]
         bundle = _bundle(
             [
@@ -287,7 +290,32 @@ class TestALeverIsCheckedAgainstTheMechanismItDeclares:
             ]
         )
         mechanism = _row(bundle, "chunk_tokens").mechanism
-        assert (mechanism.state, mechanism.reason) == reading
+        assert (mechanism.state, mechanism.reason) == ("unchecked", "uniform_move_needs_range")
+
+    @pytest.mark.parametrize(("n_cases", "state"), [(4, "inert"), (12, "moved")])
+    def test_a_uniform_shift_on_a_declared_range_is_read_by_the_bounded_test(self, n_cases: int, state: str) -> None:
+        """On a declared range the bounded test reads a shift of one amount: four documents moved +0.75 on a 0-1 rate
+        cannot show the mean moved, twelve can (#597). The same shift with no range is never called."""
+        documents = TOYHOST_DOCUMENTS[:n_cases]
+
+        def hit_rate(shift: float) -> Callable[[EvalResult], EvalResult]:
+            def alter(result: EvalResult) -> EvalResult:
+                index = TOYHOST_DOCUMENTS.index(result.test_case_id)
+                return result.model_copy(
+                    # Rounded so each value is the decimal it reads as: the shift is exactly one amount.
+                    update={"host_measures": {**result.host_measures, _HIT_RATE: round(0.1 + 0.01 * index + shift, 6)}}
+                )
+
+            return alter
+
+        arms = [
+            _Arm(_chunk_batch(256), alter=hit_rate(0.0), documents=documents),
+            _Arm(_chunk_batch(1024), alter=hit_rate(0.75), documents=documents),
+        ]
+        mechanism = _row(_bundle(arms, profile=_hit_rate_profile((0.0, 1.0))), "chunk_tokens").mechanism
+        assert (mechanism.state, mechanism.measure) == (state, _HIT_RATE)
+        unranged = _row(_bundle(arms, profile=_hit_rate_profile(None)), "chunk_tokens").mechanism
+        assert (unranged.state, unranged.reason) == ("unchecked", "uniform_move_needs_range")
 
     def test_one_case_a_level_is_too_few_to_test(self) -> None:
         bundle = _bundle(
@@ -358,6 +386,34 @@ def _retrieve_profile(population: MeasurePopulation | None) -> HostProfile:
     )
 
 
+#: A host rate the chunk width acts on in :func:`_hit_rate_profile`.
+_HIT_RATE = "retrieval_hit_rate"
+
+
+def _hit_rate_profile(value_range: tuple[float, float] | None) -> HostProfile:
+    """The toy profile, with ``chunk_tokens`` acting on a host rate that declares ``value_range``."""
+    descriptor = MetricDescriptor(
+        name=_HIT_RATE,
+        reader_name="Retrieval hit rate",
+        data_type="numeric",
+        family="mechanical",
+        transferability_class="mechanical",
+        attribution_scope="subsystem",
+        description="Share of the document's fields the retriever surfaced.",
+        higher_is_better=True,
+        value_range=value_range,
+    )
+    declarations = tuple(
+        replace(declared, acts_on=_HIT_RATE) if declared.name == "chunk_tokens" else declared
+        for declared in TOYHOST_SWEEPABLES
+    )
+    return replace(
+        toyhost_profile(),
+        host_sweepables=SHARED_CORE.extend(declarations, roles=TOYHOST_ROLES),
+        measures=MeasureRegistry([*TOYHOST_MEASURES, descriptor], families=(TOYHOST_EXTRACTION_FAMILY,)),
+    )
+
+
 def _retrieved(*, refuse: tuple[str, ...] = ()) -> Callable[[EvalResult], EvalResult]:
     """Each observation's retrieve time: 1 s for a turn taken, 50 ms for a call refused on a ``refuse`` document."""
 
@@ -406,7 +462,7 @@ class TestAKindOverlayLeverDeclaresItsMechanismToo:
         bundle = _bundle(
             [
                 _Arm(_page_batch(5), _per_document(_CONTEXT, 2000.0, 40.0)),
-                _Arm(_page_batch(20), _per_document(_CONTEXT, 8000.0, 40.0)),
+                _Arm(_page_batch(20), _per_document(_CONTEXT, 8000.0, 95.0)),
             ]
         )
         mechanism = _row(bundle, _PAGE_LIMIT).mechanism
@@ -439,6 +495,139 @@ class TestAKindOverlayLeverDeclaresItsMechanismToo:
 
         with pytest.raises(KindContractError, match="ActsOn"):
             KindContract("mapped", overlays=_Mapped)
+
+
+class _CappedOverlays(ExtractorOverlays):
+    """The toy extractor's knobs plus an open map of caps, one of whose entries names its mechanism (#585)."""
+
+    caps: Annotated[dict[str, int], MemberActsOn({"max_pages": _CONTEXT})] = Field(
+        default_factory=dict, description="per-tool call caps the extractor honours, by tool"
+    )
+
+
+_MAX_PAGES = "extractor.caps.max_pages"
+_RETRIES = "extractor.caps.retries"
+
+
+def _capped_profile() -> HostProfile:
+    return _profile(kinds=(replace(TOY_EXTRACTOR_CONTRACT, overlays=_CappedOverlays),))
+
+
+def _capped_batch(**caps: int) -> EvalRun:
+    """One toy batch whose launch set only these entries of the ``caps`` map."""
+    overlays = freeze(_CappedOverlays.model_validate({"caps": caps}))
+    salt = "caps-" + "-".join(f"{key}{value}" for key, value in sorted(caps.items()))
+    return _renamed(_chunk_batch(512), salt, overlays=overlays)
+
+
+class TestAMemberOfAnOpenMapDeclaresItsMechanism:
+    """#585: a map's entries are distinct knobs, so each names what it acts on — and only the named one is checked."""
+
+    def test_the_named_member_carries_the_mechanism_and_no_other_does(self) -> None:
+        registry = _capped_profile().sweepables
+        assert registry.acts_on(_MAX_PAGES) == _CONTEXT
+        assert registry.acts_on(_RETRIES) is None
+        assert registry.acts_on("extractor.caps") is None
+
+    def test_a_sweep_of_the_named_member_is_moved(self) -> None:
+        bundle = _bundle(
+            [
+                _Arm(_capped_batch(max_pages=5), _per_document(_CONTEXT, 2000.0, 40.0)),
+                # A gap that varies by document: one amount on every document is never called with no range (#597).
+                _Arm(_capped_batch(max_pages=20), _per_document(_CONTEXT, 8000.0, 95.0)),
+            ],
+            profile=_capped_profile(),
+        )
+        mechanism = _row(bundle, _MAX_PAGES).mechanism
+        assert (mechanism.state, mechanism.measure) == ("moved", _CONTEXT)
+        assert mechanism.level_means == {"5": pytest.approx(2220.0), "20": pytest.approx(8522.5)}
+
+    def test_a_cap_the_candidate_never_reaches_is_inert(self) -> None:
+        bundle = _bundle(
+            [
+                _Arm(_capped_batch(max_pages=30), _constant({_CONTEXT: 3000})),
+                _Arm(_capped_batch(max_pages=40), _constant({_CONTEXT: 3000})),
+            ],
+            profile=_capped_profile(),
+        )
+        assert _row(bundle, _MAX_PAGES).mechanism.state == "inert"
+
+    def test_a_sweep_of_an_unnamed_member_still_reads_not_declared(self) -> None:
+        bundle = _bundle(
+            [
+                _Arm(_capped_batch(retries=1), _per_document(_CONTEXT, 2000.0, 40.0)),
+                _Arm(_capped_batch(retries=4), _per_document(_CONTEXT, 8000.0, 40.0)),
+            ],
+            profile=_capped_profile(),
+        )
+        assert _row(bundle, _RETRIES).mechanism == MechanismCheck(state="unchecked", reason="not_declared")
+
+    def test_it_moves_no_variant_key(self) -> None:
+        class _Undeclared(ExtractorOverlays):
+            caps: dict[str, int] = Field(default_factory=dict, description="per-tool call caps the extractor honours")
+
+        undeclared = _profile(kinds=(replace(TOY_EXTRACTOR_CONTRACT, overlays=_Undeclared),))
+        batch = _capped_batch(max_pages=20)
+        assert (
+            resolve_variant_identity(run=batch, profile=undeclared).variant_key
+            == resolve_variant_identity(run=batch, profile=_capped_profile()).variant_key
+        )
+
+    @pytest.mark.parametrize("measure", ["no_such_measure", "execution_mode", "reasoning_tokens"])
+    def test_a_member_mechanism_meets_the_plain_field_s_refusals(self, measure: str) -> None:
+        class _Bad(BaseModel):
+            caps: Annotated[dict[str, int], MemberActsOn({"max_pages": measure})] = Field(
+                default_factory=dict, description="caps"
+            )
+
+        with pytest.raises(ProfileRegistrationError, match=measure):
+            _profile(kinds=(KindContract(TOY_EXTRACTOR_KIND, overlays=_Bad),))
+
+    def test_it_is_refused_on_a_field_that_is_not_a_map(self) -> None:
+        class _Scalar(BaseModel):
+            pages: Annotated[int, MemberActsOn({"x": _CONTEXT})] = Field(10, description="pages read")
+
+        with pytest.raises(KindContractError, match="MemberActsOn but is not a map"):
+            KindContract("scalar", overlays=_Scalar)
+
+    def test_a_blank_entry_is_refused(self) -> None:
+        class _Blank(BaseModel):
+            caps: Annotated[dict[str, int], MemberActsOn({"max_pages": " "})] = Field(
+                default_factory=dict, description="caps"
+            )
+
+        with pytest.raises(KindContractError, match="blank entry"):
+            KindContract("blank", overlays=_Blank)
+
+    def test_a_registry_family_refuses_a_member_it_does_not_own(self) -> None:
+        with pytest.raises(RegistrationError, match="no member it recognises"):
+            SHARED_CORE.extend(
+                [
+                    Sweepable(
+                        name="knobs.*",
+                        role="lever",
+                        read=lambda _r, _s: {},
+                        reader_prose="any knob",
+                        open_family="a launch may overlay any knob",
+                        owns_member=lambda name: name.startswith("knobs."),
+                        member_acts_on={"other.cap": _CONTEXT},
+                    )
+                ]
+            )
+
+    def test_member_acts_on_is_refused_off_an_open_family(self) -> None:
+        with pytest.raises(RegistrationError, match="member_acts_on and is not an open family"):
+            SHARED_CORE.extend(
+                [
+                    Sweepable(
+                        name="knob",
+                        role="lever",
+                        read=lambda _r, _s: 1,
+                        reader_prose="a knob",
+                        member_acts_on={"knob.x": _CONTEXT},
+                    )
+                ]
+            )
 
 
 class TestAnUnresolvableMechanismIsRefusedWhereItIsDeclared:

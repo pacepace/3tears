@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from typing import TypedDict
 
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
-from threetears.evals.contracts import (
+from threetears.evals.kernel import (
     BarOverride,
     CampaignDesign,
     ControlDeclaration,
@@ -24,7 +24,8 @@ from threetears.evals.contracts import (
     Question,
     SweptAxis,
 )
-from threetears.evals.contracts.host import HostProfile, IntervalScale, SweepableValue
+from threetears.evals.kernel.host import HostProfile
+from threetears.evals.schema import IntervalScale, SweepableValue
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.corpus import (
     TOYHOST_GRADER_VERSION,
@@ -70,9 +71,10 @@ _MEASUREMENTS: dict[int, _ArmMeasurements] = {
 }
 
 #: How much context each arm carried into extraction, per document — the mechanism ``chunk_tokens``
-#: declares it acts on (``acts_on="context_tokens_in"``). Wider chunks carry more, so the bundle's check on
-#: that lever reads ``moved``: the knob took effect, and whatever the outcome measures say about it is about
-#: a lever that was actually exercised.
+#: declares it acts on (``acts_on="context_tokens_in"``). Wider chunks carry more, by one amount on every
+#: document: a token count declares no range, and no test of the mean can call a move of one amount with no
+#: range (#597), so the bundle's check on that lever reads ``unchecked`` for ``uniform_move_needs_range``,
+#: never ``moved`` on a test that asks about symmetry rather than the mean.
 _CONTEXT_TOKENS_IN: dict[int, int] = {TOYHOST_NARROW: 2_400, TOYHOST_WIDE: 7_600}
 
 #: The spend ceiling the campaign holds itself to, per document. Between the two arms' spend on

@@ -27,23 +27,22 @@ from typing import Annotated, Any, Literal
 import pytest
 from pydantic import BaseModel, Field
 
-from threetears.evals.contracts import EvalStorage, ValidationFailedError
-from threetears.evals.contracts.host import (
+from threetears.evals.kernel import EvalStorage, ValidationFailedError
+from threetears.evals.kernel.host import (
     SHARED_CORE,
     SweepableRegistry,
     HostProfile,
     Interval,
-    IntervalScale,
     KindContract,
     KindContractError,
     MeasureRegistry,
-    NominalScale,
     Ordinal,
     freeze,
 )
-from threetears.evals.contracts.host.profile import ProfileRegistrationError
-from threetears.evals.contracts.host.values import OrdinalScale
-from threetears.evals.contracts.identity import derive_context_identity, derive_variant_identity
+from threetears.evals.schema import IntervalScale, NominalScale
+from threetears.evals.kernel.host.profile import ProfileRegistrationError
+from threetears.evals.schema.values import OrdinalScale
+from threetears.evals.kernel.identity import derive_context_identity, derive_variant_identity
 from threetears.evals.run import (
     LaunchGroup,
     LaunchHost,

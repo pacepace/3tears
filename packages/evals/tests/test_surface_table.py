@@ -35,13 +35,13 @@ from threetears.evals.analysis.surface_table import (
     SurfaceValue,
     build_surface_table,
 )
-from threetears.evals.contracts.analysis_measures import BarAdjudication, BarVerdict, MeasureCollection, MeasureSummary
-from threetears.evals.contracts.authored import NO_CHART, AuthoredAnalysis
-from threetears.evals.contracts.campaign import EvalAnalysis, GenerationProvenance, VariantIndexEntry
-from threetears.evals.contracts.declaration import CampaignDesign, ControlDeclaration, SweptAxis
-from threetears.evals.contracts.host.values import SweepableValue
-from threetears.evals.contracts.identity import compute_variant_key
-from threetears.evals.contracts.surface import CellFacts, DecisionSurface, MeasureFacts
+from threetears.evals.kernel.analysis_measures import BarAdjudication, BarVerdict, MeasureCollection, MeasureSummary
+from threetears.evals.kernel.authored import NO_CHART, AuthoredAnalysis
+from threetears.evals.kernel.campaign import EvalAnalysis, GenerationProvenance, VariantIndexEntry
+from threetears.evals.kernel.declaration import CampaignDesign, ControlDeclaration, SweptAxis
+from threetears.evals.schema.values import SweepableValue
+from threetears.evals.kernel.identity import compute_variant_key
+from threetears.evals.kernel.surface import CellFacts, DecisionSurface, MeasureFacts
 
 
 AXIS = "candidate_model"

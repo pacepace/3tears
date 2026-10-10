@@ -1,9 +1,9 @@
 """The toy host's own tracing, implementing the engine's trace-sink port without OpenTelemetry.
 
-:mod:`threetears.evals.contracts.host.traces` states two obligations and takes an implementation of
+:mod:`threetears.evals.schema.traces` states two obligations and takes an implementation of
 them — *"a host implements this against its own tracing"*. This one is deliberately **not** OTel: the
 toy host's tracing is a list of records appended by whatever work is running inside the collection
-scope, and that is enough to fill :class:`~threetears.evals.contracts.host.traces.CellTrace`
+scope, and that is enough to fill :class:`~threetears.evals.schema.traces.CellTrace`
 completely — the spans as storable JSON, and the three buckets. A host whose tracing is a log file,
 an APM vendor's client or a ContextVar of dicts is the ordinary case, and this is what the port owes
 it.
@@ -36,7 +36,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
-from threetears.evals.contracts.host import CellIdentity, CellTrace
+from threetears.evals.schema import CellIdentity, CellTrace
 
 #: The span attribute naming what kind of operation a span covers. A wire name — see the module
 #: docstring for why it is a literal here and not an import.
@@ -163,7 +163,7 @@ def summarize(spans: list[ToySpan]) -> dict[str, float | None]:
     The bucket rule the module docstring states, applied to the toy host's records.
 
     **A bucket no span contributed to is ``None``, never ``0.0``**, which is the one thing
-    :class:`~threetears.evals.contracts.host.traces.CellTrace` says a sink may not get wrong: on an axis where
+    :class:`~threetears.evals.schema.traces.CellTrace` says a sink may not get wrong: on an axis where
     lower is better, a zero standing in for "unmeasured" wins every comparison it should have
     been excluded from. ``tool_ms`` is always ``None`` here, and legitimately — the extractor
     calls no tool, so there is nothing to have measured.
@@ -187,7 +187,7 @@ def summarize(spans: list[ToySpan]) -> dict[str, float | None]:
 
 
 class ToyTraceSink:
-    """The toy host's :class:`~threetears.evals.contracts.host.traces.TraceSink`.
+    """The toy host's :class:`~threetears.evals.schema.traces.TraceSink`.
 
     Two scopes and a handful of assignments, which is what the port claims implementing it costs.
     Nothing here catches on the engine's behalf and nothing here degrades: a cell that emitted no

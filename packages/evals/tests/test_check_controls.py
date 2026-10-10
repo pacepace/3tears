@@ -12,16 +12,16 @@ from dataclasses import replace
 
 import pytest
 
-from threetears.evals.contracts import (
+from threetears.evals.schema import (
     ControlEndState,
     EvalTemplate,
     Firings,
     GoalCheckControl,
     GoalCheckControls,
     RecordedCall,
-    ValidationFailedError,
     WorldSeed,
 )
+from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.run.check_controls import (
     check_discriminations,
     control_end_state,

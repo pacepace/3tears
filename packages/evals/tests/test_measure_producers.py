@@ -1,6 +1,6 @@
 """Every measure the engine's catalogue declares has a producer, or is marked as a host's to produce (#573).
 
-A descriptor in :data:`~threetears.evals.contracts.metrics.METRIC_DESCRIPTORS` is a promise to every host
+A descriptor in :data:`~threetears.evals.kernel.metrics.METRIC_DESCRIPTORS` is a promise to every host
 that inherits it: a renderer shows it, a reader expects it. Six async-delivery measures were declared for
 years with nothing in the package computing them, so they rendered, were never filled, and never failed.
 
@@ -8,7 +8,7 @@ The guard is the search that found them, made a test: a declared name is PRODUCE
 outside the catalogue names it as code — a string literal that is not a docstring (a row key, a measure
 name a summary is built under) or a field a model declares. A name that appears only in prose, or only in
 the catalogue itself, is produced by nothing. The one exemption is
-:data:`~threetears.evals.contracts.metrics.HOST_PRODUCED_MEASURES`: core measures a host's candidate kind
+:data:`~threetears.evals.kernel.metrics.HOST_PRODUCED_MEASURES`: core measures a host's candidate kind
 writes and the engine only reads.
 """
 
@@ -18,8 +18,8 @@ import ast
 from pathlib import Path
 
 import threetears.evals as evals_package
-from threetears.evals.contracts import metrics
-from threetears.evals.contracts.metrics import HOST_PRODUCED_MEASURES, METRIC_DESCRIPTORS
+from threetears.evals.kernel import metrics
+from threetears.evals.kernel.metrics import HOST_PRODUCED_MEASURES, METRIC_DESCRIPTORS
 
 _SOURCE_ROOT = Path(evals_package.__file__).parent
 _CATALOGUE = Path(metrics.__file__)

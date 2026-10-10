@@ -16,8 +16,9 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis import variant_key_of_run
-from threetears.evals.contracts import ValidationFailedError
-from threetears.evals.contracts.host import CANDIDATE_MODEL_LEVER, SweepableValue
+from threetears.evals.kernel import ValidationFailedError
+from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER
+from threetears.evals.schema import SweepableValue
 from threetears.evals.quick import (
     CALLABLE_KIND_CONTRACT,
     Comparison,

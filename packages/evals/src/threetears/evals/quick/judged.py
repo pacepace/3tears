@@ -6,14 +6,14 @@ asks a model instead, one rubric dimension per call, and reports each dimension'
 scorers' measures. Nothing here judges: it declares what the engine's judge reads and who calls the model.
 
 - **The rubric** is a mapping of dimension name to what the dimension measures, or the engine's own
-  :class:`~threetears.evals.contracts.RubricDim` values. A bare name is namespaced under
+  :class:`~threetears.evals.schema.RubricDim` values. A bare name is namespaced under
   :attr:`Judge.context` (``helpful`` becomes ``answer.helpful``), because a judge config binds to a
   dimension by name across every template and a bare one would bind to every product's ``helpful``.
   The rubric is the template's, so it is part of what the case set's id is a digest of.
 - **The judge** is :class:`~threetears.evals.run.JudgeService`, built by
   :func:`~threetears.evals.run.build_judge_service` as for any judged run, over a client factory that
   hands it :attr:`Judge.client` for the judge role and nothing else. It scores the answer as a document
-  (:attr:`~threetears.evals.contracts.JudgedArtifact.DOCUMENT`): the rubric dimensions alone, each read
+  (:attr:`~threetears.evals.schema.JudgedArtifact.DOCUMENT`): the rubric dimensions alone, each read
   against the case material, with no conversation axes.
 - **The evidence** is the kind's to render (:func:`judge_evidence`): the answer as text, judged against
   :attr:`Judge.case_material`'s rendering of its case, or the case as JSON. It is stored on each cell's
@@ -35,14 +35,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Self
 
-from threetears.evals.contracts import (
-    CompletionClient,
-    CompletionResult,
-    JudgeEvidence,
-    RubricDim,
-    RubricScale,
-)
-from threetears.evals.contracts.host import CompletionClients, CompletionRole
+from threetears.evals.schema import CompletionClient, CompletionResult, JudgeEvidence, RubricDim, RubricScale
+from threetears.evals.kernel.host import CompletionClients, CompletionRole
 
 #: Renders the material one case's answer is judged against: takes the case, returns non-blank text.
 CaseMaterial = Callable[[Mapping[str, Any]], str]
@@ -71,7 +65,11 @@ class Judge:
             or ``"pass_fail"``. A :class:`RubricDim` states its own.
         context: The namespace a bare dimension name is given: what the dimensions are scored against.
         case_material: Renders what an answer is judged against from its case — a question and the
-            source it must be answered from, say. ``None`` shows the judge the case as JSON.
+            source it must be answered from, say. ``None`` shows the judge the case as JSON, less the answer
+            key: on a classifier run (``run_eval(expected=...)``), every top-level field whose value is the
+            case's expected label is left out, so the judge never grades against the label it is meant to
+            judge without. To grade against a reference answer, render it here: what this returns is sent
+            as it is, the expected label included if it includes it.
     """
 
     client: CompletionClient
@@ -148,7 +146,7 @@ class Judge:
 class BorrowedJudgeClient:
     """A caller's completion client, lent to one run: every call forwarded, the release left to its owner.
 
-    Satisfies :class:`~threetears.evals.contracts.BoundCompletionClient`. Its price ceiling is unknown —
+    Satisfies :class:`~threetears.evals.schema.BoundCompletionClient`. Its price ceiling is unknown —
     a run's judge is bounded by its spend as it arrives, never priced before a call is made. Bound to the
     temperature the engine asked for, as every client the host factory builds is, and passes it on to the
     owner's client when that client's ``generate`` takes a ``temperature`` keyword (:attr:`passes_temperature`);
@@ -227,14 +225,18 @@ def _takes_temperature(client: CompletionClient) -> bool:
     )
 
 
-def judge_evidence(judge: Judge, case: Mapping[str, Any], answer: Any) -> JudgeEvidence:
+def judge_evidence(judge: Judge, case: Mapping[str, Any], answer: Any, *, expected: str | None = None) -> JudgeEvidence:
     """What the judge reads of one answer: the answer as text, against its case's material.
+
+    The evidence is stored on the cell's trace exactly as sent, so a re-judge sends the same material.
 
     Args:
         judge: The judge, whose ``case_material`` renders the case.
         case: The case the answer was given for.
         answer: The candidate's answer: a string as written, anything else as JSON (its ``repr`` when
             JSON cannot hold it).
+        expected: The case's expected label on a classifier run, ``None`` otherwise. With no
+            ``case_material``, every top-level field holding it is left out of the case shown (the answer key).
 
     Returns:
         The evidence.
@@ -243,7 +245,8 @@ def judge_evidence(judge: Judge, case: Mapping[str, Any], answer: Any) -> JudgeE
         ValueError: ``case_material`` raised, or rendered no text.
     """
     if judge.case_material is None:
-        material = json.dumps(dict(case), indent=2, sort_keys=True, default=repr)
+        shown = {key: value for key, value in case.items() if expected is None or value != expected}
+        material = json.dumps(shown, indent=2, sort_keys=True, default=repr)
     else:
         try:
             material = judge.case_material(case)

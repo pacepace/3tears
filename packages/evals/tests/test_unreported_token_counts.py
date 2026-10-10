@@ -19,8 +19,9 @@ from dataclasses import dataclass
 
 from threetears.evals.analysis import TokenRollup
 from threetears.evals.analysis.generator import GenerationTally, generate_analysis
-from threetears.evals.contracts.provider import StopReason, describe_incomplete_completion
-from threetears.evals.contracts.models import EvalResult, RoleUsage, utc_now_iso
+from threetears.evals.schema.completion import StopReason
+from threetears.evals.kernel.provider import describe_incomplete_completion
+from threetears.evals.schema.models import EvalResult, RoleUsage, utc_now_iso
 from packages.evals.tests.bundle_support import one_batch_bundle
 from packages.evals.tests.factories import make_eval_result
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle

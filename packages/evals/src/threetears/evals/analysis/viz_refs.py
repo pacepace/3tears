@@ -1,12 +1,12 @@
 """Compile a chart from the model's authored chart — the model picks the chart and the cells, code draws the numbers.
 
-The model authors one closed chart shape for every type (:class:`~threetears.evals.contracts.authored.Chart`:
+The model authors one closed chart shape for every type (:class:`~threetears.evals.kernel.authored.Chart`:
 ``cells``, ``measures``, ``axis``, ``note``, ``caption``), already checked strictly by
-:func:`~threetears.evals.contracts.authored.validate_authored`. :func:`reference_from_chart` reads its
+:func:`~threetears.evals.kernel.authored.validate_authored`. :func:`reference_from_chart` reads its
 lists by position into the chart type's own typed reference, refusing — in the words of the chart
 the model wrote (:data:`CHART_READINGS`) — any list that is not what the type reads; and
 :func:`build_viz_payload` compiles that reference into the payload the renderers read, from the
-analysis's frozen :class:`~threetears.evals.contracts.surface.DecisionSurface`. Every label and axis
+analysis's frozen :class:`~threetears.evals.kernel.surface.DecisionSurface`. Every label and axis
 title is computed here from the cells and measures, because the authored chart carries none.
 
 **Every number goes through** :func:`~threetears.evals.analysis.references.resolve_reading` — the one
@@ -48,17 +48,17 @@ from threetears.evals.analysis.references import (
     resolve_reading,
 )
 from threetears.evals.analysis.viz.payloads import ABSENT_LEVEL
-from threetears.evals.contracts.authored import Chart
-from threetears.evals.contracts.base import EvalBaseModel
-from threetears.evals.contracts.campaign import ReadingKind, VariantIndexEntry
-from threetears.evals.contracts.host.measures import MeasureRegistry
-from threetears.evals.contracts.metrics import (
+from threetears.evals.kernel.authored import Chart
+from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.kernel.campaign import ReadingKind, VariantIndexEntry
+from threetears.evals.kernel.host.measures import MeasureRegistry
+from threetears.evals.kernel.metrics import (
     MEASURING_SPEND_MEASURES,
     describe_reported_measure,
     materiality,
     remainder_withheld_reason,
 )
-from threetears.evals.contracts.surface import CellFacts, DecisionSurface, TimePosition
+from threetears.evals.kernel.surface import CellFacts, DecisionSurface, TimePosition
 
 #: The dimension a sweep row gains when one arm was measured under more than one rig. Without it
 #: the two cells carry identical levels and draw as one configuration holding two ranks.
@@ -223,17 +223,48 @@ def cell_arm_labels(surface: DecisionSurface, variant_index: list[VariantIndexEn
 _VARIABILITY = "the cell's cases (repeats of one case clustered)"
 
 
-def _interval(reading: ResolvedReading) -> dict[str, Any]:
+def _below_band_floor(reading: ResolvedReading) -> bool:
+    """Whether a reading has too few cases for its interval to be drawn as a band (#677).
+
+    A reading whose case count is unknown (``n_cases`` None) is not judged here: its interval, if any,
+    stands as it did.
+    """
+    return reading.n_cases is not None and reading.n_cases < stats.SMALL_N_BAND_FLOOR
+
+
+def _cases_phrase(reading: ResolvedReading) -> str:
+    return f"{reading.n_cases} case{'' if reading.n_cases == 1 else 's'}"
+
+
+def _fewer_cases(a: ResolvedReading, b: ResolvedReading) -> int | None:
+    """The smaller of two readings' case counts — the n a pair of them can be read on — or None where either
+    recorded none (a reading with no independent cases counted states no n rather than its observations)."""
+    return None if a.n_cases is None or b.n_cases is None else min(a.n_cases, b.n_cases)
+
+
+def _interval(reading: ResolvedReading, *, banded: bool = True) -> dict[str, Any]:
     """A reading's interval in the payload's ``ci`` shape, or a refusal when it has none.
 
+    Args:
+        reading: The reading.
+        banded: Whether the chart draws this interval as a band, which is refused below
+            :data:`~threetears.evals.analysis.stats.SMALL_N_BAND_FLOOR` cases.
+
     Raises:
-        UnresolvableReference: The reading has no interval (fewer than two observations, or one case).
+        UnresolvableReference: The reading has no interval (fewer than two observations, or one case), or
+            ``banded`` and it has fewer cases than a band is drawn from.
     """
     if reading.ci_low is None or reading.ci_high is None:
         raise UnresolvableReference(
             f"reference names {reading.measure_id!r} at cell {reading.cell_ref!r}, which has no interval "
             f"({reading.dispersion}) — this chart draws intervals, so name a cell with at least 2 observations of it, "
             "over at least 2 cases"
+        )
+    if banded and _below_band_floor(reading):
+        raise UnresolvableReference(
+            f"reference names {reading.measure_id!r} at cell {reading.cell_ref!r}, which has "
+            f"{_cases_phrase(reading)}, fewer than the {stats.SMALL_N_BAND_FLOOR} an interval band is drawn from — "
+            "a t interval that small is too wide and unstable to draw; a distribution draws each case as a point"
         )
     return {
         "low": reading.ci_low,
@@ -325,9 +356,11 @@ def _delta_table(ref: DeltaTableRef, surface: DecisionSurface, labels: dict[str,
                 "delta": b.mean - a.mean,
                 "materiality": materiality(facts.materiality_threshold if facts else None, b.mean - a.mean),
                 "scale": scale,
-                # The smaller arm bounds any test the pair could support; the bundle carries no
-                # paired statistic, so no test was run and the row says so through `significant`.
-                "n": min(a.n, b.n),
+                # Cases, never observations: a case is the draw every interval and test reads, and a
+                # case judged three times is one. The smaller arm bounds any test the pair could
+                # support; the bundle carries no paired statistic, so no test was run and the row
+                # says so through `significant`.
+                "n": _fewer_cases(a, b),
                 "paired": False,
                 "d_z": None,
                 "p": None,
@@ -342,13 +375,30 @@ def _delta_table(ref: DeltaTableRef, surface: DecisionSurface, labels: dict[str,
     }
 
 
+def _distribution_group(reading: ResolvedReading, label: str) -> dict[str, Any]:
+    """One cell's group: its interval band, or below the band floor its cases as points and no band (#677).
+
+    Raises:
+        UnresolvableReference: The reading has no interval at all, or is below the band floor and its
+            per-case values were not recorded (a surface stored before they were).
+    """
+    interval = _interval(reading, banded=False)
+    if not _below_band_floor(reading):
+        return {"label": label, "ci": interval, "n": reading.n_cases}
+    if not reading.case_means or len(reading.case_means) < 2:
+        raise UnresolvableReference(
+            f"reference names {reading.measure_id!r} at cell {reading.cell_ref!r}, which has "
+            f"{_cases_phrase(reading)}, fewer than the {stats.SMALL_N_BAND_FLOOR} an interval band is drawn from, "
+            "and its per-case values were not recorded — this analysis was stored before they were"
+        )
+    return {"label": label, "samples": list(reading.case_means), "n": reading.n_cases}
+
+
 def _distribution(ref: DistributionRef, surface: DecisionSurface, labels: dict[str, str]) -> dict[str, Any]:
     readings = [resolve_reading(surface, cell, ref.measure_id, ref.reading) for cell in ref.cells]
     return {
         "caption": ref.caption,
-        "groups": [
-            {"label": labels[reading.cell_ref], "ci": _interval(reading), "n": reading.n} for reading in readings
-        ],
+        "groups": [_distribution_group(reading, labels[reading.cell_ref]) for reading in readings],
         "unit": readings[0].unit,
         # The value axis is the reading drawn, named — without it every distribution titles itself
         # "Distribution", and two on one page cannot be told apart.
@@ -361,7 +411,7 @@ def _null_result(ref: NullResultRef, surface: DecisionSurface, labels: dict[str,
     return {
         "caption": ref.caption,
         "groups": [
-            {"label": labels[reading.cell_ref], "ci": _interval(reading), "n": reading.n} for reading in readings
+            {"label": labels[reading.cell_ref], "ci": _interval(reading), "n": reading.n_cases} for reading in readings
         ],
         "metric": surface.measure_heading(ref.measure_id, ref.reading),
         "unit": readings[0].unit,
@@ -376,7 +426,7 @@ def _breakdown(ref: BreakdownRef, surface: DecisionSurface, labels: dict[str, st
     return {
         "caption": ref.caption,
         "parts": [
-            {"label": surface.measure_heading(part.measure_id), "value": part.mean, "n": part.n} for part in parts
+            {"label": surface.measure_heading(part.measure_id), "value": part.mean, "n": part.n_cases} for part in parts
         ],
         "unit": _shared_unit(parts, "breakdown"),
     }
@@ -429,7 +479,7 @@ def _attribution(
             "delta": b.mean - a.mean,
             "a": a.mean,
             "b": b.mean,
-            "n": min(a.n, b.n),
+            "n": _fewer_cases(a, b),
         }
     unit = _shared_unit(readings, "attribution")
     # Whether the remainder may be stated is the one rule the bundle's divergence lens also asks —
@@ -533,12 +583,14 @@ def _frontier(ref: FrontierRef, surface: DecisionSurface, labels: dict[str, str]
             "latency_ms": latency.mean if latency else None,
             "dominated": dominance == "dominated",
             "dominance": dominance,
-            "disqualified": False,
+            # The frontier lens's boundary pillar, copied (#613): an arm that breached a guardrail is drawn crossed.
+            "disqualified": bool(breached),
+            "disqualified_reason": (f"breached {', '.join(breached)} against the control" if breached else None),
         }
         for cell, quality, cost, latency in zip(cells, qualities, costs, latencies, strict=True)
-        for dominance in [
-            None if standings is None else standings.get(require_cell(surface, cell).variant_key, "untested")
-        ]
+        for variant in [require_cell(surface, cell).variant_key]
+        for dominance in [None if standings is None else standings.get(variant, "untested")]
+        for breached in [(surface.frontier_disqualified or {}).get(variant, [])]
     ]
     cost_unit = surface.measures[cost_id].unit if cost_id in surface.measures else None
     return {
@@ -630,7 +682,11 @@ def _position_point(
     reading = resolve_reading(at, cell, ref.measure_id, ref.reading)
     if reading.ci_low is None or reading.ci_high is None:
         return None, f"{reading.n} observation{'' if reading.n == 1 else 's'} there, too few for an interval"
-    return {"position": position.key, "ci": _interval(reading), "n": reading.n}, ""
+    if _below_band_floor(reading):
+        return None, (
+            f"{_cases_phrase(reading)} there, fewer than the {stats.SMALL_N_BAND_FLOOR} an interval is drawn from"
+        )
+    return {"position": position.key, "ci": _interval(reading), "n": reading.n_cases}, ""
 
 
 def _quality_bar(surface: DecisionSurface, quality: ReadingRef) -> float | None:
@@ -678,7 +734,7 @@ def _sweep_ranking(
     configs, dimensions = _sweep_configs(surface, cells, variant_index)
 
     unsorted: list[dict[str, Any]] = [
-        {"config": config, "ranked_value": r.mean, "secondary_value": s.mean, "n": r.n}
+        {"config": config, "ranked_value": r.mean, "secondary_value": s.mean, "n": r.n_cases}
         for config, r, s in zip(configs, ranked, secondary, strict=True)
     ]
     rows = sorted(unsorted, key=lambda row: -row["ranked_value"])

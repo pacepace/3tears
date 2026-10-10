@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from threetears.evals.contracts.covariates import derive_covariates
+from threetears.evals.kernel.covariates import derive_covariates
 from threetears.evals.run.jobs import EvalJobManager
 from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.job_support import InMemoryRunStore, settled

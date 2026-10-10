@@ -16,7 +16,7 @@ from __future__ import annotations
 import pytest
 
 from threetears.evals.actions import eval_catalogue, standard_tools
-from threetears.evals.contracts import OutOfRunSpend
+from threetears.evals.schema import OutOfRunSpend
 from threetears.evals.ops import OutOfRunSpendReport, out_of_run_spend_text, scope_out_of_run_spend
 from threetears.evals.quick import run_cli
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE

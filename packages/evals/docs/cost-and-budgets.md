@@ -53,14 +53,23 @@ the two apart (a clock stop's reason opens with `wall-clock budget`), and `error
 because that list counts faults. A run stopped by its clock under 0.66.0 or earlier stays stored `failed`
 (`Job timed out after Ns`).
 
-**Wall time.** A run executes its cells (case × repeat) one at a time, in a shuffled order; the only
-concurrency inside a run is a cell's judge calls (`judge_concurrency`, 4 by default, 1 on the quick path).
-The arms of one launch run side by side in one concurrency slot, so a comparison takes about as long as its
-slowest arm. Estimate a run's wall time as cases × k × the time one cell takes (the candidate's calls plus
-its judging): 30 cases at k=3 and 6 s a cell is about 9 minutes, whatever the number of arms. Cells are
-serial on purpose: each cell's metered-call count is read as a before/after pair around it, and the record of
-how busy the system was assumes no sibling cell competes, so both would be wrong under concurrent cells.
-No setting changes it.
+**The cell deadline.** Each cell runs under a deadline: the kind's own (its launcher's
+`KindWiring.cell_timeout_s`, else 600 s). A cell that outlives it is excluded as `cell_timeout`. A launch can
+name `cell_timeout_s` for a long-horizon run, up to the host's `LaunchSettings.max_cell_timeout_s`. A host that
+declares no ceiling lets a launch only lower the kind's deadline. The job's wall-clock budget is sized from
+the deadline in force. The run records it as `cell_timeout_s`, with `cell_timeout_s_origin` (`launch`, `kind`
+or `default`). A run stored before 0.66.0 records neither, and its deadline reads as unknown.
+
+**Wall time.** A run executes its cells (case × repeat) in a shuffled order, up to
+`LaunchSettings.max_concurrent_cells` (4 by default) at once, and a cell's judge calls run up to
+`judge_concurrency` at once. The arms of one launch run side by side in one concurrency slot. Estimate a
+run's wall time as cases × k × the time one cell takes, divided by the width: 30 cases at k=3 and 6 s a cell
+is a little over 2 minutes at a width of 4. A launch that declares latency under test (`measure_latency=True`)
+runs its cells one at a time and its arms one after another, with no other run beside them: the same run
+then takes about 9 minutes, times the number of arms. The cost cap and the metered-call ceiling hold at any
+width; the cap can be overshot by at most the work in flight when it is reached (one call per running cell
+for a kind that asks the cap before each call, one cell per running cell otherwise). A host with its own
+pool or queue supplies a `CellExecutor` on `LaunchHost.cell_executor`.
 
 **The out-of-run cap** is `LaunchSettings.max_out_of_run_cost_usd`. It bounds every call the engine makes
 outside a run (below).
@@ -104,6 +113,15 @@ pivot as `predicted_cost`, and each prediction sits only in the cell of its mode
 launch ran, pass its run ids as `launched_run_ids` too, and each predicted cell says how many of its
 observations came from other runs — the history the prediction was drawn from among them.
 
+**What the launch could detect.** Beside the price, the estimate's `detectable_effect` block says, per
+reading a comparison would test, "with N cases and k repeats this campaign can detect Δ ≥ x (from runs …)".
+Δ is the smallest true difference the paired test finds four times in five, at the α/m the first step of
+Holm's correction asks of the family. Its variance comes from earlier runs of the same template: the repeat
+noise, and how far two arms disagree about one case (measured where two earlier runs launched differently
+shared cases; otherwise one arm's case-to-case spread, counted twice). With no earlier run, or no repeated
+cases, a reading says it cannot estimate and why; no default variance is ever used. The block states its
+assumptions, among them near-normal per-case differences and that only the one comparison differs.
+
 A host therefore prices no arm itself: a wrapper that priced assembled runs would be a second rule, and a
 second pricing of the same arm.
 
@@ -134,6 +152,11 @@ call is ledgered under purpose `analysis`, so `scope_out_of_run_spend` reads it.
 included — priced and admitted before the first is sent, and ledgered under purpose `judge` with the run's
 id. (What a judge repeat is for is in
 [Reading reports](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers).)
+
+**Second judges.** A second judge (`judge_second`, `judge_drift_check`) is held to the same cap, priced and
+admitted the same way, and ledgered under purpose `second_judge` with the run's id. It is measurement cost on its
+own line: never in a result's `cost_usd`, never in the run's judge spend. `run_get` shows it as
+`second_judge_cost_usd`.
 
 **A host's own `spend` actions.** A host's own `spend` action carries no such obligation: the class is a
 label a tool cut splits on, metered only as far as the host's handler meters it.
@@ -186,6 +209,13 @@ else edited. Declare `departs_production` on a lever to decide its value against
 apparatus input that moves the candidate off its production footing. A run launched before the candidate
 model's origin was recorded reads its model as unchecked; a summary assembled before the disclosure
 carries `None`, "nobody checked".
+
+A cost pooled over runs carries every run's footing (`PooledProductionFooting`, run id to footing), and says
+where the runs ran at different footings rather than merging them: a frontier point's cost axis and its
+verdict (`FrontierPoint.production_footing`, when the frontier is given the host's profile; the bundle's
+frontier always is), and each analysis arm (`AnalysisContextBundle.arm_production_footings`), whose cells,
+contrasts and bars on `production_replicating_cost` pool its runs. A code-only report says per arm what its
+runs set, left unchecked, or that they moved nothing.
 
 **A cost pivot says what its cells pool.** `scope_pivot(metric="cost_usd")` averages measuring spend, so each
 cell names the role sets its dollars were summed over (`cost_compositions`, with `cost_compositions_differ` when

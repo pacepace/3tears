@@ -20,10 +20,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from threetears.evals.contracts import EvalRun, EvalStorage, NotFoundError, WorldSeed
-from threetears.evals.contracts.host import CompletionClients, HostProfile, TraceSink, WorldPlacement
+from threetears.evals.schema import EvalRun, WorldSeed
+from threetears.evals.kernel import EvalStorage, NotFoundError
+from threetears.evals.kernel.host import CompletionClients, HostProfile
+from threetears.evals.schema import TraceSink
+from threetears.evals.schema import WorldPlacement
 from threetears.evals.run import (
     ArmPlan,
+    CellExecutor,
     ArmPrice,
     ArmQuote,
     KindWiring,
@@ -87,7 +91,7 @@ def plan_toyhost_arm(request: LaunchRequest) -> ArmPlan:
         ValidationFailedError: The arm names no model.
     """
     return ArmPlan(
-        case_count=len(toyhost_test_cases(request.template)),
+        case_count=len(request.cases_or(toyhost_test_cases(request.template))),
         candidate_model=require_candidate_model(request, None),
         judge=None,
         simulator_model=None,
@@ -128,8 +132,11 @@ def toyhost_launch_host(
     trace_sink: TraceSink | None = None,
     settings: Callable[[], LaunchSettings] = lambda: TOYHOST_LAUNCH_SETTINGS,
     clients: CompletionClients | None = None,
+    client: ScriptedExtractionClient | None = None,
+    cell_executor: CellExecutor | None = None,
+    kind_cell_timeout_s: float | None = None,
 ) -> tuple[LaunchHost, ScriptedExtractionClient]:
-    """The toy host as a launching host: its :class:`~threetears.evals.contracts.host.EvalHost`, plus its launch registry.
+    """The toy host as a launching host: its :class:`~threetears.evals.kernel.host.EvalHost`, plus its launch registry.
 
     Args:
         profile: The vocabulary; ``None`` is the toy host's own.
@@ -138,6 +145,10 @@ def toyhost_launch_host(
         settings: Reads the launch settings; a callable because a host's settings hot-reload.
         clients: The completion-client factory, for a drive that also analyses what it launched. The
             extractor itself calls no model.
+        client: The scripted client the extractor calls; ``None`` is a fresh one with the toy scripts.
+        cell_executor: What runs each run's cells; ``None`` is the engine's in-process default.
+        kind_cell_timeout_s: The per-cell deadline the launcher wires for its kind
+            (``KindWiring.cell_timeout_s``); ``None`` leaves the engine's default.
 
     Returns:
         The host, and the scripted client its extractor calls — so a caller can see what was asked.
@@ -145,7 +156,7 @@ def toyhost_launch_host(
     eval_host = toyhost_host(profile=profile, storage=storage, trace_sink=trace_sink, clients=clients)
     world = eval_host.profile.world
     assert world is not None, "the toy host declares a world"
-    client = ScriptedExtractionClient()
+    client = client if client is not None else ScriptedExtractionClient()
 
     def place(run: EvalRun) -> dict[str, WorldPlacement]:
         # The algebra over what this run's kind can actually do: the dimensions its seed sets,
@@ -159,7 +170,8 @@ def toyhost_launch_host(
         subject = TOYHOST_SUBJECTS.get(request.subject_id)
         if subject is None:
             raise NotFoundError("subject", request.subject_id)
-        cases = toyhost_test_cases(request.template)
+        # The launch's case set when it names one, else every invoice. A set's cases are already stored.
+        cases = request.cases_or(toyhost_test_cases(request.template))
         for case in cases:
             eval_host.storage.save_test_case(case)
         # What the template states for the kind, as the dispatch validated it: the fields this run
@@ -182,6 +194,7 @@ def toyhost_launch_host(
                 kind_factory=lambda _cell: graded,
                 subject=subject,
                 test_cases=cases,
+                cell_timeout_s=kind_cell_timeout_s,
                 payload={
                     "toyhost": {
                         "grader_version": TOYHOST_GRADER_VERSION,
@@ -221,6 +234,7 @@ def toyhost_launch_host(
         # The toy host has no timeout layer of its own, so a run's job is bounded by the engine's.
         job_timeout_factory=default_job_timeout,
         world_placements=place,
+        cell_executor=cell_executor,
     )
     return launch_host, client
 

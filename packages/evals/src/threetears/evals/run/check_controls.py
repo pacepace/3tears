@@ -13,13 +13,13 @@ at authoring instead.
   end state, named through the host's world registry, an empty call ledger, and whatever the world does on its own. A
   triggered dimension's seed arms it rather than setting it, so an armed ``event`` or ``human`` dimension is *known
   absent* — present, holding ``None`` rather than its seeded value — since its condition is the candidate's act or a
-  person's, and neither happened. Known absent and not :data:`~threetears.evals.contracts.dsl.Missing`: the gate knows
+  person's, and neither happened. Known absent and not :data:`~threetears.evals.kernel.dsl.Missing`: the gate knows
   the value never arrived, so a hold check such as ``not state.payment_hold == "held"`` passes here, as it does in a
   run whose host reads an unfired dimension back as ``None``. A ``turn`` dimension is the exception, because its
   condition is the passage of turns, which happens in a cell whatever its candidate does. The session does not advance
-  a clock itself — :meth:`~threetears.evals.contracts.world_session.WorldSession.at_turn` only applies ambient
+  a clock itself — :meth:`~threetears.evals.kernel.world_session.WorldSession.at_turn` only applies ambient
   perturbation — so a turn trigger fires when the kind fires it as its turns pass
-  (:meth:`~threetears.evals.contracts.world_session.WorldSession.fire`), or when the world's own clock fires it and
+  (:meth:`~threetears.evals.kernel.world_session.WorldSession.fire`), or when the world's own clock fires it and
   the kind records it (``observe``). Whether a given kind fires its turn triggers is the kind's code, which this gate
   cannot see, so it assumes the worst case for a do-nothing candidate: every clock-driven dimension FIRES in the
   do-nothing control — the world's own clock may fire one the seed never armed, and the engine cannot rule that out —
@@ -28,7 +28,7 @@ at authoring instead.
   still refused. A check that passes on a clock firing alone passes for a candidate that did nothing, and is refused.
   Derived, so it needs no data and cannot be authored wrong.
 * **its named control** — an end state the template's author states in
-  :class:`~threetears.evals.contracts.models.GoalCheckControls`, laid over the do-nothing control: for an
+  :class:`~threetears.evals.schema.models.GoalCheckControls`, laid over the do-nothing control: for an
   ``act`` check, one where the behaviour happened; for a ``hold`` check, one where the forbidden thing
   happened. What the world does on its own happens there too, so its firings are the do-nothing
   control's plus the ones the control states.
@@ -41,7 +41,7 @@ and so are inverted ones, which say the check grades the opposite of what its in
 :func:`~threetears.evals.run.runner.grade_goal_checks`, the function a finished cell's checks go
 through, so a check is proven under the evaluation it will be scored by — and under the parameters' stored
 types: a case stores every variation parameter as one string, so a control's are read as strings too
-(:func:`~threetears.evals.contracts.models.stored_variation`), and a control stating any other type is refused,
+(:func:`~threetears.evals.schema.models.stored_variation`), and a control stating any other type is refused,
 since a check proven on a number or a list would pass its control and fail every case.
 
 **Controls are authoring data.** Nothing that runs a cell reads them: the candidate is seeded from
@@ -74,13 +74,13 @@ from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from typing import Any, NamedTuple
 
-from threetears.evals.contracts.call_ledger import CallLedger
-from threetears.evals.contracts.dsl import NOT_ESTABLISHED, undefined_action, undefined_fired_dimension
-from threetears.evals.contracts.errors import ValidationFailedError
-from threetears.evals.contracts.host.profile import HostProfile
-from threetears.evals.contracts.host.world import Triggered, WorldRegistry
-from threetears.evals.contracts.host.world_schema import schema_violations
-from threetears.evals.contracts.models import (
+from threetears.evals.schema.call_ledger import CallLedger
+from threetears.evals.kernel.dsl import NOT_ESTABLISHED, undefined_action, undefined_fired_dimension
+from threetears.evals.kernel.errors import ValidationFailedError
+from threetears.evals.kernel.host.profile import HostProfile
+from threetears.evals.kernel.host.world import Triggered, WorldRegistry
+from threetears.evals.kernel.host.world_schema import schema_violations
+from threetears.evals.schema.models import (
     ControlEndState,
     EvalTemplate,
     GoalCheckIntent,
@@ -89,7 +89,7 @@ from threetears.evals.contracts.models import (
     WorldSeed,
     stored_variation,
 )
-from threetears.evals.contracts.world_events import Firings
+from threetears.evals.schema.world_events import Firings
 from threetears.evals.run.runner import GoalCheckUnevaluable, grade_goal_checks
 
 #: The fields whose write puts the proof in question: the checks themselves, the controls, and the
@@ -187,7 +187,7 @@ class ControlEnd(NamedTuple):
 
     #: The world, keyed by declared dimension name — the shape a goal check reads ``state.<dimension>`` from.
     end_state: dict[str, Any]
-    #: The calls, recorded through :meth:`~threetears.evals.contracts.call_ledger.CallLedger.record`,
+    #: The calls, recorded through :meth:`~threetears.evals.schema.call_ledger.CallLedger.record`,
     #: the method a kind records its candidate's calls with.
     ledger: CallLedger
     #: What fired — read by ``fired()`` and ``fired_armed()``. The do-nothing control's are the world's
@@ -222,7 +222,7 @@ def do_nothing_end_state(template: EvalTemplate, *, world: WorldRegistry | None)
     The seed with each of its ``event`` and ``human`` triggered dimensions *known absent* (``None``): seeding
     one arms it, and with nothing done its condition — the candidate's act, or a person's — never happened,
     so its seeded value is not in the world. Known absent rather than left out, because left out it reads
-    as :data:`~threetears.evals.contracts.dsl.Missing` — unknown — and a hold check over it
+    as :data:`~threetears.evals.kernel.dsl.Missing` — unknown — and a hold check over it
     (``not state.payment_hold == "held"``) could then never pass here, though the gate knows the hold never
     arrived. A ``turn`` dimension is different: its condition is turns passing, which happens in every cell
     whatever the candidate does, and whether a kind fires it then is the kind's code, not something this
@@ -528,16 +528,16 @@ def _end_state_defects(end_state: ControlEndState, profile: HostProfile, *, arme
 
     A control is evidence only if it is a state a run could leave: a key no dimension declares, a
     value its dimension's schema refuses, a fired dimension that is not a triggered one the host
-    declares (:func:`~threetears.evals.contracts.dsl.undefined_fired_dimension`), a seed-armed firing
+    declares (:func:`~threetears.evals.kernel.dsl.undefined_fired_dimension`), a seed-armed firing
     under a template whose seed arms no event at all, or a call to an
     action the host does not define would let a check pass or fail its control for a reason no run
     reproduces. Asked of the host's profile,
     as the world gate asks of a goal check. A key names its dimension through the host's addressing
-    (:meth:`~threetears.evals.contracts.host.world.WorldRegistry.address`), as a seed key does. A host
+    (:meth:`~threetears.evals.kernel.host.world.WorldRegistry.address`), as a seed key does. A host
     that declares no world refuses any world state a control states, since a goal check can only
     read a declared dimension and there is none. A host that cannot list a tool's actions leaves
     that part unchecked rather than refused; a tool the host does not have is refused, since its reader answers that with an empty
-    action set (:func:`~threetears.evals.contracts.dsl.undefined_action`, the rule a goal check's own
+    action set (:func:`~threetears.evals.kernel.dsl.undefined_action`, the rule a goal check's own
     call references are held to).
 
     Args:

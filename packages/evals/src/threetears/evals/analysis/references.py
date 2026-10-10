@@ -1,7 +1,7 @@
 """Resolve the model's references against the decision surface — the one place a number is filled.
 
 The generating model names WHERE a number lives — a cell and a measure (or a judged dimension) —
-and this module reads the figure off the analysis's :class:`~threetears.evals.contracts.surface.DecisionSurface`.
+and this module reads the figure off the analysis's :class:`~threetears.evals.kernel.surface.DecisionSurface`.
 Every code-filled number on an analysis goes through :func:`resolve_reading`: evidence rows and
 the chart compilers in :mod:`threetears.evals.analysis.viz_refs`. One
 resolver rather than one per consumer, because two lookups of "the value of this measure at this
@@ -49,12 +49,12 @@ from threetears.evals.analysis import stats
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.numbers import format_number
-from threetears.evals.contracts.analysis_measures import MeasureSummary
-from threetears.evals.contracts.base import EvalBaseModel
-from threetears.evals.contracts.campaign import ReadingKind
-from threetears.evals.contracts.evidence_tiers import JudgedEvidenceTier
-from threetears.evals.contracts.metrics import MeritAxis, classifier_label_of
-from threetears.evals.contracts.surface import (
+from threetears.evals.kernel.analysis_measures import MeasureSummary
+from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.kernel.campaign import ReadingKind
+from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier
+from threetears.evals.kernel.metrics import MeritAxis, classifier_label_of
+from threetears.evals.kernel.surface import (
     CellFacts,
     DecisionSurface,
     JudgedDimensionFacts,
@@ -72,7 +72,10 @@ class ResolvedReading(BaseModel):
     measure_id: str
     reading: ReadingKind
     mean: float
+    #: Observations behind the mean: a case judged k times counts k. Never shown to a reader as a count.
     n: int
+    #: Distinct test cases behind the mean (the bundle's ``n_independent``): the draws its interval is read over,
+    #: and the count every chart payload's ``n`` and the evidence table carry. None where none was recorded.
     n_cases: int | None
     sem: float | None
     ci_low: float | None
@@ -83,6 +86,10 @@ class ResolvedReading(BaseModel):
     dispersion: str
     #: A judged reading's evidence tier, as the surface froze it for the cell's judges; None for a measure.
     judged_tier: JudgedEvidenceTier | None
+    #: Each case's mean, ascending, where the cell has fewer cases than a chart draws a band from
+    #: (:data:`~threetears.evals.analysis.stats.SMALL_N_BAND_FLOOR`); None at or above it, or where the surface
+    #: was stored before the values were recorded.
+    case_means: list[float] | None = None
 
 
 class ReadingRef(EvalBaseModel):
@@ -291,9 +298,10 @@ def _resolve_measure(surface: DecisionSurface, cell: CellFacts, ref: str, measur
         unit=facts.unit,
         higher_is_better=summary.higher_is_better,
         merit_axis=facts.merit_axis,
+        case_means=summary.case_means,
         dispersion=(
             # F1 is a function of one confusion matrix: there is no spread to estimate at any n, so "unestimable at
-            # n=…" would imply more data could supply one.
+            # … cases" would imply more data could supply one.
             "none by construction: one value computed from the cell's confusion counts"
             if (label := classifier_label_of(measure_id)) is not None and label[0] == "f1"
             else _dispersion(summary.sem, summary.ci_low, summary.ci_high, summary.n, summary.n_independent or None)
@@ -349,6 +357,7 @@ def _resolve_judged(surface: DecisionSurface, cell: CellFacts, ref: str, dimensi
         merit_axis="quality",
         dispersion=_dispersion(judged.sem, ci_low, ci_high, judged.n, judged.n_independent or None),
         judged_tier=judged.evidence_tier,
+        case_means=judged.case_means,
     )
 
 
@@ -407,7 +416,11 @@ def _dispersion(sem: float | None, ci_low: float | None, ci_high: float | None, 
     if ci_low is None or ci_high is None:
         if n_cases == 1 and n > 1:
             return f"unestimable: {n} obs of one case, which has no between-case spread"
-        return f"unestimable at n={n}"
+        # Cases, never observations: the count every interval is read over, and the count a reader is shown
+        # beside it. A reading with no case count recorded states none rather than its observations.
+        if n_cases is None:
+            return "unestimable"
+        return f"unestimable at {n_cases} case{'' if n_cases == 1 else 's'}"
     # A rate carries its interval and no standard error, and its interval is its spread: stated, never
     # reported as unestimable because the sem it does not have is absent.
     text = f"{stats.INTERVAL_LEVEL:.0%} CI [{format_number(ci_low)}, {format_number(ci_high)}]"

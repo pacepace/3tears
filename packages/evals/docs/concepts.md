@@ -46,20 +46,28 @@ Underneath all of it sits your **host**: the one value through which your app te
 change (levers), what it can see (measures), how to run your code (a kind), and where to store things.
 `run_eval` builds a throwaway host for you, which is why the README's first example needs none.
 
-## The ten terms to learn first
+## Terms to learn first
+
+The one short list: the README links here rather than keeping its own.
 
 | Term | In one line |
 |---|---|
-| [case](#case-test-case) | One concrete input with what a good answer looks like: one ticket and its right queue. |
-| [template](#template) | The blueprint a set of cases belongs to: what is being tested and how it is scored. |
-| [variant](#variant-and-variant-key) | One complete configuration of the thing under test: "prompt v2 on model-x". |
-| [arm](#arm) | One variant as a contestant in a comparison. A run measures exactly one arm. |
+| [case](#case-test-case) | One input and what a good answer looks like: one ticket and its right queue. |
+| [candidate](#candidate) | The code under test, which answers each case. |
+| [scorer](#scorer) | A function that grades an answer with a number, when code can check it. |
+| [measure](#measure) | A number code computes about a result: did it match, how long it took, what it cost. |
+| [judge](#judge) | A model that grades an answer against a rubric, when code cannot. |
+| [judged dimension](#judged-dimension-rubric-dimension) | One written quality of a rubric, which the judge scores. |
+| [k](#k-repeats) | How many times each case is played, because model answers vary. |
 | [run](#run) | One batch of trials: one arm, played over every case, `k` times each. |
 | [result](#result-observation) | One trial: one case, one repeat, with every grade it got. |
-| [measure](#measure) | A number code computes about a result: did it match, how long it took, what it cost. |
-| [judged dimension](#judged-dimension-rubric-dimension) | A quality an LLM judge scores against a written rubric. |
+| [arm](#arm) | One version under test, run over every case. |
+| [control](#control) | The arm every other arm is tested against. |
 | [campaign](#campaign) | The runs you want compared, grouped so they can be analysed together. |
+| [verdict](#verdict) | Separated, not separated or equivalent: what the evidence supports. |
+| [interval and p](#delta-interval-and-adjusted-p) | Where the true difference plausibly lies, and the Holm-adjusted p a verdict is decided on. |
 | [report](#report) | The one document you read: tables, charts, and (if generated) findings in words. |
+| [world](#world) | The state an agent acts on, set for each case and read back after. |
 
 ## Glossary
 
@@ -72,6 +80,14 @@ where the definition lives in the source.
 One concrete input, frozen once written (`EvalTestCase`). A case's content never changes after it is
 stored, which is what lets two runs over the same cases be compared. *Example:* ticket 17, "I was charged
 twice this month", expected queue `billing`.
+
+#### Case set
+A named, versioned, frozen list of one template's cases (`CaseSet`, minted by `mint_case_set` or the
+`case_set_mint` action). It is append-only: changing it mints the next version, and rewriting a stored
+version is refused. A launch can name one (`case_set_name` and `case_set_version`), runs exactly its cases,
+and records it on the run, so history reads a change of suite as `smoke v1` to `smoke v2`. It labels the
+run's frozen case ids, never a second identity. Not a [battery](#battery). *Example:* `smoke v2`, the three
+tickets every release is checked on.
 
 #### Template
 The blueprint the cases belong to (`EvalTemplate`): what is being tested (its intent), how to score it
@@ -200,7 +216,7 @@ world, your kinds and your style. The engine knows a host only through it.
 
 #### Scope
 One opaque string (`scope_id`) every stored document carries: your tenant, project or environment. The
-engine never interprets or defaults it, and every read names one. A campaign and its runs live in one
+engine never interprets or defaults it in your store, and every read names one. A campaign and its runs live in one
 scope. *Example:* `"dev"`.
 
 #### Run
@@ -212,6 +228,15 @@ generated later never change what a run scored against. *Example:* the v2 arm ov
 A **launch** asks for one or more arms of one template; it is always a **launch group** (`LaunchGroup`),
 whose runs are prepared together and started together, or none of them are. A **launcher** is the per-kind
 code your host supplies: it receives a `LaunchRequest` and returns `launch_run(host, request, KindWiring(...))`.
+
+#### Latency under test (`measure_latency`)
+The one declaration that latency is being measured, on a launch (`start_run`, `run_eval`, `compare`, CLI
+`--measure-latency`) and on a campaign's design. Declared, a run executes its cells one at a time and a
+launch's arms one after another, so their latency is read clean; not declared (the default), cells run
+several at once, and any latency recorded is marked read under concurrency (`execution_mode`
+`concurrent`) and left out of every comparison, bar and ranking. A design that asks about latency (a
+bar, a question or a ranking on it) without declaring it is refused. Each run records both
+(`measure_latency`, `cell_concurrency`).
 
 #### k (repeats)
 How many times each case is played in a run (`k_runs`, `run_eval(k=...)`, CLI `--k`; default 3). LLM
@@ -227,6 +252,13 @@ surface and report tables read analysis cells.
 #### Result (observation)
 One trial's record (`EvalResult`): one case, one model, one repeat, with its goal-state outcomes, rubric
 scores, cost and what the kind reported. Its turn-by-turn trace is stored beside it (`EvalTrace`).
+
+#### Evidence core
+The stored documents a later release always reads (`CORE_DOC_TYPES`): cases, runs, results and their traces,
+calibration ratings, out-of-run spend, case sets, and the templates, judge configs and rubric dims they name.
+An older one is upgraded as it is read. Campaigns, analyses, insights, sweeps and cassettes are outside it:
+a release that changes their format refuses them, and they are made again
+([what is kept](adopting-a-host.md#stored-data-what-is-kept)).
 
 #### Battery
 The universal templates, run as one pre-flighted set (`start_universal_battery`): templates marked
@@ -283,7 +315,8 @@ config; a model that refuses a temperature is sent none, and each score records 
 #### Guardrail
 Something the candidate must not do: leak data, take a destructive action, break policy. A judged dimension
 on the `boundary` axis (`RubricDim.axis`, which the judge stamps on every score and every "can't tell") or a
-measure the host declares `guardrail=True` is one. Guardrails never join the composite, pass^k or a comparison
+measure the host declares `guardrail=True` is one; on the quick path, `compare(guardrails=...)` declares either,
+with its margin and direction (`Guardrail`). Guardrails never join the composite, pass^k or a comparison
 family, so a "can't tell" on one leaves the trial in both; the bundle decides each one for every arm against
 the control as `held`, `breached` or `undecided`. A catalog dim's `axis` is its embedded dim's, so copying a
 boundary catalog dim into a template keeps it a guardrail. *Example:*
@@ -304,6 +337,34 @@ Membership is chosen, not queried; a run may sit in several campaigns. Its decla
 controlled or not, and the apparatus, commissioned or witnessed). *Example:* "triage v1 vs v2", control =
 the v1 variant, held fixed = one case battery on a commissioned rig. Which design to declare for a question:
 [Choosing a campaign design](choosing-a-design.md).
+
+#### Control
+The arm every other arm in a campaign is tested against: usually what runs today. It is a variant, not a run,
+so any run of that configuration counts toward it. `compare` sets it from `control=`. *Example:* the v1 arm.
+
+#### Delta, interval and adjusted p
+What a comparison reports for each arm against the control, per reading. The **delta** is the arm's mean minus
+the control's, over the cases the test read. Its **interval** is where the true difference plausibly lies, widened so
+that every interval tested together holds at once, 95% of the time. The **p (Holm-adjusted)** is the p-value
+corrected for every comparison in its family. A separation needs that p below 0.05 and an interval that excludes
+zero. See
+[reading a comparison](reading-reports.md#reading-a-comparison).
+
+#### Verdict
+What a comparison's evidence supports, per arm and reading: **separated** (printed `improved` or `regressed`
+on the control), **not separated** (the cases could not tell the arms apart, which never means "no
+difference"), **equivalent** (shown inside a margin the measure declares, and the only verdict that says "good
+enough"), or **untested** (no test could decide). A report from `compare` names, in a line above its contrasts
+table, each measure that declares no margin and so can never read equivalent. A guardrail is decided apart, as `held`, `breached` or `undecided`, and a bar as `cleared`, `missed` or
+`undecided`. Each is also a typed value a program reads (`Comparison.verdicts()`), which the printed words are
+rendered from. See [reading a comparison](reading-reports.md#reading-a-comparison).
+
+#### Miss
+A result the candidate got wrong: a wrong label, a scorer on the wrong side of 0 (0 or less where higher is better,
+above 0 where lower is better, as `leaked` is; never for a measure with no direction), a failed goal check, a failed
+pass/fail judgement, or a result the candidate failed outright (it raised, say). An excluded result is never a
+miss. `summary.misses()` lists them, each with its reason; the [tutorial](tutorial.md#3-read-your-misses) says how
+to read them.
 
 #### Analysis bundle
 Everything code computed about a campaign, assembled once and fingerprinted (`AnalysisContextBundle`), so

@@ -39,7 +39,7 @@ from threetears.evals.vega.compiler import (
     point_radius,
 )
 from threetears.evals.analysis.viz.intent import ChartIntent
-from threetears.evals.contracts.host import ChartFont
+from threetears.evals.kernel.host import ChartFont
 from threetears.evals.analysis.viz.intents.timeseries import POSITION_FIELD
 from threetears.evals.vega.palette import font_sizes, font_weights, geometry
 

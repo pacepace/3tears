@@ -35,6 +35,12 @@ from threetears.evals.analysis.report.model import (
     TableColumn,
     TextBlock,
     TextRole,
+    BarOutcome,
+    ContrastOutcome,
+    GuardrailOutcome,
+    Verdict,
+    VerdictKind,
+    VerdictReason,
 )
 from threetears.evals.analysis.report.serialize_html import report_html
 from threetears.evals.analysis.report.serialize_md import report_markdown
@@ -89,6 +95,12 @@ __all__ = [
     "TableColumn",
     "TextBlock",
     "TextRole",
+    "BarOutcome",
+    "ContrastOutcome",
+    "GuardrailOutcome",
+    "Verdict",
+    "VerdictKind",
+    "VerdictReason",
     "build_code_only_report",
     "build_report",
     "published_report_schema",

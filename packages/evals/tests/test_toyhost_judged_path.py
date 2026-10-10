@@ -10,7 +10,7 @@ stopped forwarding, changes the scores rather than passing.
 
 from __future__ import annotations
 
-from threetears.evals.contracts.models import JudgedArtifact
+from threetears.evals.schema.models import JudgedArtifact
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.judge import (
     FAITHFULNESS_DIM,

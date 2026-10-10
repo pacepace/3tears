@@ -12,17 +12,8 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts import (
-    NOT_ESTABLISHED,
-    CallLedger,
-    ConflictError,
-    EvalResult,
-    EvalStorage,
-    GoalStateOutcome,
-    NotFoundError,
-    ValidationFailedError,
-    WorldEvent,
-)
+from threetears.evals.kernel import NOT_ESTABLISHED, ConflictError, EvalStorage, NotFoundError, ValidationFailedError
+from threetears.evals.schema import CallLedger, EvalResult, GoalStateOutcome, WorldEvent
 from threetears.evals.run import recheck_goal_states, recheck_result
 from packages.evals.tests.factories import (
     make_eval_result,
@@ -499,7 +490,7 @@ def test_a_check_over_a_dimension_today_s_world_no_longer_declares_keeps_its_sto
 
 def test_a_check_whose_path_today_s_world_resolves_to_another_dimension_keeps_its_stored_pass() -> None:
     """The cell stored ``inbox.messages``; today's world declares only ``inbox``, which the end state never held."""
-    from threetears.evals.contracts.host import WorldDimension, WorldRegistry
+    from threetears.evals.kernel.host import WorldDimension, WorldRegistry
 
     today = WorldRegistry(
         [

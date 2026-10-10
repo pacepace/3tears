@@ -27,9 +27,9 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
-from threetears.evals.contracts import EvalResult, EvalRun
-from threetears.evals.contracts.campaign import EvalCampaign
-from threetears.evals.contracts.declaration import ControlDeclaration
+from threetears.evals.schema import EvalResult, EvalRun
+from threetears.evals.kernel.campaign import EvalCampaign
+from threetears.evals.kernel.declaration import ControlDeclaration
 from threetears.evals.quick import callable_host, run_eval
 from threetears.evals.run import list_runs
 from packages.evals.tests.factories import make_eval_run

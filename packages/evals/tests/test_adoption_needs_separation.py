@@ -34,15 +34,16 @@ from packages.evals.tests.toyhost_memo import (
     memo_payload,
 )
 from threetears.evals.analysis.arms import arm_table
-from threetears.evals.analysis.bundle import AnalysisContextBundle, ComparisonVerdict, assemble_context_bundle
+from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, ComparisonVerdict
 from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.errors import SoundnessRefusal
 from threetears.evals.analysis.generator import generate_analysis
 from threetears.evals.analysis.report import build_report
 from threetears.evals.analysis.report.model import TextBlock
-from threetears.evals.contracts.surface import GuardrailCell, GuardrailCheck, GuardrailDecision, GuardrailReadings
-from threetears.evals.contracts.campaign import EvalAnalysis
-from threetears.evals.contracts.models import utc_now_iso
+from threetears.evals.kernel.surface import GuardrailCell, GuardrailCheck, GuardrailDecision, GuardrailReadings
+from threetears.evals.kernel.campaign import EvalAnalysis
+from threetears.evals.schema.models import utc_now_iso
 
 _UNTESTED_REASON = "fewer than two cases carry this reading on a side"
 

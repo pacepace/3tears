@@ -1,6 +1,6 @@
 """Repeat a finished run's judge scores: the same judge asked the same question again, to measure its agreement with itself.
 
-The ``separation`` evidence tier (:mod:`threetears.evals.contracts.evidence_tiers`) reads how often a
+The ``separation`` evidence tier (:mod:`threetears.evals.kernel.evidence_tiers`) reads how often a
 judge gives the same score when it scores the same evidence twice. Nothing in a run measures that: a
 cell is judged once. This module takes the measurement, on a run that has finished:
 
@@ -15,12 +15,12 @@ cell is judged once. This module takes the measurement, on a run that has finish
   each scored dim's first attempt and every parse retry
   (:data:`~threetears.evals.run.judge.JUDGE_CALL_ATTEMPTS`) — is priced on the client it will be made
   on and admitted against the host's out-of-run cap
-  (:class:`~threetears.evals.contracts.out_of_run.OutOfRunBudget`) before the first one is sent. Over
+  (:class:`~threetears.evals.kernel.out_of_run.OutOfRunBudget`) before the first one is sent. Over
   the cap, or unpriceable under an enforced cap, the whole repeat is refused with nothing spent. Each
   call made is written to the out-of-run ledger under purpose ``judge``, stamped with the run, whether
   it returns or raises.
 - **A measurement of the judge, never a change to the result.** The repeat's answers are recorded on
-  the result as a :class:`~threetears.evals.contracts.models.JudgeRepeat` beside the first scores they
+  the result as a :class:`~threetears.evals.schema.models.JudgeRepeat` beside the first scores they
   repeat; the scores every lens reads stay the ones the cell was judged with.
 
 Only dims the result holds a SCORE on are repeated: a dim the judge could not tell on, or whose call
@@ -36,22 +36,18 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError as PydanticValidationError
 
-from threetears.evals.contracts.base import EvalBaseModel
-from threetears.evals.contracts.errors import ConflictError, NotFoundError, StorageError, ValidationFailedError
-from threetears.evals.contracts.models import (
-    NON_TERMINAL_RUN_STATUSES,
-    EvalResult,
-    EvalRun,
-    JudgeRepeat,
-    RepeatedScore,
-)
-from threetears.evals.contracts.offload import run_blocking
-from threetears.evals.contracts.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
-from threetears.evals.contracts.provider import JSON_OBJECT_RESPONSE_FORMAT
+from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.kernel.errors import ConflictError, NotFoundError, StorageError, ValidationFailedError
+from threetears.evals.schema.models import NON_TERMINAL_RUN_STATUSES, EvalResult, EvalRun, JudgeRepeat, RepeatedScore
+from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
+from threetears.evals.schema.out_of_run_spend import OutOfRunPurpose
+from threetears.evals.schema.completion import JSON_OBJECT_RESPONSE_FORMAT
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS
 from threetears.evals.run.judge_service import JudgeService, judge_clients_for_run
 from threetears.evals.run.rejudge import (
     ReproducibleJudgeInputs,
+    RequestSettingsPolicy,
     judged_template,
     recorded_judge_pins,
     reproducible_judge_inputs,
@@ -60,10 +56,10 @@ from threetears.evals.run.runner import build_judge_context, judge_dims, judge_r
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.host.eval_host import EvalHost
-    from threetears.evals.contracts.models import JudgeConfig
-    from threetears.evals.contracts.provider import BoundCompletionClient, CompletionResult
-    from threetears.evals.contracts.storage import EvalStorage
+    from threetears.evals.kernel.host.eval_host import EvalHost
+    from threetears.evals.schema.models import JudgeConfig
+    from threetears.evals.schema.completion import BoundCompletionClient, CompletionResult
+    from threetears.evals.kernel.storage import EvalStorage
     from threetears.evals.run.judge_service import JudgeContext, JudgeOutcome, JudgeRequest
 
 log = get_logger(__name__)
@@ -141,23 +137,29 @@ class JudgeRepeatReport(EvalBaseModel):
     cap_usd: float | None
 
 
-class _BudgetedJudgeClient:
-    """A judge client whose every call goes through the repeat's out-of-run budget, as admitted.
+class BudgetedJudgeClient:
+    """A judge client whose every call goes through an out-of-run budget, as admitted.
 
     The judge service is handed these in place of the host's clients, so the call
     :func:`~threetears.evals.run.judge.run_judge_llm` sends — first attempt and parse retry alike — is made
-    only if an admission priced for exactly that prompt is waiting, and is ledgered however it ends.
+    only if an admission priced for exactly that prompt is waiting, and is ledgered however it ends. A judge
+    repeat and a second judge (:mod:`threetears.evals.run.judge_second`) both send through it, each under its
+    own ledger purpose.
     """
 
-    def __init__(self, inner: BoundCompletionClient, budget: OutOfRunBudget) -> None:
+    def __init__(
+        self, inner: BoundCompletionClient, budget: OutOfRunBudget, purpose: OutOfRunPurpose = "judge"
+    ) -> None:
         """Wrap ``inner`` so its calls are made through ``budget``.
 
         Args:
             inner: The host's judge client, which this owns from here and releases.
-            budget: The repeat's budget.
+            budget: The budget the calls are admitted against.
+            purpose: The ledger purpose each call is admitted and written under.
         """
         self._inner = inner
         self._budget = budget
+        self._purpose: OutOfRunPurpose = purpose
         self._pending: list[AdmittedCall] = []
 
     @property
@@ -176,7 +178,7 @@ class _BudgetedJudgeClient:
         Raises:
             ValidationFailedError: See :meth:`OutOfRunBudget.admit`.
         """
-        admitted = self._budget.admit(self._inner, "judge", calls)
+        admitted = self._budget.admit(self._inner, self._purpose, calls)
         self._pending.extend(admitted)
         return admitted
 
@@ -202,7 +204,7 @@ class _BudgetedJudgeClient:
 
 
 @dataclass(frozen=True)
-class _Planned:
+class PlannedRepeat:
     """One result to repeat: what its judge read, and the dims it holds a score on, in dimension order."""
 
     result: EvalResult
@@ -211,12 +213,12 @@ class _Planned:
 
 
 @dataclass(frozen=True)
-class _Collected:
+class CollectedRepeat:
     """What a repeat of a run reads before it builds anything."""
 
     run: EvalRun
     judge_model: str
-    planned: list[_Planned]
+    planned: list[PlannedRepeat]
     skipped: list[JudgeRepeatSkip]
 
 
@@ -229,13 +231,31 @@ def _scored_dims(result: EvalResult) -> set[str]:
     }
 
 
-def _collect(storage: EvalStorage, run_id: str, scope_id: str, result_ids: Sequence[str] | None) -> _Collected:
+def collect_repeatable(
+    storage: EvalStorage,
+    run_id: str,
+    scope_id: str,
+    result_ids: Sequence[str] | None,
+    *,
+    request_settings: RequestSettingsPolicy = "today",
+) -> CollectedRepeat:
     """Load the run and every result to repeat, refusing what cannot be reproduced — blocking, so off the loop.
+
+    Args:
+        storage: The store.
+        run_id: The run.
+        scope_id: The scope it lives in.
+        result_ids: The results to collect; ``None`` for every result of the run.
+        request_settings: ``"today"`` (a repeat: its answers pair with the run's first scores, so the run must have
+            been asked exactly as a call is asked now, at the temperature a call now asks) or ``"as_recorded"`` (a
+            judge temperature comparison, which forces its own temperature on both of its sides and pairs nothing
+            with the run's scores, so only an unrecorded apparatus is refused — see :data:`RequestSettingsPolicy`).
 
     Raises:
         NotFoundError: No run with that id, or the run's template does not load.
-        ValidationFailedError: The run is still running, its judging apparatus was not recorded or cannot be
-            sent today, ``result_ids`` names a result not in the run, or no result of the run can be repeated.
+        ValidationFailedError: The run is still running, its judging apparatus was not recorded (or, ``"today"``,
+            cannot be sent today), ``result_ids`` names a result not in the run, or no result of the run can be
+            repeated.
     """
     run = storage.load_eval_run(run_id, scope_id)
     if run is None:
@@ -243,7 +263,7 @@ def _collect(storage: EvalStorage, run_id: str, scope_id: str, result_ids: Seque
     if run.status in NON_TERMINAL_RUN_STATUSES:
         raise ValidationFailedError(f"run '{run_id}' is {run.status} — its results are still being written")
     # Refusals that hold for every result, raised once rather than named per result.
-    judge_model = recorded_judge_pins(run, request_settings="today")
+    judge_model = recorded_judge_pins(run, request_settings=request_settings)
     judged_template(storage, run, scope_id)
     results = storage.query_eval_results_by_run(run.id, scope_id)
     if result_ids is not None:
@@ -252,7 +272,7 @@ def _collect(storage: EvalStorage, run_id: str, scope_id: str, result_ids: Seque
             raise ValidationFailedError(f"result(s) {stray} are not results of run '{run_id}' in this scope")
         wanted = set(result_ids)
         results = [result for result in results if result.id in wanted]
-    planned: list[_Planned] = []
+    planned: list[PlannedRepeat] = []
     skipped: list[JudgeRepeatSkip] = []
     for result in results:
         scored = _scored_dims(result)
@@ -261,7 +281,7 @@ def _collect(storage: EvalStorage, run_id: str, scope_id: str, result_ids: Seque
             continue
         try:
             inputs = reproducible_judge_inputs(
-                storage, result, run, scope_id, request_settings="today", config_dims=scored
+                storage, result, run, scope_id, request_settings=request_settings, config_dims=scored
             )
         except (ValidationFailedError, NotFoundError) as refused:
             skipped.append(JudgeRepeatSkip(result_id=result.id, reason=str(refused)))
@@ -270,23 +290,23 @@ def _collect(storage: EvalStorage, run_id: str, scope_id: str, result_ids: Seque
         if not dims:
             skipped.append(JudgeRepeatSkip(result_id=result.id, reason="none of its scored dims is one its run judged"))
             continue
-        planned.append(_Planned(result=result, inputs=inputs, dims=dims))
+        planned.append(PlannedRepeat(result=result, inputs=inputs, dims=dims))
     if not planned:
         why = "; ".join(f"{skip.result_id}: {skip.reason}" for skip in skipped) or "it has no results"
         raise ValidationFailedError(f"no result of run '{run_id}' can be repeated — {why}")
-    return _Collected(run=run, judge_model=judge_model, planned=planned, skipped=skipped)
+    return CollectedRepeat(run=run, judge_model=judge_model, planned=planned, skipped=skipped)
 
 
 @dataclass
 class _Prepared:
     """A repeat built and priced: the judge service over budgeted clients, and each result's context and calls."""
 
-    collected: _Collected
+    collected: CollectedRepeat
     budget: OutOfRunBudget
     service: JudgeService
     contexts: list[JudgeContext]
     #: Per budgeted client, every call it may make, each as many times as one dim can be attempted.
-    calls: list[tuple[_BudgetedJudgeClient, list[PlannedCall]]]
+    calls: list[tuple[BudgetedJudgeClient, list[PlannedCall]]]
 
 
 async def _prepare(
@@ -302,7 +322,9 @@ async def _prepare(
     The caller owns ``service`` and enters it, which releases every client built here.
     """
     clients = host.completion_clients("a judge repeat")
-    collected = await run_blocking(host.blocking_executor, _collect, host.storage, run_id, scope_id, result_ids)
+    collected = await run_blocking(
+        host.blocking_executor, collect_repeatable, host.storage, run_id, scope_id, result_ids
+    )
     budget = OutOfRunBudget(
         store=host.storage,
         scope_id=scope_id,
@@ -313,15 +335,15 @@ async def _prepare(
     )
     inner = judge_clients_for_run(clients, collected.judge_model)
 
-    def budgeted(model: str | None, temperature: float | None) -> _BudgetedJudgeClient:
-        return _BudgetedJudgeClient(inner(model, temperature), budget)
+    def budgeted(model: str | None, temperature: float | None) -> BudgetedJudgeClient:
+        return BudgetedJudgeClient(inner(model, temperature), budget)
 
     configs: dict[str, JudgeConfig] = {}
     for planned in collected.planned:
         configs.update(planned.inputs.configs)
     service = JudgeService(client_factory=budgeted, configs=configs, failure_describer=host.failure_describer)
     contexts: list[JudgeContext] = []
-    by_client: dict[int, tuple[_BudgetedJudgeClient, list[PlannedCall]]] = {}
+    by_client: dict[int, tuple[BudgetedJudgeClient, list[PlannedCall]]] = {}
     for planned in collected.planned:
         context = build_judge_context(
             template=planned.inputs.template,
@@ -335,15 +357,17 @@ async def _prepare(
             template=planned.inputs.template, judge_service=service, context=context, only=frozenset(planned.dims)
         )
         for request in requests:
-            client: _BudgetedJudgeClient = service.client_for(request)
-            by_client.setdefault(id(client), (client, []))[1].extend([_planned_call(request)] * JUDGE_CALL_ATTEMPTS)
+            client: BudgetedJudgeClient = service.client_for(request)
+            by_client.setdefault(id(client), (client, []))[1].extend(
+                [planned_judge_call(request)] * JUDGE_CALL_ATTEMPTS
+            )
     return _Prepared(
         collected=collected, budget=budget, service=service, contexts=contexts, calls=list(by_client.values())
     )
 
 
-def _planned_call(request: JudgeRequest) -> PlannedCall:
-    """The call a judge request sends, as :func:`~threetears.evals.run.judge.run_judge_llm` sends it."""
+def planned_judge_call(request: JudgeRequest) -> PlannedCall:
+    """The call a judge request sends — what an admission prices — as :func:`~threetears.evals.run.judge.run_judge_llm` sends it."""
     return PlannedCall(
         system=request.system_prompt, user=request.user_prompt, response_format=JSON_OBJECT_RESPONSE_FORMAT
     )
@@ -577,9 +601,11 @@ def _record(storage: EvalStorage, result_id: str, scope_id: str, repeat: JudgeRe
 
 
 __all__ = [
+    "BudgetedJudgeClient",
     "JudgeRepeatEstimate",
     "JudgeRepeatReport",
     "JudgeRepeatSkip",
     "estimate_judge_repeat",
+    "planned_judge_call",
     "repeat_judge_scores",
 ]

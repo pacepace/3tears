@@ -7,7 +7,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.contracts import CallLedger, RecordedCall
+from threetears.evals.schema import CallLedger, RecordedCall
 from packages.evals.tests.factories import make_eval_result, make_eval_trace, memory_storage
 
 

@@ -90,7 +90,7 @@ def timeseries_intent(payload: TimeseriesPayload) -> ChartIntent:
         ChartColumn(key="mean", header=axis_title("Mean", unit)),
         ChartColumn(key="low", header=axis_title("Low", unit)),
         ChartColumn(key="high", header=axis_title("High", unit)),
-        ChartColumn(key="n", header="n"),
+        ChartColumn(key="n", header="Cases"),
     ]
     return ChartIntent(
         type="timeseries",

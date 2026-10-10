@@ -1,8 +1,8 @@
 """Per-cell world binding: each cell's session calls into that cell's own world, and no other.
 
-The profile's :class:`~threetears.evals.contracts.host.WorldRegistry` is the declaration every reader
+The profile's :class:`~threetears.evals.kernel.host.WorldRegistry` is the declaration every reader
 reads. A host whose world is real per-cell state declares ``binds_per_cell=True``, and each cell's kind
-hands its own handle table to :meth:`~threetears.evals.contracts.WorldSession.bind` before seeding. The
+hands its own handle table to :meth:`~threetears.evals.kernel.WorldSession.bind` before seeding. The
 session then calls through a session-local registry over that table, so two cells cannot cross-write:
 neither holds a path to the other's world.
 
@@ -19,20 +19,12 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts import (
-    CandidateOutput,
-    CellSink,
-    EvalTemplate,
-    EvalTestCase,
-    JudgedArtifact,
-    WorldSeed,
-    WorldSession,
-    WorldSessionError,
-)
-from threetears.evals.contracts.host import WorldRegistry, check_world_conformance
-from threetears.evals.contracts.host.values import SweepableValue
-from threetears.evals.contracts.host.world import WorldRegistrationError
-from threetears.evals.contracts.identity import IDENTITY_VERSION, DerivedVariantIdentity, compute_variant_key
+from threetears.evals.kernel import CandidateOutput, CellSink, WorldSession, WorldSessionError
+from threetears.evals.schema import EvalTemplate, EvalTestCase, JudgedArtifact, WorldSeed
+from threetears.evals.kernel.host import WorldRegistry, check_world_conformance
+from threetears.evals.schema.values import SweepableValue
+from threetears.evals.kernel.host.world import WorldRegistrationError
+from threetears.evals.kernel.identity import IDENTITY_VERSION, DerivedVariantIdentity, compute_variant_key
 from threetears.evals.run.runner import RunnerOptions, run_one_result
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_ID, toyhost_profile

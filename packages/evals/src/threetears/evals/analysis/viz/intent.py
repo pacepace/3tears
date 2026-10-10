@@ -33,9 +33,9 @@ from typing import Any, Literal
 from pydantic import Field
 
 from threetears.evals.analysis.viz.payloads import PayloadError, parse_payload
-from threetears.evals.contracts.base import EvalBaseModel
-from threetears.evals.contracts.campaign import VizType
-from threetears.evals.contracts.prose import ModelProse
+from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.kernel.campaign import VizType
+from threetears.evals.schema.prose import ModelProse
 
 #: The chart-intent shape's version. Moves when a field is added, renamed or removed, or when a
 #: field's meaning moves under its name — a host renderer reads it to know what it was handed.

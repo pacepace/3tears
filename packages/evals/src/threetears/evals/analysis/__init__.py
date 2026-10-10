@@ -1,17 +1,22 @@
 """The engine's analysis package: campaigns, context bundles, generated analyses and the read lenses.
 
-It turns a campaign's runs into a generated, stored analysis. Of the engine it imports only itself
-and :mod:`threetears.evals.contracts`, and ships no charting library. The
+It turns a campaign's runs into a generated, stored analysis. Of the engine it imports only itself,
+:mod:`threetears.evals.schema` and :mod:`threetears.evals.kernel`, and ships no charting library. The
 stored shapes it writes into — the
-:class:`~threetears.evals.contracts.campaign.EvalCampaign` hub and the
-:class:`~threetears.evals.contracts.campaign.EvalAnalysis` /
-:class:`~threetears.evals.contracts.campaign.EvalInsight` documents — live in the contracts package,
+:class:`~threetears.evals.kernel.campaign.EvalCampaign` hub and the
+:class:`~threetears.evals.kernel.campaign.EvalAnalysis` /
+:class:`~threetears.evals.kernel.campaign.EvalInsight` documents — live in the kernel,
 not here. The pipeline:
 
 - ``reporting``, ``stats`` and ``numbers`` — the query-time projection of runs + results into
-  comparable rows, the statistics over them, and how a number is spelled for a reader.
-- ``bundle`` — :func:`~threetears.evals.analysis.bundle.assemble_context_bundle`
-  composes the reporting lenses into a deterministic, fingerprintable context bundle.
+  comparable rows, the statistics over them, and how a number is spelled for a reader; beside them the
+  disclosures every reader shares (``completeness``, ``significance``, ``measurement_windows``,
+  ``cassette_mode``) and the per-result latency split (``latency_partition``).
+- ``lenses`` — one module per reporting lens over that projection: comparison sets, pivot, frontier,
+  history, the program budget, orphaned runs, export and the cost estimate.
+- ``bundle`` — :func:`~threetears.evals.analysis.bundle.assemble.assemble_context_bundle`
+  composes the reporting lenses into a deterministic, fingerprintable context bundle; the bundle's schema
+  and each family of derivation it composes are modules of that package.
 - ``gen_prompt`` + ``generator`` — the hot-reloadable ``eval_analysis_gen``
   prompt and the closed, one-shot
   :func:`~threetears.evals.analysis.generator.generate_analysis` that turns a bundle into
@@ -40,6 +45,8 @@ from __future__ import annotations
 
 from threetears.evals.analysis.agreement import (
     DimensionAgreement,
+    InterJudgeAgreement,
+    InterJudgeDimension,
     JudgeAgreement,
     JudgeKey,
     JudgeSelfAgreement,
@@ -47,26 +54,54 @@ from threetears.evals.analysis.agreement import (
     UnpairedRating,
     UnpairedReason,
     UnrepeatedReason,
+    UnpairedSecondReason,
+    UnpairedSecondScore,
     UnrepeatedScore,
+    inter_judge_agreement,
     judge_agreement,
     judge_evidence_tiers,
     judge_key,
     judge_self_agreement,
+    person_scores_by_result,
     tier_for_judges,
     tier_sentence,
 )
+from threetears.evals.analysis.judge_temperature import (
+    JudgeTemperatureComparison,
+    TemperatureCase,
+    TemperatureDimension,
+    TemperatureSettingRead,
+    TemperatureSide,
+    read_judge_temperatures,
+)
+from threetears.evals.analysis.judge_drift import DriftVerdict, JudgeDrift, JudgeDriftDimension, judge_drift
+from threetears.evals.analysis.judge_kind_readings import (
+    JudgeKindReading,
+    JudgeKindReadings,
+    JudgeParseValidity,
+    UnreadJudgeTrial,
+    judge_kind_readings,
+)
+from threetears.evals.analysis.judge_profiles import (
+    JudgeProfileDrafts,
+    SkippedJudgeProfile,
+    judge_profiles_of,
+    judged_criteria,
+    tiers_with_judge_profiles,
+)
 from threetears.evals.analysis.arms import ArmTable, cell_label, multi_rig_variants, short_digest
 from threetears.evals.analysis.bar_proposals import BaselineBarProposals, propose_bars
-from threetears.evals.analysis.bundle import (
+from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
+from threetears.evals.analysis.bundle.divergence import component_carrier, measure_movement
+from threetears.evals.analysis.bundle.observations import variant_key_of_run
+from threetears.evals.analysis.bundle.insights import InsightStanding, insight_standing
+from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
+    JudgeChange,
+    JudgeDriftLink,
+    JudgeIdentityLevel,
     BundleInspection,
     GoalCheckProofReading,
-    InsightStanding,
-    assemble_context_bundle,
-    component_carrier,
-    insight_standing,
-    measure_movement,
-    variant_key_of_run,
 )
 from threetears.evals.analysis.campaigns import (
     DeclarableAxes,
@@ -92,6 +127,7 @@ from threetears.evals.analysis.generator import (
 )
 from threetears.evals.analysis.numbers import ABSENT, format_number, format_signed
 from threetears.evals.analysis.reads import (
+    READ_TIER_ROW_BUDGET,
     compare_two_runs,
     comparison_sets,
     export_results,
@@ -122,26 +158,30 @@ from threetears.evals.analysis.reporter_kind import (
     reporter_cell_timeout_s,
 )
 from threetears.evals.analysis.reporting import (
-    CELL_MEASURED,
-    CELL_NOT_RUN,
-    CELL_WITHHELD,
-    COST_ESTIMATE_MIN_BASIS,
-    COST_PREDICTION_METHOD,
-    DECLARED_INPUT_ORIGIN,
-    DEFAULT_WEIGHTING,
-    HISTORY_METRICS,
     METRIC_COMPOSITE,
     METRIC_OUTCOME,
     METRIC_SCORE,
     METRIC_TRANSCRIPT,
     PROJECTED_METRICS,
     SCOPED_METRICS_HELP,
-    WEIGHTING_EQUAL_PER_SCENARIO,
-    completeness_disclosure,
-    difference_was_declared_at_launch,
-    format_significance,
-    metric_help,
-    significance_disclosure,
+    SERVED_MODEL_UNRECORDED,
+)
+from threetears.evals.analysis.lenses.aggregation import DEFAULT_WEIGHTING, WEIGHTING_EQUAL_PER_SCENARIO, metric_help
+from threetears.evals.analysis.lenses.comparison_sets import DECLARED_INPUT_ORIGIN, difference_was_declared_at_launch
+from threetears.evals.analysis.lenses.cost_estimate import COST_ESTIMATE_MIN_BASIS, COST_PREDICTION_METHOD
+from threetears.evals.analysis.lenses.pivot import CELL_MEASURED, CELL_NOT_RUN, CELL_WITHHELD
+from threetears.evals.analysis.lenses.history import HISTORY_METRICS
+from threetears.evals.analysis.significance import format_significance, significance_disclosure
+from threetears.evals.analysis.completeness import completeness_disclosure
+from threetears.evals.analysis.gate import (
+    DEFAULT_FAIL_ON,
+    GATE_TOKENS,
+    GateOutcome,
+    GateResult,
+    GateToken,
+    gate_verdicts,
+    parse_fail_on,
+    verdict_token,
 )
 from threetears.evals.analysis.report import (
     REPORT_VERSION,
@@ -158,6 +198,12 @@ from threetears.evals.analysis.report import (
     TableColumn,
     TextBlock,
     TextRole,
+    BarOutcome,
+    ContrastOutcome,
+    GuardrailOutcome,
+    Verdict,
+    VerdictKind,
+    VerdictReason,
     NO_ANALYSIS,
     ReportBasis,
     build_code_only_report,
@@ -173,6 +219,7 @@ from threetears.evals.analysis.service import (
     PreparedGeneration,
     analysis_report,
     campaign_report,
+    campaign_verdicts,
     describe_insight_id_filters,
     estimate_analysis_generation,
     finding_chart_intent,
@@ -191,18 +238,24 @@ from threetears.evals.analysis.service import (
 from threetears.evals.analysis.stats import EQUIVALENCE_TEST_NAME, PAIRED_TEST_NAME, ChangeLabel
 from threetears.evals.analysis.surface_table import SurfaceTable
 from threetears.evals.analysis.arms import ArmLevel, ArmMeasurement, ArmRow, ArmStatus
-from threetears.evals.analysis.bundle import (
+from threetears.evals.analysis.bundle.assemble import CampaignReadStore
+from threetears.evals.analysis.bundle.schema import (
+    AliasedFactors,
     ArmMechanismReading,
     ArmServedModel,
-    CampaignReadStore,
     CellCoordinate,
     ComparedCell,
     ComparisonFamily,
     ComparisonVerdict,
     Confound,
     HeldFixedReading,
+    DeclaredCellCoverage,
+    DeclaredCrossing,
     DeclaredLevelCoverage,
     DesignArm,
+    FactorPairCell,
+    FactorPairPivot,
+    FactorPairScan,
     FamilyComparison,
     JudgedArm,
     JudgedMeasure,
@@ -243,34 +296,28 @@ from threetears.evals.analysis.reporter_kind import (
     WriterMessageCheck,
 )
 from threetears.evals.analysis.reporting import (
-    CaseSetIdentity,
-    ComparisonSet,
-    ComparisonSetsResult,
-    CostEstimate,
-    CostEstimateCell,
-    ExportFormat,
+    FrontierDominance,
+    ProjectionExclusions,
+    ServedModelReading,
+    ServedModelState,
+)
+from threetears.evals.analysis.latency_partition import LatencyPartition
+from threetears.evals.analysis.measurement_windows import MeasurementWindow
+from threetears.evals.analysis.lenses.comparison_sets import CaseSetIdentity, ComparisonSet, ComparisonSetsResult
+from threetears.evals.analysis.lenses.cost_estimate import CostEstimate, CostEstimateCell, PlannedCost, PredictedValue
+from threetears.evals.analysis.lenses.pivot import PivotCell, PivotTable, SimpsonsFlag
+from threetears.evals.analysis.lenses.frontier import (
     FrontierCostDecision,
     FrontierCostTie,
-    FrontierDominance,
     FrontierDominator,
     FrontierPoint,
     FrontierResult,
     FrontierVerdict,
-    HistoryResult,
-    MeasureSeries,
-    MeasurementWindow,
-    PivotCell,
-    PivotTable,
-    PlannedCost,
-    PredictedValue,
-    ProjectionExclusions,
-    RegressionFlag,
-    ScoreExport,
-    SeriesPoint,
-    SimpsonsFlag,
     SubjectFrontier,
-    TwoPillarDisclosure,
+    FrontierBoundaryCheck,
 )
+from threetears.evals.analysis.lenses.history import HistoryResult, MeasureSeries, RegressionFlag, SeriesPoint
+from threetears.evals.analysis.lenses.export import ExportFormat, ScoreExport
 from threetears.evals.analysis.service import AnalysisStore
 from threetears.evals.analysis.surface_table import (
     SurfaceColumn,
@@ -283,7 +330,43 @@ from threetears.evals.analysis.surface_table import (
 )
 
 
+from threetears.evals.analysis.lens_text import frontier_text
+from threetears.evals.analysis.out_of_run_spend import (
+    OutOfRunSpendReport,
+    OutOfRunSpendTotals,
+    out_of_run_spend_text,
+    scope_out_of_run_spend,
+)
+from threetears.evals.analysis.report.serialize import ReportFormat, serialize_report
+from threetears.evals.analysis.summary import (
+    CaseOutcome,
+    CaseResult,
+    DimensionSummary,
+    EvalSummary,
+    GoalCheckSummary,
+    JudgeGrade,
+    RunMeasureSummary,
+    dollars_text,
+    summarize_run,
+)
+
 __all__ = [
+    "frontier_text",
+    "OutOfRunSpendReport",
+    "OutOfRunSpendTotals",
+    "out_of_run_spend_text",
+    "scope_out_of_run_spend",
+    "ReportFormat",
+    "serialize_report",
+    "CaseOutcome",
+    "CaseResult",
+    "DimensionSummary",
+    "EvalSummary",
+    "GoalCheckSummary",
+    "JudgeGrade",
+    "RunMeasureSummary",
+    "dollars_text",
+    "summarize_run",
     "REPORT_VERSION",
     "SECTION_TITLES",
     "ChartBlock",
@@ -298,6 +381,20 @@ __all__ = [
     "ReportSource",
     "TableBlock",
     "TableColumn",
+    "BarOutcome",
+    "ContrastOutcome",
+    "GuardrailOutcome",
+    "Verdict",
+    "VerdictKind",
+    "VerdictReason",
+    "DEFAULT_FAIL_ON",
+    "GATE_TOKENS",
+    "GateOutcome",
+    "GateResult",
+    "GateToken",
+    "gate_verdicts",
+    "parse_fail_on",
+    "verdict_token",
     "TextBlock",
     "TextRole",
     "build_report",
@@ -324,9 +421,12 @@ __all__ = [
     "METRIC_TRANSCRIPT",
     "PAIRED_TEST_NAME",
     "PROJECTED_METRICS",
+    "READ_TIER_ROW_BUDGET",
     "REPORTER_KIND",
     "SCOPED_METRICS_HELP",  # debt: retires when the English moves to one renderer
+    "SERVED_MODEL_UNRECORDED",
     "WEIGHTING_EQUAL_PER_SCENARIO",
+    "AliasedFactors",
     "AmbiguousPair",
     "AnalysisContextBundle",
     "AnalysisStore",
@@ -358,10 +458,15 @@ __all__ = [
     "HeldFixedReading",
     "CriterionDrift",
     "DeclarableAxes",
+    "DeclaredCellCoverage",
+    "DeclaredCrossing",
     "DeclaredLevelCoverage",
     "DesignArm",
     "DimensionAgreement",
     "DimensionReading",
+    "FactorPairCell",
+    "FactorPairPivot",
+    "FactorPairScan",
     "FamilyComparison",
     "FrontierCostDecision",
     "FrontierCostTie",
@@ -377,7 +482,20 @@ __all__ = [
     "InsightStanding",
     "JudgeAgreement",
     "JudgeKey",
+    "JudgeKindReading",
+    "JudgeKindReadings",
+    "JudgeParseValidity",
     "JudgeSelfAgreement",
+    "InterJudgeAgreement",
+    "InterJudgeDimension",
+    "UnpairedSecondScore",
+    "UnpairedSecondReason",
+    "DriftVerdict",
+    "JudgeChange",
+    "JudgeDriftLink",
+    "JudgeIdentityLevel",
+    "JudgeDrift",
+    "JudgeDriftDimension",
     "JudgedArm",
     "JudgedMeasure",
     "LabelCriterion",
@@ -400,6 +518,7 @@ __all__ = [
     "CostEstimateCell",
     "ExportFormat",
     "HistoryResult",
+    "LatencyPartition",
     "MeasureSeries",
     "PivotCell",
     "PivotTable",
@@ -407,6 +526,8 @@ __all__ = [
     "ScoreExport",
     "SelfAgreementDimension",
     "SeriesPoint",
+    "ServedModelReading",
+    "ServedModelState",
     "SimpsonsFlag",
     "AnalysisGenerationEstimate",
     "CallAdmission",
@@ -442,8 +563,9 @@ __all__ = [
     "SurfaceVerdict",
     "TelemetryRollup",
     "TokenRollup",
-    "TwoPillarDisclosure",
+    "FrontierBoundaryCheck",
     "UnpairedRating",
+    "UnreadJudgeTrial",
     "UnrepeatedReason",
     "UnrepeatedScore",
     "UnpairedReason",
@@ -453,6 +575,7 @@ __all__ = [
     "analysis_report",
     "build_code_only_report",
     "campaign_report",
+    "campaign_verdicts",
     "analysis_gen_request_settings_for",
     "assemble_context_bundle",
     "cell_label",
@@ -486,6 +609,21 @@ __all__ = [
     "judge_evidence_tiers",
     "judge_key",
     "judge_self_agreement",
+    "person_scores_by_result",
+    "JudgeTemperatureComparison",
+    "TemperatureCase",
+    "TemperatureDimension",
+    "TemperatureSettingRead",
+    "TemperatureSide",
+    "read_judge_temperatures",
+    "inter_judge_agreement",
+    "judge_drift",
+    "judge_kind_readings",
+    "judge_profiles_of",
+    "judged_criteria",
+    "tiers_with_judge_profiles",
+    "JudgeProfileDrafts",
+    "SkippedJudgeProfile",
     "judge_phase_ceiling_s",
     "list_analyses",
     "list_analysis_attempts",

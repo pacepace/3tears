@@ -39,7 +39,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, TypeVar
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.models import CostCapOrigin
+    from threetears.evals.schema.models import CostCapOrigin
 
 #: The currency a ceiling is counted in: dollars for the cost cap, calls for the metered-call
 #: ledger. Constrained to those two rather than left unbound, so a resolved ceiling comes back as
@@ -164,7 +164,7 @@ def resolve_ceiling_origin(override: float | None, *, enforcement_enabled: bool)
         enforcement_enabled: Whether the caller enforces eval ceilings at all.
 
     Returns:
-        A :data:`~threetears.evals.contracts.models.CostCapOrigin` value: ``"uncapped"`` when enforcement is
+        A :data:`~threetears.evals.schema.models.CostCapOrigin` value: ``"uncapped"`` when enforcement is
         off (no ceiling bound the run, whatever the cascade would have resolved), else
         ``"chosen"`` for a launch-supplied ceiling (at or below the configured one — the only
         kind a launch may supply, :func:`refuse_raised_ceiling`) and ``"inherited"`` for the configured default.

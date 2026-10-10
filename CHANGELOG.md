@@ -6,6 +6,72 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: the context bundle and the reporting projection are split by concern (#612)
+
+`analysis/bundle.py` (about 10,400 lines) and `analysis/reporting.py` (about 8,000) each held a dozen concerns
+in one file. Code moved; no behaviour changed, and every name `threetears.evals.analysis` exports is still
+exported from it, unchanged.
+
+- **`threetears.evals.analysis.bundle`** is now a package: `schema` (the bundle model and every value object it
+  carries), one module per derivation family (`config`, `observations`, `measures`, `insights`, `design`,
+  `confounds`, `mechanisms`, `divergence`, `coverage`, `telemetry`, `cell_reads`, `bars`, `cell_notes`,
+  `comparisons`, `judges`, `time_axis`, `surface`, with the list caps in `caps`), and `assemble`, which holds
+  `assemble_context_bundle` and composes them.
+- **`threetears.evals.analysis.lenses`** holds one module per reporting lens: `comparison_sets`, `pivot`,
+  `frontier`, `history`, `program_budget`, `orphaned_runs`, `export` and `cost_estimate`, with the `aggregation`
+  vocabulary and the `contestants` key they share. The disclosures the lenses and the bundle both use sit beside
+  `reporting`: `completeness`, `significance`, `measurement_windows` and `cassette_mode`, with the per-result
+  latency split in `latency_partition`. `reporting` keeps the score projection itself.
+- Code importing from below the public root must name the new module. Two loggers are renamed with their code:
+  the comparison-sets and history lenses log as `threetears.evals.analysis.lenses.comparison_sets` and
+  `threetears.evals.analysis.lenses.history`, not `threetears.evals.analysis.reporting`.
+
+### 3tears-evals: eval history is kept across releases (#703)
+
+Stored eval documents were disposable: a read refused every schema version but its own, so a release dropped
+the history. The documents the engine cannot regenerate are now an **evidence core** that every later release
+reads.
+
+- **The core** (`CORE_DOC_TYPES`, in `threetears.evals.schema`) is test cases, runs, results, traces,
+  calibration ratings, out-of-run spend, case sets, templates, judge configs, rubric dims and their tombstones.
+  Its version is `CORE_SCHEMA_VERSION`, with a baseline (`CORE_BASELINE_VERSION`) of 8, which is what every
+  pre-release build wrote, so every stored document reads unchanged.
+- **How an older core document reads.** A stored read (`from_dict`) upgrades it step by step through
+  `CORE_UPGRADERS` and validates the result strictly. A document from a newer build, from before the baseline,
+  or with no version number is refused as a `ValidationError` naming why. The stored bytes are not touched,
+  and a host's store needs no migration.
+- **Every change to a core shape is a version bump**, an added optional field included. It ships with an
+  upgrader and is held by `tests/test_core_schema_pins.py`, against a frozen corpus of stored documents from
+  every core version.
+- **Campaigns, analyses, insights, sweeps and cassettes stay regenerable.** `EVAL_SCHEMA_VERSION` is renamed
+  `REGENERABLE_SCHEMA_VERSION` and is still 8. A document of one of these types written under another version is
+  refused, and is made again.
+- `docs/adopting-a-host.md` has a "Stored data: what is kept" section, and the tutorial's "delete the file" advice
+  is gone.
+
+### 3tears-evals: `contracts` splits into `schema` and `kernel` (breaking)
+
+`threetears.evals.contracts` held the stored shapes and the ports beside all of the engine's behaviour (#702).
+It is gone, with no compatibility shim, because 0.66.0 is the package's first release.
+
+- **`threetears.evals.schema`**: the stored documents, the shapes embedded in them, and the ports a host
+  implements (`DocumentStore`, `CompletionClient`, `TraceSink`), with the goal-check grammar. It imports only
+  pydantic and `threetears.observe`.
+- **`threetears.evals.kernel`**: identity, scoring, metrics, the goal-check evaluator, the world session, usage
+  capture, `EvalStorage`, the campaign and analysis documents, and the candidate kind.
+- **`threetears.evals.kernel.host`**: the host contract, formerly `contracts.host`. `SweepableValue`,
+  `SubjectSnapshot`, `ExternalSpend`, `TraceSink`, `CellIdentity` and `CellTrace` are stored or port shapes and
+  moved to `schema`.
+- Each public name is exported from the root that holds its defining module. `threetears.evals.PUBLIC_ROOTS`
+  lists the roots.
+- `EvalTemplate.resolve_preconditions(world)` is `resolve_preconditions(template, world)` in `kernel.host`.
+  `WorldPlacement` and `EVAL_DOC_TYPES` are in `schema`.
+- **`quick` no longer reaches `ops`.** The run summary (`EvalSummary`, `summarize_run`), `ReportFormat` and
+  `serialize_report`, the out-of-run spend lens and `frontier_text` move into `analysis`. `ops` still exports what
+  it did. The summary's `MeasureSummary` is renamed `RunMeasureSummary`, so it no longer shares a name with the
+  bundle's `MeasureSummary`.
+- No stored document names a Python module, so nothing stored changes.
+
 ### 3tears-evals: the public surface claims nothing it does not do (breaking)
 
 Fields and names fixed before the first public release of the schema and API.
@@ -28,7 +94,8 @@ Fields and names fixed before the first public release of the schema and API.
   gains `save_rubric_dim_tombstone` and `query_rubric_dim_tombstones`.
 - **`runs_compare`** (operation and read action) exposes `compare_two_runs`, with each short run's completeness
   sentence and the clock and cassette disclosures beside it (#621). `compare_runs` is deleted (no caller), with
-  `ComparisonColumns`; `bisect_runs` is internal.
+  `ComparisonColumns`. **`runs_bisect`** (operation and read action) exposes `bisect_runs`: which versioned inputs
+  two runs recorded differently, the same, or undecidably, with the same completeness and clock disclosures.
 - **`campaign_create` declares a design** (#685): `declared_design` and `control_from_run_id`, validated, gated and
   stamped as every declaration is; the control is resolved from a run as `set_campaign_control` resolves it.
 - `ConfidenceTier` is the authored `Confidence`, one declaration of the tiers (#644).

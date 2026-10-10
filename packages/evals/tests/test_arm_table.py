@@ -22,17 +22,12 @@ from threetears.evals.analysis.arms import arm_table
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.report import build_report
 from threetears.evals.analysis.report.model import DisclosureBlock, TableBlock
-from threetears.evals.contracts.authored import NO_CHART, AuthoredAnalysis, EvidenceRef
-from threetears.evals.contracts.campaign import (
-    EvalAnalysis,
-    FindingResolution,
-    GenerationProvenance,
-    VariantIndexEntry,
-)
-from threetears.evals.contracts.declaration import CampaignDesign, ControlDeclaration, SweptAxis
-from threetears.evals.contracts.host.values import SweepableValue
-from threetears.evals.contracts.identity import compute_variant_key
-from threetears.evals.contracts.surface import DecisionSurface
+from threetears.evals.kernel.authored import NO_CHART, AuthoredAnalysis, EvidenceRef
+from threetears.evals.kernel.campaign import EvalAnalysis, FindingResolution, GenerationProvenance, VariantIndexEntry
+from threetears.evals.kernel.declaration import CampaignDesign, ControlDeclaration, SweptAxis
+from threetears.evals.schema.values import SweepableValue
+from threetears.evals.kernel.identity import compute_variant_key
+from threetears.evals.kernel.surface import DecisionSurface
 
 
 _AXIS = "candidate_model"
@@ -122,6 +117,7 @@ def _row(model_or_key: str, measure_id: str, value: float, *, raw: bool = False)
         "reading": "measure",
         "value": value,
         "n": 6,
+        "n_cases": 3,
         "dispersion": "p95",
     }
 
@@ -349,6 +345,7 @@ class TestEvidencePlacesOntoTheArms:
 
         assert [m.measure_id for m in row.measurements] == ["p95_s"]
         assert row.measurements[0].finding_id == "1", "a number keeps the finding it was recorded under, by position"
+        assert (row.measurements[0].n, row.measurements[0].n_cases) == (6, 3), "the cases ride beside the observations"
         assert [m.measure_id for r in table.rows if not r.is_control for m in r.measurements] == [], (
             "a row at one arm's cell must not be attributed to another"
         )

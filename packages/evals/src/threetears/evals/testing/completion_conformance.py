@@ -1,6 +1,6 @@
 """The completion conformance check: whether a host's completion type carries every attribute eval reads.
 
-Eval reads a completion by attribute name (:class:`~threetears.evals.contracts.provider.CompletionResult`),
+Eval reads a completion by attribute name (:class:`~threetears.evals.schema.completion.CompletionResult`),
 and the usage ledger reads its attributes defensively, through ``getattr`` with a default, because judge
 and simulator test doubles legitimately supply only part of the set. The cost of that is silence: a host
 whose completion type renames one of those attributes — ``served_model`` to ``response_model``, say —
@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from typing import get_args
 
-from threetears.evals.contracts.provider import COMPLETION_RESULT_ATTRIBUTES, USAGE_LEDGER_ATTRIBUTES, StopReason
+from threetears.evals.schema.completion import COMPLETION_RESULT_ATTRIBUTES, USAGE_LEDGER_ATTRIBUTES, StopReason
 
 __all__ = ["CompletionConformanceFailure", "check_completion_conformance"]
 
@@ -42,8 +42,8 @@ class CompletionConformanceFailure(AssertionError):
 def check_completion_conformance(completion: object) -> None:
     """Fail, naming the attribute, when a host's completion does not carry what eval reads off it.
 
-    Every :class:`~threetears.evals.contracts.provider.CompletionResult` member is checked, the usage
-    ledger's own (:data:`~threetears.evals.contracts.provider.USAGE_LEDGER_ATTRIBUTES`) among them: those
+    Every :class:`~threetears.evals.schema.completion.CompletionResult` member is checked, the usage
+    ledger's own (:data:`~threetears.evals.schema.completion.USAGE_LEDGER_ATTRIBUTES`) among them: those
     are the ones whose absence nothing else would report, so the message says which they are.
 
     Args:
@@ -51,7 +51,7 @@ def check_completion_conformance(completion: object) -> None:
 
     Raises:
         CompletionConformanceFailure: An attribute is missing, or ``stop_reason`` is not a
-            :data:`~threetears.evals.contracts.provider.StopReason`.
+            :data:`~threetears.evals.schema.completion.StopReason`.
     """
     missing = [name for name in COMPLETION_RESULT_ATTRIBUTES if not hasattr(completion, name)]
     problems: list[str] = []

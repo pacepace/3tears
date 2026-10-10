@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts import RecordedCall
+from threetears.evals.schema import RecordedCall
 from threetears.evals.quick import EvalSummary, callable_host
 from threetears.evals.run import get_result_trace, list_results
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations

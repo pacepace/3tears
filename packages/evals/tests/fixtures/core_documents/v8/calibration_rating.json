@@ -1,0 +1,15 @@
+{
+  "doc_type": "calibration_rating",
+  "id": "rating:a62f435e818f57f8ac3d56ca1af6d5518ee09d874ebcc36006960a122a493df7",
+  "rated_at": "2026-10-10T08:11:19.744202+00:00",
+  "rater": "host",
+  "rater_kind": "person",
+  "reason": "warm and on topic",
+  "result_id": "r-1",
+  "rubric_dim": "conversation.tone",
+  "run_id": "run-1",
+  "scale": "ordinal",
+  "schema_version": 8,
+  "scope_id": "uni-1",
+  "score": 4
+}

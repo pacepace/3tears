@@ -14,25 +14,39 @@ from __future__ import annotations
 from functools import partial
 from typing import Annotated, Any, Literal
 
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from threetears.evals.actions import render
 from threetears.evals.actions.catalogue import Action, ActionCatalogue, Caller
-from threetears.evals.contracts import EvalRunStatus, ResultOutcome
-from threetears.evals.contracts.base import EvalBaseModel
-from threetears.evals.contracts import OutOfRunPurpose
+from threetears.evals.schema import EvalRunStatus
+from threetears.evals.kernel import ResultOutcome, ValidationFailedError
+from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.schema import OutOfRunPurpose
 from threetears.evals.ops import (
+    SweepArguments,
+    SweepSettings,
+    sweep_launch,
     AnalysisDeleted,
+    CaseSetLine,
+    CaseSetListing,
+    CaseSetMint,
+    case_set_mint,
+    case_sets_list,
     AnalysisGenerationEstimate,
     AnalysisLine,
     AnalysisListing,
+    BarProposals,
     CampaignDefinition,
     CampaignLine,
     CampaignListing,
     LaunchEstimate,
     EvalSummary,
     FrozenReporterCase,
+    FrontierResult,
     HistoryResult,
+    InsightDeleted,
+    InsightDetail,
+    InsightListing,
     JobsStarted,
     JobStatus,
     LaunchArguments,
@@ -40,6 +54,10 @@ from threetears.evals.ops import (
     OutOfRunSpendReport,
     PivotTable,
     ReportDocument,
+    JudgeCasesFreeze,
+    JudgeProfileListing,
+    JudgeProfileRecording,
+    JudgeProfilesRecord,
     ReporterCaseFreeze,
     ReporterCaseListing,
     ResultDetail,
@@ -49,22 +67,39 @@ from threetears.evals.ops import (
     RunDeleted,
     RunLine,
     RunListing,
+    RunsBisected,
     RunsCompared,
     ScoreExport,
+    SecondJudgeRead,
+    JudgeTemperatureComparison,
     TemplateListing,
+    UndescribableArmsListing,
     analyses_list,
+    analyses_undescribable,
     analysis_archive,
     analysis_delete,
     analysis_estimate,
     analysis_generate,
+    bars_propose,
     campaign_archive,
     campaign_create,
     campaigns_list,
+    insight_delete,
+    insight_get,
+    insights_list,
     job_cancel,
     job_poll,
+    judge_drift_check,
+    judge_second,
+    judge_second_estimate,
+    judge_temperature,
+    judge_temperature_estimate,
     launch_estimate,
     report_read,
     reporter_case_archive,
+    judge_cases_freeze,
+    judge_profiles_list,
+    judge_profiles_record,
     reporter_case_freeze,
     reporter_cases_list,
     result_get,
@@ -74,15 +109,19 @@ from threetears.evals.ops import (
     run_delete,
     run_get,
     run_launch,
+    runs_bisect,
     runs_compare,
     runs_list,
     scope_export,
+    scope_frontier,
     scope_history,
     scope_out_of_run_spend,
     scope_pivot,
     templates_list,
 )
-from threetears.evals.run import run_blocking
+from threetears.evals.schema.models import SecondJudge
+from threetears.evals.kernel.judge_temperature import DEFAULT_TEMPERATURE_REPEATS, TemperatureSelection
+from threetears.evals.run import JudgeCaseFreezeReport, JudgeTemperatureEstimate, SecondJudgeEstimate, run_blocking
 
 # --- the parameters, each declared once ---------------------------------------------------------------
 
@@ -94,6 +133,7 @@ SubjectId = Annotated[str, LaunchArguments.model_fields["subject_id"]]
 ResultId = Annotated[str, Field(min_length=1, description="A result's id, as results_list names it.")]
 CampaignId = Annotated[str, Field(min_length=1, description="A campaign's id, as campaigns_list names it.")]
 AnalysisId = Annotated[str, Field(min_length=1, description="A stored analysis's id, as analyses_list names it.")]
+InsightId = Annotated[str, Field(min_length=1, description="An insight's id, as insights_list names it.")]
 JobId = Annotated[
     str, Field(min_length=1, description="A job's id, exactly as the action that started it returned it.")
 ]
@@ -117,7 +157,13 @@ Name = Annotated[str, Field(min_length=1, description="The campaign's name, as a
 Behavior = Annotated[str, Field(min_length=1, description="Which aspect of the subject is under test.")]
 Description = Annotated[str, Field(description="A longer description of the campaign.")]
 RunIds = Annotated[list[str], Field(description="The runs to put in the campaign, all in the caller's scope.")]
-GeneratorModel = Annotated[str | None, Field(description="The analysis generator's model; omitted for the host's.")]
+GeneratorModel = Annotated[
+    str | None,
+    Field(
+        description="The analysis generator's model; omitted for the host's. A model outside the host's allowed "
+        "writers is refused before anything is spent."
+    ),
+]
 Format = Annotated[
     Literal["markdown", "json", "html"],
     Field(description="The report's form: markdown (the memo), json (the schema's form), html (script-free)."),
@@ -126,7 +172,7 @@ RowFactor = Annotated[
     str,
     Field(
         min_length=1,
-        description="The coordinate the rows are: a declared one (model, template_id, ...) or a dotted lever.",
+        description="The coordinate the rows are: a declared one (model, template_id, ...) or a lever the host registers.",
     ),
 ]
 ColumnFactor = Annotated[
@@ -140,7 +186,13 @@ Metric = Annotated[str | None, Field(description="The measure to read; omitted r
 Weighting = Annotated[
     str | None, Field(description="How a cell averages its observations; omitted takes equal per scenario.")
 ]
-SubjectFilter = Annotated[str | None, Field(description="Read only this subject's runs; omitted reads every subject.")]
+SubjectFilter = Annotated[
+    str | None, Field(description="Read only this subject's runs or insights; omitted reads every subject.")
+]
+CampaignFilter = Annotated[
+    str | None,
+    Field(description="List only the insights this campaign's analyses minted, by id; omitted lists every campaign's."),
+]
 RunStatusFilter = Annotated[
     EvalRunStatus | Literal["all"],
     Field(
@@ -263,6 +315,32 @@ class RunArchiveParams(EvalBaseModel):
     archived: Archived = True
 
 
+class SweepLaunchParams(SweepSettings):
+    """``sweep_launch`` — a sweep's shared settings, declared once on :class:`~threetears.evals.ops.SweepSettings`, and its arms."""
+
+    arms: list[dict[str, Any]] = Field(
+        min_length=1,
+        description="The arms, launched in this order: each {model, label?, overlays?, apparatus_settings?, "
+        "judge_model?, simulator_model?} — its own model and what it sets differently from its siblings.",
+    )
+
+
+class CaseSetMintParams(CaseSetMint):
+    """``case_set_mint`` — the operation's own arguments, declared once on :class:`~threetears.evals.ops.CaseSetMint`."""
+
+
+class CaseSetsListParams(EvalBaseModel):
+    """``case_sets_list``."""
+
+    case_set_filter: Annotated[str | None, Field(min_length=1, description="List only this case set's versions.")] = (
+        None
+    )
+
+
+class AnalysesUndescribableParams(EvalBaseModel):
+    """``analyses_undescribable`` — the caller's scope is the whole question, so it takes nothing."""
+
+
 class CampaignsListParams(EvalBaseModel):
     """``campaigns_list``."""
 
@@ -314,6 +392,22 @@ class ReportReadParams(EvalBaseModel):
 
     campaign_id: CampaignId
     format: Format = "markdown"
+
+
+class JudgeCasesFreezeParams(JudgeCasesFreeze):
+    """``judge_cases_freeze`` — the freeze's own arguments, declared once on :class:`~threetears.evals.ops.JudgeCasesFreeze`."""
+
+
+class JudgeProfilesRecordParams(JudgeProfilesRecord):
+    """``judge_profiles_record`` — the recording's own arguments, declared once on :class:`~threetears.evals.ops.JudgeProfilesRecord`."""
+
+
+class JudgeProfilesListParams(EvalBaseModel):
+    """``judge_profiles_list``."""
+
+    criterion_dim: str | None = Field(
+        default=None, min_length=1, description="Only the profiles of this criterion's dim; omitted lists every one."
+    )
 
 
 class ReporterCaseFreezeParams(ReporterCaseFreeze):
@@ -369,12 +463,31 @@ class RunsCompareParams(EvalBaseModel):
     ]
 
 
+class RunsBisectParams(RunsCompareParams):
+    """``runs_bisect``: the same two runs ``runs_compare`` takes."""
+
+
 class ScopeHistoryParams(EvalBaseModel):
     """``scope_history``."""
 
     metric: Metric = None
     min_absolute_change: MinAbsoluteChange = 0.0
     min_relative_change: MinRelativeChange = 0.0
+    subject_filter: SubjectFilter = None
+    run_status: RunStatusFilter = "completed"
+
+
+class ScopeFrontierParams(EvalBaseModel):
+    """``scope_frontier``."""
+
+    bar: Annotated[
+        float | None,
+        Field(
+            ge=0.0,
+            le=1.0,
+            description="The pass^k a variant must clear, from 0 to 1; omitted ranks the variants without a verdict.",
+        ),
+    ] = None
     subject_filter: SubjectFilter = None
     run_status: RunStatusFilter = "completed"
 
@@ -423,6 +536,76 @@ class ResultRateParams(EvalBaseModel):
     rating_reason: Annotated[str, Field(min_length=1, description="Why that score, in the rater's own words.")]
 
 
+SecondJudgeModel = Annotated[
+    str, Field(min_length=1, description="The model the second judge sends every judged dimension to.")
+]
+SecondJudgeConfigIds = Annotated[
+    dict[str, str] | None,
+    Field(
+        description="dim -> the versioned judge config whose prompt asks the second judge for that dim; omitted for "
+        "the prompts the run recorded. A dim absent from a map given is asked with the built-in prompt."
+    ),
+]
+SecondJudgeTemperature = Annotated[
+    float | None,
+    Field(
+        ge=0.0,
+        le=2.0,
+        description="The temperature every second-judge call is requested at; omitted for what each prompt asks.",
+    ),
+]
+ResultIds = Annotated[
+    list[str] | None, Field(description="The run's results to draw from; omitted for every result of the run.")
+]
+
+
+class JudgeDriftParams(EvalBaseModel):
+    """``judge_drift_check``."""
+
+    run_id: RunId
+    second_judge_model: SecondJudgeModel
+    second_judge_config_ids: SecondJudgeConfigIds = None
+    second_judge_temperature: SecondJudgeTemperature = None
+    result_ids: ResultIds = None
+
+    def judge(self) -> SecondJudge:
+        """The second judge these parameters name."""
+        return SecondJudge(
+            model=self.second_judge_model,
+            config_ids=self.second_judge_config_ids,
+            temperature=self.second_judge_temperature,
+        )
+
+
+class JudgeSecondParams(JudgeDriftParams):
+    """``judge_second`` and ``judge_second_estimate``."""
+
+    sample_fraction: Annotated[
+        float,
+        Field(gt=0.0, le=1.0, description="The share of the run's judged results the second judge is asked about."),
+    ] = 1.0
+    sample_seed: Annotated[
+        int, Field(description="The seed the share is drawn with; the same seed draws the same results.")
+    ] = 0
+
+
+class JudgeTemperatureParams(EvalBaseModel):
+    """``judge_temperature`` and ``judge_temperature_estimate``."""
+
+    run_id: RunId
+    selection: Annotated[
+        TemperatureSelection,
+        Field(
+            description="Which scored dims are re-judged: borderline (stored score inside the scale, or a recorded "
+            "repeat or second judge disagreed) or all."
+        ),
+    ] = "borderline"
+    repeats: Annotated[
+        int, Field(ge=2, le=50, description="How many times each dim is judged at each temperature.")
+    ] = DEFAULT_TEMPERATURE_REPEATS
+    result_ids: ResultIds = None
+
+
 class RunDeleteParams(EvalBaseModel):
     """``run_delete``."""
 
@@ -434,6 +617,26 @@ class AnalysisDeleteParams(EvalBaseModel):
     """``analysis_delete``."""
 
     analysis_id: AnalysisId
+    confirm: Confirm
+
+
+class InsightsListParams(EvalBaseModel):
+    """``insights_list``."""
+
+    subject_filter: SubjectFilter = None
+    campaign_filter: CampaignFilter = None
+
+
+class InsightParams(EvalBaseModel):
+    """``insight_get``."""
+
+    insight_id: InsightId
+
+
+class InsightDeleteParams(EvalBaseModel):
+    """``insight_delete``."""
+
+    insight_id: InsightId
     confirm: Confirm
 
 
@@ -506,6 +709,30 @@ async def _run_archive(host: OpsHost, caller: Caller, params: RunArchiveParams) 
     )
 
 
+async def _sweep_launch(host: OpsHost, caller: Caller, params: SweepLaunchParams) -> JobsStarted:
+    try:
+        arguments = SweepArguments.model_validate(params.model_dump())
+    except ValidationError as e:
+        raise ValidationFailedError(f"invalid sweep: {e.errors()[0]['msg']} ({e.errors()[0]['loc']})") from e
+    return await sweep_launch(host, arguments, caller.scope_id, created_by=caller.identity)
+
+
+async def _case_set_mint(host: OpsHost, caller: Caller, params: CaseSetMintParams) -> CaseSetLine:
+    eval_host = host.eval_host
+    arguments = CaseSetMint.model_validate(params.model_dump())
+    return await run_blocking(eval_host.blocking_executor, case_set_mint, eval_host, arguments, caller.scope_id)
+
+
+async def _case_sets_list(host: OpsHost, caller: Caller, params: CaseSetsListParams) -> CaseSetListing:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor,
+        partial(case_sets_list, name=params.case_set_filter),
+        eval_host,
+        caller.scope_id,
+    )
+
+
 async def _campaigns_list(host: OpsHost, caller: Caller, params: CampaignsListParams) -> CampaignListing:
     eval_host = host.eval_host
     archived = None if params.include_archived else False
@@ -546,6 +773,13 @@ async def _analyses_list(host: OpsHost, caller: Caller, params: CampaignParams) 
     )
 
 
+async def _analyses_undescribable(
+    host: OpsHost, caller: Caller, params: AnalysesUndescribableParams
+) -> UndescribableArmsListing:
+    eval_host = host.eval_host
+    return await run_blocking(eval_host.blocking_executor, analyses_undescribable, eval_host, caller.scope_id)
+
+
 async def _analysis_generate(host: OpsHost, caller: Caller, params: AnalysisGenerateParams) -> JobsStarted:
     return await analysis_generate(host, params.campaign_id, caller.scope_id, model=params.model)
 
@@ -576,6 +810,35 @@ async def _report_read(host: OpsHost, caller: Caller, params: ReportReadParams) 
         params.campaign_id,
         caller.scope_id,
         format=params.format,
+    )
+
+
+async def _bars_propose(host: OpsHost, caller: Caller, params: CampaignParams) -> BarProposals:
+    eval_host = host.eval_host
+    return await run_blocking(eval_host.blocking_executor, bars_propose, eval_host, params.campaign_id, caller.scope_id)
+
+
+async def _judge_cases_freeze(host: OpsHost, caller: Caller, params: JudgeCasesFreezeParams) -> JudgeCaseFreezeReport:
+    eval_host = host.eval_host
+    freeze = JudgeCasesFreeze.model_validate(params.model_dump())
+    return await run_blocking(eval_host.blocking_executor, judge_cases_freeze, eval_host, freeze, caller.scope_id)
+
+
+async def _judge_profiles_record(
+    host: OpsHost, caller: Caller, params: JudgeProfilesRecordParams
+) -> JudgeProfileRecording:
+    eval_host = host.eval_host
+    record = JudgeProfilesRecord.model_validate(params.model_dump())
+    return await run_blocking(eval_host.blocking_executor, judge_profiles_record, eval_host, record, caller.scope_id)
+
+
+async def _judge_profiles_list(host: OpsHost, caller: Caller, params: JudgeProfilesListParams) -> JudgeProfileListing:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor,
+        partial(judge_profiles_list, rubric_dim=params.criterion_dim),
+        eval_host,
+        caller.scope_id,
     )
 
 
@@ -639,6 +902,18 @@ async def _runs_compare(host: OpsHost, caller: Caller, params: RunsCompareParams
     )
 
 
+async def _runs_bisect(host: OpsHost, caller: Caller, params: RunsBisectParams) -> RunsBisected:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor,
+        runs_bisect,
+        eval_host,
+        params.baseline_run_id,
+        params.candidate_run_id,
+        caller.scope_id,
+    )
+
+
 async def _scope_history(host: OpsHost, caller: Caller, params: ScopeHistoryParams) -> HistoryResult:
     eval_host = host.eval_host
     return await run_blocking(
@@ -649,6 +924,19 @@ async def _scope_history(host: OpsHost, caller: Caller, params: ScopeHistoryPara
         metric=params.metric,
         min_absolute_change=params.min_absolute_change,
         min_relative_change=params.min_relative_change,
+        subject_id=params.subject_filter,
+        status=params.run_status,
+    )
+
+
+async def _scope_frontier(host: OpsHost, caller: Caller, params: ScopeFrontierParams) -> FrontierResult:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor,
+        scope_frontier,
+        eval_host,
+        caller.scope_id,
+        bar=params.bar,
         subject_id=params.subject_filter,
         status=params.run_status,
     )
@@ -710,10 +998,92 @@ async def _result_rate(host: OpsHost, caller: Caller, params: ResultRateParams) 
     )
 
 
+async def _judge_second(host: OpsHost, caller: Caller, params: JudgeSecondParams) -> SecondJudgeRead:
+    return await judge_second(
+        host,
+        params.run_id,
+        caller.scope_id,
+        judge=params.judge(),
+        sample_fraction=params.sample_fraction,
+        seed=params.sample_seed,
+        result_ids=params.result_ids,
+    )
+
+
+async def _judge_second_estimate(host: OpsHost, caller: Caller, params: JudgeSecondParams) -> SecondJudgeEstimate:
+    return await judge_second_estimate(
+        host,
+        params.run_id,
+        caller.scope_id,
+        judge=params.judge(),
+        sample_fraction=params.sample_fraction,
+        seed=params.sample_seed,
+        result_ids=params.result_ids,
+    )
+
+
+async def _judge_drift_check(host: OpsHost, caller: Caller, params: JudgeDriftParams) -> SecondJudgeRead:
+    return await judge_drift_check(
+        host, params.run_id, caller.scope_id, judge=params.judge(), result_ids=params.result_ids
+    )
+
+
+async def _judge_temperature(
+    host: OpsHost, caller: Caller, params: JudgeTemperatureParams
+) -> JudgeTemperatureComparison:
+    return await judge_temperature(
+        host,
+        params.run_id,
+        caller.scope_id,
+        selection=params.selection,
+        repeats=params.repeats,
+        result_ids=params.result_ids,
+    )
+
+
+async def _judge_temperature_estimate(
+    host: OpsHost, caller: Caller, params: JudgeTemperatureParams
+) -> JudgeTemperatureEstimate:
+    return await judge_temperature_estimate(
+        host,
+        params.run_id,
+        caller.scope_id,
+        selection=params.selection,
+        repeats=params.repeats,
+        result_ids=params.result_ids,
+    )
+
+
 async def _run_delete(host: OpsHost, caller: Caller, params: RunDeleteParams) -> RunDeleted:
     eval_host = host.eval_host
     return await run_blocking(
         eval_host.blocking_executor, run_delete, eval_host, params.run_id, caller.scope_id, confirm=params.confirm
+    )
+
+
+async def _insights_list(host: OpsHost, caller: Caller, params: InsightsListParams) -> InsightListing:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor,
+        partial(insights_list, subject_id=params.subject_filter, source_campaign_id=params.campaign_filter),
+        eval_host,
+        caller.scope_id,
+    )
+
+
+async def _insight_get(host: OpsHost, caller: Caller, params: InsightParams) -> InsightDetail:
+    eval_host = host.eval_host
+    return await run_blocking(eval_host.blocking_executor, insight_get, eval_host, params.insight_id, caller.scope_id)
+
+
+async def _insight_delete(host: OpsHost, caller: Caller, params: InsightDeleteParams) -> InsightDeleted:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor,
+        partial(insight_delete, confirm=params.confirm),
+        eval_host,
+        params.insight_id,
+        caller.scope_id,
     )
 
 
@@ -745,6 +1115,7 @@ def engine_actions() -> tuple[Action, ...]:
         The actions.
     """
     run_id, campaign_id, analysis_id = "0193a1b2-run", "0193a1b2-campaign", "0193a1b2-analysis"
+    insight_id = "0193a1b2-insight"
     reporter_template_id, reporter_case_id = "tmpl-reporter", "0193a1b2-reporter-case"
     return (
         Action(
@@ -768,6 +1139,62 @@ def engine_actions() -> tuple[Action, ...]:
             handler=_runs_list,
             render=render.render_runs,
             example={"status": "completed"},
+        ),
+        Action(
+            name="sweep_launch",
+            summary="Launch arms that differ beyond the model, one after another, into one campaign, as one job.",
+            workflow=RUN,
+            permission="spend",
+            params=SweepLaunchParams,
+            result=JobsStarted,
+            handler=_sweep_launch,
+            render=render.render_jobs_started,
+            example={
+                "template_id": "tmpl-1",
+                "subject_id": "subject-1",
+                "campaign_name": "prompt bake-off",
+                "campaign_behavior": "accuracy",
+                "arms": [
+                    {"model": "model-a", "label": "terse", "overlays": {"style": "terse"}},
+                    {"model": "model-a", "label": "verbose", "overlays": {"style": "verbose"}},
+                ],
+            },
+            long_running=True,
+            detail=(
+                "Every arm is refused up front if its launch would be. Arms run one at a time unless "
+                "max_concurrent_arms is raised, each run joining the campaign as it is created. job_poll on the "
+                "sweep's job counts the arms launched and finished; one job_cancel stops the arm in flight and "
+                "launches none after. An arm refused at its launch, or whose run ends failed, ends the sweep "
+                "failed. The judge and simulator are the sweep's unless an arm names its own: where the sweep "
+                "names none, the first arm's resolved ones hold for the rest."
+            ),
+        ),
+        Action(
+            name="case_sets_list",
+            summary="List the scope's named case sets, every version — what a launch can target by name.",
+            workflow=DISCOVER,
+            permission="read",
+            params=CaseSetsListParams,
+            result=CaseSetListing,
+            handler=_case_sets_list,
+            render=render.render_case_sets,
+            example={},
+        ),
+        Action(
+            name="case_set_mint",
+            summary="Store the next version of a named case set: a template's cases, frozen in order.",
+            workflow=RUN,
+            permission="write",
+            params=CaseSetMintParams,
+            result=CaseSetLine,
+            handler=_case_set_mint,
+            render=render.render_case_set,
+            example={"case_set": "smoke", "template_id": "tmpl-1", "test_case_ids": ["case-1", "case-2"]},
+            detail=(
+                "Append-only: a new name starts at v1 and every change is the next version, so a launch naming "
+                "smoke v1 (run_launch's case_set_name and case_set_version) runs the same cases however the template "
+                "changes. A list the latest version already holds is refused."
+            ),
         ),
         Action(
             name="campaigns_list",
@@ -818,7 +1245,9 @@ def engine_actions() -> tuple[Action, ...]:
                 "refusal, word for word. n_test_cases prices a hypothetical grid instead of each plan's cases; the "
                 "generation calls a generating launch makes first are priced by the launch itself. Pass the structured "
                 "result to scope_pivot as predicted_cost after the runs land, to set each prediction beside the cost "
-                "observed. Spends nothing."
+                "observed. Beside the price, detectable_effect states per reading the smallest difference the paired "
+                "comparison would find at 80% power, from earlier runs of the template's variance, or why it cannot. "
+                "Spends nothing."
             ),
         ),
         Action(
@@ -926,7 +1355,8 @@ def engine_actions() -> tuple[Action, ...]:
                 "optionally its questions, bars and merit priority — and is refused, naming why, when this host "
                 "cannot honour it: an axis it does not declare, a bar looser than the registered one. control_from_run_id "
                 "names the run whose variant every other cell is read against. Omit both and the campaign is "
-                "undeclared, and its analysis infers the design from the runs."
+                "exploratory: its report and analysis say once that its readings confirm nothing, and its design is "
+                "inferred from the runs."
             ),
         ),
         Action(
@@ -965,6 +1395,88 @@ def engine_actions() -> tuple[Action, ...]:
             ),
         ),
         Action(
+            name="judge_second",
+            summary="Ask a second judge to score a seeded share of a finished run's judged results; read agreement.",
+            workflow=ANALYSE,
+            permission="spend",
+            params=JudgeSecondParams,
+            result=SecondJudgeRead,
+            handler=_judge_second,
+            render=render.render_second_judge,
+            example={"run_id": run_id, "second_judge_model": "judge/other", "sample_fraction": 0.5},
+            detail=(
+                "The evidence each result's judge read, sent to the second judge: the run's scores are never changed, "
+                "and each second score is recorded beside the first it pairs with. Every call is priced and admitted "
+                "against the host's out-of-run cap before the first is sent, and ledgered under purpose second_judge "
+                "— measurement cost, never the candidate's. Returns per-dimension n, exact agreement and kappa "
+                "(quadratic on 1-5, unweighted on pass/fail; undefined says why), and the drift between the judges. "
+                "judge_second_estimate prices it first without spending."
+            ),
+        ),
+        Action(
+            name="judge_second_estimate",
+            summary="Price a second judge's pass over a run against the host's out-of-run cap, without spending.",
+            workflow=ANALYSE,
+            permission="read",
+            params=JudgeSecondParams,
+            result=SecondJudgeEstimate,
+            handler=_judge_second_estimate,
+            render=render.render_second_judge_estimate,
+            example={"run_id": run_id, "second_judge_model": "judge/other", "sample_fraction": 0.5},
+            detail="The pass's own collection, sample and admission, so would_start is judge_second's answer.",
+        ),
+        Action(
+            name="judge_drift_check",
+            summary="Re-score every judged result of a run under a changed judge; read how far each dimension moved.",
+            workflow=ANALYSE,
+            permission="spend",
+            params=JudgeDriftParams,
+            result=SecondJudgeRead,
+            handler=_judge_drift_check,
+            render=render.render_second_judge,
+            example={"run_id": run_id, "second_judge_model": "judge/new"},
+            detail=(
+                "judge_second over the whole set. The run's judge, as it recorded it, is the first configuration; "
+                "the second names the changed one. Each dimension's movement is read over cases with an interval, "
+                "Holm-adjusted over the dimensions: separated, not separated or untested. It detects movement "
+                "between the judges, never which is right. The stored scores are never changed."
+            ),
+        ),
+        Action(
+            name="judge_temperature",
+            summary="Re-judge a run's borderline cases at temperature 0 and at the provider default; compare spread.",
+            workflow=ANALYSE,
+            permission="spend",
+            params=JudgeTemperatureParams,
+            result=JudgeTemperatureComparison,
+            handler=_judge_temperature,
+            render=render.render_judge_temperature,
+            example={"run_id": run_id, "repeats": 5},
+            detail=(
+                "The measurement the judge temperature policy rests on (#633). Each borderline dim (stored score "
+                "inside its scale, or a recorded repeat or second judge disagreed; selection=all for every scored "
+                "dim) is judged `repeats` times at DEFAULT_JUDGE_TEMPERATURE and `repeats` times with no temperature "
+                "sent, from the evidence its judge first read, with the prompt the run recorded. Returns, per "
+                "dimension and side by side, the case count, the mean and largest score variance across repeats, the "
+                "unstable cases, and exact agreement and kappa read by judge_self_agreement; comparable=false says "
+                "when the judge's client did not send the temperature a side names. Every call is priced and "
+                "admitted against the host's out-of-run cap before the first is sent, and ledgered under purpose "
+                "judge. Nothing is written to the results. judge_temperature_estimate prices it first."
+            ),
+        ),
+        Action(
+            name="judge_temperature_estimate",
+            summary="Price a judge temperature comparison against the host's out-of-run cap, without spending.",
+            workflow=ANALYSE,
+            permission="read",
+            params=JudgeTemperatureParams,
+            result=JudgeTemperatureEstimate,
+            handler=_judge_temperature_estimate,
+            render=render.render_judge_temperature_estimate,
+            example={"run_id": run_id, "repeats": 5},
+            detail="The comparison's own collection, selection and admission, so would_start is its answer.",
+        ),
+        Action(
             name="analyses_list",
             summary="List a campaign's stored analyses.",
             workflow=ANALYSE,
@@ -976,6 +1488,49 @@ def engine_actions() -> tuple[Action, ...]:
             example={"campaign_id": campaign_id},
         ),
         Action(
+            name="insights_list",
+            summary="List the scope's insights — the durable claims analyses minted — newest first.",
+            workflow=ANALYSE,
+            permission="read",
+            params=InsightsListParams,
+            result=InsightListing,
+            handler=_insights_list,
+            render=render.render_insights,
+            example={"campaign_filter": campaign_id},
+            detail=(
+                "Each insight with where it stands: live (fed to every later analysis of its subject as prior "
+                "context), retracted (the analysis that minted it is archived) or orphaned (that analysis was "
+                "deleted). Both filters match ids exactly; one that matches nothing lists nothing."
+            ),
+        ),
+        Action(
+            name="insight_get",
+            summary="Read one insight in full: its statement, evidence runs, provenance and standing.",
+            workflow=ANALYSE,
+            permission="read",
+            params=InsightParams,
+            result=InsightDetail,
+            handler=_insight_get,
+            render=render.render_insight,
+            example={"insight_id": insight_id},
+        ),
+        Action(
+            name="analyses_undescribable",
+            summary="List the scope's analyses holding an arm whose levels this build cannot describe.",
+            workflow=ANALYSE,
+            permission="read",
+            params=AnalysesUndescribableParams,
+            result=UndescribableArmsListing,
+            handler=_analyses_undescribable,
+            render=render.render_undescribable_arms,
+            example={},
+            detail=(
+                "Read from each stored analysis's variant index on every call, never stored: each such analysis "
+                "with how many of its arms carry levels_unavailable and why. Most useful after an identity "
+                "version bump, when arms stamped before it can no longer be described."
+            ),
+        ),
+        Action(
             name="report_read",
             summary="Read a campaign's report — its analysis, else its evidence alone — as Markdown, JSON or HTML.",
             workflow=ANALYSE,
@@ -985,6 +1540,24 @@ def engine_actions() -> tuple[Action, ...]:
             handler=_report_read,
             render=render.render_report,
             example={"campaign_id": campaign_id, "format": "markdown"},
+        ),
+        Action(
+            name="bars_propose",
+            summary="Propose bars from a single-cell baseline campaign's measured incumbent; registers nothing.",
+            workflow=ANALYSE,
+            permission="read",
+            params=CampaignParams,
+            result=BarProposals,
+            handler=_bars_propose,
+            render=render.render_bar_proposals,
+            example={"campaign_id": campaign_id},
+            detail=(
+                "Measures the baseline campaign's one cell and proposes a bar on each host-declared measure with a "
+                "better end, seeded from the incumbent's measured interval. A proposal nothing could fail is flagged "
+                "vacuous with why; every reading nothing could be proposed on is named with why. Nothing is "
+                "registered: a person adopts a bar by writing it into the host's registrations. A campaign of more "
+                "than one cell is refused, since which arm is the incumbent is a person's choice."
+            ),
         ),
         Action(
             name="reporter_case_freeze",
@@ -1030,6 +1603,60 @@ def engine_actions() -> tuple[Action, ...]:
             ),
         ),
         Action(
+            name="judge_cases_freeze",
+            summary="Freeze stored judged outputs, their criteria and their labels into cases of a judge template.",
+            workflow=ANALYSE,
+            permission="write",
+            params=JudgeCasesFreezeParams,
+            result=JudgeCaseFreezeReport,
+            handler=_judge_cases_freeze,
+            render=render.render_judge_case_freeze,
+            example={"template_id": "tmpl-judge", "judged_run_ids": [run_id], "into_case_set": "faithfulness"},
+            detail=(
+                "A judge campaign measures a judge configuration as its subject, and its cases are never generated: "
+                "each is one stored output and the criterion it was judged on, with the evidence its judge read "
+                "rebuilt from what its run recorded and the person ratings given on it as labels. One case per judged "
+                "dim of each result; a result whose run did not record its judging, or whose template was edited "
+                "since, is skipped with why. With into_case_set, the next version of that set lists exactly these cases. "
+                "Then run_launch the judge template, one arm per judge (its model, and its overlays config_ids and "
+                "temperature); the trials call only the judge. Calls no model."
+            ),
+        ),
+        Action(
+            name="judge_profiles_record",
+            summary="Store what a judge campaign measured each judge to be, per criterion, for other campaigns to read.",
+            workflow=ANALYSE,
+            permission="write",
+            params=JudgeProfilesRecordParams,
+            result=JudgeProfileRecording,
+            handler=_judge_profiles_record,
+            render=render.render_judge_profile_recording,
+            example={"judge_run_ids": [run_id]},
+            detail=(
+                "Reads the judge campaign's finished runs (judge_run_ids, every arm) as judge_kind_readings does, and "
+                "stores one profile per judge (model, prompt config, temperature) and criterion: agreement with the "
+                "labels, self-agreement, parse validity, the cases and runs measured on and when. Replaces the stored "
+                "profile of the same judge and criterion. A judge whose served model or temperature was not recorded "
+                "is skipped with why. Any campaign that judge scores then reads its evidence tier from the profile "
+                "where its own evidence decides none, and says so. Calls no model."
+            ),
+        ),
+        Action(
+            name="judge_profiles_list",
+            summary="List the stored judge profiles: each judge and criterion measured, on what, when, and its tier.",
+            workflow=ANALYSE,
+            permission="read",
+            params=JudgeProfilesListParams,
+            result=JudgeProfileListing,
+            handler=_judge_profiles_list,
+            render=render.render_judge_profiles,
+            example={},
+            detail=(
+                "A profile is read only for the very judge it measured: a changed model, prompt config or temperature, "
+                "or a reworded criterion, is another judge whose profile does not exist."
+            ),
+        ),
+        Action(
             name="scope_pivot",
             summary="Aggregate one measure over the scope's observations by two coordinates, cell by cell.",
             workflow=ANALYSE,
@@ -1063,6 +1690,23 @@ def engine_actions() -> tuple[Action, ...]:
                 "delivered less than its matrix carries its sentence, and the answer says when the two were "
                 "measured over spans that do not overlap or recorded different cassette modes. A run not in the "
                 "caller's scope is not found."
+            ),
+        ),
+        Action(
+            name="runs_bisect",
+            summary="Split the versioned inputs of two runs into those that differ, agree and cannot be decided.",
+            workflow=ANALYSE,
+            permission="read",
+            params=RunsBisectParams,
+            result=RunsBisected,
+            handler=_runs_bisect,
+            render=render.render_runs_bisected,
+            example={"baseline_run_id": run_id, "candidate_run_id": "0193a1b2-run-b"},
+            detail=(
+                "The what-changed question behind a history step: every input the host declares as sweepable, each "
+                "with both runs' values. An input one run or both recorded nothing for is undecided, never the same. "
+                "Each run that delivered less than its matrix carries its sentence, and the answer says when the two "
+                "were measured over spans that do not overlap. A run not in the caller's scope is not found."
             ),
         ),
         Action(
@@ -1103,6 +1747,24 @@ def engine_actions() -> tuple[Action, ...]:
                 "where the suite changed is marked so a new denominator does not read as a regression. A step that "
                 "misses significance reads not_separated, never no change; only an equivalence test against the "
                 "measure's declared materiality threshold reads equivalent."
+            ),
+        ),
+        Action(
+            name="scope_frontier",
+            summary="Rank each subject's variants on quality, cost and latency, and name the cheapest that clears a bar.",
+            workflow=ANALYSE,
+            permission="read",
+            params=ScopeFrontierParams,
+            result=FrontierResult,
+            handler=_scope_frontier,
+            render=render.render_frontier,
+            example={"bar": 0.8},
+            detail=(
+                "A point is one variant of a subject: pass^k with its interval, mean composite, production-replicating "
+                "cost and latency, each over its own count. A point is dominated only when another is shown better on "
+                "every axis it measured. With a bar, a variant clears it only when its whole pass^k interval is at or "
+                "above it, and the verdict names the cheapest that cleared, beside every rival it was not shown cheaper "
+                "than. The arms of one compare share a subject, so its models rank on one frontier. Spends nothing."
             ),
         ),
         Action(
@@ -1209,6 +1871,22 @@ def engine_actions() -> tuple[Action, ...]:
             handler=_analysis_delete,
             render=render.render_analysis_deleted,
             example={"analysis_id": analysis_id, "confirm": analysis_id},
+        ),
+        Action(
+            name="insight_delete",
+            summary="Destroy one insight, so no later analysis reads it as prior context. Unrecoverable.",
+            workflow=CURATE,
+            permission="destructive",
+            params=InsightDeleteParams,
+            result=InsightDeleted,
+            handler=_insight_delete,
+            render=render.render_insight_deleted,
+            example={"insight_id": insight_id, "confirm": insight_id},
+            detail=(
+                "An insight has no archive: a wrong one keeps steering every later analysis of its subject until it "
+                "is gone, so deleting it is the intended answer. To withdraw everything one analysis minted, "
+                "archive the analysis instead (analysis_archive), which retracts its insights reversibly."
+            ),
         ),
     )
 

@@ -10,8 +10,8 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.evals.analysis.cells import Cell, NextExperiment
-from threetears.evals.contracts.host import MeasureRegistry
-from threetears.evals.contracts.metrics import describe_measure, describe_reported_measure
+from threetears.evals.kernel.host import MeasureRegistry
+from threetears.evals.kernel.metrics import describe_measure, describe_reported_measure
 
 #: A host that declares no measures of its own: everything described here is the engine's core.
 _NO_HOST_MEASURES = MeasureRegistry([])

@@ -1,0 +1,19 @@
+{
+  "call_ledger": null,
+  "doc_type": "eval_trace",
+  "end_state": null,
+  "eval_run_id": "run-1",
+  "id": "res-1:trace",
+  "judge_evidence": null,
+  "judged_artifact": null,
+  "otel_trace": [],
+  "result_id": "res-1",
+  "schema_version": 8,
+  "scope_id": "uni-1",
+  "trace": [
+    {
+      "candidate": "...",
+      "turn": 1
+    }
+  ]
+}

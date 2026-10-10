@@ -39,3 +39,9 @@ packages/models/tests/unit/models/test_capabilities.py::synthetic claude-test ca
 # scraped/catalogue id variants matched at runtime, not registry pins — the
 # whole point of the lookup is that 3tears bakes no vendor prices.
 packages/models/tests/unit/models/test_price_lookup.py::price-source fixtures (OpenRouter catalogue ids + scraped Voyage ids) exercising the matcher/scraper, not current-model pins
+
+# evals' live-lane price tables and per-model request shapes: the model id is the
+# key being priced or the model whose request shape is under test, and evals does
+# not depend on threetears.models, whose defaults are not these models.
+packages/evals/tests/test_live_example.py::per-model price and effort-support tests; the model id is the subject under test
+packages/evals/tests/test_paid_analysis_generation.py::paid-lane price table keyed by model id; evals does not depend on threetears.models

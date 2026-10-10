@@ -34,41 +34,36 @@ interprets. The host chooses what a scope is and passes it through.
 
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import ValidationError
 
+from threetears.evals.analysis.contention import marked_latency_sentence, withheld_latency
 from threetears.evals.analysis.reporting import (
-    DEFAULT_WEIGHTING,
     METRIC_COMPOSITE,
-    CostEstimate,
-    PlannedCost,
-    ExportError,
-    FrontierError,
-    HistoryError,
-    HistoryResult,
-    PivotError,
-    PivotTable,
-    ScoreExport,
-    completeness_disclosure,
-    compute_comparison_sets,
-    compute_frontier,
-    compute_history,
-    compute_orphaned_runs,
-    compute_pivot,
-    compute_program_budget,
-    cross_subject_disclosure,
-    export_projection,
-    normalize_bar,
     pooled_composite_basis,
+    pooled_served_models,
     project_score_records,
 )
+from threetears.evals.analysis.lenses.aggregation import DEFAULT_WEIGHTING
+from threetears.evals.analysis.lenses.comparison_sets import compute_comparison_sets
+from threetears.evals.analysis.lenses.cost_estimate import CostEstimate, PlannedCost
+from threetears.evals.analysis.lenses.pivot import PivotError, PivotTable, compute_pivot
+from threetears.evals.analysis.lenses.frontier import FrontierError, compute_frontier, normalize_bar
+from threetears.evals.analysis.lenses.history import HistoryError, HistoryResult, compute_history
+from threetears.evals.analysis.lenses.program_budget import compute_program_budget
+from threetears.evals.analysis.lenses.orphaned_runs import compute_orphaned_runs
+from threetears.evals.analysis.lenses.export import ExportError, ScoreExport, export_projection
+from threetears.evals.analysis.significance import cross_subject_disclosure
+from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, composite_significance, difference_interval
-from threetears.evals.contracts.arguments import normalize_blank
-from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
-from threetears.evals.contracts.host.profile import HostProfile
-from threetears.evals.contracts.scoring import (
+from threetears.evals.kernel.arguments import normalize_blank
+from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.host.profile import HostProfile
+from threetears.evals.kernel.scoring import (
     compute_composite_summary,
     compute_async_delivery_summary,
     compute_cost_summary,
@@ -78,13 +73,13 @@ from threetears.evals.contracts.scoring import (
     compute_per_case_composites,
     pass_hat_k_at,
 )
-from threetears.evals.contracts.status_filter import StatusFilterError, normalize_status_filter
+from threetears.evals.kernel.status_filter import StatusFilterError, normalize_status_filter
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.storage import EvalStorage
-    from threetears.evals.contracts.campaign import EvalCampaign
-    from threetears.evals.contracts.models import EvalResult, EvalRun, EvalTemplate
+    from threetears.evals.kernel.storage import EvalStorage
+    from threetears.evals.kernel.campaign import EvalCampaign
+    from threetears.evals.schema.models import EvalResult, EvalRun, EvalTemplate
 
 log = get_logger(__name__)
 
@@ -106,13 +101,70 @@ RowColumns = Callable[["list[EvalResult]"], Mapping[tuple[str, str], Mapping[str
 #: absence: reading it as unrecorded would make a real difference undecidable.
 _NOT_CARRIED = "(not carried by this run)"
 
+#: How many projected score records one read-tier call may carry before its observer line is logged at
+#: WARNING instead of INFO (#652).
+#:
+#: The read tier projects and aggregates in Python on every request, and that is calibrated to a corpus of
+#: dozens-to-hundreds of cells — one operator, one scope (see :mod:`threetears.evals.analysis.reporting`).
+#: A cell pools a few dozen observations and each observation projects one record per measure, so that
+#: premise is a few thousand records to tens of thousands at its upper end. This budget sits just past it: a
+#: call above it is reading a corpus the premise does not describe, which is the point to push
+#: :func:`~threetears.evals.analysis.reporting.project_score_records` down into SQL. It is a signal that the
+#: deferral is being crossed, set to fire before a page is slow, not a latency limit; ``elapsed_ms`` rides on
+#: the same line for a host that would rather alert on time. A host alerts on the level alone.
+READ_TIER_ROW_BUDGET = 50_000
+
+
+def _observe_read(
+    lens: str,
+    scope_id: str,
+    started: float,
+    runs_in: int,
+    results_in: int,
+    records_out: int,
+    *,
+    cells_out: int | str | None = None,
+) -> None:
+    """Log one read-tier call's size and wall time, at WARNING once it is past :data:`READ_TIER_ROW_BUDGET`.
+
+    One structured line per call (#652), so a corpus outgrowing the in-Python projection is something a host
+    sees in its logs rather than first meets as a timed-out page. ``runs_in`` and ``results_in`` count what
+    the call read, ``records_out`` the score records it projected — the count the budget is held against —
+    and ``cells_out`` the pivot's cells (absent for an export, ``refused`` for a pivot that was refused after
+    its projection). A refused call is still logged: it paid for the read all the same.
+
+    Args:
+        lens: The operation, as the line names it (``pivot``, ``export_results``).
+        scope_id: The scope read.
+        started: ``time.perf_counter()`` at the call's start.
+        runs_in: The runs listed.
+        results_in: The results read.
+        records_out: The score records projected.
+        cells_out: The pivot's cell count, ``"refused"``, or ``None`` for a lens that has no cells.
+    """
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    over = records_out > READ_TIER_ROW_BUDGET
+    cells = "" if cells_out is None else f" cells_out={cells_out}"
+    log.log(
+        logging.WARNING if over else logging.INFO,
+        "eval.read_tier lens=%s scope_id=%s runs_in=%d results_in=%d records_out=%d%s elapsed_ms=%.1f%s",
+        lens,
+        scope_id,
+        runs_in,
+        results_in,
+        records_out,
+        cells,
+        elapsed_ms,
+        f" over READ_TIER_ROW_BUDGET={READ_TIER_ROW_BUDGET}" if over else "",
+    )
+
 
 class LensStore(Protocol):
     """The storage reads the lenses make — results by scope and by run, campaigns, and one whole run.
 
     A scope's runs are not listed through it: they arrive through ``list_runs`` and the caller's
     listed-run loader, which carry the run package's listing rules. Structural, so a host's own storage satisfies it by
-    having the methods — the engine's :class:`~threetears.evals.contracts.storage.EvalStorage` does. Positional
+    having the methods — the engine's :class:`~threetears.evals.kernel.storage.EvalStorage` does. Positional
     parameters are positional-only, which lets the port say ``scope_id`` while an implementation
     names the thing it partitions by.
     """
@@ -172,7 +224,7 @@ def _score_delta(score_a: float | None, score_b: float | None) -> float | None:
 def _status_filter(status: str | None) -> str | None:
     """Resolve a caller's run-status filter, refusing an unknown one as caller input.
 
-    The one translation of :class:`~threetears.evals.contracts.status_filter.StatusFilterError`,
+    The one translation of :class:`~threetears.evals.kernel.status_filter.StatusFilterError`,
     shared by the five COMPARISON surfaces that take a ``status`` —
     ``comparison_sets``, ``pivot``, ``frontier``, ``history``, ``export_results``.
     Written once for the reason the normalizer itself is: five copies of one
@@ -287,7 +339,7 @@ def comparison_sets(
     group to the set actually under analysis, before anything is badged.
 
     **Resolving a campaign to its members happens HERE, not one layer down.**
-    :func:`~threetears.evals.analysis.reporting.compute_comparison_sets` takes run ids and knows
+    :func:`~threetears.evals.analysis.lenses.comparison_sets.compute_comparison_sets` takes run ids and knows
     nothing about campaigns, deliberately: new eval machinery lands host-agnostic,
     and a campaign is a grouping concept
     the reporting layer has no reason to know. Turning a grouping concept into its members is this
@@ -318,7 +370,7 @@ def comparison_sets(
         profile: The host whose vocabulary this reads.
 
     Returns:
-        A JSON-safe :class:`~threetears.evals.analysis.reporting.ComparisonSetsResult` —
+        A JSON-safe :class:`~threetears.evals.analysis.lenses.comparison_sets.ComparisonSetsResult` —
         ``comparison_sets`` sorted by subject then template, plus
         ``out_of_scope_run_ids`` naming what a scope left out. A group whose
         every member is out of scope is not returned at all.
@@ -395,16 +447,16 @@ def pivot(
             same reason as :func:`comparison_sets` — an in-flight run's cells
             are still arriving. ``"all"`` aggregates over every run.
         predicted_cost: The estimate the caller made before these runs, as
-            :func:`~threetears.evals.analysis.reporting.compute_estimate_cost` returned it — the model, or its JSON
+            :func:`~threetears.evals.analysis.lenses.cost_estimate.compute_estimate_cost` returned it — the model, or its JSON
             form as a caller across a wire holds it — or the planned costs of a launch its host's pricer priced
-            (:class:`~threetears.evals.analysis.reporting.PlannedCost`, which
+            (:class:`~threetears.evals.analysis.lenses.cost_estimate.PlannedCost`, which
             :func:`~threetears.evals.ops.launch_estimate`'s ``LaunchEstimate`` is). Each cost cell at a planned model
             then carries that model's predicted cost per observation beside the cost it observed. ``None`` shows
             observed cost alone.
         profile: The host whose vocabulary this reads.
 
     Returns:
-        The :class:`~threetears.evals.analysis.reporting.PivotTable`.
+        The :class:`~threetears.evals.analysis.lenses.pivot.PivotTable`.
 
     Raises:
         ValidationFailedError: The pivot cannot be answered honestly — an
@@ -413,6 +465,7 @@ def pivot(
             from different rubrics; or a ``predicted_cost`` that is not an estimate, or
             that was handed to a pivot of another metric or with no model axis.
     """
+    started = time.perf_counter()
     estimate: CostEstimate | list[PlannedCost] | None
     try:
         if predicted_cost is None:
@@ -447,6 +500,7 @@ def pivot(
     projection = project_score_records(
         runs, results, known_run_ids={run.id for run in all_runs}, archived_run_ids=archived_run_ids, profile=profile
     )
+    observed = (len(all_runs), len(results), len(projection.records))
     try:
         table = compute_pivot(
             projection.records,
@@ -468,7 +522,9 @@ def pivot(
         # question the caller can restate (a different axis, a subject filter),
         # so a 500 would misattribute it and an empty table would read as
         # "no data" — the one answer that is definitely wrong.
+        _observe_read("pivot", scope_id, started, *observed, cells_out="refused")
         raise ValidationFailedError(str(e)) from e
+    _observe_read("pivot", scope_id, started, *observed, cells_out=len(table.cells))
     return table
 
 
@@ -480,11 +536,13 @@ def frontier(
     bar: float | str | None = None,
     subject_id: str | None = None,
     status: str | None = "completed",
+    profile: HostProfile | None = None,
+    control_variant_key: str | None = None,
 ) -> dict[str, Any]:
     """Rank each subject's variants on quality x cost x latency, cheapest above bar.
 
     Composed over ``list_runs`` plus the scope's results and delegated
-    to :func:`~threetears.evals.analysis.reporting.compute_frontier`, so the REST route and the
+    to :func:`~threetears.evals.analysis.lenses.frontier.compute_frontier`, so the REST route and the
     MCP action answer from one implementation — the same shape as
     :func:`pivot`.
 
@@ -505,9 +563,15 @@ def frontier(
             are counted as filtered-out rather than dropped silently.
         status: Raw run-status filter, defaulting to ``"completed"`` for the
             same reason as :func:`pivot`. ``"all"`` ranks over every run.
+        profile: The host whose sweepable declarations each point's production-replicating cost is read
+            against (#571): every point and verdict then names what each of its runs set away from the subject's
+            production configuration, read off the WHOLE run. ``None`` leaves that disclosure ``None`` — nobody
+            checked, never "nothing moved".
+        control_variant_key: The variant each contestant's boundary (guardrail) dimensions are held against;
+            ``None`` checks none, and the answer says so per subject.
 
     Returns:
-        A JSON-safe :class:`~threetears.evals.analysis.reporting.FrontierResult` dict.
+        A JSON-safe :class:`~threetears.evals.analysis.lenses.frontier.FrontierResult` dict.
 
     Raises:
         ValidationFailedError: The bar is not a number or is outside
@@ -525,6 +589,10 @@ def frontier(
     # exclusion-accounting reason spelled out in :func:`pivot`.
     all_runs, cohort, archived_run_ids = _corpus_and_cohort(list_runs, scope_id)
     runs = [run for run in cohort if run.status == status] if status else cohort
+    if profile is not None:
+        # A listing elides host payload, and a payload-carried lever read off it would report as the subject's
+        # own setting, so a run whose footing is read is read whole (`run_summary` does the same).
+        runs = [(storage.load_eval_run(run.id, scope_id) or run) if run.elided_payload_paths else run for run in runs]
     results = storage.query_eval_results(scope_id)
     try:
         result = compute_frontier(
@@ -534,6 +602,8 @@ def frontier(
             subject_id=subject,
             known_run_ids={run.id for run in all_runs},
             archived_run_ids=archived_run_ids,
+            profile=profile,
+            control_variant_key=(control_variant_key or "").strip() or None,
         )
     except FrontierError as e:
         raise ValidationFailedError(str(e)) from e
@@ -555,7 +625,7 @@ def history(
     """Series one measure over time per contestant, flagging real regressions.
 
     Composed over ``list_runs`` plus the scope's results and delegated
-    to :func:`~threetears.evals.analysis.reporting.compute_history`, so the REST route and the MCP
+    to :func:`~threetears.evals.analysis.lenses.history.compute_history`, so the REST route and the MCP
     action answer from one implementation — the same shape as :func:`pivot`
     and :func:`frontier`.
 
@@ -578,7 +648,7 @@ def history(
         profile: The host whose vocabulary this reads.
 
     Returns:
-        The :class:`~threetears.evals.analysis.reporting.HistoryResult`.
+        The :class:`~threetears.evals.analysis.lenses.history.HistoryResult`.
 
     Raises:
         ValidationFailedError: The metric is not one this surface can series,
@@ -615,7 +685,7 @@ def program_budget(storage: LensStore, scope_id: str, *, list_runs: RunLister) -
     """Report program-lens spend over a scope, excluding no run.
 
     Composed over ``list_runs`` plus the scope's results and delegated
-    to :func:`~threetears.evals.analysis.reporting.compute_program_budget` — the same shape as
+    to :func:`~threetears.evals.analysis.lenses.program_budget.compute_program_budget` — the same shape as
     :func:`pivot` and :func:`history`, with one deliberate difference: it
     takes **no status filter**. The quality surfaces default to
     ``status="completed"`` because an in-flight or failed run has no stable
@@ -628,7 +698,7 @@ def program_budget(storage: LensStore, scope_id: str, *, list_runs: RunLister) -
         list_runs: The run listing (:data:`RunLister`).
 
     Returns:
-        A JSON-safe :class:`~threetears.evals.analysis.reporting.ProgramBudget` dict —
+        A JSON-safe :class:`~threetears.evals.analysis.lenses.program_budget.ProgramBudget` dict —
         per-run spend with a cumulative series, plus the incomplete-run
         accounting that names the spend a quality view would have dropped.
     """
@@ -661,7 +731,7 @@ def orphaned_runs(storage: LensStore, scope_id: str, *, list_runs: RunLister) ->
         list_runs: The run listing (:data:`RunLister`).
 
     Returns:
-        A JSON-safe :class:`~threetears.evals.analysis.reporting.OrphanedRunsResult`.
+        A JSON-safe :class:`~threetears.evals.analysis.lenses.orphaned_runs.OrphanedRunsResult`.
     """
     runs = list_runs(scope_id, include_archived=True)
     results = storage.query_eval_results(scope_id)
@@ -686,7 +756,7 @@ def export_results(
     Composed over ``list_runs`` plus the scope's results, projected
     through :func:`~threetears.evals.analysis.reporting.project_score_records` — the same
     projection ``pivot`` reads — and serialized at one seam
-    (:func:`~threetears.evals.analysis.reporting.export_projection`) so every surface emits
+    (:func:`~threetears.evals.analysis.lenses.export.export_projection`) so every surface emits
     byte-identical exports.
 
     **Arguments arrive raw.** The format and status are normalized here, at
@@ -708,7 +778,7 @@ def export_results(
             in storage) rather than the whole scope, so a targeted export of
             a handful of runs reads a handful of runs' rows. What it saves is
             rows, not row width: the stored result carries no trace payload at
-            all — that lives in a sibling :class:`~threetears.evals.contracts.models.EvalTrace`
+            all — that lives in a sibling :class:`~threetears.evals.schema.models.EvalTrace`
             document no export path reads. Unknown ids are silently absent (they
             contribute no rows). ``None`` exports every run, as before.
 
@@ -720,7 +790,7 @@ def export_results(
         profile: The host whose vocabulary this reads.
 
     Returns:
-        The :class:`~threetears.evals.analysis.reporting.ScoreExport`: its body is CSV text or a JSON
+        The :class:`~threetears.evals.analysis.lenses.export.ScoreExport`: its body is CSV text or a JSON
         :class:`~threetears.evals.analysis.reporting.ScoreProjection`, and beside it the row count,
         the exclusions and the completeness disclosures a CSV body has no place for.
 
@@ -729,6 +799,7 @@ def export_results(
             or ``status`` is neither ``"all"`` nor a status a run can carry —
             each a question the caller can restate.
     """
+    started = time.perf_counter()
     fmt = normalize_blank(fmt, "csv")
     status = _status_filter(status)
     requested = {rid.strip() for rid in run_ids if rid and rid.strip()} if run_ids else None
@@ -773,10 +844,14 @@ def export_results(
         archived_run_ids=archived_run_ids if requested is None else None,
         profile=profile,
     )
+    observed = (len(all_runs), len(results), len(projection.records))
     try:
-        return export_projection(projection, fmt=fmt)
+        export = export_projection(projection, fmt=fmt)
     except ExportError as e:
+        _observe_read("export_results", scope_id, started, *observed)
         raise ValidationFailedError(str(e)) from e
+    _observe_read("export_results", scope_id, started, *observed)
+    return export
 
 
 def run_summary(
@@ -793,10 +868,10 @@ def run_summary(
 
     Loads the run (404 if missing) plus its results, then composes the
     query-time aggregators
-    (:func:`~threetears.evals.contracts.scoring.compute_pass_hat_k`,
-    :func:`~threetears.evals.contracts.scoring.compute_latency_summary`,
-    :func:`~threetears.evals.contracts.scoring.compute_async_delivery_summary`,
-    :func:`~threetears.evals.contracts.scoring.compute_cost_summary`) into one
+    (:func:`~threetears.evals.kernel.scoring.compute_pass_hat_k`,
+    :func:`~threetears.evals.kernel.scoring.compute_latency_summary`,
+    :func:`~threetears.evals.kernel.scoring.compute_async_delivery_summary`,
+    :func:`~threetears.evals.kernel.scoring.compute_cost_summary`) into one
     JSON-serializable structure. The aggregators key on the
     ``(model, eval_run_id)`` tuple, which is not JSON-safe — so the
     per-group numbers are flattened into a list of rows, one per
@@ -835,7 +910,7 @@ def run_summary(
         ``pass_hat_k`` is pass^k — the chance that ``k`` attempts at a case all
         pass, estimated without bias per case and averaged over the
         ``n_cases_at_k`` cases scored at least ``k`` times
-        (:func:`~threetears.evals.contracts.scoring.compute_pass_hat_k`); ``k`` is
+        (:func:`~threetears.evals.kernel.scoring.compute_pass_hat_k`); ``k`` is
         the deepest iteration *attempted*. ``pass_hat_k_curve`` is every depth
         from 1 to the deepest scored case, each point with its own case count,
         so two rows at different ``k`` are compared at a depth both reached
@@ -860,12 +935,17 @@ def run_summary(
         prod-cost keys and is absent with them: which inputs the run held away from the subject's
         production configuration (``moved``), which could not be checked (``unchecked``), which held
         (``held``), ``moved_nothing`` and the ``sentence`` to print beside the figure — read off the host's
-        declarations (:meth:`~threetears.evals.contracts.host.sweepables.SweepableRegistry.production_footing`),
+        declarations (:meth:`~threetears.evals.kernel.host.sweepables.SweepableRegistry.production_footing`),
         since the figure is what production spends only for a run that moved nothing (#571). The six
         async-delivery keys are the engine's rollup of each result's ``async_deliveries``
-        (:func:`~threetears.evals.contracts.scoring.compute_async_delivery_summary`): absent together on a
+        (:func:`~threetears.evals.kernel.scoring.compute_async_delivery_summary`): absent together on a
         group none of whose results watched for background work, the durations absent when no real
         delivery measured one, and the 95th percentile absent below 13 durations.
+        ``measure_latency`` and ``cell_concurrency`` are the run's own record of whether its launch declared
+        latency under test and how many of its cells executed at once (None on a run stored before either was
+        recorded, whose cells executed one at a time); ``latency_disclosure`` is the line to render beside the
+        latency keys when any of them was read under concurrency (the results' ``execution_mode``), null
+        otherwise — the figures describe this run as it ran and are never compared with another run's.
         ``completeness`` and ``completeness_disclosure``
         are both null when the run carries no completeness record (it has not
         reached a terminal state), and the disclosure alone is null when the
@@ -953,6 +1033,11 @@ def run_summary(
         # WITH the numbers rather than being a detail on the run document.
         "completeness": run.completeness.to_dict() if run.completeness else None,
         "completeness_disclosure": completeness_disclosure(run.completeness),
+        # Whether its launch declared latency under test and how many cells it ran at once (#701), and the
+        # line the latency columns are read under when any of them was read under concurrency.
+        "measure_latency": run.measure_latency,
+        "cell_concurrency": run.cell_concurrency,
+        "latency_disclosure": marked_latency_sentence(len(withheld_latency(results, profile.measures)), len(results)),
         "rows": rows,
         "dimension_rows": dimension_rows,
     }
@@ -1084,7 +1169,7 @@ def compare_two_runs(
     **Composite comparisons are withheld across subjects.** Rubric
     dimensions come from each subject's own self-description, so two
     subjects' composites are different measurements wearing one number.
-    When :func:`~threetears.evals.analysis.reporting.cross_subject_disclosure` returns a
+    When :func:`~threetears.evals.analysis.significance.cross_subject_disclosure` returns a
     sentence, every composite *comparison* — the delta, the effect size, the
     p and the verdict — is withheld here rather than on each surface, so
     REST and MCP cannot answer differently about the same run pair. The
@@ -1112,7 +1197,8 @@ def compare_two_runs(
         two runs share a template — it is NOT the significance basis.
         ``composite_comparability`` is the withholding disclosure, or
         ``None`` when the composites are comparable.
-        The ``arm`` row carries ``model_{a,b}``, ``k``, ``pass_hat_k_{a,b,delta}``,
+        The ``arm`` row carries ``model_{a,b}``, ``served_models_{a,b}`` (which models the responses named as
+        having answered each run's candidate calls — one, pooled or unrecorded — never the requested id), ``k``, ``pass_hat_k_{a,b,delta}``,
         ``composite_{a,b,delta}``, ``composite_basis_{a,b}`` (what each composite was meaned over, ragged
         when its results carried different dimension sets), ``composite_bases_differ``,
         ``composite_interval`` (at ``interval_level``),
@@ -1209,6 +1295,11 @@ def compare_two_runs(
     )
     n_scored_a = sum(1 for (_m, r, _tc) in per_case_a if r == run_a_id)
     n_scored_b = sum(1 for (_m, r, _tc) in per_case_b if r == run_b_id)
+    # Which models answered each run's candidate calls, as the responses named them (#684): an arm is keyed by
+    # the model its launch asked for, so two runs of one floating alias can be answered by different models and
+    # still read as one model here. Never the requested id standing in for a response that named none.
+    served_a = pooled_served_models(results_a)
+    served_b = pooled_served_models(results_b)
     interval: tuple[float, float] | None = None
     if composites_comparable:
         hedges_g, significant, p_value = composite_significance(sample_a, sample_b, paired=paired)
@@ -1220,6 +1311,10 @@ def compare_two_runs(
     arm: dict[str, Any] = {
         "model_a": model_a,
         "model_b": model_b,
+        # Each run's served models (`ServedModelReading` as a dict: served_models, n_results, n_unrecorded and
+        # state one / pooled / unrecorded); None where the run's candidate made no call.
+        "served_models_a": served_a.model_dump() if served_a is not None else None,
+        "served_models_b": served_b.model_dump() if served_b is not None else None,
         # The depth both pass^k values below are read at.
         "k": common_k,
         "pass_hat_k_a": pass_hat_k_a,
@@ -1350,6 +1445,7 @@ if TYPE_CHECKING:
 
 
 __all__ = [
+    "READ_TIER_ROW_BUDGET",
     "LensStore",
     "RowColumns",
     "RunLister",

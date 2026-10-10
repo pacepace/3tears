@@ -59,7 +59,7 @@ def attribution_intent(payload: AttributionPayload) -> ChartIntent:
         # The two movements have their OWN observation counts, and two different n's side by side are
         # the plainest statement that these are different populations — the whole reason the
         # remainder below them may not be a number.
-        columns.append(ChartColumn(key="n", header="n"))
+        columns.append(ChartColumn(key="n", header="Cases"))
     rows: list[dict[str, Any]] = [
         {
             "scope": scope,

@@ -24,7 +24,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.contracts.candidate_kind import (
+from threetears.evals.kernel.candidate_kind import (
     CandidateKindDefect,
     CandidateOutput,
     CandidatePreparationFailed,
@@ -35,11 +35,11 @@ from threetears.evals.contracts.candidate_kind import (
     UnknownCandidateKind,
     VariantConfig,
 )
-from threetears.evals.contracts.cassettes import CellCassettes
-from threetears.evals.contracts.host.apparatus import ApparatusError
-from threetears.evals.contracts.host.subject import SubjectSnapshot
-from threetears.evals.contracts.host.traces import CellTrace, TraceSink
-from threetears.evals.contracts.models import (
+from threetears.evals.kernel.cassettes import CellCassettes
+from threetears.evals.kernel.host.apparatus import ApparatusError
+from threetears.evals.schema.subject import SubjectSnapshot
+from threetears.evals.schema.traces import CellTrace, TraceSink
+from threetears.evals.schema.models import (
     AsyncDelivery,
     ConversationStopCause,
     EvalRun,
@@ -49,12 +49,12 @@ from threetears.evals.contracts.models import (
     PreconditionOutcome,
     RoleUsage,
 )
-from threetears.evals.contracts.provider import withhold_failure_detail
-from threetears.evals.contracts.world_session import WorldSession
+from threetears.evals.kernel.provider import withhold_failure_detail
+from threetears.evals.kernel.world_session import WorldSession
 from threetears.evals.run.metering import MeteredCallLedger
 from threetears.evals.run.runner import EveryCellApparatusFailedError, RunnerOptions, execute_run, run_one_result
-from threetears.evals.contracts.identity import IDENTITY_VERSION, DerivedVariantIdentity, compute_variant_key
-from threetears.evals.contracts.host.values import SweepableValue
+from threetears.evals.kernel.identity import IDENTITY_VERSION, DerivedVariantIdentity, compute_variant_key
+from threetears.evals.schema.values import SweepableValue
 from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.factories import memory_storage
@@ -71,7 +71,7 @@ _EVAL_ROOT = _SRC_ROOT / "threetears" / "evals"
 _FAKE_KIND = "fake-single-shot"
 
 
-# parity-with: threetears.evals.contracts.candidate_kind.CandidateKind
+# parity-with: threetears.evals.kernel.candidate_kind.CandidateKind
 class _FakeSingleShotKind:
     """A kind with no subject to mint, no turns to drive and nothing to tear down.
 
@@ -1004,7 +1004,7 @@ async def test_every_kind_can_open_its_windows_without_asking_whether_anyone_is_
     """The engine side of the port, and the one promise it makes to a kind.
 
     The object every kind is handed as ``prepare``'s ``span_window`` must, per
-    :class:`~threetears.evals.contracts.candidate_kind.CellSpanWindow`, be enterable with no sink
+    :class:`~threetears.evals.kernel.candidate_kind.CellSpanWindow`, be enterable with no sink
     wired. A kind that had to ask would branch on the host's tracing from inside the seam, which
     is the coupling the port exists to avoid -- and the run that wires no sink is every fixture
     run there is. Driven through the runner: a kind that opens both windows on a cell with no
@@ -1104,7 +1104,7 @@ def test_the_protocol_module_reaches_no_host_package():
     restating it here is that this module's whole reason for existing is to be liftable, so
     the day it acquires a host import is the day the seam stopped being one.
     """
-    tree = ast.parse((_EVAL_ROOT / "contracts" / "candidate_kind.py").read_text(encoding="utf-8"))
+    tree = ast.parse((_EVAL_ROOT / "kernel" / "candidate_kind.py").read_text(encoding="utf-8"))
     imported = {
         alias.name if isinstance(node, ast.Import) else f"{node.module}.{alias.name}"
         for node in ast.walk(tree)
@@ -1118,7 +1118,7 @@ def test_the_protocol_module_reaches_no_host_package():
         if (name.split(".", 1)[0] not in sys.stdlib_module_names | {"pydantic", "threetears"})
         or (name.startswith("threetears.") and not name.startswith("threetears.evals.") and name != "threetears.evals")
     )
-    assert not host, f"threetears/evals/contracts/candidate_kind.py reaches host packages: {host}"
+    assert not host, f"threetears/evals/kernel/candidate_kind.py reaches host packages: {host}"
 
 
 def test_the_seam_declares_no_trace_field():
@@ -1150,8 +1150,8 @@ def test_the_candidate_kind_is_a_coordinate_of_every_variant():
     """
     import inspect
 
-    from threetears.evals.contracts import identity as identity_module
-    from threetears.evals.contracts.host import CANDIDATE_KIND_LEVER, SHARED_CORE, HostProfile, MeasureRegistry
+    from threetears.evals.kernel import identity as identity_module
+    from threetears.evals.kernel.host import CANDIDATE_KIND_LEVER, SHARED_CORE, HostProfile, MeasureRegistry
 
     params = set(inspect.signature(identity_module.derive_variant_identity).parameters)
     assert params == {"run", "profile"}, (
@@ -1258,8 +1258,8 @@ async def test_a_document_candidate_is_judged_on_its_rubric_against_the_material
     conversation turn, (b) put the case material and the rendered output in every prompt, and
     (c) skip the transcript and outcome axes, which have no turns or goals to read here.
     """
-    from threetears.evals.contracts.models import JudgeEvidence
-    from threetears.evals.contracts.models import RubricDim
+    from threetears.evals.schema.models import JudgeEvidence
+    from threetears.evals.schema.models import RubricDim
     from threetears.evals.run.judge_service import JudgeService
 
     kind = _FakeSingleShotKind(
@@ -1301,7 +1301,7 @@ async def test_a_conversational_candidate_gets_both_axes_and_the_transcript_its_
     The transcript is the KIND's rendering — the engine never reads the turns in ``output`` — so
     what every call carries is the artifact string, under the transcript heading.
     """
-    from threetears.evals.contracts.models import JudgeEvidence, RubricDim
+    from threetears.evals.schema.models import JudgeEvidence, RubricDim
     from threetears.evals.run.judge_service import JudgeService
 
     kind = _FakeSingleShotKind(
@@ -1343,7 +1343,7 @@ def _judge_evidence() -> Any:
     Returns:
         Judge evidence with recognisable strings.
     """
-    from threetears.evals.contracts.models import JudgeEvidence
+    from threetears.evals.schema.models import JudgeEvidence
 
     return JudgeEvidence(case_material="CASE-MATERIAL", artifact="ARTIFACT")
 
@@ -1364,7 +1364,7 @@ async def test_a_cell_contradicting_its_kinds_declaration_is_refused_before_any_
     handed back output without evidence has left its judge nothing to read; an unjudged kind that
     rendered some is contradicting its own declaration. Either is the kind's defect and names it.
     """
-    from threetears.evals.contracts.models import RubricDim
+    from threetears.evals.schema.models import RubricDim
     from threetears.evals.run.judge_service import JudgeService
 
     kind = _FakeSingleShotKind(
@@ -1394,7 +1394,7 @@ async def test_a_cell_contradicting_its_kinds_declaration_is_refused_before_any_
 @pytest.mark.parametrize("declared", [JudgedArtifact.DOCUMENT, JudgedArtifact.TRANSCRIPT])
 async def test_a_judged_kind_that_produced_nothing_owes_no_evidence(declared):
     """An empty output is a cell that produced nothing to judge — a failed generation — not a defect."""
-    from threetears.evals.contracts.models import RubricDim
+    from threetears.evals.schema.models import RubricDim
     from threetears.evals.run.judge_service import JudgeService
 
     kind = _FakeSingleShotKind(CandidateOutput(candidate_errors=["generation refused"]), judged_artifact=declared)
@@ -1478,7 +1478,7 @@ def test_an_account_refusal_must_record_the_apparatus_fault_it_is():
 
 async def test_the_runner_refuses_a_kind_landing_the_derived_accuracy_before_paying_its_judge() -> None:
     """``accuracy`` is derived from ``match``; a kind landing it is its own code, so every cell would, and the judge waits."""
-    from threetears.evals.contracts.models import JudgeEvidence, RubricDim
+    from threetears.evals.schema.models import JudgeEvidence, RubricDim
     from threetears.evals.run import JudgeService
 
     kind = _FakeSingleShotKind(
@@ -1502,7 +1502,7 @@ async def test_the_runner_refuses_a_kind_landing_the_derived_accuracy_before_pay
 @pytest.mark.parametrize("name", ["cost_usd", "score", "goal_state:state.done", "classifier:recall:a"])
 async def test_the_runner_refuses_a_kind_landing_any_engine_owned_measure_before_paying_its_judge(name: str) -> None:
     """No host can declare a core-named measure, so a kind landing one would pool into the engine's own reading."""
-    from threetears.evals.contracts.models import JudgeEvidence, RubricDim
+    from threetears.evals.schema.models import JudgeEvidence, RubricDim
     from threetears.evals.run import JudgeService
 
     kind = _FakeSingleShotKind(
@@ -1524,7 +1524,7 @@ async def test_the_runner_refuses_a_kind_landing_any_engine_owned_measure_before
 
 
 def test_the_classifier_track_s_own_keys_are_the_only_core_named_host_measures() -> None:
-    from threetears.evals.contracts.metrics import undeclarable_host_measures
+    from threetears.evals.kernel.metrics import undeclarable_host_measures
 
     assert undeclarable_host_measures(["match", "confusion_cell", "my_own_rate"]) == []
     assert undeclarable_host_measures(["llm_ms", "match", "goal_state:x"]) == ["goal_state:x", "llm_ms"]
@@ -1532,7 +1532,7 @@ def test_the_classifier_track_s_own_keys_are_the_only_core_named_host_measures()
 
 async def test_the_runner_refuses_double_reported_background_spend_before_paying_its_judge() -> None:
     """Assembly folds the rows after judging, so the runner's refusal must come first or the judge is paid for nothing."""
-    from threetears.evals.contracts.models import JudgeEvidence, RubricDim
+    from threetears.evals.schema.models import JudgeEvidence, RubricDim
     from threetears.evals.run import JudgeService
 
     usage = [RoleUsage(role="inner_agent", model="scout/model", call_count=1, cost_usd=0.1, price_source="script")]

@@ -15,18 +15,11 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.contracts import (
-    EvalStorage,
-    Firings,
-    ValidationFailedError,
-    WorldEvent,
-    WorldSeed,
-    WorldSession,
-    WorldSessionError,
-)
-from threetears.evals.contracts.host import SeedRefused, WorldRegistry
-from threetears.evals.contracts.host.world import WorldRegistrationError
-from threetears.evals.contracts.identity import resolve_context_identity
+from threetears.evals.kernel import EvalStorage, ValidationFailedError, WorldSession, WorldSessionError
+from threetears.evals.schema import Firings, WorldEvent, WorldSeed
+from threetears.evals.kernel.host import SeedRefused, WorldRegistry
+from threetears.evals.kernel.host.world import WorldRegistrationError
+from threetears.evals.kernel.identity import resolve_context_identity
 from threetears.evals.run import start_run
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_eval_run

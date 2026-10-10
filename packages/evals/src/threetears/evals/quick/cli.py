@@ -1,7 +1,7 @@
 """The engine's command line: launch a template's runs, list what a scope holds, and read a campaign's report.
 
 ``python -m threetears.evals`` runs it with ``--host module:factory`` naming the host to work in: a
-zero-argument callable returning an :class:`~threetears.evals.contracts.host.EvalHost`, or a
+zero-argument callable returning an :class:`~threetears.evals.kernel.host.EvalHost`, or a
 :class:`~threetears.evals.run.LaunchHost` for ``run``, which launches. A product mounts the same
 commands under its own CLI by calling :func:`run_cli` with its own ``host_factory``, and its users
 then never name the host::
@@ -11,6 +11,9 @@ then never name the host::
     python -m threetears.evals report CAMPAIGN --host myapp.evals:build_host --scope dev --format html --out r.html
     python -m threetears.evals bundle CAMPAIGN --host myapp.evals:build_host --scope dev
     python -m threetears.evals spend --host myapp.evals:build_host --scope dev --purpose variation
+    python -m threetears.evals gate CAMPAIGN --host myapp.evals:build_host --scope dev --fail-on regressed,breached
+    python -m threetears.evals frontier --host myapp.evals:build_host --scope dev --bar 0.8
+    python -m threetears.evals judge-temperature RUN --host myapp.evals:build_host --scope dev --max-cost-usd 5
 
 - ``run`` launches through :func:`~threetears.evals.run.start_run`, waits for the runs' jobs, and
   prints each run's summary. It exits 0 when every run completed and 1 when any did not. Each
@@ -27,18 +30,40 @@ then never name the host::
   so they are priced against the host's out-of-run cap before they are made. ``--apparatus-settings``
   sets host-declared apparatus values as a JSON object, as ``run_launch``'s ``apparatus_settings`` does.
 - ``ls`` prints the scope's templates, runs and campaigns.
-- ``report`` prints the campaign's report (:func:`~threetears.evals.ops.report_read`, the same read the
-  ``report_read`` action makes): its newest analysis that is not archived, else a code-only report of its
+- ``report`` prints the campaign's report (:func:`~threetears.evals.analysis.campaign_report`, the same
+  report the ``report_read`` action reads): its newest analysis that is not archived, else a code-only report of its
   evidence — which says, in its first lines, that no analysis was generated. ``--format`` is
   ``markdown`` (the default), ``html`` (needs no script) or ``json`` (what the published schema
   validates); ``--out PATH`` writes it to a file instead of stdout. No model is called.
 - ``bundle`` prints the campaign's analysis bundle as JSON
   (:func:`~threetears.evals.analysis.inspect_campaign_bundle`): what a generation would read, assembled
   without calling any model.
+- ``gate`` is the CI gate: it reads the campaign's typed verdicts as code reaches them on its evidence now
+  (:func:`~threetears.evals.analysis.campaign_verdicts`, never an analysis's words), prints what it came to and
+  every verdict that failed it or was not decided, and exits 4 when a verdict ``--fail-on`` names occurred.
+  ``--fail-on`` takes a comma-separated list of ``regressed``, ``not-separated``, ``untested``, ``breached``,
+  ``undecided-guardrail``, ``missed`` and ``undecided-bar``; the default is ``regressed,breached,undecided-guardrail``
+  (:data:`~threetears.evals.analysis.DEFAULT_FAIL_ON`): a regression, a breached guardrail, and a guardrail not shown
+  held, since one not known to be safe must not ship as if it were. A verdict left undecided that ``--fail-on``
+  does not name exits 0 and is printed as undecided, never as passed. ``--reading`` (repeatable) gates only those
+  readings. A campaign with no verdict at all is refused (exit 2): a gate that read nothing passed nothing.
 - ``spend`` prints what the engine spent outside any run in the scope — case generations, rubric
   proposals and analysis generations, call by call, with totals overall, per purpose and per launch
-  (:func:`~threetears.evals.ops.scope_out_of_run_spend`, the read the ``scope_out_of_run_spend`` action
+  (:func:`~threetears.evals.analysis.scope_out_of_run_spend`, the read the ``scope_out_of_run_spend`` action
   makes). ``--purpose``, ``--launch-group`` and ``--template`` narrow it.
+- ``frontier`` prints each subject's variants ranked on quality, cost and latency, and the cheapest that clears
+  ``--bar`` (:func:`~threetears.evals.analysis.frontier` over the host's run listing, the read the
+  ``scope_frontier`` action makes).
+  ``--subject`` narrows it to one subject, and ``--json`` prints the frontier as JSON.
+- ``judge-temperature`` re-judges a finished run's borderline cases ``--repeats`` times at the pinned judge
+  temperature and as many times at the provider's default, and prints each dimension's score variance and
+  self-agreement at the two side by side (:func:`~threetears.evals.run.judge_at_two_temperatures` read by
+  :func:`~threetears.evals.analysis.read_judge_temperatures`, the
+  ``judge_temperature`` action's operation, #633). It SPENDS: the calls are priced against the out-of-run cap the
+  command names, ``--max-cost-usd`` (or ``--no-cap``, said out loud), before the first is sent, and ledgered under
+  purpose ``judge``. ``--estimate`` prices it and calls nothing. ``--all`` re-judges every scored dim instead of the
+  borderline ones, ``--result`` (repeatable) narrows it to those results, and ``--json`` prints the comparison as
+  JSON — the record to keep, since nothing is written to the results.
 
 A product mounting the commands may add its own beside them — ``run_cli(..., commands=[HostCommand(...)])``
 — each parsed like the engine's (``--scope``, and ``--host`` when the host is named on the command line)
@@ -54,7 +79,7 @@ the engine did not anticipate, or the engine failing itself — prints its trace
 did not complete.
 
 Exit codes, in full: 0 done; 1 a launched run did not complete; 2 refused; 3 failed with an
-unanticipated error.
+unanticipated error; 4 the gate failed.
 """
 
 from __future__ import annotations
@@ -63,25 +88,51 @@ import argparse
 import asyncio
 import importlib
 import json
+import math
 import sys
 import traceback
+from functools import partial
 from collections.abc import Callable, Coroutine, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, get_args
 
-from threetears.evals.analysis import inspect_campaign_bundle, list_campaigns
-from threetears.evals.contracts import DEFAULT_LAUNCH_K_RUNS, EvalServiceError, OutOfRunPurpose
-from threetears.evals.contracts.host import EvalHost
-from threetears.evals.ops import ReportFormat, out_of_run_spend_text, report_read, scope_out_of_run_spend
-from threetears.evals.ops.summary import summarize_run
-from threetears.evals.run import LaunchHost, list_runs, list_templates, start_run
+from threetears.evals.analysis import (
+    read_judge_temperatures,
+    DEFAULT_FAIL_ON,
+    GATE_TOKENS,
+    FrontierResult,
+    ReportFormat,
+    campaign_report,
+    campaign_verdicts,
+    frontier,
+    frontier_text,
+    gate_verdicts,
+    inspect_campaign_bundle,
+    list_campaigns,
+    out_of_run_spend_text,
+    parse_fail_on,
+    scope_out_of_run_spend,
+    serialize_report,
+)
+from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS, OutOfRunPurpose
+from threetears.evals.kernel import DEFAULT_TEMPERATURE_REPEATS, EvalServiceError
+from threetears.evals.kernel.host import EvalHost
+from threetears.evals.analysis.summary import summarize_run
+from threetears.evals.run import (
+    LaunchHost,
+    estimate_judge_temperature_comparison,
+    judge_at_two_temperatures,
+    list_runs,
+    list_templates,
+    start_run,
+)
 
 #: What names the host the commands work in: called once, with no arguments, per invocation.
 HostFactory = Callable[[], EvalHost | LaunchHost]
 
 #: The commands the engine itself carries; a host command may take none of these names.
-ENGINE_COMMANDS: tuple[str, ...] = ("run", "ls", "report", "bundle", "spend")
+ENGINE_COMMANDS: tuple[str, ...] = ("run", "ls", "report", "bundle", "spend", "gate", "frontier", "judge-temperature")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -99,7 +150,7 @@ class HostCommand:
             already there.
         handler: Carries the command out and returns its exit code. It may be a coroutine function,
             which the command line runs to completion. A refusal it raises as
-            :class:`~threetears.evals.contracts.EvalServiceError` is printed to stderr and exits 2, as
+            :class:`~threetears.evals.kernel.EvalServiceError` is printed to stderr and exits 2, as
             the engine's commands' refusals are.
     """
 
@@ -142,6 +193,9 @@ EXIT_REFUSED = 2
 #: Exit code: the command failed on an error nothing anticipated — a host factory, a launcher or a handler
 #: raising, or the engine's own fault. Never 1, so a broken host cannot read as runs that finished.
 EXIT_FAILED = 3
+#: Exit code: ``gate`` read a verdict its ``--fail-on`` names. Never 1 or 3, so a CI step tells a failed gate from
+#: runs that did not complete and from a broken host.
+EXIT_GATE_FAILED = 4
 
 
 def _say(line: str) -> None:
@@ -270,6 +324,11 @@ def build_parser(
             'dimension, e.g. \'{"adjudicator_seat": "model:m"}\' (as run_launch\'s apparatus_settings)'
         ),
     )
+    run.add_argument(
+        "--measure-latency",
+        action="store_true",
+        help="latency is under test: run each run's cells one at a time (as run_launch's measure_latency)",
+    )
     command("ls", "List the scope's templates, runs and campaigns.")
     report = command(
         "report", "Print a campaign's report — its analysis, else its evidence alone — without calling a model."
@@ -290,9 +349,83 @@ def build_parser(
     spend.add_argument("--purpose", choices=get_args(OutOfRunPurpose), default=None, help="only this purpose's calls")
     spend.add_argument("--launch-group", default=None, metavar="ID", help="only one launch's case generation")
     spend.add_argument("--template", default=None, metavar="ID", help="only calls made for this template")
+    gate = command(
+        "gate",
+        "Exit 4 when the campaign's verdicts include an outcome --fail-on names — the CI gate. No model is called.",
+    )
+    gate.add_argument("campaign", help="the campaign, by id")
+    gate.add_argument(
+        "--fail-on",
+        type=_fail_on,
+        default=DEFAULT_FAIL_ON,
+        metavar="OUTCOMES",
+        help=(
+            f"comma-separated outcomes that fail the gate, of {', '.join(GATE_TOKENS)} "
+            f"(default {','.join(DEFAULT_FAIL_ON)})"
+        ),
+    )
+    gate.add_argument(
+        "--reading",
+        action="append",
+        default=None,
+        metavar="MEASURE",
+        help="gate only this reading, by key or as the report heads it; repeat for more (default: every reading)",
+    )
+    ranked = command(
+        "frontier", "Rank each subject's variants on quality, cost and latency, and the cheapest that clears a bar."
+    )
+    ranked.add_argument("--bar", type=float, default=None, help="the pass^k a variant must clear, from 0 to 1")
+    ranked.add_argument("--subject", default=None, help="only this subject's variants")
+    ranked.add_argument("--json", action="store_true", help="print the frontier as JSON")
+    temperature = command(
+        "judge-temperature",
+        "Re-judge a run's borderline cases at the pinned judge temperature and at the provider default, and compare "
+        "the spread of their scores. Spends, under the out-of-run cap it names.",
+    )
+    temperature.add_argument("run_id", metavar="RUN", help="the finished run, by id")
+    cap = temperature.add_mutually_exclusive_group(required=True)
+    cap.add_argument(
+        "--max-cost-usd",
+        type=float,
+        default=None,
+        metavar="DOLLARS",
+        help="the most the comparison's calls may be priced at together; every call is priced before the first",
+    )
+    cap.add_argument("--no-cap", action="store_true", help="enforce no out-of-run cap (calls are still ledgered)")
+    temperature.add_argument(
+        "--repeats",
+        type=int,
+        default=DEFAULT_TEMPERATURE_REPEATS,
+        metavar="N",
+        help=f"calls per dim at each temperature (default {DEFAULT_TEMPERATURE_REPEATS}, at least 2)",
+    )
+    temperature.add_argument(
+        "--all", action="store_true", help="re-judge every scored dim, not only the borderline ones"
+    )
+    temperature.add_argument(
+        "--result",
+        action="append",
+        default=None,
+        metavar="ID",
+        help="only this result of the run; repeat for more (default: every result)",
+    )
+    temperature.add_argument("--estimate", action="store_true", help="price it against the cap and call nothing")
+    temperature.add_argument("--json", action="store_true", help="print the comparison (or estimate) as JSON")
     for host_command in commands:
         host_command.configure(command(host_command.name, host_command.help))
     return parser
+
+
+def _fail_on(text: str) -> tuple[str, ...]:
+    """Parse ``--fail-on``, refusing an outcome no gate fails on so argparse names the argument.
+
+    Raises:
+        argparse.ArgumentTypeError: A name that is no outcome, or none at all.
+    """
+    try:
+        return parse_fail_on(text)
+    except ValueError as unknown:
+        raise argparse.ArgumentTypeError(str(unknown)) from unknown
 
 
 def _json_object(text: str) -> dict[str, Any]:
@@ -329,8 +462,8 @@ def run_cli(
 
     Returns:
         The exit code: 0, 1 when a launched run did not complete, 2 when the command was refused, 3 when
-        it failed on an error nothing anticipated (its traceback is printed to stderr), or whatever a
-        host command's handler returned.
+        it failed on an error nothing anticipated (its traceback is printed to stderr), 4 when ``gate`` read an
+        outcome its ``--fail-on`` names, or whatever a host command's handler returned.
 
     Raises:
         ValueError: A host command's name is an engine command's, or two host commands share one —
@@ -348,13 +481,18 @@ def run_cli(
             if not isinstance(host, LaunchHost):
                 raise _Refused(
                     "run launches, so its host factory must return a LaunchHost — the EvalHost with the kinds "
-                    "it can launch; this one returned an EvalHost, which ls, report, bundle and spend can read but nothing can launch"
+                    "it can launch; this one returned an EvalHost, which ls, report, bundle, spend and gate can read but nothing can launch"
                 )
             return asyncio.run(_launch(host, args))
         if (handler := handlers.get(args.command)) is not None:
             outcome = handler(host, args)
             return asyncio.run(outcome) if isinstance(outcome, Coroutine) else outcome
         eval_host = host.eval_host if isinstance(host, LaunchHost) else host
+        if args.command == "gate":
+            return _gate(eval_host, args)
+        if args.command == "judge-temperature":
+            asyncio.run(_judge_temperature(eval_host, args))
+            return EXIT_OK
         if args.command == "ls":
             _list(eval_host, args.scope)
         elif args.command == "report":
@@ -371,6 +509,18 @@ def run_cli(
                     )
                 )
             )
+        elif args.command == "frontier":
+            ranked = FrontierResult.model_validate(
+                frontier(
+                    eval_host.storage,
+                    args.scope,
+                    list_runs=partial(list_runs, eval_host),
+                    bar=args.bar,
+                    subject_id=args.subject,
+                    profile=eval_host.profile,
+                )
+            )
+            _say(ranked.model_dump_json(indent=2) if args.json else frontier_text(ranked))
         else:
             _say(inspect_campaign_bundle(eval_host, args.campaign, args.scope).model_dump_json(indent=2))
         return EXIT_OK
@@ -399,6 +549,7 @@ async def _launch(host: LaunchHost, args: argparse.Namespace) -> int:
         n_variations=args.n_variations,
         variation_model=args.variation_model,
         apparatus_settings=args.apparatus_settings,
+        measure_latency=args.measure_latency,
     )
     try:
         await host.job_manager.wait_for([run.id for run in runs])
@@ -412,16 +563,59 @@ async def _launch(host: LaunchHost, args: argparse.Namespace) -> int:
     return EXIT_OK if all(summary.status == "completed" for summary in summaries) else EXIT_RUN_DID_NOT_COMPLETE
 
 
+async def _judge_temperature(host: EvalHost, args: argparse.Namespace) -> None:
+    """Compare the run's judge at the two temperatures (or price it, with ``--estimate``), and print what it read.
+
+    Raises:
+        _Refused: ``--max-cost-usd`` is not a positive amount.
+    """
+    if not args.no_cap and not (math.isfinite(args.max_cost_usd) and args.max_cost_usd > 0):
+        raise _Refused(f"--max-cost-usd must be a positive amount of dollars; got {args.max_cost_usd!r}")
+    common: dict[str, Any] = {
+        "out_of_run_cap_usd": None if args.no_cap else args.max_cost_usd,
+        "selection": "all" if args.all else "borderline",
+        "repeats": args.repeats,
+        "result_ids": args.result,
+    }
+    if args.estimate:
+        estimate = await estimate_judge_temperature_comparison(host, args.run_id, args.scope, **common)
+        _say(estimate.model_dump_json(indent=2) if args.json else estimate.render())
+        return
+    comparison = read_judge_temperatures(await judge_at_two_temperatures(host, args.run_id, args.scope, **common))
+    _say(comparison.model_dump_json(indent=2) if args.json else comparison.render())
+
+
+def _gate(host: EvalHost, args: argparse.Namespace) -> int:
+    """Gate on the campaign's typed verdicts: print the result, and exit 4 when a named outcome occurred.
+
+    Raises:
+        _Refused: The campaign has no verdict to gate on, or a ``--reading`` no verdict is on.
+    """
+    verdicts = campaign_verdicts(host, args.campaign, args.scope)
+    if not verdicts:
+        raise _Refused(
+            f"campaign {args.campaign} has no verdict to gate on: no contrast against a control, no guardrail and no "
+            "bar was read, so a gate would pass nothing it checked. Designate a control (set_campaign_control) "
+            "or declare a bar or a guardrail"
+        )
+    try:
+        result = gate_verdicts(verdicts, fail_on=args.fail_on, readings=args.reading)
+    except ValueError as unknown:
+        raise _Refused(str(unknown)) from unknown
+    _say(result.render())
+    return EXIT_GATE_FAILED if result.failed else EXIT_OK
+
+
 def _report(host: EvalHost, args: argparse.Namespace) -> None:
     """Print the campaign's report in the asked-for form, or write it to ``--out``.
 
     Raises:
         _Refused: ``--out`` cannot be written.
     """
-    document = report_read(host, args.campaign, args.scope, format=args.format)
+    report = campaign_report(host, args.campaign, args.scope)
     # Markdown and HTML end in a newline already; canonical JSON is the model's own dump, which does not,
     # and a terminal or a file wants one.
-    body = document.body + ("\n" if document.format == "json" else "")
+    body = serialize_report(report, args.format) + ("\n" if args.format == "json" else "")
     if args.out is None:
         sys.stdout.write(body)
         return
@@ -429,9 +623,7 @@ def _report(host: EvalHost, args: argparse.Namespace) -> None:
         args.out.write_text(body, encoding="utf-8")
     except OSError as unwritable:
         raise _Refused(f"--out {args.out}: cannot write the report there: {unwritable}") from unwritable
-    _say(
-        f"wrote the {document.basis.replace('_', '-')} report of campaign {args.campaign} ({args.format}) to {args.out}"
-    )
+    _say(f"wrote the {report.basis.replace('_', '-')} report of campaign {args.campaign} ({args.format}) to {args.out}")
 
 
 def _list(host: EvalHost, scope_id: str) -> None:
@@ -454,6 +646,7 @@ __all__ = [
     "DEFAULT_PROG",
     "ENGINE_COMMANDS",
     "EXIT_FAILED",
+    "EXIT_GATE_FAILED",
     "EXIT_OK",
     "EXIT_REFUSED",
     "EXIT_RUN_DID_NOT_COMPLETE",

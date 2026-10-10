@@ -9,7 +9,7 @@ this file exists to prevent, so the only check that means anything is what colou
 reached the pixels.
 
 :func:`dominant_colours` therefore decodes the PNG rather than trusting it, and
-:func:`png_size` reads back the width — a chart drawn at the rasteriser's default
+:func:`png_size` reads back the size — a chart drawn at the rasteriser's default
 size carries exactly the same colours in the same proportions as one drawn at the
 width this module asked for. Both decoders are deliberately dependency-free: the
 venv carries no image library, and adding one so a test can read four bytes would
@@ -381,6 +381,19 @@ def png_size(png: bytes) -> tuple[int, int]:
     return struct.unpack(">II", png[16:24])
 
 
+def _declared_view_heights(node):
+    """Every view height a spec declares, at any composition depth; a mark's own height is not a view's."""
+    if isinstance(node, list):
+        for item in node:
+            yield from _declared_view_heights(item)
+    elif isinstance(node, dict):
+        if isinstance(node.get("height"), int | float):
+            yield int(node["height"])
+        for key, value in node.items():
+            if key not in ("mark", "encoding", "data", "config"):
+                yield from _declared_view_heights(value)
+
+
 def pixel_rows(png: bytes) -> list[list[tuple[int, int, int]]]:
     """Decode a PNG into its RGB pixels, row by row from the top.
 
@@ -634,7 +647,7 @@ class TestPaletteArtifact:
     def test_the_marks_drawn_without_a_label_clear_three_to_one(self):
         """Slot 1 is the colour of every single-series mark, so it may never lean on a label to be seen.
 
-        `highlight` and `context` are held to the same 3:1 non-text bar: a receded mark is
+        `context` is held to the same 3:1 non-text bar: a receded mark is
         still a mark the reader is meant to find. The other categorical slots are not —
         several fall below 3:1 on the light surface, which is why a categorical colour is
         never the only thing naming a level.
@@ -644,7 +657,6 @@ class TestPaletteArtifact:
             mode = palette[theme]
             for role, colour in (
                 ("series[0]", mode["series"][0]),
-                ("highlight", mode["highlight"]),
                 ("context", mode["context"]),
             ):
                 ratio = _contrast_ratio(colour, mode["background"])
@@ -703,18 +715,18 @@ class TestPaletteArtifact:
             )
 
     def test_the_named_roles_are_present_and_are_not_categorical_slots(self):
-        """`highlight`, `context` and the sequential ramp mean something; they are not spare hues.
+        """`context` and the sequential ramp mean something; they are not spare hues.
 
-        Carried separately from `series` so no index can ever reach them: assigning
-        `highlight` as "series 5" would put the one emphasised mark's colour in a
-        categorical set, which is the one thing its once-per-figure discipline forbids.
+        Carried separately from `series` so no index can ever reach them. There is no
+        `highlight` role: it was declared for a highlight-plus-context arm that was never
+        built, so nothing drew with it, and it was withdrawn (#678).
         """
         palette = load_palette()
         for theme in ("light", "dark"):
             mode = palette[theme]
-            assert mode["highlight"].startswith("#") and mode["context"].startswith("#")
+            assert mode["context"].startswith("#")
+            assert "highlight" not in mode
             assert len(mode["sequential"]) == 5
-            assert mode["highlight"] not in mode["series"] + mode["sequential"]
             assert mode["context"] not in mode["series"]
 
     def test_the_chart_type_scale_reaches_the_config_at_the_weight_floor(self):
@@ -1099,6 +1111,33 @@ class TestPngPixels:
         """
         assert {viz_type for viz_type, _ in PAYLOADS.values()} == set(PAYLOAD_MODELS)
 
+    @pytest.mark.timeout(120)
+    @pytest.mark.parametrize("shape", sorted(PAYLOADS), ids=sorted(PAYLOADS))
+    def test_every_shape_is_drawn_at_the_height_it_declared(self, shape):
+        """Height read back from the pixels, as width already was (#677).
+
+        Two halves. Every view height the spec declares is the height its plot frame is
+        drawn at (a view squeezed or stretched to fit draws a frame of another height),
+        and the raster is the laid-out figure exactly at the scale asked for, in both
+        dimensions: a PNG drawn at the rasteriser's default size, or ignoring the scale,
+        carries the same colours and only its size gives it away.
+        """
+        viz_type, payload = PAYLOADS[shape]
+        spec = compile_chart(viz_type, payload).spec
+        svg = render_svg(spec, palette=packaged_palette("light"))
+        laid_out = re.search(r'<svg[^>]*\bwidth="(\d+)"[^>]*\bheight="(\d+)"', svg)
+        assert laid_out, "the rendered document states no size"
+        width, height = int(laid_out.group(1)), int(laid_out.group(2))
+        frames = {int(v) for v in re.findall(r'class="background"[^>]*d="M0,0h\d+v(\d+)h', svg)}
+        declared = set(_declared_view_heights(spec))
+        assert declared, f"{shape}: the spec declares no view height to check"
+        assert declared <= frames, f"{shape}: declared view heights {declared} drawn as frames {frames}"
+        scale = 2
+        assert png_size(render_png(spec, palette=packaged_palette("light"), scale=scale)) == (
+            width * scale,
+            height * scale,
+        ), f"{shape}: rasterised at a size other than the laid-out {width}x{height} at scale {scale}"
+
     # Same measurement, same reason — this one rasterises one shape per case in both themes and
     # its slowest parametrisation sat >3s idle, so it crosses the ceiling under the same load.
     @pytest.mark.timeout(120)
@@ -1254,8 +1293,8 @@ class TestThePackagedPaletteIsHeldByTheContractsColourCheck:
 
     def test_an_artifact_carrying_oklch_is_refused(self):
         artifact = json.loads(json.dumps(load_palette()))
-        artifact["dark"]["highlight"] = "oklch(0.70 0.22 295)"
-        with pytest.raises(PaletteError, match=r"dark\.highlight.*not resolved sRGB hex"):
+        artifact["dark"]["context"] = "oklch(0.70 0.22 295)"
+        with pytest.raises(PaletteError, match=r"dark\.context.*not resolved sRGB hex"):
             check_palette_artifact(artifact)
 
     def test_the_packaged_variants_are_palettes(self):

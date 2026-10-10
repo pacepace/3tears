@@ -2,7 +2,7 @@
 
 A run's model is one coordinate of its variant; a comparison over two prompts AND two models needs a
 second. The engine's way to carry one is a kind contract's overlay model
-(:class:`~threetears.evals.contracts.host.KindContract`): every field is a lever named ``<kind>.<field>``,
+(:class:`~threetears.evals.kernel.host.KindContract`): every field is a lever named ``<kind>.<field>``,
 validated at launch, frozen onto the run, resolved into its variant key by the engine and declarable as a
 campaign's axis. This module builds that model for the callable kinds from nothing but the levers' names,
 so a caller states ``levers={"prompt": "v2"}`` and the run is a variant of its own on a declared axis.
@@ -19,7 +19,7 @@ from collections.abc import Iterable
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
-from threetears.evals.contracts.host import CANDIDATE_MODEL_LEVER
+from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER
 
 
 class CallableLevers(BaseModel):
@@ -74,7 +74,7 @@ def levers_model(names: Iterable[str]) -> type[CallableLevers]:
         names: The levers' names.
 
     Returns:
-        The model, for a callable kind's :class:`~threetears.evals.contracts.host.KindContract`.
+        The model, for a callable kind's :class:`~threetears.evals.kernel.host.KindContract`.
 
     Raises:
         ValueError: As :func:`refuse_unusable_lever_names`.

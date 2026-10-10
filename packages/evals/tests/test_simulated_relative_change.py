@@ -20,7 +20,7 @@ import pytest
 from threetears.evals.analysis.viz.intent import ChartIntent
 from threetears.evals.analysis.viz.intents.delta_table import delta_table_intent, relative_change
 from threetears.evals.analysis.viz.payloads import DeltaRow, DeltaTablePayload
-from threetears.evals.contracts.metrics import describe_rubric_dim
+from threetears.evals.kernel.metrics import describe_rubric_dim
 
 
 def test_on_a_ratio_scale_relative_change_is_the_ratio() -> None:

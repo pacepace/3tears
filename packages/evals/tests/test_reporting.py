@@ -17,7 +17,31 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.evals.analysis import reporting
+from threetears.evals.analysis.lenses import aggregation, history
 from threetears.evals.analysis.reporting import (
+    METRIC_COMPOSITE,
+    METRIC_COST_USD,
+    METRIC_GOAL_STATE,
+    METRIC_OUTCOME,
+    METRIC_SCORE,
+    METRIC_TOTAL_MS,
+    METRIC_TRANSCRIPT,
+    ScoreProjection,
+    ScoreRecord,
+    dim_judge_model,
+    place_results,
+    project_score_records,
+)
+from threetears.evals.analysis.latency_partition import (
+    PARTITION_TOLERANCE_MS,
+    WITHHELD_PARTS_EXCEED_WHOLE,
+    WITHHELD_UNMEASURED_COMPONENT,
+    LatencyPartition,
+    decompose_total_ms,
+)
+from threetears.evals.analysis.cassette_mode import CASSETTE_SPAN_CLAUSE, cassette_mode_disclosure
+from threetears.evals.analysis.lenses.aggregation import WEIGHTING_EQUAL_PER_SCENARIO, WEIGHTING_SAMPLE_WEIGHTED
+from threetears.evals.analysis.lenses.comparison_sets import (
     BADGE_CASE_SET_DIFFERS,
     BADGE_CASE_SET_UNRESOLVED,
     BADGE_CASSETTE_MODE_DIFFERS,
@@ -26,57 +50,31 @@ from threetears.evals.analysis.reporting import (
     BADGE_MEASUREMENT_WINDOWS_DISJOINT,
     BADGE_ROLES_DIFFER,
     BADGE_TOOL_CONFIG_DIFFERS,
-    CASSETTE_SPAN_CLAUSE,
+    ComparisonSet,
+    compute_comparison_sets,
+    difference_was_declared_at_launch,
+)
+from threetears.evals.analysis.lenses.cost_estimate import CostEstimateError, PredictedValue, compute_estimate_cost
+from threetears.evals.analysis.lenses.pivot import (
     CELL_MEASURED,
     CELL_UNMEASURED,
     CELL_WITHHELD,
-    DEGRADED_RUN_CLAUSE,
-    METRIC_COMPOSITE,
-    METRIC_COST_USD,
-    METRIC_GOAL_STATE,
-    METRIC_OUTCOME,
-    METRIC_SCORE,
-    METRIC_TOTAL_MS,
-    METRIC_TRANSCRIPT,
-    PARTITION_TOLERANCE_MS,
-    WEIGHTING_EQUAL_PER_SCENARIO,
-    WEIGHTING_SAMPLE_WEIGHTED,
-    WITHHELD_PARTS_EXCEED_WHOLE,
-    WITHHELD_UNMEASURED_COMPONENT,
-    ComparisonSet,
-    CostEstimateError,
-    ExportError,
-    FrontierError,
-    HistoryError,
-    LatencyPartition,
     PivotError,
-    PredictedValue,
-    ScoreProjection,
-    ScoreRecord,
-    cassette_mode_disclosure,
-    completeness_disclosure,
-    compute_comparison_sets,
-    compute_estimate_cost,
-    compute_frontier,
-    compute_history,
-    compute_orphaned_runs,
     compute_pivot,
-    export_projection,
-    compute_program_budget,
-    decompose_total_ms,
-    difference_was_declared_at_launch,
-    dim_judge_model,
-    export_records_csv,
-    place_results,
-    project_score_records,
-    serialize_export,
 )
-from threetears.evals.contracts.host import freeze
+from threetears.evals.analysis.lenses.frontier import FrontierResult, FrontierError, compute_frontier
+from threetears.evals.analysis.lenses.history import HistoryError, compute_history
+from threetears.evals.analysis.lenses.program_budget import compute_program_budget
+from threetears.evals.analysis.lenses.orphaned_runs import compute_orphaned_runs
+from threetears.evals.analysis.lenses.export import ExportError, export_projection, export_records_csv, serialize_export
+from threetears.evals.analysis.completeness import DEGRADED_RUN_CLAUSE, completeness_disclosure
+from threetears.evals.analysis.stats import UNIFORM_MOVE_NEEDS_RANGE, bounded_separation_p
+from threetears.evals.kernel.host import freeze
 from threetears.evals.ops import pivot_text
-from threetears.evals.contracts.host.values import SweepableValue
-from threetears.evals.contracts.identity import IDENTITY_VERSION, derive_context_identity, resolve_context_identity
-from threetears.evals.contracts.metrics import METRIC_DESCRIPTORS, describe_measure
-from threetears.evals.contracts.models import (
+from threetears.evals.schema.values import SweepableValue
+from threetears.evals.kernel.identity import IDENTITY_VERSION, derive_context_identity, resolve_context_identity
+from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, describe_measure
+from threetears.evals.schema.models import (
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
     AsyncDelivery,
@@ -96,6 +94,7 @@ from packages.evals.tests.factories import make_eval_result, make_eval_run, make
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
 from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRACT
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from packages.evals.tests.fixtures.toyhost.corpus import toyhost_batch, toyhost_measurements
 from packages.evals.tests.host_vocabulary import HOST_NOUNS
 
 #: Whole-word host nouns in PROSE. The list is imported, never retyped; only the matching
@@ -123,7 +122,7 @@ def _catalog_names_of(row_name):
     surfaces apply, and the seeded registry is what ``list_metrics`` publishes.
     """
     return sorted(
-        name for name in METRIC_DESCRIPTORS if name != row_name and reporting.resolve_measure_name(name) == row_name
+        name for name in METRIC_DESCRIPTORS if name != row_name and aggregation.resolve_measure_name(name) == row_name
     )
 
 
@@ -438,7 +437,7 @@ class TestGoalStateRows:
     """Each goal-state check a result evaluated is one row, keyed by the check, 1.0 passed and 0.0 not."""
 
     def test_one_row_per_check_with_the_check_as_its_coordinate(self):
-        from threetears.evals.contracts.models import GoalStateOutcome
+        from threetears.evals.schema.models import GoalStateOutcome
 
         run, _ = _run_with_results()
         result = make_eval_result(
@@ -734,7 +733,7 @@ class TestPerDimensionRows:
         two weightings genuinely differ, or the equality would hold for a reason
         this test could not see.
         """
-        from threetears.evals.contracts.scoring import compute_dimension_summary
+        from threetears.evals.kernel.scoring import compute_dimension_summary
 
         run, _ = _run_with_results()
         results = self._uneven_corpus(run)
@@ -1669,9 +1668,9 @@ class TestComparisonSets:
         why the bucketing must be structurally safe before the next bump makes it
         reachable, and why a test cannot reach it any other way today.
         """
-        from threetears.evals.analysis import reporting
+        from threetears.evals.analysis.lenses import comparison_sets
 
-        real = reporting.resolve_context_identity
+        real = comparison_sets.resolve_context_identity
         targets = set(unresolved_run_ids)
 
         def _resolve(run, profile):
@@ -1681,7 +1680,7 @@ class TestComparisonSets:
             components = identity.context_components.model_copy(update={"case_basis": None})
             return identity.model_copy(update={"context_components": components})
 
-        monkeypatch.setattr(reporting, "resolve_context_identity", _resolve)
+        monkeypatch.setattr(comparison_sets, "resolve_context_identity", _resolve)
 
     def test_unresolved_case_bases_never_merge_into_one_bucket(self, monkeypatch):
         """Two unknowns are not a match, and must not be reported as one.
@@ -2411,17 +2410,91 @@ class TestPivotAxisResolution:
 
         assert table.rows == ["sonnet", "—"]
 
-    def test_an_unset_dotted_key_is_a_table_of_dashes_not_a_refusal(self):
-        """Refusing would make "nobody overrode this" indistinguishable from a typo."""
+    def test_a_lever_no_run_set_is_a_table_of_dashes_not_a_refusal(self):
+        """Refusing would make "nobody set this" indistinguishable from a typo.
+
+        A member the host's open family claims is a lever before any run carries it.
+        """
         table = compute_pivot(
             [_record(value=1.0)],
-            row_factor="planner.never_set",
+            row_factor="extractor.field_aliases.vendor",
             column_factor="model",
             metric=METRIC_COMPOSITE,
             profile=_JUDGED_HOST,
         )
 
         assert table.rows == ["—"]
+
+    def test_a_dot_does_not_make_an_unregistered_name_a_lever(self):
+        """The name's shape decides nothing (#664): a dotted name no registry admits and no run carries is a typo."""
+        with pytest.raises(PivotError, match="unknown factor 'planner.never_set'"):
+            compute_pivot(
+                [_record(value=1.0)],
+                row_factor="planner.never_set",
+                column_factor="model",
+                metric=METRIC_COMPOSITE,
+                profile=_JUDGED_HOST,
+            )
+
+    def test_an_undotted_lever_is_pivotable_with_one_row_per_level(self):
+        """#664: a lever with a plain name is pivoted through the registry, end to end through the projection.
+
+        The toy host registers ``chunk_tokens`` undotted; two batches at two widths project through
+        ``project_score_records`` (which fills ``factors`` from the registry) and pivot into one row per width.
+        """
+        runs = [toyhost_batch(chunk_tokens=width, retriever_top_k=3) for width in (256, 1024)]
+        results = [
+            result
+            for run in runs
+            for result in toyhost_measurements(
+                run, profile=_JUDGED_HOST, cost_usd=0.02, total_ms=900.0, field_accuracy=0.8
+            )
+        ]
+        records = project_score_records(runs, results, profile=_JUDGED_HOST, archived_run_ids=None).records
+
+        table = compute_pivot(
+            records, row_factor="chunk_tokens", column_factor="model", metric=METRIC_COST_USD, profile=_JUDGED_HOST
+        )
+
+        assert table.rows == ["1024", "256"]
+        assert {cell.row for cell in table.cells if cell.status == "measured"} == {"1024", "256"}
+
+    def test_a_mistyped_lever_is_refused_naming_the_hosts_levers(self):
+        """The hint lists the levers this host registers, not a claim that levers are dotted."""
+        with pytest.raises(PivotError, match="unknown factor 'chunk_token'") as refused:
+            compute_pivot(
+                [_record(factors={"chunk_tokens": "256"})],
+                row_factor="chunk_token",
+                column_factor="model",
+                metric=METRIC_COMPOSITE,
+                profile=_JUDGED_HOST,
+            )
+
+        assert "chunk_tokens" in str(refused.value) and "retriever_top_k" in str(refused.value)
+        assert "dotted" not in str(refused.value)
+
+    def test_a_lever_named_like_a_declared_coordinate_is_refused_not_resolved_by_branch_order(self):
+        """One name, two meanings: a run carrying ``template_id`` as a lever cannot be read off either silently."""
+        with pytest.raises(PivotError, match="both a declared score-record coordinate and a lever"):
+            compute_pivot(
+                [_record(factors={"template_id": "tpl-x"})],
+                row_factor="template_id",
+                column_factor="model",
+                metric=METRIC_COMPOSITE,
+                profile=_JUDGED_HOST,
+            )
+
+    def test_the_candidate_model_lever_reads_the_model_coordinate(self):
+        """The engine's own model lever is projected into ``model``, so the shared name is one quantity."""
+        table = compute_pivot(
+            [_record(model="m1"), _record(model="m2", case="tc-2")],
+            row_factor="model",
+            column_factor="test_case_id",
+            metric=METRIC_COMPOSITE,
+            profile=_JUDGED_HOST,
+        )
+
+        assert table.rows == ["m1", "m2"]
 
     def test_the_open_coordinate_map_is_not_itself_an_axis(self):
         with pytest.raises(PivotError, match="open-coordinate map"):
@@ -2775,7 +2848,7 @@ class TestNormalizeStatusFilter:
         else this function accepts is a status a run can actually carry — the
         refusal of anything else is pinned below.
         """
-        from threetears.evals.contracts.status_filter import normalize_status_filter
+        from threetears.evals.kernel.status_filter import normalize_status_filter
 
         assert normalize_status_filter(raw) == expected
 
@@ -2801,7 +2874,7 @@ class TestNormalizeStatusFilter:
         refusal that names the vocabulary teaches `completed` in one round-trip,
         so folding would buy nothing the message does not already give.
         """
-        from threetears.evals.contracts.status_filter import StatusFilterError, normalize_status_filter
+        from threetears.evals.kernel.status_filter import StatusFilterError, normalize_status_filter
 
         with pytest.raises(StatusFilterError, match="unknown run status"):
             normalize_status_filter(raw)
@@ -2815,8 +2888,8 @@ class TestNormalizeStatusFilter:
         written here: a second copy of the vocabulary in the test is the same
         drift the seam avoids by not writing one in the source.
         """
-        from threetears.evals.contracts.models import RUN_STATUSES
-        from threetears.evals.contracts.status_filter import StatusFilterError, normalize_status_filter
+        from threetears.evals.schema.models import RUN_STATUSES
+        from threetears.evals.kernel.status_filter import StatusFilterError, normalize_status_filter
 
         with pytest.raises(StatusFilterError) as excinfo:
             normalize_status_filter("banana")
@@ -2837,8 +2910,8 @@ class TestNormalizeStatusFilter:
         behind refuses a real cohort, and refuses it loudly enough to look like a
         bug in the caller.
         """
-        from threetears.evals.contracts.models import RUN_STATUSES
-        from threetears.evals.contracts.status_filter import normalize_status_filter
+        from threetears.evals.schema.models import RUN_STATUSES
+        from threetears.evals.kernel.status_filter import normalize_status_filter
 
         assert {status: normalize_status_filter(status) for status in RUN_STATUSES} == {
             status: status for status in RUN_STATUSES
@@ -2883,7 +2956,7 @@ class TestValidateStatusFilter:
         `normalize_status_filter` would return `completed` here and quietly hide the
         two of those nine runs that were not.
         """
-        from threetears.evals.contracts.status_filter import validate_status_filter
+        from threetears.evals.kernel.status_filter import validate_status_filter
 
         assert validate_status_filter(raw) == expected
 
@@ -2898,7 +2971,7 @@ class TestValidateStatusFilter:
         this seam invents, and every real status is compared by exact equality to
         `EvalRun.status` downstream.
         """
-        from threetears.evals.contracts.status_filter import StatusFilterError, validate_status_filter
+        from threetears.evals.kernel.status_filter import StatusFilterError, validate_status_filter
 
         with pytest.raises(StatusFilterError, match="unknown run status"):
             validate_status_filter(raw)
@@ -2912,8 +2985,8 @@ class TestValidateStatusFilter:
         reads. Compared over every input EXCEPT the unspecified ones, where the two
         are supposed to disagree — those are pinned per-function above.
         """
-        from threetears.evals.contracts.models import RUN_STATUSES
-        from threetears.evals.contracts.status_filter import (
+        from threetears.evals.schema.models import RUN_STATUSES
+        from threetears.evals.kernel.status_filter import (
             StatusFilterError,
             normalize_status_filter,
             validate_status_filter,
@@ -4571,7 +4644,7 @@ class TestComparisonSetsScope:
         """
         run = self._run("present")
 
-        with caplog.at_level(logging.INFO, logger="threetears.evals.analysis.reporting"):
+        with caplog.at_level(logging.INFO, logger="threetears.evals.analysis.lenses.comparison_sets"):
             result = compute_comparison_sets([run], scope_run_ids=["present", "gone-a", "gone-b"], profile=_JUDGED_HOST)
 
         assert result.comparison_sets[0].run_ids == ["present"]
@@ -4701,14 +4774,29 @@ def _point_by_model(subject_frontier, model):
     return matches[0]
 
 
-def _fr_cases(run, n, **kwargs):
+def _fr_cases(run, n, *, spread=False, **kwargs):
     """``n`` results of one contestant, one per test case ``tc1``..``tc<n>``, each built by :func:`_fr_result`.
 
     The frontier decides domination and its bar by test over cases, so a fixture that is to show either
-    needs the cases for a test to show it: two for a pass^k interval, six for a constant gap on every case
-    to separate two contestants at α (the sign-flip p is ``2^(1 - n)``), more for a bar near 1.
+    needs the cases for a test to show it: two for a pass^k interval, more for a bar near 1. A gap of one
+    amount on every case is read by the bounded test on pass^k's [0, 1] (eight pass-against-fail cases give
+    p ≈ 0.012), and is never shown on cost or latency, which declare no range (#597). ``spread`` scales
+    each case's cost and latency by ``1 + 0.02 · (index mod 3)``, so a gap between two contestants varies by
+    case and a t-test reads it.
     """
-    return [_fr_result(run, test_case_id=f"tc{index}", **kwargs) for index in range(1, n + 1)]
+
+    def scaled(index):
+        if not spread:
+            return kwargs
+        factor = 1.0 + 0.02 * (index % 3)
+        varied = dict(kwargs)
+        if kwargs.get("roles"):
+            varied["roles"] = {role: cost * factor for role, cost in kwargs["roles"].items()}
+        if kwargs.get("total_ms") is not None:
+            varied["total_ms"] = kwargs["total_ms"] * factor
+        return varied
+
+    return [_fr_result(run, test_case_id=f"tc{index}", **scaled(index)) for index in range(1, n + 1)]
 
 
 class TestHistoryLatencyExcludesTheHarnesssOwnCells:
@@ -4827,7 +4915,7 @@ class TestHistoryCostKeepsEveryDollarSpent:
             ).series
             for point in series.points
         ]
-        from threetears.evals.contracts.scoring import compute_cost_summary
+        from threetears.evals.kernel.scoring import compute_cost_summary
 
         (summary,) = compute_cost_summary(results).values()
 
@@ -5143,7 +5231,14 @@ class TestBothLensesGateOnTheIdentityVersion:
             # every axis its twin measured — it passes six cases its twin fails, at a fifth of the
             # cost — so it dominates its superseded twin.
             *_fr_cases(
-                run, 6, model="sonnet", variant_key="vk-1", passes=False, roles={"candidate": 0.5}, identity_version=1
+                run,
+                6,
+                model="sonnet",
+                variant_key="vk-1",
+                passes=False,
+                roles={"candidate": 0.5},
+                identity_version=1,
+                spread=True,
             ),
             *_fr_cases(
                 run, 6, model="sonnet", variant_key="vk-1", roles={"candidate": 0.1}, identity_version=IDENTITY_VERSION
@@ -5660,17 +5755,26 @@ class TestFrontierDomination:
     def _corpus(self):
         """Three contestants over eight cases — enough for a constant gap to separate after Holm over three pairs.
 
-        - cheap: passes every case, $0.25, 50 ms.
-        - pricey: fails every case, $1.00, 100 ms — shown worse than cheap on all three axes.
+        - cheap: passes every case, about $0.25, 50 ms (each varying a little by case).
+        - pricey: fails every case, about $1.00, 100 ms — shown worse than cheap on all three axes.
         - fast: passes half, $0.10, 20 ms — cheaper and faster than cheap, worse on pass^k: no domination
           either way. Better than pricey on every axis too, but its pass^k edge (half the cases) is not
           shown once the family is adjusted.
         """
         run = _fr_run()
         results = [
-            *_fr_cases(run, 8, model="cheap", variant_key="vk-cheap", roles={"candidate": 0.25}, total_ms=50),
             *_fr_cases(
-                run, 8, model="pricey", variant_key="vk-pricey", passes=False, roles={"candidate": 1.0}, total_ms=100
+                run, 8, model="cheap", variant_key="vk-cheap", roles={"candidate": 0.25}, total_ms=50, spread=True
+            ),
+            *_fr_cases(
+                run,
+                8,
+                model="pricey",
+                variant_key="vk-pricey",
+                passes=False,
+                roles={"candidate": 1.0},
+                total_ms=100,
+                spread=True,
             ),
             *(
                 _fr_result(
@@ -5697,8 +5801,11 @@ class TestFrontierDomination:
         # The row's own identity, not its model: a dominator names the variant a reader
         # would move TO, which is what the frontier exists to answer.
         assert [(d.model, d.variant_key) for d in pricey.dominated_by] == [("cheap", "vk-cheap")]
-        # And the statistic it was shown at: eight constant gaps give a sign-flip p of 2^-7, times three pairs.
-        assert pricey.dominated_by[0].p_value == pytest.approx(3 * 2.0**-7)
+        # And the statistic it was shown at: the weakest axis, pass^k's eight pass-against-fail cases read by the
+        # bounded test on [0, 1] (#597), times three pairs.
+        pass_p = bounded_separation_p([0.0] * 8, [1.0] * 8, paired=True, value_range=(0.0, 1.0))
+        assert pass_p is not None
+        assert pricey.dominated_by[0].p_value == pytest.approx(3 * pass_p)
 
     def test_non_dominated_points_are_not_flagged(self):
         run, results = self._corpus()
@@ -5729,12 +5836,10 @@ class TestFrontierDomination:
         assert _point_by_model(pf, "pricey").dominated is False
         assert _point_by_model(pf, "pricey").dominance == "not_separated"
 
-    def test_a_gap_no_exact_test_can_decide_is_untested_not_not_separated(self):
-        """Three cases, every axis moved by one amount: the sign-flip p is 0.25 whatever the data.
-
-        No test could decide, so the point is untested — level_difference's word for the same pattern — and
-        not ``not_separated``, which says a test asked and could not tell.
-        """
+    def test_a_gap_of_one_amount_on_cost_and_latency_is_never_a_domination(self):
+        """Three cases, every axis moved by one amount. Cost and latency declare no range, so no test of the mean
+        can show either gap (the sign-flip p this read tests symmetry, not the mean — #597), and pass^k's bounded
+        test cannot show three cases. Not separated, as the rule reads a move it refuses to call."""
         run = _fr_run()
         results = [
             *_fr_cases(run, 3, model="cheap", variant_key="vk-cheap", roles={"candidate": 0.25}, total_ms=50),
@@ -5745,8 +5850,8 @@ class TestFrontierDomination:
 
         pf = compute_frontier([run], results, archived_run_ids=None).subjects[0]
 
-        assert _point_by_model(pf, "pricey").dominance == "untested"
-        assert _point_by_model(pf, "cheap").dominance == "untested"
+        assert _point_by_model(pf, "pricey").dominance == "not_separated"
+        assert _point_by_model(pf, "cheap").dominance == "not_separated"
 
     def test_a_point_with_one_case_is_untested(self):
         """One case gives no test, so the point is neither dominated nor shown clear of it."""
@@ -5782,11 +5887,25 @@ class TestFrontierDomination:
         run = _fr_run()
         results = [
             # Cheap and slow-ish.
-            *_fr_cases(run, 8, model="flash-x", variant_key="vk-a", roles={"candidate": 0.0021}, total_ms=92),
-            # Dear and fast — neither dominates the other, and both are shown better than `vk-c` on every axis.
-            *_fr_cases(run, 8, model="flash-x", variant_key="vk-b", roles={"candidate": 0.024}, total_ms=48),
             *_fr_cases(
-                run, 8, model="flash-x", variant_key="vk-c", passes=False, roles={"candidate": 0.030}, total_ms=100
+                run, 8, model="flash-x", variant_key="vk-a", roles={"candidate": 0.0021}, total_ms=92, spread=True
+            ),
+            # Dear and fast — neither dominates the other, and both are shown better than `vk-c` on every axis.
+            *_fr_cases(
+                run, 8, model="flash-x", variant_key="vk-b", roles={"candidate": 0.024}, total_ms=48, spread=True
+            ),
+            *(
+                # Varied the other way round, so its gap to each of the two above varies by case.
+                _fr_result(
+                    run,
+                    model="flash-x",
+                    variant_key="vk-c",
+                    test_case_id=f"tc{index}",
+                    passes=False,
+                    roles={"candidate": 0.030 * (1.0 + 0.03 * (index % 2))},
+                    total_ms=100 * (1.0 + 0.03 * (index % 2)),
+                )
+                for index in range(1, 9)
             ),
         ]
 
@@ -5956,7 +6075,7 @@ class TestFrontierBar:
         # Twenty cases each: an all-pass interval clears 0.8 from twenty (at twelve it reaches only 0.70).
         run = _fr_run()
         results = [
-            *_fr_cases(run, 20, model="a", variant_key="vk-a", roles={"candidate": 0.50}, passes=True),
+            *_fr_cases(run, 20, model="a", variant_key="vk-a", roles={"candidate": 0.50}, passes=True, spread=True),
             *_fr_cases(run, 20, model="b", variant_key="vk-b", roles={"candidate": 0.30}, passes=True),
             *_fr_cases(run, 20, model="c", variant_key="vk-c", roles={"candidate": 0.10}, passes=False),
         ]
@@ -5988,7 +6107,7 @@ class TestFrontierBar:
         assert pf.verdict.model == "b"
         assert pf.verdict.production_replicating_cost == pytest.approx(0.30)
         assert pf.verdict.pass_hat_k_ci_low is not None and pf.verdict.pass_hat_k_ci_low >= 0.8
-        # b is $0.20 cheaper on every one of the twenty cases: shown cheaper (sign-flip p 2^-19), so named.
+        # b is cheaper on every one of the twenty cases, by an amount that varies: shown cheaper, so named.
         assert (pf.verdict.cost_decision, pf.verdict.tied_with) == ("shown_cheapest", [])
 
     def test_a_pick_not_shown_cheaper_names_the_set_it_is_among(self):
@@ -6014,13 +6133,13 @@ class TestFrontierBar:
         assert tie.p_value is not None and tie.p_value >= 0.05
         assert tie.production_replicating_cost == pytest.approx(0.4005)
 
-    def test_a_constant_cost_shift_too_short_for_an_exact_test_is_untested(self):
-        """Five cases, each $0.50 dearer for b: the exact sign-flip p is 2^-4, which cannot reach α.
+    def test_a_constant_cost_shift_is_never_shown_cheaper(self):
+        """Five cases, each $0.50 dearer for b: cost declares no range, so no test of the mean can show it (#597).
 
         The costs are written ``i/10`` and ``i/10 + 0.5``, so their float differences carry residue. Read over
         floats, a t-test took that residue for a tiny, perfectly consistent spread and named a the cheapest at
-        p ≈ 1e-80. Read exactly, no test can decide here, which is untested — the word level_difference uses
-        for the same values — never a p read as shown or as not separated.
+        p ≈ 1e-80. Read exactly there is no spread, and with no range the rule refuses the claim: not shown
+        cheaper, with p 1 — never a residue's p, and never the sign flip's.
         """
         run = _fr_run()
         a_costs = [i / 10 for i in range(1, 6)]
@@ -6040,9 +6159,9 @@ class TestFrontierBar:
         verdict = compute_frontier([run], results, bar=0.3, archived_run_ids=None).subjects[0].verdict
 
         assert verdict is not None and verdict.model == "a"
-        assert verdict.cost_decision == "untested"
+        assert verdict.cost_decision == "not_separated"
         (tie,) = verdict.tied_with
-        assert tie.p_value is None
+        assert tie.p_value == 1.0
 
     def test_the_only_cleared_contestant_is_named_alone(self):
         run, results = self._corpus()
@@ -6221,28 +6340,77 @@ class TestFrontierHonestSampleSize:
         assert point.n_composite_cases == 2
 
 
-class TestFrontierTwoPillarDisclosure:
-    """The descoped boundary pillar is stated on every answer, never silent."""
+_BOUNDARY_DIM = "refuse.harm"
 
-    def test_disclosure_is_present_and_names_the_gap(self):
+
+def _with_boundary(results, score):
+    """``results`` each scored ``score`` on a pass/fail boundary (guardrail) dimension, as the judge stamps it."""
+    for result in results:
+        result.rubric_scores = [
+            *result.rubric_scores,
+            RubricScore(dim=_BOUNDARY_DIM, scale="pass_fail", axis="boundary", score=score),
+        ]
+    return results
+
+
+class TestFrontierBoundaryPillar:
+    """#613: a contestant that breaches a boundary dimension is disqualified, named by it, and never the pick."""
+
+    def _corpus(self):
         run = _fr_run()
-        result = _fr_result(run, model="m", variant_key="vk", test_case_id="c1", roles={"candidate": 0.1})
+        control = _with_boundary(_fr_cases(run, 20, model="m-ctrl", variant_key="vk-ctrl", roles={"candidate": 0.5}), 1)
+        cheap = _with_boundary(_fr_cases(run, 20, model="m-cheap", variant_key="vk-cheap", roles={"candidate": 0.1}), 0)
+        mid = _with_boundary(_fr_cases(run, 20, model="m-mid", variant_key="vk-mid", roles={"candidate": 0.3}), 1)
+        return run, control + cheap + mid
 
-        disclosure = compute_frontier([run], [result], archived_run_ids=None).two_pillar
+    def test_a_contestant_failing_only_the_boundary_dim_is_disqualified_and_named(self):
+        run, results = self._corpus()
 
-        assert disclosure.boundary_pillar_available is False
-        assert "capability" in disclosure.verdict_rests_on
-        # Scores now carry their axis, so the gap is no longer a missing axis: it is that the frontier
-        # leaves boundary dimensions out and does not disqualify on them.
-        assert "does not disqualify" in disclosure.reason
+        subject = compute_frontier(
+            [run],
+            results,
+            bar=0.5,
+            archived_run_ids=None,
+            control_variant_key="vk-ctrl",
+            guardrail_margins={_BOUNDARY_DIM: 0.2},
+        ).subjects[0]
 
-    def test_disclosure_survives_an_empty_corpus(self):
-        # Even with nothing to rank, the answer must state the pillar is absent —
-        # so "nothing was disqualified" can never be read as "nothing was checked".
-        result = compute_frontier([], [], archived_run_ids=None)
+        cheap, mid = _point_by_model(subject, "m-cheap"), _point_by_model(subject, "m-mid")
+        assert cheap.bar_decision == "cleared", "it clears the capability bar: only the boundary dim fails it"
+        assert cheap.disqualified_by == [_BOUNDARY_DIM]
+        assert [(c.dimension, c.decision) for c in cheap.boundary_checks] == [(_BOUNDARY_DIM, "breached")]
+        assert [(c.dimension, c.decision) for c in mid.boundary_checks] == [(_BOUNDARY_DIM, "held")]
+        assert subject.verdict is not None and subject.verdict.variant_key == "vk-mid"
+        assert subject.verdict.boundary_unchecked == []
+        assert (subject.boundary_dimensions, subject.n_disqualified) == ([_BOUNDARY_DIM], 1)
+        assert subject.boundary_pillar is not None and subject.boundary_pillar.startswith("checked")
 
-        assert result.subjects == []
-        assert result.two_pillar.boundary_pillar_available is False
+    def test_with_no_control_the_pillar_is_unchecked_and_the_verdict_says_so(self):
+        run, results = self._corpus()
+
+        frontier = compute_frontier([run], results, bar=0.5, archived_run_ids=None)
+
+        subject = frontier.subjects[0]
+        assert frontier.control_variant_key is None
+        assert all(point.boundary_checks == [] and point.disqualified_by == [] for point in subject.points)
+        assert subject.boundary_pillar is not None and subject.boundary_pillar.startswith("not checked")
+        assert subject.verdict is not None and subject.verdict.boundary_unchecked == [_BOUNDARY_DIM]
+
+    def test_a_subject_with_no_boundary_dim_states_nothing(self):
+        run = _fr_run()
+        results = _fr_cases(run, 3, model="m", variant_key="vk", roles={"candidate": 0.1})
+
+        subject = compute_frontier([run], results, archived_run_ids=None, control_variant_key="vk").subjects[0]
+
+        assert (subject.boundary_dimensions, subject.boundary_pillar) == ([], None)
+
+    def test_a_frozen_frontier_carrying_the_retired_disclosure_still_reads(self):
+        stored = compute_frontier([], [], archived_run_ids=None).to_dict()
+        stored["two_pillar"] = {"boundary_pillar_available": False}
+
+        assert FrontierResult.from_dict(stored).subjects == []
+        with pytest.raises(ValidationError, match="two_pillar"):
+            FrontierResult.model_validate(stored)
 
 
 class TestFrontierExclusions:
@@ -6529,7 +6697,9 @@ class TestHistoryWithholdsAttributionOnAScenarioBoundAxis:
     """
 
     def _declining(self, metric, **scores):
-        cases = ["c1", "c2", "c3", "c4", "c5", "c6"]
+        # Ten cases: every case moves by one amount, read by the bounded test on the 1-5 range (#597), which shows a
+        # three-point move from ten cases and not from six.
+        cases = [f"c{index}" for index in range(1, 11)]
         run_a, res_a = _hist_run(cases=cases, created_at="2026-07-01T00:00:00Z", **{k: v[0] for k, v in scores.items()})
         run_b, res_b = _hist_run(cases=cases, created_at="2026-07-02T00:00:00Z", **{k: v[1] for k, v in scores.items()})
         return compute_history(
@@ -6588,7 +6758,7 @@ class TestHistoryWithholdsAttributionOnAScenarioBoundAxis:
             created_at="2026-07-01T00:00:00Z",
         )
 
-        for row_name in sorted(reporting.HISTORY_METRICS):
+        for row_name in sorted(history.HISTORY_METRICS):
             out = compute_history([run], results, metric=row_name, profile=_JUDGED_HOST, archived_run_ids=None)
             expected = out.measure.transferability_class == "scenario_bound"
             assert (out.attribution_disclosure is not None) is expected, (
@@ -6765,7 +6935,8 @@ class TestHistory:
         assert points[1].epoch_boundary is False
 
     def test_a_significant_decline_within_an_epoch_is_flagged_regressed(self):
-        cases = ["c1", "c2", "c3", "c4", "c5", "c6"]
+        # Every case moves by one amount, read by the bounded test on the composite's range (#597): ten cases show it.
+        cases = [f"c{index}" for index in range(1, 11)]
         run_a, res_a = _hist_run(cases=cases, score=5, created_at="2026-07-01T00:00:00Z")
         run_b, res_b = _hist_run(cases=cases, score=2, created_at="2026-07-02T00:00:00Z")
 
@@ -6793,6 +6964,10 @@ class TestHistory:
         cases = ["c1", "c2", "c3", "c4", "c5", "c6"]
         run_a, res_a = _hist_run(cases=cases, cost=0.100, created_at="2026-07-01T00:00:00Z")
         run_b, res_b = _hist_run(cases=cases, cost=0.101, created_at="2026-07-02T00:00:00Z")
+        # A rise of about +0.001 that varies a little by case: a t-test reads it. One amount on every case would
+        # not be called at all, since cost declares no range (#597).
+        for index, result in enumerate(res_b):
+            result.cost_usd = 0.101 + (0.00001 if index % 2 else -0.00001)
 
         out = compute_history(
             [run_a, run_b],
@@ -6805,7 +6980,7 @@ class TestHistory:
 
         flag = out.series[0].points[1].regression
         assert flag is not None
-        assert flag.significant is True  # a deterministic +0.001 move is consistent
+        assert flag.significant is True  # a consistent +0.001 move
         assert flag.exceeds_threshold is False
         assert flag.label == "below_threshold"
         assert out.equivalence_margin is None
@@ -6813,6 +6988,30 @@ class TestHistory:
         from threetears.evals.analysis.stats import PAIRED_TEST_NAME
 
         assert flag.test == PAIRED_TEST_NAME
+
+    def test_a_uniform_move_on_a_measure_with_no_range_is_not_separated_and_says_why(self):
+        """Every case $0.05 dearer: cost declares no range, so no test of the mean can call it, at any n (#597).
+
+        The sign-flip reading called this ``regressed`` from six cases; it tests symmetry, not the mean. The flag
+        reads not separated, states no p, and names the remedy.
+        """
+        cases = [f"c{index}" for index in range(1, 21)]
+        run_a, res_a = _hist_run(cases=cases, cost=0.10, created_at="2026-07-01T00:00:00Z")
+        run_b, res_b = _hist_run(cases=cases, cost=0.15, created_at="2026-07-02T00:00:00Z")
+
+        out = compute_history(
+            [run_a, run_b],
+            res_a + res_b,
+            metric=METRIC_COST_USD,
+            min_absolute_change=0.01,
+            profile=_JUDGED_HOST,
+            archived_run_ids=None,
+        )
+
+        flag = out.series[0].points[1].regression
+        assert flag is not None
+        assert (flag.label, flag.significant, flag.p) == ("not_separated", False, None)
+        assert flag.not_separated_reason == UNIFORM_MOVE_NEEDS_RANGE
 
     def test_flags_carry_their_test_and_thresholds(self):
         run_a, res_a = _hist_run(cases=["c1", "c2"], score=5, created_at="2026-07-01T00:00:00Z")
@@ -7011,7 +7210,7 @@ class TestTheCatalogNameIsTheNameTheSurfacesAccept:
     back "unknown history metric ... expected one of composite, cost_usd, total_ms".
     An operator who read the catalog and used what it said got a validation error,
     and the name that worked appeared in no catalog. The two vocabularies are
-    reconciled by ACCEPTING the catalog name (`reporting.resolve_measure_name`),
+    reconciled by ACCEPTING the catalog name (`aggregation.resolve_measure_name`),
     never by renaming the row constants — a row is one observation and `composite`
     is its honest name, which is why `export_results` still emits it in the metric
     column.
@@ -7037,7 +7236,7 @@ class TestTheCatalogNameIsTheNameTheSurfacesAccept:
             created_at="2026-07-01T00:00:00Z",
         )
 
-        for row_name in sorted(reporting.HISTORY_METRICS):
+        for row_name in sorted(history.HISTORY_METRICS):
             catalog_name = _catalog_name_of(row_name)
             assert describe_measure(catalog_name, _JUDGED_HOST.measures).family is not None, (
                 f"{catalog_name!r} is offered as the catalog name of {row_name!r} but the registry does not "
@@ -7078,19 +7277,19 @@ class TestTheCatalogNameIsTheNameTheSurfacesAccept:
 
     def test_the_alias_table_is_one_table_read_both_ways(self):
         """Derived, not written twice — a pair added to one direction only cannot exist."""
-        accepted = sorted(reporting.PROJECTED_METRICS | reporting.HISTORY_METRICS)
+        accepted = sorted(reporting.PROJECTED_METRICS | history.HISTORY_METRICS)
         catalog = {observation: _catalog_name_of(observation) for observation in accepted}
 
         assert len(set(catalog.values())) == len(catalog), (
             "two row measures publish the same catalog name, so the inverse silently drops one"
         )
         for observation, aggregate in catalog.items():
-            assert reporting.resolve_measure_name(aggregate) == observation
+            assert aggregation.resolve_measure_name(aggregate) == observation
 
     def test_a_name_outside_the_alias_table_is_passed_through_to_be_refused(self):
         """The alias must not become a guesser: an unknown name reaches its own refusal."""
-        assert reporting.resolve_measure_name("compsite") == "compsite"
-        assert reporting.resolve_measure_name(METRIC_COMPOSITE) == METRIC_COMPOSITE
+        assert aggregation.resolve_measure_name("compsite") == "compsite"
+        assert aggregation.resolve_measure_name(METRIC_COMPOSITE) == METRIC_COMPOSITE
 
     def test_a_catalogued_measure_this_surface_cannot_series_is_still_refused(self):
         """Accepting catalog names does not mean accepting the whole catalog.
@@ -7112,7 +7311,7 @@ class TestTheCatalogNameIsTheNameTheSurfacesAccept:
             compute_history([run], results, metric="compsite", profile=_JUDGED_HOST, archived_run_ids=None)
 
         message = str(excinfo.value)
-        for row_name in reporting.HISTORY_METRICS:
+        for row_name in history.HISTORY_METRICS:
             assert row_name in message
             assert _catalog_name_of(row_name) in message
 
@@ -7620,14 +7819,14 @@ class TestSignificanceRead:
         asserts that a test ran and came back negative, which a reader takes as
         a measured null the campaign never measured.
         """
-        from threetears.evals.analysis.reporting import NOT_TESTED_LABEL, significance_read
+        from threetears.evals.analysis.significance import NOT_TESTED_LABEL, significance_read
 
         assert significance_read(significant=False) == NOT_TESTED_LABEL
         assert significance_read(significant=True) == NOT_TESTED_LABEL
 
     def test_not_significant_and_not_tested_are_different_answers(self):
         """The whole point of the three-way read: the two must never collapse."""
-        from threetears.evals.analysis.reporting import NOT_SIGNIFICANT_LABEL, NOT_TESTED_LABEL, significance_read
+        from threetears.evals.analysis.significance import NOT_SIGNIFICANT_LABEL, NOT_TESTED_LABEL, significance_read
 
         backed = significance_read(significant=False, p=0.42, effect=0.1)
         unbacked = significance_read(significant=False)
@@ -7643,7 +7842,7 @@ class TestSignificanceRead:
         renders without it counting toward the predicate — the exact place the
         two could silently disagree.
         """
-        from threetears.evals.analysis.reporting import NOT_TESTED_LABEL, format_significance
+        from threetears.evals.analysis.significance import NOT_TESTED_LABEL, format_significance
 
         cell = format_significance(significant=False, paired=True, n=12)
 
@@ -7652,20 +7851,20 @@ class TestSignificanceRead:
 
     def test_either_statistic_alone_counts_as_tested(self):
         """The predicate is `p or effect size`, matching the kit — not both."""
-        from threetears.evals.analysis.reporting import SIGNIFICANT_LABEL, significance_read
+        from threetears.evals.analysis.significance import SIGNIFICANT_LABEL, significance_read
 
         assert significance_read(significant=True, p=0.01) == SIGNIFICANT_LABEL
         assert significance_read(significant=True, effect=1.4) == SIGNIFICANT_LABEL
 
     def test_a_null_verdict_with_statistics_is_still_not_tested(self):
         """No verdict is no verdict, whatever else the row happens to carry."""
-        from threetears.evals.analysis.reporting import NOT_TESTED_LABEL, significance_read
+        from threetears.evals.analysis.significance import NOT_TESTED_LABEL, significance_read
 
         assert significance_read(significant=None, p=0.01, effect=1.4) == NOT_TESTED_LABEL
 
     def test_the_labels_are_spelled_out_never_abbreviated(self):
         """ "n.s." was read as nanoseconds by an operator in a report full of `*_ms`."""
-        from threetears.evals.analysis.reporting import NOT_SIGNIFICANT_LABEL, NOT_TESTED_LABEL, SIGNIFICANT_LABEL
+        from threetears.evals.analysis.significance import NOT_SIGNIFICANT_LABEL, NOT_TESTED_LABEL, SIGNIFICANT_LABEL
 
         assert (SIGNIFICANT_LABEL, NOT_SIGNIFICANT_LABEL, NOT_TESTED_LABEL) == (
             "significant",
@@ -7678,7 +7877,7 @@ class TestSignificanceFormatting:
     """A verdict never travels without the statistics behind it, or its test."""
 
     def test_a_verdict_carries_the_statistics_it_rests_on(self):
-        from threetears.evals.analysis.reporting import format_significance
+        from threetears.evals.analysis.significance import format_significance
 
         cell = format_significance(significant=True, paired=True, p=0.0123, effect=1.42, n=8)
 
@@ -7694,7 +7893,11 @@ class TestSignificanceFormatting:
         spelled out here, so renaming either one cannot leave this passing
         against a name no surface prints.
         """
-        from threetears.evals.analysis.reporting import PAIRED_EFFECT_LABEL, UNPAIRED_EFFECT_LABEL, format_significance
+        from threetears.evals.analysis.significance import (
+            PAIRED_EFFECT_LABEL,
+            UNPAIRED_EFFECT_LABEL,
+            format_significance,
+        )
 
         assert PAIRED_EFFECT_LABEL != UNPAIRED_EFFECT_LABEL
 
@@ -7712,7 +7915,7 @@ class TestSignificanceFormatting:
         a private copy there fails here rather than silently answering
         differently from the compare table about the same row.
         """
-        from threetears.evals.analysis.reporting import format_significance
+        from threetears.evals.analysis.significance import format_significance
         from threetears.evals.vega.compiler import compile_chart
         from threetears.evals.analysis.viz.payloads import DeltaRow, DeltaTablePayload
 
@@ -7738,7 +7941,7 @@ class TestSignificanceFormatting:
         }
 
     def test_the_disclosure_names_the_paired_test_and_its_threshold(self):
-        from threetears.evals.analysis.reporting import significance_disclosure
+        from threetears.evals.analysis.significance import significance_disclosure
         from threetears.evals.analysis.stats import PAIRED_TEST_NAME
 
         sentence = significance_disclosure(paired=True)
@@ -7748,7 +7951,7 @@ class TestSignificanceFormatting:
 
     def test_the_disclosure_names_the_unpaired_test_when_samples_were_not_paired(self):
         """Which test ran is most of what a small arm's verdict rests on."""
-        from threetears.evals.analysis.reporting import significance_disclosure
+        from threetears.evals.analysis.significance import significance_disclosure
         from threetears.evals.analysis.stats import PAIRED_TEST_NAME, UNPAIRED_TEST_NAME
 
         sentence = significance_disclosure(paired=False)
@@ -7758,7 +7961,7 @@ class TestSignificanceFormatting:
 
     def test_the_disclosure_promises_no_alerting(self):
         """Reporting presents and compares; it never routes a verdict anywhere."""
-        from threetears.evals.analysis.reporting import significance_disclosure
+        from threetears.evals.analysis.significance import significance_disclosure
 
         assert "no alerting" in significance_disclosure(paired=True)
 
@@ -7767,12 +7970,12 @@ class TestCrossSubjectDisclosure:
     """Composites are comparable within a subject and never across one."""
 
     def test_the_same_subject_needs_no_disclosure(self):
-        from threetears.evals.analysis.reporting import cross_subject_disclosure
+        from threetears.evals.analysis.significance import cross_subject_disclosure
 
         assert cross_subject_disclosure("ent-maple", "ent-maple") is None
 
     def test_two_subjects_are_named_and_the_delta_is_withheld(self):
-        from threetears.evals.analysis.reporting import cross_subject_disclosure
+        from threetears.evals.analysis.significance import cross_subject_disclosure
 
         note = cross_subject_disclosure("ent-maple", "ent-bea")
 
@@ -7794,7 +7997,7 @@ class TestCrossSubjectDisclosure:
         earlier claims in this branch false. **Host-neutral subject keys**, because the
         sentence interpolates them and a fixture key could carry a host noun.
         """
-        from threetears.evals.analysis.reporting import cross_subject_disclosure
+        from threetears.evals.analysis.significance import cross_subject_disclosure
 
         note = cross_subject_disclosure("subj-a", "subj-b")
 
@@ -7810,7 +8013,7 @@ class TestCrossSubjectDisclosure:
         the rule that actually bites — two DIFFERENT subjects are not comparable — and it is
         covered above.
         """
-        from threetears.evals.analysis.reporting import cross_subject_disclosure
+        from threetears.evals.analysis.significance import cross_subject_disclosure
 
         assert cross_subject_disclosure("", "") is None
         assert cross_subject_disclosure("ent-maple", "ent-bea") is not None
@@ -7878,7 +8081,7 @@ class TestGoalStatePivots:
 
     @staticmethod
     def goal_state_records():
-        from threetears.evals.contracts.models import GoalStateOutcome
+        from threetears.evals.schema.models import GoalStateOutcome
 
         run, _ = _run_with_results()
         results = [

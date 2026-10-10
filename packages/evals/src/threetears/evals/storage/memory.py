@@ -1,11 +1,11 @@
-"""The in-memory reference :class:`~threetears.evals.contracts.store_port.DocumentStore`.
+"""The in-memory reference :class:`~threetears.evals.schema.store_port.DocumentStore`.
 
 Every rule the port states, kept in one process's memory: documents keyed by ``(scope_id, id)``
 with ``doc_type`` part of every typed read, a miss that is an outcome rather than an exception,
-``exclude`` and ``keep`` with the one meaning :func:`~threetears.evals.contracts.store_port.omit_paths`
-and :func:`~threetears.evals.contracts.store_port.keep_fields` give them, and optimistic concurrency:
+``exclude`` and ``keep`` with the one meaning :func:`~threetears.evals.schema.store_port.omit_paths`
+and :func:`~threetears.evals.schema.store_port.keep_fields` give them, and optimistic concurrency:
 every write mints a fresh etag, a conditional write that presents a stale one raises
-:class:`~threetears.evals.contracts.store_port.StoreConflict`, and :meth:`InMemoryDocumentStore.merge_fields`
+:class:`~threetears.evals.schema.store_port.StoreConflict`, and :meth:`InMemoryDocumentStore.merge_fields`
 moves the etag on as a whole-document write does. It passes every case of the store conformance
 kit (``threetears.evals.testing``).
 
@@ -28,7 +28,7 @@ import threading
 from collections.abc import Iterator, Sequence
 from typing import Any
 
-from threetears.evals.contracts.store_port import StoreConflict, keep_fields, omit_paths
+from threetears.evals.schema.store_port import StoreConflict, keep_fields, omit_paths
 
 __all__ = ["InMemoryDocumentStore"]
 
@@ -48,7 +48,7 @@ def _stored_equal(stored: Any, wanted: Any) -> bool:
 
 
 class InMemoryDocumentStore:
-    """A :class:`~threetears.evals.contracts.store_port.DocumentStore` over one dict.
+    """A :class:`~threetears.evals.schema.store_port.DocumentStore` over one dict.
 
     Attributes:
         documents: The stored documents, keyed by ``(scope_id, id)``. The store's own state, exposed

@@ -1,8 +1,8 @@
 """Multi-actor user simulator for the eval substrate.
 
 Drives one (or several) simulated actors against a conversing candidate
-inside an eval scenario. A template's :class:`~threetears.evals.contracts.models.ConversationSpec`
-lists them; each :class:`~threetears.evals.contracts.models.ActorPolicy` declares a policy and an
+inside an eval scenario. A template's :class:`~threetears.evals.schema.models.ConversationSpec`
+lists them; each :class:`~threetears.evals.schema.models.ActorPolicy` declares a policy and an
 intent, and the simulator turns those into one LLM call per turn-it-speaks, conditioned on the
 variation params and the transcript so far.
 
@@ -31,7 +31,7 @@ Stopping
 --------
 
 A conversation stops only on a structural signal, recorded as a
-:class:`~threetears.evals.contracts.models.ConversationStopCause`: the turn budget,
+:class:`~threetears.evals.schema.models.ConversationStopCause`: the turn budget,
 every simulated actor's structured ``done``, or a rig fault. One actor saying ``done`` leaves the
 conversation (the scheduler stops offering it); the conversation ends ``user_done`` when the last
 one leaves. Goal checks grade the end state and never end a conversation: one that holds early
@@ -103,20 +103,23 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from threetears.evals.contracts.authored import strict_schema
-from threetears.evals.contracts.base import EvalBaseModel
-from threetears.evals.contracts.models import (
+from threetears.evals.kernel.authored import strict_schema
+from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.schema.models import (
     CANDIDATE_SPEAKER,
     ROUND_DONE,
+    WORLD_SPEAKER,
     ActorPolicy,
     ClientRequestSettings,
     ConversationSpec,
     ConversationStopCause,
     ReasoningEffort,
     SimulatorPurpose,
+    WorldRound,
 )
-from threetears.evals.contracts.provider import SimulatorLLM
-from threetears.evals.contracts.usage_capture import CallUsage, RoleUsageLedger
+from threetears.evals.schema.completion import SimulatorLLM
+from threetears.evals.schema.world_events import WorldEvent
+from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger
 
 #: How hard the simulated user reasons: the router's ``reasoning.effort``, at its lowest level that
 #: still reasons. A turn is a line of dialogue and a scheduling pick is one id, so the reasoning
@@ -187,7 +190,7 @@ class SimulatedUserReply(EvalBaseModel):
 class NextSpeakerReply(EvalBaseModel):
     """What the ``llm_decided`` scheduler returns for one pick, as the strict schema it is sent.
 
-    ``next`` is an actor id or :data:`~threetears.evals.contracts.models.ROUND_DONE`. The schema
+    ``next`` is an actor id or :data:`~threetears.evals.schema.models.ROUND_DONE`. The schema
     sent with each call narrows it to an ``enum`` of exactly the answers legal at that point, and
     the reply is checked against the same set on return, whatever the provider claims to enforce.
     """
@@ -409,6 +412,8 @@ class TurnDriver:
         """
         if self.user_turns or self.candidate_turns:
             raise ValueError("initial_utterance opens a conversation, and this one has already taken turns")
+        if not self.conversation.actors:
+            return None
         actor = self.conversation.actors[0]
         template_text = actor.initial_utterance_template
         if not template_text:
@@ -560,6 +565,45 @@ class TurnDriver:
             round_index=self._round_index,
         )
 
+    # ---- World rounds -------------------------------------------------------
+
+    def world_round(self) -> WorldRound | None:
+        """The world round the current round is, or ``None`` when the actors speak in it."""
+        return self.conversation.world_round(self.candidate_turns + 1)
+
+    def record_world_event(self, world_round: WorldRound, event: WorldEvent) -> SimulatorTurn:
+        """Record that the current round's stimulus fired, and return it as the round's one turn.
+
+        The turn is spoken by :data:`~threetears.evals.schema.models.WORLD_SPEAKER`, so the kind answering the
+        round knows the world moved and nobody spoke. It carries a due session break, as a delivered line would.
+        It is not delivered through ``post_user_turn``: the host's fire handle already moved the candidate's
+        world. The transcript records it, so an actor speaking in a later round reads that it happened.
+
+        Args:
+            world_round: The current round, as :meth:`world_round` named it.
+            event: What the world session recorded when it fired.
+
+        Returns:
+            The round's turn.
+
+        Raises:
+            ValueError: ``world_round`` is not the current round.
+        """
+        if world_round != self.world_round():
+            raise ValueError(f"turn {world_round.turn} is not the current round's world event")
+        content = f"[world] {world_round.dimension} fired ({event.condition or event.kind})"
+        self.transcript.append((WORLD_SPEAKER, content))
+        flag = self._pending_session_break
+        self._pending_session_break = False
+        return SimulatorTurn(
+            actor_id=WORLD_SPEAKER,
+            content=content,
+            session_break=flag,
+            session_index=self._session_index,
+            round_index=self._round_index,
+            metadata={"world_event": event.model_dump(mode="json")},
+        )
+
     def record_candidate_turn(self, turn: CandidateTurn) -> None:
         """Append the candidate's answer to the round, close the round, and mark a due session break.
 
@@ -591,7 +635,7 @@ class TurnDriver:
     def cost_usd(self) -> float | None:
         """What every call in :attr:`calls` cost, or ``None`` once any one of them went unpriced.
 
-        Unpriced is a state, never zero (:func:`~threetears.evals.contracts.usage_capture.blended_cost`):
+        Unpriced is a state, never zero (:func:`~threetears.evals.kernel.usage_capture.blended_cost`):
         a total over a call nobody priced is unknown, and a cost cap stops on it rather than counting it free.
         """
         if any(call.usage.cost_usd is None for call in self.calls):

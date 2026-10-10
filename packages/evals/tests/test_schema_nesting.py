@@ -1,4 +1,4 @@
-"""Every schema walker in the contracts agrees on where one schema can sit inside another.
+"""Every schema walker in the engine agrees on where one schema can sit inside another.
 
 Four readers walk a world or parameter schema: the honoured-subset audit (``honoured_kind``), the registry's
 self-contradiction check, the prose gate over world paths and the call-parameter gate over recorded calls.
@@ -16,11 +16,11 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts.dsl import call_parameter_matches, undefined_call_references, world_prose_matches
-from threetears.evals.contracts.host.world import WorldDimension, WorldRegistrationError, WorldRegistry
-from threetears.evals.contracts.host.world_schema import UnsupportedSchemaError, honoured_kind
-from threetears.evals.contracts.prose import PROSE_SCHEMA_KEY, schema_nodes_at
-from threetears.evals.contracts.schema_nesting import nested_schemas
+from threetears.evals.kernel.dsl import call_parameter_matches, undefined_call_references, world_prose_matches
+from threetears.evals.kernel.host.world import WorldDimension, WorldRegistrationError, WorldRegistry
+from threetears.evals.kernel.host.world_schema import UnsupportedSchemaError, honoured_kind
+from threetears.evals.schema.prose import PROSE_SCHEMA_KEY, schema_nodes_at
+from threetears.evals.schema.schema_nesting import nested_schemas
 
 
 class _Position:

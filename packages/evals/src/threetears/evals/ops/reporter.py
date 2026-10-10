@@ -29,10 +29,10 @@ from threetears.evals.analysis.reporter_bank import FrozenReporterCase, frozen_c
 from threetears.evals.analysis.reporter_curation import set_reporter_case_archived
 from threetears.evals.analysis.reporter_kind import REPORTER_KIND, LabelDirection
 from threetears.evals.analysis.service import freeze_reporter_case
-from threetears.evals.contracts.base import EvalBaseModel
-from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
-from threetears.evals.contracts.host import EvalHost
-from threetears.evals.contracts.models import EvalTemplate
+from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.host import EvalHost
+from threetears.evals.schema.models import EvalTemplate
 from threetears.evals.ops.runs import LaunchArguments
 from threetears.evals.run.authoring import get_template
 

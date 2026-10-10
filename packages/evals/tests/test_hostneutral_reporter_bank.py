@@ -33,9 +33,9 @@ from threetears.evals.analysis.reporter_kind import (
     reporter_case_payload,
 )
 from threetears.evals.analysis.generator import user_message_digest
-from threetears.evals.contracts.errors import ValidationFailedError
-from threetears.evals.contracts.identity import IDENTITY_VERSION
-from threetears.evals.contracts.models import EvalResult, EvalTestCase, RubricScore
+from threetears.evals.kernel.errors import ValidationFailedError
+from threetears.evals.kernel.identity import IDENTITY_VERSION
+from threetears.evals.schema.models import EvalResult, EvalTestCase, RubricScore
 from packages.evals.tests.factories import memory_storage, result_capture_defaults
 
 

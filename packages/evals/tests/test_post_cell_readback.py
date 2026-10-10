@@ -1,7 +1,7 @@
 """Post-cell readback: the runner reads the world a cell LEFT and stores it, whatever the kind did.
 
 After the kind's ``invoke`` returns, the runner reads every dimension of every carrier the cell
-attached through its ``read`` handle (the cell's :class:`~threetears.evals.contracts.WorldSession`)
+attached through its ``read`` handle (the cell's :class:`~threetears.evals.kernel.WorldSession`)
 and stores it on the cell's trace as ``end_state``. Here rather than in each kind, so a kind that
 never thought to read its world still stores what its candidate left behind — and none can store the
 seed in its place, which is the founding defect of a world read.
@@ -18,21 +18,19 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts import (
-    CandidateOutput,
-    CellSink,
+from threetears.evals.kernel import CandidateOutput, CellSink, WorldSession
+from threetears.evals.schema import (
     ConversationStopCause,
     EvalTemplate,
     EvalTestCase,
     JudgedArtifact,
     WorldEvent,
     WorldSeed,
-    WorldSession,
 )
-from threetears.evals.contracts.host import ApparatusError, WorldRegistry
-from threetears.evals.contracts.world_session import WorldSessionError
-from threetears.evals.contracts.identity import IDENTITY_VERSION, DerivedVariantIdentity, compute_variant_key
-from threetears.evals.contracts.host.values import SweepableValue
+from threetears.evals.kernel.host import ApparatusError, WorldRegistry
+from threetears.evals.kernel.world_session import WorldSessionError
+from threetears.evals.kernel.identity import IDENTITY_VERSION, DerivedVariantIdentity, compute_variant_key
+from threetears.evals.schema.values import SweepableValue
 from threetears.evals.run.runner import RunnerOptions, run_one_result
 from packages.evals.tests.factories import make_eval_result, make_eval_trace, memory_storage
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host

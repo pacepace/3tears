@@ -33,7 +33,7 @@ And, for the review fixes (each applied to a scratch-backed copy and restored fr
   counting results behind an undefined kappa;
 - a "can't tell" repeat set aside as unpaired (both scales, here and end to end);
 - ``tier_for_judges`` keyed without the scale; ``judge_key`` dropping the config; a repeat under another config paired;
-- the old ``separation`` words; ``EVAL_SCHEMA_VERSION`` left at 7.
+- the old ``separation`` words; ``REGENERABLE_SCHEMA_VERSION`` left at 7.
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ from threetears.evals.analysis.generator import generate_analysis
 from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
 from threetears.evals.analysis.stats import cohen_kappa
 from threetears.evals.analysis.report import DisclosureBlock, build_code_only_report
-from threetears.evals.contracts.evidence_tiers import (
+from threetears.evals.kernel.evidence_tiers import (
     JUDGED_TIER_RULE,
     CALIBRATION_MIN_AGREEMENT,
     CALIBRATION_MIN_RESULTS,
@@ -73,13 +73,7 @@ from threetears.evals.contracts.evidence_tiers import (
     separation_criterion,
     tier_of,
 )
-from threetears.evals.contracts.models import (
-    EvalResult,
-    JudgeRepeat,
-    RepeatedScore,
-    RubricScore,
-    utc_now_iso,
-)
+from threetears.evals.schema.models import EvalResult, JudgeRepeat, RepeatedScore, RubricScore, utc_now_iso
 from threetears.evals.run import rate_result
 from packages.evals.tests.factories import make_analysis, make_calibration_rating, make_eval_result
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, toyhost_campaign
@@ -929,9 +923,9 @@ class TestTheStoredShapeMovedTheSchemaVersion:
     def test_the_tier_fields_are_v8(self) -> None:
         # Judged rows and readings gained a required tier, `directional` left `EvidenceTier`, and a repeated
         # score records its first config — each a stored shape change, so a document written before it is v7.
-        from threetears.evals.contracts import models
+        from threetears.evals.schema import versioning
 
-        assert models.EVAL_SCHEMA_VERSION == 8
+        assert versioning.REGENERABLE_SCHEMA_VERSION == 8
         assert "**v8**" in _schema_version_doc(), "a bump says what changed, as v7 did"
         assert RepeatedScore.model_fields["first_judge_config_id"].is_required()
 
@@ -940,10 +934,10 @@ def _schema_version_doc() -> str:
     """The text documenting the schema versions, read from the module source beside the constant."""
     import inspect
 
-    from threetears.evals.contracts import models
+    from threetears.evals.schema import versioning
 
-    source = inspect.getsource(models)
-    start = source.index("EVAL_SCHEMA_VERSION: int")
+    source = inspect.getsource(versioning)
+    start = source.index("REGENERABLE_SCHEMA_VERSION: int")
     return source[start : source.index('"""', source.index('"""', start) + 3)]
 
 
@@ -1011,7 +1005,7 @@ class TestAStoredTierSaysWhichRuleDecidedIt:
         assert stands_on_words(current, "calibrated") == EVIDENCE_TIER_WORDS["calibrated"]
 
     def test_a_stored_analysis_without_the_field_still_loads(self) -> None:
-        from threetears.evals.contracts.campaign import EvalAnalysis
+        from threetears.evals.kernel.campaign import EvalAnalysis
 
         payload = make_analysis().model_dump(mode="json")
         payload.pop("judged_tier_rule")

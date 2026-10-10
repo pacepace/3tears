@@ -16,8 +16,8 @@ import statistics
 
 import pytest
 
-from threetears.evals.contracts.models import EvalResult
-from threetears.evals.contracts.scoring import compute_pass_hat_k, pass_hat_k_at, pool_pass_hat_k
+from threetears.evals.schema.models import EvalResult
+from threetears.evals.kernel.scoring import compute_pass_hat_k, pass_hat_k_at, pool_pass_hat_k
 from packages.evals.tests.factories import make_scored_result
 
 #: Each case's chance of passing one attempt.

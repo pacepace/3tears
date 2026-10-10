@@ -22,10 +22,8 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts import (
-    CandidateOutput,
-    CandidateTelemetry,
-    LeverCoordinateError,
+from threetears.evals.kernel import CandidateOutput, CandidateTelemetry, LeverCoordinateError, ValidationFailedError
+from threetears.evals.schema import (
     RoleUsage,
     ConversationStopCause,
     EvalRun,
@@ -34,9 +32,9 @@ from threetears.evals.contracts import (
     JudgedArtifact,
     JudgeEvidence,
     RubricDim,
-    ValidationFailedError,
 )
-from threetears.evals.contracts.host import EvalHost, SweepableValue
+from threetears.evals.kernel.host import EvalHost
+from threetears.evals.schema import SweepableValue
 from threetears.evals.run import (
     BudgetStoppedError,
     WitnessedJudging,

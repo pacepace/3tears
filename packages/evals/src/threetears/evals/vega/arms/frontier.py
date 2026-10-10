@@ -38,7 +38,7 @@ from threetears.evals.vega.compiler import (
 )
 from threetears.evals.analysis.viz.intent import ChartIntent
 from threetears.evals.analysis.viz.intents.frontier import CLASS_FIELD, CLASS_SHAPES, DISPLAY_FIELD, EMPHATIC_CLASSES
-from threetears.evals.contracts.host import ChartFont
+from threetears.evals.kernel.host import ChartFont
 from threetears.evals.vega.palette import CONTEXT_STYLE, font_weights, geometry
 
 #: The classes drawn in the context neutral rather than in the chart's own ink.

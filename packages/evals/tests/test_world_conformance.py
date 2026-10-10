@@ -19,22 +19,19 @@ import dataclasses
 
 import pytest
 
-from threetears.evals.contracts.host.world import WorldDimension, WorldRegistry
-from threetears.evals.contracts.host.world_conformance import (
+from threetears.evals.kernel.host.world import WorldDimension, WorldRegistry
+from threetears.evals.kernel.host.world_conformance import (
     CheckName,
     ConformanceResult,
     ObligationRow,
     Outcome,
     Qualification,
     WorldConformanceError,
-    # Private, and tested directly: routing every schema shape through check_world_conformance
-    # would need a bound host per shape, and a generator emitting a value the schema forbids is a
-    # false green nothing downstream can detect — so it is asserted where it is produced.
     check_world_conformance,
     obligation_rows,
     obligations,
 )
-from threetears.evals.contracts.host.world_schema import json_equal
+from threetears.evals.kernel.host.world_schema import json_equal
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.courierhost import courier_world
 from packages.evals.tests.fixtures.toyhost.world import (
@@ -1390,7 +1387,7 @@ class TestMovementASiblingAccountsForIsNotALeak:
 class TestPerceivingSurfacesAreDeclaredAsATuple:
     @pytest.mark.parametrize("surfaces", ["shelf", ("shelf", "shelf"), ("shelf", "")])
     def test_a_bare_string_a_duplicate_or_a_blank_is_refused(self, surfaces: object) -> None:
-        from threetears.evals.contracts.host.world import WorldRegistrationError
+        from threetears.evals.kernel.host.world import WorldRegistrationError
 
         with pytest.raises(WorldRegistrationError, match="perceived_by|perceiving surface"):
             WorldDimension(

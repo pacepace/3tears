@@ -192,7 +192,7 @@ def test_every_module_under_src_is_measured() -> None:
 
     assert not outside, f"modules under src/ outside the engine package, which the register does not key: {outside}"
     # Whichever module carries the most host words today, the measure must have read some: a measure
-    # that read nothing would satisfy a register of empty rows. (It pinned ``contracts/models.py`` until
+    # that read nothing would satisfy a register of empty rows. (It pinned ``schema/models.py`` until
     # that module was cleaned to zero, which is the reason it no longer names one.)
     assert any(_counts(hits) for hits in measured.values()), (
         "the measure read no host term in any module, so it read nothing"
@@ -202,7 +202,7 @@ def test_every_module_under_src_is_measured() -> None:
 def _plant(root: Path) -> Path:
     """A minimal package tree with one module that names no host. Returns that module."""
     core = root / "core.py"
-    core.write_text('"""Score a subject."""\n\nfrom threetears.evals.contracts import x\n', encoding="utf-8")
+    core.write_text('"""Score a subject."""\n\nfrom threetears.evals.kernel import x\n', encoding="utf-8")
     return core
 
 

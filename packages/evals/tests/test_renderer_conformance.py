@@ -36,8 +36,8 @@ from threetears.evals.analysis.viz import (
     renderer_disagreements,
     table_disagreements,
 )
-from threetears.evals.contracts.campaign import VizType
-from threetears.evals.contracts.host import StyleError, StyleProfile
+from threetears.evals.kernel.campaign import VizType
+from threetears.evals.kernel.host import StyleError, StyleProfile
 from threetears.evals.vega import CompiledChart, VegaRenderer, packaged_font, packaged_palette, vega_config
 from threetears.evals.vega.arms import ARMS
 from threetears.evals.vega.palette import series_slots, validated_slots

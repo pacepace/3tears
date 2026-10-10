@@ -47,7 +47,7 @@ the palette. A host's own face cannot sensibly live in this package — it is
 megabytes of licensed files, it belongs to whoever owns it, and two products would
 need two of them — so it arrives as :func:`register_fonts`, or as the ``font_dir``
 argument to a render call, beside the host's
-:class:`~threetears.evals.contracts.host.ChartFont`, which carries its family and its
+:class:`~threetears.evals.kernel.host.ChartFont`, which carries its family and its
 measured advances.
 
 **A host face drawn with no directory is loud, because its consequence is
@@ -67,7 +67,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from threetears.evals.contracts.host import ChartFont, ChartPalette
+from threetears.evals.kernel.host import ChartFont, ChartPalette
 from threetears.evals.vega.palette import vega_config
 from threetears.evals.vega.text_metrics import packaged_font
 from threetears.observe import get_logger

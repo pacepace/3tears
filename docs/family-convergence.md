@@ -324,7 +324,7 @@ shape the extraction:
   only in discodon's own host-resident modules, which is where the requirement leaves
   it. So the port is no longer carved under host vocabulary. discodon #2397.
 - **The analysis *core* is dependency-free; the analysis *generator* is
-  not.** `analysis/bundle.py` and its models are stdlib + pydantic as
+  not.** `analysis/bundle/` and its models are stdlib + pydantic as
   claimed. `analysis/generator.py` imports the host's OpenRouter client and
   prompt registry. The fix stays inside patterns already ruled here:
   - its prompts are *product prompts* (§4.3) -- they ship as package content
