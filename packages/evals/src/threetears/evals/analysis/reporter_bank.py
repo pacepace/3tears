@@ -51,7 +51,7 @@ from threetears.evals.analysis.reporter_kind import (
 from threetears.evals.kernel.errors import ValidationFailedError
 
 if TYPE_CHECKING:
-    from threetears.evals.analysis.bundle import AnalysisContextBundle
+    from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
     from threetears.evals.schema.models import CalibrationRating, EvalResult, EvalTestCase, RubricScore
 
 

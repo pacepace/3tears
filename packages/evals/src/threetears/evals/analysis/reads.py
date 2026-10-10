@@ -43,31 +43,22 @@ from pydantic import ValidationError
 
 from threetears.evals.analysis.contention import marked_latency_sentence, withheld_latency
 from threetears.evals.analysis.reporting import (
-    DEFAULT_WEIGHTING,
     METRIC_COMPOSITE,
-    CostEstimate,
-    PlannedCost,
-    ExportError,
-    FrontierError,
-    HistoryError,
-    HistoryResult,
-    PivotError,
-    PivotTable,
-    ScoreExport,
-    completeness_disclosure,
-    compute_comparison_sets,
-    compute_frontier,
-    compute_history,
-    compute_orphaned_runs,
-    compute_pivot,
-    compute_program_budget,
-    cross_subject_disclosure,
-    export_projection,
-    normalize_bar,
     pooled_composite_basis,
     pooled_served_models,
     project_score_records,
 )
+from threetears.evals.analysis.lenses.aggregation import DEFAULT_WEIGHTING
+from threetears.evals.analysis.lenses.comparison_sets import compute_comparison_sets
+from threetears.evals.analysis.lenses.cost_estimate import CostEstimate, PlannedCost
+from threetears.evals.analysis.lenses.pivot import PivotError, PivotTable, compute_pivot
+from threetears.evals.analysis.lenses.frontier import FrontierError, compute_frontier, normalize_bar
+from threetears.evals.analysis.lenses.history import HistoryError, HistoryResult, compute_history
+from threetears.evals.analysis.lenses.program_budget import compute_program_budget
+from threetears.evals.analysis.lenses.orphaned_runs import compute_orphaned_runs
+from threetears.evals.analysis.lenses.export import ExportError, ScoreExport, export_projection
+from threetears.evals.analysis.significance import cross_subject_disclosure
+from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, composite_significance, difference_interval
 from threetears.evals.kernel.arguments import normalize_blank
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
@@ -348,7 +339,7 @@ def comparison_sets(
     group to the set actually under analysis, before anything is badged.
 
     **Resolving a campaign to its members happens HERE, not one layer down.**
-    :func:`~threetears.evals.analysis.reporting.compute_comparison_sets` takes run ids and knows
+    :func:`~threetears.evals.analysis.lenses.comparison_sets.compute_comparison_sets` takes run ids and knows
     nothing about campaigns, deliberately: new eval machinery lands host-agnostic,
     and a campaign is a grouping concept
     the reporting layer has no reason to know. Turning a grouping concept into its members is this
@@ -379,7 +370,7 @@ def comparison_sets(
         profile: The host whose vocabulary this reads.
 
     Returns:
-        A JSON-safe :class:`~threetears.evals.analysis.reporting.ComparisonSetsResult` —
+        A JSON-safe :class:`~threetears.evals.analysis.lenses.comparison_sets.ComparisonSetsResult` —
         ``comparison_sets`` sorted by subject then template, plus
         ``out_of_scope_run_ids`` naming what a scope left out. A group whose
         every member is out of scope is not returned at all.
@@ -456,16 +447,16 @@ def pivot(
             same reason as :func:`comparison_sets` — an in-flight run's cells
             are still arriving. ``"all"`` aggregates over every run.
         predicted_cost: The estimate the caller made before these runs, as
-            :func:`~threetears.evals.analysis.reporting.compute_estimate_cost` returned it — the model, or its JSON
+            :func:`~threetears.evals.analysis.lenses.cost_estimate.compute_estimate_cost` returned it — the model, or its JSON
             form as a caller across a wire holds it — or the planned costs of a launch its host's pricer priced
-            (:class:`~threetears.evals.analysis.reporting.PlannedCost`, which
+            (:class:`~threetears.evals.analysis.lenses.cost_estimate.PlannedCost`, which
             :func:`~threetears.evals.ops.launch_estimate`'s ``LaunchEstimate`` is). Each cost cell at a planned model
             then carries that model's predicted cost per observation beside the cost it observed. ``None`` shows
             observed cost alone.
         profile: The host whose vocabulary this reads.
 
     Returns:
-        The :class:`~threetears.evals.analysis.reporting.PivotTable`.
+        The :class:`~threetears.evals.analysis.lenses.pivot.PivotTable`.
 
     Raises:
         ValidationFailedError: The pivot cannot be answered honestly — an
@@ -551,7 +542,7 @@ def frontier(
     """Rank each subject's variants on quality x cost x latency, cheapest above bar.
 
     Composed over ``list_runs`` plus the scope's results and delegated
-    to :func:`~threetears.evals.analysis.reporting.compute_frontier`, so the REST route and the
+    to :func:`~threetears.evals.analysis.lenses.frontier.compute_frontier`, so the REST route and the
     MCP action answer from one implementation — the same shape as
     :func:`pivot`.
 
@@ -580,7 +571,7 @@ def frontier(
             ``None`` checks none, and the answer says so per subject.
 
     Returns:
-        A JSON-safe :class:`~threetears.evals.analysis.reporting.FrontierResult` dict.
+        A JSON-safe :class:`~threetears.evals.analysis.lenses.frontier.FrontierResult` dict.
 
     Raises:
         ValidationFailedError: The bar is not a number or is outside
@@ -634,7 +625,7 @@ def history(
     """Series one measure over time per contestant, flagging real regressions.
 
     Composed over ``list_runs`` plus the scope's results and delegated
-    to :func:`~threetears.evals.analysis.reporting.compute_history`, so the REST route and the MCP
+    to :func:`~threetears.evals.analysis.lenses.history.compute_history`, so the REST route and the MCP
     action answer from one implementation — the same shape as :func:`pivot`
     and :func:`frontier`.
 
@@ -657,7 +648,7 @@ def history(
         profile: The host whose vocabulary this reads.
 
     Returns:
-        The :class:`~threetears.evals.analysis.reporting.HistoryResult`.
+        The :class:`~threetears.evals.analysis.lenses.history.HistoryResult`.
 
     Raises:
         ValidationFailedError: The metric is not one this surface can series,
@@ -694,7 +685,7 @@ def program_budget(storage: LensStore, scope_id: str, *, list_runs: RunLister) -
     """Report program-lens spend over a scope, excluding no run.
 
     Composed over ``list_runs`` plus the scope's results and delegated
-    to :func:`~threetears.evals.analysis.reporting.compute_program_budget` — the same shape as
+    to :func:`~threetears.evals.analysis.lenses.program_budget.compute_program_budget` — the same shape as
     :func:`pivot` and :func:`history`, with one deliberate difference: it
     takes **no status filter**. The quality surfaces default to
     ``status="completed"`` because an in-flight or failed run has no stable
@@ -707,7 +698,7 @@ def program_budget(storage: LensStore, scope_id: str, *, list_runs: RunLister) -
         list_runs: The run listing (:data:`RunLister`).
 
     Returns:
-        A JSON-safe :class:`~threetears.evals.analysis.reporting.ProgramBudget` dict —
+        A JSON-safe :class:`~threetears.evals.analysis.lenses.program_budget.ProgramBudget` dict —
         per-run spend with a cumulative series, plus the incomplete-run
         accounting that names the spend a quality view would have dropped.
     """
@@ -740,7 +731,7 @@ def orphaned_runs(storage: LensStore, scope_id: str, *, list_runs: RunLister) ->
         list_runs: The run listing (:data:`RunLister`).
 
     Returns:
-        A JSON-safe :class:`~threetears.evals.analysis.reporting.OrphanedRunsResult`.
+        A JSON-safe :class:`~threetears.evals.analysis.lenses.orphaned_runs.OrphanedRunsResult`.
     """
     runs = list_runs(scope_id, include_archived=True)
     results = storage.query_eval_results(scope_id)
@@ -765,7 +756,7 @@ def export_results(
     Composed over ``list_runs`` plus the scope's results, projected
     through :func:`~threetears.evals.analysis.reporting.project_score_records` — the same
     projection ``pivot`` reads — and serialized at one seam
-    (:func:`~threetears.evals.analysis.reporting.export_projection`) so every surface emits
+    (:func:`~threetears.evals.analysis.lenses.export.export_projection`) so every surface emits
     byte-identical exports.
 
     **Arguments arrive raw.** The format and status are normalized here, at
@@ -799,7 +790,7 @@ def export_results(
         profile: The host whose vocabulary this reads.
 
     Returns:
-        The :class:`~threetears.evals.analysis.reporting.ScoreExport`: its body is CSV text or a JSON
+        The :class:`~threetears.evals.analysis.lenses.export.ScoreExport`: its body is CSV text or a JSON
         :class:`~threetears.evals.analysis.reporting.ScoreProjection`, and beside it the row count,
         the exclusions and the completeness disclosures a CSV body has no place for.
 
@@ -1178,7 +1169,7 @@ def compare_two_runs(
     **Composite comparisons are withheld across subjects.** Rubric
     dimensions come from each subject's own self-description, so two
     subjects' composites are different measurements wearing one number.
-    When :func:`~threetears.evals.analysis.reporting.cross_subject_disclosure` returns a
+    When :func:`~threetears.evals.analysis.significance.cross_subject_disclosure` returns a
     sentence, every composite *comparison* — the delta, the effect size, the
     p and the verdict — is withheld here rather than on each surface, so
     REST and MCP cannot answer differently about the same run pair. The

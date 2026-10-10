@@ -19,7 +19,7 @@ second copy is a silent revert: the day one is fixed, the other keeps proving th
 behaviour.
 
 ``percentile``'s own cases open the file because they are the contract the move CREATED rather
-than relocated. ``threetears/evals/analysis/bundle.py`` has its own percentile taking its
+than relocated. ``threetears/evals/analysis/bundle/measures.py`` has its own percentile taking its
 quantile on the **[0, 1]** scale; this one takes **0-100**. Handed ``0.95`` by someone carrying
 that habit across, nearest-rank would return the *minimum* — a plausible number, wrong by the
 width of the distribution, with nothing anywhere to notice it. The guard is what makes that

@@ -1,6 +1,6 @@
 """The server half of two significance rules the browser kit restates.
 
-`threetears.evals.analysis.reporting.significance_read` decides whether a significance flag may be
+`threetears.evals.analysis.significance.significance_read` decides whether a significance flag may be
 reported at all, and a finding's `delta_table` payload decides what an effect size is CALLED. The
 browser kit that renders the same stored rows restates both rules in TypeScript; the pins between
 the two languages live with that kit, in the host that ships it. What stays here is this side of
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import inspect
 
-from threetears.evals.analysis.reporting import (
+from threetears.evals.analysis.significance import (
     NOT_SIGNIFICANT_LABEL,
     NOT_TESTED_LABEL,
     PAIRED_EFFECT_LABEL,

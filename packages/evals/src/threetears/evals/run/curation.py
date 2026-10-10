@@ -62,7 +62,7 @@ class CurationStore(Protocol):
 
     **Two members are redeclared rather than inherited, and that is the choice.**
     ``load_eval_runs`` / ``query_eval_results_by_run`` are
-    :class:`~threetears.evals.analysis.bundle.CampaignReadStore`'s, and composing from
+    :class:`~threetears.evals.analysis.bundle.assemble.CampaignReadStore`'s, and composing from
     it would be legal here. It would also hand a consumer of this family a
     contract naming the bundle-assembly port it has no concept of,
     which is the union-port problem one size down. Interface segregation wins over
@@ -182,7 +182,7 @@ _ARCHIVE_THE_RUN_INSTEAD = (
 #:
 #: The one retirement an insight does have is its analysis's: archiving the analysis
 #: RETRACTS what it minted, read from the analysis at every use
-#: (:func:`~threetears.evals.analysis.bundle.retracted_insights`) rather than stamped on
+#: (:func:`~threetears.evals.analysis.bundle.insights.retracted_insights`) rather than stamped on
 #: the insight — so the one mark is honoured by the bundle and the ledger listing alike,
 #: and there is no second flag for a reader to miss.
 _NO_INSIGHT_ARCHIVE = (

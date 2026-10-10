@@ -21,11 +21,11 @@ from itertools import chain
 from threetears.evals.analysis.agreement import tier_sentence
 from threetears.evals.schema.models import CHECK_REFUSED_UNDER_CURRENT_GRAMMAR
 from threetears.evals.analysis.arms import ArmTable, arm_names, arm_table, arm_table_of, short_digest, surface_order
-from threetears.evals.analysis.bundle import (
+from threetears.evals.analysis.bundle.surface import bundle_decision_surface
+from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
     FamilyComparison,
     GoalCheckProofReading,
-    bundle_decision_surface,
     exploratory_disclosure,
 )
 from threetears.evals.analysis.cells import cell_ref, variant_of_cell_ref
@@ -1141,7 +1141,7 @@ def build_code_only_report(
     code-only report — and the first block says plainly that no analysis was generated.
 
     Args:
-        bundle: The campaign's evidence, as :func:`~threetears.evals.analysis.bundle.assemble_context_bundle`
+        bundle: The campaign's evidence, as :func:`~threetears.evals.analysis.bundle.assemble.assemble_context_bundle`
             assembled it.
         measures: The host's measure registry, which a chart's payload reads.
         assembled_at: When the bundle was assembled (ISO-8601), stated as the report's ``generated_at``.

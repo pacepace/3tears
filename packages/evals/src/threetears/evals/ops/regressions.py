@@ -45,10 +45,8 @@ from threetears.evals.analysis.agreement import (
     judge_self_agreement,
     tier_for_judges,
 )
-from threetears.evals.analysis.reporting import (
-    METRIC_COMPOSITE,
-    METRIC_OUTCOME,
-    METRIC_TRANSCRIPT,
+from threetears.evals.analysis.reporting import METRIC_COMPOSITE, METRIC_OUTCOME, METRIC_TRANSCRIPT
+from threetears.evals.analysis.lenses.history import (
     HistoryError,
     HistoryResult,
     MeasureSeries,

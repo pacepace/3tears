@@ -200,7 +200,7 @@ def capability_scores(result: EvalResult) -> list[RubricScore]:
     A boundary dimension (:data:`~threetears.evals.schema.models.RubricAxis`) is a guardrail: something the
     candidate must not do. Averaged with capability it lets a gain on one pay for a loss on the other, so
     every whole-trial measure reads this list and the boundary scores are decided on their own
-    (:attr:`~threetears.evals.analysis.bundle.AnalysisContextBundle.guardrails`). A score judged before the
+    (:attr:`~threetears.evals.analysis.bundle.schema.AnalysisContextBundle.guardrails`). A score judged before the
     axis was stamped (``axis`` None) is read as capability, which is how it was read then.
     """
     return [score for score in result.rubric_scores if score.axis != "boundary"]

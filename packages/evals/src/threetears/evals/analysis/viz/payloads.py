@@ -858,7 +858,7 @@ class AttributionPayload(_VizPayload):
 class FrontierVizPoint(BaseModel):
     """One contestant's position on cost against quality.
 
-    Named for the chart rather than for the lens: :class:`threetears.evals.analysis.reporting.FrontierPoint`
+    Named for the chart rather than for the lens: :class:`threetears.evals.analysis.lenses.frontier.FrontierPoint`
     is the computed contestant, carrying every denominator its axes were drawn over.
     This is the handful of numbers a picture places, and the two must not be confused
     when one is being read for the other.

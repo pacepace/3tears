@@ -2,7 +2,7 @@
 
 Five parts, each pinned in both directions:
 
-- **The bundle's time axis** (``analysis/bundle.py``). A campaign spanning two builds the host labels, or
+- **The bundle's time axis** (``analysis/bundle/time_axis.py``). A campaign spanning two builds the host labels, or
   failing that two days, carries one; each position's cells are the decision surface's own algebra over that
   position's runs, so a position reads exactly as a campaign of only its runs would. Positions are ordered
   by when each first ran — never by name, which would put ``0.10`` before ``0.9``.
@@ -27,7 +27,8 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis.bundle import assemble_context_bundle, cell_dimension_facts, cell_measure_facts
+from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
+from threetears.evals.analysis.bundle.surface import cell_dimension_facts, cell_measure_facts
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import SoundnessRefusal, UnresolvableReference
 from threetears.evals.analysis.generator import first_request, generate_analysis, prompt_content_version

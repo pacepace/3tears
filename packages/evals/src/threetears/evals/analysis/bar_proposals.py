@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from threetears.evals.analysis.bundle import assemble_context_bundle
+from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, bar_seed
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError

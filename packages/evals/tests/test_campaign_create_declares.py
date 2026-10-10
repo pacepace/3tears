@@ -23,7 +23,11 @@ import json
 
 from threetears.evals.actions import Caller, MountedTool, eval_catalogue, standard_tools
 from threetears.evals.analysis import assemble_context_bundle
-from threetears.evals.analysis.bundle import NO_DESIGN_EXPLORATORY, NO_QUESTION_EXPLORATORY, AnalysisContextBundle
+from threetears.evals.analysis.bundle.schema import (
+    NO_DESIGN_EXPLORATORY,
+    NO_QUESTION_EXPLORATORY,
+    AnalysisContextBundle,
+)
 from threetears.evals.analysis.campaigns import set_campaign_control
 from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
 from threetears.evals.analysis.generator import build_user_message, generate_analysis

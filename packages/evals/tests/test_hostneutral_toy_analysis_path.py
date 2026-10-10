@@ -8,7 +8,7 @@ test shares.
 
 Pinned here — each class is a property a mutation of the engine turned red:
 
-- ``analysis/bundle.py``: each cell's facts over its non-faulted observations, with its run notes;
+- ``analysis/bundle/``: each cell's facts over its non-faulted observations, with its run notes;
   the judged half of the surface; an insight's standing; retraction read off the archived flag
   alone; intervals at the one level; the shared remainder predicate and measure description; the
   lever spread's spelling.
@@ -29,7 +29,9 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis import stats
-from threetears.evals.analysis.bundle import assemble_context_bundle, cell_dimension_facts, insight_standing
+from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
+from threetears.evals.analysis.bundle.surface import cell_dimension_facts
+from threetears.evals.analysis.bundle.insights import insight_standing
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal
 from threetears.evals.analysis.generator import (
@@ -100,7 +102,7 @@ def _finding(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 # =============================================================================
-# analysis/bundle.py
+# analysis/bundle/
 # =============================================================================
 
 

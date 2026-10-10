@@ -39,7 +39,7 @@ from threetears.evals.analysis import (
     assemble_context_bundle,
     build_code_only_report,
 )
-from threetears.evals.analysis.bundle import UNVERIFIED_FOLD_PREFIX
+from threetears.evals.analysis.bundle.schema import UNVERIFIED_FOLD_PREFIX
 from threetears.evals.analysis.generator import build_user_message
 from threetears.evals.kernel import (
     CampaignDesign,

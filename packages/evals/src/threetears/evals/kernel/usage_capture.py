@@ -774,7 +774,7 @@ def count_substituted_deliveries(result: EvalResult) -> int:
 
     Read from the result's own ``async_deliveries`` record rather than from the per-turn trace,
     because that is the representation that **survives an analytic read**: the guard's two
-    aggregate consumers — :func:`~threetears.evals.analysis.reporting._frontier_point` and
+    aggregate consumers — :func:`~threetears.evals.analysis.lenses.frontier._frontier_point` and
     :func:`~threetears.evals.kernel.scoring.compute_cost_summary`, which is what ``run_summary``
     reports — read results that carry no trace at all, since it lives in a sibling
     :class:`~threetears.evals.schema.models.EvalTrace` document. A count read off the trace there
@@ -791,7 +791,7 @@ def count_substituted_deliveries(result: EvalResult) -> int:
     **Not every cost surface passes through this guard, and the ones that do not are still
     wrong for the same underlying reason.** Export, pivot and history project
     ``PROJECTED_METRICS`` off raw ``result.cost_usd``, and
-    :func:`~threetears.evals.analysis.reporting.compute_estimate_cost` (the launch pricer's basis) reads that
+    :func:`~threetears.evals.analysis.lenses.cost_estimate.compute_estimate_cost` (the launch pricer's basis) reads that
     same blended field — none of them reach production-replicating cost at all, so a result
     that replayed a DELIVERY understates them and this function is not what would fix it.
     That half is open; do not read this docstring as saying it is closed.

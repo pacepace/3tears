@@ -9,9 +9,14 @@ stored shapes it writes into — the
 not here. The pipeline:
 
 - ``reporting``, ``stats`` and ``numbers`` — the query-time projection of runs + results into
-  comparable rows, the statistics over them, and how a number is spelled for a reader.
-- ``bundle`` — :func:`~threetears.evals.analysis.bundle.assemble_context_bundle`
-  composes the reporting lenses into a deterministic, fingerprintable context bundle.
+  comparable rows, the statistics over them, and how a number is spelled for a reader; beside them the
+  disclosures every reader shares (``completeness``, ``significance``, ``measurement_windows``,
+  ``cassette_mode``) and the per-result latency split (``latency_partition``).
+- ``lenses`` — one module per reporting lens over that projection: comparison sets, pivot, frontier,
+  history, the program budget, orphaned runs, export and the cost estimate.
+- ``bundle`` — :func:`~threetears.evals.analysis.bundle.assemble.assemble_context_bundle`
+  composes the reporting lenses into a deterministic, fingerprintable context bundle; the bundle's schema
+  and each family of derivation it composes are modules of that package.
 - ``gen_prompt`` + ``generator`` — the hot-reloadable ``eval_analysis_gen``
   prompt and the closed, one-shot
   :func:`~threetears.evals.analysis.generator.generate_analysis` that turns a bundle into
@@ -63,19 +68,17 @@ from threetears.evals.analysis.agreement import (
 from threetears.evals.analysis.judge_drift import DriftVerdict, JudgeDrift, JudgeDriftDimension, judge_drift
 from threetears.evals.analysis.arms import ArmTable, cell_label, multi_rig_variants, short_digest
 from threetears.evals.analysis.bar_proposals import BaselineBarProposals, propose_bars
-from threetears.evals.analysis.bundle import (
+from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
+from threetears.evals.analysis.bundle.divergence import component_carrier, measure_movement
+from threetears.evals.analysis.bundle.observations import variant_key_of_run
+from threetears.evals.analysis.bundle.insights import InsightStanding, insight_standing
+from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
     JudgeChange,
     JudgeDriftLink,
     JudgeIdentityLevel,
     BundleInspection,
     GoalCheckProofReading,
-    InsightStanding,
-    assemble_context_bundle,
-    component_carrier,
-    insight_standing,
-    measure_movement,
-    variant_key_of_run,
 )
 from threetears.evals.analysis.campaigns import (
     DeclarableAxes,
@@ -132,14 +135,6 @@ from threetears.evals.analysis.reporter_kind import (
     reporter_cell_timeout_s,
 )
 from threetears.evals.analysis.reporting import (
-    CELL_MEASURED,
-    CELL_NOT_RUN,
-    CELL_WITHHELD,
-    COST_ESTIMATE_MIN_BASIS,
-    COST_PREDICTION_METHOD,
-    DECLARED_INPUT_ORIGIN,
-    DEFAULT_WEIGHTING,
-    HISTORY_METRICS,
     METRIC_COMPOSITE,
     METRIC_OUTCOME,
     METRIC_SCORE,
@@ -147,13 +142,14 @@ from threetears.evals.analysis.reporting import (
     PROJECTED_METRICS,
     SCOPED_METRICS_HELP,
     SERVED_MODEL_UNRECORDED,
-    WEIGHTING_EQUAL_PER_SCENARIO,
-    completeness_disclosure,
-    difference_was_declared_at_launch,
-    format_significance,
-    metric_help,
-    significance_disclosure,
 )
+from threetears.evals.analysis.lenses.aggregation import DEFAULT_WEIGHTING, WEIGHTING_EQUAL_PER_SCENARIO, metric_help
+from threetears.evals.analysis.lenses.comparison_sets import DECLARED_INPUT_ORIGIN, difference_was_declared_at_launch
+from threetears.evals.analysis.lenses.cost_estimate import COST_ESTIMATE_MIN_BASIS, COST_PREDICTION_METHOD
+from threetears.evals.analysis.lenses.pivot import CELL_MEASURED, CELL_NOT_RUN, CELL_WITHHELD
+from threetears.evals.analysis.lenses.history import HISTORY_METRICS
+from threetears.evals.analysis.significance import format_significance, significance_disclosure
+from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.analysis.gate import (
     DEFAULT_FAIL_ON,
     GATE_TOKENS,
@@ -219,11 +215,11 @@ from threetears.evals.analysis.service import (
 from threetears.evals.analysis.stats import EQUIVALENCE_TEST_NAME, PAIRED_TEST_NAME, ChangeLabel
 from threetears.evals.analysis.surface_table import SurfaceTable
 from threetears.evals.analysis.arms import ArmLevel, ArmMeasurement, ArmRow, ArmStatus
-from threetears.evals.analysis.bundle import (
+from threetears.evals.analysis.bundle.assemble import CampaignReadStore
+from threetears.evals.analysis.bundle.schema import (
     AliasedFactors,
     ArmMechanismReading,
     ArmServedModel,
-    CampaignReadStore,
     CellCoordinate,
     ComparedCell,
     ComparisonFamily,
@@ -277,37 +273,28 @@ from threetears.evals.analysis.reporter_kind import (
     WriterMessageCheck,
 )
 from threetears.evals.analysis.reporting import (
-    CaseSetIdentity,
-    ComparisonSet,
-    ComparisonSetsResult,
-    CostEstimate,
-    CostEstimateCell,
-    ExportFormat,
+    FrontierDominance,
+    ProjectionExclusions,
+    ServedModelReading,
+    ServedModelState,
+)
+from threetears.evals.analysis.latency_partition import LatencyPartition
+from threetears.evals.analysis.measurement_windows import MeasurementWindow
+from threetears.evals.analysis.lenses.comparison_sets import CaseSetIdentity, ComparisonSet, ComparisonSetsResult
+from threetears.evals.analysis.lenses.cost_estimate import CostEstimate, CostEstimateCell, PlannedCost, PredictedValue
+from threetears.evals.analysis.lenses.pivot import PivotCell, PivotTable, SimpsonsFlag
+from threetears.evals.analysis.lenses.frontier import (
     FrontierCostDecision,
     FrontierCostTie,
-    FrontierDominance,
     FrontierDominator,
     FrontierPoint,
     FrontierResult,
     FrontierVerdict,
-    HistoryResult,
-    LatencyPartition,
-    MeasureSeries,
-    MeasurementWindow,
-    PivotCell,
-    PivotTable,
-    PlannedCost,
-    PredictedValue,
-    ProjectionExclusions,
-    RegressionFlag,
-    ScoreExport,
-    SeriesPoint,
-    ServedModelReading,
-    ServedModelState,
-    SimpsonsFlag,
     SubjectFrontier,
     FrontierBoundaryCheck,
 )
+from threetears.evals.analysis.lenses.history import HistoryResult, MeasureSeries, RegressionFlag, SeriesPoint
+from threetears.evals.analysis.lenses.export import ExportFormat, ScoreExport
 from threetears.evals.analysis.service import AnalysisStore
 from threetears.evals.analysis.surface_table import (
     SurfaceColumn,

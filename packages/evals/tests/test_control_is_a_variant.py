@@ -101,7 +101,7 @@ def test_no_model_carries_the_name_so_the_scan_above_may_forbid_it_bare() -> Non
     If a model ever carries a field of this name again, the bare-name scan above would refuse
     it — this says why that refusal is right rather than a false red.
     """
-    from threetears.evals.analysis.bundle import RealizedDesign
+    from threetears.evals.analysis.bundle.schema import RealizedDesign
     from threetears.evals.kernel.campaign import EvalCampaign
 
     assert _RETIRED not in RealizedDesign.model_fields

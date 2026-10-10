@@ -13,7 +13,7 @@ import random
 
 from threetears.evals.analysis import assemble_context_bundle
 from threetears.evals.analysis.generator import build_user_message
-from threetears.evals.analysis.reporting import compute_frontier
+from threetears.evals.analysis.lenses.frontier import compute_frontier
 from threetears.evals.kernel import EvalCampaign
 from threetears.evals.schema import RubricScore
 from threetears.evals.schema.models import GoalStateOutcome, RoleUsage

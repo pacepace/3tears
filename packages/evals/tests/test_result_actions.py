@@ -42,7 +42,7 @@ from threetears.evals.schema import (
     eval_trace_doc_id,
 )
 from threetears.evals.kernel import ResultOutcome
-from threetears.evals.analysis.reporting import decompose_total_ms
+from threetears.evals.analysis.latency_partition import decompose_total_ms
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.ops import ResultDetail, ResultListing, results_list
 from packages.evals.tests.factories import make_eval_result, make_eval_run

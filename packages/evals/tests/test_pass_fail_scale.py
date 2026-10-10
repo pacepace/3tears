@@ -15,7 +15,8 @@ from typing import Any, get_args
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.analysis.reporting import PivotError, compute_pivot, project_score_records
+from threetears.evals.analysis.reporting import project_score_records
+from threetears.evals.analysis.lenses.pivot import PivotError, compute_pivot
 from threetears.evals.kernel.declaration import resolve_bar_name
 from threetears.evals.kernel.host import MeasureRegistry
 from threetears.evals.schema.models import SCALES, JudgedArtifact, JudgeEvidence, RubricDim, RubricScale, RubricScore

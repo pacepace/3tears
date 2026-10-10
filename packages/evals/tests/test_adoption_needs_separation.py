@@ -34,7 +34,8 @@ from packages.evals.tests.toyhost_memo import (
     memo_payload,
 )
 from threetears.evals.analysis.arms import arm_table
-from threetears.evals.analysis.bundle import AnalysisContextBundle, ComparisonVerdict, assemble_context_bundle
+from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, ComparisonVerdict
 from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.errors import SoundnessRefusal
 from threetears.evals.analysis.generator import generate_analysis

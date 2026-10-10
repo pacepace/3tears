@@ -14,10 +14,8 @@ from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.numbers import format_number
 
 
-from threetears.evals.analysis.reporting import (
-    FrontierResult,
-    ProjectionExclusions,
-)
+from threetears.evals.analysis.reporting import ProjectionExclusions
+from threetears.evals.analysis.lenses.frontier import FrontierResult
 
 
 def exclusion_lines(exclusions: ProjectionExclusions) -> list[str]:

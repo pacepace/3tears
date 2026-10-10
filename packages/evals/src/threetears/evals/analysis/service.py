@@ -32,12 +32,9 @@ import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
-from threetears.evals.analysis.bundle import (
-    BundleInspection,
-    CampaignReadStore,
-    assemble_context_bundle,
-    superseding_insights,
-)
+from threetears.evals.analysis.bundle.assemble import CampaignReadStore, assemble_context_bundle
+from threetears.evals.analysis.bundle.insights import superseding_insights
+from threetears.evals.analysis.bundle.schema import BundleInspection
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal
 from threetears.evals.analysis.generator import MAX_GENERATION_CALLS, GenerationTally, build_user_message, first_request
 from threetears.evals.analysis.generator import generate_analysis as _generate_analysis
@@ -67,7 +64,7 @@ from threetears.observe import get_logger
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
-    from threetears.evals.analysis.bundle import AnalysisContextBundle
+    from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
     from threetears.evals.analysis.reporter_bank import ReporterCalibration, ReporterCaseBank
     from threetears.evals.analysis.viz.intent import ChartIntent
     from threetears.evals.kernel.campaign import AttemptOutcome, EvalAnalysis, EvalCampaign, EvalInsight
@@ -91,9 +88,9 @@ _SCOPE_SAMPLE = 5
 class AnalysisStore(CampaignReadStore, Protocol):
     """The storage calls the analysis service makes — its own, plus the bundle assembly's it hands the store to.
 
-    It extends :class:`~threetears.evals.analysis.bundle.CampaignReadStore` rather than repeating it,
+    It extends :class:`~threetears.evals.analysis.bundle.assemble.CampaignReadStore` rather than repeating it,
     because every function here that assembles a bundle passes this same store to
-    :func:`~threetears.evals.analysis.bundle.assemble_context_bundle`, so a store satisfying this port
+    :func:`~threetears.evals.analysis.bundle.assemble.assemble_context_bundle`, so a store satisfying this port
     has to satisfy that one. ``query_insights`` is declared again, wider: the ledger listing
     filters on the minting campaign as well as the subject, and the bundle's narrower call is one
     this signature accepts.

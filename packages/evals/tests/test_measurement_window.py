@@ -12,17 +12,16 @@ from __future__ import annotations
 
 import pytest
 
-from threetears.evals.analysis import reporting
-from threetears.evals.analysis.reporting import (
-    BADGE_MEASUREMENT_WINDOWS_DISJOINT,
+from threetears.evals.analysis import measurement_windows
+from threetears.evals.analysis.measurement_windows import (
     DISJOINT_WINDOWS_CLAUSE,
     MAX_INLINE_MEASUREMENT_WINDOWS,
     MeasurementWindow,
-    compute_comparison_sets,
     disjoint_window_pairs,
     measurement_window,
     measurement_window_disclosure,
 )
+from threetears.evals.analysis.lenses.comparison_sets import BADGE_MEASUREMENT_WINDOWS_DISJOINT, compute_comparison_sets
 from threetears.evals.analysis.reads import comparison_sets
 from threetears.evals.schema import SubjectSnapshot
 from threetears.evals.schema.models import EvalResult, EvalRun
@@ -42,7 +41,7 @@ _HOST = toyhost_profile()
 def bool_disjoint(windows) -> bool:
     """Whether ANY pair of these windows is disjoint.
 
-    ``reporting`` exports the pair list, not a boolean. A wrapper named
+    ``measurement_windows`` exports the pair list, not a boolean. A wrapper named
     ``measurement_windows_are_disjoint`` used to provide one, and it read as a
     universal ("these windows are disjoint") while returning an existential —
     the exact misreading this module exists to prevent. It lost its last
@@ -566,7 +565,7 @@ def test_a_naive_stamp_beside_an_aware_one_yields_no_duration_rather_than_a_wron
     disclosure = measurement_window_disclosure(windows)
 
     assert disclosure is not None
-    assert reporting.UNCOMPUTABLE_GAP_CLAUSE in disclosure
+    assert measurement_windows.UNCOMPUTABLE_GAP_CLAUSE in disclosure
 
 
 def test_the_summary_form_names_the_widest_gap_and_counts_the_rest():
@@ -606,9 +605,9 @@ def test_the_pair_list_caps_even_when_every_span_is_listed():
 
     assert disclosure is not None
     named = disclosure.count(" apart")
-    assert named == reporting.MAX_RENDERED_WINDOW_GAPS
+    assert named == measurement_windows.MAX_RENDERED_WINDOW_GAPS
     assert (
-        f"+{21 - reporting.MAX_RENDERED_WINDOW_GAPS} further non-overlapping pair(s), all narrower than these"
+        f"+{21 - measurement_windows.MAX_RENDERED_WINDOW_GAPS} further non-overlapping pair(s), all narrower than these"
         in disclosure
     )
 
@@ -626,9 +625,9 @@ def test_the_predicate_and_the_pair_list_are_one_derivation():
     ]
     partly = [*overlapping, _window("c", "2026-08-04T20:00:00+00:00", "2026-08-04T21:00:00+00:00")]
 
-    assert reporting.disjoint_window_pairs(overlapping) == []
+    assert measurement_windows.disjoint_window_pairs(overlapping) == []
     assert bool_disjoint(overlapping) is False
-    assert len(reporting.disjoint_window_pairs(partly)) == 2
+    assert len(measurement_windows.disjoint_window_pairs(partly)) == 2
     assert bool_disjoint(partly) is True
 
 
@@ -646,10 +645,12 @@ def test_the_split_covers_every_pair_and_names_the_overlapping_half():
         _window("c", "2026-08-04T20:00:00+00:00", "2026-08-04T21:00:00+00:00"),
     ]
 
-    pairs = reporting.classify_window_pairs(windows)
+    pairs = measurement_windows.classify_window_pairs(windows)
 
     assert pairs.total == 3, "every pair is classified — a run set of three has three of them"
-    assert pairs.disjoint == reporting.disjoint_window_pairs(windows), "the disjoint half IS the exported list"
+    assert pairs.disjoint == measurement_windows.disjoint_window_pairs(windows), (
+        "the disjoint half IS the exported list"
+    )
     assert [(both.first.run_id, both.second.run_id) for both in pairs.overlapping] == [("a", "b")]
 
 
@@ -661,8 +662,8 @@ def test_a_run_set_too_small_to_pair_classifies_as_neither():
     """
     lone = [_window("a", "2026-08-04T09:00:00+00:00", "2026-08-04T11:00:00+00:00")]
 
-    assert reporting.classify_window_pairs(lone).total == 0
-    assert reporting.classify_window_pairs([]).total == 0
+    assert measurement_windows.classify_window_pairs(lone).total == 0
+    assert measurement_windows.classify_window_pairs([]).total == 0
 
 
 @pytest.mark.parametrize(
@@ -675,12 +676,12 @@ def test_a_run_set_too_small_to_pair_classifies_as_neither():
         (3600, "1h00m"),
         (86400, "1d00h"),
         (516600, "5d23h"),
-        (None, reporting.UNCOMPUTABLE_GAP_CLAUSE),
+        (None, measurement_windows.UNCOMPUTABLE_GAP_CLAUSE),
     ],
 )
 def test_a_gap_renders_as_two_significant_units(seconds, rendered):
     """Compact and unit-word-free, so a list of pairs reads as numbers to weigh."""
-    assert reporting.format_window_gap(seconds) == rendered
+    assert measurement_windows.format_window_gap(seconds) == rendered
 
 
 # =============================================================================

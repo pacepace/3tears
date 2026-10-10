@@ -22,10 +22,11 @@ import pytest
 from pydantic import BaseModel, Field
 
 from threetears.evals.analysis import DisclosureBlock, build_code_only_report
-from threetears.evals.analysis.bundle import AnalysisContextBundle, assemble_context_bundle
+from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.generator import generate_analysis
 from threetears.evals.analysis.reads import run_summary
-from threetears.evals.analysis.reporting import FrontierPoint, compute_frontier
+from threetears.evals.analysis.lenses.frontier import FrontierPoint, compute_frontier
 from threetears.evals.kernel.host import SHARED_CORE, HostProfile, Sweepable
 from threetears.evals.kernel.host.kinds import KindContract
 from threetears.evals.kernel.host.sweepables import RegistrationError

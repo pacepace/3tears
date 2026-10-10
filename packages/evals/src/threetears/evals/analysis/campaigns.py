@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import Field
 
-from threetears.evals.analysis.bundle import variant_key_of_run
+from threetears.evals.analysis.bundle.observations import variant_key_of_run
 from threetears.evals.kernel.authoring_fields import reject_unknown_authoring_fields
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.campaign_writes import serialized_campaign_write
@@ -53,7 +53,7 @@ class CampaignStore(Protocol):
     themselves, the template a declaration's bars are checked against, and — for the view's
     window and a control's designation — a member run's stamp, the run, and its results.
 
-    **Not composed from** :class:`~threetears.evals.analysis.bundle.CampaignReadStore`, though one
+    **Not composed from** :class:`~threetears.evals.analysis.bundle.assemble.CampaignReadStore`, though one
     member is redeclared from it. That port is the bundle's four reads and writes nothing;
     composing would hand a consumer of the bundle a contract naming campaign writes, and a
     consumer of this family the bundle's insight reads — the union-port problem the curation

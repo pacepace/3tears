@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis import assemble_context_bundle
-from threetears.evals.analysis.bundle import goal_check_proofs_of
+from threetears.evals.analysis.bundle.measures import goal_check_proofs_of
 from threetears.evals.analysis.report import DisclosureBlock, build_code_only_report
 from threetears.evals.schema import ControlEndState, EvalRun, EvalTestCase, GoalCheckControls, GoalStateOutcome
 from threetears.evals.kernel.errors import ValidationFailedError

@@ -17,8 +17,31 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.evals.analysis import reporting
+from threetears.evals.analysis.lenses import aggregation, history
 from threetears.evals.analysis.reporting import (
-    FrontierResult,
+    METRIC_COMPOSITE,
+    METRIC_COST_USD,
+    METRIC_GOAL_STATE,
+    METRIC_OUTCOME,
+    METRIC_SCORE,
+    METRIC_TOTAL_MS,
+    METRIC_TRANSCRIPT,
+    ScoreProjection,
+    ScoreRecord,
+    dim_judge_model,
+    place_results,
+    project_score_records,
+)
+from threetears.evals.analysis.latency_partition import (
+    PARTITION_TOLERANCE_MS,
+    WITHHELD_PARTS_EXCEED_WHOLE,
+    WITHHELD_UNMEASURED_COMPONENT,
+    LatencyPartition,
+    decompose_total_ms,
+)
+from threetears.evals.analysis.cassette_mode import CASSETTE_SPAN_CLAUSE, cassette_mode_disclosure
+from threetears.evals.analysis.lenses.aggregation import WEIGHTING_EQUAL_PER_SCENARIO, WEIGHTING_SAMPLE_WEIGHTED
+from threetears.evals.analysis.lenses.comparison_sets import (
     BADGE_CASE_SET_DIFFERS,
     BADGE_CASE_SET_UNRESOLVED,
     BADGE_CASSETTE_MODE_DIFFERS,
@@ -27,51 +50,24 @@ from threetears.evals.analysis.reporting import (
     BADGE_MEASUREMENT_WINDOWS_DISJOINT,
     BADGE_ROLES_DIFFER,
     BADGE_TOOL_CONFIG_DIFFERS,
-    CASSETTE_SPAN_CLAUSE,
+    ComparisonSet,
+    compute_comparison_sets,
+    difference_was_declared_at_launch,
+)
+from threetears.evals.analysis.lenses.cost_estimate import CostEstimateError, PredictedValue, compute_estimate_cost
+from threetears.evals.analysis.lenses.pivot import (
     CELL_MEASURED,
     CELL_UNMEASURED,
     CELL_WITHHELD,
-    DEGRADED_RUN_CLAUSE,
-    METRIC_COMPOSITE,
-    METRIC_COST_USD,
-    METRIC_GOAL_STATE,
-    METRIC_OUTCOME,
-    METRIC_SCORE,
-    METRIC_TOTAL_MS,
-    METRIC_TRANSCRIPT,
-    PARTITION_TOLERANCE_MS,
-    WEIGHTING_EQUAL_PER_SCENARIO,
-    WEIGHTING_SAMPLE_WEIGHTED,
-    WITHHELD_PARTS_EXCEED_WHOLE,
-    WITHHELD_UNMEASURED_COMPONENT,
-    ComparisonSet,
-    CostEstimateError,
-    ExportError,
-    FrontierError,
-    HistoryError,
-    LatencyPartition,
     PivotError,
-    PredictedValue,
-    ScoreProjection,
-    ScoreRecord,
-    cassette_mode_disclosure,
-    completeness_disclosure,
-    compute_comparison_sets,
-    compute_estimate_cost,
-    compute_frontier,
-    compute_history,
-    compute_orphaned_runs,
     compute_pivot,
-    export_projection,
-    compute_program_budget,
-    decompose_total_ms,
-    difference_was_declared_at_launch,
-    dim_judge_model,
-    export_records_csv,
-    place_results,
-    project_score_records,
-    serialize_export,
 )
+from threetears.evals.analysis.lenses.frontier import FrontierResult, FrontierError, compute_frontier
+from threetears.evals.analysis.lenses.history import HistoryError, compute_history
+from threetears.evals.analysis.lenses.program_budget import compute_program_budget
+from threetears.evals.analysis.lenses.orphaned_runs import compute_orphaned_runs
+from threetears.evals.analysis.lenses.export import ExportError, export_projection, export_records_csv, serialize_export
+from threetears.evals.analysis.completeness import DEGRADED_RUN_CLAUSE, completeness_disclosure
 from threetears.evals.analysis.stats import UNIFORM_MOVE_NEEDS_RANGE, bounded_separation_p
 from threetears.evals.kernel.host import freeze
 from threetears.evals.ops import pivot_text
@@ -126,7 +122,7 @@ def _catalog_names_of(row_name):
     surfaces apply, and the seeded registry is what ``list_metrics`` publishes.
     """
     return sorted(
-        name for name in METRIC_DESCRIPTORS if name != row_name and reporting.resolve_measure_name(name) == row_name
+        name for name in METRIC_DESCRIPTORS if name != row_name and aggregation.resolve_measure_name(name) == row_name
     )
 
 
@@ -1672,9 +1668,9 @@ class TestComparisonSets:
         why the bucketing must be structurally safe before the next bump makes it
         reachable, and why a test cannot reach it any other way today.
         """
-        from threetears.evals.analysis import reporting
+        from threetears.evals.analysis.lenses import comparison_sets
 
-        real = reporting.resolve_context_identity
+        real = comparison_sets.resolve_context_identity
         targets = set(unresolved_run_ids)
 
         def _resolve(run, profile):
@@ -1684,7 +1680,7 @@ class TestComparisonSets:
             components = identity.context_components.model_copy(update={"case_basis": None})
             return identity.model_copy(update={"context_components": components})
 
-        monkeypatch.setattr(reporting, "resolve_context_identity", _resolve)
+        monkeypatch.setattr(comparison_sets, "resolve_context_identity", _resolve)
 
     def test_unresolved_case_bases_never_merge_into_one_bucket(self, monkeypatch):
         """Two unknowns are not a match, and must not be reported as one.
@@ -4648,7 +4644,7 @@ class TestComparisonSetsScope:
         """
         run = self._run("present")
 
-        with caplog.at_level(logging.INFO, logger="threetears.evals.analysis.reporting"):
+        with caplog.at_level(logging.INFO, logger="threetears.evals.analysis.lenses.comparison_sets"):
             result = compute_comparison_sets([run], scope_run_ids=["present", "gone-a", "gone-b"], profile=_JUDGED_HOST)
 
         assert result.comparison_sets[0].run_ids == ["present"]
@@ -6762,7 +6758,7 @@ class TestHistoryWithholdsAttributionOnAScenarioBoundAxis:
             created_at="2026-07-01T00:00:00Z",
         )
 
-        for row_name in sorted(reporting.HISTORY_METRICS):
+        for row_name in sorted(history.HISTORY_METRICS):
             out = compute_history([run], results, metric=row_name, profile=_JUDGED_HOST, archived_run_ids=None)
             expected = out.measure.transferability_class == "scenario_bound"
             assert (out.attribution_disclosure is not None) is expected, (
@@ -7214,7 +7210,7 @@ class TestTheCatalogNameIsTheNameTheSurfacesAccept:
     back "unknown history metric ... expected one of composite, cost_usd, total_ms".
     An operator who read the catalog and used what it said got a validation error,
     and the name that worked appeared in no catalog. The two vocabularies are
-    reconciled by ACCEPTING the catalog name (`reporting.resolve_measure_name`),
+    reconciled by ACCEPTING the catalog name (`aggregation.resolve_measure_name`),
     never by renaming the row constants — a row is one observation and `composite`
     is its honest name, which is why `export_results` still emits it in the metric
     column.
@@ -7240,7 +7236,7 @@ class TestTheCatalogNameIsTheNameTheSurfacesAccept:
             created_at="2026-07-01T00:00:00Z",
         )
 
-        for row_name in sorted(reporting.HISTORY_METRICS):
+        for row_name in sorted(history.HISTORY_METRICS):
             catalog_name = _catalog_name_of(row_name)
             assert describe_measure(catalog_name, _JUDGED_HOST.measures).family is not None, (
                 f"{catalog_name!r} is offered as the catalog name of {row_name!r} but the registry does not "
@@ -7281,19 +7277,19 @@ class TestTheCatalogNameIsTheNameTheSurfacesAccept:
 
     def test_the_alias_table_is_one_table_read_both_ways(self):
         """Derived, not written twice — a pair added to one direction only cannot exist."""
-        accepted = sorted(reporting.PROJECTED_METRICS | reporting.HISTORY_METRICS)
+        accepted = sorted(reporting.PROJECTED_METRICS | history.HISTORY_METRICS)
         catalog = {observation: _catalog_name_of(observation) for observation in accepted}
 
         assert len(set(catalog.values())) == len(catalog), (
             "two row measures publish the same catalog name, so the inverse silently drops one"
         )
         for observation, aggregate in catalog.items():
-            assert reporting.resolve_measure_name(aggregate) == observation
+            assert aggregation.resolve_measure_name(aggregate) == observation
 
     def test_a_name_outside_the_alias_table_is_passed_through_to_be_refused(self):
         """The alias must not become a guesser: an unknown name reaches its own refusal."""
-        assert reporting.resolve_measure_name("compsite") == "compsite"
-        assert reporting.resolve_measure_name(METRIC_COMPOSITE) == METRIC_COMPOSITE
+        assert aggregation.resolve_measure_name("compsite") == "compsite"
+        assert aggregation.resolve_measure_name(METRIC_COMPOSITE) == METRIC_COMPOSITE
 
     def test_a_catalogued_measure_this_surface_cannot_series_is_still_refused(self):
         """Accepting catalog names does not mean accepting the whole catalog.
@@ -7315,7 +7311,7 @@ class TestTheCatalogNameIsTheNameTheSurfacesAccept:
             compute_history([run], results, metric="compsite", profile=_JUDGED_HOST, archived_run_ids=None)
 
         message = str(excinfo.value)
-        for row_name in reporting.HISTORY_METRICS:
+        for row_name in history.HISTORY_METRICS:
             assert row_name in message
             assert _catalog_name_of(row_name) in message
 
@@ -7823,14 +7819,14 @@ class TestSignificanceRead:
         asserts that a test ran and came back negative, which a reader takes as
         a measured null the campaign never measured.
         """
-        from threetears.evals.analysis.reporting import NOT_TESTED_LABEL, significance_read
+        from threetears.evals.analysis.significance import NOT_TESTED_LABEL, significance_read
 
         assert significance_read(significant=False) == NOT_TESTED_LABEL
         assert significance_read(significant=True) == NOT_TESTED_LABEL
 
     def test_not_significant_and_not_tested_are_different_answers(self):
         """The whole point of the three-way read: the two must never collapse."""
-        from threetears.evals.analysis.reporting import NOT_SIGNIFICANT_LABEL, NOT_TESTED_LABEL, significance_read
+        from threetears.evals.analysis.significance import NOT_SIGNIFICANT_LABEL, NOT_TESTED_LABEL, significance_read
 
         backed = significance_read(significant=False, p=0.42, effect=0.1)
         unbacked = significance_read(significant=False)
@@ -7846,7 +7842,7 @@ class TestSignificanceRead:
         renders without it counting toward the predicate — the exact place the
         two could silently disagree.
         """
-        from threetears.evals.analysis.reporting import NOT_TESTED_LABEL, format_significance
+        from threetears.evals.analysis.significance import NOT_TESTED_LABEL, format_significance
 
         cell = format_significance(significant=False, paired=True, n=12)
 
@@ -7855,20 +7851,20 @@ class TestSignificanceRead:
 
     def test_either_statistic_alone_counts_as_tested(self):
         """The predicate is `p or effect size`, matching the kit — not both."""
-        from threetears.evals.analysis.reporting import SIGNIFICANT_LABEL, significance_read
+        from threetears.evals.analysis.significance import SIGNIFICANT_LABEL, significance_read
 
         assert significance_read(significant=True, p=0.01) == SIGNIFICANT_LABEL
         assert significance_read(significant=True, effect=1.4) == SIGNIFICANT_LABEL
 
     def test_a_null_verdict_with_statistics_is_still_not_tested(self):
         """No verdict is no verdict, whatever else the row happens to carry."""
-        from threetears.evals.analysis.reporting import NOT_TESTED_LABEL, significance_read
+        from threetears.evals.analysis.significance import NOT_TESTED_LABEL, significance_read
 
         assert significance_read(significant=None, p=0.01, effect=1.4) == NOT_TESTED_LABEL
 
     def test_the_labels_are_spelled_out_never_abbreviated(self):
         """ "n.s." was read as nanoseconds by an operator in a report full of `*_ms`."""
-        from threetears.evals.analysis.reporting import NOT_SIGNIFICANT_LABEL, NOT_TESTED_LABEL, SIGNIFICANT_LABEL
+        from threetears.evals.analysis.significance import NOT_SIGNIFICANT_LABEL, NOT_TESTED_LABEL, SIGNIFICANT_LABEL
 
         assert (SIGNIFICANT_LABEL, NOT_SIGNIFICANT_LABEL, NOT_TESTED_LABEL) == (
             "significant",
@@ -7881,7 +7877,7 @@ class TestSignificanceFormatting:
     """A verdict never travels without the statistics behind it, or its test."""
 
     def test_a_verdict_carries_the_statistics_it_rests_on(self):
-        from threetears.evals.analysis.reporting import format_significance
+        from threetears.evals.analysis.significance import format_significance
 
         cell = format_significance(significant=True, paired=True, p=0.0123, effect=1.42, n=8)
 
@@ -7897,7 +7893,11 @@ class TestSignificanceFormatting:
         spelled out here, so renaming either one cannot leave this passing
         against a name no surface prints.
         """
-        from threetears.evals.analysis.reporting import PAIRED_EFFECT_LABEL, UNPAIRED_EFFECT_LABEL, format_significance
+        from threetears.evals.analysis.significance import (
+            PAIRED_EFFECT_LABEL,
+            UNPAIRED_EFFECT_LABEL,
+            format_significance,
+        )
 
         assert PAIRED_EFFECT_LABEL != UNPAIRED_EFFECT_LABEL
 
@@ -7915,7 +7915,7 @@ class TestSignificanceFormatting:
         a private copy there fails here rather than silently answering
         differently from the compare table about the same row.
         """
-        from threetears.evals.analysis.reporting import format_significance
+        from threetears.evals.analysis.significance import format_significance
         from threetears.evals.vega.compiler import compile_chart
         from threetears.evals.analysis.viz.payloads import DeltaRow, DeltaTablePayload
 
@@ -7941,7 +7941,7 @@ class TestSignificanceFormatting:
         }
 
     def test_the_disclosure_names_the_paired_test_and_its_threshold(self):
-        from threetears.evals.analysis.reporting import significance_disclosure
+        from threetears.evals.analysis.significance import significance_disclosure
         from threetears.evals.analysis.stats import PAIRED_TEST_NAME
 
         sentence = significance_disclosure(paired=True)
@@ -7951,7 +7951,7 @@ class TestSignificanceFormatting:
 
     def test_the_disclosure_names_the_unpaired_test_when_samples_were_not_paired(self):
         """Which test ran is most of what a small arm's verdict rests on."""
-        from threetears.evals.analysis.reporting import significance_disclosure
+        from threetears.evals.analysis.significance import significance_disclosure
         from threetears.evals.analysis.stats import PAIRED_TEST_NAME, UNPAIRED_TEST_NAME
 
         sentence = significance_disclosure(paired=False)
@@ -7961,7 +7961,7 @@ class TestSignificanceFormatting:
 
     def test_the_disclosure_promises_no_alerting(self):
         """Reporting presents and compares; it never routes a verdict anywhere."""
-        from threetears.evals.analysis.reporting import significance_disclosure
+        from threetears.evals.analysis.significance import significance_disclosure
 
         assert "no alerting" in significance_disclosure(paired=True)
 
@@ -7970,12 +7970,12 @@ class TestCrossSubjectDisclosure:
     """Composites are comparable within a subject and never across one."""
 
     def test_the_same_subject_needs_no_disclosure(self):
-        from threetears.evals.analysis.reporting import cross_subject_disclosure
+        from threetears.evals.analysis.significance import cross_subject_disclosure
 
         assert cross_subject_disclosure("ent-maple", "ent-maple") is None
 
     def test_two_subjects_are_named_and_the_delta_is_withheld(self):
-        from threetears.evals.analysis.reporting import cross_subject_disclosure
+        from threetears.evals.analysis.significance import cross_subject_disclosure
 
         note = cross_subject_disclosure("ent-maple", "ent-bea")
 
@@ -7997,7 +7997,7 @@ class TestCrossSubjectDisclosure:
         earlier claims in this branch false. **Host-neutral subject keys**, because the
         sentence interpolates them and a fixture key could carry a host noun.
         """
-        from threetears.evals.analysis.reporting import cross_subject_disclosure
+        from threetears.evals.analysis.significance import cross_subject_disclosure
 
         note = cross_subject_disclosure("subj-a", "subj-b")
 
@@ -8013,7 +8013,7 @@ class TestCrossSubjectDisclosure:
         the rule that actually bites — two DIFFERENT subjects are not comparable — and it is
         covered above.
         """
-        from threetears.evals.analysis.reporting import cross_subject_disclosure
+        from threetears.evals.analysis.significance import cross_subject_disclosure
 
         assert cross_subject_disclosure("", "") is None
         assert cross_subject_disclosure("ent-maple", "ent-bea") is not None

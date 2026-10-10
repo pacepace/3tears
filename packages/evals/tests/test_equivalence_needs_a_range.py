@@ -20,10 +20,11 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from threetears.evals.analysis.bundle import AnalysisContextBundle, FamilyComparison
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, FamilyComparison
 from threetears.evals.analysis.report import build_code_only_report
 from threetears.evals.analysis.report.model import DisclosureBlock
-from threetears.evals.analysis.reporting import METRIC_COST_USD, HistoryResult, RegressionFlag, compute_history
+from threetears.evals.analysis.reporting import METRIC_COST_USD
+from threetears.evals.analysis.lenses.history import HistoryResult, RegressionFlag, compute_history
 from threetears.evals.analysis.stats import EQUIVALENCE_NEEDS_RANGE, paired_change
 from threetears.evals.kernel.host import HostProfile, MeasureRegistry
 from threetears.evals.kernel.metrics import MetricDescriptor

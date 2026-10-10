@@ -10,7 +10,7 @@ import ast
 from pathlib import Path
 
 
-from threetears.evals.analysis import reporting as _reporting
+from threetears.evals.analysis import significance as _significance
 
 
 def test_no_module_writes_the_reader_facing_significance_words_for_itself():
@@ -26,10 +26,10 @@ def test_no_module_writes_the_reader_facing_significance_words_for_itself():
     no claim to a reader — so only the two multi-word labels are looked for, which
     is the pair a hand-written branch cannot avoid spelling.
     """
-    labels = {_reporting.NOT_SIGNIFICANT_LABEL, _reporting.NOT_TESTED_LABEL}
-    owner = Path(_reporting.__file__).resolve()
+    labels = {_significance.NOT_SIGNIFICANT_LABEL, _significance.NOT_TESTED_LABEL}
+    owner = Path(_significance.__file__).resolve()
     offenders: dict[str, list[int]] = {}
-    for path in sorted(Path(_reporting.__file__).resolve().parents[1].rglob("*.py")):
+    for path in sorted(Path(_significance.__file__).resolve().parents[1].rglob("*.py")):
         if path == owner:
             continue
         source = path.read_text(encoding="utf-8")
@@ -58,4 +58,4 @@ def test_no_module_writes_the_reader_facing_significance_words_for_itself():
         if hits:
             offenders[str(path)] = hits
 
-    assert not offenders, f"a second significance renderer: {offenders} — call reporting.format_significance instead"
+    assert not offenders, f"a second significance renderer: {offenders} — call significance.format_significance instead"

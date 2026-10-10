@@ -17,7 +17,7 @@ from typing import Any, Literal
 
 from pydantic import Field
 
-from threetears.evals.analysis.bundle import InsightStanding, insight_standing
+from threetears.evals.analysis.bundle.insights import InsightStanding, insight_standing
 from threetears.evals.analysis.bar_proposals import propose_bars
 from threetears.evals.analysis.campaigns import create_campaign, list_campaigns
 from threetears.evals.analysis.numbers import format_number
@@ -136,7 +136,7 @@ class AnalysisDeleted(EvalBaseModel):
 
 
 #: Where an insight stands, read from the analysis that minted it at every read and never stamped on the
-#: insight (:func:`~threetears.evals.analysis.bundle.insight_standing`): ``live`` — fed to later
+#: insight (:func:`~threetears.evals.analysis.bundle.insights.insight_standing`): ``live`` — fed to later
 #: generations as prior context; ``retracted`` — its analysis is archived, so no generation reads it;
 #: ``orphaned`` — its analysis was deleted, so it is still read but its provenance cannot be followed.
 InsightStandingName = Literal["live", "retracted", "orphaned"]
