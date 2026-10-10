@@ -2,7 +2,7 @@
 
 **For** anyone who already has a host and wants to launch runs and read reports from a terminal, or mount the
 same commands under their app's own CLI. **Answers:** what each command does, what it maps to, and its exit
-codes. With no host yet, start with the README's [Your first eval](../README.md#your-first-eval), which needs
+codes. With no host yet, start with the [tutorial](tutorial.md), which needs
 none, then [Adopting the engine](adopting-a-host.md).
 
 ## Commands

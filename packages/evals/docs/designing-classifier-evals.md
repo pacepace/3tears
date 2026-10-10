@@ -2,7 +2,7 @@
 
 **For** anyone building their first eval of a classifier, or any feature whose answer code can grade.
 **Answers:** which cases to write, how many, how to feed them to the classifier, and how to read the results.
-It assumes no prior experience with evals.
+It assumes no prior experience with evals. To learn the package itself first, do the [tutorial](tutorial.md).
 
 In short: build the set mostly from hard cases (boundaries between labels, lookalikes, contrast pairs and
 context), give every case a written reason, put at least ten cases behind each label, and run them through
@@ -346,7 +346,7 @@ cases, as a classifier kind's are.
 
 ### The quick path: `run_eval`
 
-`run_eval` (the [README](../README.md)'s first example) runs a classifier function over a
+`run_eval` (the [tutorial](tutorial.md)'s first step) runs a classifier function over a
 list of cases in one call. Pass `expected=`, a function that returns the label a case expects, and `run_eval`
 grades the function as a classifier:
 
