@@ -16,6 +16,8 @@ re-exported here because they are what these operations hand back; the compariso
 :class:`RunsCompared`, the two-run lens's answer with the disclosures every comparison carries; the
 estimate its own :class:`LaunchEstimate`, priced by the launch's rule), with the text a surface shows for each (:func:`pivot_text`
 and its siblings) beside them, so a command line and an agent read one rendering.
+:class:`RegressionWatch` reads the history for a launching host as each run completes, and hands each
+regression on the step into it to the host's :class:`RegressionSink` (a :class:`RegressionAlert` each).
 :func:`scope_out_of_run_spend` reads the out-of-run ledger — the spend no run's results carry — into an
 :class:`OutOfRunSpendReport` of its own, with :func:`out_of_run_spend_text` beside it.
 
@@ -93,6 +95,7 @@ from threetears.evals.ops.lenses import (
     scope_pivot,
 )
 from threetears.evals.analysis.reporter_bank import FrozenReporterCase
+from threetears.evals.ops.regressions import RegressionAlert, RegressionSink, RegressionWatch
 from threetears.evals.ops.reporter import (
     AmbiguousReporterPair,
     ReporterCaseEntry,
@@ -177,6 +180,9 @@ __all__ = [
     "PivotTable",
     "ReportDocument",
     "ReportFormat",
+    "RegressionAlert",
+    "RegressionSink",
+    "RegressionWatch",
     "ReporterCaseEntry",
     "ReporterCaseFreeze",
     "ReporterCaseListing",

@@ -63,7 +63,13 @@ from threetears.evals.run.authoring import validated_kind_spec
 from threetears.evals.run.budget import EvalRunCostCap
 from threetears.evals.run.ceilings import CeilingRaisedError, refuse_raised_ceiling
 from threetears.evals.contracts.cassettes import CassetteMode
-from threetears.evals.run.jobs import MAX_CONCURRENT_JOBS, EvalJobManager, JobTimeoutFactory, adaptive_job_timeout_s
+from threetears.evals.run.jobs import (
+    MAX_CONCURRENT_JOBS,
+    EvalJobManager,
+    JobTimeoutFactory,
+    RunEndListener,
+    adaptive_job_timeout_s,
+)
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import JudgeService, judge_clients_for_run
 from threetears.evals.run.lifecycle import record_completeness
@@ -415,6 +421,10 @@ class LaunchHost:
         max_concurrent_jobs: How many runs' jobs execute at once in this process.
         on_job_progress: Called with ``(run id, progress)`` on every progress write — typically a
             broadcast to an operator's view — or ``None``.
+        on_run_end: Told each run's recorded terminal status
+            (:class:`~threetears.evals.run.jobs.RunEndListener`) — a
+            :class:`~threetears.evals.ops.RegressionWatch` to check a completed run against its contestant's
+            history — or ``None`` for nobody.
         job_manager: The process's job manager, built here over :attr:`eval_host`'s storage and
             executor, so the store a run's status is written to is the store its results are. It is
             the one a host hands :func:`~threetears.evals.run.lifecycle.cancel_run`, the boot reclaim
@@ -429,6 +439,7 @@ class LaunchHost:
     launch_pricer: LaunchPricer | None = None
     max_concurrent_jobs: int = MAX_CONCURRENT_JOBS
     on_job_progress: Callable[[str, dict[str, Any]], None] | None = None
+    on_run_end: RunEndListener | None = None
     job_manager: EvalJobManager = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -468,6 +479,7 @@ class LaunchHost:
                 self.on_job_progress,
                 job_timeout_factory=self.job_timeout_factory,
                 blocking_executor=self.eval_host.blocking_executor,
+                on_run_end=self.on_run_end,
             ),
         )
 
