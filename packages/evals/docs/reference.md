@@ -1219,11 +1219,15 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 
 - **`ArmStatus`** · literal · Where an arm stands, according to this analysis.
   <br>`'winner'` | `'contradicted'` | `'ruled_out'` | `'replaced_incumbent'` | `'unresolved'`
+- **`BarOutcome`** · literal · What a bar's reading on one cell came to (`BarVerdict.decision`).
+  <br>`'cleared'` | `'missed'` | `'undecided'` | `'no_interval'` | `'no_data'`
 - **`CallAdmission`** · type alias · Asked before each generator call is counted or sent, with `(system, user, response_format)`; raises to refuse that call.
   <br>`Callable[[str, str, 'dict[str, Any] | None'], None]`
 - **`ChangeLabel`** · literal · What a change between two paired samples reads as — see `ChangeVerdict`.
   <br>`'improved'` | `'regressed'` | `'equivalent'` | `'below_threshold'` | `'not_separated'` | `'untested'`
 - **`ComparisonVerdict`** · literal · What one comparison in a family came to, read off its ADJUSTED p's.
+  <br>`'improved'` | `'regressed'` | `'equivalent'` | `'not_separated'` | `'untested'`
+- **`ContrastOutcome`** · literal · What a contrast's test came to (`FamilyComparison.verdict`).
   <br>`'improved'` | `'regressed'` | `'equivalent'` | `'not_separated'` | `'untested'`
 - **`CriterionDrift`** · literal · How a label's criterion compares with the template's today — see `LabelReading.criterion_drift`.
   <br>`'unchanged'` | `'changed'` | `'no_live_criterion'`
@@ -1239,6 +1243,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`'passed'` | `'failed'` | `'undecided'`
 - **`GateToken`** · literal · An outcome a gate can fail on; see the module docstring.
   <br>`'regressed'` | `'not-separated'` | `'untested'` | `'breached'` | `'undecided-guardrail'` | `'missed'` | `'undecided-bar'`
+- **`GuardrailOutcome`** · literal · What a guardrail came to for one arm against the control (`GuardrailCheck.decision`).
+  <br>`'held'` | `'breached'` | `'undecided'`
 - **`LabelDirection`** · literal · Where a person reading a memo places it on a rubric dimension, low to high.
   <br>`'low'` | `'low_mid'` | `'mid'` | `'mid_high'` | `'high'`
 - **`MechanismUncheckedReason`** · literal · Why a swept lever's mechanism could not be checked: `not_declared` = the lever names no measure it acts on; `not_swept` = it was observed at one level, so there is nothing to compare; `levels_unobserved` = some level observed none of the measure, so no pair of levels separated and whether it held still at every level cannot be shown; `too_few_observations` = every level observed it, but some pair of levels has too few cases on a side for the separation test to run, or a gap with no spread over too few cases for an exact test to call it at alpha.

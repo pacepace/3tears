@@ -126,10 +126,20 @@ the control on each reading, under one rig.
 | untested | no test could decide: fewer than two cases on a side, or a gap with no spread (every shared case moved by exactly the same amount, or each side constant) over too few cases for the exact test to reach 0.05; the row says why | fix what it names (usually too few cases) |
 
 A report from `compare` prints one line above this table when a tested measure declares no margin: "No margin
-is declared on …, so no contrast on it can read equivalent", with how to declare one (`compare(margins=...)`;
-accuracy takes none, so grade with a scorer too).
+is declared on …, so no contrast on it can read equivalent", with how to declare one for each kind of measure:
+a scorer's by its name (`compare(margins={"correct": 0.05})`), accuracy's the same way
+(`compare(margins={"accuracy": 0.05})`), and for an engine measure such as cost, that none can be declared.
 
-`equivalent` needs a declared margin (`MetricDescriptor.materiality_threshold`) and a paired test. On a
+Every verdict here is also a typed value (`report.verdicts`, `Comparison.verdicts()`, the `outcome` key of
+`Comparison.contrasts()`): its outcome, a reason code, the margin it read and where that came from
+(`margin_source`: `measure`, `run` or, for a judged guardrail, `campaign`), its materiality, and whether it is a
+guardrail. The printed verdict is rendered from it, so code branches on the outcome, never on the words. The
+same values drive the CI gate ([The command line](command-line.md#gate)).
+
+`equivalent` needs a margin and a paired test. A host declares a measure's margin
+(`MetricDescriptor.materiality_threshold`); accuracy, whose description the engine owns, takes one declared on
+the runs at launch (`compare(margins={"accuracy": ...})`, `start_run(margins=...)`), read only when every run of
+the campaign declares the same one, and its verdict says "declared on the runs". On a
 measure that declares its range (`value_range`), as every pass rate and 1–5 score does, each one-sided test
 is a bounded test by betting, which holds 5% for any distribution of differences on that range at any number
 of cases. Coarse scores need that: a regression that fails one case in ten leaves twelve agreeing cases 28%

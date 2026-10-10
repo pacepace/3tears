@@ -65,7 +65,7 @@ answer the same input differently from one call to the next, so one play per cas
 
 ```python
 async def main() -> None:
-    summary = await run_eval(CASES, route_v1, expected=lambda case: case["queue"], scope_id="tutorial", k=2)
+    summary = await run_eval(CASES, route_v1, expected=lambda case: case["queue"], k=2)
     print(summary.render())
 
 
@@ -73,9 +73,8 @@ asyncio.run(main())
 ```
 
 ```
-run 01a123cc-bc49-762e-91f1-87930303867d completed: route_v1 over 10 case(s) x k=2
-  20 result(s): 20 scored, 0 failed by the candidate, 0 excluded
-  spend cap: uncapped — no spend ceiling was in force (cost enforcement was off)
+run 01a12445-eaee-73db-abe3-97da2b88bbb7 completed: route_v1 over 10 case(s) x k=2
+  20 result(s): 20 scored
   match: mean 0.6 (n=20, min 0, max 1)
   confusion_cell: n=20, counted in the confusion matrix below
   confusion (expected → predicted):
@@ -97,16 +96,17 @@ How to read it:
   special case. Most answers can't be checked by code, and step 6 grades those with a judge. A **scorer** is the
   other code grade: any `(case, answer) -> bool | float` function, passed in a list after the candidate
   ([`rung_zero.py`](../examples/rung_zero.py) has one).
-- **A result** is one play of one case. **Scored** results were graded. **Failed by the candidate** counts the
-  times your function raised; they count against it. **Excluded** counts faults of the measuring setup, such as
-  a scorer that raised; they count for nothing.
+- **A result** is one play of one case. **Scored** results were graded. When there are any, the line also counts
+  results **failed by the candidate** (your function raised; they count against it) and **excluded** ones (a
+  fault of the measuring setup, such as a scorer that raised; they count for nothing).
 - **`match`** is 1 when the answer was the expected label. Its mean, 0.6, is the accuracy.
 - **The confusion matrix** shows which labels were mistaken for which. Every `account` ticket went to `other`.
 - **Per label**, precision is how often a predicted label was right, and recall is how often a true label was
   found. Each has a 95% interval: the range the true rate plausibly lies in. The intervals count cases, not
   repeats ("over 3 cases"), because repeating a case does not make it a new case. A rate from a single case has
   no interval at all, and ten cases give wide ones.
-- **`scope_id`** is where the runs are stored. Runs you want to compare share one.
+- **Where the run is stored**: in memory, for as long as the call. With a host of your own, `scope_id=` names
+  where its runs are kept and found again ([Adopting the engine](adopting-a-host.md)).
 
 ## 3. Read your misses
 
@@ -120,7 +120,7 @@ them, each saying why. `summary.results()` returns every result, misses or not.
 
 ```python
 async def main() -> None:
-    summary = await run_eval(CASES, route_v1, expected=lambda case: case["queue"], scope_id="tutorial", k=2)
+    summary = await run_eval(CASES, route_v1, expected=lambda case: case["queue"], k=2)
     for miss in summary.misses():
         print(f"{miss.case} (repeat {miss.repeat}): {'; '.join(miss.missed_because)}")
     excluded = [result for result in summary.results() if result.outcome == "excluded"]
@@ -181,7 +181,6 @@ async def main() -> None:
         {"v1": route_v1, "v2": route_v2},
         expected=lambda case: case["queue"],
         control="v1",
-        scope_id="tutorial",
         k=2,
     )
     for row in result.contrasts("accuracy"):
@@ -224,6 +223,11 @@ Each row of the contrasts table compares one arm with the control on one reading
 | **equivalent to the control** | a test showed the difference is inside a margin you declared | treat the arms as interchangeable on this reading. Only this verdict says "good enough", and it needs a margin: see below |
 | **untested** | no test could decide, for example with fewer than two cases on a side | fix what the row names, usually too few cases |
 
+In code, branch on `row["outcome"]` (`improved`, `regressed`, `equivalent`, `not_separated`, `untested`), never
+on the words. `result.gate()` turns the verdicts into a CI check that fails on a regression or a guardrail not
+shown held, and `python -m threetears.evals gate` does the same from a pipeline
+([The command line](command-line.md#gate)).
+
 Now try a smaller change. `route_v1_login` fixes only the locked-out ticket. Add it, and compare all three:
 
 ```python
@@ -240,7 +244,6 @@ async def main() -> None:
         {"v1": route_v1, "v1-login": route_v1_login, "v2": route_v2},
         expected=lambda case: case["queue"],
         control="v1",
-        scope_id="tutorial",
         k=2,
     )
     for row in result.contrasts("accuracy"):
@@ -265,26 +268,20 @@ Two lessons here:
   Compare only the arms that answer your question.
 
 To show a cheaper or simpler version is **good enough**, you need `equivalent`, and that needs a **margin**: the
-largest difference too small to matter. Declare it per scorer with `margins=`. Accuracy takes none, so grade
-with a scorer too. Add it, and replace `main()`:
+largest difference too small to matter. Declare it with `margins=`, by measure: on accuracy, it is recorded on
+every arm's run; on a scorer of your own, by the scorer's name. Replace `main()`:
 
 ```python
-def correct(case: dict, answer: str) -> bool:
-    """Whether the ticket went to its queue."""
-    return answer == case["queue"]
-
-
 async def main() -> None:
     result = await compare(
         CASES,
         {"v1": route_v1, "v1-login": route_v1_login},
-        [correct],
+        expected=lambda case: case["queue"],
         control="v1",
-        scope_id="tutorial",
         k=2,
-        margins={"correct": 0.25},
+        margins={"accuracy": 0.25},
     )
-    for row in result.contrasts("correct"):
+    for row in result.contrasts("accuracy"):
         print(f"{row['arm']}: delta {row['delta']:+.2f}, interval {row['interval']}, {row['verdict']}")
 
 
@@ -292,7 +289,7 @@ asyncio.run(main())
 ```
 
 ```
-v1-login: delta +0.10, interval [-0.1262, 0.3262] at 95%, not separated from the control — immaterial: the observed delta is inside the margin of ±0.25 on Correct score, which does not show the true difference is that small
+v1-login: delta +0.10, interval [-0.1262, 0.3262] at 95%, not separated from the control — immaterial: the observed delta is inside the margin of ±0.25 on Accuracy, which does not show the true difference is that small
 ```
 
 Still not separated, and not equivalent either: ten cases cannot show a pass rate within 0.25, even when the
@@ -338,7 +335,7 @@ async def main() -> None:
         rubric={"acknowledges": "The reply acknowledges the customer's problem before anything else."},
         case_material=lambda case: f"Ticket: {case['ticket']}",
     )
-    summary = await run_eval(CASES, draft_reply, judge=judge, scope_id="tutorial", k=2)
+    summary = await run_eval(CASES, draft_reply, judge=judge, k=2)
     print(summary.render())
     for result in summary.results():
         for grade in result.judged:
@@ -350,8 +347,8 @@ asyncio.run(main())
 ```
 
 ```
-run 01a123cc-fd4c-7343-85a7-891e46e0e339 completed: draft_reply over 10 case(s) x k=2
-  20 result(s): 20 scored, 0 failed by the candidate, 0 excluded
+run 01a12446-2d38-77e1-8185-6b938c406abb completed: draft_reply over 10 case(s) x k=2
+  20 result(s): 20 scored, 0 excluded
   spend cap: uncapped — no spend ceiling was in force (cost enforcement was off)
   intent (from draft_reply's docstring): Draft the first reply to a support ticket.
   answer.acknowledges (judged 1-5): mean 4.7 (n=20, min 2, max 5)
@@ -362,6 +359,8 @@ hours: answer.acknowledges 2, because stand-in: looks for an apology
 
 - **The intent** is what the judge is told each case asks. Here it came from the candidate's docstring, and the
   summary says so. Pass `intent=` to state it outright: its wording can move the scores.
+- **With a judge in play** the summary also counts results excluded for a judge's fault, states the spend cap
+  (none here; `max_cost_usd=` sets one) and what the judge spent.
 - **`answer.acknowledges`** is the rubric's dimension, placed under the judge's default context, `answer`.
 - **The judge reads every field of the case** beside the material, `queue` included. Keep out of the case
   anything the judge should not see.
@@ -410,7 +409,6 @@ async def main() -> None:
         [promises_nothing],
         guardrails={"promises_nothing": Guardrail(margin=0.1, direction="higher_is_better")},
         control="v1",
-        scope_id="tutorial",
         k=2,
     )
     for row in result.guardrails():
