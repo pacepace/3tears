@@ -121,14 +121,11 @@ _SPELLING_TREES = ("threetears/evals/analysis",)
 
 #: What sits inside :data:`_SPELLING_TREES` and is not read as a report, so is not walked:
 #: ``numbers.py`` is the rule itself, and ``viz/`` spells numbers only in payload validation messages.
-#: ``summary.py`` and ``out_of_run_spend.py`` are the command line's run summary and spend ledger, which
-#: moved here from ``ops`` (#702) so ``quick`` could print them without reaching ``ops``. They were never
-#: walked there and keep their own spellings (dollars at currency precision, three-figure means); holding
-#: them to the rule changes every figure the summary prints, which is its own change, not a move's.
+#: ``out_of_run_spend.py`` is the spend ledger, which spells only dollars, at the four decimals a
+#: per-call price needs.
 _NOT_READ_AS_REPORTS = (
     "threetears/evals/analysis/numbers.py",
     "threetears/evals/analysis/viz",
-    "threetears/evals/analysis/summary.py",
     "threetears/evals/analysis/out_of_run_spend.py",
 )
 
@@ -148,6 +145,9 @@ _FIXED_SPELLINGS: dict[tuple[str, str, str], str] = {
     # figures below 10 are what a sentence can use, and the tables beside it keep the one rule.
     ("threetears/evals/analysis/prose_refs.py", "value", ".2g"): "a figure in a sentence",
     ("threetears/evals/analysis/prose_refs.py", "value", ".{}f"): "a figure in a sentence below 1e-4, written out",
+    # Money is spelled in cents from ten cents up, and to three significant figures below.
+    ("threetears/evals/analysis/summary.py", "amount", ".2f"): "dollars, in cents",
+    ("threetears/evals/analysis/summary.py", "amount", ".{}f"): "dollars below ten cents, three figures",
 }
 
 _PRECISION = re.compile(r"\.(\d+|\{\})")

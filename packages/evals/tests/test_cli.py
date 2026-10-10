@@ -86,7 +86,7 @@ def test_the_cli_runs_the_courier_end_to_end_from_a_subprocess() -> None:
     assert out.count("6 result(s): 6 scored\n") == 2, "no failure, no exclusion and no judge: no zero counts"
     # The pro planner is never late; the lite one misses stops behind the two closed roads.
     assert "on_time_rate: mean 1 (n=6" in out
-    assert "on_time_rate: mean 0.639 (n=6" in out
+    assert "on_time_rate: mean 0.6389 (n=6" in out
 
 
 def test_ls_lists_the_scopes_templates_runs_and_campaigns(capsys: pytest.CaptureFixture[str]) -> None:

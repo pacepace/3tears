@@ -50,6 +50,7 @@ from pydantic import BaseModel, ConfigDict, JsonValue
 
 from threetears.evals.analysis.agreement import InterJudgeDimension, inter_judge_agreement
 from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics, confusion_matrix, label_statistics
+from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.surface_table import NO_SUCCESSFUL_RESULTS
 from threetears.evals.kernel import (
@@ -378,7 +379,7 @@ class CaseResult(BaseModel):
             if result.host_measures.get(MATCH_MEASURE) is False:
                 missed.append(f"answered {_shown_value(answer)}, expected {_shown_value(expected)}")
             missed.extend(
-                f"{name} gave {value:g}"
+                f"{name} gave {format_number(value)}"
                 for name, value in result.host_measures.items()
                 if name not in (MATCH_MEASURE, CONFUSION_CELL_MEASURE)
                 and not isinstance(value, str)
@@ -417,7 +418,7 @@ class CaseResult(BaseModel):
             head += f", expected {_shown_value(self.expected)}"
         lines = [head]
         grades = [
-            f"{name} {value if isinstance(value, str | bool) else f'{value:g}'}"
+            f"{name} {value if isinstance(value, str | bool) else format_number(value)}"
             for name, value in self.scores.items()
             if name != CONFUSION_CELL_MEASURE
         ]
@@ -621,8 +622,8 @@ class EvalSummary(BaseModel):
                 lines.append(f"  {measure.name}: n={measure.n}, not a number")
             else:
                 lines.append(
-                    f"  {measure.name}: mean {measure.mean:.3g} (n={measure.n}, "
-                    f"min {measure.minimum:.3g}, max {measure.maximum:.3g}{left_out})"
+                    f"  {measure.name}: mean {format_number(measure.mean)} (n={measure.n}, "
+                    f"min {format_number(measure.minimum)}, max {format_number(measure.maximum)}{left_out})"
                     + (f"; {_GUARDRAIL_ALONE}" if measure.guardrail else "")
                 )
         if self.confusion:
@@ -731,11 +732,11 @@ def _proportion(
     """A rate with its count and interval; where cases repeat, the count says over how many cases it rests on."""
     if rate is None:
         return f"{name} none (n=0)"
-    shown = f"{name} {rate:.3g} ({hits}/{n}"
+    shown = f"{name} {format_number(rate)} ({hits}/{n}"
     if cases < n:
         shown += f" over {cases} case{'' if cases == 1 else 's'}"
     if interval is not None:
-        shown += f", {INTERVAL_LEVEL:.0%} CI {interval[0]:.2g}-{interval[1]:.2g}"
+        shown += f", {INTERVAL_LEVEL:.0%} CI {format_number(interval[0])}-{format_number(interval[1])}"
     return shown + ")"
 
 
@@ -746,7 +747,10 @@ def _dimension_line(dimension: DimensionSummary) -> str:
     if dimension.mean is None or dimension.minimum is None or dimension.maximum is None:
         line += "no result carries a score"
     else:
-        line += f"mean {dimension.mean:.3g} (n={dimension.n}, min {dimension.minimum:.3g}, max {dimension.maximum:.3g})"
+        line += (
+            f"mean {format_number(dimension.mean)} (n={dimension.n}, "
+            f"min {format_number(dimension.minimum)}, max {format_number(dimension.maximum)})"
+        )
     if dimension.cannot_tell:
         line += f", the judge could not tell on {dimension.cannot_tell}"
     return line
@@ -770,7 +774,7 @@ def _label_line(statistics: LabelStatistics) -> str:
         statistics.expected_cases,
         statistics.recall_interval,
     )
-    f1 = "f1 none" if statistics.f1 is None else f"f1 {statistics.f1:.3g}"
+    f1 = "f1 none" if statistics.f1 is None else f"f1 {format_number(statistics.f1)}"
     return f"{_shown(statistics.label)}: {precision}, {recall}, {f1}"
 
 

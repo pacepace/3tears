@@ -84,10 +84,10 @@ run 01a12445-eaee-73db-abe3-97da2b88bbb7 completed: route_v1 over 10 case(s) x k
     bug → bug: 4
     other → other: 2
   per label:
-    account: precision none (n=0), recall 0 (0/6 over 3 cases, 95% CI 0-0.82), f1 none
-    billing: precision 1 (6/6 over 3 cases, 95% CI 0.18-1), recall 0.75 (6/8 over 4 cases, 95% CI 0.19-0.97), f1 0.857
-    bug: precision 0.667 (4/6 over 3 cases, 95% CI 0.081-0.98), recall 1 (4/4 over 2 cases, 95% CI 0.018-1), f1 0.8
-    other: precision 0.25 (2/8 over 4 cases, 95% CI 0.026-0.81), recall 1 (2/2 over 1 case), f1 0.4
+    account: precision none (n=0), recall 0 (0/6 over 3 cases, 95% CI 0-0.8223), f1 none
+    billing: precision 1 (6/6 over 3 cases, 95% CI 0.1777-1), recall 0.75 (6/8 over 4 cases, 95% CI 0.1908-0.9745), f1 0.8571
+    bug: precision 0.6667 (4/6 over 3 cases, 95% CI 0.0807-0.9785), recall 1 (4/4 over 2 cases, 95% CI 0.01824-1), f1 0.8
+    other: precision 0.25 (2/8 over 4 cases, 95% CI 0.02553-0.8092), recall 1 (2/2 over 1 case), f1 0.4
 ```
 
 How to read it:
