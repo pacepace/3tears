@@ -1362,7 +1362,9 @@ class RunSummary(EvalDocumentModel):
             "`config_provenance` separates them: a lever whose value could not be established is here "
             "as `unknown` there and absent here, so 'we could not establish this' is never readable as "
             "a level; a lever the campaign never engaged with — declared by the host, never moved, never "
-            "named by a launch, never recovered — is in neither, and says nothing about the experiment."
+            "named by a launch, never recovered — is in neither, and says nothing about the experiment. "
+            "The level `null` is a value the launch SET (it named the lever as null, stamped `overridden`), "
+            "not a missing one."
         ),
     )
     config_provenance: dict[str, str] = Field(
@@ -1448,7 +1450,8 @@ class LeverCoverageInput(EvalDocumentModel):
 
     name: str = Field(description="Lever name — a dotted factor key or 'model'.")
     levels: list[str] = Field(
-        default_factory=list, description="Distinct observed values ('—' = ran without the override)."
+        default_factory=list,
+        description="Distinct observed values ('—' = ran without the override; 'null' = the launch set it to null).",
     )
     cells: int = Field(ge=0, description="Number of distinct observed levels — how finely the lever was swept.")
     k: int = Field(
@@ -1953,7 +1956,7 @@ class AnalysisContextBundle(EvalDocumentModel):
     # A/B set spanning a bump must be read as spanning it. Why each earlier version moved is in
     # this file's history.
     schema_version: int = Field(
-        default=47, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=48, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -2717,6 +2720,9 @@ def _effective_config(run: EvalRun, results: list[EvalResult], *, profile: HostP
     1. **An open family's members** — the levers the launch NAMED. A kind overlay
        ``house_rules={'flanking': 'on'}`` resolves the member ``gm.house_rules.flanking``, which is
        the lever's declared name rather than a carrier path this function flattened for itself.
+       A member named as ``null`` is the level :data:`~threetears.evals.analysis.reporting.NULL_LEVEL`,
+       ``overridden`` — unless the lever has a recovery rule, which reads a null as "not stated"
+       and resolves it in the second pass instead.
     2. **Recovery from observation** — :func:`_observed_model_levers` maps a lever to the usage
        role whose ``model`` is the value that ran. Two or more distinct models under one role
        make the value genuinely ambiguous, which is ``unknown`` rather than a guess at the first.
@@ -2780,8 +2786,14 @@ def _resolve_config(
     flat: dict[str, EffectiveLever] = {}
     for lever in sorted(resolution.overlaid):
         value = resolution.values.get(lever)
-        if value is not None:
-            flat[lever] = EffectiveLever(lever_level(value), "overridden")
+        if value is None and lever in recovery:
+            # A recovery rule gives ``null`` its own meaning — "not stated, read it off what ran" —
+            # so the second pass resolves it, to ``inherited`` or ``unknown``, never to a level.
+            continue
+        # Anywhere else a NAMED null is a level the operator set (``NULL_LEVEL``). Skipping it, as
+        # this once did, dropped the lever from the config, its provenance and the coverage map
+        # together, so a sweep between a value and ``null`` read ``unswept`` (#574).
+        flat[lever] = EffectiveLever(lever_level(value), "overridden")
     for lever, role in recovery.items():
         if lever in flat:
             continue
@@ -2796,7 +2808,9 @@ def _resolve_config(
         # its declaration's reader here would report the run-level projection (the candidate
         # model lever reads the run's whole model LIST) as one observation's level, and a lever
         # whose role never ran genuinely does not apply to the run rather than sitting at
-        # whatever the record happens to hold.
+        # whatever the record happens to hold. ``None`` here is a declaration's reader finding
+        # nothing on this run — the lever does not apply — unlike a launch-named null, which the
+        # first pass has already placed.
         if lever in flat or lever in recovery or value is None:
             continue
         flat[lever] = EffectiveLever(lever_level(value), "overridden")

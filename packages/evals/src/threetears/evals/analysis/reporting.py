@@ -1200,6 +1200,15 @@ def place_results(
 #: The types :func:`lever_level` renders through ``str()`` rather than as canonical JSON.
 SCALAR_LEVEL_TYPES: tuple[type, ...] = (str, int, float, bool)
 
+#: The level a lever sits at when the launch NAMED it with the value ``null`` — the operator set it
+#: to nothing, which is a level, and is not the inherited ``'—'`` of a run that never named it.
+#: JSON's own spelling, so it is the token the structured branch of :func:`lever_level` already
+#: produced for ``None`` and the pivot and the export (which render every resolved value through
+#: :func:`lever_level`) agree with the coverage map about it. Like every scalar it can collide with a
+#: string level spelled the same (``"1024"`` and ``1024`` share one already); that is the rendering's
+#: accepted limit, not a reason to spell a null as something JSON does not.
+NULL_LEVEL = "null"
+
 
 def lever_level(value: Any) -> str:
     """Render one lever's resolved value as the level a cohort is keyed on.
@@ -1215,12 +1224,18 @@ def lever_level(value: Any) -> str:
     downstream can undo. :attr:`~threetears.evals.contracts.campaign.VariantIndexEntry.levers` carries
     the display beside the content hash for a reader who needs to recognise the level.
 
+    **``None`` is** :data:`NULL_LEVEL`, **deliberately.** A caller hands one in only for a lever the
+    launch named as ``null`` — a reader returning nothing is "the lever does not apply", and the
+    caller skips it before reaching here — so the null is a level the operator set.
+
     Args:
         value: The resolved value, JSON-safe by the host's contract.
 
     Returns:
         The level.
     """
+    if value is None:
+        return NULL_LEVEL
     return str(value) if isinstance(value, SCALAR_LEVEL_TYPES) else canonical_json(value)
 
 
@@ -7104,6 +7119,7 @@ __all__ = [
     "METRIC_TRANSCRIPT",
     "NOT_SIGNIFICANT_LABEL",
     "NOT_TESTED_LABEL",
+    "NULL_LEVEL",
     "PAIRED_EFFECT_LABEL",
     "PAIRED_HEDGES_LABEL",
     "PARTITION_TOLERANCE_MS",
