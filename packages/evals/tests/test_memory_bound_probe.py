@@ -5,13 +5,15 @@ full result and trace to storage, so what a run holds at once is one cell's reco
 cell. If it accumulated the records too, its peak would grow with every byte of trace the run produced,
 and a large sweep could exhaust its container before it finished.
 
-The probe drives a fixed toy-host matrix through the runner, with each cell's stored output padded to a
-chosen size, into a SQLite store on disk (whose pages live outside the Python heap that ``tracemalloc``
-sees, as a production store's live outside the process). It measures the Python heap's peak at one trace
-volume and at twice that, and holds the peak to two bounds:
+The probe drives a fixed toy-host matrix through the runner at a launch's default cell width, with each
+cell's stored output padded to a chosen size, into a SQLite store on disk (whose pages live outside the
+Python heap that ``tracemalloc`` sees, as a production store's live outside the process). It measures the
+Python heap's peak at one trace volume and at twice that, and holds the peak to two bounds:
 
-- doubling the trace volume at a fixed matrix raises the peak by less than :data:`MAX_PEAK_GROWTH`;
-- the peak stays under :data:`MAX_PEAK_BYTES`, a third of the trace the matrix stores at the higher volume
+- doubling the trace volume at a fixed matrix raises the peak by less than :data:`MAX_GROWTH_SHARE` of the
+  trace it added. The cells in flight hold their own records, so the peak grows with the size of one cell's
+  trace times the width, never with the matrix; a run accumulating its records grows it by at least all of it;
+- the peak stays under :data:`MAX_PEAK_BYTES`, well under the trace the matrix stores at the higher volume
   (accumulating holds all of it).
 """
 
@@ -26,6 +28,7 @@ import pytest
 from threetears.evals.contracts import EvalStorage, EvalTestCase
 from threetears.evals.contracts.candidate_kind import CandidateOutput, CellSink
 from threetears.evals.contracts.host import WorldRegistry
+from threetears.evals.run.executor import DEFAULT_MAX_CONCURRENT_CELLS
 from threetears.evals.run.runner import RunnerOptions, execute_run
 from threetears.evals.storage.sqlite import SqliteDocumentStore
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
@@ -41,16 +44,17 @@ from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_run, t
 pytestmark = pytest.mark.memory_probe
 
 #: Repeats of each of the toy template's three cases: the fixed matrix.
-K_RUNS = 32
+K_RUNS = 48
 N_CELLS = 3 * K_RUNS
 #: The trace each cell stores at the lower volume, in bytes; the higher volume is twice it.
 TRACE_BYTES = 16 * 1024
-#: Doubling the trace volume may raise the peak by at most this factor. The run measured 1.23x; with the records
-#: accumulated it measured 1.53x (each record carries a fixed part beside its trace, so not quite 2x).
-MAX_PEAK_GROWTH = 1.4
-#: The most the run's peak heap may be at the higher volume, in bytes. Its cells store 3 MiB of trace between
+#: Doubling the trace volume may raise the peak by at most this share of the trace it added across the matrix.
+#: A run holding only its cells in flight raised it by 0.06 of it (at 4 cells wide); one accumulating every
+#: record raises it by more than the whole of it.
+MAX_GROWTH_SHARE = 0.25
+#: The most the run's peak heap may be at the higher volume, in bytes. Its cells store 4.5 MiB of trace between
 #: them there, which a run accumulating its records holds all of at its end.
-MAX_PEAK_BYTES = 1024 * 1024
+MAX_PEAK_BYTES = 3 * 512 * 1024
 
 
 class _PaddedExtractorKind(ToyExtractorKind):
@@ -112,7 +116,10 @@ async def _peak_bytes(tmp_path: Path, *, padding_bytes: int) -> int:
     host.storage.save_eval_run(run)
     for case in cases:
         host.storage.save_test_case(case)
-    options = RunnerOptions(candidate_kinds={TOY_EXTRACTOR_KIND: lambda _cell: kind})
+    # At the launch's default width, so the probe holds the run as a launched run executes it: several cells at once.
+    options = RunnerOptions(
+        candidate_kinds={TOY_EXTRACTOR_KIND: lambda _cell: kind}, max_concurrent_cells=DEFAULT_MAX_CONCURRENT_CELLS
+    )
 
     gc.collect()
     tracemalloc.start()
@@ -141,11 +148,12 @@ async def test_a_runs_peak_memory_is_bounded_by_its_matrix_not_its_trace_volume(
     lower = await _peak_bytes(tmp_path, padding_bytes=TRACE_BYTES)
     higher = await _peak_bytes(tmp_path, padding_bytes=2 * TRACE_BYTES)
 
-    growth = higher / lower
-    assert growth < MAX_PEAK_GROWTH, (
+    added = N_CELLS * TRACE_BYTES
+    growth = higher - lower
+    assert growth < MAX_GROWTH_SHARE * added, (
         f"doubling each cell's trace from {TRACE_BYTES} to {2 * TRACE_BYTES} bytes over a fixed {N_CELLS}-cell matrix "
-        f"raised the run's peak heap {growth:.2f}x ({lower} -> {higher} bytes); a run holding one cell at a time "
-        f"grows it by less than {MAX_PEAK_GROWTH}x"
+        f"raised the run's peak heap by {growth} bytes ({lower} -> {higher}), {growth / added:.2f} of the {added} "
+        f"bytes of trace it added; a run holding only its cells in flight stays under {MAX_GROWTH_SHARE}"
     )
     assert higher < MAX_PEAK_BYTES, (
         f"the run's peak heap was {higher} bytes, above {MAX_PEAK_BYTES} for a {N_CELLS}-cell matrix storing "
