@@ -53,7 +53,6 @@ from threetears.evals.analysis.reporting import (
     compute_comparison_sets,
     compute_frontier,
     compute_history,
-    compute_orphaned_runs,
     compute_pivot,
     compute_program_budget,
     normalize_bar,
@@ -61,6 +60,7 @@ from threetears.evals.analysis.reporting import (
     pooled_served_models,
     project_score_records,
 )
+from threetears.evals.analysis.lenses.orphaned_runs import compute_orphaned_runs
 from threetears.evals.analysis.lenses.export import ExportError, ScoreExport, export_projection
 from threetears.evals.analysis.significance import cross_subject_disclosure
 from threetears.evals.analysis.completeness import completeness_disclosure
