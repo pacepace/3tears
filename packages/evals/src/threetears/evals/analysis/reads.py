@@ -58,13 +58,13 @@ from threetears.evals.analysis.reporting import (
     compute_orphaned_runs,
     compute_pivot,
     compute_program_budget,
-    cross_subject_disclosure,
     export_projection,
     normalize_bar,
     pooled_composite_basis,
     pooled_served_models,
     project_score_records,
 )
+from threetears.evals.analysis.significance import cross_subject_disclosure
 from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, composite_significance, difference_interval
 from threetears.evals.kernel.arguments import normalize_blank

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import inspect
 
-from threetears.evals.analysis.reporting import (
+from threetears.evals.analysis.significance import (
     NOT_SIGNIFICANT_LABEL,
     NOT_TESTED_LABEL,
     PAIRED_EFFECT_LABEL,

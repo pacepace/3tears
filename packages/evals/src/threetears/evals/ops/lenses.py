@@ -47,10 +47,10 @@ from threetears.evals.analysis.reporting import (
     COST_ESTIMATE_MIN_BASIS,
     cassette_mode_disclosure,
     compute_estimate_cost,
-    format_significance,
     measurement_window,
     measurement_window_disclosure,
 )
+from threetears.evals.analysis.significance import format_significance
 from threetears.evals.analysis.completeness import completeness_disclosure
 
 from threetears.evals.analysis.reporting import (

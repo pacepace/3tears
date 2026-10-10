@@ -146,10 +146,9 @@ from threetears.evals.analysis.reporting import (
     SERVED_MODEL_UNRECORDED,
     WEIGHTING_EQUAL_PER_SCENARIO,
     difference_was_declared_at_launch,
-    format_significance,
     metric_help,
-    significance_disclosure,
 )
+from threetears.evals.analysis.significance import format_significance, significance_disclosure
 from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.analysis.gate import (
     DEFAULT_FAIL_ON,

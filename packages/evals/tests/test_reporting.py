@@ -7822,14 +7822,14 @@ class TestSignificanceRead:
         asserts that a test ran and came back negative, which a reader takes as
         a measured null the campaign never measured.
         """
-        from threetears.evals.analysis.reporting import NOT_TESTED_LABEL, significance_read
+        from threetears.evals.analysis.significance import NOT_TESTED_LABEL, significance_read
 
         assert significance_read(significant=False) == NOT_TESTED_LABEL
         assert significance_read(significant=True) == NOT_TESTED_LABEL
 
     def test_not_significant_and_not_tested_are_different_answers(self):
         """The whole point of the three-way read: the two must never collapse."""
-        from threetears.evals.analysis.reporting import NOT_SIGNIFICANT_LABEL, NOT_TESTED_LABEL, significance_read
+        from threetears.evals.analysis.significance import NOT_SIGNIFICANT_LABEL, NOT_TESTED_LABEL, significance_read
 
         backed = significance_read(significant=False, p=0.42, effect=0.1)
         unbacked = significance_read(significant=False)
@@ -7845,7 +7845,7 @@ class TestSignificanceRead:
         renders without it counting toward the predicate — the exact place the
         two could silently disagree.
         """
-        from threetears.evals.analysis.reporting import NOT_TESTED_LABEL, format_significance
+        from threetears.evals.analysis.significance import NOT_TESTED_LABEL, format_significance
 
         cell = format_significance(significant=False, paired=True, n=12)
 
@@ -7854,20 +7854,20 @@ class TestSignificanceRead:
 
     def test_either_statistic_alone_counts_as_tested(self):
         """The predicate is `p or effect size`, matching the kit — not both."""
-        from threetears.evals.analysis.reporting import SIGNIFICANT_LABEL, significance_read
+        from threetears.evals.analysis.significance import SIGNIFICANT_LABEL, significance_read
 
         assert significance_read(significant=True, p=0.01) == SIGNIFICANT_LABEL
         assert significance_read(significant=True, effect=1.4) == SIGNIFICANT_LABEL
 
     def test_a_null_verdict_with_statistics_is_still_not_tested(self):
         """No verdict is no verdict, whatever else the row happens to carry."""
-        from threetears.evals.analysis.reporting import NOT_TESTED_LABEL, significance_read
+        from threetears.evals.analysis.significance import NOT_TESTED_LABEL, significance_read
 
         assert significance_read(significant=None, p=0.01, effect=1.4) == NOT_TESTED_LABEL
 
     def test_the_labels_are_spelled_out_never_abbreviated(self):
         """ "n.s." was read as nanoseconds by an operator in a report full of `*_ms`."""
-        from threetears.evals.analysis.reporting import NOT_SIGNIFICANT_LABEL, NOT_TESTED_LABEL, SIGNIFICANT_LABEL
+        from threetears.evals.analysis.significance import NOT_SIGNIFICANT_LABEL, NOT_TESTED_LABEL, SIGNIFICANT_LABEL
 
         assert (SIGNIFICANT_LABEL, NOT_SIGNIFICANT_LABEL, NOT_TESTED_LABEL) == (
             "significant",
@@ -7880,7 +7880,7 @@ class TestSignificanceFormatting:
     """A verdict never travels without the statistics behind it, or its test."""
 
     def test_a_verdict_carries_the_statistics_it_rests_on(self):
-        from threetears.evals.analysis.reporting import format_significance
+        from threetears.evals.analysis.significance import format_significance
 
         cell = format_significance(significant=True, paired=True, p=0.0123, effect=1.42, n=8)
 
@@ -7896,7 +7896,11 @@ class TestSignificanceFormatting:
         spelled out here, so renaming either one cannot leave this passing
         against a name no surface prints.
         """
-        from threetears.evals.analysis.reporting import PAIRED_EFFECT_LABEL, UNPAIRED_EFFECT_LABEL, format_significance
+        from threetears.evals.analysis.significance import (
+            PAIRED_EFFECT_LABEL,
+            UNPAIRED_EFFECT_LABEL,
+            format_significance,
+        )
 
         assert PAIRED_EFFECT_LABEL != UNPAIRED_EFFECT_LABEL
 
@@ -7914,7 +7918,7 @@ class TestSignificanceFormatting:
         a private copy there fails here rather than silently answering
         differently from the compare table about the same row.
         """
-        from threetears.evals.analysis.reporting import format_significance
+        from threetears.evals.analysis.significance import format_significance
         from threetears.evals.vega.compiler import compile_chart
         from threetears.evals.analysis.viz.payloads import DeltaRow, DeltaTablePayload
 
@@ -7940,7 +7944,7 @@ class TestSignificanceFormatting:
         }
 
     def test_the_disclosure_names_the_paired_test_and_its_threshold(self):
-        from threetears.evals.analysis.reporting import significance_disclosure
+        from threetears.evals.analysis.significance import significance_disclosure
         from threetears.evals.analysis.stats import PAIRED_TEST_NAME
 
         sentence = significance_disclosure(paired=True)
@@ -7950,7 +7954,7 @@ class TestSignificanceFormatting:
 
     def test_the_disclosure_names_the_unpaired_test_when_samples_were_not_paired(self):
         """Which test ran is most of what a small arm's verdict rests on."""
-        from threetears.evals.analysis.reporting import significance_disclosure
+        from threetears.evals.analysis.significance import significance_disclosure
         from threetears.evals.analysis.stats import PAIRED_TEST_NAME, UNPAIRED_TEST_NAME
 
         sentence = significance_disclosure(paired=False)
@@ -7960,7 +7964,7 @@ class TestSignificanceFormatting:
 
     def test_the_disclosure_promises_no_alerting(self):
         """Reporting presents and compares; it never routes a verdict anywhere."""
-        from threetears.evals.analysis.reporting import significance_disclosure
+        from threetears.evals.analysis.significance import significance_disclosure
 
         assert "no alerting" in significance_disclosure(paired=True)
 
@@ -7969,12 +7973,12 @@ class TestCrossSubjectDisclosure:
     """Composites are comparable within a subject and never across one."""
 
     def test_the_same_subject_needs_no_disclosure(self):
-        from threetears.evals.analysis.reporting import cross_subject_disclosure
+        from threetears.evals.analysis.significance import cross_subject_disclosure
 
         assert cross_subject_disclosure("ent-maple", "ent-maple") is None
 
     def test_two_subjects_are_named_and_the_delta_is_withheld(self):
-        from threetears.evals.analysis.reporting import cross_subject_disclosure
+        from threetears.evals.analysis.significance import cross_subject_disclosure
 
         note = cross_subject_disclosure("ent-maple", "ent-bea")
 
@@ -7996,7 +8000,7 @@ class TestCrossSubjectDisclosure:
         earlier claims in this branch false. **Host-neutral subject keys**, because the
         sentence interpolates them and a fixture key could carry a host noun.
         """
-        from threetears.evals.analysis.reporting import cross_subject_disclosure
+        from threetears.evals.analysis.significance import cross_subject_disclosure
 
         note = cross_subject_disclosure("subj-a", "subj-b")
 
@@ -8012,7 +8016,7 @@ class TestCrossSubjectDisclosure:
         the rule that actually bites — two DIFFERENT subjects are not comparable — and it is
         covered above.
         """
-        from threetears.evals.analysis.reporting import cross_subject_disclosure
+        from threetears.evals.analysis.significance import cross_subject_disclosure
 
         assert cross_subject_disclosure("", "") is None
         assert cross_subject_disclosure("ent-maple", "ent-bea") is not None
