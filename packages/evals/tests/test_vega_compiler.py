@@ -876,6 +876,118 @@ class TestDistributionIsOnePanelWithAMarginal:
         assert svg.count('aria-label="X-axis') == 1, "one x axis for the whole figure"
 
 
+def _edged(*bins: tuple[str, float, float, int]) -> list[dict]:
+    """Recorded bins carrying numeric edges, as ``(label, low, high, count)``."""
+    return [{"range": label, "low": low, "high": high, "count": count} for label, low, high, count in bins]
+
+
+class TestEdgedBucketsArePlacedOnTheValueAxis:
+    """#616: a pre-binned cohort whose bins state numeric edges is drawn beside the sampled ones."""
+
+    #: One cohort recorded as samples, one as edged bins, in ms — large enough to restate to seconds.
+    PAYLOAD = {
+        "groups": [
+            {
+                "label": "sampled",
+                "samples": [41000.0, 47000.0, 52000.0, 49500.0, 56000.0, 60500.0],
+                "ci": {"low": 45000.0, "high": 55000.0, "mean": 51000.0, "level": 0.95, "variability": "across 6 runs"},
+                "n": 6,
+            },
+            {
+                "label": "binned",
+                "buckets": _edged(
+                    ("40–45k", 40000, 45000, 2),
+                    ("45–50k", 45000, 50000, 4),
+                    ("50–55k", 50000, 55000, 6),
+                    ("55–65k", 55000, 65000, 3),
+                ),
+                "ci": {
+                    "low": 48000.0,
+                    "high": 54000.0,
+                    "mean": 52000.0,
+                    "level": 0.95,
+                    "variability": "across 15 runs",
+                },
+                "n": 15,
+            },
+        ],
+        "unit": "ms",
+        "x_label": "latency",
+    }
+
+    def test_both_cohorts_draw_on_one_value_axis_with_no_unplaceable_footnote(self):
+        chart = compile_chart("distribution", self.PAYLOAD)
+        spec = chart.spec
+        assert "facet" in spec, "one faceted panel, not a counts panel beside it"
+        recorded = [row for row in _frame_rows(spec) if row[KIND_FIELD] == "recorded-bin"]
+        assert {row[DISPLAY_FIELD] for row in recorded} == {"binned"}
+        assert [(row["bin_low"], row["bin_high"]) for row in recorded] == [(40, 45), (45, 50), (50, 55), (55, 65)], (
+            "placed by the stated edges, restated with every other value"
+        )
+        assert any(row[KIND_FIELD] == "rug" and row[DISPLAY_FIELD] == "sampled" for row in _frame_rows(spec))
+        domains = {
+            tuple(encoding["scale"]["domain"]) for encoding in _value_encodings(spec) if encoding["field"] != RISE_FIELD
+        }
+        assert len(domains) == 1, f"the cohorts are read against {len(domains)} rulers"
+        assert "Individual runs not drawn" not in _subtitle(spec)
+        assert "recorded bins" in spec["description"], "a bin span says what it is, as the gate asks of a span"
+        assert check_spec(spec) == []
+
+    def test_a_wide_bin_is_drawn_by_its_count_per_unit_width(self):
+        """A 10s bin of 3 must not claim the area of two 5s bins of 3."""
+        spec = compile_chart("distribution", self.PAYLOAD).spec
+        rise = {row["bin_low"]: row[RISE_FIELD] for row in _frame_rows(spec) if row[KIND_FIELD] == "recorded-bin"}
+        # Counts 2, 6 and 3 over widths 5, 5 and 10: densities 0.4, 1.2 and 0.3.
+        assert rise[50] == pytest.approx(3 * rise[40])
+        assert rise[55] == pytest.approx(rise[50] / 4), "3 over 10s is a quarter of 6 over 5s, not half"
+
+    def test_a_label_only_group_beside_them_is_still_footnoted(self):
+        payload = copy.deepcopy(self.PAYLOAD)
+        payload["groups"].append(
+            {"label": "coarse", "buckets": [{"range": "45–50k", "count": 4}, {"range": "50–55k", "count": 6}], "n": 10}
+        )
+        chart = compile_chart("distribution", payload)
+        assert "Individual runs not drawn for coarse: recorded" in _subtitle(chart.spec), "only the label-only group"
+        assert "45–50k" not in json.dumps(chart.spec), "a label is never placed"
+
+    def test_a_restated_row_states_its_bins_and_its_mean_in_one_unit(self):
+        """The values table's mixed-unit row: a `45–50k` bin beside a `Mean (s)` of 52."""
+        chart = compile_chart("distribution", self.PAYLOAD)
+        headers = {column["key"]: column["header"] for column in chart.columns}
+        assert headers["mean"] == "Mean (s)"
+        row = next(row for row in chart.rows if row["label"] == "binned")
+        assert row["mean"] == pytest.approx(52.0)
+        assert row["shape"] == "40–45: 2; 45–50: 4; 50–55: 6; 55–65: 3 (s)"
+
+    def test_a_restated_label_only_row_names_the_unit_its_bins_were_recorded_in(self):
+        payload = copy.deepcopy(self.PAYLOAD)
+        for bucket in payload["groups"][1]["buckets"]:
+            del bucket["low"], bucket["high"]
+        row = next(row for row in compile_chart("distribution", payload).rows if row["label"] == "binned")
+        assert row["shape"] == "40–45k: 2; 45–50k: 4; 50–55k: 6; 55–65k: 3 (bins in ms)"
+
+    def test_an_edged_buckets_only_payload_is_drawn_on_the_value_axis(self):
+        payload = {"groups": [{"label": "only", "buckets": _edged(("0–1", 0, 1, 3), ("1–2", 1, 2, 5))}], "unit": "s"}
+        spec = compile_chart("distribution", payload).spec
+        assert "facet" in spec and "vconcat" not in spec
+        assert check_spec(spec) == []
+
+    @pytest.mark.parametrize(
+        "buckets",
+        [
+            pytest.param([{"range": "a", "count": 1, "low": 0.0}], id="one-edge"),
+            pytest.param([{"range": "a", "count": 1, "low": 2.0, "high": 1.0}], id="inverted"),
+            pytest.param([{"range": "a", "count": 1, "low": 1.0, "high": 1.0}], id="zero-width"),
+            pytest.param(_edged(("a", 0, 1, 1)) + [{"range": "b", "count": 2}], id="mixed-in-one-group"),
+            pytest.param(_edged(("a", 0, 2, 1), ("b", 1, 3, 2)), id="overlapping"),
+        ],
+    )
+    def test_a_bin_that_does_not_locate_itself_is_refused(self, buckets):
+        payload = {"groups": [{"label": "g", "buckets": buckets}], "unit": "s"}
+        with pytest.raises(PayloadError):
+            compile_chart("distribution", payload)
+
+
 class TestDistributionSpec:
     def test_the_shape_is_drawn_from_the_values_not_from_the_interval(self):
         """Shape comes from values: recovering a distribution from two endpoints assumes one nobody stated."""
@@ -900,17 +1012,18 @@ class TestDistributionSpec:
         }
         assert compile_chart("distribution", payload).rows[0]["shape"] == "unknown — interval only"
 
-    def test_pre_binned_buckets_never_reach_the_value_axis(self):
+    def test_label_only_buckets_never_reach_the_value_axis(self):
         """Their bins are label strings; placing them would invent edges the payload
         never gave, and drawing them against bin NAMES is the second ruler the marginal rule
         removes. So the shape is absent from the picture — and stated as absent."""
         chart = compile_chart("distribution", DISTRIBUTION)
-        assert "0-1s" not in json.dumps(chart.spec), "no bin name is drawn anywhere"
+        assert "1000-1500" not in json.dumps(chart.spec), "no bin name is drawn anywhere"
         # Named by what the reader would have SEEN — the per-run ticks — rather than
         # by "shape", which is this module's internal word for the distribution and
         # could equally mean the mark, the interval, or the row.
         assert "Individual runs not drawn for deepseek" in _subtitle(chart.spec)
-        assert chart.rows[1]["shape"] == "0-1s: 2; 1-2s: 7", "the counts stay exact in the values table"
+        # The chart restated ms to s and a label cannot be restated, so the cell names the unit its bins are in.
+        assert chart.rows[1]["shape"] == "1000-1500: 2; 1500-2000: 7 (bins in ms)", "the counts stay exact"
 
     def test_a_buckets_only_payload_still_draws_its_counts(self):
         """Nothing places on the value axis, so there is no axis for a marginal to be

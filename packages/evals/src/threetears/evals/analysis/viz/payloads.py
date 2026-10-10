@@ -278,14 +278,56 @@ class ConfidenceInterval(BaseModel):
 
 
 class HistogramBucket(BaseModel):
-    """One pre-binned count — a shape recorded coarsely, when raw values were not kept."""
+    """One pre-binned count — a shape recorded coarsely, when raw values were not kept.
+
+    **A bin with edges can be placed; a bin with only a label cannot.** ``range`` is prose and is never
+    parsed: reading ``45–50k`` as the numbers 45000 and 50000 would mean guessing a unit, a separator
+    and a suffix the payload never stated. So a bin reaches the shared value axis only when its producer
+    states ``low`` and ``high`` in the payload's ``unit``, and a group whose bins carry only labels is
+    named as unplaceable and kept, exact, in the values table.
+    """
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     range: str = Field(
-        min_length=1, description="The bin's human range label, e.g. '0.6–0.7'. A label, not a number pair."
+        min_length=1,
+        description=(
+            "The bin's human range label in the payload's `unit`, e.g. '0.6–0.7'. A label, not a number pair: "
+            "it is never parsed, so a bin is placed on the value axis only by `low` and `high`."
+        ),
     )
     count: int = Field(ge=0, description="Observations that fell in the bin.")
+    low: float | None = Field(
+        default=None,
+        description=(
+            "The bin's lower edge, in the payload's `unit`. Given together with `high` or not at all; a bin "
+            "with edges is drawn on the shared value axis, one with only its label is not."
+        ),
+    )
+    high: float | None = Field(
+        default=None, description="The bin's upper edge, in the payload's `unit`, above `low`. Given with `low`."
+    )
+
+    @model_validator(mode="after")
+    def _edges_are_a_bin(self) -> HistogramBucket:
+        """Reject half a bin, an edge that is not a number, and a bin of no width.
+
+        One edge alone does not locate a bin, and the missing one would have to be invented from the
+        label — the inference this field exists to make unnecessary.
+        """
+        if (self.low is None) != (self.high is None):
+            raise ValueError(f"bin {self.range!r} states one edge — give both `low` and `high`, or neither")
+        if self.low is not None and self.high is not None:
+            if not (math.isfinite(self.low) and math.isfinite(self.high)):
+                raise ValueError(f"bin {self.range!r} has an edge that is not a finite number")
+            if not self.low < self.high:
+                raise ValueError(f"bin {self.range!r} has `low` {self.low} not below `high` {self.high}")
+        return self
+
+    @property
+    def edged(self) -> bool:
+        """Whether the bin states numeric edges, and so can be placed on a value axis."""
+        return self.low is not None
 
 
 class DistributionGroup(BaseModel):
@@ -336,6 +378,25 @@ class DistributionGroup(BaseModel):
         """
         if not self.samples and not self.buckets and self.ci is None:
             raise ValueError(f"group {self.label!r} carries no samples, buckets or ci — there is no spread to draw")
+        buckets = self.buckets or []
+        if any(bucket.edged for bucket in buckets) and not all(bucket.edged for bucket in buckets):
+            # A group is placed whole or not at all: drawing the edged bins and dropping the rest would show a
+            # shape with a hole where the label-only bins' counts went.
+            raise ValueError(
+                f"group {self.label!r} gives edges for some bins and not others — give every bin `low` and `high`, "
+                "or none"
+            )
+        edged = sorted(
+            (bucket.low, bucket.high, bucket.range)
+            for bucket in buckets
+            if bucket.low is not None and bucket.high is not None
+        )
+        for (_, high, name), (low, _, following) in zip(edged, edged[1:], strict=False):
+            if low < high:
+                raise ValueError(
+                    f"group {self.label!r} has bins {name!r} and {following!r} that overlap — an observation "
+                    "would be counted in both"
+                )
         if self.ci is None and not self.buckets and len(self.samples or []) < 2:
             raise ValueError(
                 f"group {self.label!r} carries a single sample and no ci or buckets — a distribution is a spread, "
