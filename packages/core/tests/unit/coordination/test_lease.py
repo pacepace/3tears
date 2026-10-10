@@ -516,6 +516,57 @@ class TestAWriteAppliedButNeverAnswered:
         await handle.release()
         assert await bucket.get(key="lock/a") is None
 
+    async def _write_that_lands_late(self) -> tuple[LeaseHandle, FakeKvBucket]:
+        """a refresh whose write is sent, never answered, and lands only as the next refresh swaps."""
+        lease, client = await _make_lease()
+        handle = await lease.acquire("lock/a", ttl_seconds=30)
+        bucket = await _bucket_for(client, "test_leases")
+        real_update = bucket.update
+        sent: dict[str, Any] = {}
+
+        async def lands_before_this_swap(**kwargs: Any) -> int | None:
+            bucket.update = real_update  # type: ignore[method-assign]
+            await real_update(**sent)
+            return await real_update(**kwargs)
+
+        async def sent_and_never_answered(**kwargs: Any) -> int | None:
+            sent.update(kwargs)
+            bucket.update = lands_before_this_swap  # type: ignore[method-assign]
+            raise TimeoutError("the answer never came")
+
+        bucket.update = sent_and_never_answered  # type: ignore[method-assign]
+        with pytest.raises(TimeoutError):
+            await handle.refresh()
+        return handle, bucket
+
+    async def test_a_write_that_lands_between_the_next_refreshs_read_and_its_swap_is_renewed_from(self) -> None:
+        """the read saw the entry before the unanswered write; the swap was refused because it landed."""
+        handle, bucket = await self._write_that_lands_late()
+        await handle.refresh()
+        entry = await bucket.get_entry(key="lock/a")
+        assert entry is not None and entry[1] == handle.revision
+
+    async def test_a_refused_swap_whose_re_read_fails_keeps_the_record_for_the_release(self) -> None:
+        """the swap was refused and the entry could not be read again: the unanswered write is still the
+        handle's own, and the release deletes it."""
+        handle, bucket = await self._write_that_lands_late()
+        real_get_entry = bucket.get_entry
+        reads = 0
+
+        async def second_read_fails(**kwargs: Any) -> tuple[bytes, int] | None:
+            nonlocal reads
+            reads += 1
+            if reads == 2:
+                raise ConnectionError("kv is unreachable")
+            return await real_get_entry(**kwargs)
+
+        bucket.get_entry = second_read_fails  # type: ignore[method-assign]
+        with pytest.raises(ConnectionError):
+            await handle.refresh()
+        bucket.get_entry = real_get_entry  # type: ignore[method-assign]
+        await handle.release()
+        assert await bucket.get(key="lock/a") is None
+
     async def test_another_holders_entry_is_still_a_lost_lease(self) -> None:
         handle, bucket = await self._unanswered_refresh()
         entry = await bucket.get_entry(key="lock/a")
