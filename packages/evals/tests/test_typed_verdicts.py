@@ -31,7 +31,18 @@ from threetears.evals.analysis import (
     parse_fail_on,
     verdict_token,
 )
-from threetears.evals.quick import EXIT_GATE_FAILED, EXIT_OK, EXIT_REFUSED, Comparison, Guardrail, compare, run_cli
+from threetears.evals.quick import (
+    DEFAULT_QUICK_SCOPE,
+    callable_host,
+    run_eval,
+    EXIT_GATE_FAILED,
+    EXIT_OK,
+    EXIT_REFUSED,
+    Comparison,
+    Guardrail,
+    compare,
+    run_cli,
+)
 
 CASES = [{"n": index} for index in range(48)]
 
@@ -271,3 +282,19 @@ class TestTheCommandLineGate:
         )
         code = run_cli(["gate", bare.id, "--scope", comparison.scope_id], host_factory=lambda: comparison.host)
         assert code == EXIT_REFUSED and "has no verdict to gate on" in capsys.readouterr().err
+
+
+class TestANewcomerNeedsNoScope:
+    """#700: ``run_eval`` and ``compare`` with no host need no ``scope_id``; a host of your own still does."""
+
+    async def test_run_eval_and_compare_default_it_with_no_host(self) -> None:
+        summary = await run_eval(CASES[:4], _answers(0), [correct], k=1)
+        assert summary.scope_id == DEFAULT_QUICK_SCOPE == "quick" and summary.status == "completed"
+        comparison = await compare(
+            CASES[:4], {"current": _answers(0), "other": _answers(1)}, [correct], control="current", k=1
+        )
+        assert comparison.scope_id == DEFAULT_QUICK_SCOPE
+
+    async def test_a_host_of_your_own_names_its_scope(self) -> None:
+        with pytest.raises(ValueError, match="scope_id= is required with a host of your own"):
+            await run_eval(CASES[:4], _answers(0), [correct], host=callable_host([correct]), k=1)

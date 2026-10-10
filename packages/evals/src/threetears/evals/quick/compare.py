@@ -88,6 +88,7 @@ from threetears.evals.quick.one_call import (
     CallableArm,
     run_arms,
     callable_host,
+    quick_scope,
     refuse_unusable_guardrails,
 )
 from threetears.evals.run import list_results
@@ -708,7 +709,7 @@ async def compare(
     scorers: Sequence[Scorer] = (),
     *,
     control: ArmKey,
-    scope_id: str,
+    scope_id: str | None = None,
     expected: ExpectedLabel | None = None,
     judge: Judge | None = None,
     intent: str | None = None,
@@ -745,7 +746,9 @@ async def compare(
             level is stated on the run as that factor's lever (``callable.<factor>=<level>``).
         scorers: The grades, as :func:`~threetears.evals.quick.run_eval` takes them.
         control: The arm every other arm is tested against, by its key.
-        scope_id: The scope every run and the campaign are stored in.
+        scope_id: The scope every run and the campaign are stored in; with no ``host``, ``None`` stores them in
+            :data:`~threetears.evals.quick.one_call.DEFAULT_QUICK_SCOPE`, in the in-memory store the call builds. A
+            host of your own needs one.
         expected: Declares every candidate a classifier, as :func:`~threetears.evals.quick.run_eval` takes it.
         judge: A model grading every arm's answers on one rubric, as :func:`~threetears.evals.quick.run_eval`
             takes it. ONE judge for every arm — its model, rubric and judge configs — so no difference between
@@ -811,8 +814,8 @@ async def compare(
         The comparison: every arm's summary, the campaign's id and its report.
 
     Raises:
-        ValueError: Fewer than two candidates, a blank arm name, an arm key that is not a level of each
-            factor, factors without ``model`` or with an unusable or repeated name, a ``control`` that names
+        ValueError: No ``scope_id`` with a ``host`` of your own, fewer than two candidates, a blank arm name, an
+            arm key that is not a level of each factor, factors without ``model`` or with an unusable or repeated name, a ``control`` that names
             no arm, a ``max_cost_usd`` that is not a positive number, a margin that names no scorer and no core rate
             measure, is not a positive number (below 1 on accuracy), is on accuracy with no ``expected=``, is on a
             scorer with no range, or is on a scorer and comes with a ``host``, a range that is unusable or
@@ -821,6 +824,7 @@ async def compare(
             :func:`~threetears.evals.quick.run_eval` refuses.
         ValidationFailedError: The launch refused, or the host refuses the campaign's declaration.
     """
+    scope_id = quick_scope(scope_id, host)
     named = _factors(factors)
     if factors is None and (host is None or host.profile.host_sweepables.get(ARM_LEVER) is not None):
         # The arms' names are not models: each is stated as the arm lever's level, every arm at one model.

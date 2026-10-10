@@ -1277,12 +1277,41 @@ def _kind_factory(
     return cell_kind
 
 
+#: The scope a quick call with no host of its own stores its runs in when it is named none: the call's store is
+#: in memory and lives only as long as the call, so no other run can share it by accident.
+DEFAULT_QUICK_SCOPE = "quick"
+
+
+def quick_scope(scope_id: str | None, host: EvalHost | None) -> str:
+    """The scope a quick call stores in: the one named, else :data:`DEFAULT_QUICK_SCOPE` when it builds its own host.
+
+    Args:
+        scope_id: The scope the caller named, or None.
+        host: The caller's own host, or None for the one the call builds.
+
+    Returns:
+        The scope.
+
+    Raises:
+        ValueError: A host of the caller's own and no scope: its store outlives the call, so where its runs land
+            is the caller's to say.
+    """
+    if scope_id is not None:
+        return scope_id
+    if host is not None:
+        raise ValueError(
+            "scope_id= is required with a host of your own: its store outlives this call, and the scope is where its "
+            "runs and campaigns are found again"
+        )
+    return DEFAULT_QUICK_SCOPE
+
+
 async def run_eval(
     cases: Sequence[Mapping[str, Any]],
     candidate: Candidate | ToolUsingCandidate | WorldCandidate,
     scorers: Sequence[Scorer] = (),
     *,
-    scope_id: str,
+    scope_id: str | None = None,
     expected: ExpectedLabel | None = None,
     judge: Judge | None = None,
     intent: str | None = None,
@@ -1315,7 +1344,9 @@ async def run_eval(
         scorers: The grades. Each is reported as a measure named by its ``__name__``; ``True`` and
             ``False`` count as 1 and 0, and higher is better. None is needed when ``expected`` or
             ``judge`` is given.
-        scope_id: The scope the template, cases and run are stored in. The engine never defaults it.
+        scope_id: The scope the template, cases and run are stored in. With no ``host``, ``None`` stores them in
+            :data:`DEFAULT_QUICK_SCOPE`, inside the in-memory store this call builds and drops; a host of your own
+            names its scope, since its store outlives the call and the scope is where its runs are found.
         expected: Declares the candidate a classifier: called once per case, it returns the label a
             correct answer gives. Each cell then lands ``match`` (the answer is that label) and
             ``confusion_cell`` (expected, then predicted), and the summary carries the confusion matrix
@@ -1378,8 +1409,8 @@ async def run_eval(
         so the answers can be read after this call returns whatever store the run used.
 
     Raises:
-        ValueError: No cases, a case that is not a JSON object with string keys, a case ``id`` that is not a
-            non-blank string or an int or that two cases share, a ``max_cost_usd`` that is not a positive
+        ValueError: No ``scope_id`` with a ``host`` of your own, no cases, a case that is not a JSON object with
+            string keys, a case ``id`` that is not a non-blank string or an int or that two cases share, a ``max_cost_usd`` that is not a positive
             number, a synchronous candidate handed tools or a world, no scorer, ``expected``
             or ``judge``, an ``intent`` that is not a non-blank string, a scorer with no name, a repeated one or
             one named after an engine core measure (``match``, ``confusion_cell``, ``accuracy``, ``score``,
@@ -1451,7 +1482,7 @@ async def run_arms(
     arms: Sequence[CallableArm],
     scorers: Sequence[Scorer] = (),
     *,
-    scope_id: str,
+    scope_id: str | None = None,
     expected: ExpectedLabel | None = None,
     judge: Judge | None = None,
     intent: str | None = None,
@@ -1485,6 +1516,7 @@ async def run_arms(
     Returns:
         Each arm's finished run's summary, read back from the store, in arm order.
     """
+    scope_id = quick_scope(scope_id, host)
     plain_cases = _plain_cases(cases)
     names = _case_names(plain_cases)
     _refuse_an_unusable_cap(max_cost_usd)
