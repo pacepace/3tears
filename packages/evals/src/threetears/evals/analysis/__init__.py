@@ -63,7 +63,8 @@ from threetears.evals.analysis.agreement import (
 from threetears.evals.analysis.judge_drift import DriftVerdict, JudgeDrift, JudgeDriftDimension, judge_drift
 from threetears.evals.analysis.arms import ArmTable, cell_label, multi_rig_variants, short_digest
 from threetears.evals.analysis.bar_proposals import BaselineBarProposals, propose_bars
-from threetears.evals.analysis.bundle.assemble import assemble_context_bundle, component_carrier, measure_movement
+from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
+from threetears.evals.analysis.bundle.divergence import component_carrier, measure_movement
 from threetears.evals.analysis.bundle.observations import variant_key_of_run
 from threetears.evals.analysis.bundle.insights import InsightStanding, insight_standing
 from threetears.evals.analysis.bundle.schema import (
