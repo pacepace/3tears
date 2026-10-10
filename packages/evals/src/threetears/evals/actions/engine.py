@@ -55,6 +55,9 @@ from threetears.evals.ops import (
     PivotTable,
     ReportDocument,
     JudgeCasesFreeze,
+    JudgeProfileListing,
+    JudgeProfileRecording,
+    JudgeProfilesRecord,
     ReporterCaseFreeze,
     ReporterCaseListing,
     ResultDetail,
@@ -95,6 +98,8 @@ from threetears.evals.ops import (
     report_read,
     reporter_case_archive,
     judge_cases_freeze,
+    judge_profiles_list,
+    judge_profiles_record,
     reporter_case_freeze,
     reporter_cases_list,
     result_get,
@@ -391,6 +396,18 @@ class ReportReadParams(EvalBaseModel):
 
 class JudgeCasesFreezeParams(JudgeCasesFreeze):
     """``judge_cases_freeze`` — the freeze's own arguments, declared once on :class:`~threetears.evals.ops.JudgeCasesFreeze`."""
+
+
+class JudgeProfilesRecordParams(JudgeProfilesRecord):
+    """``judge_profiles_record`` — the recording's own arguments, declared once on :class:`~threetears.evals.ops.JudgeProfilesRecord`."""
+
+
+class JudgeProfilesListParams(EvalBaseModel):
+    """``judge_profiles_list``."""
+
+    criterion_dim: str | None = Field(
+        default=None, min_length=1, description="Only the profiles of this criterion's dim; omitted lists every one."
+    )
 
 
 class ReporterCaseFreezeParams(ReporterCaseFreeze):
@@ -805,6 +822,24 @@ async def _judge_cases_freeze(host: OpsHost, caller: Caller, params: JudgeCasesF
     eval_host = host.eval_host
     freeze = JudgeCasesFreeze.model_validate(params.model_dump())
     return await run_blocking(eval_host.blocking_executor, judge_cases_freeze, eval_host, freeze, caller.scope_id)
+
+
+async def _judge_profiles_record(
+    host: OpsHost, caller: Caller, params: JudgeProfilesRecordParams
+) -> JudgeProfileRecording:
+    eval_host = host.eval_host
+    record = JudgeProfilesRecord.model_validate(params.model_dump())
+    return await run_blocking(eval_host.blocking_executor, judge_profiles_record, eval_host, record, caller.scope_id)
+
+
+async def _judge_profiles_list(host: OpsHost, caller: Caller, params: JudgeProfilesListParams) -> JudgeProfileListing:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor,
+        partial(judge_profiles_list, rubric_dim=params.criterion_dim),
+        eval_host,
+        caller.scope_id,
+    )
 
 
 async def _reporter_case_freeze(host: OpsHost, caller: Caller, params: ReporterCaseFreezeParams) -> FrozenReporterCase:
@@ -1585,6 +1620,40 @@ def engine_actions() -> tuple[Action, ...]:
                 "since, is skipped with why. With into_case_set, the next version of that set lists exactly these cases. "
                 "Then run_launch the judge template, one arm per judge (its model, and its overlays config_ids and "
                 "temperature); the trials call only the judge. Calls no model."
+            ),
+        ),
+        Action(
+            name="judge_profiles_record",
+            summary="Store what a judge campaign measured each judge to be, per criterion, for other campaigns to read.",
+            workflow=ANALYSE,
+            permission="write",
+            params=JudgeProfilesRecordParams,
+            result=JudgeProfileRecording,
+            handler=_judge_profiles_record,
+            render=render.render_judge_profile_recording,
+            example={"judge_run_ids": [run_id]},
+            detail=(
+                "Reads the judge campaign's finished runs (judge_run_ids, every arm) as judge_kind_readings does, and "
+                "stores one profile per judge (model, prompt config, temperature) and criterion: agreement with the "
+                "labels, self-agreement, parse validity, the cases and runs measured on and when. Replaces the stored "
+                "profile of the same judge and criterion. A judge whose served model or temperature was not recorded "
+                "is skipped with why. Any campaign that judge scores then reads its evidence tier from the profile "
+                "where its own evidence decides none, and says so. Calls no model."
+            ),
+        ),
+        Action(
+            name="judge_profiles_list",
+            summary="List the stored judge profiles: each judge and criterion measured, on what, when, and its tier.",
+            workflow=ANALYSE,
+            permission="read",
+            params=JudgeProfilesListParams,
+            result=JudgeProfileListing,
+            handler=_judge_profiles_list,
+            render=render.render_judge_profiles,
+            example={},
+            detail=(
+                "A profile is read only for the very judge it measured: a changed model, prompt config or temperature, "
+                "or a reworded criterion, is another judge whose profile does not exist."
             ),
         ),
         Action(

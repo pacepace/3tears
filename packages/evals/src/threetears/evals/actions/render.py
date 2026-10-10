@@ -26,6 +26,9 @@ from threetears.evals.kernel import ResultOutcome, counted_goal_verdicts
 from threetears.evals.kernel.errors import EvalServiceError
 from threetears.evals.ops import (
     AnalysisDeleted,
+    JudgeProfileEntry,
+    JudgeProfileListing,
+    JudgeProfileRecording,
     CaseSetLine,
     CaseSetListing,
     AnalysisGenerationEstimate,
@@ -545,6 +548,55 @@ def render_judge_case_freeze(report: JudgeCaseFreezeReport) -> str:
         lines.append(f"skipped ({len(report.skipped)})")
         lines += [f"- {skip.result_id}: {skip.reason}" for skip in report.skipped]
     return "\n".join(lines)
+
+
+def _judge_profile_line(entry: JudgeProfileEntry) -> str:
+    """One stored judge profile as a line: the judge, the criterion, what it was measured on and when, its tier."""
+    profile = entry.profile
+    judge = profile.judge_model + (f", config {profile.judge_config_id}" if profile.judge_config_id else "")
+    temperature = profile.judge_temperature
+    judge += f", temperature {temperature if isinstance(temperature, str) else format_number(temperature)}"
+    measures = []
+    for label, agreement in (("labels", profile.label_agreement), ("repeats", profile.self_agreement)):
+        if agreement is None:
+            measures.append(f"{label} not measured")
+        else:
+            measures.append(
+                f"{label} {format_number(agreement.agreement)} over {format_number(agreement.results)} cases"
+            )
+    measures.append(f"parse validity {format_number(profile.parse_validity)}")
+    line = (
+        f"- {profile.rubric_dim} ({judge}), criterion {profile.criterion_digest[:12]}: {entry.tier} — "
+        f"{'; '.join(measures)}; measured at {profile.measured_at} on {format_number(profile.cases)} cases "
+        f"(case set {profile.case_set_fingerprint[:12]}, runs {', '.join(profile.run_ids)})"
+    )
+    if entry.replaced_measured_at is not None:
+        line += f"; replaced the profile measured at {entry.replaced_measured_at}"
+    return line
+
+
+def render_judge_profile_recording(recording: JudgeProfileRecording) -> str:
+    """A judge profile recording's receipt: each profile written, then what was measured and not recorded."""
+    lines = [f"{len(recording.profiles)} judge profile(s) recorded"]
+    lines += [_judge_profile_line(entry) for entry in recording.profiles]
+    if recording.skipped:
+        lines.append(f"not recorded ({len(recording.skipped)})")
+        lines += [
+            f"- {skip.rubric_dim} ({skip.judge_model or 'unnamed judge'}): {skip.reason}" for skip in recording.skipped
+        ]
+    if recording.unread:
+        lines.append(f"results left out ({len(recording.unread)})")
+        lines += [f"- {unread.result_id}: {unread.reason}" for unread in recording.unread]
+    return "\n".join(lines)
+
+
+def render_judge_profiles(listing: JudgeProfileListing) -> str:
+    """The stored judge profiles, one line each."""
+    if not listing.profiles:
+        return "No judge profile is stored."
+    return "\n".join(
+        [f"{len(listing.profiles)} judge profile(s)"] + [_judge_profile_line(entry) for entry in listing.profiles]
+    )
 
 
 def render_reporter_case(case: FrozenReporterCase) -> str:
