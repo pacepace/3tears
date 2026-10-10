@@ -17,7 +17,9 @@ from typing import Any, Literal
 
 from pydantic import Field
 
+from threetears.evals.analysis.bar_proposals import propose_bars
 from threetears.evals.analysis.campaigns import create_campaign, list_campaigns
+from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.report import Report, ReportBasis, report_html, report_markdown
 from threetears.evals.analysis.service import (
     AnalysisGenerationEstimate,
@@ -422,6 +424,105 @@ def report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: Repo
     )
 
 
+class ProposedBar(EvalBaseModel):
+    """One bar a baseline proposes, for a person to adopt, tighten or leave.
+
+    Attributes:
+        measure: The measure the bar is on, a host-declared one.
+        threshold: The proposed threshold, in the measure's unit.
+        higher_is_better: Which side of ``threshold`` clears it.
+        rationale: How the threshold was seeded from the incumbent's measurement.
+        vacuous: Whether nothing could fail it — adopting it as written registers no standard.
+        vacuous_reason: Why it is vacuous; ``None`` when it discriminates.
+    """
+
+    measure: str
+    threshold: float
+    higher_is_better: bool
+    rationale: str
+    vacuous: bool
+    vacuous_reason: str | None
+
+
+class BarProposals(EvalBaseModel):
+    """What a baseline campaign proposes as its behavior's bars. Read-only: nothing here is registered.
+
+    Attributes:
+        campaign_id: The baseline campaign measured.
+        behavior: The behavior every proposal governs, the campaign's.
+        variant_key: The incumbent: the baseline's one cell.
+        proposals: One per declared measure with a better end that could be seeded, in measure-name order.
+        not_proposed: ``{reading: why}`` for every reading the cell carries that no bar could be proposed on.
+    """
+
+    campaign_id: str
+    behavior: str
+    variant_key: str
+    proposals: list[ProposedBar]
+    not_proposed: dict[str, str]
+
+
+def bars_propose(host: EvalHost, campaign_id: str, scope_id: str) -> BarProposals:
+    """Propose a bar on every measure a single-cell baseline campaign measured its incumbent on.
+
+    :func:`~threetears.evals.analysis.bar_proposals.propose_bars`, read through: each proposal seeded from the
+    incumbent's measured interval and flagged vacuous where nothing could fail it, and every reading nothing
+    could be proposed on named with why. **Nothing is registered**: a bar reaches a registry only when a person
+    writes it into the host's registrations, since :class:`~threetears.evals.contracts.host.BarRegistry` has no
+    mutation API.
+
+    Args:
+        host: The host whose measures, bars and store this reads.
+        campaign_id: The baseline campaign.
+        scope_id: The scope it lives in.
+
+    Returns:
+        The proposals.
+
+    Raises:
+        NotFoundError: No campaign with that id in the scope.
+        ValidationFailedError: The campaign measured no cell or more than one: a baseline is one configuration
+            under one rig.
+    """
+    proposed = propose_bars(host, campaign_id, scope_id=scope_id)
+    return BarProposals(
+        campaign_id=proposed.campaign_id,
+        behavior=proposed.behavior,
+        variant_key=proposed.variant_key,
+        proposals=[
+            ProposedBar(
+                measure=proposal.bar.measure,
+                threshold=proposal.bar.threshold,
+                higher_is_better=proposal.bar.higher_is_better,
+                rationale=proposal.bar.rationale,
+                vacuous=proposal.vacuous,
+                vacuous_reason=proposal.reason or None,
+            )
+            for proposal in proposed.proposals
+        ],
+        not_proposed=dict(proposed.not_proposed),
+    )
+
+
+def bar_proposals_text(proposals: BarProposals) -> str:
+    """Proposals as a person reads them: each bar with its seed and any vacuity, then what was not proposed."""
+    lines = [
+        f"bar proposals for behavior {proposals.behavior!r} from baseline campaign {proposals.campaign_id} "
+        f"(incumbent {proposals.variant_key}); nothing is registered — adopt a bar by writing it into the host's "
+        "registrations"
+    ]
+    for bar in proposals.proposals:
+        side = ">=" if bar.higher_is_better else "<="
+        flag = f" — VACUOUS, do not adopt as written: {bar.vacuous_reason}" if bar.vacuous else ""
+        lines.append(f"- {bar.measure} {side} {format_number(bar.threshold)}{flag}")
+        lines.append(f"  seeded from {bar.rationale}")
+    if not proposals.proposals:
+        lines.append("- no bar could be proposed")
+    for reading, why in sorted(proposals.not_proposed.items()):
+        lines.append(f"- not proposed on {reading}: {why}")
+    return "\n".join(lines)
+
+
 def analysis_delete(host: EvalHost, analysis_id: str, scope_id: str, *, confirm: str | None) -> AnalysisDeleted:
     """Destroy a stored analysis — its insights stay; archive is the reversible answer.
 
@@ -448,9 +549,11 @@ __all__ = [
     "AnalysisGenerationEstimate",
     "AnalysisLine",
     "AnalysisListing",
+    "BarProposals",
     "CampaignDefinition",
     "CampaignLine",
     "CampaignListing",
+    "ProposedBar",
     "ReportDocument",
     "ReportFormat",
     "analyses_list",
@@ -458,6 +561,8 @@ __all__ = [
     "analysis_delete",
     "analysis_estimate",
     "analysis_generate",
+    "bar_proposals_text",
+    "bars_propose",
     "campaign_archive",
     "campaign_create",
     "campaigns_list",

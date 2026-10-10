@@ -1536,6 +1536,10 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, model: str | None = None) -> JobsStarted`
 - **`analysis_job_id`** · function · The job id of an analysis generation: its campaign, then its attempt.
   <br>`analysis_job_id(campaign_id: str, attempt_id: str) -> str`
+- **`bar_proposals_text`** · function · Proposals as a person reads them: each bar with its seed and any vacuity, then what was not proposed.
+  <br>`bar_proposals_text(proposals: BarProposals) -> str`
+- **`bars_propose`** · function · Propose a bar on every measure a single-cell baseline campaign measured its incumbent on.
+  <br>`bars_propose(host: EvalHost, campaign_id: str, scope_id: str) -> BarProposals`
 - **`campaign_archive`** · function · Archive or restore a campaign — retired from listings, nothing destroyed.
   <br>`campaign_archive(host: EvalHost, campaign_id: str, scope_id: str, *, archived: bool) -> CampaignLine`
 - **`campaign_create`** · function · Create a campaign over runs already in the scope, declared as it is created when the definition says so.
@@ -1621,6 +1625,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`AnalysisLine`** · model · One stored analysis, as a listing shows it.
 - **`AnalysisListing`** · model · A campaign's stored analyses.
 - **`ArmEstimate`** · model · One arm of a launch estimate: what its kind planned, what the host's pricer predicted, and what the launch would do.
+- **`BarProposals`** · model · What a baseline campaign proposes as its behavior's bars. Read-only: nothing here is registered.
 - **`CampaignDefinition`** · model · What creating a campaign names: what it is called, its subject and behaviour, its runs, and what it set out to learn.
 - **`CampaignLine`** · model · One campaign, as a listing shows it.
 - **`CampaignListing`** · model · A scope's campaigns, newest first.
@@ -1634,6 +1639,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`OpsHost`** · dataclass · The host the operations, and the actions over them, work in.
 - **`OutOfRunSpendReport`** · model · The calls the engine made outside any run in a scope — case generations, rubric proposals and analysis generations — and their totals.
 - **`OutOfRunSpendTotals`** · model · What a set of out-of-run calls spent, summed — with what could not be summed counted beside it.
+- **`ProposedBar`** · model · One bar a baseline proposes, for a person to adopt, tighten or leave.
 - **`ReportDocument`** · model · A campaign's report, serialized in one form.
 - **`ReporterCaseEntry`** · model · One readable case of a reporter template, with whether a launch runs it.
 - **`ReporterCaseFreeze`** · model · What freezing a reporter case names: the reporter template, the campaign, and optionally its memo and labels.
@@ -2223,6 +2229,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `analysis_estimate` | `read` | `campaign_id`, `model?` | Price a campaign's analysis generation against the host's out-of-run cap, without spending. |
 | `analyses_list` | `read` | `campaign_id` | List a campaign's stored analyses. |
 | `report_read` | `read` | `campaign_id`, `format?` | Read a campaign's report — its analysis, else its evidence alone — as Markdown, JSON or HTML. |
+| `bars_propose` | `read` | `campaign_id` | Propose bars from a single-cell baseline campaign's measured incumbent; registers nothing. |
 | `reporter_case_freeze` | `write` | `template_id`, `campaign_id`, `recorded_analysis_id?`, `labels?`, `supersedes?` | Freeze a campaign's analysis bundle, and the memo it got, into a case of a reporter template. |
 | `reporter_cases_list` | `read` | `template_id`, `include_archived?` | List a reporter template's cases: which each campaign and memo launches, superseded or retired. |
 | `scope_pivot` | `read` | `row_factor`, `column_factor`, `metric?`, `weighting?`, `subject_filter?`, `run_status?`, `predicted_cost?`, `launched_run_ids?` | Aggregate one measure over the scope's observations by two coordinates, cell by cell. |

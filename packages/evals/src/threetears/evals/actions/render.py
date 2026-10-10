@@ -28,6 +28,7 @@ from threetears.evals.ops import (
     AnalysisGenerationEstimate,
     AnalysisLine,
     AnalysisListing,
+    BarProposals,
     CampaignLine,
     CampaignListing,
     LaunchEstimate,
@@ -51,6 +52,7 @@ from threetears.evals.ops import (
     RunsCompared,
     ScoreExport,
     TemplateListing,
+    bar_proposals_text,
     dollars_text,
     estimate_text,
     export_text,
@@ -445,6 +447,11 @@ def render_analysis_estimate(estimate: AnalysisGenerationEstimate) -> str:
     )
 
 
+def render_bar_proposals(proposals: BarProposals) -> str:
+    """Each proposed bar with its seed and any vacuity, then every reading nothing could be proposed on."""
+    return bar_proposals_text(proposals)
+
+
 def render_report(document: ReportDocument) -> str:
     """The report itself, in the form asked for — which already says whether it is an analysis or code-only."""
     return document.body
@@ -580,6 +587,7 @@ __all__ = [
     "render_results",
     "render_campaign",
     "render_campaigns",
+    "render_bar_proposals",
     "render_estimate",
     "render_export",
     "render_help_index",
