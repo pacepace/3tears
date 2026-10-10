@@ -12,6 +12,11 @@ run that has finished, over the machinery a judge repeat uses (:mod:`threetears.
   temperature differs: every call on the ``pinned`` side is requested at ``DEFAULT_JUDGE_TEMPERATURE``, every call on
   the ``provider_default`` side is sent none. A config that pins its own temperature is overridden on both sides —
   this compares the two settings — while its prompt and model are kept.
+- **As recorded, not as today.** The run is collected under the ``as_recorded`` policy, not the ``today`` one a judge
+  repeat uses: a run that recorded no judge temperature (judged before #633), or was asked with older request
+  settings (before ``strict_output``), is accepted, because both sides force their own temperature, both are sent
+  the request settings a judge call sends now, and nothing is paired with the run's own scores. What cannot be
+  reproduced at all — no recorded apparatus, an edited template, evidence never stored — is still refused.
 - **Borderline by default.** A scored dim of a result is borderline when its stored score sits inside the scale (2-4
   on 1-5), or when a recorded judge repeat or second judge of it answered differently (a "can't tell" included).
   ``selection="all"`` takes every scored dim instead.
@@ -243,7 +248,12 @@ async def _prepare(
     clients = host.completion_clients("a judge temperature comparison")
 
     def collect(storage: EvalStorage) -> tuple[CollectedRepeat, list[PlannedRepeat], list[TemperatureSkip]]:
-        collected = collect_repeatable(storage, run_id, scope_id, result_ids)
+        # As recorded, not as a call is asked today: the recorded temperature is irrelevant here (both sides force
+        # their own), and a run judged before today's request settings — before #633 recorded a temperature, or
+        # before strict_output — is still the same judge, prompt and evidence, which is all this replays. Both
+        # sides are sent today's settings alike and nothing is paired with the run's own scores, so the two
+        # sides still differ by temperature alone. What cannot be reproduced at all is still refused.
+        collected = collect_repeatable(storage, run_id, scope_id, result_ids, request_settings="as_recorded")
         return (collected, *_select(collected, selection))
 
     collected, planned, skipped = await run_blocking(host.blocking_executor, collect, host.storage)
