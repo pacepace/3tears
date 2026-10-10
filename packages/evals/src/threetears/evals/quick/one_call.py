@@ -66,6 +66,7 @@ from threetears.evals.contracts import (
     DEFAULT_LAUNCH_K_RUNS,
     MATCH_MEASURE,
     METRIC_DESCRIPTORS,
+    SCALES,
     CandidateOutput,
     CandidateTelemetry,
     CassetteMode,
@@ -127,6 +128,7 @@ from threetears.evals.run import (
 from threetears.evals.run.authoring import refuse_unsupplied_world
 from threetears.evals.contracts.errors import ValidationFailedError
 from threetears.evals.quick.answer import unwrap_answer
+from threetears.evals.quick.guardrails import Guardrail
 from threetears.evals.quick.judged import Judge, judge_evidence
 from threetears.evals.quick.levers import CallableLevers, levers_model
 from threetears.evals.quick.tools import CellTools, Tool, ToolUsingCandidate, refuse_unusable_tools
@@ -276,8 +278,14 @@ def _scorer_reader_name(name: str) -> str:
     return f"{words[:1].upper()}{words[1:]} score"
 
 
-def scorer_measure(scorer: Scorer, *, margin: float | None = None) -> MetricDescriptor:
+def scorer_measure(
+    scorer: Scorer, *, margin: float | None = None, guardrail: Guardrail | None = None
+) -> MetricDescriptor:
     """The measure one scorer function reports: a quality score, higher is better, over scored results.
+
+    Declared a guardrail (``guardrail=``), it is instead a measure no arm may get worse on: on no merit axis, so it
+    joins no contrast and no composite, with the guardrail's direction, its margin as the measure's
+    ``materiality_threshold`` and, for a scorer that is not a pass/fail, its declared range.
 
     Args:
         scorer: The scorer. Its ``__name__`` names the measure and the first line of its docstring,
@@ -286,12 +294,34 @@ def scorer_measure(scorer: Scorer, *, margin: float | None = None) -> MetricDesc
             still be too small to act on, so a contrast on it can read ``equivalent``. ``None`` declares none,
             and no contrast on it can. With a margin, a scorer whose return is annotated ``bool`` is declared on
             the range 0 to 1, so its equivalence test is the bounded one that holds its error rate at any n.
+        guardrail: Declares the measure a guardrail, with its margin and direction; ``None`` for a quality score.
+            A guardrail takes no ``margin`` beside it: its margin is the guardrail's own.
 
     Returns:
         The descriptor :func:`callable_host` registers for it.
+
+    Raises:
+        ValueError: Both ``margin`` and ``guardrail`` are given.
     """
     name = _scorer_name(scorer)
     doc = inspect.getdoc(scorer)
+    if guardrail is not None:
+        if margin is not None:
+            raise ValueError(_MARGIN_ON_A_GUARDRAIL.format(name=name))
+        return MetricDescriptor(
+            name=name,
+            reader_name=_scorer_reader_name(name),
+            data_type="numeric",
+            family="mechanical",
+            transferability_class="mechanical",
+            attribution_scope="end_to_end",
+            description=doc.splitlines()[0] if doc else f"The score the {name} function gave the candidate's answer.",
+            higher_is_better=guardrail.higher_is_better,
+            guardrail=True,
+            population="scored",
+            materiality_threshold=guardrail.margin,
+            value_range=(0.0, 1.0) if _returns_bool(scorer) else guardrail.value_range,
+        )
     return MetricDescriptor(
         name=name,
         # The def's own name in words, marked a score so it never heads a column alike with an engine measure.
@@ -347,6 +377,79 @@ def refuse_unusable_margins(scorers: Sequence[Scorer], margins: Mapping[str, flo
             raise ValueError(
                 f"the margin on {name!r} is a positive number in the measure's own units (0.05 is five points on a "
                 f"pass rate), not {margin!r}"
+            )
+
+
+#: Why a scorer named in both ``margins=`` and ``guardrails=`` is refused, naming it.
+_MARGIN_ON_A_GUARDRAIL = (
+    "{name!r} is declared a guardrail and given a margin in margins= too: a guardrail is never contrasted, so a "
+    "margin for equivalence has no use on it, and its own margin is Guardrail(margin=...); drop it from margins="
+)
+
+
+def refuse_unusable_guardrails(
+    scorers: Sequence[Scorer],
+    guardrails: Mapping[str, Guardrail],
+    *,
+    margins: Mapping[str, float] | None = None,
+    judge: Judge | None = None,
+) -> None:
+    """Refuse a guardrail no scorer's measure, or judged dimension, could carry, naming the ones that can.
+
+    Args:
+        scorers: The scorers whose measures a guardrail may be declared on.
+        guardrails: Each guardrail, by the name of the scorer (or the judge's rubric dimension) it is declared on.
+        margins: The margins declared beside them, by scorer.
+        judge: The judge whose rubric dimensions a guardrail may also be declared on, or ``None``.
+
+    Raises:
+        ValueError: A guardrail that is not a :class:`~threetears.evals.quick.Guardrail` (a bare margin among
+            them); on an engine core measure (the classifier's accuracy among them), or a name no scorer or
+            dimension has; on a scorer also given a margin; a range on a pass/fail scorer; or, on a judged
+            dimension, a range, a lower-is-better direction, or a margin as wide as the dimension's scale.
+    """
+    names = [_scorer_name(scorer) for scorer in scorers]
+    by_name = dict(zip(names, scorers, strict=True))
+    dims = {dim.name: dim for dim in judge.dims} if judge is not None else {}
+    for name, guardrail in guardrails.items():
+        if not isinstance(guardrail, Guardrail):
+            raise ValueError(
+                f"guardrails= maps a name to a Guardrail, its margin and direction both declared "
+                f"(guardrails={{{name!r}: Guardrail(margin=0.02, direction='higher_is_better')}}), not {guardrail!r}"
+            )
+        if name in _CLASSIFIER_NAMES or name in METRIC_DESCRIPTORS:
+            raise ValueError(
+                f"a guardrail on {name!r} cannot be declared: it is an engine core measure, read under the core's own "
+                "description. Grade what the candidate must not get worse on with a scorer "
+                "(def no_leak(case, answer) -> bool: ...) and declare the guardrail on that"
+            )
+        if name in by_name:
+            if margins and name in margins:
+                raise ValueError(_MARGIN_ON_A_GUARDRAIL.format(name=name))
+            if guardrail.value_range is not None and _returns_bool(by_name[name]):
+                raise ValueError(
+                    f"{name!r} returns a bool, a pass/fail on 0 to 1 already; its guardrail takes no value_range"
+                )
+            continue
+        dim = dims.get(judge.dim_name(name)) if judge is not None else None
+        if dim is None:
+            said = ", ".join(map(repr, [*names, *dims])) or "none were given"
+            raise ValueError(
+                f"guardrails= names {name!r}, which no scorer reports and no rubric dimension of the judge scores; a "
+                f"guardrail is declared on a scorer's measure, by its def's name, or on a judged dimension: {said}"
+            )
+        if guardrail.value_range is not None:
+            raise ValueError(f"{dim.name!r} is judged on its scale, so its guardrail takes no value_range")
+        if not guardrail.higher_is_better:
+            raise ValueError(
+                f"{dim.name!r} is judged with higher better, so its guardrail's direction is 'higher_is_better': "
+                "word the dimension as what the answer must do (never_leaks), and a higher score is the safer one"
+            )
+        low, high = SCALES[dim.scale].value_range
+        if guardrail.margin >= high - low:
+            raise ValueError(
+                f"a margin of {guardrail.margin!r} on {dim.name!r}, judged {low:g} to {high:g}, is as wide as its "
+                "scale, so every arm would hold whatever it did; declare a smaller one"
             )
 
 
@@ -415,6 +518,7 @@ def callable_host(
     world: World | None = None,
     arms: bool = False,
     margins: Mapping[str, float] | None = None,
+    guardrails: Mapping[str, Guardrail] | None = None,
 ) -> EvalHost:
     """The least host there is: the shared core, one measure per scorer, no world, an in-memory store.
 
@@ -435,18 +539,25 @@ def callable_host(
             host. A run that states no arm (a ``run_eval`` in this host) is at its candidate model's label.
         margins: A margin declared on a scorer's measure, by the scorer's name (:func:`scorer_measure`), so a
             contrast on it can read ``equivalent``; ``None`` declares none. No margin is ever assumed.
+        guardrails: The scorers declared guardrails, by name, each with its margin and direction
+            (:class:`~threetears.evals.quick.Guardrail`): measures no arm may get worse on, decided apart from
+            every contrast. A guardrail on a judged dimension is the campaign's to declare, so it is
+            :func:`~threetears.evals.quick.compare`'s, not a host's. ``None`` declares none.
 
     Returns:
         The host.
 
     Raises:
         ValueError: A scorer has no usable name, two share one, or one takes a classifier measure's name or
-            any other engine core measure's; a lever name is unusable or repeated; or a margin names no scorer
-            or is not a positive number.
+            any other engine core measure's; a lever name is unusable or repeated; a margin names no scorer
+            or is not a positive number; or a guardrail names no scorer, is not a ``Guardrail``, or is
+            declared on a scorer given a margin too.
     """
     _refuse_unnamed_or_repeated(scorers)
     margins = dict(margins or {})
     refuse_unusable_margins(scorers, margins)
+    guardrails = dict(guardrails or {})
+    refuse_unusable_guardrails(scorers, guardrails, margins=margins)
     return EvalHost(
         profile=HostProfile(
             host_id=CALLABLE_HOST_ID,
@@ -454,7 +565,10 @@ def callable_host(
             if arms
             else SHARED_CORE,
             measures=MeasureRegistry(
-                scorer_measure(scorer, margin=margins.get(_scorer_name(scorer))) for scorer in scorers
+                scorer_measure(
+                    scorer, margin=margins.get(_scorer_name(scorer)), guardrail=guardrails.get(_scorer_name(scorer))
+                )
+                for scorer in scorers
             ),
             kinds=callable_kind_contracts(levers),
             world=None if world is None else world.registry,
@@ -507,6 +621,7 @@ class CallableKind:
         classifies: bool = False,
         judge: Judge | None = None,
         tools: Mapping[str, Tool] | None = None,
+        ranges: Mapping[str, tuple[float, float]] | None = None,
     ) -> None:
         """Bind the candidate and its scorers.
 
@@ -517,10 +632,14 @@ class CallableKind:
             judge: The judge whose evidence each answer carries, or ``None`` for an unjudged kind.
             tools: The tools the candidate is called with beside each case, or ``None`` for a candidate
                 called with the case alone.
+            ranges: The range each scorer's measure declares, by scorer name: a score outside it excludes its
+                cell as a fault of the scorer, since an interval read off the range would rest on a promise the
+                scorer broke. A scorer with no range is held to none.
         """
         self._candidate = candidate
         self._tools = dict(tools) if tools is not None else None
         self._scorers = tuple(scorers)
+        self._ranges = dict(ranges or {})
         self._classifies = classifies
         self._judge = judge
         self.judged_artifact = JudgedArtifact.UNJUDGED if judge is None else JudgedArtifact.DOCUMENT
@@ -620,6 +739,16 @@ class CallableKind:
                 return CandidateOutput(
                     output=trace,
                     infra_errors=[f"the scorer {name} returned {score!r}, not a finite number or a bool"],
+                    judge_evidence=evidence,
+                    telemetry=telemetry,
+                )
+            if (bounds := self._ranges.get(name)) is not None and not bounds[0] <= score <= bounds[1]:
+                return CandidateOutput(
+                    output=trace,
+                    infra_errors=[
+                        f"the scorer {name} returned {score!r}, outside the range {bounds[0]:g} to {bounds[1]:g} "
+                        "its measure declares"
+                    ],
                     judge_evidence=evidence,
                     telemetry=telemetry,
                 )
@@ -1059,16 +1188,22 @@ def _kind_factory(
     judge: Judge | None,
     world: World | None,
     tools: Mapping[str, Tool] | None,
+    ranges: Mapping[str, tuple[float, float]],
 ) -> KindFactory:
     """The factory building each cell's kind: one :class:`CallableKind` for every cell, or a world cell's own kind."""
     if world is None:
         kind = CallableKind(
-            cast(Candidate | ToolUsingCandidate, candidate), scorers, classifies=classifies, judge=judge, tools=tools
+            cast(Candidate | ToolUsingCandidate, candidate),
+            scorers,
+            classifies=classifies,
+            judge=judge,
+            tools=tools,
+            ranges=ranges,
         )
         return lambda _cell: kind
 
     def over(acting: Candidate) -> CallableKind:
-        return CallableKind(acting, scorers, classifies=classifies, judge=judge)
+        return CallableKind(acting, scorers, classifies=classifies, judge=judge, ranges=ranges)
 
     def cell_kind(context: CellContext) -> WorldCellKind:
         return WorldCellKind(world, cast(WorldCandidate, candidate), over, context)
@@ -1358,12 +1493,23 @@ async def run_arms(
     host.storage.save_template(template)
     for test_case in test_cases:
         host.storage.save_test_case(test_case)
+    ranges = {
+        name: descriptor.value_range
+        for name in map(_scorer_name, scorers)
+        if (descriptor := host.profile.measures.get(name)) is not None and descriptor.value_range is not None
+    }
     wired = [
         _WiredArm(
             model=model,
             levers=dict(arm.levers or {}),
             kind_factory=_kind_factory(
-                arm.candidate, scorers, classifies=labels is not None, judge=judge, world=world, tools=tools
+                arm.candidate,
+                scorers,
+                classifies=labels is not None,
+                judge=judge,
+                world=world,
+                tools=tools,
+                ranges=ranges,
             ),
             arm=arm.arm,
         )

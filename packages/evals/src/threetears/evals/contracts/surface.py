@@ -606,7 +606,8 @@ class GuardrailCheck(EvalDocumentModel):
         ge=0.0,
         description=(
             "The worsening tolerated before `breached`, in the reading's units: the measure's declared "
-            "`materiality_threshold`, or 0 when it declares none and for every judged dimension (held at zero change)."
+            "`materiality_threshold`, or the judged dimension's margin its campaign declares (`guardrail_margins`); "
+            "0 when none is declared (held at zero change)."
         ),
     )
     margin_declared: bool = Field(description="Whether `margin` was declared, rather than 0 for want of one.")

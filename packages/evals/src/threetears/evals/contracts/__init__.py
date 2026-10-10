@@ -303,6 +303,7 @@ from threetears.evals.contracts.declaration import (
     BarNameRefusal,
     BarOverride,
     ControlDeclaration,
+    GuardrailMargin,
     Question,
     SweptAxis,
 )
@@ -539,6 +540,7 @@ __all__ = [
     "GuardrailCell",
     "GuardrailCheck",
     "GuardrailDecision",
+    "GuardrailMargin",
     "GuardrailReadings",
     "JudgingState",
     "LatencyMetrics",

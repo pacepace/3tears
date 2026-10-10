@@ -10,7 +10,9 @@ with a model against a rubric. A candidate that calls a paid model returns an :c
 what each answer spent, which the summary and the results' ``cost_usd`` carry. :func:`compare` runs two or
 more candidates over one case list the same way, each as one arm, and returns a :class:`Comparison` whose
 campaign report tests every arm against the one named the control; keyed by their level of each of several
-factors (``factors=``), its arms are the cells of a factorial design, each factor a lever of its own. A candidate that calls tools declares them (``tools=``, each a
+factors (``factors=``), its arms are the cells of a factorial design, each factor a lever of its own. A scorer or
+a judged dimension no arm may get worse on is declared a :class:`Guardrail` (``guardrails=``), decided for each
+arm against the control apart from every contrast: held, breached or undecided. A candidate that calls tools declares them (``tools=``, each a
 :data:`Tool`) and is handed them beside each case (:data:`ToolUsingCandidate`); a run with
 ``cassette_mode='capture'`` records what they answered, and ``'replay'`` serves that recording to every arm
 in place of calling them. Handed a :class:`World`, each case's starting state and goal-state checks,
@@ -61,6 +63,7 @@ from threetears.evals.quick.one_call import (
     callable_kind_contracts,
     run_eval,
 )
+from threetears.evals.quick.guardrails import Guardrail, GuardrailDirection
 from threetears.evals.quick.judged import CaseMaterial, Judge
 from threetears.evals.quick.tools import CandidateTools, Tool, ToolUsingCandidate
 from threetears.evals.quick.world import CaseSeed, Dimension, ToolRefused, World, WorldCandidate, WorldTool, WorldTools
@@ -106,6 +109,8 @@ __all__ = [
     "EvalSummary",
     "ExpectedLabel",
     "GoalCheckSummary",
+    "Guardrail",
+    "GuardrailDirection",
     "HostCommand",
     "HostFactory",
     "Judge",

@@ -104,6 +104,10 @@ def dollars_text(amount: float) -> str:
     return f"${amount:.{decimals}f}"
 
 
+#: Said beside a guardrail's level in one run's summary, which has no control to decide it against.
+_GUARDRAIL_ALONE = "a guardrail: held, breached or undecided is decided only against a control, in a comparison"
+
+
 class MeasureSummary(BaseModel):
     """One measure over a run's results.
 
@@ -119,6 +123,9 @@ class MeasureSummary(BaseModel):
             every other.
         n_faulted: How many results carrying it were left out of ``n`` and the mean as a fault of the rig. Only
             a cost or latency measure leaves any out; 0 for every other.
+        guardrail: Whether the host declares it a guardrail, something no arm may get worse on. A run alone has no
+            control to hold it against, so its level here is no verdict: held, breached or undecided is decided
+            only against a control, in a comparison.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -130,6 +137,7 @@ class MeasureSummary(BaseModel):
     maximum: float | None
     n_no_turn: int = 0
     n_faulted: int = 0
+    guardrail: bool = False
 
 
 class GoalCheckSummary(BaseModel):
@@ -576,6 +584,7 @@ class EvalSummary(BaseModel):
                 lines.append(
                     f"  {measure.name}: mean {measure.mean:.3g} (n={measure.n}, "
                     f"min {measure.minimum:.3g}, max {measure.maximum:.3g}{left_out})"
+                    + (f"; {_GUARDRAIL_ALONE}" if measure.guardrail else "")
                 )
         if self.confusion:
             lines.append("  confusion (expected → predicted):")
@@ -772,6 +781,7 @@ def summarize_run(
                 maximum=max(values) if values else None,
                 n_no_turn=sum(1 for result in left if classify_result(result) is ResultOutcome.CANDIDATE_FAIL),
                 n_faulted=sum(1 for result in left if classify_result(result) is ResultOutcome.INFRA_EXCLUDE),
+                guardrail=describe_measure(name, host.profile.measures).guardrail,
             )
         )
     names = case_names or {}
