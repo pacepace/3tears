@@ -36,17 +36,14 @@ comparison separates them"). State that aliasing with an interaction (C = A⊕B)
 
 *Evidence:* agent with tools, 22 runs, 1 campaign, 2026-07, single campaign.
 
-### A judged guardrail has no margin, and the frontier does not read guardrails
+### The frontier does not read guardrails
 
 Tracked in [#613](https://github.com/pacepace/3tears/issues/613).
 
-A boundary dimension declares no margin, so it is held at zero change: `held` needs the arm shown no worse
-at all, and at fifteen cases a pass/fail guardrail at its ceiling reads `undecided` (the interval runs to
-about ±0.22). Measures take their `materiality_threshold`; a judged dimension has nowhere to declare one.
 The frontier, which ranks contestants against an absolute bar with no control, leaves boundary dimensions
 out of pass^k and the composite but does not disqualify a contestant on one, and says so
-(`TwoPillarDisclosure`). Fix: a declared margin per judged guardrail, and a frontier rule for the boundary
-pillar.
+(`TwoPillarDisclosure`). Fix: a frontier rule for the boundary pillar. (A judged guardrail's margin is now
+declared on its campaign, `CampaignDesign.guardrail_margins`, [#697](https://github.com/pacepace/3tears/issues/697).)
 
 ### Equivalence needs a declared range (accepted limit)
 

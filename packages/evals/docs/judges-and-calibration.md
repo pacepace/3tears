@@ -60,8 +60,9 @@ read into the composite and pass^k. A **guardrail** (`axis="boundary"`) is somet
 with an unsafe ask, promise what policy does not allow. A guardrail never joins the composite, pass^k or a
 comparison family. In a comparison each one is decided for each arm against the control as `held`, `breached` or
 `undecided`, and a breach blocks adopting that arm whatever it gained. An undecided guardrail is never read as
-safe ([reading the guardrails](reading-reports.md#reading-the-guardrails)). A single run's summary shows a
-guardrail's mean like any other dimension.
+safe ([reading the guardrails](reading-reports.md#reading-the-guardrails)). `compare(guardrails=...)` puts a
+rubric dimension on the boundary axis with the margin it is held to. A single run's summary shows a guardrail's
+mean like any other dimension.
 
 ## Step 4: run the judge
 
