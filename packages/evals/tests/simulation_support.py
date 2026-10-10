@@ -31,11 +31,11 @@ from statistics import NormalDist
 
 from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
-    composite_significance,
     difference_interval,
     exact_decimal,
     holm_adjust,
     paired_equivalence,
+    separation_p,
 )
 from threetears.evals.contracts.metrics import confusion_cell
 
@@ -378,13 +378,16 @@ def family_verdicts(
     comparisons: Sequence[tuple[dict[str, float], dict[str, float], bool]],
     *,
     margins: Sequence[float | None] | None = None,
+    value_ranges: Sequence[tuple[float, float] | None] | None = None,
 ) -> list[FamilyVerdict]:
     """Decide one family of comparisons by the rule the analysis bundle's ``multiple_comparisons`` states.
 
     Each comparison is ``(control per-case values, contrast per-case values, higher_is_better)``. It is
     tested paired over the cases both sides ran when they share at least two, else unpaired over each
-    side's values (:func:`~threetears.evals.analysis.stats.composite_significance`). A paired comparison with
-    a declared margin (``margins``, aligned with ``comparisons``) also runs the paired TOST against it
+    side's values, its p :func:`~threetears.evals.analysis.stats.separation_p`'s — the t-test's where the
+    values have spread, the exact permutation p where they have none, None where no test can decide — as the
+    bundle's is. A paired comparison with a declared margin (``margins``, aligned with ``comparisons``) also
+    runs the paired TOST against it, on the reading's declared range where ``value_ranges`` gives one
     (:func:`~threetears.evals.analysis.stats.paired_equivalence`). Every separation p and TOST p is
     Holm-adjusted together, the multiplier capped at the separation count
     (:func:`~threetears.evals.analysis.stats.holm_adjust`); a comparison separates when its adjusted p is
@@ -406,11 +409,13 @@ def family_verdicts(
         a = [control[case] for case in shared] if paired else list(control.values())
         b = [contrast[case] for case in shared] if paired else list(contrast.values())
         delta = sum(b) / len(b) - sum(a) / len(a) if a and b else None
-        p_raw = composite_significance(a, b, paired=paired).p_value
+        p_raw = separation_p(a, b, paired=paired)
         margin = margins[index] if margins is not None else None
+        value_range = value_ranges[index] if value_ranges is not None else None
         equivalence_p = None
         if paired and margin and p_raw is not None:
-            equivalence_p = paired_equivalence([exact_decimal(y) - exact_decimal(x) for x, y in zip(a, b)], margin)[1]
+            diffs = [exact_decimal(y) - exact_decimal(x) for x, y in zip(a, b)]
+            equivalence_p = paired_equivalence(diffs, margin, value_range=value_range)[1]
         tested.append((p_raw, equivalence_p, delta, a, b, paired))
     m = sum(1 for p_raw, *_ in tested if p_raw is not None)
     raw = [p for p_raw, equivalence_p, *_ in tested for p in (p_raw, equivalence_p) if p is not None]

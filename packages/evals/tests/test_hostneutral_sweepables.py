@@ -175,6 +175,9 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
     # re-assembles with a config entry and a `null` level where it had none (#574). A declared axis on an input the
     # host cannot vary carries the host's reason on its coverage row as `cannot_be_an_arm` (#675), and every declared
     # axis row names each declared level as ran, not_run or undetermined in `declared_levels` (#690).
+    # An equivalence on a measure that declares a value range is decided by the bounded-mean betting test, and a
+    # paired difference with no spread by the exact one-sided sign-flip test, so stored equivalence p values move
+    # over unchanged evidence (#693).
     ((47, 11), _CORE_V24 | {"judge_request_settings", "simulator_request_settings", "judge_temperature"}),
 )
 

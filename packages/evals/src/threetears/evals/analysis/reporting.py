@@ -5462,8 +5462,9 @@ class RegressionFlag(EvalBaseModel):
     #: whose statistic is absent cannot be checked.
     p: float | None = None
     #: The TOST p an ``equivalent`` label was thresholded against — the larger of the
-    #: two one-sided p's — or ``None`` wherever no equivalence t-test ran: no margin
-    #: declared, too few pairs, or a zero-spread difference reasoned rather than tested.
+    #: two one-sided p's — or ``None`` wherever no equivalence test ran: no margin
+    #: declared, too few pairs, or on a measure with no declared range a difference
+    #: with no spread (:func:`~threetears.evals.analysis.stats.paired_equivalence`).
     equivalence_p: float | None = None
     #: The margin that test ran against, in the measure's units: the measure's declared
     #: materiality threshold, or ``None`` when it declares none.
@@ -5941,6 +5942,7 @@ def compute_history(
                     min_relative_change=min_relative_change,
                     higher_is_better=direction,
                     equivalence_margin=margin,
+                    value_range=descriptor.value_range,
                 )
                 regression = RegressionFlag(
                     label=verdict.label,
