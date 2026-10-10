@@ -339,6 +339,15 @@ subjects and `AclCache`'s TTL stay until the contract stage.
   wildcard or an empty token). Every tool pod may publish the request and the hub subscribes it; no
   KV or stream grant changes. A hub older than the request does not answer, and the pod keeps the
   markers.
+- **Added, `threetears.nats.hub_requests.ask_hub`**: one pod -> hub ask on a forwarded-token subject
+  (send, decode, match the reply to its request, classify a refusal as retryable or final), used by
+  the object store, collection keys, geography reload and audit anonymization clients, which keep
+  only their models, subjects and what their own success carries. One correlation rule for all: a
+  reply answers a request when it carries the request's id, or is a refusal carrying none.
+- **Fixed, `purge_pod_collection_keys`**: a success reply with no correlation id is no longer taken as
+  this request's (it is `CollectionKeysRequestUnavailableError`, as the other clients already
+  answered). The hub's purge responder echoes the id on every reply it builds from a decoded request,
+  so no hub that answers the request is refused by the stricter check.
 - **Added, `BaseCollection.caches_in_l1`**: `False` declares a collection that takes no L1 backend,
   whatever the registry offers.
 

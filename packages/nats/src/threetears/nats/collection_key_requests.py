@@ -29,14 +29,13 @@ then tells the pod to keep the markers, which cost space and nothing else.
 
 from __future__ import annotations
 
-from datetime import timedelta
 from typing import TYPE_CHECKING, Annotated, Any, Final
 from uuid import UUID, uuid7
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_serializer
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_serializer
 from threetears.observe import get_logger
 
-from threetears.nats.errors import RequestError
+from threetears.nats.hub_requests import ask_hub
 from threetears.nats.subjects import Subjects
 
 if TYPE_CHECKING:
@@ -68,6 +67,9 @@ DEFAULT_COLLECTION_KEYS_REQUEST_TIMEOUT_SECONDS: Final[float] = 5.0
 #: a key below the pod's scope: dot-separated tokens of the KV key grammar, none empty, so never a
 #: wildcard (``*``, ``>``) and never a token that climbs out of the scope
 SCOPED_KEY_PATTERN: Final[str] = r"^[-/_=a-zA-Z0-9]+(\.[-/_=a-zA-Z0-9]+)*$"
+
+#: the codes that are a hub-side failure after verification: no usable answer, and a retry is safe
+_RETRYABLE_ERROR_CODES: Final[frozenset[str]] = frozenset({"PURGE_FAILED"})
 
 #: every ``error_code`` a responder answers with
 COLLECTION_KEYS_REQUEST_ERROR_CODES: Final[frozenset[str]] = frozenset(
@@ -177,31 +179,25 @@ async def purge_pod_collection_keys(
     :rtype: int
     :raises CollectionKeysRequestRefusedError: when the hub refuses
     :raises CollectionKeysRequestUnavailableError: on no token, a hub that does not answer (one older
-        than this contract among them), a reply that does not decode or answers another request, or
-        the hub's ``PURGE_FAILED``
+        than this contract among them), a reply that does not decode or does not answer this request
+        (a success with no correlation id among them), or the hub's ``PURGE_FAILED``
     """
     if not identity_token:
         raise CollectionKeysRequestUnavailableError("a collection keys purge has no identity token to present")
     request = CollectionKeysPurgeRequest(identity_token=SecretStr(identity_token), correlation_id=uuid7(), keys=keys)
-    try:
-        raw: bytes = await nats_client.request_raw(
-            subject=Subjects.hub_collection_keys_purge(),
-            payload=request.model_dump_json().encode("utf-8"),
-            timeout=timedelta(seconds=timeout_seconds),
-        )
-        reply = CollectionKeysPurgeReply.model_validate_json(raw)
-    except (RequestError, ValidationError) as exc:
-        raise CollectionKeysRequestUnavailableError(
-            f"collection keys purge got no usable answer (correlation_id={request.correlation_id}): {exc}"
-        ) from exc
-    if reply.correlation_id is not None and reply.correlation_id != request.correlation_id:
-        raise CollectionKeysRequestUnavailableError(
-            f"collection keys purge reply carried correlation_id={reply.correlation_id}, not {request.correlation_id}"
-        )
-    if not reply.success and reply.error_code == "PURGE_FAILED":
-        raise CollectionKeysRequestUnavailableError(f"collection keys purge failed hub-side: {reply.error_message}")
-    if not reply.success:
-        raise CollectionKeysRequestRefusedError(reply.error_code or "UNKNOWN", reply.error_message or "no details")
+    reply = await ask_hub(
+        nats_client,
+        subject=Subjects.hub_collection_keys_purge(),
+        request=request,
+        reply_type=CollectionKeysPurgeReply,
+        what="collection keys purge",
+        timeout_seconds=timeout_seconds,
+        unavailable=CollectionKeysRequestUnavailableError,
+        refused=lambda refusal: CollectionKeysRequestRefusedError(
+            refusal.error_code or "UNKNOWN", refusal.error_message or "no details"
+        ),
+        retryable=_RETRYABLE_ERROR_CODES,
+    )
     return reply.purged or 0
 
 
