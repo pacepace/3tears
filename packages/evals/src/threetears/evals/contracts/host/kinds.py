@@ -276,6 +276,7 @@ class KindContract:
         try:
             return freeze(self.overlays.model_validate({}))
         except ValidationError:
+            # NOSILENT: None IS the answer -- a required overlay field means no launch runs at a default
             return None
 
     @property
