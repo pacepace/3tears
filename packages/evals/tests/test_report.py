@@ -741,13 +741,13 @@ class TestTheComparativeTablesCompileToCharts:
         from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, TOYHOST_WIDE, toyhost_campaign
         from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
         from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-        from packages.evals.tests.test_viz_timeseries import DAY_ONE, _batches
+        from packages.evals.tests.test_viz_timeseries import DAY_ONE, timeseries_batches
         from threetears.evals.analysis.bundle import assemble_context_bundle
         from threetears.evals.analysis.report.build import build_code_only_report
 
         host = toyhost_profile()
         campaign, _ = toyhost_campaign(profile=host)
-        runs, results = _batches([(DAY_ONE, None)], profile=host, levels=(TOYHOST_NARROW, 512, TOYHOST_WIDE))
+        runs, results = timeseries_batches([(DAY_ONE, None)], profile=host, levels=(TOYHOST_NARROW, 512, TOYHOST_WIDE))
         bundle = assemble_context_bundle(
             campaign.model_copy(update={"run_ids": [run.id for run in runs]}),
             storage=ToyhostStorage(runs, results),

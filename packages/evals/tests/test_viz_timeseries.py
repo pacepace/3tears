@@ -71,7 +71,7 @@ def _release_profile() -> HostProfile:
     return dataclasses.replace(toyhost_profile(), release_label="batch_label")
 
 
-def _batches(
+def timeseries_batches(
     positions: list[tuple[str, str | None]],
     *,
     profile: HostProfile,
@@ -112,7 +112,7 @@ def _timed(
     """The toy campaign re-run at each position, assembled."""
     host = profile if profile is not None else toyhost_profile()
     campaign, _ = toyhost_campaign(profile=host)
-    runs, results = _batches(positions, profile=host)
+    runs, results = timeseries_batches(positions, profile=host)
     timed = campaign.model_copy(update={"run_ids": run_ids if run_ids is not None else [run.id for run in runs]})
     return assemble_context_bundle(timed, storage=ToyhostStorage(runs, results), profile=host)
 
@@ -212,7 +212,7 @@ class TestTheBundleEarnsATimeAxis:
     def test_a_run_that_measured_nothing_has_no_place_in_time(self) -> None:
         host = toyhost_profile()
         campaign, _ = toyhost_campaign(profile=host)
-        runs, results = _batches([(DAY_ONE, None), (DAY_TWO, None)], profile=host)
+        runs, results = timeseries_batches([(DAY_ONE, None), (DAY_TWO, None)], profile=host)
         for run in runs[2:]:
             results[run.id] = []
         timed = campaign.model_copy(update={"run_ids": [run.id for run in runs]})
@@ -225,7 +225,7 @@ class TestTheBundleEarnsATimeAxis:
     def test_a_campaign_that_measured_nothing_says_so(self) -> None:
         host = toyhost_profile()
         campaign, _ = toyhost_campaign(profile=host)
-        runs, results = _batches([(DAY_ONE, None), (DAY_TWO, None)], profile=host)
+        runs, results = timeseries_batches([(DAY_ONE, None), (DAY_TWO, None)], profile=host)
         timed = campaign.model_copy(update={"run_ids": [run.id for run in runs]})
 
         bundle = assemble_context_bundle(
@@ -837,7 +837,7 @@ def _few_cases(cases: int) -> Any:
     """The toy campaign at one position, each run's results cut to its first ``cases`` test cases."""
     host = toyhost_profile()
     campaign, _ = toyhost_campaign(profile=host)
-    runs, results = _batches([(DAY_ONE, None)], profile=host)
+    runs, results = timeseries_batches([(DAY_ONE, None)], profile=host)
     kept = sorted({result.test_case_id for rows in results.values() for result in rows})[:cases]
     trimmed = {run_id: [r for r in rows if r.test_case_id in kept] for run_id, rows in results.items()}
     scoped = campaign.model_copy(update={"run_ids": [run.id for run in runs]})
