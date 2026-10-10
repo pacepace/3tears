@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import Field
 
-from threetears.evals.analysis.bundle.assemble import variant_key_of_run
+from threetears.evals.analysis.bundle.observations import variant_key_of_run
 from threetears.evals.kernel.authoring_fields import reject_unknown_authoring_fields
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.campaign_writes import serialized_campaign_write
