@@ -6328,6 +6328,61 @@ def _name_arms(
     return named
 
 
+def _declared_level_names(index: list[VariantIndexEntry], declared: CampaignDesign | None) -> list[VariantIndexEntry]:
+    """Name each arm's levels by what the campaign declared them as, where it declared them.
+
+    A host displays a level by what it can see of it, and for a long text — a prompt in a prompt sweep — that is a
+    fingerprint (``cognitive_style: 2304 chars · 539ef3``), so two arms that differ only in their text read as two
+    digests. A campaign that declared the level (``SweptAxis.values``) said what to call it: "current text",
+    "optimised text". That name replaces the host's display on every entry carrying the level, so every surface
+    reading the index — the arm names, the report's tables and charts, and the writer's arm list — prints it.
+
+    **Joined on ``(axis_id, content_hash)``, never on a display**: the hash is the level's identity, and a display
+    is what is being replaced. The first declaration wins where one hash is declared twice on one axis, as an
+    author reading the declaration top to bottom would expect. A level with no declared name keeps the host's
+    display, and so does a lever's "not a run of this kind" level, which is the engine's and no declaration's.
+    Only ``display`` changes: the variant key digests content hashes alone, so no key moves and no cell regroups.
+
+    Args:
+        index: The variant index, its arms already named by :func:`_name_arms`.
+        declared: The campaign's declaration, or None when it declared nothing.
+
+    Returns:
+        The index, each declared level displayed by its declared name; entries no declaration names unchanged.
+    """
+    if declared is None:
+        return index
+    names: dict[tuple[str, str], str] = {}
+    for axis in declared.axes:
+        for value in axis.values:
+            names.setdefault((axis.axis_id, value.content_hash), value.display)
+
+    def named(levers: dict[str, SweepableValue]) -> dict[str, SweepableValue]:
+        return {
+            axis: level.model_copy(update={"display": name})
+            if level.not_of_kind is None and (name := names.get((axis, level.content_hash))) is not None
+            else level
+            for axis, level in levers.items()
+        }
+
+    renamed: list[VariantIndexEntry] = []
+    for entry in index:
+        levers, swept = named(entry.levers), named(entry.swept)
+        if levers == entry.levers and swept == entry.swept:
+            renamed.append(entry)
+            continue
+        renamed.append(
+            VariantIndexEntry(
+                variant_key=entry.variant_key,
+                levers=levers,
+                levels_unavailable=entry.levels_unavailable,
+                swept=swept,
+                folded=entry.folded,
+            )
+        )
+    return renamed
+
+
 def _variant_key_of(
     result: EvalResult, run: EvalRun, *, profile: HostProfile
 ) -> tuple[str, dict[str, SweepableValue], str | None]:
@@ -6610,6 +6665,7 @@ def assemble_context_bundle(
         runs, results_by_run, apparatus_classes, scope_id=scope_id, profile=profile
     )
     variant_index = _name_arms(variant_index, observations, folds, run_ids)
+    variant_index = _declared_level_names(variant_index, campaign.declared_design)
     cells, refused_merges, next_experiments = pool_observations(
         observations, {c.apparatus_class_id: c for c in apparatus_classes.values()}
     )

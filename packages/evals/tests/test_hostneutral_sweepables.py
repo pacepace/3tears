@@ -161,8 +161,8 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
     # requested id was answered by more than one model (#684). The temperature each judge call was actually sent
     # at joins the judge's apparatus (#633), so the cell model moves: an observation that recorded one no longer
     # pools with one that did not. A cell whose runs recorded none keeps the id it had (CELL_ID_NEUTRAL), so a
-    # stored analysis's cell references still resolve. Every measure in the catalog carries a reader-facing name
-    # (#627).
+    # stored analysis's cell references still resolve. Every measure in the catalog carries a reader-facing name (#627),
+    # and a level the campaign declared a name for is displayed by it in the variant index (#581); neither moves a key.
     ((47, 11), _CORE_V24 | {"judge_request_settings", "simulator_request_settings", "judge_temperature"}),
 )
 

@@ -220,6 +220,12 @@ results by stratum, the contrasts, the guardrails and labels tables, and every c
 - Two arms that would still read alike carry their variant keys' digests (`(arm <digest>)`), so no two
   arms of one report share a name.
 
+- A level the campaign declared a name for (the `display` of a value on its `SweptAxis`, such as "current text"
+  for a prompt) is printed by that name rather than the host's display, which for a long text is a fingerprint
+  (`cognitive_style: 2304 chars · 539ef3`). The name is matched on `(axis_id, content_hash)`; where one level
+  is declared twice the first name wins, and an undeclared level keeps the host's display. Only the display
+  changes, so no variant key moves.
+
 What an arm ran in full is stated once, in the arm table's "Every lever it ran" column
 (`ArmRow.settings`). A stored analysis's own charts keep the names they were drawn with at generation.
 

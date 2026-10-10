@@ -16,21 +16,30 @@ import pytest
 from threetears.evals.analysis import (
     ChartBlock,
     TableBlock,
+    assemble_context_bundle,
+    build_code_only_report,
     campaign_report,
     render_memo_as_written,
 )
+from threetears.evals.analysis.arms import arm_names, arm_table_of, writer_arms
 from threetears.evals.analysis.references import ReadingRef
 from threetears.evals.analysis.surface_table import build_surface_table
 from threetears.evals.analysis.viz_refs import FrontierRef, build_viz_payload
 from threetears.evals.contracts.campaign import EvalAnalysis
+from threetears.evals.contracts.declaration import SweptAxis
 from threetears.evals.contracts.host import EvalHost
 from threetears.evals.contracts.host.measures import MeasureRegistrationError, MeasureRegistry
+from threetears.evals.contracts.host.values import IntervalScale, SweepableValue
 from threetears.evals.contracts.metrics import METRIC_DESCRIPTORS, MetricDescriptor, goal_check_of
 from threetears.evals.vega.compiler import compile_chart, draw_intent
 from packages.evals.tests.fixtures.toyhost.campaign import (
+    TOYHOST_AXIS,
+    TOYHOST_NARROW,
     TOYHOST_QUESTION_ID,
+    TOYHOST_WIDE,
+    toyhost_campaign,
 )
-from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES
+from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile
 from packages.evals.tests.report_support import toy_report
 
 
@@ -161,3 +170,68 @@ async def test_the_memo_prints_each_findings_evidence_as_one_table_headed_by_rea
     assert len(evidence) == 2 + len(analysis.resolutions[0].evidence) == 4
     assert all(row.split(" | ")[1] == "Turn time" for row in evidence[2:])
     assert "total_ms" not in memo
+
+
+# --- #581: an arm level the campaign named is called by that name everywhere an arm is labelled ----------------
+
+
+def _named_design(names: list[tuple[int, str]]) -> Any:
+    """The toy design, its swept levels declared under ``names`` — the same content, so the same hashes."""
+    campaign, storage = toyhost_campaign()
+    design = campaign.declared_design
+    assert design is not None
+    axis = SweptAxis(
+        axis_id=TOYHOST_AXIS,
+        values=[
+            SweepableValue.of(level, display=name, scale=IntervalScale(value=level, unit="tok"), keep_raw=True)
+            for level, name in names
+        ],
+    )
+    return campaign.model_copy(update={"declared_design": design.model_copy(update={"axes": [axis]})}), storage
+
+
+def test_a_declared_level_name_labels_the_arm_on_every_surface_and_moves_no_key() -> None:
+    profile = toyhost_profile()
+    plain, plain_storage = toyhost_campaign()
+    before = assemble_context_bundle(plain, storage=plain_storage, profile=profile)
+    campaign, storage = _named_design([(TOYHOST_NARROW, "current width"), (TOYHOST_WIDE, "proposed width")])
+    bundle = assemble_context_bundle(campaign, storage=storage, profile=profile)
+
+    assert [e.variant_key for e in bundle.variant_index] == [e.variant_key for e in before.variant_index]
+    assert sorted(arm_names(bundle.variant_index).values()) == [
+        f"{TOYHOST_AXIS}=current width",
+        f"{TOYHOST_AXIS}=proposed width",
+    ]
+    listed = writer_arms(bundle.variant_index)["arms"]
+    assert sorted(arm["levels"][TOYHOST_AXIS] for arm in listed) == ["current width", "proposed width"]  # type: ignore[index]
+    table = arm_table_of(bundle.variant_index, control=None, decisions=[], resolutions=[], source="test")
+    assert sorted(row.label for row in table.rows) == [
+        f"{TOYHOST_AXIS}=current width",
+        f"{TOYHOST_AXIS}=proposed width",
+    ]
+
+    report = build_code_only_report(bundle, measures=profile.measures, assembled_at="2026-10-10T00:00:00Z")
+    surface = next(b for b in report.blocks if isinstance(b, TableBlock) and b.name == "surface")
+    assert {str(row["arm"]).removesuffix(" (control)").strip() for row in surface.rows} >= {
+        f"{TOYHOST_AXIS}=current width",
+        f"{TOYHOST_AXIS}=proposed width",
+    }
+
+
+def test_a_level_declared_twice_takes_its_first_name_and_an_undeclared_one_keeps_the_hosts() -> None:
+    profile = toyhost_profile()
+    plain, plain_storage = toyhost_campaign()
+    host_display = {
+        level.content_hash: level.display
+        for entry in assemble_context_bundle(plain, storage=plain_storage, profile=profile).variant_index
+        for level in [entry.levers[TOYHOST_AXIS]]
+    }
+    campaign, storage = _named_design([(TOYHOST_NARROW, "first"), (TOYHOST_NARROW, "second")])
+    bundle = assemble_context_bundle(campaign, storage=storage, profile=profile)
+    displays = {
+        entry.levers[TOYHOST_AXIS].content_hash: entry.levers[TOYHOST_AXIS].display for entry in bundle.variant_index
+    }
+    narrow = SweepableValue.of(TOYHOST_NARROW, scale=IntervalScale(value=TOYHOST_NARROW, unit="tok")).content_hash
+    wide = SweepableValue.of(TOYHOST_WIDE, scale=IntervalScale(value=TOYHOST_WIDE, unit="tok")).content_hash
+    assert displays[narrow] == "first"
+    assert displays[wide] == host_display[wide]
