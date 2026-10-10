@@ -864,7 +864,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`judge_at_two_temperatures`** · async function · Re-judge a finished run's borderline cases `repeats` times at each temperature, and return every answer.
   <br>`judge_at_two_temperatures(host: EvalHost, run_id: str, scope_id: str, *, out_of_run_cap_usd: float | None, selection: TemperatureSelection = 'borderline', repeats: int = 5, result_ids: Sequence[str] | None = None) -> JudgeTemperatureAnswers`
 - **`judge_case_labels`** · function · The person ratings a judge case frozen from `result` on `dim` carries as its labels.
-  <br>`judge_case_labels(storage: EvalStorage, scope_id: str, result: EvalResult, dim: str, *, scale: str) -> list[CalibrationRating]`
+  <br>`judge_case_labels(storage: EvalStorage, scope_id: str, result: EvalResult, dim: str, *, scale: str, label_key: LabelKey | None = None) -> list[CalibrationRating]`
 - **`judge_kind`** · function · The judge kind for one arm, its configs loaded from the store: what a launcher builds per arm.
   <br>`judge_kind(storage: EvalStorage, clients: CompletionClients, *, model: str, scope_id: str, failure_describer: ProviderFailureDescriber, overlays: JudgeKindOverlays | None = None) -> JudgeKind`
 - **`launch_as_group`** · async function · Launch one group of runs: admit it, prepare every arm, and start them together — or start none.

@@ -16,8 +16,8 @@ What a judge case is, what a trial records and the kind's contract are declared 
   judge template, and mints a case set over them. What each case freezes is what the result's judge read, rebuilt
   under the one check a re-judge and a second judge rebuild it under
   (:func:`~threetears.evals.run.rejudge.reproducible_judge_inputs`).
-- :func:`judge_case_labels` — the labels a frozen case carries. **The seam output-bound labels plug into** (#628):
-  today it reads the person ratings keyed to the result.
+- :func:`judge_case_labels` — the labels a frozen case carries: the person ratings keyed to the result, and those
+  keyed to what was read (output-bound labels, #628), so a label follows a byte-identical output into its case.
 - :func:`launchable_judge_kind` — the kind's launch-registry entry, for a host that launches judge campaigns
   through :func:`~threetears.evals.run.start_run`.
 
@@ -72,6 +72,8 @@ from threetears.evals.schema.models import (
     CaseSetRef,
     EvalTestCase,
     JudgedArtifact,
+    LabelKey,
+    label_key_of,
 )
 from threetears.evals.schema.subject import SubjectSnapshot
 from threetears.observe import get_logger
@@ -110,15 +112,25 @@ _CASE_ID_NAMESPACE = uuid.UUID("4557ddbf-f5d3-4ed0-9459-1b883d5f1f70")
 
 
 def judge_case_labels(
-    storage: EvalStorage, scope_id: str, result: EvalResult, dim: str, *, scale: str
+    storage: EvalStorage,
+    scope_id: str,
+    result: EvalResult,
+    dim: str,
+    *,
+    scale: str,
+    label_key: LabelKey | None = None,
 ) -> list[CalibrationRating]:
     """The person ratings a judge case frozen from ``result`` on ``dim`` carries as its labels.
 
-    **SEAM (#628, output-bound labels).** Today a label is found by the RESULT it was written on: the person
-    ratings keyed to ``result.id`` on ``dim``. Once a rating can be keyed by a fingerprint of the output a person
-    read plus the criterion, this is the one function that changes — it looks the label up by that fingerprint, so
-    a label given on any result whose judged output is byte-identical follows the output into its case. Nothing
-    else in the freeze reads ratings.
+    **Found two ways (#628).** A label is found by the RESULT it was written on — the person ratings keyed to
+    ``result.id`` on ``dim`` — and, given ``label_key``, by WHAT WAS READ: every rating whose output and criterion
+    fingerprints are the key's (:func:`~threetears.evals.schema.label_key_of` of the evidence the judge read and the
+    criterion), so a label given on any result whose judged output is byte-identical, on the same criterion, follows
+    the output into its case. Nothing else in the freeze reads ratings.
+
+    **No label counts twice.** A rating found by both routes is one label (by its id). And a case is one output on
+    one criterion, so one rater's ratings of it from two results are that rater's two opinions of the same thing:
+    the later one stands, as a rater's later rating replaces the earlier one of the same result.
 
     Only a person's rating is a label: an agent's is another model's opinion, as agreement with people reads it
     (:func:`~threetears.evals.analysis.judge_agreement`). A rating on another scale than the criterion is asked on
@@ -130,15 +142,20 @@ def judge_case_labels(
         result: The judged result the case replays.
         dim: The criterion.
         scale: The scale the case asks the criterion on.
+        label_key: The key of the output the case replays read on the criterion; ``None`` finds labels by the
+            result alone.
 
     Returns:
-        The labels, oldest first.
+        The labels, oldest first, at most one per rater.
     """
-    return [
-        rating
-        for rating in storage.query_calibration_ratings(scope_id, result_id=result.id)
-        if rating.rubric_dim == dim and rating.rater_kind == "person" and rating.scale == scale
-    ]
+    found = storage.query_calibration_ratings(scope_id, result_id=result.id)
+    if label_key is not None:
+        found += storage.query_calibration_ratings(scope_id, label_key=label_key)
+    by_rater: dict[str, CalibrationRating] = {}
+    for rating in sorted({rating.id: rating for rating in found}.values(), key=lambda r: (r.rated_at, r.id)):
+        if rating.rubric_dim == dim and rating.rater_kind == "person" and rating.scale == scale:
+            by_rater[rating.rater] = rating
+    return sorted(by_rater.values(), key=lambda r: (r.rated_at, r.id))
 
 
 # =============================================================================
@@ -211,7 +228,14 @@ def _cases_of_result(
             continue  # recorded_judged_dims names only rubric dims and the axes; unreachable, but never guessed at
         scale = criterion.scale if criterion is not None else "ordinal"
         first = result.judge_score(dim)
-        labels = judge_case_labels(storage, scope_id, result, dim, scale=scale)
+        labels = judge_case_labels(
+            storage,
+            scope_id,
+            result,
+            dim,
+            scale=scale,
+            label_key=label_key_of(inputs.judge_evidence, criterion if criterion is not None else dim),
+        )
         case = JudgeCase(
             dim=dim,
             scale=scale,

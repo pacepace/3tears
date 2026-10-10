@@ -443,8 +443,9 @@ prompt, another temperature), make the judge the subject of a campaign of its ow
   (`config_ids`, versioned `JudgeConfig` ids) and the temperature are the arm's overlays (`JudgeKindOverlays`), so
   two arms that differ in their judge are two variants the campaign tells apart.
 - **A case is frozen from a stored result:** one judged output and one criterion. It holds the evidence the
-  result's judge read, the criterion as its template worded it, and the person ratings given on that result as
-  its labels.
+  result's judge read, the criterion as its template worded it, and as its labels the person ratings given on
+  that result or on any result whose judged output is byte-identical on the same criterion (output-bound labels).
+  A rating found both ways counts once, and one person's ratings of one output are one label: the latest.
 - **A trial replays the stored output and calls only the judge.** It asks the criterion through the engine's own
   judge service, so the judge reads the same evidence block the first judge read. Only the judge differs. No
   candidate is re-run.
