@@ -48,6 +48,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, JsonValue
 
+from threetears.evals.analysis.agreement import InterJudgeDimension, inter_judge_agreement
 from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics, confusion_matrix, label_statistics
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.surface_table import NO_SUCCESSFUL_RESULTS
@@ -224,6 +225,9 @@ class DimensionSummary(BaseModel):
         minimum: The lowest score; ``None`` when none does.
         maximum: The highest score; ``None`` when none does.
         cannot_tell: How many results the judge answered it could not score on it — not failures, and in no mean.
+        second_judges: How far each second judge asked about this run agreed with its judge on this dimension
+            (:func:`~threetears.evals.analysis.inter_judge_agreement`): n, exact agreement and kappa, beside the score
+            it qualifies. Empty when no second judge was asked — agreement between judges is then unmeasured.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -235,6 +239,7 @@ class DimensionSummary(BaseModel):
     minimum: float | None
     maximum: float | None
     cannot_tell: int
+    second_judges: list[InterJudgeDimension] = []
 
 
 #: How one result came out, as :func:`~threetears.evals.contracts.classify_result` classifies it: graded normally,
@@ -466,6 +471,9 @@ class EvalSummary(BaseModel):
             (:func:`~threetears.evals.quick.run_eval`: ``"from <candidate>'s docstring"`` or a generic
             default); ``None`` for an intent stated outright, and for a summary read back from the store,
             which keeps the intent but not its source.
+        second_judge_calls: How many calls second judges asked about this run made, as the out-of-run ledger records
+            them under purpose ``second_judge``. Measurement cost: never in :attr:`judge_calls` or the candidate's.
+        second_judge_cost_usd: What those calls cost; ``None`` when any went unpriced, and when none was made.
         judge_calls: How many judge calls the results' ``judge`` usage rows count.
         judge_cost_usd: What those calls cost, as their client priced them; ``None`` when any went
             unpriced, and for a run no judge was called in.
@@ -514,6 +522,8 @@ class EvalSummary(BaseModel):
     judged: list[DimensionSummary] = []
     judge_calls: int = 0
     judge_cost_usd: float | None = None
+    second_judge_calls: int = 0
+    second_judge_cost_usd: float | None = None
     candidate_calls: int = 0
     candidate_cost_usd: float | None = None
     goal_checks: list[GoalCheckSummary] = []
@@ -817,6 +827,11 @@ def summarize_run(
     if run.judge_model is not None and run.template_id is not None:
         template = host.storage.load_template(run.template_id, scope_id)
     candidate_rows = [row for result in results for row in result.usage if row.role == "candidate"]
+    # A second judge's spend is the out-of-run ledger's, stamped with the run — never a result's usage row.
+    second_rows = [
+        row for row in host.storage.query_out_of_run_spend(scope_id, purpose="second_judge") if row.run_id == run.id
+    ]
+    second_costs = [row.cost_usd for row in second_rows]
     return EvalSummary(
         run_id=run.id,
         scope_id=scope_id,
@@ -835,6 +850,12 @@ def summarize_run(
         judged=_judged_dimensions(results),
         judge_calls=sum(row.call_count or 0 for row in judge_rows),
         judge_cost_usd=blended_cost(judge_rows, _JUDGE_ROLE) if judge_rows else None,
+        second_judge_calls=len(second_rows),
+        second_judge_cost_usd=(
+            math.fsum(cost for cost in second_costs if cost is not None)
+            if second_rows and None not in second_costs
+            else None
+        ),
         candidate_calls=sum(row.call_count or 0 for row in candidate_rows),
         candidate_cost_usd=blended_cost(candidate_rows, _CANDIDATE_ROLE) if candidate_rows else None,
         goal_checks=_goal_checks(results, run),
@@ -867,6 +888,7 @@ def _judged_dimensions(results: list[EvalResult]) -> list[DimensionSummary]:
         for dim in result.judge_cannot_tell:
             scores.setdefault(dim, [])
             cannot_tell[dim] += 1
+    agreement = inter_judge_agreement(results)
     return [
         DimensionSummary(
             name=name,
@@ -876,6 +898,7 @@ def _judged_dimensions(results: list[EvalResult]) -> list[DimensionSummary]:
             minimum=min(values) if values else None,
             maximum=max(values) if values else None,
             cannot_tell=cannot_tell[name],
+            second_judges=[row for row in agreement.dimensions if row.rubric_dim == name],
         )
         for name, values in scores.items()
     ]

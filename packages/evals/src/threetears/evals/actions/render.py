@@ -50,6 +50,7 @@ from threetears.evals.ops import (
     RunListing,
     RunsCompared,
     ScoreExport,
+    SecondJudgeRead,
     TemplateListing,
     dollars_text,
     estimate_text,
@@ -62,6 +63,7 @@ from threetears.evals.ops import (
 
 if TYPE_CHECKING:
     from threetears.evals.actions.catalogue import Action, MountedTool
+    from threetears.evals.run import SecondJudgeEstimate
 
 
 # --- help --------------------------------------------------------------------------------------------
@@ -548,6 +550,55 @@ def render_result_rated(rated: ResultRated) -> str:
     return (
         f"rated {rated.rubric_dim} of result {rated.result_id} at {rated.score} as {rated.rater} "
         f"({rated.rater_kind}; kept beside people's ratings, never read as one)"
+    )
+
+
+def _bounds(interval: tuple[float, float] | None) -> str:
+    """An interval as ``[low, high]``, or a word saying there is none."""
+    return "no interval" if interval is None else f"[{interval[0]:.3g}, {interval[1]:.3g}]"
+
+
+def render_second_judge(read: SecondJudgeRead) -> str:
+    """A second judge's pass: what it asked and spent apart from the candidate, then agreement and drift per dim."""
+    report = read.report
+    cost = _usd(report.cost_usd) if report.cost_usd is not None else "unpriced"
+    lines = [
+        f"second judge {report.judge.model} on run {report.run_id} (pass {report.pass_id}): asked about "
+        f"{len(report.judged)} of {report.eligible} judgeable result(s) (fraction {report.sample_fraction:g}, seed "
+        f"{report.sample_seed}); {report.scores_paired} score(s) paired, {report.scores_unanswered} unanswered; "
+        f"{report.calls_made} call(s), {cost} — measurement cost, ledgered under second_judge, never the candidate's",
+    ]
+    if report.stopped:
+        lines.append(f"stopped: {report.stopped}")
+    lines += [f"skipped {skip.result_id}: {skip.reason}" for skip in report.skipped]
+    lines += [f"unwritten {result_id}: paid for, record not stored" for result_id in report.unwritten]
+    lines.append("agreement between the judges")
+    for row in read.agreement.dimensions:
+        kappa = (
+            f"kappa ({row.kappa_weighting}) {row.kappa:.3g}, bounds {_bounds(row.agreement_interval)}"
+            if row.kappa is not None
+            else f"kappa {row.kappa_undefined}"
+        )
+        lines.append(f"- {row.rubric_dim}: n={row.n}, exact agreement {row.exact_agreement:.0%}, {kappa}")
+    lines.append(read.drift.disclosure)
+    for drift in read.drift.dimensions:
+        delta = "n/a" if drift.delta is None else f"{drift.delta:+.3g}"
+        lines.append(
+            f"- {drift.rubric_dim}: {drift.verdict}, movement {delta} over {drift.n_cases} case(s), "
+            f"{_bounds(drift.interval)}"
+        )
+    return "\n".join(lines)
+
+
+def render_second_judge_estimate(estimate: SecondJudgeEstimate) -> str:
+    """A second judge's price before it starts, against the cap, and whether it would start."""
+    ceiling = _usd(estimate.ceiling_usd) if estimate.ceiling_usd is not None else "unpriceable"
+    cap = _usd(estimate.cap_usd) if estimate.cap_usd is not None else "none enforced"
+    verdict = "would start" if estimate.would_start else f"would be refused: {estimate.refusal}"
+    return (
+        f"estimate: second judge {estimate.judge.model} on run {estimate.run_id} — {len(estimate.sampled)} of "
+        f"{estimate.eligible} judgeable result(s), {estimate.dims} dim(s), at most {estimate.max_calls} call(s) priced "
+        f"at up to {ceiling}; out-of-run cap {cap}; {verdict}."
     )
 
 

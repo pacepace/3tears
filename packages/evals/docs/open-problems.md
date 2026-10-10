@@ -59,21 +59,6 @@ host's side: declare the measure's range.
 
 ## Judging
 
-### No check for judge drift across configurations
-
-Tracked in [#597](https://github.com/pacepace/3tears/issues/597).
-
-A judge is a model and its config, and evidence tiers are keyed that way (see
-[evidence tiers](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers)). A re-judge
-or repeat refuses to run under an apparatus the run did not record, so nothing re-scores stored evidence
-under a new config to show how far the judge moved. The ruled design re-scores a frozen transcript set
-whenever a judge config changes: it detects movement, not which judge is right. Without it a before/after
-spanning a judge change cannot be answered. One judged dimension rose from 2.7 to 4.4 when a subject fix
-and a judge swap landed together, while unchanged dimensions moved −0.3 to +0.5; "did the fix work" was
-ruled permanently unanswerable.
-
-*Evidence:* agent with tools, one before/after pair, 2026-07, 2.7→4.4 on the changed judge vs −0.3 to +0.5 on unchanged ones, single campaign.
-
 ### The judge temperature policy is not measured
 
 Tracked in [#633](https://github.com/pacepace/3tears/issues/633).

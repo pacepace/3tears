@@ -362,6 +362,7 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # that measurement and calibration decide. Shared contract from the day they existed: they read a
     # run, its results and the judge through the engine's own ports and name no host.
     "run/judge_repeat.py",
+    "run/judge_second.py",
     "contracts/evidence_tiers.py",
     # Tool recording and replay. It moved off _HOST_COUPLED_MODULES when the lane stopped reaching
     # into a host's candidate and started wiring only the seams a kind hands it (now declared in
