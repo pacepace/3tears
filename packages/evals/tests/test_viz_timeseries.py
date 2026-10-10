@@ -63,7 +63,7 @@ _NAMESPACE = uuid.UUID("0b8e6a52-41d7-4f0e-9c3a-7d25e1f4a9b6")
 DAY_ONE, DAY_TWO = "2026-03-14T09:30:00+00:00", "2026-03-15T09:30:00+00:00"
 
 #: The base wall-clock per arm, before each position's drift.
-_TOTAL_MS = {TOYHOST_NARROW: 900.0, TOYHOST_WIDE: 1400.0}
+_TOTAL_MS = {TOYHOST_NARROW: 900.0, 512: 1100.0, TOYHOST_WIDE: 1400.0}
 
 
 def _release_profile() -> HostProfile:

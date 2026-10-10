@@ -111,7 +111,7 @@ class TestTheToyAnalysisSerializesThreeWays:
 
 
 def _chart(report: Report) -> Any:
-    (block,) = [block for block in report.blocks if isinstance(block, ChartBlock)]
+    (block,) = [block for block in report.blocks if isinstance(block, ChartBlock) and block.section == "findings"]
     assert block.intent is not None, block.error
     return block.intent
 
@@ -169,7 +169,7 @@ class TestTheToyReportsContent:
 
     async def test_the_chart_is_its_intent_never_a_renderers_spec(self, toy: tuple[Any, Any, Report]) -> None:
         _, _, report = toy
-        (block,) = [block for block in report.blocks if isinstance(block, ChartBlock)]
+        (block,) = [block for block in report.blocks if isinstance(block, ChartBlock) and block.section == "findings"]
         dumped = block.model_dump(mode="json")
 
         assert block.finding == 0 and block.error == ""
@@ -203,7 +203,7 @@ class TestTheToyReportsContent:
             update={"chart": Viz(type="delta_table", payload={"rows": []}, ref=resolution.chart.ref)}  # type: ignore[union-attr]
         )
         report = build_report(analysis.model_copy(update={"resolutions": [broken]}))
-        (block,) = [block for block in report.blocks if isinstance(block, ChartBlock)]
+        (block,) = [block for block in report.blocks if isinstance(block, ChartBlock) and block.section == "findings"]
 
         assert block.intent is None and "delta_table" in block.error
         assert "cannot be drawn" in report_markdown(report)
@@ -243,7 +243,7 @@ class TestOneFindingsChart:
         host, analysis, report = toy
         intent = finding_chart_intent(host.storage, analysis.id, analysis.scope_id, "0")
 
-        (block,) = [block for block in report.blocks if isinstance(block, ChartBlock)]
+        (block,) = [block for block in report.blocks if isinstance(block, ChartBlock) and block.section == "findings"]
         assert intent == block.intent
 
     @pytest.mark.parametrize("finding_id", ["1", "-1", "first"])
@@ -681,3 +681,88 @@ def test_a_code_only_report_states_the_contrasts_code_tested_against_the_control
     )
     (arms,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "arms"]
     assert sum(str(row["arm"]).endswith("(control)") for row in arms.rows) == 1
+
+
+# =============================================================================
+# The comparative tables compile to charts that lead them (#643)
+# =============================================================================
+
+
+def _surface_order(report: Report) -> tuple[list[int], int]:
+    """Where the surface's compiled charts sit, and where its table does, in block order."""
+    charts = [
+        index
+        for index, block in enumerate(report.blocks)
+        if isinstance(block, ChartBlock) and block.section == "surface"
+    ]
+    (table,) = [
+        index for index, block in enumerate(report.blocks) if isinstance(block, TableBlock) and block.name == "surface"
+    ]
+    return charts, table
+
+
+class TestTheComparativeTablesCompileToCharts:
+    async def test_a_stored_analysis_draws_its_surface_before_the_surface_table(
+        self, toy: tuple[Any, EvalAnalysis, Report]
+    ) -> None:
+        _, _, report = toy
+        charts, table = _surface_order(report)
+        assert charts, "the decision surface compiled to no chart"
+        assert max(charts) < table, "the surface charts follow the table they draw"
+        for index in charts:
+            block = report.blocks[index]
+            assert isinstance(block, ChartBlock) and block.intent is not None and len(block.intent.rows) >= 2
+        markdown = report_markdown(report)
+        assert markdown.index("**Chart: ") < markdown.index("**Decision surface**")
+        page = report_html(report)
+        assert page.index("data-chart-intent") < page.index("Decision surface")
+
+    async def test_a_three_arm_code_only_report_draws_a_chart_before_the_surface_table(self) -> None:
+        from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, TOYHOST_WIDE, toyhost_campaign
+        from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
+        from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+        from packages.evals.tests.test_viz_timeseries import DAY_ONE, _batches
+        from threetears.evals.analysis.bundle import assemble_context_bundle
+        from threetears.evals.analysis.report.build import build_code_only_report
+
+        host = toyhost_profile()
+        campaign, _ = toyhost_campaign(profile=host)
+        runs, results = _batches([(DAY_ONE, None)], profile=host, levels=(TOYHOST_NARROW, 512, TOYHOST_WIDE))
+        bundle = assemble_context_bundle(
+            campaign.model_copy(update={"run_ids": [run.id for run in runs]}),
+            storage=ToyhostStorage(runs, results),
+            profile=host,
+        )
+        assert len(bundle.cell_measures) == 3
+        report = build_code_only_report(bundle, measures=host.measures, assembled_at="2026-10-10T00:00:00+00:00")
+
+        charts, table = _surface_order(report)
+        assert charts and max(charts) < table
+        drawn = report.blocks[charts[-1]]
+        assert isinstance(drawn, ChartBlock) and drawn.intent is not None
+        assert len(drawn.intent.rows) == 3, "the chart compares all three arms"
+
+    async def test_a_finding_without_a_drawn_chart_compiles_its_evidence_ahead_of_the_table(
+        self, toy: tuple[Any, EvalAnalysis, Report]
+    ) -> None:
+        _, analysis, _ = toy
+        resolution = analysis.resolutions[0]
+        cited = {
+            (row.measure_id, row.reading): {r.cell_ref for r in resolution.evidence if r.measure_id == row.measure_id}
+            for row in resolution.evidence
+        }
+        assert any(len(cells) >= 2 for cells in cited.values()), "the toy evidence compares no arms"
+        report = build_report(
+            analysis.model_copy(update={"resolutions": [resolution.model_copy(update={"chart": None})]})
+        )
+
+        finding = [block for block in report.blocks if block.section == "findings" and block.finding == 0]
+        kinds = [type(block).__name__ for block in finding]
+        assert "ChartBlock" in kinds and kinds.index("ChartBlock") < kinds.index("TableBlock")
+
+    async def test_a_finding_whose_authored_chart_drew_gets_no_second_chart(
+        self, toy: tuple[Any, EvalAnalysis, Report]
+    ) -> None:
+        _, _, report = toy
+        charts = [block for block in report.blocks if isinstance(block, ChartBlock) and block.section == "findings"]
+        assert [block.viz_type for block in charts] == ["delta_table"]

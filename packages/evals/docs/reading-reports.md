@@ -11,7 +11,9 @@ Every campaign is read through one document, the **report**: blocks in reading o
 author wrote, with a role), `table`, `chart` and `disclosure` (what code must add), each linked to the findings it
 belongs to or rests on. With an **analysis** (a model reading the campaign's numbers and writing findings), the
 report carries those findings beside the evidence; without one it is a **code-only report**, every table and
-chart code can build and a line saying no analysis was generated. Either way every number comes from code, and a
+chart code can build and a line saying no analysis was generated. Either way the decision surface's charts lead its
+table, and a finding's evidence that compares arms is drawn ahead of its table unless the author's own chart drew:
+the chart is the reading form, the table the audit form. Either way every number comes from code, and a
 model never decides how much a judged score can be trusted. [`examples/reports.py`](../examples/reports.py) writes
 one to files, offline. `analysis_report(storage, analysis_id, scope_id)` returns a generated analysis's `Report`:
 
@@ -38,10 +40,10 @@ which the published schema and the model both refuse. It holds:
 - the arm table: each arm and every lever it ran, with no status column (every arm is unresolved, since
   nothing decided) and no finding column (there are no findings);
 - the guardrails, each decided for each arm against the control ([below](#reading-the-guardrails));
-- the decision surface;
+- the decision surface, led by a distribution chart per judged dimension and per measure with a better end,
+  drawn across the arms, except a label's statistics (they are in the labels table), `match` where `accuracy` is
+  charted, a cost no result reported, and a reading only one arm drew (nothing to compare);
 - the contrasts the evidence tested against the control;
-- a distribution chart per judged dimension and per measure with a better end, except a label's statistics
-  (they are in the labels table), `match` where `accuracy` is charted, and a cost no result reported;
 - for a classifier, one `labels` table of each label's precision, recall and F1, a row per label and arm:
   precision and recall with their 95% Wilson intervals over the cases, F1 with none (it has none by construction), and
   every figure with the n it is counted over;
