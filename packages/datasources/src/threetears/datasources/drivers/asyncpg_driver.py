@@ -155,7 +155,7 @@ from typing import Any, Final
 
 import asyncpg
 
-from threetears.core.fingerprint import postgres_fingerprint_sql, relation_key_expression
+from threetears.core.fingerprint import postgres_fingerprint_sql
 from threetears.core.config import DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS, DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS
 from threetears.core.utils.pg_pool_kwargs import (
     PoolStartupTimeoutError,
@@ -1416,13 +1416,7 @@ class AsyncpgDriver(Driver):
         if self._closed:
             raise RuntimeError("AsyncpgDriver is closed")
         filters, values = build_filter(where, where_in)
-        sql = translate_placeholders(
-            "SELECT g, COUNT(*) AS row_count, "  # noqa: S608 - relation, key and group_by are trusted identifiers
-            "COALESCE(SUM(('x' || SUBSTR(MD5(k), 1, 8))::bit(32)::bigint), 0) AS digest "
-            f"FROM (SELECT {group_by} AS g, {relation_key_expression(key)} AS k FROM {relation}{filters}) "
-            "AS fingerprint_source GROUP BY g",
-            "asyncpg",
-        )
+        sql = translate_placeholders(postgres_fingerprint_sql(relation, key, filters, group_by=group_by), "asyncpg")
         records = await self._acquire_and_run(lambda conn: conn.fetch(sql, *values))
         return {
             (None if r["g"] is None else str(r["g"])): RelationFingerprint(

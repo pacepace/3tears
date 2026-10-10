@@ -166,13 +166,12 @@ if TYPE_CHECKING:
     RedshiftConnection = Any
     RedshiftCursor = Any
 
-from threetears.core.fingerprint import relation_key_expression
+from threetears.core.fingerprint import fingerprint_sql, relation_key_expression
 from threetears.datasources.config import RedshiftConnectionConfig
 from threetears.datasources.drivers._redshift_connector_internals import connection_socket
 from threetears.datasources.drivers.sync_bridge import AsyncSyncBridge
 from threetears.datasources.drivers.sql_fragments import (
     translate_placeholders,
-    build_equality_filter,
     build_filter,
     build_set_local_statement_timeout_sql,
     build_set_search_path_sql,
@@ -321,6 +320,11 @@ _REDSHIFT_UNQUALIFIED_BOOLEAN_COLUMNS_SQL = (
     "SELECT column_name FROM SVV_COLUMNS WHERE table_schema = ANY(current_schemas(false)) "
     "AND table_name = %s AND data_type = 'boolean'"
 )
+
+#: Redshift's per-row fingerprint number (:func:`~threetears.core.fingerprint.fingerprint_sql`): it
+#: has ``STRTOL`` where Postgres casts through ``bit(32)``, and the cast to ``DECIMAL(38,0)`` keeps
+#: the sum from wrapping (``SUM`` over ``BIGINT`` stays ``BIGINT`` here)
+_REDSHIFT_ROW_NUMBER = "CAST(STRTOL(SUBSTRING(MD5(k), 1, 8), 16) AS DECIMAL(38,0))"
 
 
 #: list columns for every table in the schema allow-list. ``is_nullable``
@@ -2500,50 +2504,9 @@ class RedshiftDriver(Driver):
         :raises ValueError: when ``key`` is empty
         :raises RuntimeError: if the driver was previously closed
         """
-        if self._closed:
-            raise RuntimeError("RedshiftDriver is closed")
-        # refuses an empty key here, before a connection is taken
-        relation_key_expression(key)
-        filters, values = build_equality_filter(where)
-        known = self._boolean_columns.get(relation)
-
-        def _do_sync(conn: RedshiftConnection) -> RelationFingerprint:
-            cursor = conn.cursor()
-            try:
-                booleans = known if known is not None else _read_boolean_columns(cursor, relation)
-                sql = translate_placeholders(
-                    "SELECT COUNT(*) AS row_count, "  # noqa: S608 - relation and key are trusted identifiers
-                    "COALESCE(SUM(CAST(STRTOL(SUBSTRING(MD5(k), 1, 8), 16) AS DECIMAL(38,0))), 0) AS digest "
-                    f"FROM (SELECT {relation_key_expression(key, boolean_columns=booleans)} AS k "
-                    f"FROM {relation}{filters}) AS fingerprint_source",
-                    "pyformat",
-                )
-                try:
-                    if values:
-                        cursor.execute(sql, values)
-                    else:
-                        cursor.execute(sql)
-                    row = cursor.fetchone()
-                except (
-                    Exception
-                ):  # prawduct:allow prawduct/broad-except -- forgets the column answer, then re-raises unchanged
-                    # the answer may be why it failed (a column turned boolean): read it again next time
-                    self._boolean_columns.pop(relation, None)
-                    raise
-                # kept only once it has carried a fingerprint through
-                self._boolean_columns[relation] = booleans
-                return RelationFingerprint(row_count=int(row[0]), digest=str(row[1]))
-            finally:
-                cursor.close()
-
-        async def _op(conn: RedshiftConnection) -> Any:
-            return await self._bridge.to_thread_with_cancel(
-                lambda: _do_sync(conn),
-                cancel_cb=_closer(conn),
-            )
-
-        result: RelationFingerprint = await self._acquire_and_run(_op)
-        return result
+        filters, values = build_filter(where)
+        [row] = await self._fingerprint_rows(relation, key, filters, values, group_by=None)
+        return RelationFingerprint(row_count=int(row[0]), digest=str(row[1]))
 
     @traced
     @observed(driver_type="redshift")
@@ -2575,21 +2538,56 @@ class RedshiftDriver(Driver):
         :raises ValueError: when ``key`` is empty
         :raises RuntimeError: if the driver was previously closed
         """
+        filters, values = build_filter(where, where_in)
+        rows = await self._fingerprint_rows(relation, key, filters, values, group_by=group_by)
+        return {
+            (None if row[0] is None else str(row[0])): RelationFingerprint(row_count=int(row[1]), digest=str(row[2]))
+            for row in rows
+        }
+
+    async def _fingerprint_rows(
+        self, relation: str, key: list[str], filters: str, values: list[str], *, group_by: str | None
+    ) -> list[tuple[Any, ...]]:
+        """the rows of one fingerprint statement, whole or grouped: the one Redshift body both answer from.
+
+        The relation's boolean columns are read from ``SVV_COLUMNS`` on the same connection, kept
+        once a fingerprint has carried them through, and forgotten when one fails (the answer may
+        be why it failed: a column turned boolean), so the next call reads them again.
+
+        :param relation: schema-qualified relation name, a TRUSTED identifier
+        :ptype relation: str
+        :param key: the columns the digest covers, TRUSTED identifiers
+        :ptype key: list[str]
+        :param filters: the `` WHERE`` fragment, ``$n`` placeholders
+        :ptype filters: str
+        :param values: its bound values, in order
+        :ptype values: list[str]
+        :param group_by: the grouping column, a TRUSTED identifier; the whole relation when None
+        :ptype group_by: str | None
+        :return: ``(row_count, digest)`` once when whole; ``(g, row_count, digest)`` per group
+        :rtype: list[tuple[Any, ...]]
+        :raises ValueError: when ``key`` is empty
+        :raises RuntimeError: if the driver was previously closed
+        """
         if self._closed:
             raise RuntimeError("RedshiftDriver is closed")
+        # refuses an empty key here, before a connection is taken
         relation_key_expression(key)
-        filters, values = build_filter(where, where_in)
         known = self._boolean_columns.get(relation)
 
-        def _do_sync(conn: RedshiftConnection) -> dict[str | None, RelationFingerprint]:
+        def _do_sync(conn: RedshiftConnection) -> list[tuple[Any, ...]]:
             cursor = conn.cursor()
             try:
                 booleans = known if known is not None else _read_boolean_columns(cursor, relation)
                 sql = translate_placeholders(
-                    "SELECT g, COUNT(*) AS row_count, "  # noqa: S608 - relation, key and group_by are trusted identifiers
-                    "COALESCE(SUM(CAST(STRTOL(SUBSTRING(MD5(k), 1, 8), 16) AS DECIMAL(38,0))), 0) AS digest "
-                    f"FROM (SELECT {group_by} AS g, {relation_key_expression(key, boolean_columns=booleans)} AS k "
-                    f"FROM {relation}{filters}) AS fingerprint_source GROUP BY g",
+                    fingerprint_sql(
+                        relation,
+                        key,
+                        filters,
+                        row_number=_REDSHIFT_ROW_NUMBER,
+                        group_by=group_by,
+                        boolean_columns=booleans,
+                    ),
                     "pyformat",
                 )
                 try:
@@ -2597,26 +2595,22 @@ class RedshiftDriver(Driver):
                         cursor.execute(sql, values)
                     else:
                         cursor.execute(sql)
-                    rows = cursor.fetchall()
+                    rows = [tuple(row) for row in cursor.fetchall()] if group_by else [tuple(cursor.fetchone())]
                 except (
                     Exception
                 ):  # prawduct:allow prawduct/broad-except -- forgets the column answer, then re-raises unchanged
                     self._boolean_columns.pop(relation, None)
                     raise
+                # kept only once it has carried a fingerprint through
                 self._boolean_columns[relation] = booleans
-                return {
-                    (None if row[0] is None else str(row[0])): RelationFingerprint(
-                        row_count=int(row[1]), digest=str(row[2])
-                    )
-                    for row in rows
-                }
+                return rows
             finally:
                 cursor.close()
 
         async def _op(conn: RedshiftConnection) -> Any:
             return await self._bridge.to_thread_with_cancel(lambda: _do_sync(conn), cancel_cb=_closer(conn))
 
-        result: dict[str | None, RelationFingerprint] = await self._acquire_and_run(_op)
+        result: list[tuple[Any, ...]] = await self._acquire_and_run(_op)
         return result
 
     @property
