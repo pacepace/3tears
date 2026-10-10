@@ -1592,6 +1592,13 @@ def _with_case_results(
         key=lambda result: (order.get(result.test_case_id, len(order)), result.k_iteration),
     )
     payloads = {test_case.id: test_case.host_payload for test_case in test_cases}
+    breached_above_zero = frozenset(
+        name
+        for name in host.profile.measures.names
+        if (descriptor := host.profile.measures.get(name)) is not None
+        and descriptor.guardrail
+        and descriptor.higher_is_better is False
+    )
     case_results = []
     for result in stored:
         payload = payloads.get(result.test_case_id, {})
@@ -1604,6 +1611,7 @@ def _with_case_results(
                 given=payload.get(_CASE_KEY),
                 expected=payload.get(_EXPECTED_KEY),
                 answer=_stored_answer(trace.trace if trace is not None else []),
+                breached_above_zero=breached_above_zero,
             )
         )
     return summary.model_copy(update={"case_results": case_results})

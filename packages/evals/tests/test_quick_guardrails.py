@@ -169,6 +169,8 @@ class TestAScorerGuardrail:
         outcomes = {row["arm"]: row["outcome"] for row in comparison.guardrails()}
         assert outcomes == {"same": "held", "leaky": "breached", "slip": "undecided"}
         assert comparison.host.profile.measures.get("leaked").higher_is_better is False  # type: ignore[union-attr]
+        reasons = [reason for miss in comparison.misses("leaky") for reason in miss.missed_because]
+        assert reasons == ["leaked gave 1"] * 12, "a leak is the miss on a lower-is-better guardrail, and none is not"
 
     async def test_a_bounded_scorer_holds_on_its_range_and_a_value_outside_it_is_the_scorer_s_fault(self) -> None:
         arms = {"current": _answers(misses=0, leaks=0), "same": _answers(misses=0, leaks=0)}

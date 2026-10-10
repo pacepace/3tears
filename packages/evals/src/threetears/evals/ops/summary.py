@@ -43,7 +43,7 @@ from __future__ import annotations
 import math
 
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, JsonValue
@@ -290,7 +290,7 @@ class CaseResult(BaseModel):
         errors: Why the result failed or was excluded, as the run recorded it; empty for a scored result.
         missed_because: Why the result is a miss, one line per reason; empty when it is not one. A miss is a
             result the candidate failed, a classifier answer that is not the expected label, a scorer that gave
-            0 or less (``False`` counts as 0), a goal check the end state failed, or a pass/fail dimension the
+            0 or less (``False`` counts as 0) — or more than 0, for a guardrail declared lower-is-better — a goal check the end state failed, or a pass/fail dimension the
             judge failed. An excluded result is never a miss: it says nothing about the candidate.
         cost_usd: What the result spent, as reported and priced; ``None`` when any of it went unpriced.
     """
@@ -318,7 +318,14 @@ class CaseResult(BaseModel):
 
     @classmethod
     def of(
-        cls, result: EvalResult, *, case: str, given: JsonValue, expected: str | None, answer: JsonValue
+        cls,
+        result: EvalResult,
+        *,
+        case: str,
+        given: JsonValue,
+        expected: str | None,
+        answer: JsonValue,
+        breached_above_zero: Collection[str] = (),
     ) -> CaseResult:
         """One stored result, read as a case result.
 
@@ -328,6 +335,8 @@ class CaseResult(BaseModel):
             given: The case, as given.
             expected: A classifier's expected label, or ``None``.
             answer: The candidate's answer, as its kind stored it.
+            breached_above_zero: The measures that count something the candidate must not do — a guardrail
+                declared lower-is-better, such as ``leaked`` — so a value above 0 is the miss and 0 is not.
 
         Returns:
             The case result, its miss reasons decided by the rule :attr:`missed_because` states.
@@ -361,7 +370,7 @@ class CaseResult(BaseModel):
                 for name, value in result.host_measures.items()
                 if name not in (MATCH_MEASURE, CONFUSION_CELL_MEASURE)
                 and not isinstance(value, str)
-                and float(value) <= 0
+                and (float(value) > 0 if name in breached_above_zero else float(value) <= 0)
             )
             missed.extend(f"goal check {check} failed" for check, passed in goal_checks.items() if not passed)
             missed.extend(
@@ -539,8 +548,8 @@ class EvalSummary(BaseModel):
         """The results the candidate missed, each saying why (:attr:`CaseResult.missed_because`).
 
         A miss is a result the candidate failed, a classifier answer that is not the expected label, a scorer
-        that gave 0 or less (``False`` counts as 0), a goal check the end state failed, or a pass/fail
-        dimension the judge failed. An excluded result is not a miss — it says nothing about the candidate —
+        that gave 0 or less (``False`` counts as 0) — more than 0 on a lower-is-better guardrail — a goal check
+        the end state failed, or a pass/fail dimension the judge failed. An excluded result is not a miss — it says nothing about the candidate —
         so read :meth:`results` for those; the summary's :attr:`n_excluded` counts them.
 
         Returns:
