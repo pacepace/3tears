@@ -51,12 +51,18 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`eval_trace_doc_id(result_id: str) -> str`
 - **`extract_paths`** · function · Parse `expression` and return the paths it reads, without evaluating it.
   <br>`extract_paths(expression: str) -> ExtractedPaths`
+- **`fingerprint_criterion`** · function · The fingerprint of a criterion: the digest of the words and scale a dimension is judged on.
+  <br>`fingerprint_criterion(dim: RubricDim | str) -> str`
+- **`fingerprint_judged_output`** · function · The fingerprint of a judged output: the digest of the evidence a judge reads, exactly as the kind rendered it.
+  <br>`fingerprint_judged_output(evidence: JudgeEvidence) -> str`
 - **`is_pass`** · function · Whether `call` is the engine's deliberate-pass entry rather than a call the candidate made.
   <br>`is_pass(call: RecordedCall) -> bool`
 - **`judges_sharing_a_candidate_model`** · function · The dims whose judge is one of the run's candidate models: a model grading its own output.
   <br>`judges_sharing_a_candidate_model(effective_judges: dict[str, str] | None, candidate_models: Sequence[str]) -> dict[str, str]`
 - **`keep_fields`** · function · Return `document` reduced to the top-level `fields` it has — the meaning of `keep`.
   <br>`keep_fields(document: dict[str, Any], fields: Sequence[str]) -> dict[str, Any]`
+- **`label_key_of`** · function · The label key of one judgement: `evidence` read on `dim`.
+  <br>`label_key_of(evidence: JudgeEvidence, dim: RubricDim | str) -> LabelKey`
 - **`nested_schemas`** · function · Every schema written directly inside `schema`, in declaration order.
   <br>`nested_schemas(schema: Mapping[str, Any]) -> Iterator[NestedSchema]`
 - **`omit_paths`** · function · Return `document` without each dotted path in `paths` — the meaning of `exclude`.
@@ -117,6 +123,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`JudgeEvidence`** · model · Everything a judge reads about one cell's candidate, rendered by the kind that ran it.
 - **`JudgeRepeat`** · model · One repeat of a result's judge scores: the same judge asked the same question again, recorded beside them.
 - **`JudgeRescore`** · model · One re-judge of a result's failed judge dimensions, recorded on the result it changed.
+- **`LabelKey`** · class · What a judged score was given on, and so what a person's label of it holds for: an output and a criterion.
 - **`LatencyMetrics`** · model · Per-result latency decomposition: harvested OTel spans, plus what they miss.
 - **`MeasureDeclaration`** · model · How the launching host declared one of its own measures to be read, frozen onto the run it launched.
 - **`NestedSchema`** · class · One schema written inside another, and where it sits.
@@ -233,7 +240,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 8`
 - **`CORE_DOC_TYPES`** · constant (frozenset) · The kept documents, by `doc_type`.
 - **`CORE_SCHEMA_VERSION`** · constant (int) · The core version this build writes. Every bump appends one line here and one `CoreUpgrader`.
-  <br>`= 8`
+  <br>`= 9`
 - **`CORE_UPGRADERS`** · constant (tuple) · The registered steps, oldest first: `[s.from_version for s in CORE_UPGRADERS]` is `range(CORE_BASELINE_VERSION, CORE_SCHEMA_VERSION)`.
 - **`DEFAULT_JUDGE_TEMPERATURE`** · constant (float) · The temperature every judge call is requested at unless a `JudgeConfig` for its dimension says otherwise, and that config's own default (#633).
   <br>`= 0.0`
@@ -1108,7 +1115,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`inspect_campaign_bundle(host: EvalHost, campaign_id: str, scope_id: str) -> BundleInspection`
 - **`inter_judge_agreement`** · function · Pair each second judge's score with the first score it answers, and read agreement the way calibration does.
   <br>`inter_judge_agreement(results: Iterable[EvalResult], *, pass_id: str | None = None) -> InterJudgeAgreement`
-- **`judge_agreement`** · function · Pair each rating with the judge's score on the same dimension of the same result, and read agreement.
+- **`judge_agreement`** · function · Pair each rating with the judge's score on its dimension, on its result or the same output, and read agreement.
   <br>`judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[EvalResult]) -> JudgeAgreement`
 - **`judge_drift`** · function · Read how far each dimension's scores moved from the run's judge to a second judge on the same evidence.
   <br>`judge_drift(results: Iterable[EvalResult], *, pass_id: str | None = None) -> JudgeDrift`
