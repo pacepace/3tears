@@ -3357,7 +3357,7 @@ class LatencyMetrics(EvalDocumentModel):
     context is set at all.
 
     ``total_ms`` partitions exactly into ``llm_ms + tool_ms`` plus a named remainder —
-    ``threetears.evals.analysis.reporting.decompose_total_ms``, which derives it rather than reading a
+    ``threetears.evals.analysis.latency_partition.decompose_total_ms``, which derives it rather than reading a
     fourth stored field, since these three already settle it.
     """
 

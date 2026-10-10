@@ -26,16 +26,18 @@ from threetears.evals.analysis.reporting import (
     METRIC_SCORE,
     METRIC_TOTAL_MS,
     METRIC_TRANSCRIPT,
+    ScoreProjection,
+    ScoreRecord,
+    dim_judge_model,
+    place_results,
+    project_score_records,
+)
+from threetears.evals.analysis.latency_partition import (
     PARTITION_TOLERANCE_MS,
     WITHHELD_PARTS_EXCEED_WHOLE,
     WITHHELD_UNMEASURED_COMPONENT,
     LatencyPartition,
-    ScoreProjection,
-    ScoreRecord,
     decompose_total_ms,
-    dim_judge_model,
-    place_results,
-    project_score_records,
 )
 from threetears.evals.analysis.cassette_mode import CASSETTE_SPAN_CLAUSE, cassette_mode_disclosure
 from threetears.evals.analysis.lenses.aggregation import WEIGHTING_EQUAL_PER_SCENARIO, WEIGHTING_SAMPLE_WEIGHTED

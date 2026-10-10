@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel
 
 from threetears.evals.analysis.confusion import label_statistics
-from threetears.evals.analysis.reporting import decompose_total_ms
+from threetears.evals.analysis.latency_partition import decompose_total_ms
 from threetears.evals.analysis.stats import (
     clustered_standard_error,
     observed_mean_interval,

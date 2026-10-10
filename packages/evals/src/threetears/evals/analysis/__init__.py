@@ -11,7 +11,7 @@ not here. The pipeline:
 - ``reporting``, ``stats`` and ``numbers`` — the query-time projection of runs + results into
   comparable rows, the statistics over them, and how a number is spelled for a reader; beside them the
   disclosures every reader shares (``completeness``, ``significance``, ``measurement_windows``,
-  ``cassette_mode``).
+  ``cassette_mode``) and the per-result latency split (``latency_partition``).
 - ``lenses`` — one module per reporting lens over that projection: comparison sets, pivot, frontier,
   history, the program budget, orphaned runs, export and the cost estimate.
 - ``bundle`` — :func:`~threetears.evals.analysis.bundle.assemble.assemble_context_bundle`
@@ -273,11 +273,11 @@ from threetears.evals.analysis.reporter_kind import (
 )
 from threetears.evals.analysis.reporting import (
     FrontierDominance,
-    LatencyPartition,
     ProjectionExclusions,
     ServedModelReading,
     ServedModelState,
 )
+from threetears.evals.analysis.latency_partition import LatencyPartition
 from threetears.evals.analysis.measurement_windows import MeasurementWindow
 from threetears.evals.analysis.lenses.comparison_sets import CaseSetIdentity, ComparisonSet, ComparisonSetsResult
 from threetears.evals.analysis.lenses.cost_estimate import CostEstimate, CostEstimateCell, PlannedCost, PredictedValue

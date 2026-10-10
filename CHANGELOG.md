@@ -20,8 +20,8 @@ exported from it, unchanged.
 - **`threetears.evals.analysis.lenses`** holds one module per reporting lens: `comparison_sets`, `pivot`,
   `frontier`, `history`, `program_budget`, `orphaned_runs`, `export` and `cost_estimate`, with the `aggregation`
   vocabulary and the `contestants` key they share. The disclosures the lenses and the bundle both use sit beside
-  `reporting`: `completeness`, `significance`, `measurement_windows` and `cassette_mode`. `reporting` keeps the
-  score projection itself.
+  `reporting`: `completeness`, `significance`, `measurement_windows` and `cassette_mode`, with the per-result
+  latency split in `latency_partition`. `reporting` keeps the score projection itself.
 - Code importing from below the public root must name the new module. Two loggers are renamed with their code:
   the comparison-sets and history lenses log as `threetears.evals.analysis.lenses.comparison_sets` and
   `threetears.evals.analysis.lenses.history`, not `threetears.evals.analysis.reporting`.

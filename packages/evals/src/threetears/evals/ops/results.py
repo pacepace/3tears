@@ -35,7 +35,7 @@ from typing import Any, Literal
 
 from pydantic import Field
 
-from threetears.evals.analysis.reporting import LatencyPartition, decompose_total_ms
+from threetears.evals.analysis.latency_partition import LatencyPartition, decompose_total_ms
 from threetears.evals.schema import CallLedger, CellTermination, EvalResult, JudgedArtifact, JudgeEvidence
 from threetears.evals.kernel import (
     ResultCondition,
@@ -242,7 +242,7 @@ def result_get(host: EvalHost, result_id: str, scope_id: str, *, part: ResultPar
     backs; it reads here as ``missing``, never as none stored). Nothing is recomputed but the condition and
     the latency partition, each by the one function every surface asks
     (:func:`~threetears.evals.kernel.resolve_result_condition`,
-    :func:`~threetears.evals.analysis.reporting.decompose_total_ms`), so each reads here as it reads anywhere
+    :func:`~threetears.evals.analysis.latency_partition.decompose_total_ms`), so each reads here as it reads anywhere
     else. The whole trace document is read whichever part is asked for: the bound is on what is
     returned, which is what a reader's context pays for.
 
