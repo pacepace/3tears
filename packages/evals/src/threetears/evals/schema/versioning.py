@@ -224,6 +224,11 @@ because the frontier then disqualified none.
 interval band. An analysis stored before them carries None and reads as not recorded: its small cells draw no band
 and no points, and the chart is refused with that reason rather than drawn from the interval.
 
+**Within v8, not a bump**: ``JudgedReading.prediction_powered`` joined as an OPTIONAL field (#598) — the judged mean
+re-estimated with people's calibration ratings (prediction-powered inference), beside the judge's own. An analysis
+stored before it carries None and reads as not recorded: its judged readings state the judge's mean alone, as they
+did when frozen.
+
 **Within v8, not a bump**: ``EvalSweep`` joined as a new stored type (#632) — the record of a multi-arm launch
 run arm after arm. A store written before it holds none, which reads as "no sweep was started".
 """

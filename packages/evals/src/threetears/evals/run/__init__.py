@@ -122,13 +122,10 @@ from threetears.evals.run.judge_repeat import (
     repeat_judge_scores,
 )
 from threetears.evals.run.judge_temperature import (
-    DEFAULT_TEMPERATURE_REPEATS,
-    JudgeTemperatureComparison,
     JudgeTemperatureEstimate,
-    TemperatureSelection,
     borderline_dims,
-    compare_judge_temperatures,
     estimate_judge_temperature_comparison,
+    judge_at_two_temperatures,
 )
 from threetears.evals.run.judge_second import (
     SecondJudgeEstimate,
@@ -138,6 +135,17 @@ from threetears.evals.run.judge_second import (
     ask_second_judge,
 )
 from threetears.evals.run.rejudge import reproducible_judge_inputs
+from threetears.evals.run.judge_kind import (
+    FrozenJudgeCase,
+    JudgeCaseFreezeReport,
+    JudgeCaseSkip,
+    JudgeKind,
+    PreparedJudge,
+    freeze_judge_cases,
+    judge_case_labels,
+    judge_kind,
+    launchable_judge_kind,
+)
 from threetears.evals.run.runner import (
     CellContext,
     ErrorLedger,
@@ -227,9 +235,14 @@ __all__ = [
     "InProcessCellExecutor",
     "JobTimeoutFactory",
     "RunEndHook",
+    "FrozenJudgeCase",
+    "JudgeCaseFreezeReport",
+    "JudgeCaseSkip",
     "JudgeClientFactory",
     "JudgeContext",
     "JudgeInputStore",
+    "JudgeKind",
+    "PreparedJudge",
     "JudgeOutcome",
     "JudgeRequest",
     "JudgeService",
@@ -268,6 +281,10 @@ __all__ = [
     "WorkFn",
     "assert_preconditions",
     "build_judge_context",
+    "freeze_judge_cases",
+    "judge_case_labels",
+    "judge_kind",
+    "launchable_judge_kind",
     "build_judge_service",
     "callers_missing_the_constructor",
     "cancel_run",
@@ -349,11 +366,8 @@ __all__ = [
     "SecondJudgeSkip",
     "estimate_second_judge",
     "ask_second_judge",
-    "DEFAULT_TEMPERATURE_REPEATS",
-    "JudgeTemperatureComparison",
     "JudgeTemperatureEstimate",
-    "TemperatureSelection",
     "borderline_dims",
-    "compare_judge_temperatures",
     "estimate_judge_temperature_comparison",
+    "judge_at_two_temperatures",
 ]

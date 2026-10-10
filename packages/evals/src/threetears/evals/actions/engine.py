@@ -54,6 +54,7 @@ from threetears.evals.ops import (
     OutOfRunSpendReport,
     PivotTable,
     ReportDocument,
+    JudgeCasesFreeze,
     ReporterCaseFreeze,
     ReporterCaseListing,
     ResultDetail,
@@ -63,9 +64,11 @@ from threetears.evals.ops import (
     RunDeleted,
     RunLine,
     RunListing,
+    RunsBisected,
     RunsCompared,
     ScoreExport,
     SecondJudgeRead,
+    JudgeTemperatureComparison,
     TemplateListing,
     UndescribableArmsListing,
     analyses_list,
@@ -91,6 +94,7 @@ from threetears.evals.ops import (
     launch_estimate,
     report_read,
     reporter_case_archive,
+    judge_cases_freeze,
     reporter_case_freeze,
     reporter_cases_list,
     result_get,
@@ -100,6 +104,7 @@ from threetears.evals.ops import (
     run_delete,
     run_get,
     run_launch,
+    runs_bisect,
     runs_compare,
     runs_list,
     scope_export,
@@ -110,14 +115,8 @@ from threetears.evals.ops import (
     templates_list,
 )
 from threetears.evals.schema.models import SecondJudge
-from threetears.evals.run import (
-    DEFAULT_TEMPERATURE_REPEATS,
-    JudgeTemperatureComparison,
-    JudgeTemperatureEstimate,
-    SecondJudgeEstimate,
-    TemperatureSelection,
-    run_blocking,
-)
+from threetears.evals.kernel.judge_temperature import DEFAULT_TEMPERATURE_REPEATS, TemperatureSelection
+from threetears.evals.run import JudgeCaseFreezeReport, JudgeTemperatureEstimate, SecondJudgeEstimate, run_blocking
 
 # --- the parameters, each declared once ---------------------------------------------------------------
 
@@ -390,6 +389,10 @@ class ReportReadParams(EvalBaseModel):
     format: Format = "markdown"
 
 
+class JudgeCasesFreezeParams(JudgeCasesFreeze):
+    """``judge_cases_freeze`` — the freeze's own arguments, declared once on :class:`~threetears.evals.ops.JudgeCasesFreeze`."""
+
+
 class ReporterCaseFreezeParams(ReporterCaseFreeze):
     """``reporter_case_freeze`` — the freeze's own arguments, declared once on :class:`~threetears.evals.ops.ReporterCaseFreeze`.
 
@@ -441,6 +444,10 @@ class RunsCompareParams(EvalBaseModel):
     candidate_run_id: Annotated[
         str, Field(min_length=1, description="The run read against the baseline (B), as runs_list names it.")
     ]
+
+
+class RunsBisectParams(RunsCompareParams):
+    """``runs_bisect``: the same two runs ``runs_compare`` takes."""
 
 
 class ScopeHistoryParams(EvalBaseModel):
@@ -794,6 +801,12 @@ async def _bars_propose(host: OpsHost, caller: Caller, params: CampaignParams) -
     return await run_blocking(eval_host.blocking_executor, bars_propose, eval_host, params.campaign_id, caller.scope_id)
 
 
+async def _judge_cases_freeze(host: OpsHost, caller: Caller, params: JudgeCasesFreezeParams) -> JudgeCaseFreezeReport:
+    eval_host = host.eval_host
+    freeze = JudgeCasesFreeze.model_validate(params.model_dump())
+    return await run_blocking(eval_host.blocking_executor, judge_cases_freeze, eval_host, freeze, caller.scope_id)
+
+
 async def _reporter_case_freeze(host: OpsHost, caller: Caller, params: ReporterCaseFreezeParams) -> FrozenReporterCase:
     eval_host = host.eval_host
     freeze = ReporterCaseFreeze.model_validate(params.model_dump())
@@ -847,6 +860,18 @@ async def _runs_compare(host: OpsHost, caller: Caller, params: RunsCompareParams
     return await run_blocking(
         eval_host.blocking_executor,
         runs_compare,
+        eval_host,
+        params.baseline_run_id,
+        params.candidate_run_id,
+        caller.scope_id,
+    )
+
+
+async def _runs_bisect(host: OpsHost, caller: Caller, params: RunsBisectParams) -> RunsBisected:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor,
+        runs_bisect,
         eval_host,
         params.baseline_run_id,
         params.candidate_run_id,
@@ -1543,6 +1568,26 @@ def engine_actions() -> tuple[Action, ...]:
             ),
         ),
         Action(
+            name="judge_cases_freeze",
+            summary="Freeze stored judged outputs, their criteria and their labels into cases of a judge template.",
+            workflow=ANALYSE,
+            permission="write",
+            params=JudgeCasesFreezeParams,
+            result=JudgeCaseFreezeReport,
+            handler=_judge_cases_freeze,
+            render=render.render_judge_case_freeze,
+            example={"template_id": "tmpl-judge", "judged_run_ids": [run_id], "into_case_set": "faithfulness"},
+            detail=(
+                "A judge campaign measures a judge configuration as its subject, and its cases are never generated: "
+                "each is one stored output and the criterion it was judged on, with the evidence its judge read "
+                "rebuilt from what its run recorded and the person ratings given on it as labels. One case per judged "
+                "dim of each result; a result whose run did not record its judging, or whose template was edited "
+                "since, is skipped with why. With into_case_set, the next version of that set lists exactly these cases. "
+                "Then run_launch the judge template, one arm per judge (its model, and its overlays config_ids and "
+                "temperature); the trials call only the judge. Calls no model."
+            ),
+        ),
+        Action(
             name="scope_pivot",
             summary="Aggregate one measure over the scope's observations by two coordinates, cell by cell.",
             workflow=ANALYSE,
@@ -1576,6 +1621,23 @@ def engine_actions() -> tuple[Action, ...]:
                 "delivered less than its matrix carries its sentence, and the answer says when the two were "
                 "measured over spans that do not overlap or recorded different cassette modes. A run not in the "
                 "caller's scope is not found."
+            ),
+        ),
+        Action(
+            name="runs_bisect",
+            summary="Split the versioned inputs of two runs into those that differ, agree and cannot be decided.",
+            workflow=ANALYSE,
+            permission="read",
+            params=RunsBisectParams,
+            result=RunsBisected,
+            handler=_runs_bisect,
+            render=render.render_runs_bisected,
+            example={"baseline_run_id": run_id, "candidate_run_id": "0193a1b2-run-b"},
+            detail=(
+                "The what-changed question behind a history step: every input the host declares as sweepable, each "
+                "with both runs' values. An input one run or both recorded nothing for is undecided, never the same. "
+                "Each run that delivered less than its matrix carries its sentence, and the answer says when the two "
+                "were measured over spans that do not overlap. A run not in the caller's scope is not found."
             ),
         ),
         Action(

@@ -12,58 +12,61 @@ run that has finished, over the machinery a judge repeat uses (:mod:`threetears.
   temperature differs: every call on the ``pinned`` side is requested at ``DEFAULT_JUDGE_TEMPERATURE``, every call on
   the ``provider_default`` side is sent none. A config that pins its own temperature is overridden on both sides —
   this compares the two settings — while its prompt and model are kept.
+- **As recorded, not as today.** The run is collected under the ``as_recorded`` policy, not the ``today`` one a judge
+  repeat uses: a run that recorded no judge temperature (judged before #633), or was asked with older request
+  settings (before ``strict_output``), is accepted, because both sides force their own temperature, both are sent
+  the request settings a judge call sends now, and nothing is paired with the run's own scores. What cannot be
+  reproduced at all — no recorded apparatus, an edited template, evidence never stored — is still refused.
 - **Borderline by default.** A scored dim of a result is borderline when its stored score sits inside the scale (2-4
   on 1-5), or when a recorded judge repeat or second judge of it answered differently (a "can't tell" included).
   ``selection="all"`` takes every scored dim instead.
 - **Repeated at each setting, interleaved.** Each borderline dim is judged ``repeats`` times at each setting, the two
   settings alternating call round by call round, so a provider changing under the measurement moves both alike.
-- **Read by the code every self-agreement is read by.** Per setting, each case's answers pair against its first
-  answer at that setting and go through :func:`~threetears.evals.analysis.judge_self_agreement` — exact agreement and
-  kappa, a "can't tell" a disagreement — and each case's score variance across its repeats is reported beside it.
+- **Spent here, read there.** This module asks and returns every answer
+  (:class:`~threetears.evals.kernel.JudgeTemperatureAnswers`); the reading — per-case variance and self-agreement at
+  each setting, side by side — is :func:`~threetears.evals.analysis.read_judge_temperatures`, which spends nothing.
+  The ``judge_temperature`` operation and the ``judge-temperature`` command do both.
 - **The temperature sent is checked, never assumed.** Each answer records the temperature its client reports sending
   (:func:`~threetears.evals.run.judge.sent_temperature`). A run whose every borderline score records that its model
   was sent none (a model that refuses a temperature) is refused before anything is spent: both sides would be the
   same sampling. An answer recorded at anything other than its side's setting — a client that dropped the
-  temperature, or reports none — is left out of that side's variance and counted, and the comparison is then marked
-  not comparable, with the reason.
+  temperature, or reports none — is left out of that side's figures by the reading, and the comparison is marked not
+  comparable, with the reason.
 - **Priced before it is paid for.** Every call, parse retries included, is priced on the client it will be made on
   and admitted against the host's out-of-run cap before the first is sent. Each call made is written to the
   out-of-run ledger under purpose ``judge``, stamped with the run, whether it returns or raises.
 - **A measurement of the judge, never a change to the result.** Nothing is written to the results: the forced
   temperatures are not the run's judge, so recording them as repeats would split the run's own self-agreement. The
-  returned :class:`JudgeTemperatureComparison` is the record; keep it.
+  returned answers, and the comparison read off them, are the record; keep them.
 """
 
 from __future__ import annotations
 
 import math
-import statistics
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
-from pydantic import Field
-
-from threetears.evals.analysis.agreement import JudgeSelfAgreement, judge_self_agreement
 from threetears.evals.kernel.errors import ValidationFailedError
+from threetears.evals.kernel.judge_temperature import (
+    DEFAULT_TEMPERATURE_REPEATS,
+    MIN_TEMPERATURE_REPEATS,
+    TEMPERATURE_SETTINGS,
+    JudgeTemperatureAnswers,
+    TemperatureAnswer,
+    TemperatureCaseAnswers,
+    TemperatureSelection,
+    TemperatureSetting,
+    TemperatureSkip,
+)
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.out_of_run import OutOfRunBudget, PlannedCall
 from threetears.evals.schema.base import EvalBaseModel
-from threetears.evals.schema.models import (
-    DEFAULT_JUDGE_TEMPERATURE,
-    MODEL_DEFAULT_TEMPERATURE,
-    SCALES,
-    EvalResult,
-    JudgeRepeat,
-    JudgeTemperature,
-    RepeatedScore,
-    RubricScale,
-)
+from threetears.evals.schema.models import MODEL_DEFAULT_TEMPERATURE, SCALES, EvalResult
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS
 from threetears.evals.run.judge_repeat import (
     BudgetedJudgeClient,
     CollectedRepeat,
-    JudgeRepeatSkip,
     PlannedRepeat,
     collect_repeatable,
     planned_judge_call,
@@ -79,95 +82,6 @@ if TYPE_CHECKING:
     from threetears.evals.schema.models import JudgeConfig
 
 log = get_logger(__name__)
-
-#: The two samplings compared. ``pinned``: every call requested at ``DEFAULT_JUDGE_TEMPERATURE`` (the policy).
-#: ``provider_default``: every call sent no temperature, so the provider's own default applies.
-TemperatureSetting = Literal["pinned", "provider_default"]
-
-#: The settings in the order a call round makes them, and each one's request and the record its answers must carry.
-_SETTINGS: tuple[tuple[TemperatureSetting, float | None, JudgeTemperature], ...] = (
-    ("pinned", DEFAULT_JUDGE_TEMPERATURE, DEFAULT_JUDGE_TEMPERATURE),
-    ("provider_default", None, MODEL_DEFAULT_TEMPERATURE),
-)
-
-#: Which scored dims are re-judged: ``borderline`` (stored score inside its scale, or a recorded repeat or second
-#: judge disagreed on it — :func:`borderline_dims`) or ``all``.
-TemperatureSelection = Literal["borderline", "all"]
-
-#: How many times each dim is judged at each setting when the caller names no number.
-DEFAULT_TEMPERATURE_REPEATS = 5
-
-#: The fewest repeats per setting: one answer has no variance and nothing to agree with.
-MIN_TEMPERATURE_REPEATS = 2
-
-
-class TemperatureCase(EvalBaseModel):
-    """One result's dimension, judged ``repeats`` times at one setting: its answers and their spread."""
-
-    result_id: str
-    rubric_dim: str
-    scale: RubricScale
-    stored_score: int = Field(description="The score the run's judge stored, which made the case borderline or not.")
-    scores: list[int] = Field(description="The scores answered at this setting's temperature, in call order.")
-    cannot_tell: int = Field(ge=0, description="Answers that said the judge could not tell.")
-    failed: int = Field(ge=0, description="Calls that failed — an infrastructure fault, saying nothing of the judge.")
-    off_setting: int = Field(
-        ge=0, description="Scores recorded at a temperature other than this setting's, left out of `scores`."
-    )
-    variance: float | None = Field(
-        description="The sample variance of `scores`; None under two scores. 0 = the judge gave one score every time."
-    )
-    stable: bool | None = Field(
-        description=(
-            'Whether every answer was the same, a "can\'t tell" counted as an answer of its own; None under two answers.'
-        )
-    )
-
-
-class TemperatureSide(EvalBaseModel):
-    """One dimension at one setting: how much its cases' scores moved across repeats, and the judge's self-agreement."""
-
-    cases: int = Field(ge=0, description="Cases with at least two answers at this setting.")
-    mean_variance: float | None = Field(
-        description="The mean over cases of each case's score variance; None when no case has two scores."
-    )
-    max_variance: float | None = Field(description="The largest case variance; None when no case has two scores.")
-    unstable_cases: int = Field(ge=0, description="Cases whose answers were not all the same.")
-    exact_agreement: float | None = Field(
-        description=(
-            "The share of repeats answering what the case's first answer at this setting did, as "
-            "`judge_self_agreement` reads it; None when it read no pair, or split the dim across judges."
-        )
-    )
-    kappa: float | None = Field(description="Cohen's kappa of the same pairs; None when undefined or not read.")
-    weighted_kappa: float | None = Field(description="Quadratic-weighted kappa on 1-5; None on pass/fail or undefined.")
-
-
-class TemperatureDimension(EvalBaseModel):
-    """One dimension, the two settings side by side."""
-
-    rubric_dim: str
-    scale: RubricScale
-    pinned: TemperatureSide
-    provider_default: TemperatureSide
-
-
-class TemperatureSettingRead(EvalBaseModel):
-    """Everything one setting's answers say, case by case."""
-
-    setting: TemperatureSetting
-    requested: float | None = Field(description="The temperature each call was requested at; None = sent none.")
-    recorded: list[str] = Field(
-        description=(
-            "The temperatures the answers recorded being sent at, sorted, as text: a number, 'model_default' (sent "
-            "none), or 'unrecorded' (the client reports nothing)."
-        )
-    )
-    off_setting: int = Field(ge=0, description="Scores recorded at a temperature other than `requested`.")
-    self_agreement: JudgeSelfAgreement = Field(
-        description="Each case's later answers paired with its first at this setting, read by judge_self_agreement."
-    )
-    cases: list[TemperatureCase]
 
 
 class JudgeTemperatureEstimate(EvalBaseModel):
@@ -200,7 +114,7 @@ class JudgeTemperatureEstimate(EvalBaseModel):
     cap_usd: float | None
     would_start: bool
     refusal: str | None = None
-    skipped: list[JudgeRepeatSkip]
+    skipped: list[TemperatureSkip]
 
     def render(self) -> str:
         """The estimate in a line: what would be re-judged, the most it costs, the cap, and whether it would start."""
@@ -213,87 +127,6 @@ class JudgeTemperatureEstimate(EvalBaseModel):
             f"of 2 temperatures, at most {self.max_calls} call(s) priced at up to {ceiling}; out-of-run cap {cap}; "
             f"{verdict}."
         )
-
-
-class JudgeTemperatureComparison(EvalBaseModel):
-    """The measurement: a run's borderline cases re-judged at the pinned temperature and at the provider's default.
-
-    Attributes:
-        run_id: The run.
-        judge_model: The run's judge pin.
-        selection: Which scored dims were re-judged.
-        repeats: Calls per dim per setting.
-        results: The results re-judged.
-        cases: The (result, dim) pairs re-judged.
-        dimensions: Per dimension, the two settings side by side.
-        settings: Per setting, every case and the full self-agreement read.
-        comparable: Whether every score on each side was recorded at that side's temperature. False means the
-            figures do not compare the two settings as named, and ``incomparable`` says why.
-        incomparable: Why not, when not.
-        skipped: The run's results not re-judged, each with why — decided before anything was spent.
-        stopped: Why the comparison stopped before its last result, when it did.
-        calls_made: Judge calls made, as the ledger recorded them under purpose ``judge``.
-        cost_usd: What they cost together; ``None`` when any went unpriced.
-        cap_usd: The out-of-run cap they were admitted under; ``None`` when the host enforces none.
-    """
-
-    run_id: str
-    judge_model: str
-    selection: TemperatureSelection
-    repeats: int
-    results: int
-    cases: int
-    dimensions: list[TemperatureDimension]
-    settings: list[TemperatureSettingRead]
-    comparable: bool
-    incomparable: str | None = None
-    skipped: list[JudgeRepeatSkip]
-    stopped: str | None = None
-    calls_made: int
-    cost_usd: float | None
-    cap_usd: float | None
-
-    def render(self) -> str:
-        """The comparison as text: what was asked and spent, then each dimension's two settings side by side."""
-        cost = "unpriced" if self.cost_usd is None else f"${self.cost_usd:.4f}"
-        requested = {read.setting: read for read in self.settings}
-        pinned = requested["pinned"].requested
-        lines = [
-            f"judge temperature comparison on run {self.run_id} (judge {self.judge_model}): {self.cases} "
-            f"{self.selection} case(s) over {self.results} result(s), {self.repeats} repeat(s) at temperature "
-            f"{pinned:g} and at the provider default; {self.calls_made} call(s), {cost} — measurement cost, "
-            "ledgered under judge, never the candidate's",
-        ]
-        if not self.comparable:
-            lines.append(f"NOT COMPARABLE: {self.incomparable}")
-        if self.stopped:
-            lines.append(f"stopped: {self.stopped}")
-        lines += [f"skipped {skip.result_id}: {skip.reason}" for skip in self.skipped]
-        for read in self.settings:
-            lines.append(f"{read.setting}: answers recorded at {', '.join(read.recorded) or 'nothing'}")
-        lines.append(
-            "per dimension — cases, mean / max score variance across repeats, unstable cases, exact agreement, kappa"
-        )
-        for row in self.dimensions:
-            lines.append(f"- {row.rubric_dim} ({row.scale})")
-            lines.append(f"    temperature {pinned:g}:      {_side_text(row.pinned)}")
-            lines.append(f"    provider default:   {_side_text(row.provider_default)}")
-        return "\n".join(lines)
-
-
-def _figure(value: float | None, spec: str = ".3g") -> str:
-    """A figure, or ``n/a`` where there is none."""
-    return "n/a" if value is None else format(value, spec)
-
-
-def _side_text(side: TemperatureSide) -> str:
-    """One setting of one dimension, in a line."""
-    agreement = "n/a" if side.exact_agreement is None else f"{side.exact_agreement:.0%}"
-    kappa = side.weighted_kappa if side.weighted_kappa is not None else side.kappa
-    return (
-        f"{side.cases} case(s), variance {_figure(side.mean_variance)} / {_figure(side.max_variance)}, "
-        f"{side.unstable_cases} unstable, exact agreement {agreement}, kappa {_figure(kappa)}"
-    )
 
 
 def _disagreed(result: EvalResult, dim: str, stored: int) -> bool:
@@ -335,7 +168,7 @@ def borderline_dims(result: EvalResult) -> set[str]:
 
 def _select(
     collected: CollectedRepeat, selection: TemperatureSelection
-) -> tuple[list[PlannedRepeat], list[JudgeRepeatSkip]]:
+) -> tuple[list[PlannedRepeat], list[TemperatureSkip]]:
     """Narrow each planned result to the dims ``selection`` takes, skipping a result left with none.
 
     Raises:
@@ -343,7 +176,7 @@ def _select(
             records that its model was sent no temperature.
     """
     planned: list[PlannedRepeat] = []
-    skipped = list(collected.skipped)
+    skipped = [TemperatureSkip(result_id=skip.result_id, reason=skip.reason) for skip in collected.skipped]
     for one in collected.planned:
         if selection == "all":
             planned.append(one)
@@ -352,7 +185,7 @@ def _select(
         dims = [dim for dim in one.dims if dim in borderline]
         if not dims:
             skipped.append(
-                JudgeRepeatSkip(
+                TemperatureSkip(
                     result_id=one.result.id,
                     reason="no borderline dim: every stored score is at an end of its scale and nothing disagreed",
                 )
@@ -383,7 +216,7 @@ class _Prepared:
     run_id: str
     judge_model: str
     planned: list[PlannedRepeat]
-    skipped: list[JudgeRepeatSkip]
+    skipped: list[TemperatureSkip]
     budget: OutOfRunBudget
     services: dict[TemperatureSetting, JudgeService]
     contexts: list[JudgeContext]
@@ -414,8 +247,13 @@ async def _prepare(
         )
     clients = host.completion_clients("a judge temperature comparison")
 
-    def collect(storage: EvalStorage) -> tuple[CollectedRepeat, list[PlannedRepeat], list[JudgeRepeatSkip]]:
-        collected = collect_repeatable(storage, run_id, scope_id, result_ids)
+    def collect(storage: EvalStorage) -> tuple[CollectedRepeat, list[PlannedRepeat], list[TemperatureSkip]]:
+        # As recorded, not as a call is asked today: the recorded temperature is irrelevant here (both sides force
+        # their own), and a run judged before today's request settings — before #633 recorded a temperature, or
+        # before strict_output — is still the same judge, prompt and evidence, which is all this replays. Both
+        # sides are sent today's settings alike and nothing is paired with the run's own scores, so the two
+        # sides still differ by temperature alone. What cannot be reproduced at all is still refused.
+        collected = collect_repeatable(storage, run_id, scope_id, result_ids, request_settings="as_recorded")
         return (collected, *_select(collected, selection))
 
     collected, planned, skipped = await run_blocking(host.blocking_executor, collect, host.storage)
@@ -432,7 +270,7 @@ async def _prepare(
     for one in planned:
         configs.update(one.inputs.configs)
     services: dict[TemperatureSetting, JudgeService] = {}
-    for setting, requested, _ in _SETTINGS:
+    for setting, requested, _ in TEMPERATURE_SETTINGS:
 
         def budgeted(
             model: str | None, _temperature: float | None, sent: float | None = requested
@@ -492,7 +330,7 @@ async def estimate_judge_temperature_comparison(
 ) -> JudgeTemperatureEstimate:
     """Price comparing a run's judge at the two temperatures against the cap it would be held to, and make no call.
 
-    The same collection, selection, calls and admission :func:`compare_judge_temperatures` makes, so ``would_start``
+    The same collection, selection, calls and admission :func:`judge_at_two_temperatures` makes, so ``would_start``
     is its answer.
 
     Args:
@@ -509,7 +347,7 @@ async def estimate_judge_temperature_comparison(
 
     Raises:
         NotFoundError: No run with that id, or a record it names does not load.
-        ValidationFailedError: The comparison cannot be made (see :func:`compare_judge_temperatures`).
+        ValidationFailedError: The comparison cannot be made (see :func:`judge_at_two_temperatures`).
         ValueError: The host supplies no completion clients.
     """
     prepared = await _prepare(
@@ -551,7 +389,7 @@ async def estimate_judge_temperature_comparison(
     )
 
 
-async def compare_judge_temperatures(
+async def judge_at_two_temperatures(
     host: EvalHost,
     run_id: str,
     scope_id: str,
@@ -560,11 +398,12 @@ async def compare_judge_temperatures(
     selection: TemperatureSelection = "borderline",
     repeats: int = DEFAULT_TEMPERATURE_REPEATS,
     result_ids: Sequence[str] | None = None,
-) -> JudgeTemperatureComparison:
-    """Re-judge a finished run's borderline cases ``repeats`` times at each temperature, and read the two side by side.
+) -> JudgeTemperatureAnswers:
+    """Re-judge a finished run's borderline cases ``repeats`` times at each temperature, and return every answer.
 
     Every call is priced and admitted against ``out_of_run_cap_usd`` before the first is sent, so a comparison the
-    cap refuses has spent nothing. Nothing is written to the results; the returned comparison is the record.
+    cap refuses has spent nothing. Nothing is written to the results. Read the answers with
+    :func:`~threetears.evals.analysis.read_judge_temperatures`.
 
     Args:
         host: The host: the run's store, its judge clients — through the run-pinned resolution the run scored
@@ -573,11 +412,11 @@ async def compare_judge_temperatures(
         scope_id: The scope it lives in.
         out_of_run_cap_usd: The most the calls may be priced at together; ``None`` when the host enforces none.
         selection: ``borderline`` (the default: see :func:`borderline_dims`) or ``all`` scored dims.
-        repeats: Calls per dim per setting, at least :data:`MIN_TEMPERATURE_REPEATS`.
+        repeats: Calls per dim per setting, at least :data:`~threetears.evals.kernel.MIN_TEMPERATURE_REPEATS`.
         result_ids: The results to draw from; ``None`` for every result of the run.
 
     Returns:
-        Per dimension, score variance across repeats and self-agreement at each setting, the case count and the spend.
+        Per case and setting every answer in call order, the case count and the spend.
 
     Raises:
         NotFoundError: No run with that id, or a record it names does not load.
@@ -596,16 +435,14 @@ async def compare_judge_temperatures(
         selection=selection,
         repeats=repeats,
     )
-    answers: dict[TemperatureSetting, dict[tuple[str, str], list[JudgeOutcome]]] = {
-        setting: {} for setting, _, _ in _SETTINGS
-    }
+    answered: dict[tuple[str, str, TemperatureSetting], list[JudgeOutcome]] = {}
     stopped: str | None = None
     try:
         for client, calls in prepared.calls:
             client.admit(calls)
         for one, context in zip(prepared.planned, prepared.contexts, strict=True):
             for _ in range(repeats):
-                for setting, _, _ in _SETTINGS:
+                for setting, _, _ in TEMPERATURE_SETTINGS:
                     outcomes = await judge_dims(
                         template=one.inputs.template,
                         judge_service=prepared.services[setting],
@@ -613,7 +450,7 @@ async def compare_judge_temperatures(
                         only=frozenset(one.dims),
                     )
                     for dim, outcome in outcomes:
-                        answers[setting].setdefault((one.result.id, dim), []).append(outcome)
+                        answered.setdefault((one.result.id, dim, setting), []).append(outcome)
                     if any(outcome.account_refused for _, outcome in outcomes):
                         stopped = (
                             f"the account behind the judge refused a call while re-judging result '{one.result.id}', "
@@ -626,227 +463,64 @@ async def compare_judge_temperatures(
                 break
     finally:
         await _close(prepared.services)
-    spends = prepared.budget.recorded
-    costs = [spend.cost_usd for spend in spends]
-    comparison = _read(prepared, answers, selection=selection, repeats=repeats, stopped=stopped).model_copy(
-        update={
-            "calls_made": len(spends),
-            "cost_usd": None if None in costs else math.fsum(c for c in costs if c is not None),
-            "cap_usd": out_of_run_cap_usd,
-        }
-    )
-    log.info(
-        "eval.judge_temperature run=%s cases=%d repeats=%d comparable=%s calls=%d cost=%s",
-        comparison.run_id,
-        comparison.cases,
-        repeats,
-        comparison.comparable,
-        comparison.calls_made,
-        "unpriced" if comparison.cost_usd is None else f"${comparison.cost_usd:.6f}",
-    )
-    return comparison
-
-
-def _recorded_text(temperature: JudgeTemperature | None) -> str:
-    """A recorded temperature as the report spells it."""
-    if temperature is None:
-        return "unrecorded"
-    return temperature if isinstance(temperature, str) else f"{temperature:g}"
-
-
-def _case(
-    result: EvalResult, dim: str, outcomes: list[JudgeOutcome], expected: JudgeTemperature
-) -> tuple[TemperatureCase, set[str]]:
-    """One case's answers at one setting, and the temperatures they recorded."""
-    stored = result.judge_score(dim)
-    assert stored is not None  # only scored dims are planned, from this very result
-    scores: list[int] = []
-    answers: list[int | None] = []  # None = "can't tell", an answer of its own
-    recorded: set[str] = set()
-    cannot_tell = failed = off = 0
-    for outcome in outcomes:
-        if outcome.score is not None:
-            recorded.add(_recorded_text(outcome.score.judge_temperature))
-            if outcome.score.judge_temperature != expected:
-                off += 1
-                continue
-            scores.append(outcome.score.score)
-            answers.append(outcome.score.score)
-        elif outcome.cannot_tell is not None:
-            cannot_tell += 1
-            answers.append(None)
-        else:
-            failed += 1
-    case = TemperatureCase(
-        result_id=result.id,
-        rubric_dim=dim,
-        scale=stored.scale,
-        stored_score=stored.score,
-        scores=scores,
-        cannot_tell=cannot_tell,
-        failed=failed,
-        off_setting=off,
-        variance=statistics.variance(scores) if len(scores) >= 2 else None,
-        stable=len(set(answers)) == 1 if len(answers) >= 2 else None,
-    )
-    return case, recorded
-
-
-def _paired(result: EvalResult, by_dim: dict[str, list[JudgeOutcome]], judge_model: str) -> EvalResult | None:
-    """``result`` carrying one setting's answers as repeats of its first scored answer there, for judge_self_agreement.
-
-    Each dim's anchor is its first answer that is a score; every later answer is recorded as a repeat of it, so the
-    rounds are ``repeat 1`` (the second answer) onward. An in-memory copy, never stored. None when no dim has an anchor.
-    """
-    repeats: list[JudgeRepeat] = []
-    for dim, outcomes in by_dim.items():
-        anchor_at = next((index for index, outcome in enumerate(outcomes) if outcome.score is not None), None)
-        if anchor_at is None:
-            continue
-        anchor = outcomes[anchor_at]
-        assert anchor.score is not None
-        for outcome in outcomes[anchor_at + 1 :]:
-            entry = RepeatedScore(
-                dim=dim,
-                scale=anchor.score.scale,
-                first_score=anchor.score.score,
-                first_served_model=anchor.score.served_model,
-                first_judge_config_id=anchor.config_id,
-                first_judge_temperature=anchor.score.judge_temperature,
-                repeat=outcome.score,
-                error=(outcome.error or "no answer") if outcome.score is None and outcome.cannot_tell is None else None,
-                cannot_tell=outcome.cannot_tell,
-            )
-            repeats.append(
-                JudgeRepeat(
-                    judge_model=judge_model,
-                    scores=[entry],
-                    judge_config_ids={dim: outcome.config_id} if outcome.config_id is not None else {},
-                )
-            )
-    return result.model_copy(update={"judge_repeats": repeats}) if repeats else None
-
-
-def _side(cases: list[TemperatureCase], agreement: JudgeSelfAgreement, dim: str) -> TemperatureSide:
-    """One dimension at one setting, from its cases and that setting's self-agreement."""
-    answered = [case for case in cases if case.stable is not None]
-    variances = [case.variance for case in cases if case.variance is not None]
-    groups = [group for group in agreement.dimensions if group.rubric_dim == dim]
-    # One judge (model, config, temperature) answered every pair, or the figures would pool two judges: none then.
-    group = groups[0] if len(groups) == 1 else None
-    return TemperatureSide(
-        cases=len(answered),
-        mean_variance=statistics.fmean(variances) if variances else None,
-        max_variance=max(variances) if variances else None,
-        unstable_cases=sum(1 for case in answered if not case.stable),
-        exact_agreement=None if group is None else group.exact_agreement,
-        kappa=None if group is None else group.kappa,
-        weighted_kappa=None if group is None else group.weighted_kappa,
-    )
-
-
-def _read(
-    prepared: _Prepared,
-    answers: dict[TemperatureSetting, dict[tuple[str, str], list[JudgeOutcome]]],
-    *,
-    selection: TemperatureSelection,
-    repeats: int,
-    stopped: str | None,
-) -> JudgeTemperatureComparison:
-    """Every answer read, per setting and per dimension; the spend is filled in by the caller."""
-    reads: list[TemperatureSettingRead] = []
-    cases_by: dict[TemperatureSetting, list[TemperatureCase]] = {}
-    agreement_by: dict[TemperatureSetting, JudgeSelfAgreement] = {}
-    for setting, requested, expected in _SETTINGS:
-        cases: list[TemperatureCase] = []
-        recorded: set[str] = set()
-        paired: list[EvalResult] = []
-        for one in prepared.planned:
-            by_dim = {
-                dim: answers[setting][(one.result.id, dim)]
-                for dim in one.dims
-                if (one.result.id, dim) in answers[setting]
-            }
-            for dim, outcomes in by_dim.items():
-                case, seen = _case(one.result, dim, outcomes, expected)
-                cases.append(case)
-                recorded |= seen
-            if (copy := _paired(one.result, by_dim, prepared.judge_model)) is not None:
-                paired.append(copy)
-        agreement = judge_self_agreement(paired)
-        cases_by[setting], agreement_by[setting] = cases, agreement
-        reads.append(
-            TemperatureSettingRead(
-                setting=setting,
-                requested=requested,
-                recorded=sorted(recorded),
-                off_setting=sum(case.off_setting for case in cases),
-                self_agreement=agreement,
-                cases=cases,
-            )
-        )
-    dims: dict[str, RubricScale] = {}
+    cases: list[TemperatureCaseAnswers] = []
     for one in prepared.planned:
         for dim in one.dims:
             stored = one.result.judge_score(dim)
-            assert stored is not None
-            dims.setdefault(dim, stored.scale)
-    dimensions = [
-        TemperatureDimension(
-            rubric_dim=dim,
-            scale=scale,
-            pinned=_side([c for c in cases_by["pinned"] if c.rubric_dim == dim], agreement_by["pinned"], dim),
-            provider_default=_side(
-                [c for c in cases_by["provider_default"] if c.rubric_dim == dim], agreement_by["provider_default"], dim
-            ),
-        )
-        for dim, scale in sorted(dims.items())
-    ]
-    problems = [
-        f"{read.off_setting} score(s) at the {read.setting} setting were recorded at "
-        f"{', '.join(sorted(set(read.recorded) - {_recorded_text(expected)})) or 'another temperature'}, not "
-        f"{_recorded_text(expected)}"
-        for read, (_, _, expected) in zip(reads, _SETTINGS, strict=True)
-        if read.off_setting
-    ]
-    incomparable = None
-    if problems:
-        incomparable = (
-            "; ".join(problems)
-            + " — the judge's client did not send (or does not report sending) the temperature each side names, so "
-            "those scores are left out and the two sides do not compare the settings as named"
-        )
-    return JudgeTemperatureComparison(
+            assert stored is not None  # only scored dims are planned, from this very result
+            for setting, _, _ in TEMPERATURE_SETTINGS:
+                if (outcomes_of := answered.get((one.result.id, dim, setting))) is None:
+                    continue
+                cases.append(
+                    TemperatureCaseAnswers(
+                        result_id=one.result.id,
+                        rubric_dim=dim,
+                        scale=stored.scale,
+                        stored_score=stored.score,
+                        setting=setting,
+                        answers=[
+                            TemperatureAnswer(
+                                score=outcome.score,
+                                config_id=outcome.config_id,
+                                cannot_tell=outcome.cannot_tell,
+                                error=(outcome.error or "no answer")
+                                if outcome.score is None and outcome.cannot_tell is None
+                                else None,
+                            )
+                            for outcome in outcomes_of
+                        ],
+                    )
+                )
+    spends = prepared.budget.recorded
+    costs = [spend.cost_usd for spend in spends]
+    answers = JudgeTemperatureAnswers(
         run_id=prepared.run_id,
         judge_model=prepared.judge_model,
         selection=selection,
         repeats=repeats,
         results=len(prepared.planned),
         cases=sum(len(one.dims) for one in prepared.planned),
-        dimensions=dimensions,
-        settings=reads,
-        comparable=incomparable is None,
-        incomparable=incomparable,
+        answers=cases,
         skipped=prepared.skipped,
         stopped=stopped,
-        calls_made=0,
-        cost_usd=None,
-        cap_usd=None,
+        calls_made=len(spends),
+        cost_usd=None if None in costs else math.fsum(c for c in costs if c is not None),
+        cap_usd=out_of_run_cap_usd,
     )
+    log.info(
+        "eval.judge_temperature run=%s cases=%d repeats=%d calls=%d cost=%s",
+        answers.run_id,
+        answers.cases,
+        repeats,
+        answers.calls_made,
+        "unpriced" if answers.cost_usd is None else f"${answers.cost_usd:.6f}",
+    )
+    return answers
 
 
 __all__ = [
-    "DEFAULT_TEMPERATURE_REPEATS",
-    "MIN_TEMPERATURE_REPEATS",
-    "JudgeTemperatureComparison",
     "JudgeTemperatureEstimate",
-    "TemperatureCase",
-    "TemperatureDimension",
-    "TemperatureSelection",
-    "TemperatureSetting",
-    "TemperatureSettingRead",
-    "TemperatureSide",
     "borderline_dims",
-    "compare_judge_temperatures",
     "estimate_judge_temperature_comparison",
+    "judge_at_two_temperatures",
 ]

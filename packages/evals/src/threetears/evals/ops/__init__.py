@@ -11,9 +11,10 @@ The operations are named as the actions over them are (``noun_verb``), so a name
 catalogue (:mod:`threetears.evals.actions`) is the operation it calls.
 
 The read lenses — :func:`scope_pivot`, :func:`scope_history`, :func:`scope_export`, :func:`scope_frontier`,
-:func:`runs_compare` and :func:`launch_estimate` — return their result models (the first four the analysis package's own,
-re-exported here because they are what these operations hand back; the comparison its own
-:class:`RunsCompared`, the two-run lens's answer with the disclosures every comparison carries; the
+:func:`runs_compare`, :func:`runs_bisect` and :func:`launch_estimate` — return their result models (the first four the
+analysis package's own, re-exported here because they are what these operations hand back; the comparison its own
+:class:`RunsCompared`, the two-run lens's answer with the disclosures every comparison carries, and the bisection
+its own :class:`RunsBisected`, which versioned inputs differ between two runs, with the same disclosures; the
 estimate its own :class:`LaunchEstimate`, priced by the launch's rule), with the text a surface shows for each (:func:`pivot_text`
 and its siblings) beside them, so a command line and an agent read one rendering.
 :class:`RegressionWatch` reads the history for a launching host as each run completes, and hands each
@@ -90,7 +91,14 @@ from threetears.evals.ops.jobs import (
     sweep_job_id,
 )
 from threetears.evals.ops.sweeps import SweepArguments, SweepArm, SweepSettings, sweep_launch
-from threetears.evals.analysis import CostEstimate, FrontierResult, HistoryResult, PivotTable, ScoreExport
+from threetears.evals.analysis import (
+    CostEstimate,
+    FrontierResult,
+    HistoryResult,
+    JudgeTemperatureComparison,
+    PivotTable,
+    ScoreExport,
+)
 from threetears.evals.ops.lenses import (
     ArmEstimate,
     DetectableEffect,
@@ -102,7 +110,10 @@ from threetears.evals.ops.lenses import (
     history_launch_pricer,
     launch_estimate,
     pivot_text,
+    RunsBisected,
     RunsCompared,
+    runs_bisect,
+    runs_bisected_text,
     runs_compare,
     runs_compared_text,
     scope_export,
@@ -119,6 +130,7 @@ from threetears.evals.analysis.out_of_run_spend import (
 )
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.reporter_bank import FrozenReporterCase
+from threetears.evals.ops.judge_cases import JudgeCasesFreeze, judge_cases_freeze
 from threetears.evals.ops.regressions import RegressionAlert, RegressionSink, RegressionWatch
 from threetears.evals.ops.reporter import (
     AmbiguousReporterPair,
@@ -214,6 +226,7 @@ __all__ = [
     "EvalSummary",
     "FrozenReporterCase",
     "FrontierResult",
+    "JudgeTemperatureComparison",
     "HistoryResult",
     "InsightDeleted",
     "InsightDetail",
@@ -239,6 +252,7 @@ __all__ = [
     "RegressionAlert",
     "RegressionSink",
     "RegressionWatch",
+    "JudgeCasesFreeze",
     "ReporterCaseEntry",
     "ReporterCaseFreeze",
     "ReporterCaseListing",
@@ -250,6 +264,7 @@ __all__ = [
     "RunDeleted",
     "RunLine",
     "RunListing",
+    "RunsBisected",
     "RunsCompared",
     "ScoreExport",
     "TemplateLine",
@@ -283,6 +298,7 @@ __all__ = [
     "insight_get",
     "insights_list",
     "job_cancel",
+    "judge_cases_freeze",
     "job_poll",
     "history_launch_pricer",
     "launch_estimate",
@@ -302,6 +318,8 @@ __all__ = [
     "run_get",
     "run_job_id",
     "run_launch",
+    "runs_bisect",
+    "runs_bisected_text",
     "runs_compare",
     "runs_compared_text",
     "runs_list",

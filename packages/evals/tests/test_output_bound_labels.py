@@ -28,7 +28,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.analysis import assemble_context_bundle, judge_agreement
+from threetears.evals.analysis import assemble_context_bundle, judge_agreement, person_scores_by_result
 from threetears.evals.kernel.provider import withhold_failure_detail
 from threetears.evals.run import rate_result
 from threetears.evals.run.judge_service import JudgeContext, JudgeService
@@ -305,6 +305,22 @@ class TestAgreementFindsALabelByWhatWasRead:
 
         assert agreement.dimensions == []
         assert [u.reason for u in agreement.unpaired] == ["rated_by_an_agent"]
+
+
+class TestThePredictionPoweredLabelsIncludeLabelsFoundByOutput:
+    """The human labels a prediction-powered estimate combines with the judge's scores are agreement's pairs (#598)."""
+
+    def test_a_label_reached_by_output_labels_the_result_it_reached(self) -> None:
+        scores = person_scores_by_result([_rating("deleted", 2)], [_scored("r-2", 4, judge="judge-b")])
+
+        assert scores == {("r-2", TONE): [2]}
+
+    def test_a_label_labels_one_result_per_judge_however_many_copies_it_scored(self) -> None:
+        scores = person_scores_by_result(
+            [_rating("r-1", 3)], [_scored("r-1", 4), _scored("r-2", 4), _scored("r-3", 2, judge="judge-b")]
+        )
+
+        assert scores == {("r-1", TONE): [3], ("r-3", TONE): [3]}, "r-2 shares r-1's judge: no second label"
 
 
 class _StampedStore:

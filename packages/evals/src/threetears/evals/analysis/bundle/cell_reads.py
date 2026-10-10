@@ -7,7 +7,7 @@ The populations the bars, comparisons and decision surface share — results the
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 
 from threetears.evals.analysis.agreement import (
     JudgeKey,
@@ -24,7 +24,9 @@ from threetears.evals.analysis.reporting import (
     ScoreRecord,
 )
 from threetears.evals.analysis.stats import (
+    PPI_MIN_LABELLED_RESULTS,
     clustered_standard_error,
+    prediction_powered_mean,
     small_sample_case_means,
 )
 from threetears.evals.kernel.analysis_measures import MeasureCollection
@@ -34,7 +36,7 @@ from threetears.evals.kernel.declaration import (
 )
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.metrics import describe_rubric_dim
-from threetears.evals.schema.models import EvalResult
+from threetears.evals.schema.models import SCALES, EvalResult
 from threetears.evals.kernel.result_condition import (
     JUDGE_CANNOT_TELL_OUTCOME,
     ResultOutcome,
@@ -45,6 +47,7 @@ from threetears.evals.kernel.result_condition import (
 from threetears.evals.kernel.surface import (
     CellFacts,
     JudgedReading,
+    PredictionPoweredReading,
     StratumFacts,
 )
 from threetears.evals.analysis.bundle.schema import (
@@ -160,6 +163,7 @@ def _judged_measures(
     design: CampaignDesign | None,
     *,
     tiers: list[JudgeEvidenceTier],
+    person_scores: Mapping[tuple[str, str], Sequence[int]] | None = None,
 ) -> list[JudgedMeasure]:
     """Summarise every judged dimension per cell, from the score projection assembly already holds.
 
@@ -174,6 +178,10 @@ def _judged_measures(
         design: The campaign's declaration, for the bar naming a dimension.
         tiers: The judges' evidence tiers; each arm carries the weakest among the judges that served its
             counted scores (:func:`~threetears.evals.analysis.agreement.tier_for_judges`).
+        person_scores: People's scores per ``(result_id, dimension)``
+            (:func:`~threetears.evals.analysis.agreement.person_scores_by_result`), from which each arm with a
+            rated counted observation carries a prediction-powered estimate (:func:`_prediction_powered`); None
+            reads as nobody rated anything.
 
     Returns:
         One entry per dimension scored anywhere, sorted by name.
@@ -226,6 +234,13 @@ def _judged_measures(
                     sem=clustered_standard_error(values, value_cases) if values else None,
                     case_means=small_sample_case_means(values, value_cases),
                     evidence_tier=tier_for_judges(tiers, served),
+                    prediction_powered=_prediction_powered(
+                        dimension,
+                        valued,
+                        result_by_id,
+                        person_scores or {},
+                        value_range=descriptor.value_range,
+                    ),
                 )
             )
         measures.append(
@@ -241,6 +256,79 @@ def _judged_measures(
             )
         )
     return measures
+
+
+def _prediction_powered(
+    dimension: str,
+    valued: list[ScoreRecord],
+    result_by_id: Mapping[str, EvalResult],
+    person_scores: Mapping[tuple[str, str], Sequence[int]],
+    *,
+    value_range: tuple[float, float] | None,
+) -> PredictionPoweredReading | None:
+    """One arm's judged mean re-estimated with people's ratings of its counted observations (#598).
+
+    Each counted observation a person rated is labelled with the people's mean score, COUNTED as the judge's score
+    is (:func:`~threetears.evals.kernel.result_condition.counted_score`): on a candidate failure the judge's score
+    counts the scale floor, so the person's does too, and the rectifier measures the judge where it was read, not a
+    disagreement about a turn the measure already floors.
+
+    Args:
+        dimension: The judged dimension.
+        valued: The arm's counted, valued score rows on it.
+        result_by_id: Every result read, by id.
+        person_scores: People's scores per ``(result_id, dimension)``.
+        value_range: The dimension's scale, which the interval is clipped to.
+
+    Returns:
+        The estimate, its ``mean`` None with the reason below
+        :data:`~threetears.evals.analysis.stats.PPI_MIN_LABELLED_RESULTS` labelled observations; or None when no
+        counted observation here was rated.
+    """
+    human: list[float | None] = []
+    for row in valued:
+        scores = person_scores.get((row.result_id, dimension))
+        if not scores:
+            human.append(None)
+            continue
+        result = result_by_id[row.result_id]
+        judged = result.judge_score(dimension)
+        if classify_result(result) is ResultOutcome.CANDIDATE_FAIL and judged is not None:
+            human.append(float(SCALES[judged.scale].scores[0]))
+        else:
+            human.append(sum(scores) / len(scores))
+    labelled = [row.test_case_id for row, label in zip(valued, human) if label is not None]
+    if not labelled:
+        return None
+    n_labelled, n_labelled_cases = len(labelled), len(set(labelled))
+    if n_labelled < PPI_MIN_LABELLED_RESULTS:
+        return PredictionPoweredReading(
+            n_labelled=n_labelled,
+            n_labelled_cases=n_labelled_cases,
+            min_labelled=PPI_MIN_LABELLED_RESULTS,
+            unavailable_reason=(
+                f"not available: {n_labelled} of the counted scores here were rated by a person, under the "
+                f"{PPI_MIN_LABELLED_RESULTS} a prediction-powered estimate is stated from."
+            ),
+        )
+    estimate = prediction_powered_mean(
+        [float(row.value) for row in valued if row.value is not None],
+        [row.test_case_id for row in valued],
+        human,
+        value_range=value_range,
+    )
+    assert estimate is not None  # some observation is labelled
+    low, high = estimate.interval if estimate.interval is not None else (None, None)
+    return PredictionPoweredReading(
+        n_labelled=n_labelled,
+        n_labelled_cases=n_labelled_cases,
+        min_labelled=PPI_MIN_LABELLED_RESULTS,
+        mean=estimate.mean,
+        rectifier=estimate.rectifier,
+        sem=estimate.sem,
+        ci_low=low,
+        ci_high=high,
+    )
 
 
 def _boundary_dimensions(results: Iterable[EvalResult]) -> set[str]:
@@ -334,6 +422,7 @@ def _judged_by_cell(judged_measures: list[JudgedMeasure]) -> dict[_CellKey, list
                     n_infra_excluded=arm.n_infra_excluded,
                     n_cannot_tell=arm.n_cannot_tell,
                     evidence_tier=arm.evidence_tier,
+                    prediction_powered=arm.prediction_powered,
                 )
             )
     return judged_by_cell
@@ -351,6 +440,7 @@ def _cell_strata(
     *,
     tiers: list[JudgeEvidenceTier],
     profile: HostProfile,
+    person_scores: Mapping[tuple[str, str], Sequence[int]] | None = None,
 ) -> dict[_CellKey, list[StratumFacts]]:
     """Each cell read again per stratum of its cases — the same walk and transposition, over each stratum's results.
 
@@ -370,6 +460,8 @@ def _cell_strata(
         design: The campaign's declaration, for the bar a judged dimension carries.
         tiers: The judges' evidence tiers.
         profile: The host whose vocabulary this reads.
+        person_scores: People's scores per ``(result_id, dimension)``, for each stratum's prediction-powered
+            estimates; see :func:`_judged_measures`.
 
     Returns:
         Each broken-down cell's strata — named strata in name order, then the undeclared one — keyed by the
@@ -387,7 +479,11 @@ def _cell_strata(
         result_ids = {result.id for members in slice_by_cell.values() for result in members}
         judged = _judged_by_cell(
             _judged_measures(
-                [record for record in records if record.result_id in result_ids], slice_by_cell, design, tiers=tiers
+                [record for record in records if record.result_id in result_ids],
+                slice_by_cell,
+                design,
+                tiers=tiers,
+                person_scores=person_scores,
             )
         )
         for key, members in slice_by_cell.items():

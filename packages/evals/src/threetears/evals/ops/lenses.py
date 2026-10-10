@@ -1,5 +1,5 @@
-"""The read lenses as operations: a scope's pivot, its history, its export, two runs compared, and a launch's
-estimated cost.
+"""The read lenses as operations: a scope's pivot, its history, its export, two runs compared and bisected, and a
+launch's estimated cost.
 
 Each binds one lens of :mod:`threetears.evals.analysis` to the host — its store, its run listing and its
 vocabulary — and returns the lens's own typed result, so a CLI, an MCP action and a REST route read one
@@ -10,7 +10,7 @@ arguments, by the launch's own rule: each arm planned by its kind and priced thr
 ``launch_pricer`` (:func:`~threetears.evals.run.quote_launch`).
 
 Each result's text is here too (:func:`pivot_text`, :func:`history_text`, :func:`estimate_text`,
-:func:`export_text`, :func:`runs_compared_text`), for the reason :meth:`~threetears.evals.ops.EvalSummary.render` sits with the
+:func:`export_text`, :func:`runs_compared_text`, :func:`runs_bisected_text`), for the reason :meth:`~threetears.evals.ops.EvalSummary.render` sits with the
 summary: every surface — an action, a command line — shows one rendering, and each carries the
 caveats its model carries (what was left out, which runs came up short) rather than the numbers alone.
 """
@@ -28,7 +28,15 @@ from typing import Any, Literal
 from pydantic import Field, TypeAdapter, ValidationError
 
 
-from threetears.evals.analysis.reads import RunLister, compare_two_runs, export_results, frontier, history, pivot
+from threetears.evals.analysis.reads import (
+    RunLister,
+    bisect_runs,
+    compare_two_runs,
+    export_results,
+    frontier,
+    history,
+    pivot,
+)
 
 from threetears.evals.analysis.numbers import format_number, format_signed
 
@@ -345,10 +353,29 @@ def runs_compare(host: EvalHost, baseline_run_id: str, candidate_run_id: str, sc
     comparison = compare_two_runs(
         storage, baseline_run_id, candidate_run_id, scope_id, load_template=template, subject_detail=subject_detail
     )
+    runs, completeness, window = _pair_disclosures(host, baseline_run_id, candidate_run_id, scope_id)
+    return RunsCompared(
+        baseline_run_id=baseline_run_id,
+        candidate_run_id=candidate_run_id,
+        comparison=comparison,
+        completeness_disclosures=completeness,
+        measurement_window_disclosure=window,
+        cassette_mode_disclosure=cassette_mode_disclosure({run.id: run.cassette_mode for run in runs}),
+    )
+
+
+def _pair_disclosures(
+    host: EvalHost, baseline_run_id: str, candidate_run_id: str, scope_id: str
+) -> tuple[list[EvalRun], dict[str, str], str | None]:
+    """Two runs read side by side: both runs, each short run's completeness sentence, and the clock sentence.
+
+    Called after the lens, which has already refused a missing run; the refusal here keeps the type honest.
+    """
+    storage = host.storage
     runs: list[EvalRun] = []
     for run_id in (baseline_run_id, candidate_run_id):
         run = storage.load_eval_run(run_id, scope_id)
-        if run is None:  # compare_two_runs has already refused a missing run; this keeps the type honest
+        if run is None:
             raise NotFoundError("run", run_id)
         runs.append(run)
     windows = [
@@ -356,15 +383,74 @@ def runs_compare(host: EvalHost, baseline_run_id: str, candidate_run_id: str, sc
         for run in runs
         if (window := measurement_window(run.id, storage.query_eval_results_by_run(run.id, scope_id))) is not None
     ]
-    return RunsCompared(
+    completeness = {
+        run.id: sentence for run in runs if (sentence := completeness_disclosure(run.completeness)) is not None
+    }
+    return runs, completeness, measurement_window_disclosure(windows)
+
+
+class RunsBisected(EvalBaseModel):
+    """Which versioned inputs differ between two runs, with what either run could not deliver said beside them.
+
+    The split is :func:`~threetears.evals.analysis.reads.bisect_runs`'s, carried whole (#621). It answers what
+    neither a pivot nor the analysis bundle does: a pivot aggregates scores over coordinates a reader names, and
+    the bundle's confound scan reads only a campaign's runs and only its apparatus. Two runs a history step
+    flagged, in no campaign together, are read here input by input. A run that delivered less than its matrix
+    observed its per-result inputs over fewer results, so its sentence is carried, as on every comparison surface.
+    """
+
+    baseline_run_id: str = Field(description="The run read as the baseline (A).")
+    candidate_run_id: str = Field(description="The run read against it (B).")
+    differs: list[str] = Field(description="The inputs the two runs recorded at different values.")
+    same: list[str] = Field(description="The inputs both runs recorded at one value.")
+    unknown: list[str] = Field(
+        description="The inputs whose comparison cannot be decided because one run or both recorded nothing for it: "
+        "neither a difference nor an agreement."
+    )
+    details: dict[str, dict[str, Any]] = Field(
+        description="Input name -> `{a, b}`, each run's value for it as compared. An input only one run carried "
+        "reads `(not carried by this run)` on the other side; a rig seat one run did not have reads as a level."
+    )
+    completeness_disclosures: dict[str, str] = Field(
+        description=(
+            "Run id -> the sentence for each of the two runs that delivered less than its matrix; empty when both "
+            "are whole. A run absent from it is not asserted complete: one carrying no completeness record has "
+            "nothing to disclose either way."
+        )
+    )
+    measurement_window_disclosure: str | None = Field(
+        description="When the two runs were measured over spans that do not overlap, the sentence saying so: time is "
+        "no input, so a provider's drift between the spans is a difference this split cannot name. None when they "
+        "overlap or either produced no result to date a span from."
+    )
+
+
+def runs_bisect(host: EvalHost, baseline_run_id: str, candidate_run_id: str, scope_id: str) -> RunsBisected:
+    """Split two runs' versioned inputs into those that differ, agree and cannot be decided, with each disclosure.
+
+    Args:
+        host: The host whose store and sweepable declarations are read.
+        baseline_run_id: The run read as the baseline.
+        candidate_run_id: The run read against it.
+        scope_id: The scope both runs live in.
+
+    Returns:
+        The split and its disclosures.
+
+    Raises:
+        NotFoundError: Either run is not in the scope.
+    """
+    split = bisect_runs(host.storage, baseline_run_id, candidate_run_id, scope_id, profile=host.profile)
+    _, completeness, window = _pair_disclosures(host, baseline_run_id, candidate_run_id, scope_id)
+    return RunsBisected(
         baseline_run_id=baseline_run_id,
         candidate_run_id=candidate_run_id,
-        comparison=comparison,
-        completeness_disclosures={
-            run.id: sentence for run in runs if (sentence := completeness_disclosure(run.completeness)) is not None
-        },
-        measurement_window_disclosure=measurement_window_disclosure(windows),
-        cassette_mode_disclosure=cassette_mode_disclosure({run.id: run.cassette_mode for run in runs}),
+        differs=split["differs"],
+        same=split["same"],
+        unknown=split["unknown"],
+        details=split["details"],
+        completeness_disclosures=completeness,
+        measurement_window_disclosure=window,
     )
 
 
@@ -1227,6 +1313,28 @@ def runs_compared_text(compared: RunsCompared) -> str:
     return "\n".join(lines)
 
 
+def runs_bisected_text(bisected: RunsBisected) -> str:
+    """Two runs' inputs split as text: each difference with both values, each undecided input, then every disclosure."""
+    details = bisected.details
+    lines = [
+        f"run {bisected.baseline_run_id} against run {bisected.candidate_run_id}: {len(bisected.differs)} input(s) "
+        f"differ, {len(bisected.same)} the same, {len(bisected.unknown)} undecided"
+    ]
+    for heading, names in (
+        ("differs", bisected.differs),
+        ("undecided (one run or both recorded nothing)", bisected.unknown),
+    ):
+        if names:
+            lines.append(f"{heading}:")
+            lines += [f"- {name}: {details[name]['a']!r} vs {details[name]['b']!r}" for name in names]
+    if bisected.same:
+        lines.append("same: " + ", ".join(bisected.same))
+    lines += _completeness(bisected.completeness_disclosures)
+    if bisected.measurement_window_disclosure:
+        lines.append(bisected.measurement_window_disclosure)
+    return "\n".join(lines)
+
+
 __all__ = [
     "ArmEstimate",
     "DETECTABLE_EFFECT_ASSUMPTIONS",
@@ -1234,6 +1342,7 @@ __all__ = [
     "DetectableEffects",
     "LAUNCH_PRICER_METHOD",
     "LaunchEstimate",
+    "RunsBisected",
     "RunsCompared",
     "detectable_effect_lines",
     "detectable_effects",
@@ -1242,6 +1351,8 @@ __all__ = [
     "history_text",
     "launch_estimate",
     "pivot_text",
+    "runs_bisect",
+    "runs_bisected_text",
     "runs_compare",
     "runs_compared_text",
     "scope_export",

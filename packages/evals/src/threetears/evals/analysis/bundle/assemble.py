@@ -48,6 +48,7 @@ from threetears.evals.analysis.agreement import (
     judge_evidence_tiers,
     judge_self_agreement,
     inter_judge_agreement,
+    person_scores_by_result,
 )
 from threetears.evals.analysis.judge_drift import judge_drift
 from threetears.evals.analysis.arms import arm_names
@@ -486,6 +487,11 @@ def assemble_context_bundle(
 
     # The campaign's effective bar on the measure the frontier ranks on, or why it takes none.
     frontier_bar, frontier_bar_withheld = _frontier_bar(campaign.behavior, campaign.declared_design, profile=profile)
+    # Ratings are read once, because the agreement and the prediction-powered estimates both pair them with the
+    # judge (#598): the members' per run, in run order, then any in the scope labelling an output a member's judge
+    # scored (#628), so the unpaired list is deterministic for the fingerprint.
+    ratings = _campaign_ratings(storage, scope_id, runs, results)
+    person_scores = person_scores_by_result(ratings, results)
     bundle = AnalysisContextBundle(
         campaign_id=campaign.id,
         subject_id=campaign.subject_id,
@@ -584,7 +590,10 @@ def assemble_context_bundle(
         prior_insights=prior_insights,
         prior_insights_omitted=prior_insights_omitted,
         retracted_insights=retracted,
-        judge_agreement=judge_agreement(_campaign_ratings(storage, scope_id, runs, results), results),
+        # Over the resolved members only, like every other lens: a rating of an archived run's result
+        # calibrates a judge the bundle does not otherwise read — unless it labels an output a member's judge
+        # scored (#628), which `_campaign_ratings` reads too.
+        judge_agreement=judge_agreement(ratings, results),
     )
     # The judge's reliability, before anything judged is summarised: every judged reading carries the
     # tier these two agreements decide for the judges that served it.
@@ -616,7 +625,11 @@ def assemble_context_bundle(
             }
         )
         for measure in _judged_measures(
-            projection.records, results_by_cell, campaign.declared_design, tiers=bundle.judge_evidence_tiers
+            projection.records,
+            results_by_cell,
+            campaign.declared_design,
+            tiers=bundle.judge_evidence_tiers,
+            person_scores=person_scores,
         )
     ]
     bundle.bar_adjudications = _bar_adjudications(
@@ -651,6 +664,7 @@ def assemble_context_bundle(
             campaign.declared_design,
             tiers=bundle.judge_evidence_tiers,
             profile=profile,
+            person_scores=person_scores,
         ),
         short_runs=bundle.short_runs,
         incomplete_runs=bundle.incomplete_runs,

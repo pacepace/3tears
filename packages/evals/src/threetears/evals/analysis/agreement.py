@@ -93,7 +93,7 @@ from threetears.evals.kernel.evidence_tiers import (
 from threetears.evals.schema.models import MODEL_DEFAULT_TEMPERATURE, SCALES, JudgeTemperature, RubricScale
 
 if TYPE_CHECKING:
-    from threetears.evals.schema.models import CalibrationRating, EvalResult, LabelKey, RubricScore
+    from threetears.evals.schema.models import CalibrationRating, EvalResult, JudgeRepeat, LabelKey, RubricScore
 
 
 #: Why a rating has no judge score to be read against.
@@ -267,16 +267,31 @@ class _Pair(NamedTuple):
     result_id: str
 
 
-def judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[EvalResult]) -> JudgeAgreement:
-    """Pair each rating with the judge's score on its dimension, on its result or the same output, and read agreement.
+class _PairedRatings(NamedTuple):
+    """Every rating read, as :func:`_pair_ratings` sorted it: the pairs per judge, the unpaired, and the count."""
+
+    groups: dict[JudgeKey, list[_Pair]]
+    unpaired: list[UnpairedRating]
+    read: int
+
+
+def _pair_ratings(ratings: Iterable[CalibrationRating], results: Iterable[EvalResult]) -> _PairedRatings:
+    """Pair each rating with the judge's score on its dimension, on its result or the same output — the ONE matching rule.
+
+    A rating pairs with its own result's score, then with every other result's score carrying its label key (#628),
+    entering each judge (:class:`JudgeKey`) once; it is unpaired only when it entered none, with its own result's
+    reason. See the module docstring.
+
+    Read by :func:`judge_agreement` and :func:`person_scores_by_result`, so the ratings agreement reads and the
+    ratings a prediction-powered estimate combines with the judge's scores are one set (#598).
 
     Args:
         ratings: The ratings to read.
         results: The results they may rate. A rating whose result is not here, and whose label key reaches no
-            score here, is unpaired (``result_unresolved``), so hand in every result the ratings were read for.
+            score here, is unpaired (``result_unresolved``).
 
     Returns:
-        The agreement per (dimension, scale, judge, judge config), and the ratings that could not be paired.
+        The pairs grouped by judge, the ratings that could not be paired (and why), and how many were read.
     """
     results = list(results)
     by_id = {result.id: result for result in results}
@@ -318,6 +333,21 @@ def judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[Eval
         if not entered:
             assert reason is not None  # its own result paired, or said why not
             unpaired.append(_unpaired(rating, reason))
+    return _PairedRatings(groups, unpaired, read)
+
+
+def judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[EvalResult]) -> JudgeAgreement:
+    """Pair each rating with the judge's score on its dimension, on its result or the same output, and read agreement.
+
+    Args:
+        ratings: The ratings to read.
+        results: The results they may rate. A rating whose result is not here, and whose label key reaches no
+            score here, is unpaired (``result_unresolved``), so hand in every result the ratings were read for.
+
+    Returns:
+        The agreement per (dimension, scale, judge, judge config), and the ratings that could not be paired.
+    """
+    groups, unpaired, read = _pair_ratings(ratings, results)
     dimensions = []
     for key in sorted(groups, key=_sort_key):
         numbers = _agreement_numbers(key.scale, groups[key])
@@ -338,6 +368,36 @@ def judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[Eval
             )
         )
     return JudgeAgreement(ratings_read=read, dimensions=dimensions, unpaired=unpaired)
+
+
+def person_scores_by_result(
+    ratings: Iterable[CalibrationRating], results: Iterable[EvalResult]
+) -> dict[tuple[str, str], list[int]]:
+    """Every person's score of a judged dimension of a result, keyed ``(result_id, dimension)`` — the human labels.
+
+    Exactly the pairs :func:`judge_agreement` reads (a person's rating, of a result read, on a dimension its judge
+    scores on the rating's scale), so an agent's rating, a rating of a result not read and a rating on a changed
+    scale label nothing here either. What a prediction-powered estimate combines with the judge's scores (#598).
+
+    A label found by what was read (#628) labels the result it reached: a rating of one result whose label key
+    another result's score carries is that other result's person score too. Because the pairing enters each judge
+    once, a label labels at most one result per judge — so an arm, whose results share a judge, never counts one
+    person's answer on several byte-identical outputs as several labels.
+
+    Args:
+        ratings: The ratings to read.
+        results: The results they may rate.
+
+    Returns:
+        Every person's score per rated ``(result_id, dimension)``, in the order the ratings were read; a result
+        two people rated carries both.
+    """
+    scores: dict[tuple[str, str], list[int]] = {}
+    for key, pairs in _pair_ratings(ratings, results).groups.items():
+        for pair in pairs:
+            if pair.other is not None:
+                scores.setdefault((pair.result_id, key.rubric_dim), []).append(pair.other)
+    return scores
 
 
 def _scores_by_label_key(results: Sequence[EvalResult]) -> dict[LabelKey, list[tuple[EvalResult, RubricScore]]]:
@@ -747,12 +807,27 @@ def judge_self_agreement(results: Iterable[EvalResult]) -> JudgeSelfAgreement:
     Returns:
         The agreement per (dimension, scale, judge, judge config), and the repeated scores that could not be paired.
     """
+    return self_agreement_of_repeats((result.id, result.judge_repeats) for result in results)
+
+
+def self_agreement_of_repeats(repeats: Iterable[tuple[str, Sequence[JudgeRepeat]]]) -> JudgeSelfAgreement:
+    """:func:`judge_self_agreement` over repeats held apart from any stored result, each beside the result it repeats.
+
+    The one reading, for repeats that were never written to a result — a judge temperature comparison's answers at
+    one setting, paired against that setting's first answer (#633) — so they are read by the same code.
+
+    Args:
+        repeats: ``(result id, its repeats, oldest first)`` per result.
+
+    Returns:
+        As :func:`judge_self_agreement`.
+    """
     groups: dict[JudgeKey, list[_Pair]] = {}
     unpaired: list[UnrepeatedScore] = []
     read = 0
-    for result in results:
+    for result_id, judge_repeats in repeats:
         rounds: dict[str, int] = {}
-        for repeat in result.judge_repeats:
+        for repeat in judge_repeats:
             for entry in repeat.scores:
                 read += 1
                 rounds[entry.dim] = rounds.get(entry.dim, 0) + 1
@@ -768,7 +843,7 @@ def judge_self_agreement(results: Iterable[EvalResult]) -> JudgeSelfAgreement:
                     reason = "temperature_changed"
                 if reason is not None:
                     unpaired.append(
-                        UnrepeatedScore(result_id=result.id, rubric_dim=entry.dim, round=round_name, reason=reason)
+                        UnrepeatedScore(result_id=result_id, rubric_dim=entry.dim, round=round_name, reason=reason)
                     )
                     continue
                 key = JudgeKey(
@@ -779,7 +854,7 @@ def judge_self_agreement(results: Iterable[EvalResult]) -> JudgeSelfAgreement:
                     entry.first_judge_temperature,
                 )
                 again = entry.repeat.score if entry.repeat is not None else None
-                groups.setdefault(key, []).append(_Pair(entry.first_score, again, round_name, result.id))
+                groups.setdefault(key, []).append(_Pair(entry.first_score, again, round_name, result_id))
     dimensions = []
     for key in sorted(groups, key=_sort_key):
         numbers = _agreement_numbers(key.scale, groups[key])
@@ -1143,6 +1218,8 @@ __all__ = [
     "judge_evidence_tiers",
     "judge_key",
     "judge_self_agreement",
+    "person_scores_by_result",
+    "self_agreement_of_repeats",
     "tier_for_judges",
     "tier_sentence",
 ]

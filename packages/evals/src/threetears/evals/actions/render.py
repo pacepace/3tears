@@ -57,6 +57,7 @@ from threetears.evals.ops import (
     RunDeleted,
     RunLine,
     RunListing,
+    RunsBisected,
     RunsCompared,
     ScoreExport,
     SecondJudgeRead,
@@ -71,12 +72,14 @@ from threetears.evals.ops import (
     history_text,
     out_of_run_spend_text,
     pivot_text,
+    runs_bisected_text,
     runs_compared_text,
 )
 
 if TYPE_CHECKING:
     from threetears.evals.actions.catalogue import Action, MountedTool
-    from threetears.evals.run import JudgeTemperatureComparison, JudgeTemperatureEstimate, SecondJudgeEstimate
+    from threetears.evals.ops import JudgeTemperatureComparison
+    from threetears.evals.run import JudgeCaseFreezeReport, JudgeTemperatureEstimate, SecondJudgeEstimate
 
 
 # --- help --------------------------------------------------------------------------------------------
@@ -525,6 +528,25 @@ def render_report(document: ReportDocument) -> str:
     return document.body
 
 
+def render_judge_case_freeze(report: JudgeCaseFreezeReport) -> str:
+    """A judge case freeze's receipt: each case, the set listing them, and every result it skipped."""
+    created = sum(1 for case in report.cases if case.created)
+    lines = [
+        f"{len(report.cases)} judge case(s) of template {report.template_id} ({created} new, "
+        f"{len(report.cases) - created} already stored)"
+        + (f"; case set {report.case_set.label}" if report.case_set is not None else ""),
+    ]
+    lines += [
+        f"- {case.test_case_id}: {case.dim} on result {case.source_result_id} (run {case.source_run_id}), "
+        f"{case.labels} label(s)"
+        for case in report.cases
+    ]
+    if report.skipped:
+        lines.append(f"skipped ({len(report.skipped)})")
+        lines += [f"- {skip.result_id}: {skip.reason}" for skip in report.skipped]
+    return "\n".join(lines)
+
+
 def render_reporter_case(case: FrozenReporterCase) -> str:
     """A reporter case's receipt: what it froze, its fingerprint, its labels and every limit it recorded."""
     memo = case.recorded_analysis_id or "none (only a generating candidate can run it)"
@@ -596,6 +618,11 @@ def render_pivot(table: PivotTable) -> str:
 def render_runs_compared(compared: RunsCompared) -> str:
     """Two runs compared: the arms, each reading with its delta and test, and every disclosure."""
     return runs_compared_text(compared)
+
+
+def render_runs_bisected(bisected: RunsBisected) -> str:
+    """Two runs' inputs split: each difference with both values, each undecided input, and every disclosure."""
+    return runs_bisected_text(bisected)
 
 
 def render_frontier(result: FrontierResult) -> str:

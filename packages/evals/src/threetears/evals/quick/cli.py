@@ -57,7 +57,8 @@ then never name the host::
   ``--subject`` narrows it to one subject, and ``--json`` prints the frontier as JSON.
 - ``judge-temperature`` re-judges a finished run's borderline cases ``--repeats`` times at the pinned judge
   temperature and as many times at the provider's default, and prints each dimension's score variance and
-  self-agreement at the two side by side (:func:`~threetears.evals.run.compare_judge_temperatures`, the
+  self-agreement at the two side by side (:func:`~threetears.evals.run.judge_at_two_temperatures` read by
+  :func:`~threetears.evals.analysis.read_judge_temperatures`, the
   ``judge_temperature`` action's operation, #633). It SPENDS: the calls are priced against the out-of-run cap the
   command names, ``--max-cost-usd`` (or ``--no-cap``, said out loud), before the first is sent, and ledgered under
   purpose ``judge``. ``--estimate`` prices it and calls nothing. ``--all`` re-judges every scored dim instead of the
@@ -97,6 +98,7 @@ from pathlib import Path
 from typing import Any, get_args
 
 from threetears.evals.analysis import (
+    read_judge_temperatures,
     DEFAULT_FAIL_ON,
     GATE_TOKENS,
     FrontierResult,
@@ -114,14 +116,13 @@ from threetears.evals.analysis import (
     serialize_report,
 )
 from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS, OutOfRunPurpose
-from threetears.evals.kernel import EvalServiceError
+from threetears.evals.kernel import DEFAULT_TEMPERATURE_REPEATS, EvalServiceError
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.analysis.summary import summarize_run
 from threetears.evals.run import (
-    DEFAULT_TEMPERATURE_REPEATS,
     LaunchHost,
-    compare_judge_temperatures,
     estimate_judge_temperature_comparison,
+    judge_at_two_temperatures,
     list_runs,
     list_templates,
     start_run,
@@ -580,7 +581,7 @@ async def _judge_temperature(host: EvalHost, args: argparse.Namespace) -> None:
         estimate = await estimate_judge_temperature_comparison(host, args.run_id, args.scope, **common)
         _say(estimate.model_dump_json(indent=2) if args.json else estimate.render())
         return
-    comparison = await compare_judge_temperatures(host, args.run_id, args.scope, **common)
+    comparison = read_judge_temperatures(await judge_at_two_temperatures(host, args.run_id, args.scope, **common))
     _say(comparison.model_dump_json(indent=2) if args.json else comparison.render())
 
 

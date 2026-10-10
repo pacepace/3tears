@@ -380,10 +380,18 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # run, its results and the judge through the engine's own ports and name no host.
     "run/judge_repeat.py",
     "run/judge_second.py",
+    # The judge as a campaign's subject (#628): its case and trial shapes, and the kind that asks a judge frozen
+    # cases. Shared contract from the day they existed: they replay stored evidence through the engine's own judge
+    # service and name no host.
+    "kernel/judge_cases.py",
+    "run/judge_kind.py",
+    "run/judge_temperature.py",
     # How a run's cells are executed, serially or several at once: the runner's own seam, which a host may fill
     # with its own pool. It names no host and reads nothing a host owns.
     "run/executor.py",
     "kernel/evidence_tiers.py",
+    # The judge temperature comparison's record, handed from run (which asks) to analysis (which reads) (#633).
+    "kernel/judge_temperature.py",
     # Tool recording and replay. It moved off _HOST_COUPLED_MODULES when the lane stopped reaching
     # into a host's candidate and started wiring only the seams a kind hands it (now declared in
     # `kernel/cassettes.py`); what is here records and replays through them for every host alike.

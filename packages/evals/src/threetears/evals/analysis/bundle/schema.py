@@ -69,6 +69,7 @@ from threetears.evals.schema.models import (
 from threetears.evals.kernel.surface import (
     CellFacts,
     GuardrailReadings,
+    PredictionPoweredReading,
     TimeAxis,
 )
 
@@ -848,6 +849,16 @@ class JudgedArm(EvalDocumentModel):
             "scores counted in `n` — `undetermined` when none was counted or the evidence decides no tier. "
             "Flagged, never a reason the scores are dropped."
         )
+    )
+    prediction_powered: PredictionPoweredReading | None = Field(
+        default=None,
+        description=(
+            "The prediction-powered estimate (#598): `mean` corrected by people's calibration ratings of some of the "
+            "counted observations — the judge's mean plus the rectifier (person minus judge over the rated ones), "
+            "with its interval clustered by case. Beside `mean`, never replacing it: `mean` is what the judge said, "
+            "this is what people would have said, estimated. Its `mean` is None (with the reason) below "
+            "`min_labelled` rated observations. None when no person rated any counted observation here."
+        ),
     )
 
 

@@ -2,8 +2,8 @@
 
 **For** someone grading output that no code can check (is the answer grounded, is the tone right, did it refuse
 what it should) who wants to know whether to trust the grades. **Answers:** how to write a rubric dimension, run
-an LLM judge, collect person ratings, and read whether the judge agrees with people and with itself, and how many
-ratings that takes. Grade with code wherever code can decide; a judge is for judgment
+an LLM judge, collect person ratings, and read whether the judge agrees with people and with itself, how many
+ratings that takes, and how the ratings correct the judge's mean. Grade with code wherever code can decide; a judge is for judgment
 ([principles](principles.md)).
 
 The snippets run top to bottom as one script. `client` is any `CompletionClient` (an async
@@ -99,6 +99,9 @@ dimension states another. Each score records what its call was actually sent at 
 separately per temperature, and a repeat at another temperature is not paired. On the quick path your client
 builds the request, so send temperature 0 and report it as `CompletionResult.temperature`. How much temperature
 moves your judge's scores is measured, not assumed: see [Step 10](#step-10-measure-what-temperature-does-to-the-judge).
+Measured on one real judge (#633), 0 was no steadier than the provider's default on borderline cases, and neither
+removed the spread. The policy stays 0 because it is a stated, recorded value, not because it makes a judge
+deterministic ([what the measurement found](#what-the-measurement-found)).
 
 ## Step 5: collect person ratings
 
@@ -223,6 +226,46 @@ results) — needs 120 results.
 says about how many more results would carry them clear if agreement held at its estimate. Tiers are flagged and
 never hide a reading; a finding stands on the weakest tier among its rows.
 
+## Step 7b: combine the ratings with the judge's scores
+
+Ratings do more than decide a tier. Where people rated some of a cell's judged scores, the cell's judged reading
+(`JudgedArm.prediction_powered` in the bundle, `JudgedReading.prediction_powered` on the frozen surface) carries a
+**prediction-powered estimate** (Angelopoulos et al., 2023) beside the judge's own mean:
+
+- the judge's mean over every counted score in the cell, plus
+- the **rectifier**: the mean of person minus judge over the scores people rated, the judge's bias as people
+  measured it.
+
+The sum estimates the mean people would have given every result, and its interval stays valid however biased the
+judge is. A judge that scores a point high makes its own interval confidently wrong; the rectifier moves the
+estimate back by that point. The price is width: the closer the judge tracks people, the closer the interval is
+to the judge-only one; the less it does, the closer it is to an interval on the ratings alone.
+
+It never replaces the judge's figure. The judge's mean is what the judge said; this is what people would have
+said, estimated. The code-only report's strata table prints it after the judge's figure, here for a judge biased 0.8 high over
+a true mean of 3 (one draw of the simulation below):
+
+```text
+3.63 ± 0.1271 (n=90 over 30 cases); with people's ratings: 2.846 [2.566, 3.127] (rectifier -0.7839; 24 rated by people)
+```
+
+- **Which ratings count.** Exactly those agreement pairs (step 6): a person's rating, of a result read, on a
+  dimension its judge scored on the same scale (`person_scores_by_result`). Several people on one result count
+  as their mean. On a candidate failure the judge's score counts the scale floor, so the person's does too.
+- **The interval** is clustered by case like every other: the analytic cluster-robust variance of the estimate
+  (`prediction_powered_mean`), which carries the covariance between the judge's mean and the rectifier (the
+  rated results are among those the judge's mean covers), read on t with the rated cases minus one degrees of
+  freedom.
+- **At least 10 rated results** (`PPI_MIN_LABELLED_RESULTS`). Below it the estimate reads `not available` and
+  says how many were rated: the correction is estimated from the rated results alone, and below ten its spread is
+  too uncertain to put an interval on.
+- A cell nobody rated carries no estimate (`None`). Ratings are per cell, so 10 rated results per arm you want
+  corrected, not 10 in all.
+
+In seeded simulation, a judge biased by 0.8 on a 30-case × 3-repeat arm with 24 rated results: the
+prediction-powered interval covered the true mean 95.2% of the time, the judge-only interval 0.15%
+(`test_simulated_prediction_powered.py`).
+
 ## Step 8: judge repeats, for self-agreement
 
 A repeat asks the same judge the same question again, from the evidence it first read, and records each answer
@@ -295,15 +338,18 @@ python -m threetears.evals judge-temperature RUN --host myapp.evals:build_host -
 python -m threetears.evals judge-temperature RUN --host myapp.evals:build_host --scope dev --max-cost-usd 5 --json > temperature.json
 ```
 
-In code it is `compare_judge_temperatures` (and `estimate_judge_temperature_comparison`) from
-`threetears.evals.run`, and the actions are `judge_temperature` and `judge_temperature_estimate`:
+In code it is two steps: `judge_at_two_temperatures` (priced first by `estimate_judge_temperature_comparison`) from
+`threetears.evals.run` spends and returns every answer, and `read_judge_temperatures` from `threetears.evals.analysis`
+reads them, spending nothing. The actions are `judge_temperature`, which does both, and `judge_temperature_estimate`:
 
 ```python
-from threetears.evals.run import compare_judge_temperatures
+from threetears.evals.analysis import read_judge_temperatures
+from threetears.evals.run import judge_at_two_temperatures
 
-comparison = await compare_judge_temperatures(
+answers = await judge_at_two_temperatures(
     judging_host, summary.run_id, summary.scope_id, out_of_run_cap_usd=5.0, repeats=5,
 )
+comparison = read_judge_temperatures(answers)
 print(comparison.render())
 ```
 
@@ -342,6 +388,123 @@ Its off-setting scores are counted and left out of that side's figures, never re
 out-of-run cap before the first is sent: the cap the command names with `--max-cost-usd` (`--no-cap` waives it out
 loud), or the host's own for the action. Calls are ledgered under purpose `judge` and stamped with the run
 (`python -m threetears.evals spend --purpose judge`). The comparison reports its case count, calls and cost.
+
+### What the measurement found
+
+Run on 2026-10-10 in a private host application, against its own judged runs (#633):
+
+- **Setup.** Judge `openai/gpt-6-luna`, a reasoning model behind OpenRouter. Seven finished persona runs, 50
+  borderline (result, dimension) cases over 25 results, and 5 repeats at each setting: 500 calls, $0.19. The
+  priced ceiling was about 240 times that, because every call is admitted at its full output cap and retries.
+- **Dimensions.** The two scored on every persona run, `__outcome__` (19 cases) and `__transcript__` (23 cases),
+  plus 8 cases over three host dimensions (2 to 4 each). All are on 1-5. No pass/fail dimension was borderline,
+  since no repeat or second judge had disagreed on one.
+- **Answers.** Every answer recorded the temperature it was sent at (0 on one side, `model_default` on the other).
+  Both sides were comparable, with no failed call and no "can't tell".
+
+| Dimension | Cases | Mean score variance, 0 / default | Unstable cases, 0 / default | Agreement with first answer, 0 / default |
+|---|---|---|---|---|
+| `__outcome__` | 19 | 0.274 / 0.242 | 16 / 15 | 39% / 64% |
+| `__transcript__` | 23 | 0.157 / 0.126 | 13 / 12 | 67% / 71% |
+| three host dims | 8 | 0.163 / 0.188 | 5 / 4 | 59% / 75% |
+| all | 50 | 0.202 / 0.180 | 34 / 31 | 56% / 69% |
+
+**Temperature 0 did not steady this judge.** Paired case by case, the variance at 0 minus the variance at the
+default was +0.022 (95% bootstrap interval −0.026 to +0.076). 0 was lower on 11 cases, higher on 12 and tied on 27.
+The interval rules out 0 making a material difference: at best it cut mean variance by 0.026 against a base of
+0.18. Both settings left one answer in four to six off the case's most common score: the modal share was 0.75 and
+0.73 on `__outcome__`, and 0.82 and 0.85 on `__transcript__`. The mean score moved +0.04 between the settings.
+The lower agreement with the first answer at 0 comes from that statistic, not from temperature: it scores every
+answer against one draw, so a first answer that happens to be off the mode counts against all four repeats. The
+variances, which use every answer, do not differ. The reasoning model most likely samples its private reasoning
+whatever temperature its answer is requested at, so 0 cannot make it repeatable.
+
+**The policy stays at 0.** The data gives no reason to move off it: 0 cost nothing in consistency here. Nor does it
+support any claim for 0 beyond this. What 0 buys is a judge identity that can be stated and reproduced. The
+provider's default is whatever that provider uses, which differs across providers and can change without
+notice. On a judge model that honours temperature, 0 can only narrow the sampling. What 0 does not buy is
+determinism. On a judge like this one, measure the residual spread with a judge repeat (Step 8) and lean on
+self-agreement, not on the temperature.
+
+**Limits.** One judge model. The three host dimensions have too few cases each to be read alone. The runs
+predated recorded judge temperatures, and were judged with request settings from before `strict_output`, a
+setting that host's client does not send. So their judge inputs were reproduced as recorded rather than refused,
+and both sides sent the host's current request settings, differing by temperature alone. A judge that honours temperature (a non-reasoning model)
+may still show a difference, and the command above measures it on yours.
+
+## Evaluating a judge as a subject
+
+Steps 6 to 10 measure a judge inside the campaign it scored. To compare judges directly (another model, another
+prompt, another temperature), make the judge the subject of a campaign of its own. This is the **judge kind**
+(`candidate_kind="judge"`):
+
+- **The candidate is a judge configuration:** a model, the prompt per criterion and the temperature, the three
+  things `JudgeKey` keys a judge by. The model is the arm's candidate model. The prompt per criterion
+  (`config_ids`, versioned `JudgeConfig` ids) and the temperature are the arm's overlays (`JudgeKindOverlays`), so
+  two arms that differ in their judge are two variants the campaign tells apart.
+- **A case is frozen from a stored result:** one judged output and one criterion. It holds the evidence the
+  result's judge read, the criterion as its template worded it, and the person ratings given on that result as
+  its labels.
+- **A trial replays the stored output and calls only the judge.** It asks the criterion through the engine's own
+  judge service, so the judge reads the same evidence block the first judge read. Only the judge differs. No
+  candidate is re-run.
+- **The grade is code.** Each trial lands `judge_parse_valid` and, on a scored trial of a labelled case,
+  `judge_label_agreement` on its `host_measures`. The whole answer goes on its `kind_payload`.
+
+Freeze cases from a judged run into a judge template, and mint the case set a launch targets:
+
+```python
+from threetears.evals.kernel import JUDGE_KIND
+from threetears.evals.run import freeze_judge_cases
+from threetears.evals.schema import EvalTemplate
+
+judge_template = EvalTemplate(
+    scope_id=summary.scope_id, name="grounded judge", candidate_kind=JUDGE_KIND,
+    intent="Score whether an answer is grounded in the store policy, as a person would.",
+)
+host.storage.save_template(judge_template)
+frozen = freeze_judge_cases(
+    host.storage, template=judge_template, run_ids=[summary.run_id], scope_id=summary.scope_id,
+    dims=["answer.grounded"], case_set="grounded-judge",
+)
+```
+
+Each case is rebuilt under the same check a re-judge uses (`reproducible_judge_inputs`). A result is skipped, with
+the reason, if its run did not record its judging or its template was edited since. Freezing the same output,
+criterion and labels again returns the stored case. A re-freeze after a label changed mints a new case, and the
+new case-set version lists only the new one. The action is `judge_cases_freeze`.
+
+Run one arm per judge. Through a launch, a host registers `launchable_judge_kind` for `JUDGE_KIND` and declares
+`JUDGE_KIND_CONTRACT` (and `JUDGE_KIND_MEASURES`) on its profile. Then each arm is a `run_launch` of the judge
+template, with the judge's model and its `config_ids` and `temperature` overlays. A host driving the runner
+directly builds each arm's kind with `judge_kind(...)`. Read the campaign out per judge and criterion:
+
+```python
+from threetears.evals.analysis import judge_kind_readings
+
+readings = judge_kind_readings(results)  # every result of the campaign's runs
+for reading in readings.readings:
+    print(reading.key, reading.cases, reading.parse_validity.rate,
+          reading.label_agreement and reading.label_agreement.kappa,
+          reading.self_agreement and reading.self_agreement.kappa)
+```
+
+| Measure | Read from |
+|---|---|
+| agreement with the labels | each case's first scored trial against its labels, by `judge_agreement` (Step 6) |
+| self-agreement | each case's later trials against its first, by `judge_self_agreement` (Step 8); run at `k_runs >= 2` |
+| parse validity | the share of replies that kept the protocol (a score on the scale, or "can't tell") |
+
+Both agreements count distinct **cases**, so the tier floors of Step 7 apply to them unchanged. A case repeated k
+times counts once. Each reading names the cases it was measured on (`case_set_fingerprint`) and the criterion
+wording (`criterion_digest`).
+
+**Spend.** Every trial's spend is recorded on its result under the `judge` role. A judge campaign has no
+`candidate` role in its spend. It is in-run spend under the run's cost cap, not the out-of-run ledger a judge
+repeat or a second judge writes to.
+
+A stored profile per judge and criterion, which other campaigns' evidence tiers read, is not built yet
+([#628](https://github.com/pacepace/3tears/issues/628)).
 
 ## What to read next
 
