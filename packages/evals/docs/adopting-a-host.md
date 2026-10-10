@@ -66,7 +66,11 @@ pass it to every entrypoint. It holds:
   label prints in place of its key ("Output speed", not `candidate_output_tokens_per_s`). `MeasureRegistry`
   refuses a measure without one, and one whose `reader_name` matches another measure's (yours or the engine's,
   ignoring case), so the mistake surfaces at startup, not on a chart. The key stays what the store files the
-  number under and what a reader cites;
+  number under and what a reader cites. Your bars (`BarRegistry`, each a `Bar`, with any per-behavior
+  `PassThreshold`) can be built in code or kept as data: `load_bar_registry(mapping)` reads
+  `{"bars": [...], "pass_thresholds": [...]}`, each entry its type's fields. It refuses a field it does not
+  know and a value of the wrong type rather than ignoring or coercing them, because a misspelt `rationale`
+  dropped silently would register a standard other than the one you wrote;
 - the `EvalStorage` you read and write through;
 - a factory for the completion clients the engine's own judge, simulator and analysis roles call. Every
   completion a client returns is read by `CompletionResult`'s attribute names, and the usage ledger reads its

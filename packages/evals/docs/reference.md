@@ -676,6 +676,8 @@ The host contract — what a consuming product declares, and what the engine nev
   <br>`default_cell_timeout(budget_s: float) -> AsyncIterator[float]`
 - **`freeze`** · function · What is recorded of values a kind's model validated: the model's JSON form, or nothing.
   <br>`freeze(validated: BaseModel | None) -> dict[str, Any]`
+- **`load_bar_registry`** · function · Build a host's bar registry from a declaration kept as data — refusing any field it does not know.
+  <br>`load_bar_registry(declaration: Mapping[str, Any]) -> BarRegistry`
 - **`obligation_rows`** · function · Which rows of the obligations table this dimension's declared shape sits on.
   <br>`obligation_rows(declared: WorldDimension) -> frozenset[ObligationRow]`
 - **`obligations`** · function · The per-dimension checks this dimension's shape owes, derived and never declared.
