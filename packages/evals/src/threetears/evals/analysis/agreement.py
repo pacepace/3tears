@@ -38,6 +38,18 @@ sweeping its judge — model, prompt or sampling — reads each judge's agreemen
 credit one judge with the other's calibration, which is the comparison a judge swap is decided on. A dimension rated on a
 scale it was later moved off is two groups for the same reason.
 
+**A label is found by its result and by what was read** (#628). A rating carries the label key of the score it
+rated (:class:`~threetears.evals.schema.models.LabelKey`: the fingerprint of the judged output and of the
+criterion), and each judge score carries its own. So a rating pairs with its own result's score, AND with every
+other result's score whose key is the same — a byte-identical output judged on the same criterion, in another
+run, under another judge, or on a result whose own record has since changed. **A label enters each judge's
+agreement once.** Within one :class:`JudgeKey` group a rating pairs at most once: with its own result when that
+result is in the group, otherwise with the first matching result in the order the results were handed in. Found by
+both routes (its own result also matches its key), or on several identical outputs scored by one judge, it is
+still one person's one answer, and counting it per copy would inflate ``n`` and the distinct results the
+``calibrated`` floor counts with no further human judgement. A rating whose key reached a judged result is paired
+even when its own result is gone; one with no key (rated before scores were stamped) is read by its result alone.
+
 **A rating that cannot be paired is named, never dropped.** Its result may have been deleted, or
 re-judged without that dimension, or the dimension's scale may have changed since it was rated; each
 is listed with which, so a dimension's n can be reconciled with the ratings people actually wrote.
@@ -81,7 +93,7 @@ from threetears.evals.kernel.evidence_tiers import (
 from threetears.evals.schema.models import MODEL_DEFAULT_TEMPERATURE, SCALES, JudgeTemperature, RubricScale
 
 if TYPE_CHECKING:
-    from threetears.evals.schema.models import CalibrationRating, EvalResult
+    from threetears.evals.schema.models import CalibrationRating, EvalResult, LabelKey, RubricScore
 
 
 #: Why a rating has no judge score to be read against.
@@ -256,17 +268,19 @@ class _Pair(NamedTuple):
 
 
 def judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[EvalResult]) -> JudgeAgreement:
-    """Pair each rating with the judge's score on the same dimension of the same result, and read agreement.
+    """Pair each rating with the judge's score on its dimension, on its result or the same output, and read agreement.
 
     Args:
         ratings: The ratings to read.
-        results: The results they may rate. A rating whose result is not here is unpaired
-            (``result_unresolved``), so hand in every result the ratings were read for.
+        results: The results they may rate. A rating whose result is not here, and whose label key reaches no
+            score here, is unpaired (``result_unresolved``), so hand in every result the ratings were read for.
 
     Returns:
         The agreement per (dimension, scale, judge, judge config), and the ratings that could not be paired.
     """
+    results = list(results)
     by_id = {result.id: result for result in results}
+    by_label = _scores_by_label_key(results)
     groups: dict[JudgeKey, list[_Pair]] = {}
     unpaired: list[UnpairedRating] = []
     read = 0
@@ -276,19 +290,34 @@ def judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[Eval
         if rating.rater_kind != "person":
             unpaired.append(_unpaired(rating, "rated_by_an_agent"))
             continue
+        # The judges this label has entered: one entry per judge, whichever route found it.
+        entered: set[JudgeKey] = set()
+        reason: UnpairedReason | None = None
         result = by_id.get(rating.result_id)
+        score = None if result is None else result.judge_score(rating.rubric_dim)
+        key = None if result is None else judge_key(result, rating.rubric_dim)
         if result is None:
-            unpaired.append(_unpaired(rating, "result_unresolved"))
-            continue
-        score = result.judge_score(rating.rubric_dim)
-        key = judge_key(result, rating.rubric_dim)
-        if score is None or key is None:
-            unpaired.append(_unpaired(rating, "dimension_unscored"))
-            continue
-        if score.scale != rating.scale:
-            unpaired.append(_unpaired(rating, "scale_changed"))
-            continue
-        groups.setdefault(key, []).append(_Pair(score.score, rating.score, rating.rater, result.id))
+            reason = "result_unresolved"
+        elif score is None or key is None:
+            reason = "dimension_unscored"
+        elif score.scale != rating.scale:
+            reason = "scale_changed"
+        else:
+            groups.setdefault(key, []).append(_Pair(score.score, rating.score, rating.rater, result.id))
+            entered.add(key)
+        if rating.label_key is not None:
+            for other, other_score in by_label.get(rating.label_key, ()):
+                other_key = judge_key(other, other_score.dim)
+                # Its own result was read above; a judge it already entered is not entered twice.
+                if other.id == rating.result_id or other_key is None or other_key in entered:
+                    continue
+                if other_score.scale != rating.scale:
+                    continue
+                groups.setdefault(other_key, []).append(_Pair(other_score.score, rating.score, rating.rater, other.id))
+                entered.add(other_key)
+        if not entered:
+            assert reason is not None  # its own result paired, or said why not
+            unpaired.append(_unpaired(rating, reason))
     dimensions = []
     for key in sorted(groups, key=_sort_key):
         numbers = _agreement_numbers(key.scale, groups[key])
@@ -309,6 +338,24 @@ def judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[Eval
             )
         )
     return JudgeAgreement(ratings_read=read, dimensions=dimensions, unpaired=unpaired)
+
+
+def _scores_by_label_key(results: Sequence[EvalResult]) -> dict[LabelKey, list[tuple[EvalResult, RubricScore]]]:
+    """Every stamped judge score, by the output and criterion it was given on, in result order.
+
+    Args:
+        results: The results read.
+
+    Returns:
+        ``{label_key: [(result, score), ...]}`` over every judge score — rubric dimensions and the two dual-score
+        axes — that carries a key. A score judged before the stamp is absent.
+    """
+    found: dict[LabelKey, list[tuple[EvalResult, RubricScore]]] = {}
+    for result in results:
+        for score in (*result.rubric_scores, result.transcript_score, result.outcome_score):
+            if score is not None and (key := score.label_key) is not None:
+                found.setdefault(key, []).append((result, score))
+    return found
 
 
 def _unpaired(rating: CalibrationRating, reason: UnpairedReason) -> UnpairedRating:

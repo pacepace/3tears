@@ -199,8 +199,8 @@ class CampaignReadStore(Protocol):
         """
         ...
 
-    def query_calibration_ratings(self, scope_id: str, /, *, run_id: str) -> list[CalibrationRating]:
-        """Every calibration rating of one run's results within a scope, oldest first — unpaged."""
+    def query_calibration_ratings(self, scope_id: str, /, *, run_id: str | None = None) -> list[CalibrationRating]:
+        """Every calibration rating within a scope, or of one run's results, oldest first — unpaged."""
         ...
 
     def query_insights(self, scope_id: str, /, *, subject_id: str) -> list[EvalInsight]:
@@ -210,6 +210,45 @@ class CampaignReadStore(Protocol):
     def analysis_archived(self, analysis_id: str, scope_id: str, /) -> bool | None:
         """Whether one stored analysis is archived, or ``None`` when it no longer resolves in the scope."""
         ...
+
+
+def _campaign_ratings(
+    storage: CampaignReadStore, scope_id: str, runs: Sequence[EvalRun], results: Sequence[EvalResult]
+) -> list[CalibrationRating]:
+    """The ratings the campaign's judge agreement reads: of its resolved members' results, and of what they judged.
+
+    Over the resolved members only, like every other lens: a rating of an archived run's result calibrates a
+    judge the bundle does not otherwise read. Except by what was read (#628): a rating anywhere in the scope
+    whose label key — the judged output and the criterion — is a key one of the members' judge scores carries
+    is a person's label of an output this campaign's judge scored, and is read too. Ratings are read per run,
+    in run order, then the scope's other ratings oldest first, so the unpaired list is deterministic for the
+    fingerprint; the scope is read only when a member's score carries a key at all.
+
+    Args:
+        storage: The store.
+        scope_id: The scope.
+        runs: The resolved member runs, in order.
+        results: Their results.
+
+    Returns:
+        The ratings, each once.
+    """
+    ratings = [rating for run in runs for rating in storage.query_calibration_ratings(scope_id, run_id=run.id)]
+    keys = {
+        key
+        for result in results
+        for score in (*result.rubric_scores, result.transcript_score, result.outcome_score)
+        if score is not None and (key := score.label_key) is not None
+    }
+    if not keys:
+        return ratings
+    held = {rating.id for rating in ratings}
+    ratings += [
+        rating
+        for rating in storage.query_calibration_ratings(scope_id)
+        if rating.id not in held and rating.label_key in keys
+    ]
+    return ratings
 
 
 def _launch_disclosure(runs: Collection[EvalRun]) -> str | None:
@@ -545,13 +584,7 @@ def assemble_context_bundle(
         prior_insights=prior_insights,
         prior_insights_omitted=prior_insights_omitted,
         retracted_insights=retracted,
-        # Over the resolved members only, like every other lens: a rating of an archived run's result
-        # calibrates a judge the bundle does not otherwise read. Ratings are read per run, in run order,
-        # so the unpaired list is deterministic for the fingerprint.
-        judge_agreement=judge_agreement(
-            (rating for run in runs for rating in storage.query_calibration_ratings(scope_id, run_id=run.id)),
-            results,
-        ),
+        judge_agreement=judge_agreement(_campaign_ratings(storage, scope_id, runs, results), results),
     )
     # The judge's reliability, before anything judged is summarised: every judged reading carries the
     # tier these two agreements decide for the judges that served it.
