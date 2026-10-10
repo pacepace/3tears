@@ -47,6 +47,7 @@ from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS
 from threetears.evals.run.judge_service import JudgeService, judge_clients_for_run
 from threetears.evals.run.rejudge import (
     ReproducibleJudgeInputs,
+    RequestSettingsPolicy,
     judged_template,
     recorded_judge_pins,
     reproducible_judge_inputs,
@@ -231,14 +232,30 @@ def _scored_dims(result: EvalResult) -> set[str]:
 
 
 def collect_repeatable(
-    storage: EvalStorage, run_id: str, scope_id: str, result_ids: Sequence[str] | None
+    storage: EvalStorage,
+    run_id: str,
+    scope_id: str,
+    result_ids: Sequence[str] | None,
+    *,
+    request_settings: RequestSettingsPolicy = "today",
 ) -> CollectedRepeat:
     """Load the run and every result to repeat, refusing what cannot be reproduced — blocking, so off the loop.
 
+    Args:
+        storage: The store.
+        run_id: The run.
+        scope_id: The scope it lives in.
+        result_ids: The results to collect; ``None`` for every result of the run.
+        request_settings: ``"today"`` (a repeat: its answers pair with the run's first scores, so the run must have
+            been asked exactly as a call is asked now, at the temperature a call now asks) or ``"as_recorded"`` (a
+            judge temperature comparison, which forces its own temperature on both of its sides and pairs nothing
+            with the run's scores, so only an unrecorded apparatus is refused — see :data:`RequestSettingsPolicy`).
+
     Raises:
         NotFoundError: No run with that id, or the run's template does not load.
-        ValidationFailedError: The run is still running, its judging apparatus was not recorded or cannot be
-            sent today, ``result_ids`` names a result not in the run, or no result of the run can be repeated.
+        ValidationFailedError: The run is still running, its judging apparatus was not recorded (or, ``"today"``,
+            cannot be sent today), ``result_ids`` names a result not in the run, or no result of the run can be
+            repeated.
     """
     run = storage.load_eval_run(run_id, scope_id)
     if run is None:
@@ -246,7 +263,7 @@ def collect_repeatable(
     if run.status in NON_TERMINAL_RUN_STATUSES:
         raise ValidationFailedError(f"run '{run_id}' is {run.status} — its results are still being written")
     # Refusals that hold for every result, raised once rather than named per result.
-    judge_model = recorded_judge_pins(run, request_settings="today")
+    judge_model = recorded_judge_pins(run, request_settings=request_settings)
     judged_template(storage, run, scope_id)
     results = storage.query_eval_results_by_run(run.id, scope_id)
     if result_ids is not None:
@@ -264,7 +281,7 @@ def collect_repeatable(
             continue
         try:
             inputs = reproducible_judge_inputs(
-                storage, result, run, scope_id, request_settings="today", config_dims=scored
+                storage, result, run, scope_id, request_settings=request_settings, config_dims=scored
             )
         except (ValidationFailedError, NotFoundError) as refused:
             skipped.append(JudgeRepeatSkip(result_id=result.id, reason=str(refused)))
