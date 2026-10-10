@@ -91,7 +91,14 @@ from threetears.evals.ops.jobs import (
     sweep_job_id,
 )
 from threetears.evals.ops.sweeps import SweepArguments, SweepArm, SweepSettings, sweep_launch
-from threetears.evals.analysis import CostEstimate, FrontierResult, HistoryResult, PivotTable, ScoreExport
+from threetears.evals.analysis import (
+    CostEstimate,
+    FrontierResult,
+    HistoryResult,
+    JudgeTemperatureComparison,
+    PivotTable,
+    ScoreExport,
+)
 from threetears.evals.ops.lenses import (
     ArmEstimate,
     DetectableEffect,
@@ -218,6 +225,7 @@ __all__ = [
     "EvalSummary",
     "FrozenReporterCase",
     "FrontierResult",
+    "JudgeTemperatureComparison",
     "HistoryResult",
     "InsightDeleted",
     "InsightDetail",

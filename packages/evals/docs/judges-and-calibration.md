@@ -259,15 +259,18 @@ python -m threetears.evals judge-temperature RUN --host myapp.evals:build_host -
 python -m threetears.evals judge-temperature RUN --host myapp.evals:build_host --scope dev --max-cost-usd 5 --json > temperature.json
 ```
 
-In code it is `compare_judge_temperatures` (and `estimate_judge_temperature_comparison`) from
-`threetears.evals.run`, and the actions are `judge_temperature` and `judge_temperature_estimate`:
+In code it is two steps: `judge_at_two_temperatures` (priced first by `estimate_judge_temperature_comparison`) from
+`threetears.evals.run` spends and returns every answer, and `read_judge_temperatures` from `threetears.evals.analysis`
+reads them, spending nothing. The actions are `judge_temperature`, which does both, and `judge_temperature_estimate`:
 
 ```python
-from threetears.evals.run import compare_judge_temperatures
+from threetears.evals.analysis import read_judge_temperatures
+from threetears.evals.run import judge_at_two_temperatures
 
-comparison = await compare_judge_temperatures(
+answers = await judge_at_two_temperatures(
     judging_host, summary.run_id, summary.scope_id, out_of_run_cap_usd=5.0, repeats=5,
 )
+comparison = read_judge_temperatures(answers)
 print(comparison.render())
 ```
 

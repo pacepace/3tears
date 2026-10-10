@@ -122,13 +122,10 @@ from threetears.evals.run.judge_repeat import (
     repeat_judge_scores,
 )
 from threetears.evals.run.judge_temperature import (
-    DEFAULT_TEMPERATURE_REPEATS,
-    JudgeTemperatureComparison,
     JudgeTemperatureEstimate,
-    TemperatureSelection,
     borderline_dims,
-    compare_judge_temperatures,
     estimate_judge_temperature_comparison,
+    judge_at_two_temperatures,
 )
 from threetears.evals.run.judge_second import (
     SecondJudgeEstimate,
@@ -349,11 +346,8 @@ __all__ = [
     "SecondJudgeSkip",
     "estimate_second_judge",
     "ask_second_judge",
-    "DEFAULT_TEMPERATURE_REPEATS",
-    "JudgeTemperatureComparison",
     "JudgeTemperatureEstimate",
-    "TemperatureSelection",
     "borderline_dims",
-    "compare_judge_temperatures",
     "estimate_judge_temperature_comparison",
+    "judge_at_two_temperatures",
 ]

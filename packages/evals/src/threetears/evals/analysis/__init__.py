@@ -65,6 +65,14 @@ from threetears.evals.analysis.agreement import (
     tier_for_judges,
     tier_sentence,
 )
+from threetears.evals.analysis.judge_temperature import (
+    JudgeTemperatureComparison,
+    TemperatureCase,
+    TemperatureDimension,
+    TemperatureSettingRead,
+    TemperatureSide,
+    read_judge_temperatures,
+)
 from threetears.evals.analysis.judge_drift import DriftVerdict, JudgeDrift, JudgeDriftDimension, judge_drift
 from threetears.evals.analysis.arms import ArmTable, cell_label, multi_rig_variants, short_digest
 from threetears.evals.analysis.bar_proposals import BaselineBarProposals, propose_bars
@@ -582,6 +590,12 @@ __all__ = [
     "judge_evidence_tiers",
     "judge_key",
     "judge_self_agreement",
+    "JudgeTemperatureComparison",
+    "TemperatureCase",
+    "TemperatureDimension",
+    "TemperatureSettingRead",
+    "TemperatureSide",
+    "read_judge_temperatures",
     "inter_judge_agreement",
     "judge_drift",
     "judge_phase_ceiling_s",

@@ -38,13 +38,12 @@ from threetears.evals.run.judge_second import (
     ask_second_judge,
     estimate_second_judge,
 )
+from threetears.evals.analysis.judge_temperature import JudgeTemperatureComparison, read_judge_temperatures
+from threetears.evals.kernel.judge_temperature import DEFAULT_TEMPERATURE_REPEATS, TemperatureSelection
 from threetears.evals.run.judge_temperature import (
-    DEFAULT_TEMPERATURE_REPEATS,
-    JudgeTemperatureComparison,
     JudgeTemperatureEstimate,
-    TemperatureSelection,
-    compare_judge_temperatures,
     estimate_judge_temperature_comparison,
+    judge_at_two_temperatures,
 )
 from threetears.evals.run.lifecycle import get_run
 from threetears.evals.run.ratings import rate_result
@@ -563,7 +562,8 @@ async def judge_temperature(
     """Re-judge a finished run's borderline cases at the pinned temperature and at the provider default (#633).
 
     The measurement the judge temperature policy rests on: per dimension, score variance across repeats and the
-    judge's self-agreement at each setting, side by side (:func:`~threetears.evals.run.compare_judge_temperatures`).
+    judge's self-agreement at each setting, side by side: :func:`~threetears.evals.run.judge_at_two_temperatures` asks,
+    :func:`~threetears.evals.analysis.read_judge_temperatures` reads.
     Every call is priced and admitted against the host's out-of-run cap before the first is sent, and ledgered under
     purpose ``judge``. Nothing is written to the results.
 
@@ -583,7 +583,7 @@ async def judge_temperature(
         ValidationFailedError: The comparison cannot be made, or its calls are priced above the cap or cannot be
             priced under it — before any call.
     """
-    return await compare_judge_temperatures(
+    answers = await judge_at_two_temperatures(
         host.eval_host,
         run_id,
         scope_id,
@@ -592,6 +592,7 @@ async def judge_temperature(
         repeats=repeats,
         result_ids=result_ids,
     )
+    return read_judge_temperatures(answers)
 
 
 class SecondJudgeRead(EvalBaseModel):

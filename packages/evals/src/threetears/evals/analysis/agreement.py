@@ -81,7 +81,7 @@ from threetears.evals.kernel.evidence_tiers import (
 from threetears.evals.schema.models import MODEL_DEFAULT_TEMPERATURE, SCALES, JudgeTemperature, RubricScale
 
 if TYPE_CHECKING:
-    from threetears.evals.schema.models import CalibrationRating, EvalResult
+    from threetears.evals.schema.models import CalibrationRating, EvalResult, JudgeRepeat
 
 
 #: Why a rating has no judge score to be read against.
@@ -700,12 +700,27 @@ def judge_self_agreement(results: Iterable[EvalResult]) -> JudgeSelfAgreement:
     Returns:
         The agreement per (dimension, scale, judge, judge config), and the repeated scores that could not be paired.
     """
+    return self_agreement_of_repeats((result.id, result.judge_repeats) for result in results)
+
+
+def self_agreement_of_repeats(repeats: Iterable[tuple[str, Sequence[JudgeRepeat]]]) -> JudgeSelfAgreement:
+    """:func:`judge_self_agreement` over repeats held apart from any stored result, each beside the result it repeats.
+
+    The one reading, for repeats that were never written to a result — a judge temperature comparison's answers at
+    one setting, paired against that setting's first answer (#633) — so they are read by the same code.
+
+    Args:
+        repeats: ``(result id, its repeats, oldest first)`` per result.
+
+    Returns:
+        As :func:`judge_self_agreement`.
+    """
     groups: dict[JudgeKey, list[_Pair]] = {}
     unpaired: list[UnrepeatedScore] = []
     read = 0
-    for result in results:
+    for result_id, judge_repeats in repeats:
         rounds: dict[str, int] = {}
-        for repeat in result.judge_repeats:
+        for repeat in judge_repeats:
             for entry in repeat.scores:
                 read += 1
                 rounds[entry.dim] = rounds.get(entry.dim, 0) + 1
@@ -721,7 +736,7 @@ def judge_self_agreement(results: Iterable[EvalResult]) -> JudgeSelfAgreement:
                     reason = "temperature_changed"
                 if reason is not None:
                     unpaired.append(
-                        UnrepeatedScore(result_id=result.id, rubric_dim=entry.dim, round=round_name, reason=reason)
+                        UnrepeatedScore(result_id=result_id, rubric_dim=entry.dim, round=round_name, reason=reason)
                     )
                     continue
                 key = JudgeKey(
@@ -732,7 +747,7 @@ def judge_self_agreement(results: Iterable[EvalResult]) -> JudgeSelfAgreement:
                     entry.first_judge_temperature,
                 )
                 again = entry.repeat.score if entry.repeat is not None else None
-                groups.setdefault(key, []).append(_Pair(entry.first_score, again, round_name, result.id))
+                groups.setdefault(key, []).append(_Pair(entry.first_score, again, round_name, result_id))
     dimensions = []
     for key in sorted(groups, key=_sort_key):
         numbers = _agreement_numbers(key.scale, groups[key])
@@ -1096,6 +1111,7 @@ __all__ = [
     "judge_evidence_tiers",
     "judge_key",
     "judge_self_agreement",
+    "self_agreement_of_repeats",
     "tier_for_judges",
     "tier_sentence",
 ]

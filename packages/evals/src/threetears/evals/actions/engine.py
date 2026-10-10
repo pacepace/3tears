@@ -67,6 +67,7 @@ from threetears.evals.ops import (
     RunsCompared,
     ScoreExport,
     SecondJudgeRead,
+    JudgeTemperatureComparison,
     TemplateListing,
     UndescribableArmsListing,
     analyses_list,
@@ -112,14 +113,8 @@ from threetears.evals.ops import (
     templates_list,
 )
 from threetears.evals.schema.models import SecondJudge
-from threetears.evals.run import (
-    DEFAULT_TEMPERATURE_REPEATS,
-    JudgeTemperatureComparison,
-    JudgeTemperatureEstimate,
-    SecondJudgeEstimate,
-    TemperatureSelection,
-    run_blocking,
-)
+from threetears.evals.kernel.judge_temperature import DEFAULT_TEMPERATURE_REPEATS, TemperatureSelection
+from threetears.evals.run import JudgeTemperatureEstimate, SecondJudgeEstimate, run_blocking
 
 # --- the parameters, each declared once ---------------------------------------------------------------
 
