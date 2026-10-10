@@ -1466,10 +1466,14 @@ Batteries: run an eval in one call, and drive the engine from a command line.
   <br>`build_parser(prog: str = 'python -m threetears.evals', *, takes_host: bool = True, commands: Sequence[HostCommand] = ()) -> argparse.ArgumentParser`
 - **`callable_host`** · function · The least host there is: the shared core, one measure per scorer, no world, an in-memory store.
   <br>`callable_host(scorers: Sequence[Scorer] = (), *, levers: Sequence[str] = (), world: World | None = None, arms: bool = False, margins: Mapping[str, float] | None = None, ranges: Mapping[str, tuple[float, float]] | None = None, store: DocumentStore | None = None, clients: CompletionClients | None = None, trace_sink: TraceSink | None = None, guardrails: Mapping[str, Guardrail] | None = None) -> EvalHost`
+- **`callable_kind`** · function · The kind over a plain async candidate and its scorers, for a host of your own to launch.
+  <br>`callable_kind(candidate: Candidate | ToolUsingCandidate, scorers: Sequence[Scorer] = (), *, classifies: bool = False, judge: Judge | None = None, tools: Mapping[str, Tool] | None = None, ranges: Mapping[str, tuple[float, float]] | None = None) -> CandidateKind`
 - **`callable_kind_contracts`** · function · The contracts of both callable kinds, declaring `levers` as each run's levels beside its model.
   <br>`callable_kind_contracts(levers: Sequence[str] = ()) -> tuple[KindContract, KindContract]`
 - **`compare`** · async function · Run each candidate over every case `k` times as one arm, test every arm against `control`, and report.
   <br>`compare(cases: Sequence[Mapping[str, Any]], candidates: Mapping[str, Candidate | ToolUsingCandidate | WorldCandidate] | Mapping[tuple[str, ...], Candidate | ToolUsingCandidate | WorldCandidate], scorers: Sequence[Scorer] = (), *, control: ArmKey, scope_id: str | None = None, expected: ExpectedLabel | None = None, judge: Judge | None = None, intent: str | None = None, host: EvalHost | None = None, store: DocumentStore | None = None, k: int = 3, name: str | None = None, created_by: str = 'compare', factors: Sequence[str] | None = None, tools: Mapping[str, Tool] | None = None, cassette_mode: CassetteMode = 'off', cassette_corpus_id: str | None = None, world: World | None = None, seed: CaseSeed | None = None, goal_checks: Sequence[str] = (), max_cost_usd: float | None = None, margins: Mapping[str, float] | None = None, ranges: Mapping[str, tuple[float, float]] | None = None, guardrails: Mapping[str, Guardrail] | None = None, measure_latency: bool = False) -> Comparison`
+- **`measure`** · function · Declare the measure a function computes, on the function: `@measure(higher_is_better=True, ...)`.
+  <br>`measure(*, name: str | None = None, reader_name: str | None = None, description: str | None = None, family: str = 'mechanical', transferability_class: str = 'mechanical', attribution_scope: str = 'end_to_end', data_type: str = 'numeric', **declared: Any) -> Callable[[Callable[..., Any]], Measure]`
 - **`run_cli`** · function · Parse `argv` and carry out the command, printing to stdout and refusals to stderr.
   <br>`run_cli(argv: Sequence[str] | None = None, *, host_factory: HostFactory | None = None, prog: str = 'python -m threetears.evals', commands: Sequence[HostCommand] = ()) -> int`
 - **`run_eval`** · async function · Run `candidate` on every case `k` times, grade each answer with every scorer and the judge, and summarise.
@@ -1490,6 +1494,7 @@ Batteries: run an eval in one call, and drive the engine from a command line.
 - **`HostCommand`** · dataclass · A subcommand a host adds beside the engine's own, mounted by `run_cli` under the same program.
 - **`Judge`** · dataclass · A model that grades each answer on a rubric, one call per dimension.
 - **`JudgeGrade`** · model · One rubric dimension's score on one answer, with the judge's reason.
+- **`Measure`** · class · A function that computes a measure, carrying the measure's declaration.
 - **`MeasureSummary`** · model · One measure over a run's results.
 - **`ToolRefused`** · exception · A tool call the world did not make: no such tool, or parameters its schema refuses. Nothing changed.
 - **`World`** · class · A small world: named state each case seeds, and tools the candidate changes it with.

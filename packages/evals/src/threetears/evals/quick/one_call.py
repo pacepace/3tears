@@ -62,6 +62,7 @@ from functools import partial
 from typing import Any, cast
 
 from threetears.evals.contracts import (
+    CandidateKind,
     ACCURACY_MEASURE,
     CONFUSION_CELL_MEASURE,
     DEFAULT_LAUNCH_K_RUNS,
@@ -135,6 +136,7 @@ from threetears.evals.quick.answer import unwrap_answer
 from threetears.evals.quick.guardrails import Guardrail
 from threetears.evals.quick.judged import Judge, judge_evidence
 from threetears.evals.quick.levers import CallableLevers, levers_model
+from threetears.evals.quick.measures import Measure
 from threetears.evals.quick.tools import CellTools, Tool, ToolUsingCandidate, refuse_unusable_tools
 from threetears.evals.quick.world import CaseSeed, World, WorldCandidate, WorldCellKind, world_case_payload
 from threetears.evals.storage import InMemoryDocumentStore
@@ -649,6 +651,15 @@ def callable_host(
     _refuse_unnamed_or_repeated(scorers)
     margins = dict(margins or {})
     ranges = dict(ranges or {})
+    if declared_twice := sorted(
+        scorer.descriptor.name
+        for scorer in scorers
+        if isinstance(scorer, Measure) and scorer.descriptor.name in {*margins, *ranges, *(guardrails or {})}
+    ):
+        raise ValueError(
+            f"{', '.join(declared_twice)} declare(s) its margin, range and guardrail on its own @measure; "
+            "declare them there rather than in margins=, ranges= or guardrails="
+        )
     refuse_unusable_margins(scorers, margins, ranges)
     guardrails = dict(guardrails or {})
     refuse_unusable_guardrails(scorers, guardrails, margins=margins, ranges=ranges)
@@ -659,7 +670,10 @@ def callable_host(
             if arms
             else SHARED_CORE,
             measures=MeasureRegistry(
-                scorer_measure(
+                # A Measure declares itself; any other scorer is declared here, with what this call declares on it.
+                scorer.descriptor
+                if isinstance(scorer, Measure)
+                else scorer_measure(
                     scorer,
                     margin=margins.get(_scorer_name(scorer)),
                     value_range=_as_range(ranges.get(_scorer_name(scorer))),
@@ -681,6 +695,50 @@ def callable_host(
         blocking_executor=None,
         cell_timeout=default_cell_timeout,
         clients=clients,
+    )
+
+
+def callable_kind(
+    candidate: Candidate | ToolUsingCandidate,
+    scorers: Sequence[Scorer] = (),
+    *,
+    classifies: bool = False,
+    judge: Judge | None = None,
+    tools: Mapping[str, Tool] | None = None,
+    ranges: Mapping[str, tuple[float, float]] | None = None,
+) -> CandidateKind:
+    """The kind over a plain async candidate and its scorers, for a host of your own to launch.
+
+    What :func:`run_eval` runs each cell through, as an ordinary :class:`~threetears.evals.contracts.CandidateKind`
+    a launcher wires like any other (``KindWiring(kind_factory=lambda _cell: kind, ...)``), declared on the profile
+    under :data:`CALLABLE_KIND` by :func:`callable_kind_contracts` (:data:`JUDGED_CALLABLE_KIND` with a judge).
+    Each cell calls the candidate with its case, read from the stored test case's ``host_payload["case"]``, where
+    the quick path stores it, and each scorer with the case and the answer, landing each score as a host measure
+    under the scorer's name. A candidate that raises fails its cell; a scorer that raises, returns no number, or
+    returns one outside its range excludes it.
+
+    Args:
+        candidate: The callable under test.
+        scorers: The grades: plain functions, or :class:`~threetears.evals.quick.Measure` objects declaring their own
+            measure (``@measure(...)``), each reported under its name.
+        classifies: Whether each case carries an expected label (``host_payload["expected"]``), landing ``match``
+            and ``confusion_cell``.
+        judge: The judge whose evidence each answer carries, for the judged kind; ``None`` for an unjudged one.
+        tools: The tools the candidate is called with beside each case; ``None`` for a candidate called alone.
+        ranges: Each scorer's range, by name, every score is held to; a ``Measure``'s own ``value_range`` when not
+            named here.
+
+    Returns:
+        The kind: one instance serves every cell of a run.
+    """
+    _refuse_unnamed_or_repeated(scorers)
+    held = {
+        scorer.descriptor.name: scorer.descriptor.value_range
+        for scorer in scorers
+        if isinstance(scorer, Measure) and scorer.descriptor.value_range is not None
+    }
+    return CallableKind(
+        candidate, scorers, classifies=classifies, judge=judge, tools=tools, ranges={**held, **(ranges or {})}
     )
 
 
@@ -1856,6 +1914,7 @@ __all__ = [
     "ExpectedLabel",
     "Scorer",
     "callable_host",
+    "callable_kind",
     "callable_kind_contracts",
     "run_eval",
 ]

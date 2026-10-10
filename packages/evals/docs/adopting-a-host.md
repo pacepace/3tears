@@ -24,6 +24,13 @@ Everything past those — the trial loop, the stored documents, judging, pricing
 engine's. The sections after "Launching" cover what you need only if your subject has a stateful world,
 converses, does background work, or calls tools you want to record and replay.
 
+Quick's pieces build some of these as ordinary contract objects you mix with your own (all in
+`threetears.evals.quick`): `@measure(...)` declares a `MetricDescriptor` on the function that computes it, so you
+register its `.descriptor` and grade with the function; `callable_kind(candidate, scorers)` is the kind over a
+plain async function, declared under `callable_kind_contracts()`; and a quick `World`'s `registry` and
+`bindings(state)` are a simple world's declaration and its handles. The toy host's kind computes its measures
+this way.
+
 ## Read the reference hosts, in this order
 
 Two example hosts live in this repository (not in the wheel), written as reference code that imports
