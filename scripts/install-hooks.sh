@@ -12,7 +12,8 @@ set -euo pipefail
 # Idempotent: running it again rewrites the same hook. It installs into the hooks directory git
 # itself uses (`git rev-parse --git-path hooks`: honours core.hooksPath, and is the common
 # directory's hooks for every worktree of the clone), and the hook runs the check script of the
-# checkout the commit is made in, so each worktree checks with its own copy.
+# checkout the commit is made in, so each worktree checks with its own copy; a checkout that has no
+# check script (a branch cut before it existed) commits unchecked, with a line on stderr saying so.
 #
 # A commit-msg hook already there that this script did not write (a git template's, a tool's) is
 # kept, not replaced: it is moved to commit-msg.chained and the installed hook runs it first, then
@@ -52,7 +53,14 @@ if [ -x "\$chained" ]; then
     "\$chained" "\$@" || exit \$?
 fi
 # refuse a commit message that credits an agent (CLAUDE.md, "No agent attribution")
-exec "\$(git rev-parse --show-toplevel)/scripts/check-attribution.sh" --message "\$1"
+check="\$(git rev-parse --show-toplevel)/scripts/check-attribution.sh"
+if [ ! -f "\$check" ]; then
+    # this hook serves every worktree of the clone; one on a branch cut before the check existed has
+    # nothing to run, and must still be able to commit
+    echo "commit-msg: no scripts/check-attribution.sh in this checkout; attribution not checked" >&2
+    exit 0
+fi
+exec "\$check" --message "\$1"
 HOOK_BODY
 chmod +x "$tmp"
 mv -f "$tmp" "$HOOK"

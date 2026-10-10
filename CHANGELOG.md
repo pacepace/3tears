@@ -20,6 +20,8 @@ packages (bumped in lock-step).
   (`check-attribution.sh --message`), in the hooks directory git uses (so every worktree of the
   clone), idempotently. A commit-msg hook already there (a git template's, a tool's) is kept as
   `commit-msg.chained` and runs first; CLAUDE.md points at the script instead of a hand-typed hook.
+  In a worktree whose branch has no check script the hook lets the commit through, with a line on
+  stderr saying it was not checked.
 
 ### Tests: SearXNG's scoring is pinned on engines of the test container's own
 

@@ -246,5 +246,29 @@ class TestTheHookInstaller:
         assert refused.returncode != 0
         assert _commit_through_hooks(other, "a clean change").returncode == 0
 
+    def test_a_worktree_whose_branch_has_no_check_script_still_commits(
+        self, hooked_repo: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """the hook is shared by every worktree of the clone, and some are on branches older than the script."""
+        assert _install(hooked_repo).returncode == 0
+        # a branch whose tree never had the script
+        for command in (
+            ["git", "checkout", "-q", "--orphan", "older"],
+            ["git", "rm", "-rqf", "--cached", "."],
+            ["git", "commit", "-q", "--no-verify", "--allow-empty", "-m", "before the check existed"],
+            ["git", "checkout", "-qf", "main"],
+        ):
+            assert _run(*command, cwd=hooked_repo).returncode == 0, command
+        other = tmp_path_factory.mktemp("wt") / "older"
+        assert _run("git", "worktree", "add", "-q", str(other), "older", cwd=hooked_repo).returncode == 0
+        assert not (other / "scripts" / "check-attribution.sh").exists()
+        committed = _commit_through_hooks(other, "a change on the older branch")
+        assert committed.returncode == 0, committed.stderr
+        assert "no scripts/check-attribution.sh in this checkout" in committed.stderr
+        # and where the script is checked out, the same hook still runs it
+        assert (
+            _commit_through_hooks(hooked_repo, "x\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n").returncode != 0
+        )
+
     def test_claude_md_tells_a_contributor_to_run_it(self) -> None:
         assert "./scripts/install-hooks.sh" in _CLAUDE_MD.read_text()
