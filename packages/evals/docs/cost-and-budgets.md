@@ -53,6 +53,13 @@ the two apart (a clock stop's reason opens with `wall-clock budget`), and `error
 because that list counts faults. A run stopped by its clock under 0.66.0 or earlier stays stored `failed`
 (`Job timed out after Ns`).
 
+**The cell deadline.** Each cell runs under a deadline: the kind's own (its launcher's
+`KindWiring.cell_timeout_s`, else 600 s). A cell that outlives it is excluded as `cell_timeout`. A launch can
+name `cell_timeout_s` for a long-horizon run, up to the host's `LaunchSettings.max_cell_timeout_s`. A host that
+declares no ceiling lets a launch only lower the kind's deadline. The job's wall-clock budget is sized from
+the deadline in force. The run records it as `cell_timeout_s`, with `cell_timeout_s_origin` (`launch`, `kind`
+or `default`). A run stored before 0.66.0 records neither, and its deadline reads as unknown.
+
 **Wall time.** A run executes its cells (case × repeat) in a shuffled order, up to
 `LaunchSettings.max_concurrent_cells` (4 by default) at once, and a cell's judge calls run up to
 `judge_concurrency` at once. The arms of one launch run side by side in one concurrency slot. Estimate a
@@ -105,6 +112,15 @@ read-only and reports each arm's price and the launch's verdict, word for word. 
 pivot as `predicted_cost`, and each prediction sits only in the cell of its model and template. Once the
 launch ran, pass its run ids as `launched_run_ids` too, and each predicted cell says how many of its
 observations came from other runs — the history the prediction was drawn from among them.
+
+**What the launch could detect.** Beside the price, the estimate's `detectable_effect` block says, per
+reading a comparison would test, "with N cases and k repeats this campaign can detect Δ ≥ x (from runs …)".
+Δ is the smallest true difference the paired test finds four times in five, at the α/m the first step of
+Holm's correction asks of the family. Its variance comes from earlier runs of the same template: the repeat
+noise, and how far two arms disagree about one case (measured where two earlier runs launched differently
+shared cases; otherwise one arm's case-to-case spread, counted twice). With no earlier run, or no repeated
+cases, a reading says it cannot estimate and why; no default variance is ever used. The block states its
+assumptions, among them near-normal per-case differences and that only the one comparison differs.
 
 A host therefore prices no arm itself: a wrapper that priced assembled runs would be a second rule, and a
 second pricing of the same arm.

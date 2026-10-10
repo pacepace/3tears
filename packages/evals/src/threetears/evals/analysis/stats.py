@@ -2123,8 +2123,184 @@ def lognormal_sum_prediction_band(history: Sequence[float], n_future: int) -> tu
     return quantile(tail), quantile(1.0 - tail)
 
 
+#: The power a detectable difference is stated at: the smallest difference the planned comparison finds four
+#: times in five. The conventional planning figure (Cohen 1988); the estimate names it beside every number.
+DETECTABLE_POWER: Final = 0.8
+
+
+def paired_t_power(n_pairs: int, effect: float, difference_sd: float, *, alpha: float) -> float:
+    """The power of the two-sided paired t-test on ``n_pairs`` differences against a true mean difference ``effect``.
+
+    The noncentral t: ``P(|T'| > c)`` with ``n − 1`` df, noncentrality ``effect · √n / difference_sd`` and ``c``
+    the two-sided critical value at ``alpha`` (:func:`t_critical_two_sided`). Integrated over the chi-square
+    law of the differences' variance, ``E[Φ(λ − c·√(V/df)) + Φ(−λ − c·√(V/df))]``, on the
+    :data:`_SPREAD_NODES` equal-probability points :func:`_chi_square_nodes` places — the law the lognormal
+    cost band integrates over. Exact for normal differences up to that quadrature (under 0.2 points of power
+    against a 4,000-panel Simpson integral, ``tests/test_power_preflight.py``).
+
+    Args:
+        n_pairs: The pairs the test reads, at least two.
+        effect: The true mean difference.
+        difference_sd: The true standard deviation of one pair's difference, positive.
+        alpha: The two-sided level the test rejects at.
+
+    Returns:
+        The probability the test rejects.
+
+    Raises:
+        ValueError: Fewer than two pairs, or a spread that is not positive.
+    """
+    if n_pairs < 2:
+        raise ValueError(f"a paired t-test needs at least two pairs, got {n_pairs}")
+    if difference_sd <= 0.0:
+        raise ValueError(f"the differences' standard deviation must be positive, got {difference_sd}")
+    df = n_pairs - 1
+    critical = t_critical_two_sided(1.0 - alpha, df)
+    noncentrality = abs(effect) * math.sqrt(n_pairs) / difference_sd
+    normal = NormalDist()
+    total = 0.0
+    for node in _chi_square_nodes(df):
+        scaled = critical * math.sqrt(node / df)
+        total += normal.cdf(noncentrality - scaled) + normal.cdf(-noncentrality - scaled)
+    return total / _SPREAD_NODES
+
+
+def paired_detectable_difference(
+    n_pairs: int, difference_sd: float, *, alpha: float, power: float = DETECTABLE_POWER
+) -> float:
+    """The smallest true mean difference the two-sided paired t-test on ``n_pairs`` pairs finds with ``power``.
+
+    The inverse of :func:`paired_t_power` in the effect, by bisection: the power rises monotonically in
+    ``|effect|``. It is in the unit of ``difference_sd``.
+
+    Args:
+        n_pairs: The pairs the test reads, at least two.
+        difference_sd: The standard deviation of one pair's difference, positive.
+        alpha: The two-sided level each comparison is rejected at — ``α/m`` for the first step of Holm's
+            correction over ``m`` comparisons.
+        power: The power the difference is found with.
+
+    Returns:
+        The difference.
+
+    Raises:
+        ValueError: As :func:`paired_t_power`, or a ``power`` outside ``(alpha, 1)``.
+    """
+    if not alpha < power < 1.0:
+        raise ValueError(f"power must lie between alpha and 1, got {power}")
+    low, high = 0.0, difference_sd
+    while paired_t_power(n_pairs, high, difference_sd, alpha=alpha) < power:
+        low, high = high, 2.0 * high
+    for _ in range(60):
+        middle = 0.5 * (low + high)
+        if paired_t_power(n_pairs, middle, difference_sd, alpha=alpha) < power:
+            low = middle
+        else:
+            high = middle
+    return high
+
+
+class VarianceComponents(NamedTuple):
+    """How one reading varies across cases and across repeats of one case, estimated from earlier runs.
+
+    ``within_case`` is the pooled variance of repeats around their case's mean; ``between_case`` the variance
+    of case levels around the run's mean, with the repeat noise each case mean carries taken out (the
+    one-way random-effects method of moments, floored at zero). Both are variances, in the reading's unit
+    squared.
+    """
+
+    within_case: float
+    #: The degrees of freedom behind ``within_case``: every repeat beyond a case's first, over every run.
+    within_df: int
+    between_case: float
+    #: The cases behind ``between_case``, summed over the runs that had two or more.
+    n_cases: int
+    #: How many cases (over every run) were repeated, and so carried a within-case spread.
+    n_repeated_cases: int
+
+
+def variance_components(runs: Sequence[Sequence[Sequence[float]]]) -> VarianceComponents | None:
+    """Estimate one reading's within-case and between-case variance from earlier runs.
+
+    Each run is its cases, each case its repeats' values. The within-case variance pools every repeated case's
+    sample variance by its degrees of freedom. The between-case variance is estimated per run as the variance
+    of its case means less the share of it the repeat noise explains (``within_case`` times the mean of
+    ``1/k`` over its cases), floored at zero, and pooled over runs by ``cases − 1``. A run is one arm, so its
+    case means vary only by case and by repeat noise; two arms are never pooled into one case's level.
+
+    Args:
+        runs: Per run, per case, the values of that case's repeats.
+
+    Returns:
+        The components, or ``None`` when fewer than two cases were repeated (no within-case spread can be
+        told from case-to-case spread then) or no run carries two cases.
+    """
+    within_ss = 0.0
+    within_df = 0
+    repeated = 0
+    for run in runs:
+        for case in run:
+            if len(case) >= 2:
+                mean = math.fsum(case) / len(case)
+                within_ss += math.fsum((value - mean) ** 2 for value in case)
+                within_df += len(case) - 1
+                repeated += 1
+    if repeated < 2:
+        return None
+    within = within_ss / within_df
+    between_weighted = 0.0
+    between_df = 0
+    n_cases = 0
+    for run in runs:
+        cases = [case for case in run if case]
+        if len(cases) < 2:
+            continue
+        means = [math.fsum(case) / len(case) for case in cases]
+        spread = _sample_std(means) ** 2
+        noise = within * math.fsum(1.0 / len(case) for case in cases) / len(cases)
+        between_weighted += (len(cases) - 1) * max(0.0, spread - noise)
+        between_df += len(cases) - 1
+        n_cases += len(cases)
+    if between_df == 0:
+        return None
+    return VarianceComponents(within, within_df, between_weighted / between_df, n_cases, repeated)
+
+
+def paired_case_variance(
+    pairs: Sequence[tuple[Sequence[Sequence[float]], Sequence[Sequence[float]]]], within_case: float
+) -> tuple[float, int] | None:
+    """The between-case variance of a paired difference: how much two arms disagree about the same case.
+
+    Each pair is two earlier runs' repeats over the cases both ran, aligned by case. A case's difference of
+    means varies by how differently the two arms find that case (what pairing does not cancel) and by both
+    sides' repeat noise; the noise's share, ``within_case · (1/k_a + 1/k_b)`` averaged over the cases, is taken
+    out of the differences' sample variance, floored at zero, and the pairs pooled by ``cases − 1``.
+
+    Args:
+        pairs: Per pair of runs, ``(one run's cases, the other's)``, case-aligned, each case its repeats' values.
+        within_case: The pooled within-case variance (:func:`variance_components`).
+
+    Returns:
+        ``(variance, cases behind it)``, or ``None`` when no pair shares two cases.
+    """
+    weighted = 0.0
+    df = 0
+    n_cases = 0
+    for left, right in pairs:
+        aligned = [(a, b) for a, b in zip(left, right, strict=True) if a and b]
+        if len(aligned) < 2:
+            continue
+        diffs = [math.fsum(b) / len(b) - math.fsum(a) / len(a) for a, b in aligned]
+        noise = within_case * math.fsum(1.0 / len(a) + 1.0 / len(b) for a, b in aligned) / len(aligned)
+        weighted += (len(aligned) - 1) * max(0.0, _sample_std(diffs) ** 2 - noise)
+        df += len(aligned) - 1
+        n_cases += len(aligned)
+    return None if df == 0 else (weighted / df, n_cases)
+
+
 __all__ = [
     "BAR_SEED_HALF_WIDTH_FRACTION",
+    "DETECTABLE_POWER",
     "EQUIVALENCE_NEEDS_RANGE",
     "EQUIVALENCE_TEST_NAME",
     "GUARDRAIL_HELD_NEEDS_RANGE",
@@ -2142,6 +2318,7 @@ __all__ = [
     "KappaMoments",
     "LevelDifference",
     "SignificanceResult",
+    "VarianceComponents",
     "bar_seed",
     "bounded_mean_p",
     "case_means",
@@ -2167,12 +2344,16 @@ __all__ = [
     "mean_interval",
     "no_spread_p",
     "observed_mean_interval",
+    "paired_case_variance",
     "paired_change",
+    "paired_detectable_difference",
     "paired_equivalence",
+    "paired_t_power",
     "proportion_interval",
     "separation_p",
     "small_sample_case_means",
     "standard_error_of_mean",
     "t_critical_two_sided",
+    "variance_components",
     "wilson_interval",
 ]

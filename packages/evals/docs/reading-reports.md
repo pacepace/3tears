@@ -55,6 +55,12 @@ An analysis adds that reading: findings, each with the evidence it rests on and 
 a decision per declared question, with its confidence; which arm won and why; and what to run next. No
 headline, finding, decision or answer to a declared question appears in a code-only report.
 
+**Coverage, joined.** An analysis's report opens What to run next with a `coverage` table: each lever of the
+coverage map, its status, the findings whose `axes` name it (or "no finding") and the next steps whose `lever`
+names it. A `thin` or `unswept` lever no step names reads "no next step names it". A step naming a lever with
+no coverage row is a proposal, not a gap, and says so beside it. The methods count the levers no finding names;
+a measured lever with no finding may simply have had nothing to say, so nothing acts on the count.
+
 `Report.basis` says which a report is; `REPORT_VERSION` is 5.
 
 ## Reading the arm table
@@ -241,6 +247,7 @@ unit of analysis: a case's repeats are averaged first, because they are not inde
 | Scope divergence, mechanism checks | The difference tested directly, paired or Welch as for a contrast; a gap with no spread is read by an exact permutation test, which can reach 0.05 only from six shared cases, or unshared where 2 / C(n_a + n_b, n_a) ≤ 0.05 (four a side, or three against five). |
 | Frontier | Dominance by the contrasts' test, Holm across the subject's pairs; latency ranked on the mean; p95 median-unbiased (Hyndman–Fan type 8) from 13 observations; cost band a lognormal prediction band. |
 | Run history | Paired test per adjacent pair of runs, uncorrected; `equivalent` by the same bounded TOST against the threshold, on the measure's declared range (with none, untested, and each step's flag says why). |
+| Detectable difference (a launch estimate) | The smallest true difference the paired t-test on `n` cases finds with 80% power at α/m (Holm's first step over the `m` comparisons planned), by the noncentral t. The variance is measured on earlier runs of the template: repeat noise, plus how far two arms disagree about a case (or one arm's case spread, twice, where no earlier pair shares cases). Assumes near-normal per-case differences and one real difference in the family. |
 | Judge agreement and evidence tiers | Cohen's κ, quadratic-weighted on 1–5; tiers decided on a score interval for κ (one-sided 95% lower bound to award, 97.5% upper bound to deny). |
 
 The [simulation suite](measuring-soundly.md) checks each method's error rate against a known truth.

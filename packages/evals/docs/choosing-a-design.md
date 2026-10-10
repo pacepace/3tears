@@ -111,6 +111,7 @@ campaign = create_campaign(
 | `intended_repetitions` | The repeats per case you meant each cell to get. A cell that falls short is named in `bundle.short_cells`. | the frontier, and any cell you want checked |
 | `questions` | What you set out to learn. Their `merit_axes` set the Holm families, and a reading no question covers is [exploratory](reading-reports.md#readings-no-question-asked-about-exploratory). | a confirmatory answer |
 | `bars`, `merit_priority` | Thresholds tighter than the host's, and the tie-break order between merit axes. | a bar verdict, a tie-break |
+| `crossing`, `skipped_cells` | Which combinations of levels (cells) you meant to run: `full`, or `star` (each axis's first level is the centre; cells moving more than one axis from it are skipped), less any `skipped_cells`. `bundle.declared_crossing` then reads a skipped cell as `skipped_by_design`, never a gap, and an unrun cell you meant to run as `not_run`. With neither, no cell is read either way. | a partial grid |
 
 **Declare a design when you know the question; explore when you do not.** The design is optional. Declare
 one when the question is settled before the runs: you know which lever you are comparing, against which

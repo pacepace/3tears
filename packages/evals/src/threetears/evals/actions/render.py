@@ -25,9 +25,12 @@ from threetears.evals.contracts import GoalStateOutcome, ResultOutcome, counted_
 from threetears.evals.contracts.errors import EvalServiceError
 from threetears.evals.ops import (
     AnalysisDeleted,
+    CaseSetLine,
+    CaseSetListing,
     AnalysisGenerationEstimate,
     AnalysisLine,
     AnalysisListing,
+    BarProposals,
     CampaignLine,
     CampaignListing,
     LaunchEstimate,
@@ -52,6 +55,7 @@ from threetears.evals.ops import (
     ScoreExport,
     SecondJudgeRead,
     TemplateListing,
+    bar_proposals_text,
     UndescribableArmsListing,
     dollars_text,
     estimate_text,
@@ -442,6 +446,20 @@ def render_campaign(campaign: CampaignLine) -> str:
     )
 
 
+def render_case_set(case_set: CaseSetLine) -> str:
+    """One version of a case set on one line."""
+    tracked = "" if case_set.tracked else ", one-off"
+    return (
+        f"- {case_set.label}: template {case_set.template_id}, {len(case_set.test_case_ids)} case(s) "
+        f"({', '.join(case_set.test_case_ids)}){tracked}"
+    )
+
+
+def render_case_sets(listing: CaseSetListing) -> str:
+    """A scope's case sets, every version."""
+    return "\n".join([f"case sets ({len(listing.case_sets)})", *(render_case_set(c) for c in listing.case_sets)])
+
+
 def render_campaigns(listing: CampaignListing) -> str:
     """A scope's campaigns."""
     return "\n".join([f"campaigns ({len(listing.campaigns)})", *(render_campaign(c) for c in listing.campaigns)])
@@ -488,6 +506,11 @@ def render_analysis_estimate(estimate: AnalysisGenerationEstimate) -> str:
         f"up to {ceiling}, out-of-run cap {cap}; {verdict}. A generation makes at most {estimate.max_calls} call(s): "
         "a refused output buys one repair round-trip, priced against what is left of the cap before it is sent."
     )
+
+
+def render_bar_proposals(proposals: BarProposals) -> str:
+    """Each proposed bar with its seed and any vacuity, then every reading nothing could be proposed on."""
+    return bar_proposals_text(proposals)
 
 
 def render_report(document: ReportDocument) -> str:
@@ -674,6 +697,7 @@ __all__ = [
     "render_results",
     "render_campaign",
     "render_campaigns",
+    "render_bar_proposals",
     "render_estimate",
     "render_export",
     "render_help_index",

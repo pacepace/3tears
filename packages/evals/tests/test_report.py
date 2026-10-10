@@ -210,8 +210,10 @@ class TestTheToyReportsContent:
     ) -> None:
         _, analysis, report = toy
         methods = [block for block in report.blocks if block.section == "methods"]
-        assert [block.source for block in methods if isinstance(block, DisclosureBlock)] == ["generation"]
+        # Then the count of coverage levers no finding names (#631), which every analysis with a coverage map states.
+        assert [block.source for block in methods if isinstance(block, DisclosureBlock)] == ["generation", "surface"]
         assert analysis.generation.bundle_fingerprint in methods[0].text  # type: ignore[union-attr]
+        assert "lever(s) in the coverage map" in methods[1].text  # type: ignore[union-attr]
 
     async def test_a_stored_chart_this_build_cannot_draw_says_why(self, toy: tuple[Any, EvalAnalysis, Report]) -> None:
         """Served as the reason, never omitted — a missing chart reads as one that never was."""

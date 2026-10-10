@@ -44,6 +44,20 @@ Ordering predicates (across all tools' recorded calls — the cell's call ledger
     call_count("inventory.place_order") >= 2
     last_call_was("inventory.place_order")
 
+Each ordering predicate is False when either action never happened, so "never acted" reads like "acted in
+the wrong order", and ``not called_before(a, b)`` holds for a candidate that did neither. A check about order
+pairs it with ``call_count(a) >= 1``. ``last_call_was`` reads only the cell's final call, across the whole
+cell, so a candidate that acted and then called something else answers False for the action it did take.
+
+A deliberate pass (the engine's reserved ledger entry, recorded by ``CallLedger.record_pass``) is not a call:
+none of the call builtins sees it, and ``passed()`` reads it, the same for every host::
+
+    passed()
+    not passed() and call_count("inventory.place_order") >= 1
+
+``passed()`` holds when the cell recorded a pass and no call: a candidate that acted and then passed did not
+pass. A cell that did nothing and recorded no pass did not pass either.
+
 Call parameters (``calls()`` returns the matching calls' recorded parameters, in order)::
 
     calls("inventory.place_order").length >= 3
@@ -157,7 +171,7 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
-from threetears.evals.contracts.call_ledger import CallLedger
+from threetears.evals.contracts.call_ledger import CallLedger, is_pass
 from threetears.evals.contracts.prose import schema_is_prose, schema_nodes_at
 
 if TYPE_CHECKING:
@@ -258,6 +272,7 @@ _BUILTINS = frozenset(
         "calls",
         "fired",
         "fired_armed",
+        "passed",
         "any",
         "all",
     }
@@ -885,6 +900,9 @@ def call_parameter_matches(
 #: The builtins whose string arguments name a ``tool.action``.
 _ACTION_BUILTINS = frozenset({"called_before", "called_after", "call_count", "last_call_was", "calls"})
 
+#: Every builtin that reads the cell's call ledger: the action builtins, and ``passed()``.
+_LEDGER_BUILTINS = _ACTION_BUILTINS | {"passed"}
+
 
 def referenced_actions(expression: str) -> tuple[tuple[str, str], ...]:
     """Every ``(tool, action)`` a goal check names through a call builtin, in source order, each once.
@@ -914,19 +932,20 @@ def referenced_actions(expression: str) -> tuple[tuple[str, str], ...]:
 
 
 def reads_call_ledger(expression: str) -> bool:
-    """Whether a goal check reads the cell's call ledger at all — through any call builtin.
+    """Whether a goal check reads the cell's call ledger at all — through any call builtin, or ``passed()``.
 
     Args:
         expression: A goal-state expression.
 
     Returns:
-        Whether it calls ``called_before``, ``called_after``, ``call_count``, ``last_call_was`` or ``calls``.
+        Whether it calls ``called_before``, ``called_after``, ``call_count``, ``last_call_was``, ``calls`` or
+        ``passed``.
 
     Raises:
         DSLError: The expression does not parse.
     """
     return any(
-        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _ACTION_BUILTINS
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _LEDGER_BUILTINS
         for node in ast.walk(parse(expression).body)
     )
 
@@ -1532,6 +1551,9 @@ def _eval_call(node: ast.Call, ctx: _EvalContext) -> Any:
         return _builtin_last_call_was(ctx.ledger, *_check_arity("last_call_was", args, 1))
     if func_name == "calls":
         return _builtin_calls(ctx.ledger, *_check_arity("calls", args, 1))
+    if func_name == "passed":
+        _check_arity("passed", args, 0)
+        return _builtin_passed(ctx.ledger)
     if func_name in _FIRE_PREDICATES:
         return _builtin_fired(func_name, ctx, ast.unparse(node), *_check_arity(func_name, args, 1))
     raise DSLError(f"Unknown DSL function: {func_name}")
@@ -1621,8 +1643,20 @@ def _builtin_length(value: Any) -> Any:
 
 
 def _all_calls_with_index(ledger: CallLedger) -> list[tuple[int, str, str]]:
-    """Return ``[(index, tool, action), ...]`` over the ledger, in recorded order across every tool."""
-    return [(i, call.tool, call.action) for i, call in enumerate(ledger.calls)]
+    """Return ``[(index, tool, action), ...]`` over the ledger's calls, in recorded order across every tool.
+
+    The engine's deliberate-pass entry is left out: it is not a call, and only ``passed()`` reads it.
+    """
+    return [(i, call.tool, call.action) for i, call in enumerate(ledger.calls) if not is_pass(call)]
+
+
+def _builtin_passed(ledger: CallLedger) -> bool:
+    """True when the cell recorded a deliberate pass and made no call.
+
+    A pass beside a call is an act followed (or preceded) by a pass, which is not passing; an empty ledger is
+    doing nothing without saying so, which is not a deliberate pass either.
+    """
+    return any(is_pass(call) for call in ledger.calls) and all(is_pass(call) for call in ledger.calls)
 
 
 def _parse_tool_action(spec: Any) -> tuple[str, str]:
@@ -1694,7 +1728,11 @@ def _builtin_calls(ledger: CallLedger, spec: Any) -> list[dict[str, Any]]:
     Copies, so an expression cannot reach the ledger it reads.
     """
     tool, action = _parse_tool_action(spec)
-    return [copy.deepcopy(call.params) for call in ledger.calls if call.tool == tool and call.action == action]
+    return [
+        copy.deepcopy(call.params)
+        for call in ledger.calls
+        if call.tool == tool and call.action == action and not is_pass(call)
+    ]
 
 
 # ---- any() / all() generators ------------------------------------------------

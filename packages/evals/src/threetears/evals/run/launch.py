@@ -51,7 +51,11 @@ from threetears.evals.contracts.models import (
     DEFAULT_LAUNCH_K_RUNS,
     GOAL_CHECK_PROOF_RULES,
     ApparatusSettingValue,
+    CaseSet,
+    CaseSetRef,
+    CellTimeoutOrigin,
     EvalRun,
+    EvalTestCase,
     refused_goal_checks,
     JudgedArtifact,
     ModelRoleOrigin,
@@ -62,6 +66,7 @@ from threetears.evals.contracts.models import (
 from threetears.evals.contracts.out_of_run import OutOfRunBudget, plan_variation_calls
 from threetears.evals.run.authoring import validated_kind_spec
 from threetears.evals.run.budget import EvalRunCostCap
+from threetears.evals.run.case_sets import resolve_case_set
 from threetears.evals.run.ceilings import CeilingRaisedError, refuse_raised_ceiling
 from threetears.evals.contracts.cassettes import CassetteMode
 from threetears.evals.run.jobs import MAX_CONCURRENT_JOBS, EvalJobManager, JobTimeoutFactory, adaptive_job_timeout_s
@@ -86,7 +91,7 @@ from threetears.observe import get_logger
 if TYPE_CHECKING:
     from threetears.evals.contracts.host.subject import SubjectSnapshot
     from threetears.evals.contracts.host.sweepables import SweepableRegistry
-    from threetears.evals.contracts.models import EvalTemplate, EvalTestCase, JudgeConfig, VariationCounts
+    from threetears.evals.contracts.models import EvalTemplate, JudgeConfig, VariationCounts
     from threetears.evals.contracts.provider import PricedCompletion
     from threetears.evals.contracts.scoring import CellSummary
     from threetears.evals.contracts.storage import DefinitionStore
@@ -146,6 +151,10 @@ class LaunchSettings(BaseModel):
             pins per dim: those are choices. ``None`` substitutes nothing, and a run judged on a candidate's
             model says so on every surface that lists its judges
             (:func:`~threetears.evals.contracts.judge_attribution.judges_sharing_a_candidate_model`).
+        max_cell_timeout_s: The longest per-cell deadline a launch may name (``cell_timeout_s``), in seconds.
+            ``None`` declares no ceiling of the host's own: a launch may then only LOWER its kind's deadline (the
+            one the kind's launcher wires, or :data:`~threetears.evals.run.runner.DEFAULT_CELL_TIMEOUT_S`), so a
+            host that declares nothing cannot be overridden upward.
         setting_names: What the host calls each of the fields above, keyed by field name, so a
             refusal names the knob an operator turns. A field the host does not name here is
             called by its own name; the engine names no host setting of its own.
@@ -162,6 +171,7 @@ class LaunchSettings(BaseModel):
     max_metered_calls: int | None = Field(gt=0)
     max_out_of_run_cost_usd: float = Field(gt=0)
     judge_alternate_model: str | None = Field(default=None, min_length=1)
+    max_cell_timeout_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     setting_names: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -813,6 +823,15 @@ class LaunchRequest:
             (:func:`~threetears.evals.contracts.models.refused_goal_checks`). ``template`` already leaves them
             out (:func:`~threetears.evals.run.runner.template_as_graded`), so every launcher and every cell
             grades the rest, and the run records these (``EvalRun.refused_goal_checks``).
+        cell_timeout_s: The per-cell deadline the launch named, in seconds, already checked positive and within
+            the host's declared ceiling (:attr:`LaunchSettings.max_cell_timeout_s`); ``None`` runs every cell under
+            the kind's own deadline. The launch tail holds it to the kind's deadline when the host declares no
+            ceiling, and records the deadline every cell ran under (``EvalRun.cell_timeout_s``).
+        case_set: The named, versioned case set the launch targets, as stored, or ``None`` for a launch over the
+            template's cases. Its cases are :attr:`case_set_cases`; the launcher freezes exactly those
+            (:meth:`cases_or`), the launch tail refuses a wiring that froze any others, and the run records the set
+            (``EvalRun.case_set``).
+        case_set_cases: The set's cases, resolved in the set's order; empty when :attr:`case_set` is ``None``.
         margins: The margins the launch declared on core rate measures, already checked
             (:func:`~threetears.evals.contracts.metrics.run_margin_refusal`), which the run records
             (``EvalRun.declared_margins``); empty when it declared none.
@@ -842,8 +861,22 @@ class LaunchRequest:
     launch_group: LaunchGroup
     settings: LaunchSettings
     refused_goal_checks: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
+    cell_timeout_s: float | None = None
+    case_set: CaseSet | None = None
+    case_set_cases: tuple[EvalTestCase, ...] = ()
     margins: Mapping[str, float] = field(default_factory=lambda: MappingProxyType({}))
     measure_latency: bool = False
+
+    def cases_or(self, template_cases: Sequence[EvalTestCase]) -> list[EvalTestCase]:
+        """The cases this arm freezes: the case set's, when the launch names one, else the kind's own.
+
+        Args:
+            template_cases: The cases the kind plays when the launch names no set.
+
+        Returns:
+            The cases, in the order the run freezes them.
+        """
+        return list(self.case_set_cases) if self.case_set is not None else list(template_cases)
 
     def overlays_as(self, model: type[_Validated]) -> _Validated:
         """The launch's overlays as the kind's own overlay model, typed.
@@ -1323,6 +1356,7 @@ class _Dispatched(NamedTuple):
         overlays: The launch's overlays, validated by the kind's model.
         kind_spec: The template's kind spec, validated by the kind's spec model.
         apparatus_settings: The launch's apparatus settings, validated against the kind.
+        case_set: The case set the launch targets and its cases in order, resolved; ``None`` for none.
     """
 
     template: EvalTemplate
@@ -1331,6 +1365,7 @@ class _Dispatched(NamedTuple):
     overlays: BaseModel | None
     kind_spec: BaseModel | None
     apparatus_settings: dict[str, ApparatusSettingValue]
+    case_set: tuple[CaseSet, tuple[EvalTestCase, ...]] | None = None
 
 
 def _refuse_repeated_models(models: Sequence[str]) -> None:
@@ -1364,6 +1399,7 @@ async def _dispatch(
     cassette_corpus_id: str | None,
     overlays: Mapping[str, Any] | None,
     apparatus_settings: Mapping[str, Any] | None,
+    case_set: CaseSetRef | None = None,
 ) -> _Dispatched:
     """Load a launch's template, find its kind's launcher, and make the refusals that read them.
 
@@ -1381,10 +1417,12 @@ async def _dispatch(
         cassette_corpus_id: The capture run a replay serves, already checked against the mode.
         overlays: The launch's overlays, unvalidated.
         apparatus_settings: The launch's apparatus settings, unvalidated.
+        case_set: The case set the launch targets, or ``None``.
 
     Returns:
         The template, its kind, that kind's registry entry, the overlays and the template's kind spec as
-        the kind's models validated them, and the apparatus settings validated against the kind.
+        the kind's models validated them, the apparatus settings validated against the kind, and the case set
+        with its cases.
 
     Raises:
         NotFoundError: The template is not found.
@@ -1439,6 +1477,18 @@ async def _dispatch(
         )
         _refuse_a_corpus_that_cannot_serve(corpus_run, cassette_corpus_id, template=template, scope_id=scope_id)
     _refuse_repeated_models(models)
+    resolved_set: tuple[CaseSet, tuple[EvalTestCase, ...]] | None = None
+    if case_set is not None:
+        if n_variations > 0:
+            raise ValidationFailedError(
+                f"case_set={case_set.label!r} names the cases to run and n_variations={n_variations} asks for new "
+                "ones; a launch runs one or the other"
+            )
+        stored, cases = await run_blocking(
+            eval_host.blocking_executor,
+            partial(resolve_case_set, eval_host.storage, case_set, template=template, scope_id=scope_id),
+        )
+        resolved_set = (stored, tuple(cases))
     # The registry entry is the launcher, so a kind the host registered is a kind this launch
     # dispatches — there is no chain of kind comparisons here for a new kind to be missing from.
     return _Dispatched(
@@ -1448,6 +1498,7 @@ async def _dispatch(
         resolved.overlays,
         resolved.kind_spec,
         resolved.apparatus_settings,
+        resolved_set,
     )
 
 
@@ -1472,6 +1523,8 @@ async def start_run(
     scope_id: str,
     launch_group: LaunchGroup | None = None,
     admission: AdmissionTicket | None = None,
+    cell_timeout_s: float | None = None,
+    case_set: CaseSetRef | None = None,
     margins: Mapping[str, float] | None = None,
     measure_latency: bool = False,
 ) -> list[EvalRun]:
@@ -1528,6 +1581,16 @@ async def start_run(
         admission: A reservation the caller already holds, of which this launch takes its runs'
             share instead of asking for room of its own. Ignored with ``launch_group``, whose
             caller's admission covers it. When omitted, a launch that owns its group is admitted here.
+        cell_timeout_s: The deadline each cell of the launch's runs runs under, in seconds, in place of the
+            kind's own; ``None`` keeps the kind's. Bounded by the host's ceiling
+            (:attr:`LaunchSettings.max_cell_timeout_s`, or the kind's own deadline when the host declares none,
+            so an undeclared host can only be lowered). The run's job budget is sized from it, and the run
+            records it with its origin (``EvalRun.cell_timeout_s``, ``cell_timeout_s_origin``).
+        case_set: A named, versioned case set of the template to run in place of the kind's own choice of cases
+            (:func:`~threetears.evals.run.case_sets.mint_case_set`). Every arm runs exactly its cases, in its
+            order, and each run records it (``EvalRun.case_set``). Refused beside ``n_variations`` (a launch runs
+            the set's cases or new ones, not both), and when the set is another template's or a case of it no
+            longer resolves.
         margins: Margins on core rate measures (``{"accuracy": 0.05}``), the most two arms may differ on one and
             still be alike, declared before any result exists. A core measure's descriptor declares none, so
             this is how a comparison of these runs can read ``equivalent`` on it. Every run records them
@@ -1596,6 +1659,8 @@ async def start_run(
         scope_id=scope_id,
         launch_group=launch_group,
         admission=admission,
+        cell_timeout_s=cell_timeout_s,
+        case_set=case_set,
         margins=margins,
         measure_latency=measure_latency,
     )
@@ -1649,6 +1714,42 @@ def _refuse_raised_ceilings(
         raise ValidationFailedError(str(refused)) from refused
 
 
+def _refuse_cell_timeout(settings: LaunchSettings, cell_timeout_s: float | None, *, ceiling: float | None) -> None:
+    """Refuse a per-cell deadline no cell could run under, or one above the ceiling it is held to.
+
+    Asked twice with one rule: before anything is read, against the host's declared ceiling (``None`` there checks
+    only the value), and at the launch tail against the ceiling in force — the declared one, or the kind's own
+    deadline for a host that declares none, which a launch may then only lower.
+
+    Args:
+        settings: The launch's settings snapshot, which names the host's ceiling in a refusal.
+        cell_timeout_s: The launch's per-cell deadline, or ``None`` for none.
+        ceiling: The most it may be, or ``None`` for no ceiling to check here.
+
+    Raises:
+        ValidationFailedError: The deadline is not a finite number above zero, or is above ``ceiling``.
+    """
+    if cell_timeout_s is None:
+        return
+    if not (math.isfinite(cell_timeout_s) and cell_timeout_s > 0):
+        raise ValidationFailedError(
+            f"cell_timeout_s must be a finite number of seconds above 0 (got {cell_timeout_s}); a cell with no time "
+            "to run measures nothing"
+        )
+    if ceiling is not None and cell_timeout_s > ceiling:
+        declared = settings.max_cell_timeout_s is not None
+        raise ValidationFailedError(
+            f"cell_timeout_s={cell_timeout_s:g} is above the {'host' if declared else 'kind'}'s ceiling of "
+            f"{ceiling:g}s"
+            + (
+                f" ({settings.name_of('max_cell_timeout_s')})"
+                if declared
+                else f"; the host declares no {settings.name_of('max_cell_timeout_s')}, so a launch may only lower "
+                "the kind's own deadline"
+            )
+        )
+
+
 def _refuse_launch_arguments(
     host: LaunchHost,
     settings: LaunchSettings,
@@ -1658,6 +1759,7 @@ def _refuse_launch_arguments(
     max_metered_calls: int | None,
     cassette_mode: str | None,
     cassette_corpus_id: str | None,
+    cell_timeout_s: float | None = None,
 ) -> CassetteMode:
     """The refusals a launch makes of its arguments alone, before it reads anything — one place, for the launch and its quote.
 
@@ -1669,12 +1771,14 @@ def _refuse_launch_arguments(
         max_metered_calls: The per-run metered-call ceiling override.
         cassette_mode: The cassette mode, unnormalised.
         cassette_corpus_id: The corpus a replay serves.
+        cell_timeout_s: The launch's per-cell deadline, or ``None``.
 
     Returns:
         The cassette mode, normalised.
 
     Raises:
-        ValidationFailedError: A non-positive ``max_cost_usd`` or ``max_metered_calls`` (or any
+        ValidationFailedError: A ``cell_timeout_s`` that is not a finite number above zero, or above the
+            host's declared ceiling; a non-positive ``max_cost_usd`` or ``max_metered_calls`` (or any
             ``max_metered_calls`` on a host declaring no metered tools), either one above the host's configured
             ceiling, a ``k_runs`` outside the run's bounds, a ``cassette_mode`` that is not a mode, or a corpus
             the mode cannot use.
@@ -1697,6 +1801,7 @@ def _refuse_launch_arguments(
             "without max_metered_calls"
         )
     _refuse_raised_ceilings(settings, max_cost_usd=max_cost_usd, max_metered_calls=max_metered_calls)
+    _refuse_cell_timeout(settings, cell_timeout_s, ceiling=settings.max_cell_timeout_s)
     # The run model bounds k_runs, but it is built after the cases are resolved — so an out-of-range
     # value from a surface that does not bound it at the wire would be refused after generation had
     # been paid for. Checked against the model's own field, so the bound is stated once.
@@ -1733,6 +1838,8 @@ async def _start_run(
     launch_group: LaunchGroup | None,
     admission: AdmissionTicket | None,
     priced: _PricedArms | None = None,
+    cell_timeout_s: float | None = None,
+    case_set: CaseSetRef | None = None,
     margins: Mapping[str, float] | None = None,
     measure_latency: bool = False,
 ) -> list[EvalRun]:
@@ -1756,6 +1863,7 @@ async def _start_run(
         max_metered_calls=max_metered_calls,
         cassette_mode=cassette_mode,
         cassette_corpus_id=cassette_corpus_id,
+        cell_timeout_s=cell_timeout_s,
     )
     declared_margins = MappingProxyType(_refused_margins_or(margins))
     dispatch = partial(
@@ -1773,6 +1881,7 @@ async def _start_run(
         cassette_corpus_id=cassette_corpus_id,
         overlays=overlays,
         apparatus_settings=apparatus_settings,
+        case_set=case_set,
     )
 
     async def prepare(group: LaunchGroup, dispatched: _Dispatched) -> list[EvalRun]:
@@ -1803,6 +1912,7 @@ async def _start_run(
             cassette_corpus_id=cassette_corpus_id,
             max_cost_usd=max_cost_usd,
             max_metered_calls=max_metered_calls,
+            cell_timeout_s=cell_timeout_s,
             measure_latency=measure_latency,
         )
         if declared_margins:
@@ -1910,6 +2020,7 @@ def _arm_requests(
     cassette_corpus_id: str | None,
     max_cost_usd: float | None,
     max_metered_calls: int | None,
+    cell_timeout_s: float | None = None,
     measure_latency: bool = False,
 ) -> list[LaunchRequest]:
     """One request per arm — per model, or one on the kind's default when the launch names none.
@@ -1936,6 +2047,7 @@ def _arm_requests(
         cassette_corpus_id: The corpus a replay serves.
         max_cost_usd: The per-run cost-cap override.
         max_metered_calls: The per-run metered-call ceiling override.
+        cell_timeout_s: The launch's per-cell deadline, or ``None`` for the kind's own.
         measure_latency: Whether the launch declared latency under test.
 
     Returns:
@@ -1983,6 +2095,9 @@ def _arm_requests(
             arm_price=None,
             launch_group=group,
             settings=settings,
+            cell_timeout_s=cell_timeout_s,
+            case_set=dispatched.case_set[0] if dispatched.case_set is not None else None,
+            case_set_cases=dispatched.case_set[1] if dispatched.case_set is not None else (),
             measure_latency=measure_latency,
         )
         for arm_model in arm_models
@@ -2345,6 +2460,8 @@ async def quote_launch(
     max_metered_calls: int | None = None,
     scope_id: str,
     case_count: int | None = None,
+    cell_timeout_s: float | None = None,
+    case_set: CaseSetRef | None = None,
 ) -> LaunchQuote:
     """What :func:`start_run` with the same arguments would make of its arms' prices — read-only.
 
@@ -2377,6 +2494,8 @@ async def quote_launch(
         scope_id: As :func:`start_run` takes it.
         case_count: A case count to quote every planned arm at in place of its plan's, for a hypothetical
             grid; ``None`` quotes each at its plan, as the launch prices it.
+        cell_timeout_s: As :func:`start_run` takes it; refused as the launch refuses it, and prices nothing.
+        case_set: As :func:`start_run` takes it; resolved and refused as the launch resolves and refuses it.
 
     Returns:
         The quote.
@@ -2398,6 +2517,7 @@ async def quote_launch(
         max_metered_calls=max_metered_calls,
         cassette_mode=cassette_mode,
         cassette_corpus_id=cassette_corpus_id,
+        cell_timeout_s=cell_timeout_s,
     )
     _refuse_oversized_launch(max(1, len(models)), settings.max_launch_arms, settings.name_of("max_launch_arms"))
     dispatched = await _dispatch(
@@ -2414,6 +2534,7 @@ async def quote_launch(
         cassette_corpus_id=cassette_corpus_id,
         overlays=overlays,
         apparatus_settings=apparatus_settings,
+        case_set=case_set,
     )
     # A provisional group: nothing joins it, and its id stamps only a budget nothing is admitted to.
     planned = await _planned_arms(
@@ -2731,6 +2852,14 @@ def _refuse_wiring_the_request_contradicts(request: LaunchRequest, wiring: KindW
             f"{request.template.id!r} in scope {request.scope_id!r}; a run's cases are its template's, in its scope, "
             "or its results name cases nothing in that scope resolves"
         )
+    if request.case_set is not None and (frozen := [case.id for case in wiring.test_cases]) != list(
+        request.case_set.test_case_ids
+    ):
+        raise ValueError(
+            f"the launch targets case set {request.case_set.ref.label!r} ({', '.join(request.case_set.test_case_ids)}) "
+            f"and kind {kind!r}'s launcher froze {', '.join(frozen) or 'no cases'}; a launcher freezes the set's "
+            "cases (LaunchRequest.cases_or)"
+        )
     if request.candidate_model is not None and wiring.default_candidate_model is not None:
         raise ValueError(
             f"kind {kind!r}'s launcher supplied a default model ({wiring.default_candidate_model!r}) for an arm the "
@@ -2905,6 +3034,22 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
         configured_max_metered_calls = settings.max_metered_calls
 
         refused_checks = dict(request.refused_goal_checks)
+        # The deadline every cell of this run runs under: the launch's, held to the host's ceiling — or, for a host
+        # that declares none, to the kind's own deadline, which a launch may then only lower — else the kind's.
+        kind_cell_timeout_s = wiring.cell_timeout_s if wiring.cell_timeout_s is not None else DEFAULT_CELL_TIMEOUT_S
+        _refuse_cell_timeout(
+            settings,
+            request.cell_timeout_s,
+            ceiling=settings.max_cell_timeout_s if settings.max_cell_timeout_s is not None else kind_cell_timeout_s,
+        )
+        cell_timeout_s = request.cell_timeout_s if request.cell_timeout_s is not None else kind_cell_timeout_s
+        cell_timeout_origin: CellTimeoutOrigin = (
+            "launch"
+            if request.cell_timeout_s is not None
+            else "kind"
+            if wiring.cell_timeout_s is not None
+            else "default"
+        )
         try:
             run = EvalRun(
                 scope_id=request.scope_id,
@@ -2914,6 +3059,7 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                 candidate_model=candidate_model,
                 k_runs=request.k_runs,
                 test_case_ids=[case.id for case in test_cases],
+                case_set=request.case_set.ref if request.case_set is not None else None,
                 variation_counts=wiring.variation_counts,
                 candidate_kind=request.kind,
                 # A launch is the act of fixing a rig and measuring against it, so every run it starts
@@ -2956,6 +3102,8 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                 ),
                 simulator_model=wiring.simulator_model,
                 turn_budget_s=wiring.turn_budget_s,
+                cell_timeout_s=cell_timeout_s,
+                cell_timeout_s_origin=cell_timeout_origin,
                 # How each apparatus role was ASKED, stamped from the one value the host's client
                 # builder applies to it, and only for a role this kind ran: a resolved model is
                 # recorded exactly when the role ran, so it is the predicate here too.
@@ -3058,7 +3206,8 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
             # dispatch's kind is the only key, so the factory cannot be registered under another.
             candidate_kinds={request.kind: wiring.kind_factory},
             external_rates=wiring.external_rates,
-            cell_timeout_s=wiring.cell_timeout_s if wiring.cell_timeout_s is not None else DEFAULT_CELL_TIMEOUT_S,
+            # Each cell's own deadline, the one the run records: every cell opens its own timeout from it.
+            cell_timeout_s=cell_timeout_s,
             # Measurement-condition probe (R4): the job manager is the only thing that can
             # see a SECOND job executing beside this one, which is contention that corrupts a
             # latency pool as the run's own concurrent cells do (``max_concurrent_cells``). The run is this job

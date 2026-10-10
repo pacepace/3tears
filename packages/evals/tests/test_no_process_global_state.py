@@ -137,6 +137,11 @@ ALLOWED: dict[tuple[str, str], str] = {
         "over-serialises and never leaks: it holds no value, and a per-store lock would be weaker, "
         "since a host may build two storages over one document store"
     ),
+    ("threetears/evals/run/metering.py", "_OPEN_CELL"): (
+        "a ContextVar, so its value is per task, never per process: each cell sets it for its own task and "
+        "resets it on leaving, and the value names the ledger it meters for, so a call decided under one "
+        "run's ledger is never counted by another host's cell"
+    ),
     ("threetears/evals/contracts/host/sweepables.py", "SHARED_CORE"): (
         "the engine's own core declarations every host extends — engine vocabulary, built once from "
         "constants and never mutated (extend returns a new registry)"
