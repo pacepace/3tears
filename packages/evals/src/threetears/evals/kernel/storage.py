@@ -58,6 +58,7 @@ from threetears.evals.schema.models import (
     EvalTestCase,
     EvalTrace,
     JudgeConfig,
+    LabelKey,
     RubricDimTombstone,
     JudgeConfigTombstone,
     case_set_doc_id,
@@ -919,9 +920,14 @@ class EvalStorage:
         self._save(rating.to_dict())
 
     def query_calibration_ratings(
-        self, scope_id: str, *, run_id: str | None = None, result_id: str | None = None
+        self,
+        scope_id: str,
+        *,
+        run_id: str | None = None,
+        result_id: str | None = None,
+        label_key: LabelKey | None = None,
     ) -> list[CalibrationRating]:
-        """Ratings in a scope, oldest first, optionally narrowed by run and by result.
+        """Ratings in a scope, oldest first, optionally narrowed by run, by result and by what was read.
 
         Unlimited, like every agreement input: a paged read would compute agreement over the first
         page and report it as the dimension's.
@@ -930,6 +936,10 @@ class EvalStorage:
             scope_id: The scope to read.
             run_id: Optional equality filter on the rated result's run.
             result_id: Optional equality filter on the rated result.
+            label_key: Optional filter on the output and criterion the rating was given on (#628): every
+                label of a byte-identical judged output on the same criterion, whichever result it was given
+                on — the read a frozen judge case makes (build the key with
+                :func:`~threetears.evals.schema.models.label_key_of`). A rating with no key never matches.
 
         Returns:
             The matching ratings, ordered by when they were rated.
@@ -939,6 +949,9 @@ class EvalStorage:
             field_eq["run_id"] = run_id
         if result_id is not None:
             field_eq["result_id"] = result_id
+        if label_key is not None:
+            field_eq["output_fingerprint"] = label_key.output_fingerprint
+            field_eq["criterion_fingerprint"] = label_key.criterion_fingerprint
         items = self._store.by_doc_type(
             "calibration_rating", scope_id, order_by="rated_at", descending=False, **field_eq
         )

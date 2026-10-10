@@ -17,6 +17,12 @@ replaces their earlier rating: the document's id is derived from the result, the
 and the rater's kind — so an agent rating under a person's identity stands beside that person's rating
 rather than overwriting it.
 
+**A rating is also bound to what the rater read** (#628). The judge stamps each score with its label key —
+the fingerprint of the evidence it read and of the dimension's definition — and the write copies that key onto
+the rating, from the stored score rather than from the caller. So the label pairs with every judge score of a
+byte-identical output on the same criterion, on any result, and a frozen judge case finds it by the key. A
+score judged before the stamp has none, and its rating is read by its result alone.
+
 **Deleting a result does not delete its ratings.** They stay, and every agreement read lists them as
 ``result_unresolved`` — a person's judgement is not regenerable, and a rating that silently
 disappeared would shrink a dimension's n with nothing saying why.
@@ -78,8 +84,9 @@ def rate_result(
         reason: The rater's own words for the score.
 
     Returns:
-        The rating as written. A second rating by the same rater, of the same kind, of the same
-        dimension of the same result replaces the first.
+        The rating as written, carrying the judge score's label key (the fingerprints of the output read
+        and of the criterion) when the score has one. A second rating by the same rater, of the same kind,
+        of the same dimension of the same result replaces the first.
 
     Raises:
         NotFoundError: No such result in the scope.
@@ -114,6 +121,10 @@ def rate_result(
             scale=judged.scale,
             score=score,
             reason=reason,
+            # What the rater read, as the judge stamped it: the label then holds for every judgement of a
+            # byte-identical output on the same criterion, not only this result's (#628).
+            output_fingerprint=judged.output_fingerprint,
+            criterion_fingerprint=judged.criterion_fingerprint,
         )
     except ValidationError as e:
         raise ValidationFailedError(f"rating of {rubric_dim!r} on result {result_id!r} refused: {e}") from e

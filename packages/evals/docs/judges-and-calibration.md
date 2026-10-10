@@ -123,6 +123,35 @@ for result in results:  # in practice: the results a person has read
 result again replaces that rater's rating. Only `rater_kind="person"` counts as agreement with people. A rating
 an agent wrote is listed as `rated_by_an_agent` and never pooled.
 
+### A rating is bound to what was read, not only to the result
+
+The judge stamps every score with a **label key** (`RubricScore.label_key`): a fingerprint of the evidence it read
+and a fingerprint of the criterion it applied. `rate_result` copies the rated score's key onto the rating
+(`CalibrationRating.output_fingerprint` and `criterion_fingerprint`). So the label holds for every judgement of a
+byte-identical output on the same criterion: another run's result, a result under another judge, or a frozen judge
+case.
+
+- **The output** is the whole `JudgeEvidence` the kind rendered: `subject`, `case_material` and `artifact`,
+  hashed verbatim (`fingerprint_judged_output`). One changed byte, whitespace included, is another output. The
+  scenario intent, variation and goal outcomes are context the engine adds around the evidence, so they are not
+  part of it.
+- **The criterion** is the dimension's definition, not its id: its name, description, scale and scoring guide
+  (`fingerprint_criterion`). Templates are edited in place, so an id outlives its wording. A label keyed by the id
+  would follow an output to a dimension that now asks something else. When you reword a dimension or move it to
+  another scale, you get a new criterion, and no earlier label claims it. The rubric axis is not part of the
+  criterion. A reserved transcript or outcome axis is its id and its 1-5 scale.
+
+To find the labels of an output you hold, build its key and read the store:
+
+```python
+from threetears.evals.schema import label_key_of
+
+key = label_key_of(evidence, rubric_dim)  # a JudgeEvidence, and a RubricDim or reserved axis id
+labels = host.storage.query_calibration_ratings(scope_id, label_key=key)
+```
+
+A score judged before the stamp has no key, and so does its rating. Such a rating is read by its result alone.
+
 ## Step 6: read agreement: kappa
 
 ```python
@@ -140,6 +169,13 @@ net of what chance alone would give from each side's score distribution: 0 is ch
 same score: then it is undefined, not perfect. With several people, the judge is set against each person and the
 kappas are pooled so that each distinct result weighs 1. `results` counts those distinct results, and the tier
 floors count them too. `agreement.unpaired` names every rating that could not be paired, and why.
+
+A rating pairs with its own result's score, and with every other result's score that carries the same label key.
+A label enters each judge's agreement once. Within one judge group a rating pairs with its own result when that
+result is in the group, and otherwise with the first matching result. A label found by both routes, or on several
+identical outputs under one judge, is still one person's one answer, so it adds one pair and not one pair per copy.
+A rating whose own result was deleted still pairs when its key reaches a result that was read. A campaign bundle
+reads its member runs' ratings, plus any rating in the scope whose key matches a key its judge scores carry.
 
 ## Step 7: evidence tiers, and how many ratings they take
 

@@ -408,6 +408,16 @@ class ResultRated(EvalBaseModel):
     rater_kind: str = Field(
         description="Always `agent` through an action: the agent rated, whatever account it acts for."
     )
+    output_fingerprint: str | None = Field(
+        default=None,
+        description=(
+            "The fingerprint of the judged output rated, copied from the judge score: the rating holds for every "
+            "judgement of a byte-identical output on the same criterion. None when the score predates the stamp."
+        ),
+    )
+    criterion_fingerprint: str | None = Field(
+        default=None, description="The fingerprint of the rated dimension's definition, beside output_fingerprint."
+    )
 
 
 def result_rate(
@@ -454,6 +464,8 @@ def result_rate(
         score=rating.score,
         rater=rating.rater,
         rater_kind=rating.rater_kind,
+        output_fingerprint=rating.output_fingerprint,
+        criterion_fingerprint=rating.criterion_fingerprint,
     )
 
 

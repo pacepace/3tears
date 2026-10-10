@@ -1,0 +1,17 @@
+{
+  "criterion_fingerprint": "98768155bd7ea6dd8ef476fa4e39d63b00dac9cd040957c100c04589f521ffe7",
+  "doc_type": "calibration_rating",
+  "id": "rating:a62f435e818f57f8ac3d56ca1af6d5518ee09d874ebcc36006960a122a493df7",
+  "output_fingerprint": "1f9d9bece16539e2c8031142aefce56788324982259145a36677bf1cc818ad1c",
+  "rated_at": "2026-10-10T14:35:15.207919+00:00",
+  "rater": "host",
+  "rater_kind": "person",
+  "reason": "warm and on topic",
+  "result_id": "r-1",
+  "rubric_dim": "conversation.tone",
+  "run_id": "run-1",
+  "scale": "ordinal",
+  "schema_version": 9,
+  "scope_id": "uni-1",
+  "score": 4
+}

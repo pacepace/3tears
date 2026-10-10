@@ -60,12 +60,14 @@ from threetears.evals.schema.models import (
     JudgeConfig,
     JudgedArtifact,
     JudgeEvidence,
+    LabelKey,
     RoleUsage,
     RubricDim,
     RubricAxis,
     RubricScale,
     RubricScore,
     UsageRole,
+    label_key_of,
 )
 from threetears.evals.kernel.host.eval_host import CompletionClients
 from threetears.evals.schema.completion import BoundCompletionClient, ProviderFailureDescriber
@@ -326,6 +328,9 @@ class JudgeRequest(NamedTuple):
     include_goal_outcomes: bool
     #: The dimension's rubric axis, stamped onto its score: a boundary dimension is a guardrail.
     axis: RubricAxis = "capability"
+    #: What the call reads — the evidence's fingerprint and the criterion's — stamped onto its score, so a
+    #: person's label of the same output on the same criterion pairs with it on any result (#628).
+    label_key: LabelKey | None = None
 
 
 def _request(
@@ -339,6 +344,7 @@ def _request(
     include_goal_outcomes: bool,
     document: bool = False,
     axis: RubricAxis = "capability",
+    label_key: LabelKey | None = None,
 ) -> JudgeRequest:
     """Compose one call's system prompt from its instructions and the JSON-format contract.
 
@@ -368,6 +374,7 @@ def _request(
         label=label,
         include_goal_outcomes=include_goal_outcomes,
         axis=axis,
+        label_key=label_key,
     )
 
 
@@ -503,6 +510,7 @@ class JudgeService:
             label="EvalTranscript",
             scale="ordinal",
             include_goal_outcomes=False,
+            label_key=label_key_of(context.judge_evidence, TRANSCRIPT_DIM_ID),
         )
 
     def outcome_request(self, context: JudgeContext) -> JudgeRequest:
@@ -516,6 +524,7 @@ class JudgeService:
             label="EvalOutcome",
             scale="ordinal",
             include_goal_outcomes=True,
+            label_key=label_key_of(context.judge_evidence, OUTCOME_DIM_ID),
         )
 
     def dimension_request(self, dim: RubricDim, context: JudgeContext) -> JudgeRequest:
@@ -532,6 +541,7 @@ class JudgeService:
             include_goal_outcomes=True,
             document=document,
             axis=dim.axis,
+            label_key=label_key_of(context.judge_evidence, dim),
         )
 
     # ------------------------------------------------------------------
@@ -597,6 +607,9 @@ class JudgeService:
                 # What the call was sent at, as the client reported it — not what was asked for, since
                 # a model that refuses a temperature is sent none.
                 judge_temperature=result.get("judge_temperature"),
+                # What was read on what criterion: the key a person's label of this output pairs by.
+                output_fingerprint=None if request.label_key is None else request.label_key.output_fingerprint,
+                criterion_fingerprint=None if request.label_key is None else request.label_key.criterion_fingerprint,
             ),
             config_id=config_id,
             usage=usage,

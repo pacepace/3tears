@@ -1,0 +1,10 @@
+{
+  "deleted_at": "2026-10-10T14:35:15.285870+00:00",
+  "deleted_config_id": "c-1",
+  "doc_type": "judge_config_tombstone",
+  "id": "01a1263d-51d5-729f-a334-24719f01abdd",
+  "name": "tone-strict",
+  "rubric_dim_id": "conversation.tone",
+  "schema_version": 9,
+  "scope_id": "uni-1"
+}
