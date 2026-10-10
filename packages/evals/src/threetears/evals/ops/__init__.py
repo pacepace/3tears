@@ -10,8 +10,8 @@ answerable across a restart.
 The operations are named as the actions over them are (``noun_verb``), so a name in the action
 catalogue (:mod:`threetears.evals.actions`) is the operation it calls.
 
-The read lenses — :func:`scope_pivot`, :func:`scope_history`, :func:`scope_export`, :func:`runs_compare` and
-:func:`launch_estimate` — return their result models (the first three the analysis package's own,
+The read lenses — :func:`scope_pivot`, :func:`scope_history`, :func:`scope_export`, :func:`scope_frontier`,
+:func:`runs_compare` and :func:`launch_estimate` — return their result models (the first four the analysis package's own,
 re-exported here because they are what these operations hand back; the comparison its own
 :class:`RunsCompared`, the two-run lens's answer with the disclosures every comparison carries; the
 estimate its own :class:`LaunchEstimate`, priced by the launch's rule), with the text a surface shows for each (:func:`pivot_text`
@@ -71,7 +71,7 @@ from threetears.evals.ops.jobs import (
     parse_job_id,
     run_job_id,
 )
-from threetears.evals.analysis import CostEstimate, HistoryResult, PivotTable, ScoreExport
+from threetears.evals.analysis import CostEstimate, FrontierResult, HistoryResult, PivotTable, ScoreExport
 from threetears.evals.ops.lenses import (
     ArmEstimate,
     LaunchEstimate,
@@ -79,6 +79,7 @@ from threetears.evals.ops.lenses import (
     OutOfRunSpendTotals,
     estimate_text,
     export_text,
+    frontier_text,
     history_text,
     history_launch_pricer,
     launch_estimate,
@@ -88,6 +89,7 @@ from threetears.evals.ops.lenses import (
     runs_compare,
     runs_compared_text,
     scope_export,
+    scope_frontier,
     scope_history,
     scope_out_of_run_spend,
     scope_pivot,
@@ -161,6 +163,7 @@ __all__ = [
     "DimensionSummary",
     "EvalSummary",
     "FrozenReporterCase",
+    "FrontierResult",
     "HistoryResult",
     "JobHandle",
     "JobKind",
@@ -208,6 +211,7 @@ __all__ = [
     "dollars_text",
     "estimate_text",
     "export_text",
+    "frontier_text",
     "generation_key",
     "history_text",
     "job_cancel",
@@ -234,6 +238,7 @@ __all__ = [
     "runs_compared_text",
     "runs_list",
     "scope_export",
+    "scope_frontier",
     "scope_history",
     "scope_out_of_run_spend",
     "scope_pivot",

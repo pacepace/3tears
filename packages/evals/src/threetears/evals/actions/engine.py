@@ -32,6 +32,7 @@ from threetears.evals.ops import (
     LaunchEstimate,
     EvalSummary,
     FrozenReporterCase,
+    FrontierResult,
     HistoryResult,
     JobsStarted,
     JobStatus,
@@ -77,6 +78,7 @@ from threetears.evals.ops import (
     runs_compare,
     runs_list,
     scope_export,
+    scope_frontier,
     scope_history,
     scope_out_of_run_spend,
     scope_pivot,
@@ -379,6 +381,21 @@ class ScopeHistoryParams(EvalBaseModel):
     run_status: RunStatusFilter = "completed"
 
 
+class ScopeFrontierParams(EvalBaseModel):
+    """``scope_frontier``."""
+
+    bar: Annotated[
+        float | None,
+        Field(
+            ge=0.0,
+            le=1.0,
+            description="The pass^k a variant must clear, from 0 to 1; omitted ranks the variants without a verdict.",
+        ),
+    ] = None
+    subject_filter: SubjectFilter = None
+    run_status: RunStatusFilter = "completed"
+
+
 class ScopeExportParams(EvalBaseModel):
     """``scope_export``."""
 
@@ -649,6 +666,19 @@ async def _scope_history(host: OpsHost, caller: Caller, params: ScopeHistoryPara
         metric=params.metric,
         min_absolute_change=params.min_absolute_change,
         min_relative_change=params.min_relative_change,
+        subject_id=params.subject_filter,
+        status=params.run_status,
+    )
+
+
+async def _scope_frontier(host: OpsHost, caller: Caller, params: ScopeFrontierParams) -> FrontierResult:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor,
+        scope_frontier,
+        eval_host,
+        caller.scope_id,
+        bar=params.bar,
         subject_id=params.subject_filter,
         status=params.run_status,
     )
@@ -1104,6 +1134,24 @@ def engine_actions() -> tuple[Action, ...]:
                 "where the suite changed is marked so a new denominator does not read as a regression. A step that "
                 "misses significance reads not_separated, never no change; only an equivalence test against the "
                 "measure's declared materiality threshold reads equivalent."
+            ),
+        ),
+        Action(
+            name="scope_frontier",
+            summary="Rank each subject's variants on quality, cost and latency, and name the cheapest that clears a bar.",
+            workflow=ANALYSE,
+            permission="read",
+            params=ScopeFrontierParams,
+            result=FrontierResult,
+            handler=_scope_frontier,
+            render=render.render_frontier,
+            example={"bar": 0.8},
+            detail=(
+                "A point is one variant of a subject: pass^k with its interval, mean composite, production-replicating "
+                "cost and latency, each over its own count. A point is dominated only when another is shown better on "
+                "every axis it measured. With a bar, a variant clears it only when its whole pass^k interval is at or "
+                "above it, and the verdict names the cheapest that cleared, beside every rival it was not shown cheaper "
+                "than. The arms of one compare share a subject, so its models rank on one frontier. Spends nothing."
             ),
         ),
         Action(

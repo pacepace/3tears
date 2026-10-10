@@ -33,6 +33,7 @@ from threetears.evals.ops import (
     LaunchEstimate,
     EvalSummary,
     FrozenReporterCase,
+    FrontierResult,
     HistoryResult,
     JobsStarted,
     JobStatus,
@@ -54,6 +55,7 @@ from threetears.evals.ops import (
     dollars_text,
     estimate_text,
     export_text,
+    frontier_text,
     history_text,
     out_of_run_spend_text,
     pivot_text,
@@ -523,6 +525,11 @@ def render_runs_compared(compared: RunsCompared) -> str:
     return runs_compared_text(compared)
 
 
+def render_frontier(result: FrontierResult) -> str:
+    """Each subject's variants on quality, cost and latency, and the cheapest that clears the bar."""
+    return frontier_text(result)
+
+
 def render_history(result: HistoryResult) -> str:
     """Each contestant's series, with each step's regression verdict and the test behind it."""
     return history_text(result)
@@ -584,6 +591,7 @@ __all__ = [
     "render_export",
     "render_help_index",
     "render_help_page",
+    "render_frontier",
     "render_history",
     "render_job_status",
     "render_jobs_started",

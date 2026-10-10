@@ -1548,6 +1548,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`estimate_text(estimate: LaunchEstimate) -> str`
 - **`export_text`** · function · An export as text: a line of its row count and what it left out, then the body itself.
   <br>`export_text(export: ScoreExport) -> str`
+- **`frontier_text`** · function · A frontier as text: each subject's variants, best pass^k first, with each one's axes and the verdict.
+  <br>`frontier_text(result: FrontierResult) -> str`
 - **`generation_key`** · function · The exclusivity key one campaign's generations share: one runs at a time, and only its scope sees it.
   <br>`generation_key(campaign_id: str, scope_id: str) -> str`
 - **`history_launch_pricer`** · function · The engine's launch pricer: an arm bounded from the scope's usage history of runs launched as it will be.
@@ -1602,6 +1604,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`runs_list(host: EvalHost, scope_id: str, *, status: str | None = None, include_archived: bool = False) -> RunListing`
 - **`scope_export`** · function · The scope's observations as flat rows, in CSV or JSON, for analysis elsewhere.
   <br>`scope_export(host: EvalHost, scope_id: str, *, format: str | None = None, status: str | None = 'completed', run_ids: list[str] | None = None) -> ScoreExport`
+- **`scope_frontier`** · function · Each subject's variants ranked on quality, cost and latency, and the cheapest that clears `bar`.
+  <br>`scope_frontier(host: EvalHost, scope_id: str, *, bar: float | str | None = None, subject_id: str | None = None, status: str | None = 'completed') -> FrontierResult`
 - **`scope_history`** · function · One measure over time for each contestant in the scope, with its regressions flagged.
   <br>`scope_history(host: EvalHost, scope_id: str, *, metric: str | None = None, min_absolute_change: float = 0.0, min_relative_change: float = 0.0, subject_id: str | None = None, status: str | None = 'completed') -> HistoryResult`
 - **`scope_out_of_run_spend`** · function · What the engine spent outside any run in a scope, call by call and summed, optionally narrowed.
@@ -1673,7 +1677,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 
 **Also exported here**
 
-`AnalysisGenerationEstimate` ([`threetears.evals.analysis`](#api-analysis)), `CaseResult` ([`threetears.evals.quick`](#api-quick)), `CostEstimate` ([`threetears.evals.analysis`](#api-analysis)), `DimensionSummary` ([`threetears.evals.quick`](#api-quick)), `EvalSummary` ([`threetears.evals.quick`](#api-quick)), `FrozenReporterCase` ([`threetears.evals.analysis`](#api-analysis)), `HistoryResult` ([`threetears.evals.analysis`](#api-analysis)), `JudgeGrade` ([`threetears.evals.quick`](#api-quick)), `MeasureSummary` ([`threetears.evals.quick`](#api-quick)), `PivotTable` ([`threetears.evals.analysis`](#api-analysis)), `ScoreExport` ([`threetears.evals.analysis`](#api-analysis)), `summarize_run` ([`threetears.evals.quick`](#api-quick))
+`AnalysisGenerationEstimate` ([`threetears.evals.analysis`](#api-analysis)), `CaseResult` ([`threetears.evals.quick`](#api-quick)), `CostEstimate` ([`threetears.evals.analysis`](#api-analysis)), `DimensionSummary` ([`threetears.evals.quick`](#api-quick)), `EvalSummary` ([`threetears.evals.quick`](#api-quick)), `FrontierResult` ([`threetears.evals.analysis`](#api-analysis)), `FrozenReporterCase` ([`threetears.evals.analysis`](#api-analysis)), `HistoryResult` ([`threetears.evals.analysis`](#api-analysis)), `JudgeGrade` ([`threetears.evals.quick`](#api-quick)), `MeasureSummary` ([`threetears.evals.quick`](#api-quick)), `PivotTable` ([`threetears.evals.analysis`](#api-analysis)), `ScoreExport` ([`threetears.evals.analysis`](#api-analysis)), `summarize_run` ([`threetears.evals.quick`](#api-quick))
 
 <a id="api-actions"></a>
 ### `threetears.evals.actions`
@@ -2227,6 +2231,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `runs_compare` | `read` | `baseline_run_id`, `candidate_run_id` | Compare one run's arm against another's: pass^k, mean composite, their deltas and the test. |
 | `scope_out_of_run_spend` | `read` | `purpose_filter?`, `launch_group_filter?`, `template_filter?` | List what the engine spent outside any run — case generations, rubric proposals and analysis generations — with totals. |
 | `scope_history` | `read` | `metric?`, `min_absolute_change?`, `min_relative_change?`, `subject_filter?`, `run_status?` | Series one measure over time for each contestant in the scope, flagging regressions. |
+| `scope_frontier` | `read` | `bar?`, `subject_filter?`, `run_status?` | Rank each subject's variants on quality, cost and latency, and name the cheapest that clears a bar. |
 | `scope_export` | `read` | `export_format?`, `run_status?`, `export_run_ids?` | Export the scope's observations as flat rows, CSV or JSON, for analysis elsewhere. |
 
 ### Curate
@@ -2250,6 +2255,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `apparatus_settings` | `object` or `null` | Host-declared apparatus values to set the runs' rig up with, by apparatus dimension (e.g. who sits in an adjudicator's seat) — each a string, a bool or a number, and one the template's kind reads; refused otherwise. Recorded on every run and part of its measurement context, so one template can be compared at two. |
 | `archive_reason` | `string` or `null` | Why the record is archived (an analysis shown false or superseded, a reporter case that can no longer measure anything); cleared on restore. |
 | `archived` | `boolean` | The state to set: true retires the record, false restores it. |
+| `bar` | `number` or `null` | The pass^k a variant must clear, from 0 to 1; omitted ranks the variants without a verdict. |
 | `baseline_run_id` | `string` | The run read as the baseline (A), as runs_list names it. |
 | `behavior` | `string` | Which aspect of the subject is under test. |
 | `campaign_id` | `string` | A campaign's id, as campaigns_list names it. |
@@ -2429,6 +2435,24 @@ options:
                         only this purpose's calls
   --launch-group ID     only one launch's case generation
   --template ID         only calls made for this template
+```
+
+### `frontier`
+
+```text
+usage: python -m threetears.evals frontier [-h] --host MODULE:FACTORY --scope SCOPE [--bar BAR]
+                                           [--subject SUBJECT] [--json]
+
+Rank each subject's variants on quality, cost and latency, and the cheapest that clears a bar.
+
+options:
+  -h, --help            show this help message and exit
+  --host MODULE:FACTORY
+                        the host to work in
+  --scope SCOPE         the scope to read and write in
+  --bar BAR             the pass^k a variant must clear, from 0 to 1
+  --subject SUBJECT     only this subject's variants
+  --json                print the frontier as JSON
 ```
 
 <a id="measures"></a>

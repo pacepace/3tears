@@ -793,6 +793,11 @@ async def compare(
             guardrails={name: guardrail for name, guardrail in guardrails.items() if name in scorer_names},
         )
     coordinates = {arm: _coordinates(arm, named) for arm in arms_given}
+    if name is None:
+        if len(named) == 1:
+            name = " vs ".join(_label(arm, named) for arm in [control, *(arm for arm in arms_given if arm != control)])
+        else:
+            name = " × ".join(named)
     # Every arm in ONE launch, started together, so the arms are measured side by side rather than one after
     # another: what differs between their runs is their settings, not when they ran.
     summaries = await run_arms(
@@ -820,13 +825,11 @@ async def compare(
         seed=seed,
         goal_checks=goal_checks,
         max_cost_usd=None if max_cost_usd is None else max_cost_usd / len(arms_given),
+        # The arms are variants of one subject, the comparison, never a subject each: the frontier ranks the
+        # variants of a subject, so a model is a lever it ranks across rather than a subject of its own.
+        subject=name,
     )
     arms: dict[ArmKey, EvalSummary] = dict(zip(arms_given, summaries, strict=True))
-    if name is None:
-        if len(named) == 1:
-            name = " vs ".join(_label(arm, named) for arm in [control, *(arm for arm in arms if arm != control)])
-        else:
-            name = " × ".join(named)
     return _declare(
         host,
         arms,

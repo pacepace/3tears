@@ -202,10 +202,15 @@ The cheaper arm may still be good enough; 20 rooms cannot say. To decide it, add
 Before you rely on it, check two things:
 
 - **Every arm must run under one subject.** The frontier never ranks across subjects. On the quick path,
-  `compare` makes each model its own subject, and so is each arm named without `factors`. So its frontier
-  ranks only arms that share a model, as here. On your own host, run every arm under the subject it measures.
+  every arm of one `compare` runs under the comparison's subject (its name), so its models and its named arms
+  rank on one frontier. On your own host, run every arm under the subject it measures.
 - **pass^k needs goal checks or a judge.** An arm graded by neither, such as a classifier scored only by
-  `expected=`, counts every attempt as a fail and reads pass^k 0. Read such an arm from the contrasts.
+  `expected=`, has no pass^k: `pass_hat_k` is `None`, `n_pass_no_criterion` counts its attempts, and no bar
+  is decided on it. Read such an arm from the contrasts.
+
+The same frontier is the `scope_frontier` action and the `frontier` command
+([The command line](command-line.md#frontier)); `scope_frontier` in `threetears.evals.ops` returns it as a
+`FrontierResult`.
 
 The bundle carries a frontier too (`bundle.frontier`). Check `bundle.frontier_bar_withheld` before reading
 its clearing counts.

@@ -1187,10 +1187,13 @@ class _WiredArm:
     levers: dict[str, Any]
     kind_factory: KindFactory
     arm: str | None = None
+    shared_subject: str | None = None
 
     @property
     def subject(self) -> str:
-        """The run's subject: the arm's name when it has one, else its model."""
+        """The run's subject: the one every arm of the launch shares when it names one, else the arm's name, else its model."""
+        if self.shared_subject is not None:
+            return self.shared_subject
         return self.arm if self.arm is not None else self.model
 
 
@@ -1203,13 +1206,16 @@ def _launch_host(
     *,
     calls_tools: bool = False,
     max_cost_usd: float | None = None,
+    preparing: Sequence[_WiredArm] = (),
 ) -> LaunchHost:
     """``host`` as a launching host whose one kind runs each arm's kind over ``cases``, judged by ``judge`` when given.
 
     Every arm is launched into one group (:func:`_launch_arms`), each through its own
     :func:`~threetears.evals.run.start_run` call, so the launcher is asked once per arm and wires the arm the
-    request names: the one at the request's candidate model and overlays. Its subject is its model, as a
-    one-arm launch's is.
+    request names: the one at the request's candidate model, overlays and subject. Arms that share one subject
+    and differ only on the arm lever, which rides on the run's payload rather than the request, are told apart
+    by ``preparing``: the arm whose ``start_run`` call is in progress, which the caller sets before each call (a
+    launch into a caller's group prepares its one run inside that call).
 
     A judged kind's launcher builds its judge as every judged launcher does, with
     :func:`~threetears.evals.run.build_judge_service` over the run's template, on a host whose client
@@ -1229,7 +1235,7 @@ def _launch_host(
 
     def arm_of(request: LaunchRequest) -> _WiredArm:
         levels = {} if request.overlays is None else request.overlays.model_dump(mode="json")
-        for arm in arms:
+        for arm in preparing or arms:
             if arm.model == request.candidate_model and arm.levers == levels and arm.subject == request.subject_id:
                 return arm
         raise ValueError(f"no arm of this launch runs model {request.candidate_model!r} at levers {levels!r}")
@@ -1532,6 +1538,7 @@ async def run_arms(
     cassette_mode: CassetteMode = "off",
     cassette_corpus_id: str | None = None,
     max_cost_usd: float | None = None,
+    subject: str | None = None,
 ) -> list[EvalSummary]:
     """Run every arm over every case ``k`` times as ONE launch, and summarise each arm's run, in arm order.
 
@@ -1545,7 +1552,9 @@ async def run_arms(
 
     Args and Raises as :func:`run_eval`, every argument but the arms the same for every arm — one judge, so
     every arm is judged by the same model, rubric and judge configs, and one ``max_cost_usd``, each arm's
-    run's own cap. The arms are distinct — no two at one model and one level of every lever — which the
+    run's own cap. ``subject`` is the subject every arm's run shares (a comparison's: its arms are variants of
+    one subject, so the frontier and history rank them together); ``None`` makes each run's subject its arm's
+    name, else its model. The arms are distinct — no two at one model and one level of every lever — which the
     caller holds.
 
     Returns:
@@ -1646,11 +1655,20 @@ async def run_arms(
                 ranges=ranges,
             ),
             arm=arm.arm,
+            shared_subject=subject,
         )
         for arm, model in zip(arms, models, strict=True)
     ]
+    preparing: list[_WiredArm] = []
     launch_host = _launch_host(
-        host, wired, test_cases, judge, world, calls_tools=tools is not None, max_cost_usd=max_cost_usd
+        host,
+        wired,
+        test_cases,
+        judge,
+        world,
+        calls_tools=tools is not None,
+        max_cost_usd=max_cost_usd,
+        preparing=preparing,
     )
 
     async def form() -> tuple[LaunchGroup, None]:
@@ -1659,11 +1677,13 @@ async def run_arms(
 
     async def prepare(group: LaunchGroup, _formed: None) -> list[EvalRun]:
         prepared: list[EvalRun] = []
-        for arm, model in zip(arms, models, strict=True):
+        for arm, wired_arm, model in zip(arms, wired, models, strict=True):
+            # A launch into this group prepares its one run inside the call, so the launcher wires this arm.
+            preparing[:] = [wired_arm]
             prepared += await start_run(
                 launch_host,
                 template_id=template_id,
-                subject_id=model if arm.arm is None else arm.arm,
+                subject_id=wired_arm.subject,
                 models=[model],
                 k_runs=k,
                 scope_id=scope_id,
@@ -1674,6 +1694,7 @@ async def run_arms(
                 max_cost_usd=max_cost_usd,
                 launch_group=group,
             )
+        preparing.clear()
         return prepared
 
     runs = await launch_as_group(

@@ -3708,7 +3708,7 @@ def _undeclarable_host_entries(results: Sequence[EvalResult]) -> list[str]:
     ]
 
 
-def _in_population(population: MeasurePopulation, result: EvalResult) -> bool:
+def in_population(population: MeasurePopulation, result: EvalResult) -> bool:
     """Whether a result is an observation of a measure read over ``population``.
 
     The one membership rule the measure walk applies, per measure and per result: a result the harness
@@ -3820,7 +3820,7 @@ def _collect_measures(
         # Outside its population before anything else: a faulted result is not an observation of a
         # `scored` or `delivered` measure at all, nor a failure that took no turn one of a `delivered`
         # measure, so it can neither contribute a value nor be reported as one lost.
-        if not _in_population(summary_population(descriptor, undeclared), result):
+        if not in_population(summary_population(descriptor, undeclared), result):
             return
         if not _is_reportable(descriptor, profile.measures):
             # An undescribed NUMBER from a telemetry source is the loss worth reporting: a
@@ -4932,7 +4932,7 @@ def _mechanism_value(result: EvalResult, name: str, *, profile: HostProfile) -> 
     """
     # Over every result where the measure declares nothing, as a mechanism always read — except a turn's
     # time or spend, which every reader takes over the turns taken (`summary_population`).
-    if not _in_population(summary_population(describe_measure(name, profile.measures), "all_observed"), result):
+    if not in_population(summary_population(describe_measure(name, profile.measures), "all_observed"), result):
         return None
     outer = [
         value

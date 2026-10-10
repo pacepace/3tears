@@ -6070,7 +6070,7 @@ def _host_measure_value_of(descriptor: MetricDescriptor) -> Callable[[EvalResult
         HistoryError: The measure is not numeric, or declares no direction — a series could not say which
             way a step is a decline.
     """
-    from threetears.evals.analysis.bundle import _in_population
+    from threetears.evals.analysis.bundle import in_population
     from threetears.evals.contracts.metrics import summary_population
 
     name = descriptor.name
@@ -6086,7 +6086,7 @@ def _host_measure_value_of(descriptor: MetricDescriptor) -> Callable[[EvalResult
     def host_measure_value(result: EvalResult) -> float | None:
         """Read the declared measure off one result, or ``None`` where it is not an observation of it."""
         value = result.host_measures.get(name)
-        if value is None or isinstance(value, str) or not _in_population(population, result):
+        if value is None or isinstance(value, str) or not in_population(population, result):
             return None
         return float(value)
 
