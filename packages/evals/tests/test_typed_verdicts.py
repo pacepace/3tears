@@ -191,8 +191,9 @@ class TestAQuickGuardrailIsATypedVerdictTheGateReads:
     """#697's quick guardrails reach the typed verdicts, and the default gate fails on a breach and on undecided."""
 
     async def test_held_breached_and_undecided_each_typed_and_gated(self) -> None:
+        # All 48 cases: the bounded test shows a 0.1 margin held only from about 41 agreeing cases.
         comparison = await compare(
-            CASES[:40],
+            CASES,
             {"current": _leaks(0), "same": _leaks(0), "leaky": _leaks(12), "slip": _leaks(3)},
             [correct, no_leak],
             control="current",
