@@ -44,6 +44,7 @@ from dataclasses import dataclass
 from typing import Any, TypedDict
 
 from threetears.evals.contracts.models import (
+    AsyncDelivery,
     CellTermination,
     EvalResult,
     EvalRun,
@@ -861,6 +862,80 @@ def compute_latency_summary(
 
 
 # =============================================================================
+# Async-delivery aggregates — computed at query time, not stored
+# =============================================================================
+
+
+def compute_async_delivery_summary(
+    results: list[EvalResult],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Roll each ``(model, eval_run_id)`` group's background work up into the six async-delivery measures.
+
+    Read from :attr:`~threetears.evals.contracts.models.EvalResult.async_deliveries`, the engine's own
+    record of the work a candidate started and was told about later, so every host gets the same rollup
+    without writing one. What a delivery's outcomes are CALLED is a tool's taxonomy and stays the host's;
+    these six are the generic half: how many deliveries there were, how many a harness stood in for, and
+    how long the real ones took.
+
+    **The population is the latency summary's.** A result :func:`compute_latency_summary` drops — an
+    infra-excluded one, whose cell a harness fault cut short — is dropped here too, by the same
+    :func:`~threetears.evals.contracts.result_condition.classify_result` predicate: background work cut off
+    by the rig is a measurement of the rig, and its truncated clock would make a tool look fast.
+
+    **Absent, never zero, where nothing was watched.** A result whose ``async_deliveries`` is ``None``
+    started no background work the engine was told about (its kind has no async tool), so a group made
+    only of such results is omitted entirely: a host with no async tools gets no async measures, rather
+    than a count of zero that reads as "the tool was never called". A group with at least one result that
+    watched (an empty list is "watched, nothing started") carries both counts, zero included.
+
+    - ``async_deliveries``: entries that are NOT ``substituted``, of every status — the work that describes
+      a real run of the tool, and the denominator a host's outcome rates are taken against.
+    - ``async_deliveries_substituted``: entries a harness supplied (a seed or a replayed capture). The two
+      counts summed are every entry the group recorded.
+    - ``async_delivery_mean_elapsed_ms`` / ``async_delivery_median_elapsed_ms`` /
+      ``async_delivery_p95_elapsed_ms`` / ``async_delivery_elapsed_n``: over the NON-substituted entries
+      that measured an ``elapsed_ms``. A substituted entry's clock times the harness serving a payload, not
+      the tool producing one, so it is no duration of the tool. All four are absent when no entry measured
+      one. The median and the tail are read the way :func:`compute_latency_summary` reads ``total_ms``:
+      :func:`median_unbiased_quantile` at 0.5 and at 0.95, the tail absent below the 13 durations at which
+      a 95th percentile can be estimated at all (below that the only candidate is the slowest delivery,
+      which is not a 95th percentile).
+
+    Returns:
+        ``{(model, eval_run_id): {"async_deliveries", "async_deliveries_substituted",
+        "async_delivery_mean_elapsed_ms", "async_delivery_median_elapsed_ms", "async_delivery_p95_elapsed_ms",
+        "async_delivery_elapsed_n"}}``, a group present only when one of its results watched for background
+        work, the duration keys absent when no real delivery measured one and the tail absent below 13.
+    """
+    grouped: dict[tuple[str, str], list[AsyncDelivery]] = {}
+    for r in results:
+        # The latency summary's population: a harness fault's clock is a measurement of the harness.
+        if classify_result(r) is ResultOutcome.INFRA_EXCLUDE:
+            continue
+        if r.async_deliveries is None:
+            continue
+        grouped.setdefault((r.model, r.eval_run_id), []).extend(r.async_deliveries)
+
+    out: dict[tuple[str, str], dict[str, Any]] = {}
+    for key, deliveries in grouped.items():
+        real = [entry for entry in deliveries if not entry.substituted]
+        row: dict[str, Any] = {
+            "async_deliveries": len(real),
+            "async_deliveries_substituted": len(deliveries) - len(real),
+        }
+        elapsed = sorted(entry.elapsed_ms for entry in real if entry.elapsed_ms is not None)
+        if elapsed:
+            row["async_delivery_mean_elapsed_ms"] = sum(elapsed) / len(elapsed)
+            row["async_delivery_median_elapsed_ms"] = median_unbiased_quantile(elapsed, 0.5)
+            tail = median_unbiased_quantile(elapsed, 0.95)
+            if tail is not None:
+                row["async_delivery_p95_elapsed_ms"] = tail
+            row["async_delivery_elapsed_n"] = len(elapsed)
+        out[key] = row
+    return out
+
+
+# =============================================================================
 # Cost aggregates — computed at query time, not stored
 # =============================================================================
 
@@ -1167,6 +1242,7 @@ def compute_per_case_composites(
 __all__ = [
     "CellSummary",
     "capability_scores",
+    "compute_async_delivery_summary",
     "compute_composite_summary",
     "compute_cost_summary",
     "compute_dimension_summary",

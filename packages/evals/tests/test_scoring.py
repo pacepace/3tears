@@ -33,12 +33,21 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis import assemble_context_bundle
+from threetears.evals.analysis import assemble_context_bundle, run_summary
 from threetears.evals.contracts.campaign import EvalCampaign
-from threetears.evals.contracts.models import TRANSCRIPT_DIM_ID, EvalResult, LatencyMetrics, RoleUsage, RubricScore
+from threetears.evals.contracts.metrics import METRIC_DESCRIPTORS
+from threetears.evals.contracts.models import (
+    TRANSCRIPT_DIM_ID,
+    AsyncDelivery,
+    EvalResult,
+    LatencyMetrics,
+    RoleUsage,
+    RubricScore,
+)
 from threetears.evals.contracts.result_condition import ResultOutcome
 from threetears.evals.contracts.scoring import (
     CellSummary,
+    compute_async_delivery_summary,
     compute_composite_summary,
     compute_cost_summary,
     compute_dimension_summary,
@@ -939,6 +948,146 @@ def test_compute_latency_summary_separates_models():
     out = compute_latency_summary(results)
     assert out[("m1", "r1")]["mean_total_ms"] == 100.0
     assert out[("m2", "r1")]["mean_total_ms"] == 300.0
+
+
+# =============================================================================
+# compute_async_delivery_summary — the engine's six async-delivery measures (#573)
+# =============================================================================
+
+#: The six names the engine's catalogue declares for the run-summary rollup.
+_ASYNC_MEASURES = (
+    "async_deliveries",
+    "async_deliveries_substituted",
+    "async_delivery_mean_elapsed_ms",
+    "async_delivery_median_elapsed_ms",
+    "async_delivery_p95_elapsed_ms",
+    "async_delivery_elapsed_n",
+)
+
+
+def _delivery(
+    elapsed_ms: float | None = None, *, substituted: bool = False, status: str = "delivered"
+) -> AsyncDelivery:
+    """One piece of background work; a failed one carries its error, as the model requires."""
+    return AsyncDelivery(
+        tool="scout",
+        status=status,
+        elapsed_ms=elapsed_ms,
+        substituted=substituted,
+        error="boom" if status == "failed" else None,
+    )
+
+
+def _async_result(deliveries: list[AsyncDelivery] | None, *, k: int = 1, **kwargs: Any) -> EvalResult:
+    return make_eval_result(
+        eval_run_id="r1", model="m1", test_case_id=f"tc-{k}", k_iteration=k, async_deliveries=deliveries, **kwargs
+    )
+
+
+def test_async_summary_counts_real_and_substituted_and_times_only_the_real_ones():
+    """A substituted delivery is counted apart and its clock is no duration of the tool."""
+    results = [
+        _async_result([_delivery(100.0), _delivery(300.0, status="failed"), _delivery(5.0, substituted=True)], k=1),
+        _async_result([_delivery(200.0), _delivery(None, status="undelivered")], k=2),
+    ]
+
+    row = compute_async_delivery_summary(results)[("m1", "r1")]
+
+    assert row["async_deliveries"] == 4  # every non-substituted entry, whatever its status
+    assert row["async_deliveries_substituted"] == 1
+    assert row["async_delivery_elapsed_n"] == 3  # the undelivered one measured nothing; the substituted one is out
+    assert row["async_delivery_mean_elapsed_ms"] == pytest.approx(200.0)
+    assert row["async_delivery_median_elapsed_ms"] == pytest.approx(200.0)
+    assert "async_delivery_p95_elapsed_ms" not in row, "three durations cannot give a 95th percentile"
+
+
+def test_async_summary_reads_the_tail_type_8_from_thirteen_durations():
+    durations = [float(t) for t in range(10, 210, 10)]  # 20 durations, 10..200
+    results = [_async_result([_delivery(t)], k=i) for i, t in enumerate(durations, start=1)]
+
+    row = compute_async_delivery_summary(results)[("m1", "r1")]
+
+    # h = (20 + 1/3) * 0.95 + 1/3 = 19.65: between the 19th (190) and 20th (200) durations.
+    assert row["async_delivery_p95_elapsed_ms"] == pytest.approx(190.0 + 0.65 * 10.0)
+    assert row["async_delivery_median_elapsed_ms"] == pytest.approx(105.0)  # the mean of the middle two
+    assert row["async_delivery_elapsed_n"] == 20
+
+
+def test_a_host_with_no_async_tools_gets_the_measures_absent_not_zero():
+    """``async_deliveries=None`` is "nothing watched": no group, so no count of zero that reads as "never called"."""
+    assert compute_async_delivery_summary([_async_result(None)]) == {}
+
+
+def test_watched_with_nothing_started_is_a_real_zero_and_no_duration():
+    row = compute_async_delivery_summary([_async_result([])])[("m1", "r1")]
+
+    assert row == {"async_deliveries": 0, "async_deliveries_substituted": 0}
+
+
+def test_async_summary_drops_an_infra_excluded_cell_as_the_latency_summary_does():
+    results = [
+        _async_result([_delivery(100.0)], k=1),
+        _async_result([_delivery(1.0)], k=2, infra_error="apparatus: cassette miss in replay mode"),
+    ]
+
+    row = compute_async_delivery_summary(results)[("m1", "r1")]
+
+    assert (row["async_deliveries"], row["async_delivery_mean_elapsed_ms"]) == (1, 100.0)
+
+
+def test_a_toy_host_run_summary_carries_all_six_async_measures():
+    """The run summary every host reads carries the engine's rollup, with the values the descriptors state."""
+    run = make_eval_run(status="completed")
+    durations = [float(t) for t in range(10, 140, 10)]  # 13 durations: the fewest a p95 is read from
+    results = [
+        make_eval_result(
+            eval_run_id=run.id,
+            scope_id=run.scope_id,
+            model="m1",
+            test_case_id=f"tc-{i}",
+            async_deliveries=[_delivery(t), _delivery(substituted=True)],
+        )
+        for i, t in enumerate(durations)
+    ]
+    storage = ToyhostStorage([run], {run.id: results})
+
+    summary = run_summary(
+        storage,
+        run.id,
+        run.scope_id,
+        load_run_listed=lambda _id, _scope: run,
+        row_columns=lambda _results: {},
+        profile=toyhost_profile(),
+    )
+
+    [row] = summary["rows"]
+    assert {name: row.get(name) for name in _ASYNC_MEASURES} == {
+        "async_deliveries": 13,
+        "async_deliveries_substituted": 13,
+        "async_delivery_mean_elapsed_ms": pytest.approx(70.0),
+        "async_delivery_median_elapsed_ms": pytest.approx(70.0),
+        # h = (13 + 1/3) * 0.95 + 1/3 = 13.0: the 13th duration.
+        "async_delivery_p95_elapsed_ms": pytest.approx(130.0),
+        "async_delivery_elapsed_n": 13,
+    }
+    assert all(name in METRIC_DESCRIPTORS for name in _ASYNC_MEASURES)
+
+
+def test_a_toy_host_run_with_no_async_tools_carries_none_of_them():
+    run = make_eval_run(status="completed")
+    results = [make_eval_result(eval_run_id=run.id, scope_id=run.scope_id, model="m1")]
+
+    summary = run_summary(
+        ToyhostStorage([run], {run.id: results}),
+        run.id,
+        run.scope_id,
+        load_run_listed=lambda _id, _scope: run,
+        row_columns=lambda _results: {},
+        profile=toyhost_profile(),
+    )
+
+    [row] = summary["rows"]
+    assert not set(_ASYNC_MEASURES) & set(row)
 
 
 # =============================================================================

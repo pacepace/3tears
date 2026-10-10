@@ -471,8 +471,11 @@ The engine's contracts: the stored shapes, and the vocabulary every other packag
 - **`EVAL_DOC_TYPES`** · constant (tuple) · Every `doc_type` the engine writes — the set the operator wipe sweeps.
 - **`EVAL_SCHEMA_VERSION`** · constant (int) · The schema version every stored eval document is written under, and the only one a read accepts.
   <br>`= 8`
+- **`FRONTIER_RANKING_MEASURE`** · constant (str) · The measure the frontier ranks contestants on, and so the one measure a campaign bar is passed to the frontier on.
+  <br>`= 'pass_hat_k'`
 - **`GOAL_STATE_FAMILY`** · constant (str) · A goal-state check's verdict: code compared against what the candidate did.
   <br>`= 'goal_state'`
+- **`HOST_PRODUCED_MEASURES`** · constant (frozenset) · The core measures the ENGINE declares and a host's candidate kind writes: a classifier kind lands `match` and `confusion_cell` on each result's `host_measures`, and the engine only reads them.
 - **`IDENTITY_VERSION`** · constant (int) · One counter covers both predicates, so a bump on either side re-derives the other's keys — conservative in the safe direction, since re-deriving unchanged inputs reproduces the same digest.
   <br>`= 24`
 - **`INCOMPLETE_STOP_REASONS`** · constant (frozenset) · The `CompletionResult.stop_reason` values meaning the completion was CUT SHORT rather than finished.
@@ -1919,7 +1922,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `run_summaries` | `list[RunSummary]` | `[]` | Per-run digests (run_id order). |
 | `comparison` | `ComparisonSetsResult` | required | reporting.compute_comparison_sets over the member runs. |
 | `frontier` | `FrontierResult` | required | reporting.compute_frontier — empty (no subjects) when the data can't seat a ranking yet. |
-| `frontier_bar_withheld` | `str \| None` | `None` | Set when the frontier lens was given no bar, which is how this bundle always assembles it. |
+| `frontier_bar_withheld` | `str \| None` | `None` | Set when the frontier lens was given no bar: the campaign's effective bar (declared, else registered) is passed to it only when one names `pass_hat_k`, the measure it ranks on, and `frontier.bar` is then set and each point's `bar_decision` names the variants below it. |
 | `telemetry` | `TelemetryRollup` | required | Campaign-wide descriptive telemetry. |
 | `coverage` | `list[LeverCoverageInput]` | `[]` | Per-lever structural coverage map (the analysis's spine). |
 | `scope_divergences` | `list[ScopeDivergence]` | `[]` | Lever changes where the whole-run measure moved by a different amount than the isolating measure, the difference itself tested and Holm-corrected within the lever — each one is a finding. |
@@ -2460,7 +2463,7 @@ The engine's own measures (`METRIC_DESCRIPTORS`), grouped by family in the order
 | `async_delivery_mean_elapsed_ms` | lower | — | ms | Average async delivery duration. |
 | `async_delivery_median_elapsed_ms` | lower | — | ms | Typical async delivery duration. |
 | `async_delivery_p95_elapsed_ms` | lower | — | ms | Tail async delivery duration. |
-| `async_delivery_elapsed_n` | — | — | deliveries | How many deliveries had a measured duration — absent rather than zero when none did. |
+| `async_delivery_elapsed_n` | — | — | deliveries | How many non-substituted deliveries had a measured duration — the denominator behind the mean, median and p95. |
 | `paired` | — | — | — | Whether the significance test paired the two runs' composites by test case. |
 | `n_pairs` | — | — | cases | How many test cases were scored in BOTH runs — the paired test's sample size. |
 | `n_cases` | — | — | cases | How many test cases contributed a composite — the pairing atom behind significance. |
@@ -2523,6 +2526,5 @@ The engine's own measures (`METRIC_DESCRIPTORS`), grouped by family in the order
 | `precision` | higher | — | — | Per class: of the times this label was predicted, how often it was right. |
 | `recall` | higher | — | — | Per class: of the times this label was correct, how often it was predicted. |
 | `f1` | higher | — | — | Harmonic mean of precision and recall for a class. |
-| `support` | — | — | cases | How many cases carried this expected label — the denominator behind its precision and recall. |
 | `match` | higher | — | — | Whether one classification matched its expected label. |
 | `confusion_cell` | — | — | — | Which cell of the confusion matrix one classification landed in. |

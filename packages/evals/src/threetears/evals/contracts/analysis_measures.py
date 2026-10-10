@@ -14,6 +14,7 @@ from pydantic import Field, computed_field, model_validator
 
 from threetears.evals.contracts.metrics import AttributionScope, MeasurePopulation, MeritAxis
 from threetears.evals.contracts.base import EvalDocumentModel
+from threetears.evals.contracts.evidence_tiers import JudgedEvidenceTier
 
 
 class MeasureSummary(EvalDocumentModel):
@@ -338,6 +339,18 @@ class BarVerdict(EvalDocumentModel):
         ),
     )
 
+    judge_evidence_tier: JudgedEvidenceTier | None = Field(
+        default=None,
+        description=(
+            "For a bar on a judged dimension, what the scores behind `value` can bear: the weakest "
+            "`judge_evidence_tiers` tier among the judges that served them — `undetermined` when none was counted "
+            "or the evidence decides no tier. The verdict is the interval's either way; this says how far a judged "
+            "clearance or miss is the judge's word rather than a measurement, and is stated beside it. None — not "
+            "applicable — for a bar on a measured quantity or a goal-state check, which no judge scored; also None "
+            "on a verdict stored before the tier was recorded (every bundle shape before 47)."
+        ),
+    )
+
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
         description=(
             "The verdict as one word: `cleared`, `missed`, `undecided` (the interval straddles the threshold "
@@ -376,6 +389,12 @@ class BarAdjudication(EvalDocumentModel):
     and the frontier's own clearing count kept its default of zero because no bar was ever passed to
     it — which a memo then quoted as "no arm cleared the bar". A reader now finds the comparison made,
     per cell, or the reason it could not be.
+
+    **A bar on the frontier's ranking measure is the one read elsewhere.** pass^k
+    (:data:`~threetears.evals.contracts.metrics.FRONTIER_RANKING_MEASURE`) is a rate over a contestant's
+    cases that no single result carries, so no cell verdict is given on it here: its adjudication reads
+    ``names_no_stored_measure`` and its ``reason`` says where it was read instead — the bundle passes it to
+    the frontier, which decides each contestant's pass^k interval against it, by the same three-valued rule.
     """
 
     measure_id: str = Field(min_length=1, description="What the bar is read on, as the bar names it.")
@@ -393,7 +412,8 @@ class BarAdjudication(EvalDocumentModel):
             "`names_no_stored_measure` — no non-faulted member result carries a readable value under this "
             "name, so the bar was never read and no verdict exists; a bar nobody could clear or fail, never "
             "one every arm failed. `reason` says why: nothing carried it, or the name is one no result can "
-            "carry with a direction. `not_numeric` — the measure is categorical or boolean, so a threshold "
+            "carry with a direction — or, for a bar on `pass_hat_k`, that the frontier read it instead (each "
+            "point's `bar_decision`). `not_numeric` — the measure is categorical or boolean, so a threshold "
             "has nothing to compare."
         )
     )
