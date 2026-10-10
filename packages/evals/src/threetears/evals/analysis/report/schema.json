@@ -1262,6 +1262,316 @@
       },
       "title": "TextBlock",
       "type": "object"
+    },
+    "Verdict": {
+      "additionalProperties": false,
+      "description": "One verdict the report states, typed: what a program reads instead of the words printed from it.\n\nThe source of truth for every verdict the report prints: the ``comparisons`` table's ``verdict`` cell and the\n``guardrails`` table's ``decision`` cell are each a verdict's :attr:`words`, rendered from it, never the reverse.",
+      "properties": {
+        "apparatus_class_id": {
+          "description": "The rig it was measured under.",
+          "minLength": 1,
+          "title": "Apparatus Class Id",
+          "type": "string"
+        },
+        "arm": {
+          "description": "The arm, as the report names it.",
+          "minLength": 1,
+          "title": "Arm",
+          "type": "string"
+        },
+        "control": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The control, as the report names it; None for a bar, read on one cell.",
+          "title": "Control"
+        },
+        "delta": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Arm mean minus control mean; None for a bar.",
+          "title": "Delta"
+        },
+        "guardrail": {
+          "default": false,
+          "description": "Whether the reading is a guardrail \u2014 true exactly for a guardrail verdict.",
+          "title": "Guardrail",
+          "type": "boolean"
+        },
+        "heading": {
+          "description": "The reading as the report heads it.",
+          "minLength": 1,
+          "title": "Heading",
+          "type": "string"
+        },
+        "interval": {
+          "anyOf": [
+            {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The interval the verdict read: on the delta for a contrast or guardrail, on the cell's value for a bar.",
+          "title": "Interval"
+        },
+        "interval_level": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The interval's level, 0 to 1.",
+          "title": "Interval Level"
+        },
+        "kind": {
+          "description": "A contrast against the control, a bar on one cell, or a guardrail.",
+          "enum": [
+            "contrast",
+            "bar",
+            "guardrail"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "margin": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The margin the verdict read, in the reading's units: a contrast's equivalence margin, a bar's margin, a guardrail's tolerated worsening (0 when none is declared). None when the reading has none.",
+          "title": "Margin"
+        },
+        "margin_source": {
+          "anyOf": [
+            {
+              "enum": [
+                "measure",
+                "run"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Where the margin came from: `measure` = the measure's declared materiality threshold; `run` = a margin every run declared at launch on a core rate measure. None when no margin was declared.",
+          "title": "Margin Source"
+        },
+        "materiality": {
+          "anyOf": [
+            {
+              "enum": [
+                "material",
+                "immaterial"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "A contrast's delta read against its margin: `immaterial` when inside it. None otherwise.",
+          "title": "Materiality"
+        },
+        "name": {
+          "description": "The measure or judged dimension, by its key.",
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "enum": [
+                "improved",
+                "regressed",
+                "equivalent",
+                "not_separated",
+                "untested"
+              ],
+              "type": "string"
+            },
+            {
+              "enum": [
+                "cleared",
+                "missed",
+                "undecided",
+                "no_interval",
+                "no_data"
+              ],
+              "type": "string"
+            },
+            {
+              "enum": [
+                "held",
+                "breached",
+                "undecided"
+              ],
+              "type": "string"
+            }
+          ],
+          "description": "What it came to. A contrast: improved, regressed, equivalent, not_separated (says nothing about whether the arms differ) or untested. A bar: cleared, missed, undecided, no_interval or no_data. A guardrail: held, breached or undecided. `undecided`, `no_interval`, `no_data`, `not_separated` and `untested` are never a pass.",
+          "title": "Outcome"
+        },
+        "p_adjusted": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "A contrast's Holm-adjusted p; None otherwise.",
+          "title": "P Adjusted"
+        },
+        "question_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The declared question whose family tested a contrast; None campaign-wide, and for a bar or guardrail.",
+          "title": "Question Id"
+        },
+        "reading": {
+          "description": "Whether `name` is a measure or a judged dimension.",
+          "enum": [
+            "measure",
+            "judged"
+          ],
+          "title": "Reading",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why, as a code; see `VerdictReason`.",
+          "enum": [
+            "separated",
+            "inside_margin",
+            "no_margin",
+            "margin_untested",
+            "not_inside_margin",
+            "untestable",
+            "interval_clears",
+            "interval_misses",
+            "interval_straddles",
+            "too_few_observations",
+            "no_observations",
+            "within_margin",
+            "beyond_margin",
+            "no_interval"
+          ],
+          "title": "Reason",
+          "type": "string"
+        },
+        "reason_detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The reason in words where there is more to say: why no test ran, why undecided.",
+          "title": "Reason Detail"
+        },
+        "threshold": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "A bar's threshold; None otherwise.",
+          "title": "Threshold"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "A bar's cell value; None otherwise.",
+          "title": "Value"
+        },
+        "variant_key": {
+          "description": "The arm's variant.",
+          "minLength": 1,
+          "title": "Variant Key",
+          "type": "string"
+        },
+        "words": {
+          "description": "The verdict as the report prints it, rendered from these fields.",
+          "minLength": 1,
+          "title": "Words",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "outcome",
+        "reason",
+        "reading",
+        "name",
+        "heading",
+        "arm",
+        "variant_key",
+        "apparatus_class_id",
+        "words"
+      ],
+      "title": "Verdict",
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1414,8 +1724,8 @@
       "type": "string"
     },
     "report_version": {
-      "const": 5,
-      "default": 5,
+      "const": 6,
+      "default": 6,
       "description": "This shape's version.",
       "title": "Report Version",
       "type": "integer"
@@ -1423,6 +1733,14 @@
     "source": {
       "$ref": "#/$defs/ReportSource",
       "description": "What this is a report of."
+    },
+    "verdicts": {
+      "description": "Every verdict the report states, typed \u2014 the source each printed verdict is rendered from: the guardrails (for each arm against the control), then each bar on each cell, then the contrasts against the control, each group in its table's row order. A code-only report carries all three; an analysis report carries the guardrails and bars its frozen decision surface holds, and no contrast, as it prints no contrasts table.",
+      "items": {
+        "$ref": "#/$defs/Verdict"
+      },
+      "title": "Verdicts",
+      "type": "array"
     }
   },
   "required": [

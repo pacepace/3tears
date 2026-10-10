@@ -1867,9 +1867,18 @@ class FamilyComparison(EvalDocumentModel):
     equivalence_margin: float | None = Field(
         default=None,
         description=(
-            "The measure's declared margin (`materiality_threshold`) the equivalence test ran against, in its unit. "
-            "None when it declares none, for a judged dimension, and for an unpaired test: then no equivalence test "
-            "ran and the verdict cannot be `equivalent`."
+            "The measure's margin the equivalence test ran against, in its unit: its declared `materiality_threshold`, "
+            "or the margin its runs declared (`margin_source` says which). None when it has none, for a judged "
+            "dimension, and for an unpaired test: then no equivalence test ran and the verdict cannot be `equivalent`."
+        ),
+    )
+    margin_source: Literal["measure", "run"] | None = Field(
+        default=None,
+        description=(
+            "Where the measure's margin came from: `measure` = its descriptor's `materiality_threshold`, declared "
+            "by the host; `run` = a margin every member run declared at launch on a core rate measure "
+            "(`run_margins`). It is the margin `materiality` reads, and `equivalence_margin` when an equivalence "
+            "test ran. None when the measure has no margin, and on a judged dimension."
         ),
     )
     equivalence_p_raw: float | None = Field(
@@ -1905,8 +1914,8 @@ class FamilyComparison(EvalDocumentModel):
     materiality: Materiality | None = Field(
         default=None,
         description=(
-            "`delta` read against the host's declared materiality threshold for this measure: `immaterial` when it "
-            "is smaller than the threshold — too small to act on, whatever `verdict` says about its separation — "
+            "`delta` read against the measure's margin (`margin_source`: its declared materiality threshold, or its "
+            "runs' declared margin): `immaterial` when it is smaller than the margin — too small to act on, whatever `verdict` says about its separation — "
             "and `material` otherwise, including when no threshold is declared (a judged dimension declares none). "
             "No finding names a winner on an immaterial delta. None when `delta` is None."
         ),
@@ -2381,6 +2390,26 @@ class AnalysisContextBundle(EvalDocumentModel):
             "comparison family and composite, so a capability gain cannot pay for a guardrail loss. An arm with a "
             "breached guardrail is not adopted; an undecided one is never safe, and is stated wherever the arm is "
             "recommended."
+        ),
+    )
+    run_margins: dict[str, float] = Field(
+        default_factory=dict,
+        description=(
+            "Margins on core rate measures (`accuracy`) that every member run declared alike at launch "
+            "(`EvalRun.declared_margins`), by measure. A core descriptor declares no margin, so this is the one "
+            "margin such a measure has here: each comparison on it runs its equivalence test against it, and names "
+            "it (`equivalence_margin`, `margin_source` `run`). Read by the contrasts against the control only: a bar "
+            "on the measure and the history's movements read its descriptor, which declares none. Empty when no run "
+            "declared one."
+        ),
+    )
+    run_margins_withheld: str | None = Field(
+        default=None,
+        description=(
+            "Why a margin some member runs declared on a core rate measure is read on none of its comparisons: the "
+            "runs do not all declare it, or declare different ones, and a contrast between two arms read against a "
+            "margin only one of them chose would be read against a margin nobody chose for the pair. None when no "
+            "run margin was withheld."
         ),
     )
     reading_scope: ReadingScope = Field(
@@ -7239,6 +7268,7 @@ def assemble_context_bundle(
         names=names,
     )
     bundle.measure_catalog = _measure_catalog(bundle, profile=profile)
+    bundle.run_margins, bundle.run_margins_withheld = _run_margins(runs)
     # After the catalog, which says each measure's better direction and axis: a family is the readings a
     # question's axes name, and a reading with no better end has no verdict to correct.
     bundle.multiple_comparisons, bundle.guardrails = _multiple_comparisons(
@@ -7251,6 +7281,7 @@ def assemble_context_bundle(
         observations=mechanisms,
         served=served,
         profile=profile,
+        run_margins=bundle.run_margins,
     )
     bundle.reading_scope = _reading_scope(campaign.declared_design, bundle.measure_catalog, bundle.judged_measures)
     # Divergences pair measures by unit, which only the catalog knows, so they are derived
@@ -7273,6 +7304,39 @@ def assemble_context_bundle(
     # lens reported, and a reader would take that as a claim the campaign made.
     bundle.confound_catalog = _confound_catalog(bundle, profile=profile)
     return bundle
+
+
+def _run_margins(runs: Sequence[EvalRun]) -> tuple[dict[str, float], str | None]:
+    """The margins every member run declared alike on a core rate measure, and why any other was withheld.
+
+    A margin decides what `equivalent` means for a pair of arms, so it is read only when every run of the
+    campaign declared the same one on the measure — then whichever two arms a contrast sets side by side chose
+    it alike. A margin some runs declared and others did not, or that runs declared differently, is read on
+    none, and one sentence says so, naming the measures.
+
+    Args:
+        runs: The resolved member runs.
+
+    Returns:
+        ``(margins, withheld)``: the agreed margins by measure, in name order, and the sentence naming the
+        measures whose declared margins disagree, or None.
+    """
+    declared = sorted({name for run in runs for name in run.declared_margins})
+    agreed: dict[str, float] = {}
+    disagreed: list[str] = []
+    for name in declared:
+        margins = {run.declared_margins.get(name) for run in runs}
+        if len(margins) == 1 and None not in margins:
+            agreed[name] = margins.pop()  # type: ignore[assignment]  # the one value, and it is not None
+        else:
+            disagreed.append(name)
+    if not disagreed:
+        return agreed, None
+    return agreed, (
+        f"The member runs do not all declare one margin on {', '.join(disagreed)}, so no margin is read on "
+        f"{'it' if len(disagreed) == 1 else 'them'}: no comparison on {'it' if len(disagreed) == 1 else 'them'} "
+        "can read equivalent. Relaunch every arm with the same margin to read one."
+    )
 
 
 def _measure_catalog(bundle: AnalysisContextBundle, *, profile: HostProfile) -> dict[str, MetricDescriptor]:
@@ -8131,6 +8195,7 @@ def _compare(
     contrast: tuple[_CellKey, dict[str, float]],
     *,
     threshold: float | None,
+    margin_source: Literal["measure", "run"] | None = None,
     value_range: tuple[float, float] | None = None,
     no_turn: tuple[str, ...] = (),
 ) -> _Tested:
@@ -8153,6 +8218,7 @@ def _compare(
         threshold: The measure's declared materiality threshold, which labels the delta through the one
             predicate every surface uses (:func:`~threetears.evals.contracts.metrics.materiality`) and is the
             equivalence test's margin; None for a measure that declared none and for a judged dimension.
+        margin_source: Where ``threshold`` came from (:func:`_margin_of`), which the comparison records.
         value_range: The reading's declared inclusive bounds, which the equivalence test reads so its error
             rate holds on coarse values at every n (:func:`~threetears.evals.analysis.stats.paired_equivalence`),
             and which bound the interval on the delta; None where it declares none.
@@ -8243,6 +8309,7 @@ def _compare(
         test=None if p_raw is None else ("paired" if paired else "unpaired"),
         p_raw=p_raw,
         equivalence_margin=margin,
+        margin_source=margin_source if threshold is not None else None,
         equivalence_p_raw=equivalence_p_raw,
         equivalence_untested_reason=equivalence_refused,
         verdict="untested" if p_raw is None else "not_separated",
@@ -8250,6 +8317,24 @@ def _compare(
         materiality=None if delta is None else materiality(threshold, delta),
     )
     return _Tested(comparison, p_raw, equivalence_p_raw, (a, b), value_range)
+
+
+def _margin_of(
+    reading: tuple[ReadingKind, str], catalog: Mapping[str, MetricDescriptor], run_margins: Mapping[str, float]
+) -> tuple[float | None, Literal["measure", "run"] | None]:
+    """A reading's margin and where it came from: the descriptor's threshold, else its runs' declared margin.
+
+    A core rate measure's descriptor declares none (:data:`~threetears.evals.contracts.metrics.RUN_MARGIN_MEASURES`),
+    so the two never both exist for one measure. A judged dimension has neither.
+    """
+    if reading[0] != "measure":
+        return None, None
+    declared = catalog[reading[1]].materiality_threshold
+    if declared is not None:
+        return declared, "measure"
+    if (margin := run_margins.get(reading[1])) is not None:
+        return margin, "run"
+    return None, None
 
 
 def _family_disclosure(
@@ -8354,6 +8439,7 @@ def _multiple_comparisons(
     observations: _MechanismObservations,
     served: _ServedModels,
     profile: HostProfile,
+    run_margins: Mapping[str, float] | None = None,
 ) -> tuple[MultipleComparisons, GuardrailReadings]:
     """Test each contrast against the control, per live question — or campaign-wide — and decide every guardrail.
 
@@ -8376,6 +8462,8 @@ def _multiple_comparisons(
         observations: The campaign's mechanism observations, read for each contrast between two models.
         served: Which model answered each result's candidate calls, read for every contrast.
         profile: The host whose vocabulary this reads.
+        run_margins: The margins every member run declared alike on a core rate measure (:func:`_run_margins`),
+            read as that measure's margin, since its descriptor declares none.
 
     Returns:
         One family per live question, in declaration order; one campaign-wide family over every reading when
@@ -8432,12 +8520,14 @@ def _multiple_comparisons(
                 contrast_values = values[contrast_key].get(reading, {})
                 if not control_values and not contrast_values:
                     continue
+                threshold, margin_source = _margin_of(reading, catalog, run_margins or {})
                 one = _compare(
                     reading,
                     readings[reading],
                     (control_key, control_values),
                     (contrast_key, contrast_values),
-                    threshold=catalog[reading[1]].materiality_threshold if reading[0] == "measure" else None,
+                    threshold=threshold,
+                    margin_source=margin_source,
                     value_range=(
                         catalog[reading[1]].value_range if reading[0] == "measure" else judged_ranges.get(reading[1])
                     ),

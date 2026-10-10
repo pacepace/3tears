@@ -418,8 +418,8 @@ class TestTheBasisIsRefusedWhenTheReportDisagreesWithIt:
 
     def test_the_schema_holds_the_version(self) -> None:
         document = json.loads(_code_only().to_canonical_json())
-        assert document["report_version"] == REPORT_VERSION == 5
-        document["report_version"] = 3
+        assert document["report_version"] == REPORT_VERSION == 6
+        document["report_version"] = 5
         with pytest.raises(jsonschema.ValidationError):
             jsonschema.Draft202012Validator(published_report_schema()).validate(document)
 

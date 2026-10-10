@@ -90,6 +90,7 @@ the system produces" — the second is not true and is not the goal.
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any, Literal
@@ -149,6 +150,8 @@ __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why th
     "describe_classifier_label",
     "is_code_graded",
     "materiality",
+    "RUN_MARGIN_MEASURES",
+    "run_margin_refusal",
     "DERIVED_PER_RESULT_MEASURES",
     # The measure vocabulary is published, not internal: surfaces that carry a measure's
     # metadata onward (the analysis context bundle types these fields off the registry
@@ -1986,6 +1989,21 @@ _SEED = _SEED + _compare_trio("composite", "Mean composite quality", "judge_medi
 #: The engine's own measures, each one's descriptor keyed by its name.
 METRIC_DESCRIPTORS: dict[str, MetricDescriptor] = {d.name: d for d in _SEED}
 
+#: The core rate measures a run may declare a margin on (``EvalRun.declared_margins``,
+#: :func:`run_margin_refusal`): numeric, on 0 to 1, with a better end and a merit axis (so a comparison tests
+#: them), no guardrail, and no margin of their own. Derived from the descriptors, so a core rate measure added
+#: to a merit axis joins it.
+RUN_MARGIN_MEASURES: frozenset[str] = frozenset(
+    name
+    for name, descriptor in METRIC_DESCRIPTORS.items()
+    if descriptor.data_type == "numeric"
+    and descriptor.value_range == (0.0, 1.0)
+    and descriptor.higher_is_better is not None
+    and descriptor.merit_axis is not None
+    and not descriptor.guardrail
+    and descriptor.materiality_threshold is None
+)
+
 # Guard against a copy-paste duplicate silently winning the dict comprehension above.
 if len(METRIC_DESCRIPTORS) != len(_SEED):  # pragma: no cover - import-time invariant
     _dupes = sorted({d.name for d in _SEED if sum(1 for o in _SEED if o.name == d.name) > 1})
@@ -2133,6 +2151,41 @@ def materiality(threshold: float | None, delta: float) -> Materiality:
         ``immaterial`` only below a declared threshold.
     """
     return "immaterial" if threshold is not None and abs(delta) < threshold else "material"
+
+
+def run_margin_refusal(name: str, margin: object) -> str | None:
+    """Why a launch cannot declare ``margin`` on core measure ``name`` for its runs, or None when it can.
+
+    A core measure's descriptor is the engine's and declares no margin, so a comparison could never read
+    ``equivalent`` on it. A run-scoped margin (``EvalRun.declared_margins``) is the one way to declare one, and
+    only on a core RATE measure that a comparison tests: a number from 0 to 1 with a better end and a merit axis,
+    which no guardrail is and whose descriptor declares no margin of its own. ``accuracy`` is the one today. The
+    range is what lets its equivalence test hold its error rate, and it is already declared.
+
+    Args:
+        name: The measure, by its key.
+        margin: The margin, in the measure's units.
+
+    Returns:
+        The refusal, naming what can carry a margin; None when the margin can be declared.
+    """
+    descriptor = METRIC_DESCRIPTORS.get(name)
+    if descriptor is None:
+        return (
+            f"{name!r} is not an engine core measure; a run declares margins only on core rate measures "
+            f"({', '.join(sorted(RUN_MARGIN_MEASURES))}), and a host's own measure declares its margin as its "
+            "materiality_threshold"
+        )
+    if name not in RUN_MARGIN_MEASURES:
+        return (
+            f"{name!r} is not a core rate measure a comparison tests, so no margin on it could be read; a run "
+            f"declares margins only on {', '.join(sorted(RUN_MARGIN_MEASURES))}"
+        )
+    if isinstance(margin, bool) or not isinstance(margin, int | float) or not math.isfinite(margin):
+        return f"the margin on {name!r} is a number in the measure's units (0.05 is five points), not {margin!r}"
+    if not 0 < margin < 1:
+        return f"the margin on {name!r} is above 0 and below 1, the width of a rate's range, not {margin!r}"
+    return None
 
 
 #: Described measures a result IMPLIES rather than carries — computed from its own fields each time

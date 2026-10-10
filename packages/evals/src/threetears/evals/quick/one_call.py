@@ -381,10 +381,9 @@ def refuse_unusable_margins(
     for name, margin in margins.items():
         if name in _CLASSIFIER_NAMES or name in METRIC_DESCRIPTORS:
             raise ValueError(
-                f"a margin on {name!r} cannot be declared: it is an engine core measure, read under the core's own "
-                "description, which declares no margin. To show two arms alike on a classifier's accuracy, grade it "
-                "with a scorer as well (def correct(case, answer) -> bool: return answer == case[...]) and declare "
-                "the margin on that: margins={'correct': 0.05}"
+                f"a margin on {name!r} is not a scorer's: it is an engine core measure, whose descriptor the engine "
+                "owns. A margin on a core rate measure (accuracy) is declared on the runs instead: "
+                "compare(margins={'accuracy': 0.05}) declares it on every arm's run"
             )
         if name not in names:
             raise ValueError(
@@ -1348,6 +1347,7 @@ async def run_arms(
     cassette_mode: CassetteMode = "off",
     cassette_corpus_id: str | None = None,
     max_cost_usd: float | None = None,
+    margins: Mapping[str, float] | None = None,
 ) -> list[EvalSummary]:
     """Run every arm over every case ``k`` times as ONE launch, and summarise each arm's run, in arm order.
 
@@ -1362,7 +1362,8 @@ async def run_arms(
     Args and Raises as :func:`run_eval`, every argument but the arms the same for every arm — one judge, so
     every arm is judged by the same model, rubric and judge configs, and one ``max_cost_usd``, each arm's
     run's own cap. The arms are distinct — no two at one model and one level of every lever — which the
-    caller holds.
+    caller holds. ``margins`` are run-scoped margins on core rate measures (``{"accuracy": 0.05}``), declared
+    on every arm's run alike (:func:`~threetears.evals.run.start_run`'s ``margins``).
 
     Returns:
         Each arm's finished run's summary, read back from the store, in arm order.
@@ -1490,6 +1491,7 @@ async def run_arms(
                 cassette_corpus_id=cassette_corpus_id,
                 max_cost_usd=max_cost_usd,
                 launch_group=group,
+                margins=margins,
             )
         return prepared
 

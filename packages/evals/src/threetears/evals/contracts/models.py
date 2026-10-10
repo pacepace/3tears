@@ -2574,6 +2574,19 @@ class EvalRun(EvalDocumentModel):
             "condition. Empty when the launch set none, which is a level."
         ),
     )
+    declared_margins: dict[str, float] = Field(
+        default_factory=dict,
+        description=(
+            "Margins the launch declared on core rate measures (``accuracy``), by measure, in the measure's units: "
+            "the most two arms may differ on it and still be alike. A core measure's descriptor is the engine's and "
+            "declares no margin, so a run-scoped one is how a comparison of runs can read `equivalent` on it; the "
+            "analysis reads it only when every member run of the campaign declares the same margin, and each "
+            "contrast tested against it names it (``FamilyComparison.margin_source`` `run`). Declared at launch, "
+            "before any result, so it is chosen before the data is seen. Not part of the measurement context: a "
+            "margin changes how a difference is read, not what was measured. Empty when the launch declared none, "
+            "and on every run stored before run-scoped margins existed, which then read as declaring none."
+        ),
+    )
     resolved_world_seed: dict[str, Any] = Field(
         default_factory=dict,
         description=(

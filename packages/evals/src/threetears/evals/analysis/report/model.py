@@ -75,7 +75,14 @@ from threetears.evals.contracts.prose import ModelProse
 #: declared question asked about, or the one sentence that a campaign declaring none is exploratory throughout);
 #: a finding's ``Scope`` fact, present only on a finding resting wholly on exploratory readings, and an adopted
 #: decision's ``Guardrails`` fact, present only when a guardrail on its arm is not held.
-REPORT_VERSION: Literal[5] = 5
+#:
+#: 6: ``verdicts`` added — every contrast against the control, bar reading and guardrail reading as a typed
+#: :class:`Verdict` (its outcome, a structured reason, its margin and where that came from, its materiality and
+#: whether it is a guardrail), in the order the report's tables lay them out; the ``verdict`` and ``decision``
+#: cells of the ``comparisons`` and ``guardrails`` tables are each verdict's ``words``, rendered from it. An
+#: ``equivalent`` contrast on a margin its runs declared says so (``declared on the runs``), and the
+#: ``comparisons`` disclosure source carries why a margin the runs disagree on was read on no contrast.
+REPORT_VERSION: Literal[6] = 6
 
 #: What a report is of: a generated analysis, or the campaign's evidence alone with no analysis.
 ReportBasis = Literal["analysis", "code_only"]
@@ -131,6 +138,132 @@ DisclosureSource = Literal[
     "guardrails",
     "scope",
 ]
+
+
+#: Which reading a :class:`Verdict` is: a contrast tested against the control, a bar read on one cell, or a guardrail
+#: checked for one arm against the control.
+VerdictKind = Literal["contrast", "bar", "guardrail"]
+
+#: What a contrast's test came to (``FamilyComparison.verdict``).
+ContrastOutcome = Literal["improved", "regressed", "equivalent", "not_separated", "untested"]
+
+#: What a bar's reading on one cell came to (``BarVerdict.decision``).
+BarOutcome = Literal["cleared", "missed", "undecided", "no_interval", "no_data"]
+
+#: What a guardrail came to for one arm against the control (``GuardrailCheck.decision``).
+GuardrailOutcome = Literal["held", "breached", "undecided"]
+
+#: Each kind's outcomes, so a verdict cannot carry another kind's.
+VERDICT_OUTCOMES: dict[str, frozenset[str]] = {
+    "contrast": frozenset(get_args(ContrastOutcome)),
+    "bar": frozenset(get_args(BarOutcome)),
+    "guardrail": frozenset(get_args(GuardrailOutcome)),
+}
+
+#: Why a verdict came out as it did, as a code a program branches on (``reason_detail`` says it in words where
+#: there is more to say). A contrast: ``separated`` (its Holm-adjusted p is below α), ``inside_margin`` (the
+#: equivalence test shows the difference inside the margin), ``no_margin`` (not separated, and with no margin it
+#: could not be shown equivalent), ``margin_untested`` (not separated, a margin is declared and no equivalence test
+#: could run: no declared range, or an unpaired test), ``not_inside_margin`` (not separated, and the equivalence
+#: test did not show it inside the margin), ``untestable`` (no test could run). A bar: ``interval_clears``,
+#: ``interval_misses``, ``interval_straddles``, ``too_few_observations`` (a value from fewer than two, which is not
+#: read), ``no_observations``. A guardrail: ``within_margin`` (held), ``beyond_margin`` (breached),
+#: ``interval_straddles`` or ``no_interval`` (undecided).
+VerdictReason = Literal[
+    "separated",
+    "inside_margin",
+    "no_margin",
+    "margin_untested",
+    "not_inside_margin",
+    "untestable",
+    "interval_clears",
+    "interval_misses",
+    "interval_straddles",
+    "too_few_observations",
+    "no_observations",
+    "within_margin",
+    "beyond_margin",
+    "no_interval",
+]
+
+
+class Verdict(EvalBaseModel):
+    """One verdict the report states, typed: what a program reads instead of the words printed from it.
+
+    The source of truth for every verdict the report prints: the ``comparisons`` table's ``verdict`` cell and the
+    ``guardrails`` table's ``decision`` cell are each a verdict's :attr:`words`, rendered from it, never the reverse.
+    """
+
+    kind: VerdictKind = Field(description="A contrast against the control, a bar on one cell, or a guardrail.")
+    outcome: ContrastOutcome | BarOutcome | GuardrailOutcome = Field(
+        description=(
+            "What it came to. A contrast: improved, regressed, equivalent, not_separated (says nothing about whether "
+            "the arms differ) or untested. A bar: cleared, missed, undecided, no_interval or no_data. A guardrail: "
+            "held, breached or undecided. `undecided`, `no_interval`, `no_data`, `not_separated` and `untested` "
+            "are never a pass."
+        )
+    )
+    reason: VerdictReason = Field(description="Why, as a code; see `VerdictReason`.")
+    reason_detail: str | None = Field(
+        default=None, description="The reason in words where there is more to say: why no test ran, why undecided."
+    )
+    reading: Literal["measure", "judged"] = Field(description="Whether `name` is a measure or a judged dimension.")
+    name: str = Field(min_length=1, description="The measure or judged dimension, by its key.")
+    heading: str = Field(min_length=1, description="The reading as the report heads it.")
+    arm: str = Field(min_length=1, description="The arm, as the report names it.")
+    variant_key: str = Field(min_length=1, description="The arm's variant.")
+    apparatus_class_id: str = Field(min_length=1, description="The rig it was measured under.")
+    control: str | None = Field(
+        default=None, description="The control, as the report names it; None for a bar, read on one cell."
+    )
+    question_id: str | None = Field(
+        default=None,
+        description="The declared question whose family tested a contrast; None campaign-wide, and for a bar or guardrail.",
+    )
+    delta: float | None = Field(default=None, description="Arm mean minus control mean; None for a bar.")
+    interval: tuple[float, float] | None = Field(
+        default=None,
+        description="The interval the verdict read: on the delta for a contrast or guardrail, on the cell's value for a bar.",
+    )
+    interval_level: float | None = Field(default=None, description="The interval's level, 0 to 1.")
+    p_adjusted: float | None = Field(default=None, description="A contrast's Holm-adjusted p; None otherwise.")
+    value: float | None = Field(default=None, description="A bar's cell value; None otherwise.")
+    threshold: float | None = Field(default=None, description="A bar's threshold; None otherwise.")
+    margin: float | None = Field(
+        default=None,
+        description=(
+            "The margin the verdict read, in the reading's units: a contrast's equivalence margin, a bar's margin, a "
+            "guardrail's tolerated worsening (0 when none is declared). None when the reading has none."
+        ),
+    )
+    margin_source: Literal["measure", "run"] | None = Field(
+        default=None,
+        description=(
+            "Where the margin came from: `measure` = the measure's declared materiality threshold; `run` = a margin "
+            "every run declared at launch on a core rate measure. None when no margin was declared."
+        ),
+    )
+    materiality: Literal["material", "immaterial"] | None = Field(
+        default=None,
+        description="A contrast's delta read against its margin: `immaterial` when inside it. None otherwise.",
+    )
+    guardrail: bool = Field(
+        default=False, description="Whether the reading is a guardrail — true exactly for a guardrail verdict."
+    )
+    words: str = Field(min_length=1, description="The verdict as the report prints it, rendered from these fields.")
+
+    @model_validator(mode="after")
+    def _the_outcome_is_its_kinds(self) -> Self:
+        """Refuse an outcome of another kind, and a guardrail flag that disagrees with the kind.
+
+        Raises:
+            ValueError: The outcome is not one of the kind's, or ``guardrail`` is not ``kind == "guardrail"``.
+        """
+        if self.outcome not in VERDICT_OUTCOMES[self.kind]:
+            raise ValueError(f"a {self.kind} verdict cannot be {self.outcome!r}")
+        if self.guardrail != (self.kind == "guardrail"):
+            raise ValueError("a verdict is flagged guardrail exactly when it is a guardrail's")
+        return self
 
 
 class Fact(EvalBaseModel):
@@ -403,7 +536,7 @@ class Report(EvalBaseModel):
         }
     )
 
-    report_version: Literal[5] = Field(default=REPORT_VERSION, description="This shape's version.")
+    report_version: Literal[6] = Field(default=REPORT_VERSION, description="This shape's version.")
     basis: ReportBasis = Field(
         description=(
             "`analysis` when the report renders a generated analysis; `code_only` when no analysis exists and the "
@@ -418,6 +551,16 @@ class Report(EvalBaseModel):
     )
     source: ReportSource = Field(description="What this is a report of.")
     blocks: list[ReportBlock] = Field(description="The report, in reading order.")
+    verdicts: list[Verdict] = Field(
+        default_factory=list,
+        description=(
+            "Every verdict the report states, typed — the source each printed verdict is rendered from: the "
+            "guardrails (for each arm against the control), then each bar on each cell, then the contrasts against "
+            "the control, each group in its table's row order. A code-only report carries all three; an analysis "
+            "report carries the guardrails and bars its frozen decision surface holds, and no contrast, as it "
+            "prints no contrasts table."
+        ),
+    )
 
     @model_validator(mode="after")
     def _positions_point_at_findings(self) -> Self:
@@ -534,6 +677,13 @@ def chart_table_columns(intent: ChartIntent) -> list[ChartColumn]:
 
 __all__ = [
     "REPORT_VERSION",
+    "VERDICT_OUTCOMES",
+    "BarOutcome",
+    "ContrastOutcome",
+    "GuardrailOutcome",
+    "Verdict",
+    "VerdictKind",
+    "VerdictReason",
     "SECTION_TITLES",
     "ChartBlock",
     "DisclosureBlock",
