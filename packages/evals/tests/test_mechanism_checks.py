@@ -534,13 +534,14 @@ class TestAMemberOfAnOpenMapDeclaresItsMechanism:
         bundle = _bundle(
             [
                 _Arm(_capped_batch(max_pages=5), _per_document(_CONTEXT, 2000.0, 40.0)),
-                _Arm(_capped_batch(max_pages=20), _per_document(_CONTEXT, 8000.0, 40.0)),
+                # A gap that varies by document: one amount on every document is never called with no range (#597).
+                _Arm(_capped_batch(max_pages=20), _per_document(_CONTEXT, 8000.0, 95.0)),
             ],
             profile=_capped_profile(),
         )
         mechanism = _row(bundle, _MAX_PAGES).mechanism
         assert (mechanism.state, mechanism.measure) == ("moved", _CONTEXT)
-        assert mechanism.level_means == {"5": pytest.approx(2220.0), "20": pytest.approx(8220.0)}
+        assert mechanism.level_means == {"5": pytest.approx(2220.0), "20": pytest.approx(8522.5)}
 
     def test_a_cap_the_candidate_never_reaches_is_inert(self) -> None:
         bundle = _bundle(

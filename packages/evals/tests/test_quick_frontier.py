@@ -27,8 +27,10 @@ from threetears.evals.run import LaunchHost, LaunchSettings, default_job_timeout
 CASES = [{"n": index} for index in range(24)]
 
 
+# Each arm's cost varies a little by case, so the gap between them does too: cost declares no range, and a gap of
+# one amount on every case is never shown cheaper (#597).
 async def big(case: Mapping[str, Any]) -> Answer:
-    return Answer("GOOD", cost_usd=0.01)
+    return Answer("GOOD", cost_usd=0.01 + 0.0001 * (case["n"] % 3))
 
 
 async def small(case: Mapping[str, Any]) -> Answer:
