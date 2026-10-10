@@ -315,7 +315,9 @@ EXPLORATORY_FINDING = (
 _GUARDRAILS_DISCLOSURE = (
     "A guardrail is what an arm must not get worse on. Each is decided on its own 95% interval on the difference "
     "from the control: held when the whole interval lies on the good side of the margin, breached when it lies "
-    "wholly beyond it, undecided otherwise. A measure's margin is its declared materiality threshold, a judged "
+    "wholly beyond it, undecided otherwise. On a declared range the interval is the bounded test's, which holds "
+    "its error rate at any number of cases; a reading with no declared range is never held, since no test holds "
+    "its rate there, and can only be shown breached. A measure's margin is its declared materiality threshold, a judged "
     "dimension's the one its campaign declares; with none, a guardrail is held at zero change. Guardrails join no comparison and no composite, so no "
     "gain elsewhere offsets one; an arm with a breached guardrail is not adopted, and an undecided guardrail is "
     "not known to be safe."
@@ -417,7 +419,7 @@ def _guardrail_blocks(
                 if check.interval is None
                 else f"[{format_number(check.interval[0])}, {format_number(check.interval[1])}] at "
                 f"{format_number(100 * INTERVAL_LEVEL)}%"
-                + (" (bounded: every case moved alike)" if check.interval_basis == "bounded" else ""),
+                + (" (t: no declared range)" if check.interval_basis == "t" else ""),
                 "margin": format_number(check.margin) if check.margin_declared else "0 (none declared)",
                 "decision": GUARDRAIL_DECISION_WORDS[check.decision]
                 + (f" ({check.undecided_reason})" if check.undecided_reason else ""),

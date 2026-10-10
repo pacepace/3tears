@@ -57,6 +57,25 @@ comparison still reads `improved`, `regressed` or `not_separated`; its equivalen
 "declare value_range on this measure to test equivalence", and a report says so once per measure. Fix, on the
 host's side: declare the measure's range.
 
+### A guardrail is held only on a declared range (accepted limit)
+
+Decided with the fix that made `held` a bounded test's claim (no issue filed yet; tracked with
+[#697](https://github.com/pacepace/3tears/issues/697)'s guardrail pillar): a guardrail on a reading that declares no
+`value_range` is never read `held`.
+
+`held` is a claim of safety. With no declared range no test of a mean holds its error rate at a few cases, and the
+t interval the engine read it off claimed `held` up to 9.5% of the time against 2.5% at the margin on skewed coarse
+values. Such a guardrail now reads `undecided`, with the reason "declare value_range on this measure (on compare(),
+ranges= beside the scorer)". Fix, on the host's side: declare the reading's range. A pass/fail scorer and a judged
+scale declare theirs already.
+
+**The breach on such a reading is still the t interval's, and its rate is not guaranteed.** Simulated at 30 cases
+with no margin, on 1-5 differences that are -1 on most cases and +4 on one in five (an arm no worse than the
+control that looks worse in most samples), it read `breached` 4.1% of the time against 2.5%. A false breach blocks
+a good arm, which is the lesser harm, and refusing every breach without a range would let a blatant regression on an
+unbounded measure be adopted, so the t breach is kept and the gap recorded as a strict xfail in
+`tests/test_simulated_guardrails.py`. On a declared range the breach is the bounded test's, and holds its rate.
+
 ## Judging
 
 ### No check for judge drift across configurations

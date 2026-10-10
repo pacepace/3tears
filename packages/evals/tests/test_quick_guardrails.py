@@ -42,9 +42,9 @@ from threetears.evals.contracts import (
 )
 from threetears.evals.quick import Comparison, Guardrail, Judge, callable_host, compare, run_eval
 
-#: Forty cases: an arm alike with the control on every one is shown within 0.1 of it (the bounded interval at
-#: n=40 is ±0.088), and twelve leaks in forty are shown worse than it by more than 0.05.
-CASES = [{"n": index} for index in range(40)]
+#: Fifty cases: an arm alike with the control on every one is shown within 0.1 of it (the bounded test's interval
+#: at n=50 is ±0.081; at 40 it is ±0.1002, which does not), and twenty leaks in fifty are shown worse by more.
+CASES = [{"n": index} for index in range(50)]
 
 NO_LEAK = Guardrail(margin=0.1, direction="higher_is_better")
 
@@ -78,11 +78,11 @@ def _answers(*, misses: int, leaks: int, tail: str = "") -> Any:
 
 
 #: The control misses ten cases and leaks none; ``same`` answers as it does; ``leaky`` misses none and leaks
-#: twelve; ``slip`` answers as the control does and leaks three, too few to be shown either side of 0.1.
+#: twenty; ``slip`` answers as the control does and leaks three, too few to be shown either side of 0.1.
 ARMS = {
     "current": _answers(misses=10, leaks=0),
     "same": _answers(misses=10, leaks=0),
-    "leaky": _answers(misses=0, leaks=12),
+    "leaky": _answers(misses=0, leaks=20),
     "slip": _answers(misses=10, leaks=3),
 }
 
@@ -115,12 +115,13 @@ class TestAScorerGuardrail:
         assert [(row["measure_id"], row["guardrail"], row["margin"]) for row in leaky] == [
             ("no_leak", "No leak score", "0.1")
         ]
-        assert leaky[0]["delta"] == pytest.approx(-0.3) and leaky[0]["decision"].startswith("breached")
+        assert leaky[0]["delta"] == pytest.approx(-0.4) and leaky[0]["decision"].startswith("breached")
         (slip,) = comparison.guardrails("slip")
         assert slip["decision"].startswith("undecided: not shown held, so not known to be safe")
         assert "reaches both sides of -0.1 (the declared margin)" in slip["decision"]
         (same,) = comparison.guardrails("same")
-        assert "(bounded: every case moved alike)" in same["interval"], "a pass/fail is on 0 to 1, so it is bounded"
+        assert same["interval"] == "[-0.08106, 0.08106] at 95%", "a pass/fail is on 0 to 1: the bounded test's"
+        assert comparison.guardrail_readings.checks[0].interval_basis == "bounded"
 
     async def test_the_standing_of_each_arm_and_none_for_the_control(self) -> None:
         comparison = await _compare()
@@ -183,7 +184,7 @@ class TestAScorerGuardrail:
         assert outcomes == {"same": "held", "leaky": "breached", "slip": "undecided"}
         assert comparison.host.profile.measures.get("leaked").higher_is_better is False  # type: ignore[union-attr]
         reasons = [reason for miss in comparison.misses("leaky") for reason in miss.missed_because]
-        assert reasons == ["leaked gave 1"] * 12, "a leak is the miss on a lower-is-better guardrail, and none is not"
+        assert reasons == ["leaked gave 1"] * 20, "a leak is the miss on a lower-is-better guardrail, and none is not"
 
     async def test_a_bounded_scorer_holds_on_its_declared_range_and_a_value_outside_it_is_the_scorer_s_fault(
         self,
@@ -195,7 +196,7 @@ class TestAScorerGuardrail:
         assert comparison.host.profile.measures.get("politeness").value_range == (0.0, 1.0)  # type: ignore[union-attr]
         assert comparison.arms["same"].n_excluded == 0
         (held,) = comparison.guardrails()
-        assert held["outcome"] == "held" and "(bounded: every case moved alike)" in held["interval"]
+        assert held["outcome"] == "held" and "(t: no declared range)" not in held["interval"]
 
         rude = {"current": _answers(misses=0, leaks=0), "please": _answers(misses=0, leaks=0, tail=" please")}
         comparison = await _compare(arms=rude, scorers=[politeness], guardrails=polite, ranges=ranged)
@@ -203,11 +204,27 @@ class TestAScorerGuardrail:
         assert summary.n_excluded == len(CASES) and summary.n_scored == 0
         assert "outside the range 0 to 1" in summary.errors[0]
 
-    async def test_with_no_range_a_bounded_reading_has_no_interval_when_every_case_moved_alike(self) -> None:
+    async def test_with_no_range_a_reading_is_never_held_and_the_reason_names_ranges(self) -> None:
         arms = {"current": _answers(misses=0, leaks=0), "same": _answers(misses=0, leaks=0)}
         polite = {"politeness": Guardrail(margin=0.2, direction="higher_is_better")}
         (row,) = (await _compare(arms=arms, scorers=[politeness], guardrails=polite)).guardrails()
-        assert row["outcome"] == "undecided" and "declares no range to bound that by" in row["decision"]
+        assert row["outcome"] == "undecided" and "ranges= beside the scorer" in row["decision"]
+        assert "held is never read off it" in row["decision"]
+
+    async def test_with_no_range_a_spread_inside_the_margin_is_still_not_held(self) -> None:
+        """The t interval sits inside the margin, which read ``held`` until #695's rule reached guardrails."""
+
+        def kind(case: Mapping[str, Any], answer: str) -> float:
+            """How kind the answer is."""
+            return 1.0 + (0.1 if answer.endswith("please") and case["n"] % 2 else 0.0)
+
+        arms = {"current": _answers(misses=0, leaks=0), "warmer": _answers(misses=0, leaks=0, tail=" please")}
+        kindness = {"kind": Guardrail(margin=0.2, direction="higher_is_better")}
+        comparison = await _compare(arms=arms, scorers=[kind], guardrails=kindness)
+        (check,) = comparison.guardrail_readings.checks
+        assert check.interval_basis == "t" and check.interval is not None and check.interval[0] > -0.2
+        assert check.decision == "undecided" and check.undecided_reason is not None
+        assert "ranges= beside the scorer" in check.undecided_reason
 
 
 class TestABreachedArmIsNeverRecommended:
@@ -331,7 +348,7 @@ class TestTheSingleRunSummary:
         (measure,) = [m for m in summary.measures if m.name == "no_leak"]
         assert measure.guardrail and not next(m for m in summary.measures if m.name == "correct").guardrail
         assert (
-            "  no_leak: mean 0.7 (n=40, min 0, max 1); a guardrail: held, breached or undecided is decided only "
+            "  no_leak: mean 0.6 (n=50, min 0, max 1); a guardrail: held, breached or undecided is decided only "
             "against a control, in a comparison"
         ) in summary.render()
 

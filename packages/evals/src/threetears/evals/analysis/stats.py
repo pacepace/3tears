@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import functools
 import math
+import random
 from collections.abc import Hashable, Mapping, Sequence
 from fractions import Fraction
 from functools import lru_cache
@@ -1129,12 +1130,124 @@ def no_spread_p(a: Sequence[Fraction], b: Sequence[Fraction], *, paired: bool) -
     return 1.0 if a[0] == b[0] else _constant_split_p(len(a), len(b))
 
 
+#: Why a guardrail on a reading with no declared range is never read ``held`` (#695's rule, applied to guardrails).
+GUARDRAIL_HELD_NEEDS_RANGE = (
+    "declare value_range on this measure (on compare(), ranges= beside the scorer) for it to be shown held: it "
+    "declares no range, and with no range no test of a mean holds its error rate (an unbounded value can hide a rare "
+    "large move), so held is never read off it and only a breach can be shown"
+)
+
+#: Why a guardrail whose values contradict their declared range is not decided.
+GUARDRAIL_OUTSIDE_RANGE = (
+    "a value lies outside the reading's declared range, so the range bounds nothing and no bounded test can run"
+)
+
+
 class GuardrailVerdict(NamedTuple):
     """What :func:`guardrail_decision` came to: the decision, the interval it read, and how that interval was formed."""
 
     decision: GuardrailDecision
     interval: tuple[float, float] | None
     basis: Literal["t", "bounded"] | None
+    #: Why the decision is ``undecided`` where the rule itself refused to decide (:data:`GUARDRAIL_HELD_NEEDS_RANGE`,
+    #: :data:`GUARDRAIL_OUTSIDE_RANGE`); None otherwise, and the caller says why an interval straddled or was absent.
+    refusal: str | None = None
+
+
+#: Bisection steps for a bound inverted from :func:`bounded_mean_p`: the bound is found to ``width · 2^-32``.
+_BOUND_STEPS = 32
+
+
+def bounded_mean_lower_bound(
+    values: Sequence[float | Fraction], value_range: tuple[float, float], *, alpha: float
+) -> float:
+    """A one-sided ``1 − alpha`` lower confidence bound on the mean of values inside ``value_range``.
+
+    The inversion of :func:`bounded_mean_p`: every null mean its test rejects at ``alpha`` lies below the bound.
+    Its p rises with the null mean (a larger null makes every bet's payoff smaller and its stake no larger), so
+    the rejected nulls are an interval from the bottom of the range, and bisection finds its end. The bound
+    returned is the largest null found rejected, so it sits at or below the exact one: rounding only widens.
+
+    Args:
+        values: The observations, in an order fixed before they were seen, each inside ``value_range``.
+        value_range: The declared inclusive bounds.
+        alpha: The one-sided error rate.
+
+    Returns:
+        The bound, in ``[low, high]``.
+
+    Raises:
+        ValueError: The range is empty, or a value lies outside it (:func:`bounded_mean_p`).
+    """
+    scaled = _scaled_to_unit(values, value_range)
+    stakes = _plug_in_stakes(scaled, alpha)
+    if _betting_p_staked(scaled, stakes, 0.0) >= alpha:
+        return float(value_range[0])
+    # Bisected on the rescaled null, where the betting runs, and mapped back once.
+    rejected, kept = 0.0, 1.0
+    for _ in range(_BOUND_STEPS):
+        middle = (rejected + kept) / 2.0
+        if _betting_p_staked(scaled, stakes, middle) < alpha:
+            rejected = middle
+        else:
+            kept = middle
+    low = float(value_range[0])
+    return low + rejected * (float(value_range[1]) - low)
+
+
+def _bounded_mean_interval(
+    values: Sequence[float | Fraction], value_range: tuple[float, float], *, alpha: float
+) -> tuple[float, float]:
+    """Lower and upper one-sided ``1 − alpha`` bounds on a bounded mean (:func:`bounded_mean_lower_bound`)."""
+    low, high = value_range
+    lower = bounded_mean_lower_bound(values, value_range, alpha=alpha)
+    upper = -bounded_mean_lower_bound([-exact_decimal(v) for v in values], (-high, -low), alpha=alpha)
+    return lower, upper
+
+
+def bounded_difference_interval(
+    sample_a: Sequence[float | Fraction],
+    sample_b: Sequence[float | Fraction],
+    *,
+    paired: bool,
+    value_range: tuple[float, float],
+    confidence: float = INTERVAL_LEVEL,
+) -> tuple[float, float] | None:
+    """The interval on ``mean(b) − mean(a)`` from the bounded test by betting, valid at every n on a declared range.
+
+    Each end is a one-sided bound at ``(1 − confidence) / 2``, so each one-sided claim read off it errs at most that
+    often for every distribution on the range — the guarantee a t interval cannot give coarse, skewed values,
+    where a regression that broke one case in ten leaves a sample of agreeing cases a third of the time.
+
+    Paired, the bounds are :func:`bounded_mean_lower_bound`'s on the differences, which lie within ± the range's
+    width. Unpaired, each arm's mean is bounded on the range at half that rate (Bonferroni), and the difference's
+    bound is the gap between them: wider, and valid with no assumption about how the two arms relate.
+
+    Args:
+        sample_a: The control's per-case values, in a fixed case order.
+        sample_b: The arm's, aligned with ``sample_a`` when ``paired``.
+        paired: Whether the two are one-to-one on the same cases.
+        value_range: The reading's declared inclusive bounds.
+        confidence: The two-sided coverage.
+
+    Returns:
+        ``(low, high)``, or None with fewer than two values a side, or a value outside the declared range.
+    """
+    if len(sample_a) < 2 or len(sample_b) < 2:
+        return None
+    low, high = exact_decimal(value_range[0]), exact_decimal(value_range[1])
+    a = [exact_decimal(v) for v in sample_a]
+    b = [exact_decimal(v) for v in sample_b]
+    if any(not low <= v <= high for v in (*a, *b)):
+        return None
+    tail = (1.0 - confidence) / 2.0
+    if paired:
+        width = float(high - low)
+        return _bounded_mean_interval([y - x for x, y in zip(a, b)], (-width, width), alpha=tail)
+    bounds = (float(low), float(high))
+    low_a, high_a = _bounded_mean_interval(a, bounds, alpha=tail / 2.0)
+    low_b, high_b = _bounded_mean_interval(b, bounds, alpha=tail / 2.0)
+    return low_b - high_a, high_b - low_a
 
 
 def guardrail_decision(
@@ -1148,24 +1261,26 @@ def guardrail_decision(
 ) -> GuardrailVerdict:
     """Decide one guardrail for an arm against the control: held, breached or undecided — non-inferiority.
 
-    The bar rule (:func:`interval_clears`) read on the difference instead of a level: the interval on
-    ``mean(contrast) − mean(control)`` at :data:`INTERVAL_LEVEL`, from the comparison test's own inversion
-    (:func:`difference_interval`), against a line at zero change less the margin on the worse side. ``held``
-    when the whole interval is on the good side of it — the arm is shown no worse than the control by more
-    than the margin; ``breached`` when the whole interval is beyond it; ``undecided`` when it straddles the
-    line or no interval exists. With no margin the line is zero change itself, so ``held`` needs the arm
-    shown no worse at all. Each one-sided claim errs at most 2.5% of the time at the interval's coverage.
+    The bar rule (:func:`interval_clears`) read on the difference instead of a level: an interval on
+    ``mean(contrast) − mean(control)`` at :data:`INTERVAL_LEVEL`, against a line at zero change less the margin
+    on the worse side. ``held`` when the whole interval is on the good side of it — the arm is shown no worse
+    than the control by more than the margin; ``breached`` when the whole interval is beyond it; ``undecided``
+    when it straddles the line or no interval exists. With no margin the line is zero change itself, so
+    ``held`` needs the arm shown no worse at all. Each one-sided claim errs at most 2.5% of the time.
 
-    **When every paired case moved by the same amount** the t interval has no width to give — the state of a
-    guardrail at its ceiling, where both arms pass every case, and of a blatant regression, where every case
-    flipped. For a reading with a declared range, the interval is then the one boundedness allows: no case
-    moved otherwise in ``n``, so the share that could is at most ``1 − 0.025^(1/n)`` (Clopper–Pearson with no
-    events, one-sided 2.5%), and each such case moves at most the full span of the scale either way. It is
-    wide by design — a perfect record over fifteen cases does not show a rare failure absent — and with no
-    range there is no such bound, so the guardrail is undecided.
+    **On a declared range the interval is the bounded test's** (:func:`bounded_difference_interval`), which holds
+    that rate for every distribution on the range at every n. The t interval this read until then did not: on
+    coarse, skewed values at the margin (a rare 4-point drop on a 1-5 scale, a pass/fail regression that broke
+    one case in four) it read ``held`` up to 9.5% of the time against the nominal 2.5%. The price is the truth
+    about coarse data: no valid test shows a rare large drop absent from a few agreeing cases.
+
+    **With no declared range ``held`` is never read** (:data:`GUARDRAIL_HELD_NEEDS_RANGE`): no test of a mean holds
+    its error rate there (Bahadur and Savage 1956), and ``held`` is a claim of safety. The t interval
+    (:func:`difference_interval`) is still read for a breach, which blocks an arm rather than clearing one; a
+    reading the t interval would have called held is ``undecided``, saying why and naming the remedy.
 
     Args:
-        control: The control's per-case values.
+        control: The control's per-case values, in a fixed case order.
         contrast: The arm's, aligned with ``control`` when ``paired``.
         paired: Whether the two are one-to-one on the same cases.
         margin: The reading's declared margin, in its units, or None when it declares none.
@@ -1173,23 +1288,24 @@ def guardrail_decision(
         value_range: The reading's declared inclusive bounds, or None when it declares none.
 
     Returns:
-        The decision, the interval it read (None when none exists) and the interval's basis.
+        The decision, the interval it read (None when none exists), the interval's basis, and the refusal when
+        the rule itself declined to decide.
     """
-    interval = difference_interval(list(control), list(contrast), paired=paired, value_range=value_range)
-    basis: Literal["t", "bounded"] | None = "t" if interval is not None else None
-    if interval is None and paired and value_range is not None and len(control) == len(contrast) >= 2:
-        diffs = [float(b) - float(a) for a, b in zip(control, contrast)]
-        if _sample_std(diffs) == 0.0:
-            span = value_range[1] - value_range[0]
-            moved = diffs[0]
-            share = 1.0 - ((1.0 - INTERVAL_LEVEL) / 2.0) ** (1.0 / len(diffs))
-            interval = (moved - (moved + span) * share, moved + (span - moved) * share)
-            basis = "bounded"
-    if interval is None:
+    if value_range is not None:
+        interval = bounded_difference_interval(control, contrast, paired=paired, value_range=value_range)
+        if interval is None:
+            refusal = GUARDRAIL_OUTSIDE_RANGE if len(control) >= 2 and len(contrast) >= 2 else None
+            return GuardrailVerdict("undecided", None, None, refusal)
+        cleared = interval_clears(interval, 0.0, margin=margin, higher_is_better=higher_is_better)
+        decision: GuardrailDecision = "undecided" if cleared is None else ("held" if cleared else "breached")
+        return GuardrailVerdict(decision, interval, "bounded")
+    t_interval = difference_interval(list(control), list(contrast), paired=paired)
+    if t_interval is None:
         return GuardrailVerdict("undecided", None, None)
-    cleared = interval_clears(interval, 0.0, margin=margin, higher_is_better=higher_is_better)
-    decision: GuardrailDecision = "undecided" if cleared is None else ("held" if cleared else "breached")
-    return GuardrailVerdict(decision, interval, basis)
+    cleared = interval_clears(t_interval, 0.0, margin=margin, higher_is_better=higher_is_better)
+    if cleared is False:
+        return GuardrailVerdict("breached", t_interval, "t")
+    return GuardrailVerdict("undecided", t_interval, "t", GUARDRAIL_HELD_NEEDS_RANGE)
 
 
 def separation_p(
@@ -1327,8 +1443,12 @@ def bounded_mean_p(
     cases as having no spread, when a regression that broke one case in ten leaves ten agreeing cases one time
     in three.
 
-    The stakes are set in the order the values come, so pass them in an order fixed before the values were
-    seen (the engine's is the cases' sorted ids); a different fixed order is an equally valid test.
+    **The values are bet on in a pseudo-random order fixed by their count alone** (:func:`_bet_order`), never
+    the order they are passed in. The guarantee needs the order independent of the values, and the order cases
+    arrive in is not: a caller lists its hard cases together, and case ids sort by that listing. Bet in that
+    order, a run of agreeing cases ahead of the drops lifts the capital to its maximum before the drops are
+    seen: twelve leaks listed last of fifty read an interval on the difference of ``[-0.107, -0.095]`` around a
+    true ``-0.24``. A fixed shuffle keeps the test reproducible and makes any listing order an equally valid one.
 
     Args:
         values: The observations, each inside ``value_range``.
@@ -1343,6 +1463,17 @@ def bounded_mean_p(
         ValueError: The range is empty, or a value lies outside it.
     """
     low, high = exact_decimal(value_range[0]), exact_decimal(value_range[1])
+    scaled = _scaled_to_unit(values, value_range)
+    return _betting_p(scaled, float((exact_decimal(null_mean) - low) / (high - low)), alpha)
+
+
+def _scaled_to_unit(values: Sequence[float | Fraction], value_range: tuple[float, float]) -> list[float]:
+    """Values checked exactly against their declared range, then rescaled to ``[0, 1]`` for the betting.
+
+    Raises:
+        ValueError: The range is empty, or a value lies outside it.
+    """
+    low, high = exact_decimal(value_range[0]), exact_decimal(value_range[1])
     if high <= low:
         raise ValueError(f"value_range {value_range} is empty")
     exact = [exact_decimal(v) for v in values]
@@ -1351,22 +1482,47 @@ def bounded_mean_p(
     # Checked exactly above; the betting itself is float arithmetic, clamped so a rounding cannot leave the range.
     low_f, width = float(low), float(high - low)
     scaled = [min(1.0, max(0.0, (float(v) - low_f) / width)) for v in exact]
-    m = float((exact_decimal(null_mean) - low) / (high - low))
+    return [scaled[i] for i in _bet_order(len(scaled))]
+
+
+@lru_cache(maxsize=256)
+def _bet_order(n: int) -> tuple[int, ...]:
+    """The order :func:`bounded_mean_p` bets on ``n`` values in: a shuffle seeded by ``n`` alone, so it is
+    reproducible and independent of the values and of the order they were listed in."""
+    order = list(range(n))
+    random.Random(f"bounded-mean-bet-order-{n}").shuffle(order)
+    return tuple(order)
+
+
+def _betting_p(scaled: Sequence[float], m: float, alpha: float) -> float:
+    """:func:`bounded_mean_p` on values already rescaled to ``[0, 1]``, against the rescaled null mean ``m``."""
+    return _betting_p_staked(scaled, _plug_in_stakes(scaled, alpha), m)
+
+
+def _plug_in_stakes(scaled: Sequence[float], alpha: float) -> list[float]:
+    """Each value's predictable plug-in stake before its cap, ``sqrt(2 ln(1/α) / (n σ̂²))``: it does not depend on the null."""
+    n = len(scaled)
+    stakes = []
+    total = squares = 0.0
+    for t, z in enumerate(scaled):
+        stakes.append(math.sqrt(2.0 * math.log(1.0 / alpha) / (n * ((0.25 + squares) / (t + 1)))))
+        total += z
+        squares += (z - (0.5 + total) / (t + 2)) ** 2
+    return stakes
+
+
+def _betting_p_staked(scaled: Sequence[float], stakes: Sequence[float], m: float) -> float:
+    """The betting p against the rescaled null ``m``, given the uncapped stakes (:func:`_plug_in_stakes`)."""
     if m <= 0.0:
         # H0 puts every value at the bottom of the range, so one value above it refutes H0 outright.
         return 0.0 if any(z > 0.0 for z in scaled) else 1.0
     if m >= 1.0:
         return 1.0
-    n = len(scaled)
+    cap = _BET_CAP / m
     log_capital = best = 0.0
-    total = squares = 0.0
-    for t, z in enumerate(scaled):
-        variance = (0.25 + squares) / (t + 1)
-        stake = min(math.sqrt(2.0 * math.log(1.0 / alpha) / (n * variance)), _BET_CAP / m)
-        log_capital += math.log1p(stake * (z - m))
+    for z, stake in zip(scaled, stakes):
+        log_capital += math.log1p(min(stake, cap) * (z - m))
         best = max(best, log_capital)
-        total += z
-        squares += (z - (0.5 + total) / (t + 2)) ** 2
     return min(1.0, math.exp(-best))
 
 
@@ -1876,6 +2032,8 @@ __all__ = [
     "BAR_SEED_HALF_WIDTH_FRACTION",
     "EQUIVALENCE_NEEDS_RANGE",
     "EQUIVALENCE_TEST_NAME",
+    "GUARDRAIL_HELD_NEEDS_RANGE",
+    "GUARDRAIL_OUTSIDE_RANGE",
     "GuardrailVerdict",
     "INTERVAL_LEVEL",
     "MIN_PAIRS_FOR_DETERMINISTIC_GAP",
@@ -1898,6 +2056,8 @@ __all__ = [
     "difference_interval",
     "equivalence_untested_reason",
     "exact_decimal",
+    "bounded_difference_interval",
+    "bounded_mean_lower_bound",
     "guardrail_decision",
     "hedges_j",
     "holm_adjust",
