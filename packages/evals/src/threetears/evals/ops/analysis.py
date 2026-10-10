@@ -289,8 +289,8 @@ async def analysis_estimate(
         The estimate.
 
     Raises:
-        ValidationFailedError: The host generates no analyses here, the bundle has no evidence, or the
-            prompt does not resolve.
+        ValidationFailedError: The host generates no analyses here, the bundle has no evidence, the
+            prompt does not resolve, or the writer model is not one the host allows.
         NotFoundError: No campaign with that id in the scope.
     """
     generation = _generation_settings(host)
@@ -325,7 +325,8 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
 
     Raises:
         ValidationFailedError: The host generates no analyses here, the bundle has no evidence, the
-            prompt does not resolve, or the first call cannot be priced under the enforced cap or is priced
+            prompt does not resolve, the writer model is not one the host allows
+            (``HostProfile.analysis_writer_models``, checked before any provider request), or the first call cannot be priced under the enforced cap or is priced
             above it.
         ConflictError: A generation of this campaign is already running.
         NotFoundError: No campaign with that id in the scope.

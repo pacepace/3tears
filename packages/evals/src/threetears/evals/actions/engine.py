@@ -117,7 +117,13 @@ Name = Annotated[str, Field(min_length=1, description="The campaign's name, as a
 Behavior = Annotated[str, Field(min_length=1, description="Which aspect of the subject is under test.")]
 Description = Annotated[str, Field(description="A longer description of the campaign.")]
 RunIds = Annotated[list[str], Field(description="The runs to put in the campaign, all in the caller's scope.")]
-GeneratorModel = Annotated[str | None, Field(description="The analysis generator's model; omitted for the host's.")]
+GeneratorModel = Annotated[
+    str | None,
+    Field(
+        description="The analysis generator's model; omitted for the host's. A model outside the host's allowed "
+        "writers is refused before anything is spent."
+    ),
+]
 Format = Annotated[
     Literal["markdown", "json", "html"],
     Field(description="The report's form: markdown (the memo), json (the schema's form), html (script-free)."),
