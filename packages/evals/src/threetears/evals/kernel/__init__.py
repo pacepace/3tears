@@ -170,6 +170,7 @@ from threetears.evals.kernel.judge_cases import (
     JudgeTrial,
     JudgeTrialOutcome,
     judge_case_of,
+    judge_case_payload,
     judge_trial_of,
 )
 from threetears.evals.kernel.metrics import (
@@ -314,6 +315,7 @@ __all__ = [
     "JudgeTrial",
     "JudgeTrialOutcome",
     "judge_case_of",
+    "judge_case_payload",
     "judge_trial_of",
     "CONFIDENCE_TIERS",
     "IDENTITY_VERSION",
