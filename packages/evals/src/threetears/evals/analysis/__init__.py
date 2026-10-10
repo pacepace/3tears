@@ -278,13 +278,7 @@ from threetears.evals.analysis.reporting import (
     ComparisonSetsResult,
     CostEstimate,
     CostEstimateCell,
-    FrontierCostDecision,
-    FrontierCostTie,
     FrontierDominance,
-    FrontierDominator,
-    FrontierPoint,
-    FrontierResult,
-    FrontierVerdict,
     LatencyPartition,
     MeasurementWindow,
     PivotCell,
@@ -295,6 +289,14 @@ from threetears.evals.analysis.reporting import (
     ServedModelReading,
     ServedModelState,
     SimpsonsFlag,
+)
+from threetears.evals.analysis.lenses.frontier import (
+    FrontierCostDecision,
+    FrontierCostTie,
+    FrontierDominator,
+    FrontierPoint,
+    FrontierResult,
+    FrontierVerdict,
     SubjectFrontier,
     FrontierBoundaryCheck,
 )

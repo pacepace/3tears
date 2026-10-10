@@ -18,7 +18,6 @@ from pydantic import ValidationError
 
 from threetears.evals.analysis import reporting
 from threetears.evals.analysis.reporting import (
-    FrontierResult,
     BADGE_CASE_SET_DIFFERS,
     BADGE_CASE_SET_UNRESOLVED,
     BADGE_CASSETTE_MODE_DIFFERS,
@@ -45,7 +44,6 @@ from threetears.evals.analysis.reporting import (
     WITHHELD_UNMEASURED_COMPONENT,
     ComparisonSet,
     CostEstimateError,
-    FrontierError,
     LatencyPartition,
     PivotError,
     PredictedValue,
@@ -54,7 +52,6 @@ from threetears.evals.analysis.reporting import (
     cassette_mode_disclosure,
     compute_comparison_sets,
     compute_estimate_cost,
-    compute_frontier,
     compute_pivot,
     decompose_total_ms,
     difference_was_declared_at_launch,
@@ -62,6 +59,7 @@ from threetears.evals.analysis.reporting import (
     place_results,
     project_score_records,
 )
+from threetears.evals.analysis.lenses.frontier import FrontierResult, FrontierError, compute_frontier
 from threetears.evals.analysis.lenses.history import HistoryError, compute_history
 from threetears.evals.analysis.lenses.program_budget import compute_program_budget
 from threetears.evals.analysis.lenses.orphaned_runs import compute_orphaned_runs

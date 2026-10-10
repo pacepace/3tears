@@ -12,11 +12,11 @@ import pytest
 from threetears.evals.analysis.reads import compare_two_runs
 from threetears.evals.analysis.reporting import (
     METRIC_COMPOSITE,
-    compute_frontier,
     compute_pivot,
     pooled_composite_basis,
     project_score_records,
 )
+from threetears.evals.analysis.lenses.frontier import compute_frontier
 from threetears.evals.analysis.lenses.history import compute_history
 from threetears.evals.kernel.errors import NotFoundError
 from threetears.evals.schema.models import EvalTemplate, GoalStateOutcome, RubricScore

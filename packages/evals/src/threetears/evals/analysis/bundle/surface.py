@@ -7,7 +7,7 @@ surface carries.
 
 from __future__ import annotations
 
-from threetears.evals.analysis.reporting import FrontierResult
+from threetears.evals.analysis.lenses.frontier import FrontierResult
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.metrics import (
     MetricDescriptor,

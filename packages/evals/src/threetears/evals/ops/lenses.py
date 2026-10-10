@@ -53,7 +53,8 @@ from threetears.evals.analysis.reporting import (
 from threetears.evals.analysis.significance import format_significance
 from threetears.evals.analysis.completeness import completeness_disclosure
 
-from threetears.evals.analysis.reporting import CostEstimate, FrontierResult, PivotTable, PlannedCost, PredictedValue
+from threetears.evals.analysis.reporting import CostEstimate, PivotTable, PlannedCost, PredictedValue
+from threetears.evals.analysis.lenses.frontier import FrontierResult
 from threetears.evals.analysis.lenses.history import HistoryResult
 from threetears.evals.analysis.lenses.export import ScoreExport
 

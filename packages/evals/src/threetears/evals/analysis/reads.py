@@ -45,17 +45,15 @@ from threetears.evals.analysis.reporting import (
     METRIC_COMPOSITE,
     CostEstimate,
     PlannedCost,
-    FrontierError,
     PivotError,
     PivotTable,
     compute_comparison_sets,
-    compute_frontier,
     compute_pivot,
-    normalize_bar,
     pooled_composite_basis,
     pooled_served_models,
     project_score_records,
 )
+from threetears.evals.analysis.lenses.frontier import FrontierError, compute_frontier, normalize_bar
 from threetears.evals.analysis.lenses.history import HistoryError, HistoryResult, compute_history
 from threetears.evals.analysis.lenses.program_budget import compute_program_budget
 from threetears.evals.analysis.lenses.orphaned_runs import compute_orphaned_runs

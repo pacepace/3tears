@@ -26,7 +26,7 @@ from collections.abc import Sequence
 
 import pytest
 
-from threetears.evals.analysis.reporting import compute_frontier
+from threetears.evals.analysis.lenses.frontier import compute_frontier
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, SIGNIFICANCE_ALPHA, case_rate_interval
 from threetears.evals.schema import EvalResult, EvalRun, GoalStateOutcome, LatencyMetrics, RoleUsage, RubricScore
 from threetears.evals.kernel.scoring import case_pass_hat_k
