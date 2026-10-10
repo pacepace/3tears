@@ -57,6 +57,7 @@ from threetears.evals.ops import (
     RunDeleted,
     RunLine,
     RunListing,
+    RunsBisected,
     RunsCompared,
     ScoreExport,
     SecondJudgeRead,
@@ -71,6 +72,7 @@ from threetears.evals.ops import (
     history_text,
     out_of_run_spend_text,
     pivot_text,
+    runs_bisected_text,
     runs_compared_text,
 )
 
@@ -596,6 +598,11 @@ def render_pivot(table: PivotTable) -> str:
 def render_runs_compared(compared: RunsCompared) -> str:
     """Two runs compared: the arms, each reading with its delta and test, and every disclosure."""
     return runs_compared_text(compared)
+
+
+def render_runs_bisected(bisected: RunsBisected) -> str:
+    """Two runs' inputs split: each difference with both values, each undecided input, and every disclosure."""
+    return runs_bisected_text(bisected)
 
 
 def render_frontier(result: FrontierResult) -> str:
