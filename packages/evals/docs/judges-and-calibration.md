@@ -234,7 +234,10 @@ reported as undefined, with the reason, never as 0. `run_get` shows each second 
 scored.
 
 Drift is read per dimension over cases: the movement, its interval, and `separated`, `not separated` or
-`untested`, Holm-adjusted across the dimensions. It shows that the scores moved, never which judge is right. A
+`untested`. Each dimension is tested at 1 − α/m across the m dimensions (Bonferroni), and the verdict is read off
+its interval: `separated` exactly when the interval excludes 0, so the two never disagree. Where every case moved by
+one amount the bounded test reads both, which takes more cases than a t-test: with two dimensions read together,
+twenty cases each up one point on 1–5 are not separated, thirty are. It shows that the scores moved, never which judge is right. A
 campaign whose runs were judged differently names the change in the bundle's `judge_change`, and links any drift
 reading that re-scored one side under the other side's judge.
 

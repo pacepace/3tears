@@ -20,7 +20,7 @@ Mutations that turn this file red (each made in a scratch copy, the file restore
 - ``ops.summary._judged_dimensions``: dropping ``second_judges`` (the agreement-beside-the-score test);
 - ``run.judge_second._prepare``: building the budgeted client under purpose ``judge`` (the spend-line test);
 - ``run.judge_second._record``: writing the second scores over the result's (the scores-untouched assertions);
-- ``analysis.judge_drift.judge_drift``: pairing per result instead of per case, or dropping the Holm adjustment —
+- ``analysis.judge_drift.judge_drift``: pairing per result instead of per case, or dropping the family correction —
   neither moves these toy numbers, which is why the simulation file exists (``test_simulated_judge_drift.py``).
 """
 

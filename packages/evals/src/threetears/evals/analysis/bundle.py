@@ -2475,8 +2475,8 @@ class AnalysisContextBundle(EvalDocumentModel):
         default_factory=JudgeDrift,
         description=(
             "How far each judged dimension's scores moved when a second judge re-scored the member runs' stored "
-            "evidence: the movement over cases, its interval, and separated / not separated / untested, Holm-adjusted "
-            "over the dimensions. It detects movement between two judges, never which judge is right."
+            "evidence: the movement over cases, its interval at 1 − α/m over the dimensions, and separated (exactly when "
+            "that interval excludes 0) / not separated / untested. It detects movement between two judges, never which judge is right."
         ),
     )
     judge_change: JudgeChange = Field(

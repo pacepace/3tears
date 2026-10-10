@@ -9,13 +9,16 @@ how far the scores moved:
 - **The unit is the case.** A result's first and second scores are a pair; a case judged ``k`` times is one draw,
   so each side is averaged per case first and the pairs are the cases — the unit every separation test in the
   engine reads.
-- **A family, corrected.** Every dimension read together is one family: each separation p
-  (:func:`~threetears.evals.analysis.stats.separation_p`, paired) is Holm-adjusted over it, and each interval on the
-  movement is at ``1 − α/m`` (Bonferroni over the ``m`` tested), as the bundle's comparison families are, so a
-  family of ten dimensions does not hand a chance "move" to the reader.
+- **A family, corrected.** Every dimension read together is one family, and each is tested at ``1 − α/m``
+  (Bonferroni over the ``m`` tested), so a family of ten dimensions does not hand a chance "move" to the reader.
+- **One test per dimension, and the verdict is its interval** (:func:`_paired_test`). ``separated`` is exactly the
+  interval excluding zero, and the adjusted p is that test's p times ``m``, so a reader never sees "separated"
+  beside an interval reaching zero, or "not separated" beside one that excludes it. Holm's step-down would
+  separate a little more often, but no interval goes with it: its extra separations would sit beside a Bonferroni
+  interval that reaches zero (#597).
 - **Three words.** ``separated`` — the movement is shown, its sign the direction; ``not_separated`` — the data
   cannot tell it from noise, which says nothing about whether the judge moved; ``untested`` — no test could
-  decide (fewer than two cases, or every case moving by one amount over too few for the exact test to reach α).
+  run (fewer than two cases).
 
 **It detects movement, never which judge is right.** Both judges read the same evidence, so a movement is a
 difference between the judges; whether either one agrees with people is the calibration's question
@@ -25,6 +28,7 @@ difference between the judges; whether either one agrees with people is the cali
 from __future__ import annotations
 
 from collections.abc import Iterable
+from fractions import Fraction
 from typing import TYPE_CHECKING, Final, Literal
 
 from pydantic import Field
@@ -33,8 +37,9 @@ from threetears.evals.analysis.agreement import JudgeKey
 from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
     bounded_difference_interval,
+    bounded_mean_p,
     difference_interval,
-    holm_adjust,
+    no_spread_p,
     separation_p,
 )
 from threetears.evals.contracts.base import EvalDocumentModel
@@ -84,14 +89,18 @@ class JudgeDriftDimension(EvalDocumentModel):
     interval: tuple[float, float] | None = Field(
         description=(
             "The interval on the movement at `interval_level`, over the cases (paired), within ± the scale's span: the "
-            "paired t interval, or where every case moved by one amount the bounded test's. None below two cases."
+            "paired t interval, or where every case moved by one amount the bounded test's. The verdict is read off "
+            "it: `separated` exactly when it excludes 0. None below two cases."
         ),
     )
     interval_level: float | None = Field(
         description="The interval's coverage: 1 − α/m over the m dimensions tested together. None when none was tested."
     )
     p_adjusted: float | None = Field(
-        description="The paired separation p, Holm-adjusted over the dimensions read together; None when untested."
+        description=(
+            "The two-sided p of the test `interval` inverts, Bonferroni-adjusted (times `family_size`, capped at 1), so "
+            "it is below α exactly when the interval excludes 0. None when untested."
+        )
     )
     verdict: DriftVerdict = Field(
         description=(
@@ -118,17 +127,50 @@ class JudgeDrift(EvalDocumentModel):
 _GroupKey = tuple[JudgeKey, str, str | None, float | None]
 
 
-def _interval(a: list[float], b: list[float], level: float, scale: tuple[float, float]) -> tuple[float, float] | None:
-    """The interval on ``mean(b) − mean(a)`` over paired cases at ``level``.
+def _paired_test(
+    a: list[Fraction], b: list[Fraction], level: float, scale: tuple[float, float]
+) -> tuple[tuple[float, float], float] | None:
+    """One test of ``mean(b) − mean(a)`` over paired cases: its interval at ``level`` and its two-sided p.
 
-    The paired t interval, clipped to ± the scale's span; where every case moved by the same amount it has no width
-    to give, and the bounded test's interval (:func:`~threetears.evals.analysis.stats.bounded_difference_interval`),
-    valid at every n on the scale's range, stands in — so a uniform move is never stated without its bounds.
+    The interval and the p are one test's, so the verdict read off either cannot contradict the other: the
+    interval excludes zero exactly when ``p < 1 − level``.
+
+    - **Where the differences have spread**, the paired t-test (:func:`~threetears.evals.analysis.stats.separation_p`)
+      and the interval it inverts (:func:`~threetears.evals.analysis.stats.difference_interval`, clipped to ± the
+      scale's span, which never moves zero in or out).
+    - **Where every case moved by one amount** no t exists, and the bounded test by betting reads both
+      (:func:`~threetears.evals.analysis.stats.bounded_difference_interval`, and
+      :func:`~threetears.evals.analysis.stats.bounded_mean_p` on each side at the same tail): valid for the mean at
+      every n on the scale's range. The exact sign-flip p this once read here is a test of symmetry, not of the
+      mean: twenty cases each up one point arise about one time in ninety from a judge whose mean did not move (up one
+      point four times in five, down four the fifth), where the sign flip states one in half a million. The
+      price is the truth about a uniform move on a 1-5 scale: twenty cases do not show it, thirty do (with two
+      dimensions tested together).
+
+    Spread is decided on exact values (:func:`~threetears.evals.analysis.stats.no_spread_p`), so a float residue
+    in per-case means cannot pass for a t-test's spread.
+
+    Returns:
+        ``(interval, p)``, or None below two cases.
     """
-    interval = difference_interval(a, b, paired=True, confidence=level, value_range=scale)
-    if interval is None:
-        interval = bounded_difference_interval(a, b, paired=True, value_range=scale, confidence=level)
-    return interval
+    if len(a) < 2:
+        return None
+    if no_spread_p(a, b, paired=True) is None:
+        interval = difference_interval(
+            [float(x) for x in a], [float(y) for y in b], paired=True, confidence=level, value_range=scale
+        )
+        p = separation_p(a, b, paired=True)
+        if interval is not None and p is not None:
+            return interval, p
+    bounded = bounded_difference_interval(a, b, paired=True, value_range=scale, confidence=level)
+    if bounded is None:
+        return None
+    width = scale[1] - scale[0]
+    tail = (1.0 - level) / 2.0
+    diffs = [y - x for x, y in zip(a, b)]
+    upward = bounded_mean_p(diffs, 0.0, (-width, width), alpha=tail)
+    downward = bounded_mean_p([-d for d in diffs], 0.0, (-width, width), alpha=tail)
+    return bounded, min(1.0, 2.0 * min(upward, downward))
 
 
 def judge_drift(results: Iterable[EvalResult], *, pass_id: str | None = None) -> JudgeDrift:
@@ -174,30 +216,32 @@ def judge_drift(results: Iterable[EvalResult], *, pass_id: str | None = None) ->
             "" if k[3] is None else str(k[3]),
         ),
     )
-    samples: dict[_GroupKey, tuple[list[float], list[float]]] = {}
-    raw: dict[_GroupKey, float] = {}
+    samples: dict[_GroupKey, tuple[list[Fraction], list[Fraction]]] = {}
     for key in keys:
-        # Each case one draw: its repeats' scores averaged on each side, in one case order.
+        # Each case one draw: its repeats' scores averaged on each side, exactly, in one case order.
         by_case = pairs[key]
-        a = [sum(first for first, _ in by_case[case]) / len(by_case[case]) for case in sorted(by_case)]
-        b = [sum(second for _, second in by_case[case]) / len(by_case[case]) for case in sorted(by_case)]
-        samples[key] = (a, b)
-        if (p := separation_p(a, b, paired=True)) is not None:
-            raw[key] = p
-    tested = [key for key in keys if key in raw]
-    adjusted = dict(zip(tested, holm_adjust([raw[key] for key in tested]), strict=True)) if tested else {}
+        samples[key] = (
+            [Fraction(sum(first for first, _ in by_case[case]), len(by_case[case])) for case in sorted(by_case)],
+            [Fraction(sum(second for _, second in by_case[case]), len(by_case[case])) for case in sorted(by_case)],
+        )
+    # The family is every dimension a test can read (two cases or more); its size sets every test's level.
+    tested = [key for key in keys if len(samples[key][0]) >= 2]
     level = 1.0 - SIGNIFICANCE_ALPHA / len(tested) if tested else None
     dimensions = []
     for key in keys:
         first, model, config_id, temperature = key
         a, b = samples[key]
         low, high = SCALES[first.scale].scores
-        p_adjusted = adjusted.get(key)
+        test = _paired_test(a, b, level, (float(low), float(high))) if level is not None else None
+        interval = None if test is None else test[0]
+        # Bonferroni: the p times the family's size, so `p_adjusted < α` is exactly the interval at 1 − α/m
+        # excluding zero, and the verdict below reads the interval — one test, never two that could disagree.
+        p_adjusted = None if test is None else min(1.0, test[1] * len(tested))
         verdict: DriftVerdict = (
-            "untested" if p_adjusted is None else "separated" if p_adjusted < SIGNIFICANCE_ALPHA else "not_separated"
+            "untested" if interval is None else "separated" if interval[0] > 0 or interval[1] < 0 else "not_separated"
         )
-        first_mean = sum(a) / len(a) if a else None
-        second_mean = sum(b) / len(b) if b else None
+        first_mean = float(sum(a) / len(a)) if a else None
+        second_mean = float(sum(b) / len(b)) if b else None
         dimensions.append(
             JudgeDriftDimension(
                 rubric_dim=first.rubric_dim,
@@ -213,11 +257,9 @@ def judge_drift(results: Iterable[EvalResult], *, pass_id: str | None = None) ->
                 n_unanswered=unanswered.get(key, 0),
                 first_mean=first_mean,
                 second_mean=second_mean,
-                delta=None if first_mean is None or second_mean is None else second_mean - first_mean,
-                interval=_interval(a, b, level, (float(low), float(high)))
-                if level is not None and key in raw
-                else None,
-                interval_level=level if key in raw else None,
+                delta=float(sum(b) / len(b) - sum(a) / len(a)) if a else None,
+                interval=interval,
+                interval_level=level if interval is not None else None,
                 p_adjusted=p_adjusted,
                 verdict=verdict,
             )
