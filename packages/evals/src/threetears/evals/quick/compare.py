@@ -46,6 +46,7 @@ from threetears.evals.analysis import (
     AnalysisContextBundle,
     DisclosureBlock,
     Report,
+    ReportSection,
     TableBlock,
     assemble_context_bundle,
     build_code_only_report,
@@ -492,8 +493,18 @@ def _with_guardrail_standing_disclosed(
 
     The contrasts table reads capability, and an arm can improve there while it breaches a guardrail, which the
     table never shows: a reader taking the arm that improved most is told here, where they would pick it, that a
-    breached arm is not adopted whatever it gained, and that an undecided guardrail is not known to be safe.
+    breached arm is not adopted whatever it gained, and that an undecided guardrail is not known to be safe. A
+    report with no contrast (every scorer a guardrail) carries the lines under its guardrails table instead.
     """
+    blocks = list(report.blocks)
+    contrasts = next(
+        (
+            i
+            for i, block in enumerate(blocks)
+            if isinstance(block, TableBlock) and block.name == "comparisons" and block.rows
+        ),
+        None,
+    )
     disclosures = []
     for arm, variant in arm_variants.items():
         said: dict[str, list[str]] = {"breached": [], "undecided": []}
@@ -503,34 +514,28 @@ def _with_guardrail_standing_disclosed(
                 if heading not in said[check.decision]:
                     said[check.decision].append(heading)
         said["undecided"] = [name for name in said["undecided"] if name not in said["breached"]]
-        if said["breached"]:
+        breached, undecided = said["breached"], said["undecided"]
+        if breached:
             disclosures.append(
-                DisclosureBlock(
-                    section="surface",
-                    source="guardrails",
-                    text=f"Arm {_label(arm, factors)} breached the guardrail{'s' if len(said['breached']) > 1 else ''} "
-                    f"{', '.join(said['breached'])}: it is shown worse than the control by more than the margin, so "
-                    "it is not adopted, whatever the contrasts below show it gained.",
-                )
+                f"Arm {_label(arm, factors)} breached the guardrail{'s' if len(breached) > 1 else ''} "
+                f"{', '.join(breached)}: it is shown worse than the control by more than the margin, so it is not "
+                + ("adopted, whatever the contrasts below show it gained." if contrasts is not None else "adopted.")
             )
-        if said["undecided"]:
+        if undecided:
             disclosures.append(
-                DisclosureBlock(
-                    section="surface",
-                    source="guardrails",
-                    text=f"Arm {_label(arm, factors)} is undecided on the guardrail"
-                    f"{'s' if len(said['undecided']) > 1 else ''} {', '.join(said['undecided'])}, so it is not known "
-                    "to be safe; the guardrails table says why.",
-                )
+                f"Arm {_label(arm, factors)} is undecided on the guardrail{'s' if len(undecided) > 1 else ''} "
+                f"{', '.join(undecided)}, so it is not known to be safe; the guardrails table says why."
             )
     if not disclosures:
         return report
-    blocks = list(report.blocks)
-    at = next(
-        (i for i, block in enumerate(blocks) if isinstance(block, TableBlock) and block.name == "comparisons"),
-        len(blocks),
-    )
-    return report.model_copy(update={"blocks": [*blocks[:at], *disclosures, *blocks[at:]]})
+    section: ReportSection
+    if contrasts is not None:
+        at, section = contrasts, "surface"
+    else:
+        at = 1 + max((i for i, block in enumerate(blocks) if block.section == "guardrails"), default=len(blocks) - 1)
+        section = "guardrails"
+    lines = [DisclosureBlock(section=section, source="guardrails", text=text) for text in disclosures]
+    return report.model_copy(update={"blocks": [*blocks[:at], *lines, *blocks[at:]]})
 
 
 def _with_no_margin_disclosed(report: Report, bundle: AnalysisContextBundle) -> Report:

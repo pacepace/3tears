@@ -157,6 +157,19 @@ class TestAScorerGuardrail:
         (gain,) = [row for row in comparison.contrasts("correct") if row["arm"] == "leaky"]
         assert gain["verdict"] == "improved on the control", "the breached arm gained, and is still not adopted"
 
+    async def test_with_every_scorer_a_guardrail_the_breach_is_named_under_the_guardrails_table(self) -> None:
+        comparison = await _compare(scorers=[no_leak])
+        blocks = comparison.report.blocks
+        assert comparison.contrasts() == [], "nothing but the guardrail is graded"
+        named = [
+            i
+            for i, b in enumerate(blocks)
+            if isinstance(b, DisclosureBlock) and b.text.startswith("Arm leaky breached")
+        ]
+        assert len(named) == 1 and blocks[named[0]].section == "guardrails"
+        assert blocks[named[0]].text.endswith("so it is not adopted.")
+        assert blocks[named[0] - 1].section == "guardrails", "directly under the guardrails section"
+
     async def test_a_second_control_reads_the_same_guardrail(self) -> None:
         comparison = await _compare()
         again = comparison.against("same")
