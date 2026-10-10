@@ -48,6 +48,18 @@ out of pass^k and the composite but does not disqualify a contestant on one, and
 (`TwoPillarDisclosure`). Fix: a declared margin per judged guardrail, and a frontier rule for the boundary
 pillar.
 
+### Equivalence needs a declared range (accepted limit)
+
+Decided in [#695](https://github.com/pacepace/3tears/issues/695): a measure that declares a margin and no
+`value_range` is never tested for equivalence, so it never reads `equivalent`.
+
+With no declared range no test of a mean holds its error rate at a few cases (an unbounded value can hide a rare
+large move). The paired t-test the engine used there claimed `equivalent` 11-13% of the time against 5% on skewed
+coarse values. Every engine measure with a margin declares its range, so this binds host measures. Such a
+comparison still reads `improved`, `regressed` or `not_separated`; its equivalence is untested, with the reason
+"declare value_range on this measure to test equivalence", and a report says so once per measure. Fix, on the
+host's side: declare the measure's range.
+
 ### An arm's production-replicating cost does not name what its runs moved
 
 Tracked in [#571](https://github.com/pacepace/3tears/issues/571).

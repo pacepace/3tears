@@ -177,7 +177,9 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
     # axis row names each declared level as ran, not_run or undetermined in `declared_levels` (#690).
     # An equivalence on a measure that declares a value range is decided by the bounded-mean betting test, and a
     # paired difference with no spread by the exact one-sided sign-flip test, so stored equivalence p values move
-    # over unchanged evidence (#693).
+    # over unchanged evidence (#693). A measure declaring a margin and no value range is not tested for equivalence at
+    # all: its comparisons carry no margin and no TOST p, and name the remedy in `equivalence_untested_reason` (#695).
+    # A campaign that declared no design reads the exploratory-campaign sentence in `reading_scope.disclosure` (#685).
     ((47, 11), _CORE_V24 | {"judge_request_settings", "simulator_request_settings", "judge_temperature"}),
 )
 

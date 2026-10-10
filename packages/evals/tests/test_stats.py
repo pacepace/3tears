@@ -13,6 +13,7 @@ from fractions import Fraction
 import pytest
 
 from threetears.evals.analysis.stats import (
+    EQUIVALENCE_NEEDS_RANGE,
     PAIRED_TEST_NAME,
     SIGNIFICANCE_ALPHA,
     UNPAIRED_TEST_NAME,
@@ -513,30 +514,36 @@ class TestEquivalence:
             [0.05, 0.09, 0.02, 0.07, 0.04, 0.06],
             [0.2, -0.3, 0.1, 0.4, -0.2],
             [0.08, 0.11, 0.09],
+            [0.0001, -0.0001] * 20,
         ],
-        ids=["centred", "near the edge", "noisy", "three pairs"],
+        ids=["centred", "near the edge", "noisy", "three pairs", "forty tight pairs"],
     )
-    def test_equivalent_exactly_when_the_ninety_percent_interval_sits_inside_the_margin(self, diffs) -> None:
-        """TOST at α is the (1 − 2α) interval inside ± the margin — pinned through that duality, not a copy of the formula."""
-        margin = 0.1
+    def test_a_margin_with_no_declared_range_is_never_equivalent_and_names_the_remedy(self, diffs) -> None:
+        """No test of a mean holds α without a range, so the margin is not tested at all (#695) — even forty pairs
+        a hair apart, which the paired t TOST this replaced called equivalent, read no closer than not separated."""
         n = len(diffs)
-        mean = sum(diffs) / n
-        sd = math.sqrt(sum((d - mean) ** 2 for d in diffs) / (n - 1))
-        half = t_critical_two_sided(1 - 2 * SIGNIFICANCE_ALPHA, n - 1) * sd / math.sqrt(n)
-        inside = -margin < mean - half and mean + half < margin
 
-        verdict = self._change([0.5] * n, [0.5 + d for d in diffs], margin=margin)
+        verdict = self._change([0.5] * n, [0.5 + d for d in diffs], margin=0.1)
 
-        assert verdict.equivalence_p is not None and verdict.equivalence_margin == margin
-        assert (verdict.equivalence_p < SIGNIFICANCE_ALPHA) is inside
-        assert (verdict.label == "equivalent") is (inside and not verdict.significant)
+        assert verdict.label != "equivalent" and verdict.equivalence_p is None
+        assert verdict.equivalence_untested_reason == EQUIVALENCE_NEEDS_RANGE
+        assert verdict.equivalence_untested_reason.startswith("declare value_range")
 
     def test_a_significant_move_under_the_gate_and_inside_the_margin_reads_equivalent(self) -> None:
-        """A real but immaterial move, precisely measured: the one shape that earns 'no meaningful change'."""
-        verdict = self._change([0.80] * 6, [0.81, 0.812, 0.808, 0.811, 0.809, 0.81], margin=0.05, gate=0.05)
+        """A real but immaterial move, precisely measured on a declared range: the one shape that earns 'no
+        meaningful change'."""
+        verdict = paired_change(
+            [0.80] * 12,
+            [0.81, 0.812, 0.808, 0.811, 0.809, 0.81] * 2,
+            min_absolute_change=0.05,
+            min_relative_change=0.0,
+            higher_is_better=True,
+            equivalence_margin=0.05,
+            value_range=(0.75, 0.85),
+        )
 
         assert verdict.significant is True and verdict.exceeds_threshold is False
-        assert verdict.label == "equivalent"
+        assert verdict.label == "equivalent" and verdict.equivalence_untested_reason is None
 
     def test_without_a_margin_no_test_runs_and_no_label_claims_equivalence(self) -> None:
         verdict = self._change([0.80] * 6, [0.81, 0.812, 0.808, 0.811, 0.809, 0.81], margin=None, gate=0.05)
@@ -546,7 +553,15 @@ class TestEquivalence:
 
     def test_a_directional_label_the_gate_earns_is_kept_and_its_equivalence_p_still_carried(self) -> None:
         """With the gate off, a significant move is flagged even inside the margin — the caller asked for it — and the TOST p rides along."""
-        verdict = self._change([0.80] * 6, [0.81, 0.812, 0.808, 0.811, 0.809, 0.81], margin=0.05)
+        verdict = paired_change(
+            [0.80] * 12,
+            [0.81, 0.812, 0.808, 0.811, 0.809, 0.81] * 2,
+            min_absolute_change=0.0,
+            min_relative_change=0.0,
+            higher_is_better=True,
+            equivalence_margin=0.05,
+            value_range=(0.75, 0.85),
+        )
 
         assert verdict.label == "improved"
         assert verdict.equivalence_p is not None and verdict.equivalence_p < SIGNIFICANCE_ALPHA
@@ -683,13 +698,15 @@ class TestLevelDifference:
         tested = level_difference({"c1": 3.0, "c2": 3.0}, {"c1": 3.0, "c2": 3.0})
         assert (tested.separated, tested.p_value, tested.delta) == (False, 1.0, 0.0)
 
-    def test_equivalence_needs_a_margin_and_shared_cases(self) -> None:
-        a = {f"c{i}": float(i) for i in range(10)}
+    def test_equivalence_needs_a_margin_a_declared_range_and_shared_cases(self) -> None:
+        a = {f"c{i}": 0.05 + 0.09 * i for i in range(10)}
         b = {case: value + (0.01 if int(case[1:]) % 2 else -0.01) for case, value in a.items()}
+        on_range = {"equivalence_margin": 0.5, "value_range": (0.0, 1.0)}
         assert level_difference(a, b).equivalent is None
-        assert level_difference(a, b, equivalence_margin=1.0).equivalent is True
+        assert level_difference(a, b, **on_range).equivalent is True
+        assert level_difference(a, b, equivalence_margin=0.5).equivalent is None, "no range, no test (#695)"
         disjoint = {f"d{i}": value for i, value in enumerate(b.values())}
-        assert level_difference(a, disjoint, equivalence_margin=1.0).equivalent is None
+        assert level_difference(a, disjoint, **on_range).equivalent is None
 
 
 class TestSeparationPAgreesWithLevelDifference:

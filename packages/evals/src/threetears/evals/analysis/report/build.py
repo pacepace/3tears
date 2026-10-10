@@ -70,7 +70,7 @@ from threetears.evals.contracts.authored import NO_CHART, Finding
 from threetears.evals.contracts.campaign import EvalAnalysis, FindingResolution, ReadingKind, Viz
 from threetears.evals.contracts.host.measures import MeasureRegistry
 from threetears.evals.analysis.numbers import format_number
-from threetears.evals.analysis.stats import INTERVAL_LEVEL
+from threetears.evals.analysis.stats import EQUIVALENCE_NEEDS_RANGE, INTERVAL_LEVEL
 from threetears.evals.analysis.viz.quantities import display_scale, with_unit
 from threetears.evals.contracts.analysis_measures import MeasureSummary
 from threetears.evals.contracts.campaign import VariantIndexEntry
@@ -1131,6 +1131,24 @@ def _comparison_blocks(bundle: AnalysisContextBundle, surface: DecisionSurface) 
         DisclosureBlock(section="surface", source="comparisons", text=family.disclosure)
         for family in comparisons.families
     )
+    # Said once per measure rather than on every row: which declared a margin with no range, so none of their
+    # comparisons could be tested for equivalence, and what to declare (#695).
+    unranged = sorted(
+        {
+            surface.measure_heading(comparison.name, comparison.reading)
+            for family in comparisons.families
+            for comparison in family.comparisons
+            if comparison.equivalence_untested_reason is not None
+        }
+    )
+    if unranged:
+        blocks.append(
+            DisclosureBlock(
+                section="surface",
+                source="comparisons",
+                text=f"Equivalence untested on {_listed(unranged)}: {EQUIVALENCE_NEEDS_RANGE}.",
+            )
+        )
     return blocks
 
 

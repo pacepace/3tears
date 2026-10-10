@@ -112,6 +112,7 @@ from threetears.evals.analysis.stats import (
     clustered_standard_error,
     composite_significance,
     difference_interval,
+    equivalence_untested_reason,
     exact_decimal,
     guardrail_decision,
     holm_adjust,
@@ -1878,6 +1879,15 @@ class FamilyComparison(EvalDocumentModel):
         description=(
             "The paired TOST p against ± `equivalence_margin` (the larger one-sided p), before correction. Kept for "
             "audit and withheld from the writer, as `p_raw` is. None when no equivalence test ran."
+        ),
+    )
+    equivalence_untested_reason: str | None = Field(
+        default=None,
+        description=(
+            "Set when the measure declares a margin and no `value_range`: no equivalence test ran, because none "
+            "holds its error rate on a mean with no declared range, so this comparison can never read "
+            "`equivalent`. The sentence names the remedy: declare value_range. None otherwise, including where no "
+            "margin is declared."
         ),
     )
     equivalence_p_adjusted: float | None = Field(
@@ -8186,6 +8196,11 @@ def _compare(
     # The equivalence test only where the separation test produced a p, so each equivalence hypothesis has
     # its comparison's separation hypothesis beside it in the family (see holm_adjust's max_true).
     margin = threshold if paired and threshold and p_raw is not None else None
+    # A margin with no declared range is not tested at all (#695): no test of a mean holds α without one, and
+    # `equivalent` is the one claim that arms are alike. The comparison says why, naming the remedy.
+    equivalence_refused = equivalence_untested_reason(margin, value_range)
+    if equivalence_refused is not None:
+        margin = None
     # The differences of exact values, so a float residue cannot pass for a spread nor a spread for a constant; on
     # the measure's declared range the bounded test decides either, at the error rate it states.
     _, equivalence_p_raw = paired_equivalence(
@@ -8216,6 +8231,7 @@ def _compare(
         p_raw=p_raw,
         equivalence_margin=margin,
         equivalence_p_raw=equivalence_p_raw,
+        equivalence_untested_reason=equivalence_refused,
         verdict="untested" if p_raw is None else "not_separated",
         untested_reason=untested_reason,
         materiality=None if delta is None else materiality(threshold, delta),
