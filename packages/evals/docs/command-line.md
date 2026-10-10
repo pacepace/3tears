@@ -20,6 +20,8 @@ python -m threetears.evals bundle CAMPAIGN --host myapp.evals:build_host --scope
 python -m threetears.evals spend  --host myapp.evals:build_host --scope dev [--purpose P] [--launch-group ID] [--template ID]
 python -m threetears.evals frontier --host myapp.evals:build_host --scope dev [--bar B] [--subject S] [--json]
 python -m threetears.evals gate   CAMPAIGN --host myapp.evals:build_host --scope dev [--fail-on OUTCOMES] [--reading MEASURE ...]
+python -m threetears.evals judge-temperature RUN --host myapp.evals:build_host --scope dev (--max-cost-usd DOLLARS | --no-cap)
+                                  [--repeats N] [--all] [--result ID ...] [--estimate] [--json]
 ```
 
 ### `run`
@@ -50,13 +52,27 @@ fingerprint; the bundle itself is the wrapper's `bundle` field. Neither command 
 ### `spend`
 
 `spend` prints what the engine spent outside any run in the scope — case generations, rubric proposals,
-analysis generations and judge repeats (`--purpose variation|proposer|analysis|judge`) — narrowed by its flags.
+analysis generations, judge repeats and judge temperature comparisons
+(`--purpose variation|proposer|analysis|judge|second_judge`) — narrowed by its flags.
 
 ### `frontier`
 
 `frontier` prints each subject's variants ranked on pass^k, cost and latency, and, with `--bar`, the cheapest
 that clears it ([The frontier](choosing-a-design.md#the-frontier-passk-against-cost)). `--subject` narrows it to
 one subject, and `--json` prints the `FrontierResult` the `scope_frontier` action returns.
+
+### `judge-temperature`
+
+`judge-temperature` measures what temperature does to a run's judge: it re-judges the run's borderline cases
+`--repeats` times (default 5) at the pinned judge temperature and as many times at the provider's default, and
+prints each dimension's score variance, unstable cases and self-agreement at the two side by side
+([Step 10](judges-and-calibration.md#step-10-measure-what-temperature-does-to-the-judge)). It is the one command
+here besides `run` that spends: name the out-of-run cap with `--max-cost-usd`, or waive it with `--no-cap`. Every
+call is priced against it before the first is sent and ledgered under purpose `judge`. `--estimate` prices it and
+calls nothing. `--all` re-judges every scored dimension, `--result` narrows it to those results, and `--json` prints
+the `JudgeTemperatureComparison` (or estimate). Keep that output: nothing is written to the results. A comparison
+whose client did not send the temperature a side names prints `NOT COMPARABLE` with the reason and still exits `0`.
+
 ### `gate`
 
 `gate` is the CI gate. It reads the campaign's typed verdicts as code reaches them on its evidence now (never an

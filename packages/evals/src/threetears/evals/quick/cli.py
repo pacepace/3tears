@@ -13,6 +13,7 @@ then never name the host::
     python -m threetears.evals spend --host myapp.evals:build_host --scope dev --purpose variation
     python -m threetears.evals gate CAMPAIGN --host myapp.evals:build_host --scope dev --fail-on regressed,breached
     python -m threetears.evals frontier --host myapp.evals:build_host --scope dev --bar 0.8
+    python -m threetears.evals judge-temperature RUN --host myapp.evals:build_host --scope dev --max-cost-usd 5
 
 - ``run`` launches through :func:`~threetears.evals.run.start_run`, waits for the runs' jobs, and
   prints each run's summary. It exits 0 when every run completed and 1 when any did not. Each
@@ -54,6 +55,14 @@ then never name the host::
   ``--bar`` (:func:`~threetears.evals.analysis.frontier` over the host's run listing, the read the
   ``scope_frontier`` action makes).
   ``--subject`` narrows it to one subject, and ``--json`` prints the frontier as JSON.
+- ``judge-temperature`` re-judges a finished run's borderline cases ``--repeats`` times at the pinned judge
+  temperature and as many times at the provider's default, and prints each dimension's score variance and
+  self-agreement at the two side by side (:func:`~threetears.evals.run.compare_judge_temperatures`, the
+  ``judge_temperature`` action's operation, #633). It SPENDS: the calls are priced against the out-of-run cap the
+  command names, ``--max-cost-usd`` (or ``--no-cap``, said out loud), before the first is sent, and ledgered under
+  purpose ``judge``. ``--estimate`` prices it and calls nothing. ``--all`` re-judges every scored dim instead of the
+  borderline ones, ``--result`` (repeatable) narrows it to those results, and ``--json`` prints the comparison as
+  JSON — the record to keep, since nothing is written to the results.
 
 A product mounting the commands may add its own beside them — ``run_cli(..., commands=[HostCommand(...)])``
 — each parsed like the engine's (``--scope``, and ``--host`` when the host is named on the command line)
@@ -78,6 +87,7 @@ import argparse
 import asyncio
 import importlib
 import json
+import math
 import sys
 import traceback
 from functools import partial
@@ -107,13 +117,21 @@ from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS, OutOfRunPurpose
 from threetears.evals.kernel import EvalServiceError
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.analysis.summary import summarize_run
-from threetears.evals.run import LaunchHost, list_runs, list_templates, start_run
+from threetears.evals.run import (
+    DEFAULT_TEMPERATURE_REPEATS,
+    LaunchHost,
+    compare_judge_temperatures,
+    estimate_judge_temperature_comparison,
+    list_runs,
+    list_templates,
+    start_run,
+)
 
 #: What names the host the commands work in: called once, with no arguments, per invocation.
 HostFactory = Callable[[], EvalHost | LaunchHost]
 
 #: The commands the engine itself carries; a host command may take none of these names.
-ENGINE_COMMANDS: tuple[str, ...] = ("run", "ls", "report", "bundle", "spend", "gate", "frontier")
+ENGINE_COMMANDS: tuple[str, ...] = ("run", "ls", "report", "bundle", "spend", "gate", "frontier", "judge-temperature")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -358,6 +376,40 @@ def build_parser(
     ranked.add_argument("--bar", type=float, default=None, help="the pass^k a variant must clear, from 0 to 1")
     ranked.add_argument("--subject", default=None, help="only this subject's variants")
     ranked.add_argument("--json", action="store_true", help="print the frontier as JSON")
+    temperature = command(
+        "judge-temperature",
+        "Re-judge a run's borderline cases at the pinned judge temperature and at the provider default, and compare "
+        "the spread of their scores. Spends, under the out-of-run cap it names.",
+    )
+    temperature.add_argument("run_id", metavar="RUN", help="the finished run, by id")
+    cap = temperature.add_mutually_exclusive_group(required=True)
+    cap.add_argument(
+        "--max-cost-usd",
+        type=float,
+        default=None,
+        metavar="DOLLARS",
+        help="the most the comparison's calls may be priced at together; every call is priced before the first",
+    )
+    cap.add_argument("--no-cap", action="store_true", help="enforce no out-of-run cap (calls are still ledgered)")
+    temperature.add_argument(
+        "--repeats",
+        type=int,
+        default=DEFAULT_TEMPERATURE_REPEATS,
+        metavar="N",
+        help=f"calls per dim at each temperature (default {DEFAULT_TEMPERATURE_REPEATS}, at least 2)",
+    )
+    temperature.add_argument(
+        "--all", action="store_true", help="re-judge every scored dim, not only the borderline ones"
+    )
+    temperature.add_argument(
+        "--result",
+        action="append",
+        default=None,
+        metavar="ID",
+        help="only this result of the run; repeat for more (default: every result)",
+    )
+    temperature.add_argument("--estimate", action="store_true", help="price it against the cap and call nothing")
+    temperature.add_argument("--json", action="store_true", help="print the comparison (or estimate) as JSON")
     for host_command in commands:
         host_command.configure(command(host_command.name, host_command.help))
     return parser
@@ -437,6 +489,9 @@ def run_cli(
         eval_host = host.eval_host if isinstance(host, LaunchHost) else host
         if args.command == "gate":
             return _gate(eval_host, args)
+        if args.command == "judge-temperature":
+            asyncio.run(_judge_temperature(eval_host, args))
+            return EXIT_OK
         if args.command == "ls":
             _list(eval_host, args.scope)
         elif args.command == "report":
@@ -505,6 +560,28 @@ async def _launch(host: LaunchHost, args: argparse.Namespace) -> int:
     for summary in summaries:
         _say(summary.render())
     return EXIT_OK if all(summary.status == "completed" for summary in summaries) else EXIT_RUN_DID_NOT_COMPLETE
+
+
+async def _judge_temperature(host: EvalHost, args: argparse.Namespace) -> None:
+    """Compare the run's judge at the two temperatures (or price it, with ``--estimate``), and print what it read.
+
+    Raises:
+        _Refused: ``--max-cost-usd`` is not a positive amount.
+    """
+    if not args.no_cap and not (math.isfinite(args.max_cost_usd) and args.max_cost_usd > 0):
+        raise _Refused(f"--max-cost-usd must be a positive amount of dollars; got {args.max_cost_usd!r}")
+    common: dict[str, Any] = {
+        "out_of_run_cap_usd": None if args.no_cap else args.max_cost_usd,
+        "selection": "all" if args.all else "borderline",
+        "repeats": args.repeats,
+        "result_ids": args.result,
+    }
+    if args.estimate:
+        estimate = await estimate_judge_temperature_comparison(host, args.run_id, args.scope, **common)
+        _say(estimate.model_dump_json(indent=2) if args.json else estimate.render())
+        return
+    comparison = await compare_judge_temperatures(host, args.run_id, args.scope, **common)
+    _say(comparison.model_dump_json(indent=2) if args.json else comparison.render())
 
 
 def _gate(host: EvalHost, args: argparse.Namespace) -> int:

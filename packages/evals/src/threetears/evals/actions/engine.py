@@ -86,6 +86,8 @@ from threetears.evals.ops import (
     judge_drift_check,
     judge_second,
     judge_second_estimate,
+    judge_temperature,
+    judge_temperature_estimate,
     launch_estimate,
     report_read,
     reporter_case_archive,
@@ -108,7 +110,14 @@ from threetears.evals.ops import (
     templates_list,
 )
 from threetears.evals.schema.models import SecondJudge
-from threetears.evals.run import SecondJudgeEstimate, run_blocking
+from threetears.evals.run import (
+    DEFAULT_TEMPERATURE_REPEATS,
+    JudgeTemperatureComparison,
+    JudgeTemperatureEstimate,
+    SecondJudgeEstimate,
+    TemperatureSelection,
+    run_blocking,
+)
 
 # --- the parameters, each declared once ---------------------------------------------------------------
 
@@ -556,6 +565,23 @@ class JudgeSecondParams(JudgeDriftParams):
     ] = 0
 
 
+class JudgeTemperatureParams(EvalBaseModel):
+    """``judge_temperature`` and ``judge_temperature_estimate``."""
+
+    run_id: RunId
+    selection: Annotated[
+        TemperatureSelection,
+        Field(
+            description="Which scored dims are re-judged: borderline (stored score inside the scale, or a recorded "
+            "repeat or second judge disagreed) or all."
+        ),
+    ] = "borderline"
+    repeats: Annotated[
+        int, Field(ge=2, le=50, description="How many times each dim is judged at each temperature.")
+    ] = DEFAULT_TEMPERATURE_REPEATS
+    result_ids: ResultIds = None
+
+
 class RunDeleteParams(EvalBaseModel):
     """``run_delete``."""
 
@@ -939,6 +965,32 @@ async def _judge_second_estimate(host: OpsHost, caller: Caller, params: JudgeSec
 async def _judge_drift_check(host: OpsHost, caller: Caller, params: JudgeDriftParams) -> SecondJudgeRead:
     return await judge_drift_check(
         host, params.run_id, caller.scope_id, judge=params.judge(), result_ids=params.result_ids
+    )
+
+
+async def _judge_temperature(
+    host: OpsHost, caller: Caller, params: JudgeTemperatureParams
+) -> JudgeTemperatureComparison:
+    return await judge_temperature(
+        host,
+        params.run_id,
+        caller.scope_id,
+        selection=params.selection,
+        repeats=params.repeats,
+        result_ids=params.result_ids,
+    )
+
+
+async def _judge_temperature_estimate(
+    host: OpsHost, caller: Caller, params: JudgeTemperatureParams
+) -> JudgeTemperatureEstimate:
+    return await judge_temperature_estimate(
+        host,
+        params.run_id,
+        caller.scope_id,
+        selection=params.selection,
+        repeats=params.repeats,
+        result_ids=params.result_ids,
     )
 
 
@@ -1329,6 +1381,40 @@ def engine_actions() -> tuple[Action, ...]:
                 "Holm-adjusted over the dimensions: separated, not separated or untested. It detects movement "
                 "between the judges, never which is right. The stored scores are never changed."
             ),
+        ),
+        Action(
+            name="judge_temperature",
+            summary="Re-judge a run's borderline cases at temperature 0 and at the provider default; compare spread.",
+            workflow=ANALYSE,
+            permission="spend",
+            params=JudgeTemperatureParams,
+            result=JudgeTemperatureComparison,
+            handler=_judge_temperature,
+            render=render.render_judge_temperature,
+            example={"run_id": run_id, "repeats": 5},
+            detail=(
+                "The measurement the judge temperature policy rests on (#633). Each borderline dim (stored score "
+                "inside its scale, or a recorded repeat or second judge disagreed; selection=all for every scored "
+                "dim) is judged `repeats` times at DEFAULT_JUDGE_TEMPERATURE and `repeats` times with no temperature "
+                "sent, from the evidence its judge first read, with the prompt the run recorded. Returns, per "
+                "dimension and side by side, the case count, the mean and largest score variance across repeats, the "
+                "unstable cases, and exact agreement and kappa read by judge_self_agreement; comparable=false says "
+                "when the judge's client did not send the temperature a side names. Every call is priced and "
+                "admitted against the host's out-of-run cap before the first is sent, and ledgered under purpose "
+                "judge. Nothing is written to the results. judge_temperature_estimate prices it first."
+            ),
+        ),
+        Action(
+            name="judge_temperature_estimate",
+            summary="Price a judge temperature comparison against the host's out-of-run cap, without spending.",
+            workflow=ANALYSE,
+            permission="read",
+            params=JudgeTemperatureParams,
+            result=JudgeTemperatureEstimate,
+            handler=_judge_temperature_estimate,
+            render=render.render_judge_temperature_estimate,
+            example={"run_id": run_id, "repeats": 5},
+            detail="The comparison's own collection, selection and admission, so would_start is its answer.",
         ),
         Action(
             name="analyses_list",

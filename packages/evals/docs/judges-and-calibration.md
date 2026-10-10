@@ -97,7 +97,8 @@ judges are listed.
 dimension states another. Each score records what its call was actually sent at (`RubricScore.judge_temperature`;
 `model_default` when none was sent), and that is part of the judge's identity: agreement and tiers are kept
 separately per temperature, and a repeat at another temperature is not paired. On the quick path your client
-builds the request, so send temperature 0 and report it as `CompletionResult.temperature`.
+builds the request, so send temperature 0 and report it as `CompletionResult.temperature`. How much temperature
+moves your judge's scores is measured, not assumed: see [Step 10](#step-10-measure-what-temperature-does-to-the-judge).
 
 ## Step 5: collect person ratings
 
@@ -245,6 +246,66 @@ Calls are priced against the out-of-run cap before the first is sent. They are l
 `second_judge` and never added to the candidate's cost.
 
 **Comparing two candidates on judged quality:** see `compare`'s `judge=`.
+
+## Step 10: measure what temperature does to the judge
+
+The temperature policy (Step 4) pins every judge call at `DEFAULT_JUDGE_TEMPERATURE` (0). Whether that matters for
+your judge is a measurement: re-judge the same borderline evidence several times at 0 and several times at the
+provider's default (no temperature sent), and compare how much the scores move. On a host with a cap, one command
+prices it and then runs it:
+
+```
+python -m threetears.evals judge-temperature RUN --host myapp.evals:build_host --scope dev --max-cost-usd 5 --estimate
+python -m threetears.evals judge-temperature RUN --host myapp.evals:build_host --scope dev --max-cost-usd 5 --json > temperature.json
+```
+
+In code it is `compare_judge_temperatures` (and `estimate_judge_temperature_comparison`) from
+`threetears.evals.run`, and the actions are `judge_temperature` and `judge_temperature_estimate`:
+
+```python
+from threetears.evals.run import compare_judge_temperatures
+
+comparison = await compare_judge_temperatures(
+    judging_host, summary.run_id, summary.scope_id, out_of_run_cap_usd=5.0, repeats=5,
+)
+print(comparison.render())
+```
+
+**Which cases.** By default only borderline ones: a dimension whose stored score sits inside its scale (2-4 on 1-5),
+or one a recorded judge repeat or second judge answered differently. Scores at the ends of the scale are the ones
+temperature is least likely to move, so they are skipped and named. A pass/fail dimension is borderline only once
+something has disagreed on it, so run a judge repeat (Step 8) first, or pass `selection="all"` (`--all`) to
+re-judge every scored dimension. `result_ids` (`--result`) narrows it further.
+
+**What is sent.** Each case is rebuilt from what its run recorded, the judge pin, prompt and evidence, as a repeat
+is. Only the temperature differs. The two settings alternate call round by call round, so a provider changing
+mid-measurement moves both alike. A config that pins its own temperature is overridden on both sides; its prompt and
+model are kept.
+
+**Reading it.** One row per dimension, the two settings side by side:
+
+| Figure | What it says |
+|---|---|
+| cases | Cases with at least two answers at that setting |
+| mean / max variance | Each case's score variance across its repeats, averaged and at its worst; 0 means one score every time |
+| unstable | Cases whose answers were not all the same, a "can't tell" counting as an answer of its own |
+| exact agreement, kappa | Each case's later answers paired with its first at that setting, read by `judge_self_agreement` exactly as Step 8's repeats are |
+
+If the pinned side reads near-zero variance and the default side does not, pinning is buying consistency on exactly
+the cases where it matters. If both read alike, temperature is not what moves this judge's scores. Either way, keep
+the JSON: nothing is written to the results, because the forced temperatures are not the run's judge, and recording
+them as repeats would split the run's own self-agreement.
+
+**When it is not comparable.** Each answer records the temperature its client reports sending. A run whose every
+borderline score records that its model was sent none (`model_default`, a model that refuses a temperature) is
+refused before anything is spent, since both sides would be the same sampling. A client that drops the temperature
+at call time, or reports none at all, gets `comparable: false` (`NOT COMPARABLE` in the text), with the reason.
+Its off-setting scores are counted and left out of that side's figures, never read as the setting's.
+
+**Cost.** Each case costs `2 × repeats` calls, plus parse retries. Every one is priced and admitted against the
+out-of-run cap before the first is sent: the cap the command names with `--max-cost-usd` (`--no-cap` waives it out
+loud), or the host's own for the action. Calls are ledgered under purpose `judge` and stamped with the run
+(`python -m threetears.evals spend --purpose judge`). The comparison reports its case count, calls and cost.
 
 ## What to read next
 

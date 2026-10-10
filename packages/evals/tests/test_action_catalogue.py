@@ -105,6 +105,8 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "judge_second": "spend",
         "judge_second_estimate": "read",
         "judge_drift_check": "spend",
+        "judge_temperature": "spend",
+        "judge_temperature_estimate": "read",
         "analyses_list": "read",
         "insights_list": "read",
         "insight_get": "read",
