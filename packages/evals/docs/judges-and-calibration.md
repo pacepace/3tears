@@ -102,9 +102,10 @@ dimension states another. Each score records what its call was actually sent at 
 separately per temperature, and a repeat at another temperature is not paired. On the quick path your client
 builds the request, so send temperature 0 and report it as `CompletionResult.temperature`. How much temperature
 moves your judge's scores is measured, not assumed: see [Step 10](#step-10-measure-what-temperature-does-to-the-judge).
-Measured on one real judge (#633), 0 was no steadier than the provider's default on borderline cases, and neither
-removed the spread. The policy stays 0 because it is a stated, recorded value, not because it makes a judge
-deterministic ([what the measurement found](#what-the-measurement-found)).
+That has not yet been measured on a judge that honours temperature: the one real run so far is void for the
+question (#633, [the 2026-10-10 run](#the-2026-10-10-run-is-void)). On a judge whose model accepts no temperature,
+0 is requested but never applied: the run stamps `judge_temperature=0` (the request) while each score records
+`model_default` (what was sent).
 
 ## Step 5: collect person ratings
 
@@ -413,48 +414,26 @@ out-of-run cap before the first is sent: the cap the command names with `--max-c
 loud), or the host's own for the action. Calls are ledgered under purpose `judge` and stamped with the run
 (`python -m threetears.evals spend --purpose judge`). The comparison reports its case count, calls and cost.
 
-### What the measurement found
+**Run it only on a judge whose provider honours temperature,** and only through a client that reports the
+temperature it actually sent, not the one it was asked for. To a model that takes no temperature, send none and
+report none: every score then records `model_default`, and the harness refuses the run or marks it
+`comparable: false` instead of comparing the default against itself. A router can drop an unsupported parameter
+silently (OpenRouter does, unless the request sets `require_parameters`), so check the model's supported
+parameters before trusting either side.
 
-Run on 2026-10-10 in a private host application, against its own judged runs (#633):
+### The 2026-10-10 run is void
 
-- **Setup.** Judge `openai/gpt-6-luna`, a reasoning model behind OpenRouter. Seven finished persona runs, 50
-  borderline (result, dimension) cases over 25 results, and 5 repeats at each setting: 500 calls, $0.19. The
-  priced ceiling was about 240 times that, because every call is admitted at its full output cap and retries.
-- **Dimensions.** The two scored on every persona run, `__outcome__` (19 cases) and `__transcript__` (23 cases),
-  plus 8 cases over three host dimensions (2 to 4 each). All are on 1-5. No pass/fail dimension was borderline,
-  since no repeat or second judge had disagreed on one.
-- **Answers.** Every answer recorded the temperature it was sent at (0 on one side, `model_default` on the other).
-  Both sides were comparable, with no failed call and no "can't tell".
+A run on 2026-10-10 in a private host application (#633) re-judged 50 borderline cases from seven finished runs on
+`openai/gpt-6-luna` via OpenRouter, 5 times at 0 and 5 times at the default: 500 calls, $0.19. It reported mean
+score variance 0.202 at 0 and 0.180 at the default, and was first recorded here as showing that 0 did not steady
+the judge. It shows nothing about temperature. That model accepts no temperature, OpenRouter dropped it silently,
+and the host's adapter reported each request's own temperature as the one sent. Both sides were the provider
+default, and the near-identical variances are what two identical settings produce.
 
-| Dimension | Cases | Mean score variance, 0 / default | Unstable cases, 0 / default | Agreement with first answer, 0 / default |
-|---|---|---|---|---|
-| `__outcome__` | 19 | 0.274 / 0.242 | 16 / 15 | 39% / 64% |
-| `__transcript__` | 23 | 0.157 / 0.126 | 13 / 12 | 67% / 71% |
-| three host dims | 8 | 0.163 / 0.188 | 5 / 4 | 59% / 75% |
-| all | 50 | 0.202 / 0.180 | 34 / 31 | 56% / 69% |
-
-**Temperature 0 did not steady this judge.** Paired case by case, the variance at 0 minus the variance at the
-default was +0.022 (95% bootstrap interval −0.026 to +0.076). 0 was lower on 11 cases, higher on 12 and tied on 27.
-The interval rules out 0 making a material difference: at best it cut mean variance by 0.026 against a base of
-0.18. Both settings left one answer in four to six off the case's most common score: the modal share was 0.75 and
-0.73 on `__outcome__`, and 0.82 and 0.85 on `__transcript__`. The mean score moved +0.04 between the settings.
-The lower agreement with the first answer at 0 comes from that statistic, not from temperature: it scores every
-answer against one draw, so a first answer that happens to be off the mode counts against all four repeats. The
-variances, which use every answer, do not differ. The reasoning model most likely samples its private reasoning
-whatever temperature its answer is requested at, so 0 cannot make it repeatable.
-
-**The policy stays at 0.** The data gives no reason to move off it: 0 cost nothing in consistency here. Nor does it
-support any claim for 0 beyond this. What 0 buys is a judge identity that can be stated and reproduced. The
-provider's default is whatever that provider uses, which differs across providers and can change without
-notice. On a judge model that honours temperature, 0 can only narrow the sampling. What 0 does not buy is
-determinism. On a judge like this one, measure the residual spread with a judge repeat (Step 8) and lean on
-self-agreement, not on the temperature.
-
-**Limits.** One judge model. The three host dimensions have too few cases each to be read alone. The runs
-predated recorded judge temperatures, and were judged with request settings from before `strict_output`, a
-setting that host's client does not send. So their judge inputs were reproduced as recorded rather than refused,
-and both sides sent the host's current request settings, differing by temperature alone. A judge that honours temperature (a non-reasoning model)
-may still show a difference, and the command above measures it on yours.
+What its figures are is a same-setting baseline: two sets of 5 repeats of luna at its provider default on the same
+50 cases (1-5 scales). Mean score variance was 0.202 and 0.180, 34 and 31 cases were unstable, and agreement with
+each case's first answer was 56% and 69%. Two runs of one setting differing that much is the noise floor any real
+comparison on such a judge has to clear.
 
 ## Evaluating a judge as a subject
 
