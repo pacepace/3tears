@@ -2450,7 +2450,7 @@ class EvalRun(EvalDocumentModel):
     model_role_provenance: dict[str, RoleModelOrigin] | None = Field(
         default=None,
         description=(
-            "How each pinned role model was arrived at, keyed by role (``judge`` / ``simulator``): "
+            "How each pinned role model was arrived at, keyed by role (``candidate`` / ``judge`` / ``simulator``): "
             "``chosen`` = the launch named it, ``inherited`` = the role default supplied it, "
             "``alternate`` = the launch named no judge and the host's alternate judge scored in place of a "
             "role default that was one of the launch's candidates (see ``RoleModelOrigin``). Kept "
@@ -2459,8 +2459,11 @@ class EvalRun(EvalDocumentModel):
             "the origin says whether re-running today would pick the same one. Deliberately NOT "
             "hashed into any identity key: a run that named the default and a run that inherited it "
             "were measured under identical conditions, so splitting them would assert a difference "
-            "that does not exist. None = the run's writer recorded no origins; a missing role key = that "
-            "role was not pinned on this run."
+            "that does not exist. ``candidate`` is the launch's naming of the candidate model (``chosen``) or its "
+            "running at the kind's own default (``inherited``), which is what says whether a production-replicating "
+            "cost was measured off the subject's model; a run stored before it carries no ``candidate`` key, read as "
+            "not recorded. None = the run's writer recorded no origins; a missing role key = that "
+            "role was not pinned on this run (or, for ``candidate``, not recorded)."
         ),
     )
     effective_judges: dict[DimName, str] | None = Field(

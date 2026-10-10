@@ -143,7 +143,7 @@ from threetears.evals.contracts.declaration import (
 )
 from threetears.evals.contracts.hashing import canonical_digest, canonical_json
 from threetears.evals.contracts.host.profile import CANDIDATE_MODEL_LEVER, UNSEATED_LEVEL, HostProfile
-from threetears.evals.contracts.host.values import SweepableValue
+from threetears.evals.contracts.host.values import ProductionFooting, SweepableValue
 from threetears.evals.contracts.identity import IDENTITY_VERSION, resolve_variant_identity
 from threetears.evals.contracts.metrics import (
     ACCURACY_MEASURE,
@@ -1427,6 +1427,18 @@ class RunSummary(EvalDocumentModel):
             "refused or errored on, which took no turn (`delivered_a_turn`), and a result the harness faulted, "
             "whose cut-short spend would let the rig make an arm look cheaper: every comparison cost leaves both "
             "out, while `cost_usd` (program spend) keeps them."
+        ),
+    )
+    production_footing: ProductionFooting | None = Field(
+        default=None,
+        description=(
+            "Which inputs this run held away from the subject's production configuration, read off the host's "
+            "declarations — what `prod_cost_usd` and `mean_prod_cost_usd` were spent under. `moved` names each "
+            "input the run set off production with its level, `unchecked` each lever whose departure could not "
+            "be decided, `held` the inputs checked and found at production. Only an empty `moved` AND an empty "
+            "`unchecked` say the cost was measured at production's configuration; anything in either means it "
+            "was not, or may not have been. None when nobody checked: a summary assembled before the "
+            "disclosure existed, or one built from a run read without its host payload."
         ),
     )
     measures: MeasureCollection = Field(
@@ -5777,6 +5789,11 @@ def _run_summary(
         prod_cost_usd=sum(prod_costs) if prod_costs else None,
         mean_prod_cost_usd=(sum(prod_costs) / len(prod_costs)) if prod_costs else None,
         n_prod_cost_usd=len(prod_costs),
+        # A run read without its host payload cannot be checked: an elided lever would read as the
+        # subject's own setting. None says nobody checked rather than claiming nothing moved.
+        production_footing=(
+            None if run.elided_payload_paths else profile.sweepables.production_footing(run, run_results)
+        ),
         measures=_measure_collection(run_results, profile=profile, undeclared="all_observed"),
     )
 

@@ -73,7 +73,7 @@ from threetears.evals.contracts.host.sweepables import (
     served_models_by_score,
 )
 from threetears.evals.contracts.host.traces import CellIdentity, CellTrace, TraceSink
-from threetears.evals.contracts.host.values import IntervalScale, NominalScale, SweepableValue
+from threetears.evals.contracts.host.values import IntervalScale, NominalScale, ProductionFooting, SweepableValue
 from threetears.evals.contracts.host.world import Triggered, WorldDimension, WorldRegistry
 from threetears.evals.contracts.host.world_schema import UnsupportedSchemaError, nested_schemas, schema_violations
 from threetears.evals.contracts.host.world_conformance import (
@@ -102,6 +102,7 @@ from threetears.evals.contracts.host.style import ToneRegister
 from threetears.evals.contracts.host.sweepables import (
     Comparability,
     FamilyMemberTest,
+    ProductionDepartureReader,
     RegistrationError,
     ResidualReader,
     ResolvedLevers,
@@ -166,6 +167,8 @@ __all__ = [
     "Ordinal",
     "OrdinalScale",
     "Outcome",
+    "ProductionDepartureReader",
+    "ProductionFooting",
     "ProfileRegistrationError",
     "Qualification",
     "RegistrationError",

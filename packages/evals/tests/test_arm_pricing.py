@@ -793,7 +793,10 @@ async def test_an_inherited_judge_on_a_candidates_model_steps_to_the_alternate()
 
     # Recorded as the alternate it is, not as the role default it stepped off: re-running the same arguments
     # picks the alternate setting, and only while the default is still a candidate.
-    assert run.judge_model == "judge-alternate" and run.model_role_provenance == {"judge": "alternate"}
+    assert run.judge_model == "judge-alternate" and run.model_role_provenance == {
+        "candidate": "chosen",
+        "judge": "alternate",
+    }
     assert run.effective_judges == {_DIM: "judge-alternate"}
     (quote,) = judged.quotes
     assert quote.judge is not None and quote.judge.model == "judge-alternate", "priced by the judge that scores"
@@ -828,7 +831,8 @@ async def test_the_judge_stays_where_no_usable_alternate_or_a_choice_applies(jud
     run = await _judged_run(_Judged(**judged), **arguments)
 
     assert run.judge_model == judge
-    assert run.model_role_provenance == {"judge": origin}
+    # The arm named its model, so its candidate origin is `chosen` beside the judge's (#571).
+    assert run.model_role_provenance == {"candidate": "chosen", "judge": origin}
     shared = judges_sharing_a_candidate_model(run.effective_judges, [run.candidate_model])
     assert (shared == {_DIM: judge}) == (judge == RUN_MODELS[0]), "an overlap left in place is disclosed"
 

@@ -334,6 +334,8 @@ _ARM_SWEEPABLE = Sweepable(
     role="lever",
     read=lambda run, _results: _arm_of_run(run),
     reader_prose="the arm of a comparison the run is, by the name the comparison gave it",
+    # Which candidate the run is, not a setting it ran at: the arm moves nothing off its own footing.
+    departs_production=lambda _run, _results: False,
 )
 
 

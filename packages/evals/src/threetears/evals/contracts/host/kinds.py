@@ -75,7 +75,13 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from threetears.evals.contracts.errors import ValidationFailedError
 from threetears.evals.contracts.hashing import canonical_json
-from threetears.evals.contracts.host.sweepables import FamilyMemberTest, ResidualReader, Sweepable, SweepableReader
+from threetears.evals.contracts.host.sweepables import (
+    FamilyMemberTest,
+    ProductionDepartureReader,
+    ResidualReader,
+    Sweepable,
+    SweepableReader,
+)
 from threetears.evals.contracts.host.values import IntervalScale, NominalScale, OrdinalScale, Scale, SweepableValue
 
 if TYPE_CHECKING:
@@ -220,6 +226,7 @@ class KindContract:
     prefix: str | None = None
     seats: frozenset[str] | None = None
     _knobs: tuple[_Knob, ...] = field(init=False, repr=False, compare=False)
+    _default_overlays: dict[str, Any] | None = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         """Read the overlay model once, refusing every field the engine could not read as a lever.
@@ -255,6 +262,21 @@ class KindContract:
         if defects:
             raise KindContractError(f"kind {self.kind!r}'s models cannot be read by the engine: " + "; ".join(defects))
         object.__setattr__(self, "_knobs", tuple(knobs))
+        object.__setattr__(self, "_default_overlays", self._read_default_overlays())
+
+    def _read_default_overlays(self) -> dict[str, Any] | None:
+        """What a launch naming no overlay records: the subject's own setting of every knob.
+
+        Returns:
+            The frozen record of the overlay model's defaults; ``None`` when the model has a required
+            field, so no launch runs at a default the engine could compare against.
+        """
+        if self.overlays is None:
+            return {}
+        try:
+            return freeze(self.overlays.model_validate({}))
+        except ValidationError:
+            return None
 
     @property
     def lever_prefix(self) -> str:
@@ -354,6 +376,7 @@ class KindContract:
                     reader_prose=knob.prose,
                     acts_on=knob.acts_on,
                     resolves_into=knob.resolves_into,
+                    departs_production=self._departs(knob.field_name),
                 )
             )
             if knob.family:
@@ -407,6 +430,25 @@ class KindContract:
             return None if overlays is None else overlays.get(field_name)
 
         return read
+
+    def _departs(self, field_name: str) -> ProductionDepartureReader:
+        """Whether a run set one overlay field away from its default — the subject's own setting (#571).
+
+        The record holds every field, defaults included, so a value is no sign the launch set it; the
+        default is what a launch naming nothing runs at, and a value other than it is a departure. A run
+        of another kind does not carry the field and holds. A model with a required field has no default
+        to compare against, so its runs read unchecked.
+        """
+
+        def departs(run: EvalRun, _results: Sequence[EvalResult]) -> bool | None:
+            overlays = self._overlays_of(run)
+            if overlays is None:
+                return False
+            if self._default_overlays is None or field_name not in overlays:
+                return None
+            return canonical_json(overlays[field_name]) != canonical_json(self._default_overlays.get(field_name))
+
+        return departs
 
     def _member_reader(self, knob: _Knob) -> SweepableReader:
         """A reader of an open family's members: one per entry the run's map holds."""

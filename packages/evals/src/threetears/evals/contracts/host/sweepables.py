@@ -54,8 +54,16 @@ from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
+from threetears.evals.contracts.hashing import canonical_json
 from threetears.evals.contracts.host.attribution import HostAttributed
-from threetears.evals.contracts.host.values import IntervalScale, NominalScale, OrdinalScale, Scale, SweepableValue
+from threetears.evals.contracts.host.values import (
+    IntervalScale,
+    NominalScale,
+    OrdinalScale,
+    ProductionFooting,
+    Scale,
+    SweepableValue,
+)
 
 if TYPE_CHECKING:
     from threetears.evals.contracts.models import EvalResult, EvalRun
@@ -84,6 +92,11 @@ FamilyMemberTest = Callable[[str], bool]
 #: the surface it was written into.
 ResidualReader = Callable[["EvalRun", "Sequence[EvalResult]", frozenset[str]], Any]
 
+#: Whether one run held an input away from the subject's production configuration: ``True`` it did,
+#: ``False`` it held production's setting, ``None`` the run cannot say. Host code the engine calls and
+#: never inspects, because only the host knows what its subject runs at in production.
+ProductionDepartureReader = Callable[["EvalRun", "Sequence[EvalResult]"], bool | None]
+
 #: The one name the candidate model answers to, everywhere — a DECLARED COORDINATE of every
 #: observation (``ScoreRecord.model``) as well as the core lever below, which is why it is the
 #: only lever a reporting lens resolves off the observation rather than off the run.
@@ -101,6 +114,18 @@ CANDIDATE_MODEL_LEVER = "model"
 #: however alike their models and overlays — a router and a game master on one model are not one
 #: arm, and nothing a host writes can make them pool as one.
 CANDIDATE_KIND_LEVER = "candidate_kind"
+
+
+def _footing_level(value: Any) -> str:
+    """Render one input's level for a production-footing disclosure: a scalar as itself, else canonical JSON.
+
+    The rendering :func:`~threetears.evals.analysis.reporting.lever_level` gives a cohort, restated here
+    because the contracts layer cannot import the analysis layer; ``None`` (nothing recorded) renders as
+    ``unrecorded``.
+    """
+    if value is None:
+        return "unrecorded"
+    return str(value) if isinstance(value, (str, int, float, bool)) else canonical_json(value)
 
 
 @dataclass(frozen=True)
@@ -271,6 +296,27 @@ class Sweepable:
     whose surfaces differ only in the removed members return equal values. ``None`` means the run
     does not carry the surface at all — a run older than the host's capture of it — and is read as
     "cannot say", never as agreement.
+    """
+
+    departs_production: ProductionDepartureReader | None = None
+    """Whether a run held this input away from the subject's production configuration (#571).
+
+    Read for :meth:`SweepableRegistry.production_footing`, the disclosure every production-replicating
+    cost travels with. That cost is what production would spend only for a run that moved nothing, so
+    each input a run moved is named beside it.
+
+    **On a lever it refines the engine's default; on an apparatus input it is the opt-in.** A lever
+    with none is read by the engine's own rule: no value is the subject's own setting (the cohort every
+    surface calls ``'—'``), a member an open family resolved is one the launch named, and any other
+    value is ``unchecked`` — the engine cannot tell a value the run set from the subject's own, and
+    calling it either would be a claim. So a newly declared lever reaches the cost axis with no
+    edit anywhere. An apparatus input is the rig and is presumed not to move the candidate's
+    production behaviour; declaring this marks one that does, and stripping the candidate's learned
+    state is the case it exists for: a stateless probe skips the background work a stateful subject
+    pays for, so its cost is not production's.
+
+    Refused on a ``label``, which identifies rather than determines and so moves nothing, and on an
+    open family, whose members are each named by the launch.
     """
 
     acts_on: str | None = None
@@ -484,6 +530,11 @@ class SweepableRegistry(HostAttributed):
                 defects.append(f"{name} is apparatus but states no reason it confounds — a bare name is a label")
             if declared.role != "apparatus" and declared.confounds:
                 defects.append(f"{name} states a confound reason but is not apparatus — no scan would ever read it")
+            if declared.departs_production is not None and (declared.role == "label" or declared.open_family):
+                defects.append(
+                    f"{name} declares departs_production but is "
+                    f"{'a label, which identifies and moves nothing' if declared.role == 'label' else 'an open family, whose members are each named by the launch'}"
+                )
             defects.extend(self._coordinate_defects(declared))
             defects.extend(self._family_defects(declared))
             defects.extend(self._mechanism_defects(declared))
@@ -1061,6 +1112,72 @@ class SweepableRegistry(HostAttributed):
             members_by_family=members_by_family,
         )
 
+    def production_footing(self, run: EvalRun, results: Sequence[EvalResult] = ()) -> ProductionFooting:
+        """Which inputs ``run`` held away from the subject's production configuration (#571).
+
+        The disclosure a production-replicating cost is presented with, built from the declarations
+        alone so no cost surface keeps a list of its own. Every lever is read, and every apparatus input
+        that declares :attr:`Sweepable.departs_production`; a label never is. Per input:
+
+        - A declared :attr:`Sweepable.departs_production` decides: ``True`` moved, ``False`` held,
+          ``None`` unchecked.
+        - Otherwise, on a lever: a member an open family resolved was named by the launch, so it moved;
+          a lever that resolved no value ran at the subject's own setting, so it held; any other value
+          is ``unchecked``, because the engine cannot tell a value the run set from the subject's own.
+
+        A lever an open family restates is read as the family's member: the launch named it.
+
+        Args:
+            run: The run. Read whole: a listing's copy with its host payload elided would read a
+                payload-carried lever as unset, which is "held" — so a caller holding one loads the run.
+            results: That run's results, for the result-level inputs.
+
+        Returns:
+            The footing. ``moved_nothing`` only when every input read was checked.
+
+        Raises:
+            ValueError: ``run`` is a listing's copy whose host payload was elided.
+            RegistrationError: As :meth:`resolve_levers`.
+        """
+        if run.elided_payload_paths:
+            raise ValueError(
+                f"run {run.id} was read with its host payload elided ({', '.join(sorted(run.elided_payload_paths))}); "
+                "a production footing read off it would report an elided lever as the subject's own setting — "
+                "load the run whole"
+            )
+        values, resolution = self._resolve(run, results)
+        # A surface an open family wrote members into this run is spoken for by those members, which name
+        # what the launch set; listing the surface too would print one change twice.
+        spoken_for = {
+            declared.resolves_into
+            for declared in self.open_families
+            if declared.resolves_into is not None and resolution.members_by_family.get(declared.name)
+        }
+        moved: dict[str, str] = {}
+        unchecked: dict[str, str] = {}
+        held: list[str] = []
+        for declared in self._declarations:
+            if declared.open_family is not None or declared.role == "label":
+                continue
+            if declared.role == "apparatus" and declared.departs_production is None:
+                continue
+            name = declared.name
+            if name in resolution.overlaid or name in spoken_for:
+                continue  # the family's members below speak for it
+            value = values.get(name)
+            departed = declared.departs_production(run, results) if declared.departs_production is not None else None
+            if declared.departs_production is None and value is None:
+                departed = False
+            if departed is True:
+                moved[name] = _footing_level(value)
+            elif departed is False:
+                held.append(name)
+            else:
+                unchecked[name] = _footing_level(value)
+        for member in sorted(resolution.overlaid):
+            moved[member] = _footing_level(resolution.values.get(member))
+        return ProductionFooting(moved=moved, unchecked=unchecked, held=sorted(held))
+
     def read_role_pins(self, run: EvalRun, results: Sequence[EvalResult] = ()) -> dict[str, Any]:
         """Read the pinned-role inputs off one run, through the declarations above.
 
@@ -1401,6 +1518,30 @@ def _request_settings(settings: Any) -> dict[str, Any] | None:
 #: belongs in the READER, which knows which of the two cases it is in, not in the flag, which
 #: cannot: :func:`_judge_config_ids` returns an explicit sentinel for the observed state and
 #: reserves the falsy empty for the genuine absence.
+def _candidate_model_departs(run: EvalRun, _results: Sequence[EvalResult]) -> bool | None:
+    """Whether the run's candidate model was set away from the one the subject runs on.
+
+    A witnessed run recorded traffic nothing set, so its model is production's. A launched run records
+    under ``model_role_provenance["candidate"]`` whether the launch NAMED its model (``chosen``: moved,
+    even where the name happens to be production's, since the engine cannot see which model that is) or
+    ran at the kind's own default, the model its launcher supplies for the subject (``inherited``: held).
+    A run stored before that key was written says neither, and reads unchecked.
+
+    Args:
+        run: The run.
+        _results: Unused.
+
+    Returns:
+        ``True`` moved, ``False`` held, ``None`` cannot say.
+    """
+    if run.apparatus_provenance == "witnessed":
+        return False
+    origin = (run.model_role_provenance or {}).get("candidate")
+    if origin is None:
+        return None
+    return origin != "inherited"
+
+
 CORE_SWEEPABLES: tuple[Sweepable, ...] = (
     # A run is one arm, so its candidate model is one level. It was once declared as `models` while
     # every reporting lens called the same knob `model`, so a campaign declaring it as its axis got a
@@ -1410,15 +1551,18 @@ CORE_SWEEPABLES: tuple[Sweepable, ...] = (
         role="lever",
         read=lambda run, _results: run.candidate_model,
         reader_prose="the models the subject itself ran on",
+        departs_production=_candidate_model_departs,
     ),
     # The kind is what the candidate IS — its code, its seam, what it was asked to produce — so it
     # is a coordinate of every variant. Without it, two kinds at one model with no overlays derived
     # one key and pooled into one arm.
+    # What the candidate IS rather than a setting it ran at, so it never moves the candidate off its footing.
     Sweepable(
         name=CANDIDATE_KIND_LEVER,
         role="lever",
         read=lambda run, _results: run.candidate_kind,
         reader_prose="what kind of candidate the subject ran as",
+        departs_production=lambda _run, _results: False,
     ),
     # The models that SCORED, observed across the results — not the run's ``judge_model`` pin,
     # which this once read. The pin is what the launch asked for, and a
@@ -1593,6 +1737,8 @@ __all__ = [
     "IntervalScale",
     "NominalScale",
     "OrdinalScale",
+    "ProductionDepartureReader",
+    "ProductionFooting",
     "RegistrationError",
     "ResidualReader",
     "ResolvedLevers",
