@@ -9,14 +9,6 @@ sources in [prior art](prior-art.md).
 
 ## Measurement
 
-### No power pre-flight
-
-Tracked in [#594](https://github.com/pacepace/3tears/issues/594).
-
-A launch is priced before it runs (see [cost and budgets](cost-and-budgets.md)), but nothing says what
-effect the campaign can detect, and power depends on variance components nobody measures in advance. Fix: a pre-flight beside the price ("with N cases
-and k repeats this campaign can detect Δ ≥ x"), using variance from earlier runs of the same template.
-
 ### The between-arm correlation is not reported
 
 Tracked in [#595](https://github.com/pacepace/3tears/issues/595).

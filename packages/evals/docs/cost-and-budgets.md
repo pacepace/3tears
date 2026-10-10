@@ -104,6 +104,15 @@ pivot as `predicted_cost`, and each prediction sits only in the cell of its mode
 launch ran, pass its run ids as `launched_run_ids` too, and each predicted cell says how many of its
 observations came from other runs — the history the prediction was drawn from among them.
 
+**What the launch could detect.** Beside the price, the estimate's `detectable_effect` block says, per
+reading a comparison would test, "with N cases and k repeats this campaign can detect Δ ≥ x (from runs …)".
+Δ is the smallest true difference the paired test finds four times in five, at the α/m the first step of
+Holm's correction asks of the family. Its variance comes from earlier runs of the same template: the repeat
+noise, and how far two arms disagree about one case (measured where two earlier runs launched differently
+shared cases; otherwise one arm's case-to-case spread, counted twice). With no earlier run, or no repeated
+cases, a reading says it cannot estimate and why; no default variance is ever used. The block states its
+assumptions, among them near-normal per-case differences and that only the one comparison differs.
+
 A host therefore prices no arm itself: a wrapper that priced assembled runs would be a second rule, and a
 second pricing of the same arm.
 

@@ -191,6 +191,7 @@ from threetears.evals.contracts.models import (
     EvalResult,
     GoalCheckProof,
     RubricAxis,
+    RubricScale,
 )
 from threetears.evals.contracts.provider import sum_optional_tokens
 from threetears.evals.contracts.result_condition import (
@@ -8055,6 +8056,75 @@ def _per_case_values(
     return values
 
 
+class PlanningReading(NamedTuple):
+    """One reading a comparison family could test, as earlier runs observed it: every repeat, by run and case."""
+
+    reading: ReadingKind
+    name: str
+    higher_is_better: bool
+    #: The reading's declared inclusive bounds, or None where it declares none.
+    value_range: tuple[float, float] | None
+    #: ``{run id: {test case id: [one value per repeat]}}``, in run and case order.
+    repeats: dict[str, dict[str, list[float]]]
+
+
+def planning_readings(
+    runs: list[EvalRun], results_by_run: dict[str, list[EvalResult]], *, profile: HostProfile
+) -> list[PlanningReading]:
+    """Every reading an unscoped comparison family would test, with each earlier run's per-repeat values.
+
+    What a power pre-flight plans from: the readings :func:`_family_readings` admits for a question that names
+    no axis (a measure with a better end on a merit axis, a capability judged dimension), each observation
+    read by the one walk a family's per-case value is read by (:func:`_per_case_values`, over the one result),
+    so a repeat's value here and a case's mean in a comparison are one computation. Guardrails are left out:
+    they are held, not tested for a difference.
+
+    Args:
+        runs: The earlier runs.
+        results_by_run: Each run's results.
+        profile: The host whose vocabulary this reads.
+
+    Returns:
+        One entry per reading with a value, sorted by reading kind and name.
+    """
+    results_by_run = _failures_as_misses({run.id: results_by_run.get(run.id, []) for run in runs})
+    results = [result for run in runs for result in results_by_run[run.id]]
+    projection = project_score_records(runs, results, known_run_ids=None, archived_run_ids=None, profile=profile)
+    judged_rows: dict[str, list[ScoreRecord]] = {}
+    scales: dict[str, RubricScale] = {}
+    for record in projection.records:
+        judged_rows.setdefault(record.result_id, []).append(record)
+        if record.metric == METRIC_SCORE and record.rubric_dim and record.rubric_scale is not None:
+            scales[record.rubric_dim] = record.rubric_scale
+    boundary = _boundary_dimensions(results)
+    repeats: dict[tuple[ReadingKind, str], dict[str, dict[str, list[float]]]] = {}
+    for run in runs:
+        for result in sorted(results_by_run[run.id], key=lambda one: (one.test_case_id, one.k_iteration, one.id)):
+            for reading, by_case in _per_case_values([result], judged_rows, profile=profile).items():
+                for case_id, value in by_case.items():
+                    repeats.setdefault(reading, {}).setdefault(run.id, {}).setdefault(case_id, []).append(value)
+    readings = []
+    for (kind, name), by_run in sorted(repeats.items()):
+        if kind == "measure":
+            descriptor = describe_reported_measure(name, profile.measures)
+            if (
+                descriptor.higher_is_better is None
+                or classifier_label_of(name) is not None
+                or not axis_in_question_scope(descriptor.merit_axis, [])
+            ):
+                continue
+            higher, value_range = descriptor.higher_is_better, descriptor.value_range
+        else:
+            if name in boundary:
+                continue
+            judged = describe_rubric_dim(name, scale=scales.get(name, "ordinal"))
+            if judged.higher_is_better is None:
+                continue
+            higher, value_range = judged.higher_is_better, judged.value_range
+        readings.append(PlanningReading(kind, name, higher, value_range, by_run))
+    return readings
+
+
 def _family_readings(
     axes: list[MeritAxis], catalog: dict[str, MetricDescriptor], judged_measures: list[JudgedMeasure]
 ) -> dict[tuple[ReadingKind, str], bool]:
@@ -9313,6 +9383,7 @@ __all__ = [
     "MeasureCollection",
     "MeasureMovement",
     "MeasureSummary",
+    "PlanningReading",
     "RunSummary",
     "ScopeDivergence",
     "TelemetryRollup",
@@ -9324,5 +9395,6 @@ __all__ = [
     "host_declarations_digest",
     "insight_restatement_key",
     "measure_movement",
+    "planning_readings",
     "superseding_insights",
 ]

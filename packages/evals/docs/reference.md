@@ -1624,6 +1624,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`CampaignDefinition`** · model · What creating a campaign names: what it is called, its subject and behaviour, its runs, and what it set out to learn.
 - **`CampaignLine`** · model · One campaign, as a listing shows it.
 - **`CampaignListing`** · model · A scope's campaigns, newest first.
+- **`DetectableEffect`** · model · The smallest difference one reading's comparison would find, or why none can be stated.
+- **`DetectableEffects`** · model · What a launch could detect: per reading, the smallest difference its paired comparison would find.
 - **`JobHandle`** · model · A started job: the id to poll, and what it is working on.
 - **`JobsStarted`** · model · What starting long work returns: one handle per job, in the order the work was asked for.
 - **`JobStatus`** · model · Where one job stands, read from the record its work writes.

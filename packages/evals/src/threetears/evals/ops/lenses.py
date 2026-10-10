@@ -26,7 +26,15 @@ from pydantic import Field, TypeAdapter, ValidationError
 
 from threetears.evals.analysis.reads import RunLister, compare_two_runs, export_results, history, pivot
 from threetears.evals.analysis.numbers import format_number, format_signed
-from threetears.evals.analysis.stats import equivalence_untested_reason
+from threetears.evals.analysis.bundle import PlanningReading, planning_readings
+from threetears.evals.analysis.stats import (
+    DETECTABLE_POWER,
+    SIGNIFICANCE_ALPHA,
+    equivalence_untested_reason,
+    paired_case_variance,
+    paired_detectable_difference,
+    variance_components,
+)
 from threetears.evals.analysis.reporting import (
     COST_ESTIMATE_MIN_BASIS,
     cassette_mode_disclosure,
@@ -46,6 +54,7 @@ from threetears.evals.analysis.reporting import (
     ScoreExport,
 )
 from threetears.evals.contracts.base import EvalBaseModel
+from threetears.evals.contracts.campaign import ReadingKind
 from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
 from threetears.evals.contracts.host import DEFAULT_PASS_THRESHOLD, EvalHost, pass_threshold_label
 from threetears.evals.contracts.metrics import measure_title
@@ -340,6 +349,87 @@ class ArmEstimate(EvalBaseModel):
     refusal: str | None
 
 
+class DetectableEffect(EvalBaseModel):
+    """The smallest difference one reading's comparison would find, or why none can be stated.
+
+    Attributes:
+        reading: Whether ``name`` is a measure or a judged dimension.
+        name: The reading.
+        delta: The smallest true difference between two arms, in the reading's unit, that the paired
+            comparison finds with :attr:`DetectableEffects.power` at the family's first Holm step; ``None``
+            where ``cannot_estimate`` says why.
+        cannot_estimate: Why no difference is stated; ``None`` when one is.
+        basis: ``paired_runs`` when two earlier runs launched differently shared cases, so how far two arms
+            disagree about one case was measured; ``unrelated_case_effects`` when no such pair exists and the
+            two arms' case levels are taken as unrelated — two independent draws of one arm's between-case
+            spread, the most a pairing can leave when arms do not find opposite cases hard. ``None`` with no
+            estimate.
+        within_case_sd: The repeat noise around a case's level, pooled over the earlier runs.
+        between_case_sd: The case-to-case spread the paired difference keeps: measured between paired runs
+            (``paired_runs``), or one arm's between-case spread (``unrelated_case_effects``, counted twice).
+        difference_sd: The planned standard deviation of one case's difference of means at the planned ``k``.
+        n_history_cases: The earlier cases the between-case figure rests on.
+        run_ids: The earlier runs whose values were read.
+    """
+
+    reading: ReadingKind
+    name: str
+    delta: float | None
+    cannot_estimate: str | None
+    basis: Literal["paired_runs", "unrelated_case_effects"] | None = None
+    within_case_sd: float | None = None
+    between_case_sd: float | None = None
+    difference_sd: float | None = None
+    n_history_cases: int | None = None
+    run_ids: list[str] = Field(default_factory=list)
+
+
+#: What every detectable difference assumes, stated once on the block and rendered with it.
+DETECTABLE_EFFECT_ASSUMPTIONS = (
+    "the planned arms run the same cases and are compared paired, as a family compares them; one case's difference "
+    "of means is near normal (the paired t-test's own assumption — on a coarse pass/fail or 1-5 reading over few "
+    "cases it is only approximate); the earlier runs' variance holds for the planned arms; only the one comparison "
+    "differs, so Holm's correction asks it to clear α/m (more real differences make each easier to find); and the "
+    "variance is an estimate from the earlier runs, whose own error is not in the figure"
+)
+
+
+class DetectableEffects(EvalBaseModel):
+    """What a launch could detect: per reading, the smallest difference its paired comparison would find.
+
+    A power pre-flight beside the price. Each reading's difference is the smallest true difference between two
+    arms that the paired two-sided t-test on per-case means (the test a comparison family runs on cases both
+    arms ran) rejects with probability :attr:`power`, at the per-comparison level the first step of Holm's
+    correction asks of a family of :attr:`family_size` comparisons. The variance it plans from is measured,
+    never supplied: the within-case (repeat) and between-case components of earlier runs of the same template
+    (:func:`~threetears.evals.analysis.stats.variance_components`). With none to measure, it says so.
+
+    Attributes:
+        n_cases: The cases per arm the launch plans (the fewest over its arms); ``None`` with no plan.
+        k_runs: The repeats per case the launch plans.
+        family_size: The comparisons the family would correct together: the readings below, times one contrast
+            per arm beyond the first (at least one).
+        alpha: The family's level, :data:`~threetears.evals.analysis.stats.SIGNIFICANCE_ALPHA`.
+        per_comparison_alpha: ``alpha / family_size``, the level a lone difference must clear.
+        power: The power each difference is stated at.
+        run_ids: The earlier runs of the template that were read.
+        cannot_estimate: Why nothing could be estimated for any reading; ``None`` when the readings say.
+        effects: One per reading the earlier runs carried.
+        assumptions: What every difference here assumes.
+    """
+
+    n_cases: int | None
+    k_runs: int
+    family_size: int
+    alpha: float = SIGNIFICANCE_ALPHA
+    per_comparison_alpha: float
+    power: float = DETECTABLE_POWER
+    run_ids: list[str] = Field(default_factory=list)
+    cannot_estimate: str | None = None
+    effects: list[DetectableEffect] = Field(default_factory=list)
+    assumptions: str = DETECTABLE_EFFECT_ASSUMPTIONS
+
+
 class LaunchEstimate(EvalBaseModel):
     """What a launch would cost and whether it would launch, priced by the launch's own rule.
 
@@ -363,6 +453,8 @@ class LaunchEstimate(EvalBaseModel):
             missing an arm is not the launch's total.
         would_launch: Whether no arm would be refused on its price.
         computed_at: When the estimate was made, the stamp a pivot's prediction carries.
+        detectable_effect: What the launch could detect, per reading (:class:`DetectableEffects`); ``None`` on
+            an estimate made before the pre-flight existed.
     """
 
     template_id: str
@@ -377,6 +469,7 @@ class LaunchEstimate(EvalBaseModel):
     total_predicted_usd: float | None
     would_launch: bool
     computed_at: str
+    detectable_effect: DetectableEffects | None = None
 
     def planned_costs(self, run_ids: Sequence[str] = ()) -> list[PlannedCost]:
         """Each priced arm as a cost pivot's plan: its model, its template, its observations and its prediction.
@@ -465,6 +558,7 @@ async def launch_estimate(
     )
     arms = [_arm_estimate(arm, quote.k_runs, quote.n_variations) for arm in quote.arms]
     predicted = [arm.predicted_usd for arm in arms]
+    planned_cases = [arm.case_count for arm in arms if arm.case_count is not None]
     return LaunchEstimate(
         template_id=quote.template_id,
         subject_id=quote.subject_id,
@@ -478,7 +572,147 @@ async def launch_estimate(
         total_predicted_usd=None if None in predicted else math.fsum(p for p in predicted if p is not None),
         would_launch=all(arm.outcome != "refused" for arm in arms),
         computed_at=datetime.now(UTC).isoformat(),
+        detectable_effect=detectable_effects(
+            host.eval_host,
+            scope_id,
+            quote.template_id,
+            n_cases=min(planned_cases) if planned_cases else None,
+            k_runs=quote.k_runs,
+            n_arms=len(arms),
+        ),
     )
+
+
+def detectable_effects(
+    host: EvalHost, scope_id: str, template_id: str, *, n_cases: int | None, k_runs: int, n_arms: int
+) -> DetectableEffects:
+    """What a launch of ``template_id`` with ``n_cases`` cases and ``k_runs`` repeats could detect, per reading.
+
+    Reads every earlier run of the template in the scope (archived runs left out, as every quality view
+    leaves them) and each reading a comparison family would test on it (:func:`~threetears.evals.analysis.bundle.planning_readings`).
+    Per reading, the within-case and between-case variance of those runs
+    (:func:`~threetears.evals.analysis.stats.variance_components`) give one case's planned difference of means
+    its spread: ``between + 2·within/k``, where ``between`` is how far two arms disagree about one case —
+    measured over two earlier runs launched differently on shared cases where there are any
+    (:func:`~threetears.evals.analysis.stats.paired_case_variance`), and otherwise twice one arm's
+    between-case variance, the two arms' case levels taken as unrelated. The smallest difference the paired
+    t-test finds at :data:`~threetears.evals.analysis.stats.DETECTABLE_POWER` at ``α/m`` follows
+    (:func:`~threetears.evals.analysis.stats.paired_detectable_difference`). No variance is ever supplied: with
+    no earlier run, or too few repeated cases, the reading says it cannot estimate and why.
+
+    Args:
+        host: The host whose store holds the earlier runs and whose vocabulary reads them.
+        scope_id: The scope.
+        template_id: The template the launch runs.
+        n_cases: The cases per arm the launch plans; ``None`` when its kind plans none.
+        k_runs: The repeats per case.
+        n_arms: The arms the launch runs.
+
+    Returns:
+        The block.
+    """
+    runs = [run for run in list_runs(host, scope_id) if run.template_id == template_id]
+    results_by_run = {run.id: host.storage.query_eval_results_by_run(run.id, scope_id) for run in runs}
+    runs = [run for run in runs if results_by_run[run.id]]
+    readings = planning_readings(runs, results_by_run, profile=host.profile) if runs else []
+    family_size = max(1, len(readings)) * max(1, n_arms - 1)
+    block = DetectableEffects(
+        n_cases=n_cases,
+        k_runs=k_runs,
+        family_size=family_size,
+        per_comparison_alpha=SIGNIFICANCE_ALPHA / family_size,
+        run_ids=[run.id for run in runs],
+    )
+    if not runs:
+        return block.model_copy(
+            update={
+                "cannot_estimate": (
+                    f"no earlier run of template {template_id!r} with results is in scope {scope_id!r}, so no "
+                    "variance is measured to plan from"
+                )
+            }
+        )
+    if n_cases is None:
+        return block.model_copy(update={"cannot_estimate": "the launch plans no case count to plan a test over"})
+    if n_cases < 2:
+        return block.model_copy(
+            update={"cannot_estimate": f"a paired test needs two cases per arm; the launch plans {n_cases}"}
+        )
+    if not readings:
+        return block.model_copy(
+            update={"cannot_estimate": "the earlier runs carry no reading a comparison family would test"}
+        )
+    launched = {run.id: (run.candidate_model, run.overlays, run.apparatus_settings) for run in runs}
+    effects = [
+        _detectable_effect(reading, launched, n_cases=n_cases, k_runs=k_runs, alpha=block.per_comparison_alpha)
+        for reading in readings
+    ]
+    return block.model_copy(update={"effects": effects})
+
+
+def _detectable_effect(
+    reading: PlanningReading, launched: Mapping[str, object], *, n_cases: int, k_runs: int, alpha: float
+) -> DetectableEffect:
+    """One reading's detectable difference (see :func:`detectable_effects`)."""
+    run_ids = sorted(reading.repeats)
+    unestimated = DetectableEffect(reading=reading.reading, name=reading.name, delta=None, cannot_estimate=None)
+    components = variance_components([list(by_case.values()) for by_case in reading.repeats.values()])
+    if components is None:
+        return unestimated.model_copy(
+            update={
+                "run_ids": run_ids,
+                "cannot_estimate": (
+                    "fewer than two earlier cases were repeated (k of 2 or more) on one run, so repeat noise cannot "
+                    "be told from case-to-case spread"
+                ),
+            }
+        )
+    pairs = []
+    for index, left in enumerate(run_ids):
+        for right in run_ids[index + 1 :]:
+            if launched[left] == launched[right]:
+                continue
+            shared = sorted(set(reading.repeats[left]) & set(reading.repeats[right]))
+            pairs.append(
+                ([reading.repeats[left][case] for case in shared], [reading.repeats[right][case] for case in shared])
+            )
+    paired = paired_case_variance(pairs, components.within_case)
+    between, n_history, basis = (
+        (paired[0], paired[1], "paired_runs")
+        if paired is not None
+        else (2.0 * components.between_case, components.n_cases, "unrelated_case_effects")
+    )
+    difference_sd = math.sqrt(between + 2.0 * components.within_case / k_runs)
+    measured = unestimated.model_copy(
+        update={
+            "basis": basis,
+            "within_case_sd": math.sqrt(components.within_case),
+            "between_case_sd": math.sqrt(between),
+            "difference_sd": difference_sd,
+            "n_history_cases": n_history,
+            "run_ids": run_ids,
+        }
+    )
+    if difference_sd == 0.0:
+        return measured.model_copy(
+            update={
+                "cannot_estimate": (
+                    "the earlier runs show no spread on this reading, case to case or repeat to repeat, so no test's "
+                    "power can be planned from them"
+                )
+            }
+        )
+    delta = paired_detectable_difference(n_cases, difference_sd, alpha=alpha)
+    if reading.value_range is not None and delta > reading.value_range[1] - reading.value_range[0]:
+        return measured.model_copy(
+            update={
+                "cannot_estimate": (
+                    f"the difference it would take ({format_number(delta)}) is wider than the reading's range allows, "
+                    "so no difference is found with this power at this size"
+                )
+            }
+        )
+    return measured.model_copy(update={"delta": delta})
 
 
 def _arm_estimate(arm: ArmVerdict, k_runs: int, n_variations: int) -> ArmEstimate:
@@ -990,7 +1224,36 @@ def estimate_text(estimate: LaunchEstimate) -> str:
     else:
         lines.append(f"total: ${format_number(estimate.total_predicted_usd)}")
     lines.append("would launch" if estimate.would_launch else "would be refused")
+    if estimate.detectable_effect is not None:
+        lines += detectable_effect_lines(estimate.detectable_effect)
     return "\n".join(lines)
+
+
+def detectable_effect_lines(block: DetectableEffects) -> list[str]:
+    """A launch's power pre-flight as text: one line per reading, then what every line assumes."""
+    head = (
+        f"detectable difference ({format_number(100 * block.power)}% power, paired, Holm over {block.family_size} "
+        f"comparison(s) so α/m = {format_number(block.per_comparison_alpha)}):"
+    )
+    if block.cannot_estimate is not None:
+        return [head, f"- cannot estimate: {block.cannot_estimate}"]
+    lines = [head]
+    for effect in block.effects:
+        runs = ", ".join(effect.run_ids)
+        if effect.delta is None:
+            lines.append(f"- {effect.name}: cannot estimate: {effect.cannot_estimate} (from runs {runs})")
+            continue
+        lines.append(
+            f"- {effect.name}: with {block.n_cases} cases and {block.k_runs} repeats this campaign can detect "
+            f"Δ ≥ {format_number(effect.delta)} (from runs {runs}; "
+            + (
+                "between-arm case spread measured on earlier paired runs)"
+                if effect.basis == "paired_runs"
+                else "no earlier paired runs, so two arms' case levels are taken as unrelated)"
+            )
+        )
+    lines.append(f"assumes: {block.assumptions}")
+    return lines
 
 
 def export_text(export: ScoreExport) -> str:
@@ -1076,12 +1339,17 @@ def runs_compared_text(compared: RunsCompared) -> str:
 
 
 __all__ = [
+    "DETECTABLE_EFFECT_ASSUMPTIONS",
     "LAUNCH_PRICER_METHOD",
     "ArmEstimate",
+    "DetectableEffect",
+    "DetectableEffects",
     "LaunchEstimate",
     "OutOfRunSpendReport",
     "OutOfRunSpendTotals",
     "RunsCompared",
+    "detectable_effect_lines",
+    "detectable_effects",
     "estimate_text",
     "export_text",
     "history_text",

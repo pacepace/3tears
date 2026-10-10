@@ -74,6 +74,8 @@ from threetears.evals.ops.jobs import (
 from threetears.evals.analysis import CostEstimate, HistoryResult, PivotTable, ScoreExport
 from threetears.evals.ops.lenses import (
     ArmEstimate,
+    DetectableEffect,
+    DetectableEffects,
     LaunchEstimate,
     OutOfRunSpendReport,
     OutOfRunSpendTotals,
@@ -158,6 +160,8 @@ __all__ = [
     "CampaignListing",
     "CaseResult",
     "CostEstimate",
+    "DetectableEffect",
+    "DetectableEffects",
     "DimensionSummary",
     "EvalSummary",
     "FrozenReporterCase",
