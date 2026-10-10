@@ -11,7 +11,10 @@ evolve while the surfaces that consume it are still being learned — a persiste
 projection would freeze it against every future consumer. Aggregation is
 calibrated to a corpus of dozens-to-hundreds of cells (one operator, one
 scope); :func:`project_score_records` is the seam to push down into SQL if
-that ever stops holding.
+that ever stops holding. ``pivot`` and ``export_results``
+(:mod:`threetears.evals.analysis.reads`) log each call's rows in, records and
+cells out and wall time, at WARNING past ``READ_TIER_ROW_BUDGET``, so a host
+sees the premise being crossed (#652).
 
 **The subject is a first-class coordinate, keyed on a stable id.** Composite quality is
 comparable *within* a subject and never across one: rubric dimensions are derived

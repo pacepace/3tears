@@ -123,6 +123,22 @@ area they touch rather than the whole of it — `RunStore`, `ResultStore`, `RunR
 `DefinitionStore`, `CassetteStore` and `JobStore` (in `threetears.evals.kernel`) — so a function
 typed `DefinitionStore` cannot reach a run, and a test of one hands it only that area.
 
+**Watch the read tier's size.** The lenses that read a whole scope — `pivot` and `export_results` (and the
+`scope_pivot` / `scope_export` operations over them) — project and aggregate every result in Python on each
+call, which suits a scope of dozens-to-hundreds of cells. Each call logs one line on the
+`threetears.evals.analysis.reads` logger, at INFO:
+
+```
+eval.read_tier lens=pivot scope_id=acme runs_in=12 results_in=480 records_out=2880 cells_out=24 elapsed_ms=41.7
+```
+
+`runs_in` and `results_in` are what the call read, `records_out` the score records it projected, `cells_out`
+the pivot's cells (`refused` when the pivot was refused; absent on an export) and `elapsed_ms` its wall time.
+Once `records_out` passes `READ_TIER_ROW_BUDGET` (50,000, in `threetears.evals.analysis`) the line is logged
+at WARNING and ends `over READ_TIER_ROW_BUDGET=50000`, so you can alert on the level alone. Crossing it means
+the scope has outgrown the in-Python projection, the signal to push it down into your store; it fires
+before a page is slow, and you can alert on `elapsed_ms` instead.
+
 ## Stored data: what is kept
 
 **The evidence core is kept.** Every later release reads it, from core v8 (the first release) on. The core is

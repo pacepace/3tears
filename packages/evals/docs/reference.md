@@ -1435,6 +1435,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`NO_ANALYSIS`** · constant (str) · What the code-only report says in place of an analysis: that none was generated, and whose the numbers are.
 - **`PAIRED_TEST_NAME`** · constant (str) · The paired test the change classifier discloses, so a regression flag names the statistics it rests on rather than presenting a bare verdict.
 - **`PROJECTED_METRICS`** · constant (frozenset) · Every measure `project_score_records` can emit.
+- **`READ_TIER_ROW_BUDGET`** · constant (int) · How many projected score records one read-tier call may carry before its observer line is logged at WARNING instead of INFO (#652).
+  <br>`= 50000`
 - **`REPORT_VERSION`** · constant (int) · The report shape's version.
   <br>`= 6`
 - **`REPORTER_KIND`** · constant (str) · The `candidate_kind` a reporter template declares.
