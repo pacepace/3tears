@@ -21,8 +21,10 @@ which scope a read is asking about.
 
 Strict reads: every load path goes through the model's own ``from_dict(...)`` (:meth:`_hydrate`),
 which validates exactly as construction does. A stored document with a field the model does not
-declare, without one it requires, or written under another ``schema_version`` is refused — stored
-eval documents are dropped across a schema change, never migrated or filtered on the way in. Rows
+declare, or without one it requires, is refused, and nothing is filtered on the way in. A core
+document at an older core version is upgraded by that read before it is validated; one from a
+newer build or from before the first release, or a regenerable document at another version, is
+refused (:mod:`~threetears.evals.schema.versioning`). Rows
 arrive with the storage stamp already removed (the port's contract), so nothing but the model's
 own fields reaches validation. A read can therefore raise, which is why the one read on the boot
 path (:meth:`EvalStorage.query_non_terminal_eval_runs`) isolates a refused row rather than

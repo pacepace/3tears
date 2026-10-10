@@ -137,7 +137,7 @@ def test_the_campaign_no_longer_declares_the_field_and_the_declaration_does() ->
 
 
 def test_a_stored_campaign_carrying_the_retired_key_is_refused() -> None:
-    """A document written before the control moved does not load — it is dropped, never migrated.
+    """A campaign written before the control moved does not load — it is regenerated, never migrated.
 
     The refusal names the key, so the operator meeting it knows which document is from before.
     """

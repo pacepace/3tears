@@ -33,7 +33,7 @@ And, for the review fixes (each applied to a scratch-backed copy and restored fr
   counting results behind an undefined kappa;
 - a "can't tell" repeat set aside as unpaired (both scales, here and end to end);
 - ``tier_for_judges`` keyed without the scale; ``judge_key`` dropping the config; a repeat under another config paired;
-- the old ``separation`` words; ``EVAL_SCHEMA_VERSION`` left at 7.
+- the old ``separation`` words; ``REGENERABLE_SCHEMA_VERSION`` left at 7.
 """
 
 from __future__ import annotations
