@@ -62,6 +62,7 @@ from threetears.evals.analysis.agreement import (
     judge_evidence_tiers,
     judge_key,
     judge_self_agreement,
+    person_scores_by_result,
     tier_for_judges,
     tier_sentence,
 )
@@ -582,6 +583,7 @@ __all__ = [
     "judge_evidence_tiers",
     "judge_key",
     "judge_self_agreement",
+    "person_scores_by_result",
     "inter_judge_agreement",
     "judge_drift",
     "judge_phase_ceiling_s",

@@ -255,16 +255,26 @@ class _Pair(NamedTuple):
     result_id: str
 
 
-def judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[EvalResult]) -> JudgeAgreement:
-    """Pair each rating with the judge's score on the same dimension of the same result, and read agreement.
+class _PairedRatings(NamedTuple):
+    """Every rating read, as :func:`_pair_ratings` sorted it: the pairs per judge, the unpaired, and the count."""
+
+    groups: dict[JudgeKey, list[_Pair]]
+    unpaired: list[UnpairedRating]
+    read: int
+
+
+def _pair_ratings(ratings: Iterable[CalibrationRating], results: Iterable[EvalResult]) -> _PairedRatings:
+    """Pair each rating with the judge's score on the same dimension of the same result — the ONE matching rule.
+
+    Read by :func:`judge_agreement` and :func:`person_scores_by_result`, so the ratings agreement reads and the
+    ratings a prediction-powered estimate combines with the judge's scores are one set (#598).
 
     Args:
         ratings: The ratings to read.
-        results: The results they may rate. A rating whose result is not here is unpaired
-            (``result_unresolved``), so hand in every result the ratings were read for.
+        results: The results they may rate.
 
     Returns:
-        The agreement per (dimension, scale, judge, judge config), and the ratings that could not be paired.
+        The pairs grouped by judge, the ratings that could not be paired (and why), and how many were read.
     """
     by_id = {result.id: result for result in results}
     groups: dict[JudgeKey, list[_Pair]] = {}
@@ -289,6 +299,21 @@ def judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[Eval
             unpaired.append(_unpaired(rating, "scale_changed"))
             continue
         groups.setdefault(key, []).append(_Pair(score.score, rating.score, rating.rater, result.id))
+    return _PairedRatings(groups, unpaired, read)
+
+
+def judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[EvalResult]) -> JudgeAgreement:
+    """Pair each rating with the judge's score on the same dimension of the same result, and read agreement.
+
+    Args:
+        ratings: The ratings to read.
+        results: The results they may rate. A rating whose result is not here is unpaired
+            (``result_unresolved``), so hand in every result the ratings were read for.
+
+    Returns:
+        The agreement per (dimension, scale, judge, judge config), and the ratings that could not be paired.
+    """
+    groups, unpaired, read = _pair_ratings(ratings, results)
     dimensions = []
     for key in sorted(groups, key=_sort_key):
         numbers = _agreement_numbers(key.scale, groups[key])
@@ -309,6 +334,31 @@ def judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[Eval
             )
         )
     return JudgeAgreement(ratings_read=read, dimensions=dimensions, unpaired=unpaired)
+
+
+def person_scores_by_result(
+    ratings: Iterable[CalibrationRating], results: Iterable[EvalResult]
+) -> dict[tuple[str, str], list[int]]:
+    """Every person's score of a judged dimension of a result, keyed ``(result_id, dimension)`` — the human labels.
+
+    Exactly the pairs :func:`judge_agreement` reads (a person's rating, of a result read, on a dimension its judge
+    scores on the rating's scale), so an agent's rating, a rating of a result not read and a rating on a changed
+    scale label nothing here either. What a prediction-powered estimate combines with the judge's scores (#598).
+
+    Args:
+        ratings: The ratings to read.
+        results: The results they may rate.
+
+    Returns:
+        Every person's score per rated ``(result_id, dimension)``, in the order the ratings were read; a result
+        two people rated carries both.
+    """
+    scores: dict[tuple[str, str], list[int]] = {}
+    for key, pairs in _pair_ratings(ratings, results).groups.items():
+        for pair in pairs:
+            if pair.other is not None:
+                scores.setdefault((pair.result_id, key.rubric_dim), []).append(pair.other)
+    return scores
 
 
 def _unpaired(rating: CalibrationRating, reason: UnpairedReason) -> UnpairedRating:
@@ -1096,6 +1146,7 @@ __all__ = [
     "judge_evidence_tiers",
     "judge_key",
     "judge_self_agreement",
+    "person_scores_by_result",
     "tier_for_judges",
     "tier_sentence",
 ]
