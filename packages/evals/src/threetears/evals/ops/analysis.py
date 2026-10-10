@@ -23,6 +23,7 @@ from threetears.evals.analysis.report import Report, ReportBasis, report_html, r
 from threetears.evals.analysis.service import (
     AnalysisGenerationEstimate,
     campaign_report,
+    describe_insight_id_filters,
     estimate_analysis_generation,
     get_analysis,
     list_analyses,
@@ -164,6 +165,7 @@ class InsightListing(EvalBaseModel):
 
     subject_id: str | None = Field(description="The subject filter, when one narrowed the read.")
     source_campaign_id: str | None = Field(description="The campaign filter, when one narrowed the read.")
+    filters: str = Field(description="The id filters that narrowed the read, in words; empty when none did.")
     insights: list[InsightLine]
 
 
@@ -525,6 +527,7 @@ def insights_list(
     return InsightListing(
         subject_id=subject_id,
         source_campaign_id=source_campaign_id,
+        filters=describe_insight_id_filters(subject_id, source_campaign_id),
         insights=[
             InsightLine(
                 id=insight.id,

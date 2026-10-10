@@ -22,7 +22,6 @@ from typing import TYPE_CHECKING, Any
 from pydantic import ValidationError
 
 from threetears.evals.contracts import GoalStateOutcome, ResultOutcome, counted_goal_verdicts
-from threetears.evals.analysis.service import describe_insight_id_filters
 from threetears.evals.contracts.errors import EvalServiceError
 from threetears.evals.ops import (
     AnalysisDeleted,
@@ -579,8 +578,7 @@ def _insight_line(insight: InsightLine) -> str:
 
 def render_insights(listing: InsightListing) -> str:
     """The scope's insights, saying what narrowed the read — an empty filtered read names what it searched."""
-    named = describe_insight_id_filters(listing.subject_id, listing.source_campaign_id)
-    narrowed = f" ({named})" if named else ""
+    narrowed = f" ({listing.filters})" if listing.filters else ""
     if not listing.insights:
         return f"no insights{narrowed}"
     lines = [f"insights{narrowed} ({len(listing.insights)})"]
