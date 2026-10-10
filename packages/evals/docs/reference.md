@@ -1143,6 +1143,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 
 **Classes**
 
+- **`AliasedFactors`** · model · Factors that moved in lockstep: every one splits the runs into the same groups, so no comparison separates them.
 - **`AmbiguousPair`** · dataclass · A (campaign, recorded memo) pair holding more than one live case.
 - **`AnalysisContextBundle`** · model · The closed context bundle a generation prompt runs over.
 - **`AnalysisGenerationEstimate`** · model · What a generation would be priced at before it starts, against the cap it would be held to.
@@ -1174,12 +1175,17 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`CostEstimate`** · model · A proposed run/campaign's predicted cost, per model and in total, banded where n allows.
 - **`CostEstimateCell`** · model · The predicted cost of running one proposed model, from its historical per-observation cost.
 - **`DeclarableAxes`** · model · What a campaign may declare it sweeps on this host — the vocabulary the authoring gate reads.
+- **`DeclaredCellCoverage`** · model · One combination of declared levels (a cell), and whether it ran, was skipped on purpose, or is missing.
+- **`DeclaredCrossing`** · model · Every cell of a design that says which combinations of its levels it meant to run.
 - **`DeclaredLevelCoverage`** · model · Whether one level the campaign DECLARED for an axis was run — the declaration's delta, by name.
 - **`DesignArm`** · model · One arm of the campaign, the runs that measured it, and what it moved off the control.
 - **`DimensionAgreement`** · model · How one judge's scores on one dimension agreed with people's ratings of the same results.
 - **`DimensionReading`** · model · A dimension the judge scored that no label speaks to — reported, never compared.
 - **`DisclosureBlock`** · model · Something code must tell the reader that no author wrote — one idea.
 - **`Fact`** · model · A labelled fact code states beside an author's words — a confidence, a disposition, a tier.
+- **`FactorPairCell`** · model · One combination of two factors' levels, and how many runs sat at it.
+- **`FactorPairPivot`** · model · Two co-varying factors crossed: every combination of their observed levels, the unrun ones as `not_run`.
+- **`FactorPairScan`** · model · Every pair of varying factors checked for co-varying, with a pivot for each co-varying pair outside a group.
 - **`FamilyComparison`** · model · One contrast against the control on one reading, tested and corrected within its family.
 - **`FrontierBoundaryCheck`** · model · One boundary (guardrail) dimension of one contestant, held against the control the frontier was given.
 - **`FrontierCostTie`** · model · A contestant that cleared the bar with a cost, which the verdict's pick was NOT shown cheaper than.
@@ -1629,6 +1635,10 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, model: str | None = None) -> JobsStarted`
 - **`analysis_job_id`** · function · The job id of an analysis generation: its campaign, then its attempt.
   <br>`analysis_job_id(campaign_id: str, attempt_id: str) -> str`
+- **`bar_proposals_text`** · function · Proposals as a person reads them: each bar with its seed and any vacuity, then what was not proposed.
+  <br>`bar_proposals_text(proposals: BarProposals) -> str`
+- **`bars_propose`** · function · Propose a bar on every measure a single-cell baseline campaign measured its incumbent on.
+  <br>`bars_propose(host: EvalHost, campaign_id: str, scope_id: str) -> BarProposals`
 - **`campaign_archive`** · function · Archive or restore a campaign — retired from listings, nothing destroyed.
   <br>`campaign_archive(host: EvalHost, campaign_id: str, scope_id: str, *, archived: bool) -> CampaignLine`
 - **`campaign_create`** · function · Create a campaign over runs already in the scope, declared as it is created when the definition says so.
@@ -1728,12 +1738,15 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`AnalysisLine`** · model · One stored analysis, as a listing shows it.
 - **`AnalysisListing`** · model · A campaign's stored analyses.
 - **`ArmEstimate`** · model · One arm of a launch estimate: what its kind planned, what the host's pricer predicted, and what the launch would do.
+- **`BarProposals`** · model · What a baseline campaign proposes as its behavior's bars. Read-only: nothing here is registered.
 - **`CampaignDefinition`** · model · What creating a campaign names: what it is called, its subject and behaviour, its runs, and what it set out to learn.
 - **`CampaignLine`** · model · One campaign, as a listing shows it.
 - **`CampaignListing`** · model · A scope's campaigns, newest first.
 - **`CaseSetLine`** · model · One version of a named case set.
 - **`CaseSetListing`** · model · A scope's case sets, every version, newest version first within a name.
 - **`CaseSetMint`** · model · What minting a case set's next version names: the set, its template and its cases in order.
+- **`DetectableEffect`** · model · The smallest difference one reading's comparison would find, or why none can be stated.
+- **`DetectableEffects`** · model · What a launch could detect: per reading, the smallest difference its paired comparison would find.
 - **`JobHandle`** · model · A started job: the id to poll, and what it is working on.
 - **`JobsStarted`** · model · What starting long work returns: one handle per job, in the order the work was asked for.
 - **`JobStatus`** · model · Where one job stands, read from the record its work writes.
@@ -1742,6 +1755,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`OpsHost`** · dataclass · The host the operations, and the actions over them, work in.
 - **`OutOfRunSpendReport`** · model · The calls the engine made outside any run in a scope — case generations, rubric proposals and analysis generations — and their totals.
 - **`OutOfRunSpendTotals`** · model · What a set of out-of-run calls spent, summed — with what could not be summed counted beside it.
+- **`ProposedBar`** · model · One bar a baseline proposes, for a person to adopt, tighten or leave.
 - **`ReportDocument`** · model · A campaign's report, serialized in one form.
 - **`ReporterCaseEntry`** · model · One readable case of a reporter template, with whether a launch runs it.
 - **`ReporterCaseFreeze`** · model · What freezing a reporter case names: the reporter template, the campaign, and optionally its memo and labels.
@@ -2010,7 +2024,7 @@ A table code laid out — its columns, its rows in their stated order, and how m
 | `finding` | `int \| None` | `None` | The finding this block belongs to, by its position in the document (0 is the first); None when it belongs to none. |
 | `rests_on` | `list[int]` | `[]` | Positions of the findings this block rests on, as the author linked them. |
 | `kind` | `Literal['table']` | `'table'` | Which kind of block this is. |
-| `name` | `str` | required | Which table this is: `evidence`, `arms`, `surface`, `unadjudicated_bars`, `comparisons` (the contrasts against the control, as code tested them), `questions` (the declared questions, on a code-only report), `strata` (each arm's figures per stratum of its cases, beside its pooled figure, when its cases declare strata) or `labels` (a classifier's per-label precision, recall and F1, a row per label and arm, on a code-only report). |
+| `name` | `str` | required | Which table this is: `evidence`, `arms`, `surface`, `unadjudicated_bars`, `comparisons` (the contrasts against the control, as code tested them), `questions` (the declared questions, on a code-only report), `strata` (each arm's figures per stratum of its cases, beside its pooled figure, when its cases declare strata), `labels` (a classifier's per-label precision, recall and F1, a row per label and arm, on a code-only report) or `coverage` (each lever of an analysis's coverage map, the findings naming it and the next steps that would measure it). |
 | `title` | `str` | required | The table's heading. |
 | `columns` | `list[TableColumn]` | required | The columns, in display order. |
 | `rows` | `list[dict[str, Cell]]` | required | The rows shown, in the stated order, keyed by column key. |
@@ -2105,6 +2119,9 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `launch_disclosure` | `str \| None` | `None` | Set when the member runs were NOT all started by one campaign launch — some came from different launches, or were started on their own. |
 | `measurement_window_disclosure` | `str \| None` | `None` | Set when AT LEAST ONE PAIR of member runs was measured over spans of wall-clock time that do not overlap — so anything that moved between those spans (a model revision, a provider's load, a rate limit) moved with the runs, and a difference between the two runs of such a pair is not attributable to the runs alone. |
 | `apparatus_confounds` | `list[Confound]` | `[]` | Apparatus dimensions that varied across the WHOLE campaign, scanned independently of any lever. |
+| `aliased_factors` | `list[AliasedFactors]` | `[]` | Factors that moved in lockstep across the campaign: each group's factors split the runs identically, so no comparison separates them. |
+| `factor_pairs` | `FactorPairScan \| None` | `None` | Every pair of varying factors checked for co-varying, with a pivot (unrun combinations as not_run) for each co-varying pair outside a lockstep group, and how many pairs were examined. |
+| `declared_crossing` | `DeclaredCrossing \| None` | `None` | Where the declared design says which combinations of its levels it meant to run: every cell, marked ran, not_run (a gap), skipped_by_design (left out on purpose: never a gap) or undetermined. |
 | `arm_mechanisms` | `list[ArmMechanismReading]` | `[]` | Each arm's mean of every covariate read as an observed mechanism (today the candidate's reasoning share, `reasoning_ratio`), sorted by arm then covariate. |
 | `arm_served_models` | `list[ArmServedModel]` | `[]` | Which model the provider's responses named as having answered each arm's candidate calls, sorted by arm. |
 | `arm_production_footings` | `dict[str, PooledProductionFooting]` | `{}` | Arm (variant key) -> what each of its runs set away from the subject's production configuration, read off the host's sweepable declarations: `runs` maps run id -> that run's footing (`moved` with levels, `unchecked`, `held`; null for a run nobody could check). |
@@ -2374,6 +2391,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `analyses_list` | `read` | `campaign_id` | List a campaign's stored analyses. |
 | `analyses_undescribable` | `read` | — | List the scope's analyses holding an arm whose levels this build cannot describe. |
 | `report_read` | `read` | `campaign_id`, `format?` | Read a campaign's report — its analysis, else its evidence alone — as Markdown, JSON or HTML. |
+| `bars_propose` | `read` | `campaign_id` | Propose bars from a single-cell baseline campaign's measured incumbent; registers nothing. |
 | `reporter_case_freeze` | `write` | `template_id`, `campaign_id`, `recorded_analysis_id?`, `labels?`, `supersedes?` | Freeze a campaign's analysis bundle, and the memo it got, into a case of a reporter template. |
 | `reporter_cases_list` | `read` | `template_id`, `include_archived?` | List a reporter template's cases: which each campaign and memo launches, superseded or retired. |
 | `scope_pivot` | `read` | `row_factor`, `column_factor`, `metric?`, `weighting?`, `subject_filter?`, `run_status?`, `predicted_cost?`, `launched_run_ids?` | Aggregate one measure over the scope's observations by two coordinates, cell by cell. |

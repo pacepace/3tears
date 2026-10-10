@@ -45,7 +45,7 @@ from datetime import UTC, datetime
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
-from itertools import chain
+from itertools import chain, product
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple, Protocol
 
 from pydantic import BaseModel, Field, model_validator
@@ -204,6 +204,7 @@ from threetears.evals.contracts.models import (
     EvalResult,
     GoalCheckProof,
     RubricAxis,
+    RubricScale,
 )
 from threetears.evals.contracts.provider import sum_optional_tokens
 from threetears.evals.contracts.result_condition import (
@@ -365,6 +366,11 @@ _MAX_DIVERGENCES = 8
 _MAX_REFUSED_MERGES = 8
 _MAX_NEXT_EXPERIMENTS = 8
 _MAX_PRIOR_INSIGHTS = 12
+# Pivots over co-varying factor pairs, which grow with the square of the factors in the worst case.
+_MAX_FACTOR_PAIR_PIVOTS = 8
+# The cells of a declared crossing listed, which grow with the product of the declared levels.
+_MAX_DECLARED_CELLS = 64
+_CELL_STATES = ("ran", "not_run", "skipped_by_design", "undetermined")
 
 # Why another swept lever varying inside a cohort clouds the comparison. Generic on
 # purpose: which lever it is says nothing extra here, because a campaign sweeping it
@@ -1615,6 +1621,103 @@ class DeclaredLevelCoverage(EvalDocumentModel):
     )
 
 
+class DeclaredCellCoverage(EvalDocumentModel):
+    """One combination of declared levels (a cell), and whether it ran, was skipped on purpose, or is missing."""
+
+    levels: dict[str, str] = Field(
+        description="Each declared axis's level in this cell, as the declaration renders it."
+    )
+    state: Literal["ran", "not_run", "skipped_by_design", "undetermined"] = Field(
+        description=(
+            "ran = some run sat at every one of these levels. skipped_by_design = the design left it out on purpose "
+            "(its crossing, or skipped_cells) and it did not run: no gap. not_run = the design meant to run it and no "
+            "run did: a gap. undetermined = meant to run, no run is known to sit here, but some run's level on an "
+            "axis could not be established."
+        )
+    )
+
+
+class DeclaredCrossing(EvalDocumentModel):
+    """Every cell of a design that says which combinations of its levels it meant to run."""
+
+    crossing: Literal["full", "star"] | None = Field(
+        description="The design's declared crossing; None where only skipped_cells were named (full less those)."
+    )
+    n_cells: int = Field(ge=0, description="Every combination of the declared levels.")
+    n_ran: int = Field(ge=0)
+    n_not_run: int = Field(ge=0, description="Meant to run and never did: the gaps.")
+    n_skipped_by_design: int = Field(ge=0)
+    n_undetermined: int = Field(ge=0)
+    cells: list[DeclaredCellCoverage] = Field(description="The cells, in declaration order; capped, gaps kept first.")
+    cells_omitted: int = Field(default=0, ge=0)
+    sentence: str = Field(description="What the crossing comes to, gaps and skips counted apart.")
+
+
+class AliasedFactors(EvalDocumentModel):
+    """Factors that moved in lockstep: every one splits the runs into the same groups, so no comparison separates them."""
+
+    factors: list[str] = Field(description="The factors, sorted; two or more.")
+    n_runs: int = Field(ge=0, description="The runs whose levels of every one of these factors were read.")
+    n_levels: int = Field(ge=2, description="How many groups each of them splits those runs into.")
+    sentence: str = Field(description="The one sentence that names the group; quote it rather than a factor apiece.")
+
+
+class FactorPairCell(EvalDocumentModel):
+    """One combination of two factors' levels, and how many runs sat at it."""
+
+    row_level: str
+    column_level: str
+    n_runs: int = Field(ge=0)
+    status: Literal["ran", "not_run"] = Field(
+        description="ran = some run sat at both levels; not_run = none did, a hole in the design."
+    )
+
+
+class FactorPairPivot(EvalDocumentModel):
+    """Two co-varying factors crossed: every combination of their observed levels, the unrun ones as ``not_run``."""
+
+    row_factor: str
+    column_factor: str
+    row_aliases: list[str] = Field(
+        default_factory=list, description="Factors in the row factor's lockstep group, which this pivot stands for too."
+    )
+    column_aliases: list[str] = Field(
+        default_factory=list,
+        description="Factors in the column factor's lockstep group, which this pivot stands for too.",
+    )
+    cells: list[FactorPairCell] = Field(description="The full cross of observed levels, row-major in level order.")
+
+
+#: What the pair scan cannot see, stated wherever its result is.
+INTERACTION_ALIASING_UNCHECKED = (
+    "Only pairs of factors are checked: a factor that moved with a combination of two others (C = A⊕B, an "
+    "interaction) is not detected, so it is neither grouped nor shown."
+)
+
+
+class FactorPairScan(EvalDocumentModel):
+    """Every pair of varying factors checked for co-varying, with a pivot for each co-varying pair outside a group.
+
+    Two factors co-vary when one never moves while the other holds still: across the runs at any one level of
+    either, the other takes a single level. Every pair is checked; only the pivots are bounded, so the count says
+    how complete the short list is.
+    """
+
+    factors: list[str] = Field(
+        description=(
+            "Every factor that varied: the swept levers and candidate model the coverage reads, and each apparatus "
+            "dimension every run recorded."
+        )
+    )
+    n_pairs_examined: int = Field(ge=0)
+    n_covarying: int = Field(ge=0, description="Pairs that co-vary, inside a lockstep group or not.")
+    n_covarying_in_groups: int = Field(ge=0, description="Of those, the pairs whose two factors share a group.")
+    pivots: list[FactorPairPivot] = Field(default_factory=list)
+    pivots_omitted: int = Field(default=0, ge=0, description="Pivots past the cap, fewest holes first.")
+    completeness: str = Field(description="The sentence stating what was examined and what is shown.")
+    interaction_aliasing: str = Field(default=INTERACTION_ALIASING_UNCHECKED)
+
+
 class LeverCoverageInput(EvalDocumentModel):
     """Structural coverage of one lever, as the bundle computes it.
 
@@ -2603,6 +2706,30 @@ class AnalysisContextBundle(EvalDocumentModel):
             "answer even when the campaign compared nothing. Empty means the rig held — a claim only "
             "made about runs that recorded a value, since an unrecorded dimension is 'undecided' here "
             "as everywhere else."
+        ),
+    )
+    aliased_factors: list[AliasedFactors] = Field(
+        default_factory=list,
+        description=(
+            "Factors that moved in lockstep across the campaign: each group's factors split the runs identically, "
+            "so no comparison separates them. Name a group once, by its sentence, never one factor at a time. "
+            "Pairs only: see factor_pairs.interaction_aliasing."
+        ),
+    )
+    factor_pairs: FactorPairScan | None = Field(
+        default=None,
+        description=(
+            "Every pair of varying factors checked for co-varying, with a pivot (unrun combinations as not_run) "
+            "for each co-varying pair outside a lockstep group, and how many pairs were examined. None on a "
+            "bundle assembled before the scan existed."
+        ),
+    )
+    declared_crossing: DeclaredCrossing | None = Field(
+        default=None,
+        description=(
+            "Where the declared design says which combinations of its levels it meant to run: every cell, marked "
+            "ran, not_run (a gap), skipped_by_design (left out on purpose: never a gap) or undetermined. None when "
+            "there is no design or it says nothing about combinations, so no unrun combination is read either way."
         ),
     )
     arm_mechanisms: list[ArmMechanismReading] = Field(
@@ -6406,6 +6533,123 @@ def _reportable_levers(
     return moved | declared | (engaged & resolved)
 
 
+def _run_axis_identities(
+    axis_id: str, run: EvalRun, results: list[EvalResult], *, profile: HostProfile
+) -> set[str] | None:
+    """The identities a run's level on one declared axis can be joined to a declared level by, or None if unknown.
+
+    Its variant coordinate where it has one (the engine's own and the host's), else the value the host's registry
+    resolves for it, as its canonical digest and, for a string that may itself be a digest, as itself.
+
+    Args:
+        axis_id: The declared axis.
+        run: The run.
+        results: The run's results.
+        profile: The host whose vocabulary this reads.
+
+    Returns:
+        The identities, or None when the run's level on the axis cannot be established.
+    """
+    coordinates = {
+        **profile.engine_levels(run),
+        **(profile.variant_levers(run) if profile.variant_levers is not None else {}),
+    }
+    if (coordinate := coordinates.get(axis_id)) is not None:
+        return {coordinate.content_hash}
+    value = profile.sweepables.resolve_levers(run, results).values.get(axis_id)
+    if value is None:
+        return None
+    return {canonical_digest(value), value} if isinstance(value, str) else {canonical_digest(value)}
+
+
+def _declared_crossing(
+    design: CampaignDesign | None,
+    runs: list[EvalRun],
+    results_by_run: dict[str, list[EvalResult]],
+    *,
+    profile: HostProfile,
+) -> DeclaredCrossing | None:
+    """Mark every cell of a design that says which combinations it meant to run: ran, missing, or skipped by design.
+
+    A cell is one declared level of every declared axis. A run sits at a cell when each axis's level joins to
+    that cell's level (:func:`_run_axis_identities`). An unrun cell the design left out on purpose
+    (:meth:`~threetears.evals.contracts.declaration.CampaignDesign.skipped_by_design`) is ``skipped_by_design``
+    and is never a gap; an unrun cell it meant to run is ``not_run``, unless some run's level on an axis cannot
+    be established, when it may be sitting there and the cell is ``undetermined``.
+
+    Args:
+        design: The campaign's declaration.
+        runs: The campaign's resolved runs.
+        results_by_run: Each run's results.
+        profile: The host whose vocabulary this reads.
+
+    Returns:
+        The crossing, or None when there is no design or it says nothing about combinations — today's reading,
+        where an unrun combination is neither skipped nor missing.
+    """
+    if design is None or not design.declares_cells():
+        return None
+    ran: set[tuple[str, ...]] = set()
+    unestablished = False
+    for run in runs:
+        levels: list[str | None] = []
+        for axis in design.axes:
+            identities = _run_axis_identities(axis.axis_id, run, results_by_run.get(run.id, []), profile=profile)
+            if identities is None:
+                unestablished = True
+                levels.append(None)
+                continue
+            matched = [level.content_hash for level in axis.values if level.content_hash in identities]
+            levels.append(matched[0] if matched else None)
+        if all(level is not None for level in levels):
+            ran.add(tuple(level for level in levels if level is not None))
+    cells = []
+    for combination in product(*(axis.values for axis in design.axes)):
+        identity = tuple(level.content_hash for level in combination)
+        state: Literal["ran", "not_run", "skipped_by_design", "undetermined"]
+        if identity in ran:
+            state = "ran"
+        elif design.skipped_by_design(identity):
+            state = "skipped_by_design"
+        else:
+            state = "undetermined" if unestablished else "not_run"
+        cells.append(
+            DeclaredCellCoverage(
+                levels={axis.axis_id: level.display for axis, level in zip(design.axes, combination, strict=True)},
+                state=state,
+            )
+        )
+    counts = {state: sum(1 for cell in cells if cell.state == state) for state in _CELL_STATES}
+    kept, omitted = _capped(
+        cells, _MAX_DECLARED_CELLS, weight=lambda cell: {"not_run": 2, "undetermined": 1}.get(cell.state, 0)
+    )
+    planned = len(cells) - counts["skipped_by_design"]
+    sentence = (
+        f"The design declares {len(cells)} cell(s) over its {len(design.axes)} axis(es) and meant to run {planned}: "
+        f"{counts['ran']} ran"
+        + (f", {counts['not_run']} never ran (a gap)" if counts["not_run"] else "")
+        + (f", {counts['undetermined']} cannot be established" if counts["undetermined"] else "")
+        + (
+            f"; {counts['skipped_by_design']} were skipped by design, which is no gap"
+            if counts["skipped_by_design"]
+            else ""
+        )
+        + (f"; {omitted} cell(s) are left out of the list, gaps last to go" if omitted else "")
+        + "."
+    )
+    return DeclaredCrossing(
+        crossing=design.crossing,
+        n_cells=len(cells),
+        n_ran=counts["ran"],
+        n_not_run=counts["not_run"],
+        n_skipped_by_design=counts["skipped_by_design"],
+        n_undetermined=counts["undetermined"],
+        cells=kept,
+        cells_omitted=omitted,
+        sentence=sentence,
+    )
+
+
 def _declared_level_coverage(
     axis: SweptAxis,
     runs: list[EvalRun],
@@ -6433,20 +6677,11 @@ def _declared_level_coverage(
     observed: set[str] = set()
     unestablished = False
     for run in runs:
-        coordinates = {
-            **profile.engine_levels(run),
-            **(profile.variant_levers(run) if profile.variant_levers is not None else {}),
-        }
-        if (coordinate := coordinates.get(axis.axis_id)) is not None:
-            observed.add(coordinate.content_hash)
-            continue
-        value = profile.sweepables.resolve_levers(run, results_by_run.get(run.id, [])).values.get(axis.axis_id)
-        if value is None:
+        identities = _run_axis_identities(axis.axis_id, run, results_by_run.get(run.id, []), profile=profile)
+        if identities is None:
             unestablished = True
-            continue
-        observed.add(canonical_digest(value))
-        if isinstance(value, str):
-            observed.add(value)
+        else:
+            observed |= identities
     return [
         DeclaredLevelCoverage(
             display=level.display,
@@ -6638,6 +6873,164 @@ def _coverage_map(
             )
         )
     return coverage
+
+
+def _factor_aliasing(
+    run_ids: list[str],
+    lever_levels: dict[str, dict[str, list[str]]],
+    apparatus_levels: dict[str, dict[str, str | None]],
+) -> tuple[list[AliasedFactors], FactorPairScan]:
+    """Group the factors that moved in lockstep, and check every pair of factors for co-varying.
+
+    A factor is anything that varied across the campaign's runs: a swept lever or the candidate model, as
+    :func:`_lever_levels` reads them, and an apparatus dimension every run recorded at two or more levels (one some
+    run never recorded is undecided, not a partition, and is named in ``apparatus_confounds``). Each factor
+    splits the runs it was read on into groups, one per level. **Factors whose splits are identical are aliased**
+    — the same runs, grouped the same way, whatever the levels are called — and are reported as one group.
+
+    A pair **co-varies** when neither can be compared holding the other fixed: across the runs at any one level
+    of one, the other takes a single level. Every pair is checked; a co-varying pair whose factors are not in one
+    group gets a pivot crossing the two (a group stands in for each of its members, so its mates share one
+    pivot), with every combination no run sat at as ``not_run``. Only interactions go unchecked
+    (:data:`INTERACTION_ALIASING_UNCHECKED`).
+
+    Args:
+        run_ids: The campaign's resolved runs.
+        lever_levels: Lever → level → run ids, from :func:`_lever_levels`.
+        apparatus_levels: Dimension → run id → level key, from :func:`_apparatus_levels`.
+
+    Returns:
+        The lockstep groups (sorted by their first factor), and the pair scan.
+    """
+    by_factor: dict[str, dict[str, str]] = {}
+    for lever, by_level in lever_levels.items():
+        by_factor[lever] = {run_id: level for level, members in by_level.items() for run_id in members}
+    for dimension, by_run in apparatus_levels.items():
+        levels = [by_run.get(run_id) for run_id in run_ids]
+        if dimension in by_factor or any(level is None for level in levels) or len(set(levels)) < 2:
+            continue
+        by_factor[dimension] = {run_id: str(by_run[run_id]) for run_id in run_ids}
+    factors = sorted(name for name, by_run in by_factor.items() if len(set(by_run.values())) >= 2)
+
+    def split(name: str) -> frozenset[frozenset[str]]:
+        blocks: dict[str, set[str]] = {}
+        for run_id, level in by_factor[name].items():
+            blocks.setdefault(level, set()).add(run_id)
+        return frozenset(frozenset(block) for block in blocks.values())
+
+    by_split: dict[frozenset[frozenset[str]], list[str]] = {}
+    for name in factors:
+        by_split.setdefault(split(name), []).append(name)
+    group_of = {name: members[0] for members in by_split.values() for name in members}
+    groups = []
+    for blocks, members in sorted(by_split.items(), key=lambda item: item[1][0]):
+        if len(members) < 2:
+            continue
+        n_runs = sum(len(block) for block in blocks)
+        across = f"all {n_runs} runs" if n_runs == len(run_ids) else f"the {n_runs} runs that recorded them"
+        groups.append(
+            AliasedFactors(
+                factors=members,
+                n_runs=n_runs,
+                n_levels=len(blocks),
+                sentence=(
+                    f"{_listed_names(members)} move together across {across}, splitting them into the same "
+                    f"{len(blocks)} groups; no comparison separates them, so a difference across them belongs to all "
+                    f"{len(members)} at once."
+                ),
+            )
+        )
+
+    def varies_within(name: str, other: str) -> bool:
+        shared = by_factor[name].keys() & by_factor[other].keys()
+        seen: dict[str, set[str]] = {}
+        for run_id in shared:
+            seen.setdefault(by_factor[other][run_id], set()).add(by_factor[name][run_id])
+        return any(len(levels) >= 2 for levels in seen.values())
+
+    n_pairs = n_covarying = n_in_groups = 0
+    pivots: dict[tuple[str, str], FactorPairPivot] = {}
+    for index, row in enumerate(factors):
+        for column in factors[index + 1 :]:
+            n_pairs += 1
+            if varies_within(row, column) and varies_within(column, row):
+                continue
+            n_covarying += 1
+            if group_of[row] == group_of[column]:
+                n_in_groups += 1
+                continue
+            first, second = sorted((group_of[row], group_of[column]))
+            key = (first, second)
+            if key not in pivots:
+                pivots[key] = _factor_pair_pivot(key[0], key[1], by_factor, group_of)
+    ordered = [pivots[key] for key in sorted(pivots)]
+    kept, omitted = _capped(
+        ordered,
+        _MAX_FACTOR_PAIR_PIVOTS,
+        weight=lambda pivot: sum(1 for cell in pivot.cells if cell.status == "not_run"),
+    )
+    outside = n_covarying - n_in_groups
+    if len(factors) < 2:
+        completeness = f"{len(factors)} factor varied, so no pair of factors could co-vary."
+    else:
+        completeness = (
+            f"{n_pairs} factor pair(s) examined over the {len(factors)} factors that varied; {n_covarying} co-vary"
+            + (f", {n_in_groups} of them inside a group that moves in lockstep" if n_in_groups else "")
+            + (
+                f"; the {outside} outside any group are shown in {len(ordered)} pivot(s), a group's members sharing one"
+                if outside
+                else ""
+            )
+            + (f", of which {omitted} with the fewest unrun combinations are left out" if omitted else "")
+            + "."
+        )
+    return groups, FactorPairScan(
+        factors=factors,
+        n_pairs_examined=n_pairs,
+        n_covarying=n_covarying,
+        n_covarying_in_groups=n_in_groups,
+        pivots=kept,
+        pivots_omitted=omitted,
+        completeness=completeness,
+    )
+
+
+def _factor_pair_pivot(
+    row: str,
+    column: str,
+    by_factor: dict[str, dict[str, str]],
+    group_of: dict[str, str],
+) -> FactorPairPivot:
+    """Cross two factors' observed levels over the runs both were read on, counting the runs at each combination."""
+    shared = sorted(by_factor[row].keys() & by_factor[column].keys())
+    counts: dict[tuple[str, str], int] = {}
+    for run_id in shared:
+        combination = (by_factor[row][run_id], by_factor[column][run_id])
+        counts[combination] = counts.get(combination, 0) + 1
+    rows = sorted({by_factor[row][run_id] for run_id in shared})
+    columns = sorted({by_factor[column][run_id] for run_id in shared})
+    mates = {name: [other for other in group_of if group_of[other] == name and other != name] for name in (row, column)}
+    return FactorPairPivot(
+        row_factor=row,
+        column_factor=column,
+        row_aliases=sorted(mates[row]),
+        column_aliases=sorted(mates[column]),
+        cells=[
+            FactorPairCell(
+                row_level=row_level,
+                column_level=column_level,
+                n_runs=counts.get((row_level, column_level), 0),
+                status="ran" if (row_level, column_level) in counts else "not_run",
+            )
+            for row_level in rows
+            for column_level in columns
+        ],
+    )
+
+
+def _listed_names(names: list[str]) -> str:
+    """``a``, ``a and b``, ``a, b and c``."""
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + f" and {names[-1]}"
 
 
 #: Apparatus dimensions that joined the rig after cells were minted under ids that never digested them, each
@@ -7191,6 +7584,7 @@ def assemble_context_bundle(
         profile=profile,
     )
     reportable = {entry.name for entry in coverage}
+    aliasing = _factor_aliasing(run_ids, _lever_levels(runs, results_by_run, profile=profile), apparatus_levels)
 
     # The cell algebra, over observations rather than runs. Independent of `design`, which is
     # the point: a cell is what pools, and pooling must not depend on whether anyone designated
@@ -7318,6 +7712,9 @@ def assemble_context_bundle(
         # lenses iterate levers — so without this, a campaign whose template changed
         # underneath it reports that fact nowhere at all.
         apparatus_confounds=_apparatus_confounds(run_ids, apparatus_levels, profile=profile),
+        aliased_factors=aliasing[0],
+        factor_pairs=aliasing[1],
+        declared_crossing=_declared_crossing(campaign.declared_design, runs, results_by_run, profile=profile),
         arm_mechanisms=_arm_mechanisms(arms, results_by_run, mechanisms),
         arm_served_models=_arm_served_models(arms, results_by_run, served),
         arm_production_footings=_arm_production_footings(arms, results_by_run, profile=profile),
@@ -8315,6 +8712,80 @@ def _per_case_values(
     for (dimension, case_id), case_scores in sorted(scores.items()):
         values[("judged", dimension)][case_id] = sum(case_scores) / len(case_scores)
     return values
+
+
+class PlanningReading(NamedTuple):
+    """One reading a comparison family could test, as earlier runs observed it: every repeat, by run and case."""
+
+    reading: ReadingKind
+    name: str
+    higher_is_better: bool
+    #: The reading's declared inclusive bounds, or None where it declares none.
+    value_range: tuple[float, float] | None
+    #: ``{run id: {test case id: [one value per repeat]}}``, in run and case order.
+    repeats: dict[str, dict[str, list[float]]]
+
+
+def planning_readings(
+    runs: list[EvalRun], results_by_run: dict[str, list[EvalResult]], *, profile: HostProfile
+) -> list[PlanningReading]:
+    """Every reading an unscoped comparison family would test, with each earlier run's per-repeat values.
+
+    What a power pre-flight plans from: the readings :func:`_family_readings` admits for a question that names
+    no axis (a measure with a better end on a merit axis, a capability judged dimension), each observation
+    read by the one walk a family's per-case value is read by (:func:`_per_case_values`, over the one result),
+    so a repeat's value here and a case's mean in a comparison are one computation. Guardrails are left out:
+    they are held, not tested for a difference; so is latency read under concurrency, which no comparison reads.
+
+    Args:
+        runs: The earlier runs.
+        results_by_run: Each run's results.
+        profile: The host whose vocabulary this reads.
+
+    Returns:
+        One entry per reading with a value, sorted by reading kind and name.
+    """
+    results_by_run = _failures_as_misses({run.id: results_by_run.get(run.id, []) for run in runs})
+    # Latency read under concurrency is in no comparison (#701), so it plans none either.
+    results_by_run = {
+        run_id: withhold_contended_latency(run_results, profile.measures)
+        for run_id, run_results in results_by_run.items()
+    }
+    results = [result for run in runs for result in results_by_run[run.id]]
+    projection = project_score_records(runs, results, known_run_ids=None, archived_run_ids=None, profile=profile)
+    judged_rows: dict[str, list[ScoreRecord]] = {}
+    scales: dict[str, RubricScale] = {}
+    for record in projection.records:
+        judged_rows.setdefault(record.result_id, []).append(record)
+        if record.metric == METRIC_SCORE and record.rubric_dim and record.rubric_scale is not None:
+            scales[record.rubric_dim] = record.rubric_scale
+    boundary = _boundary_dimensions(results)
+    repeats: dict[tuple[ReadingKind, str], dict[str, dict[str, list[float]]]] = {}
+    for run in runs:
+        for result in sorted(results_by_run[run.id], key=lambda one: (one.test_case_id, one.k_iteration, one.id)):
+            for reading, by_case in _per_case_values([result], judged_rows, profile=profile).items():
+                for case_id, value in by_case.items():
+                    repeats.setdefault(reading, {}).setdefault(run.id, {}).setdefault(case_id, []).append(value)
+    readings = []
+    for (kind, name), by_run in sorted(repeats.items()):
+        if kind == "measure":
+            descriptor = describe_reported_measure(name, profile.measures)
+            if (
+                descriptor.higher_is_better is None
+                or classifier_label_of(name) is not None
+                or not axis_in_question_scope(descriptor.merit_axis, [])
+            ):
+                continue
+            higher, value_range = descriptor.higher_is_better, descriptor.value_range
+        else:
+            if name in boundary:
+                continue
+            judged = describe_rubric_dim(name, scale=scales.get(name, "ordinal"))
+            if judged.higher_is_better is None:
+                continue
+            higher, value_range = judged.higher_is_better, judged.value_range
+        readings.append(PlanningReading(kind, name, higher, value_range, by_run))
+    return readings
 
 
 def _family_readings(
@@ -9733,14 +10204,22 @@ def _telemetry_rollup(
 
 
 __all__ = [
+    "INTERACTION_ALIASING_UNCHECKED",
+    "AliasedFactors",
     "AnalysisContextBundle",
     "BundleInspection",
+    "DeclaredCellCoverage",
+    "DeclaredCrossing",
     "DeclaredLevelCoverage",
+    "FactorPairCell",
+    "FactorPairPivot",
+    "FactorPairScan",
     "GoalCheckProofReading",
     "LeverCoverageInput",
     "MeasureCollection",
     "MeasureMovement",
     "MeasureSummary",
+    "PlanningReading",
     "RunSummary",
     "ScopeDivergence",
     "TelemetryRollup",
@@ -9752,5 +10231,6 @@ __all__ = [
     "host_declarations_digest",
     "insight_restatement_key",
     "measure_movement",
+    "planning_readings",
     "superseding_insights",
 ]

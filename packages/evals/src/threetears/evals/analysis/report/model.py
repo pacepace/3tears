@@ -357,8 +357,9 @@ class TableBlock(_Block):
             "Which table this is: `evidence`, `arms`, `surface`, `unadjudicated_bars`, `comparisons` (the contrasts "
             "against the control, as code tested them), `questions` (the declared questions, on a code-only report), "
             "`strata` (each arm's figures per stratum of its cases, beside its pooled figure, when its cases "
-            "declare strata) or `labels` (a classifier's per-label precision, recall and F1, a row per label and "
-            "arm, on a code-only report)."
+            "declare strata), `labels` (a classifier's per-label precision, recall and F1, a row per label and "
+            "arm, on a code-only report) or `coverage` (each lever of an analysis's coverage map, the findings "
+            "naming it and the next steps that would measure it)."
         ),
     )
     title: str = Field(min_length=1, description="The table's heading.")
