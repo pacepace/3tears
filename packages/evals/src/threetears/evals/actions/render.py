@@ -52,6 +52,7 @@ from threetears.evals.ops import (
     RunsCompared,
     ScoreExport,
     TemplateListing,
+    UndescribableArmsListing,
     dollars_text,
     estimate_text,
     export_text,
@@ -454,6 +455,22 @@ def render_analyses(listing: AnalysisListing) -> str:
     """A campaign's analyses."""
     lines = [f"analyses of campaign {listing.campaign_id} ({len(listing.analyses)})"]
     lines += [render_analysis_line(a) for a in listing.analyses]
+    return "\n".join(lines)
+
+
+def render_undescribable_arms(listing: UndescribableArmsListing) -> str:
+    """The scope's analyses holding an arm whose levels this build cannot describe."""
+    lines = [
+        f"analyses in scope {listing.scope_id} holding an arm this build cannot describe: "
+        f"{len(listing.analyses)} of {listing.analyses_read}"
+    ]
+    for line in listing.analyses:
+        why = "; ".join(line.reasons) or "no reason recorded"
+        archived = ", archived" if line.archived else ""
+        lines.append(
+            f"- {line.analysis_id} (campaign {line.campaign_id}{archived}): "
+            f"{line.undescribable_arms} of {line.arms} arm(s) — {why}"
+        )
     return "\n".join(lines)
 
 
