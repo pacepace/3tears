@@ -316,6 +316,13 @@ def callable_kind_contracts(levers: Sequence[str] = ()) -> tuple[KindContract, K
     )
 
 
+def _arm_payload(arm: str | None) -> dict[str, str]:
+    """The ``host_payload`` a named arm's run carries: its name, under this module's own key; nothing for an unnamed arm."""
+    if arm is None:
+        return {}
+    return {_ARM_PAYLOAD_KEY: arm}
+
+
 def _arm_of_run(run: EvalRun) -> str:
     """The arm a run is, by name: what its launch stated, else its candidate model's label."""
     named = (run.host_payload or {}).get(_ARM_PAYLOAD_KEY)
@@ -914,7 +921,7 @@ def _launch_host(
                 subject=subject,
                 test_cases=cases,
                 judge=run_judge,
-                payload={} if arm.arm is None else {_ARM_PAYLOAD_KEY: arm.arm},
+                payload=_arm_payload(arm.arm),
             ),
         )
 

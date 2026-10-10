@@ -832,24 +832,27 @@ class TestAChartFontIsRefusedWithoutTheMetricsItsLayoutNeeds:
         assert StyleProfile().chart_font is None
 
 
-#: Kinds shipped INSIDE the package whose case payload is a schema they define themselves, keyed
-#: by a constant they own and written by a function they own: ``{module: (key constant, writer)}``.
+#: Kinds shipped INSIDE the package whose payloads are a schema they define themselves, each key
+#: a constant they own and written by a function they own: ``{module: ((key constant, writer), ...)}``.
 #: A separate lane from the adapter tree's exemption because it is a different claim. An adapter
 #: reads a HOST's shape, which is what the adapter is for; a module here reads no host's shape at
-#: all — the key it reads is its own, so the engine learns nothing about any host. Admission is
-#: checked structurally by
+#: all — every key it reads is its own, so the engine learns nothing about any host. A module may
+#: own more than one key when it writes more than one payload (a run's and a test case's are two
+#: different objects); each is registered with its own writer. Admission is checked structurally by
 #: :func:`test_a_self_keyed_payload_reader_reads_only_the_key_it_writes`.
-_SELF_KEYED_PAYLOAD_READERS: dict[str, tuple[str, str]] = {
+_SELF_KEYED_PAYLOAD_READERS: dict[str, tuple[tuple[str, str], ...]] = {
     # The analysis reporter's case is a frozen bundle + recorded memo + labels (ReporterCase),
     # defined, written and read in this one module.
-    "analysis/reporter_kind.py": ("REPORTER_CASE_KEY", "reporter_case_payload"),
+    "analysis/reporter_kind.py": (("REPORTER_CASE_KEY", "reporter_case_payload"),),
     # run_eval's kind hands the candidate the caller's case, which run_eval stored under its own key
     # in this module, beside a classifier's expected label under another of its own; the payload is this
-    # module's schema, not a host's.
-    "quick/one_call.py": ("_CASE_KEY", "_case_payload"),
+    # module's schema, not a host's. Separately, a single-factor compare's named arm states its name on
+    # its RUN's payload under the module's arm key, which the module's own arm-lever reader reads back:
+    # the run payload is not the case payload, so the arm is not nested under the case key.
+    "quick/one_call.py": (("_CASE_KEY", "_case_payload"), ("_ARM_PAYLOAD_KEY", "_arm_payload")),
     # A world run's kind seeds each cell from the starting state run_eval stored beside the case, under
     # the world module's own key, which that module writes and reads.
-    "quick/world.py": ("SEED_KEY", "world_case_payload"),
+    "quick/world.py": (("SEED_KEY", "world_case_payload"),),
 }
 
 
@@ -874,17 +877,18 @@ def _host_payload_reads(tree: ast.AST) -> list[ast.AST]:
     ]
 
 
-def _self_keyed_violations(source: str, key_constant: str, writer: str) -> list[str]:
+def _self_keyed_violations(source: str, keys: tuple[tuple[str, str], ...]) -> list[str]:
     """Why a module does NOT qualify as a self-keyed payload reader; empty when it does.
 
-    Three conditions: the key is a module-level string constant; the writer returns a dict
-    literal keyed by that constant; and every function reading ``host_payload`` names the
-    constant and subscripts nothing by a string literal — so the only key it can reach is its own.
+    Three conditions: each key is a module-level string constant; its writer returns a dict
+    literal keyed by that constant; and every function reading ``host_payload`` names one of the
+    module's constants and reads nothing by a string literal (subscript or ``.get``) — so the
+    only keys it can reach are its own.
 
     Args:
         source: The module's source.
-        key_constant: The module-level constant naming the payload key.
-        writer: The function that writes the payload.
+        keys: The module's ``(key constant, writer)`` pairs: each constant naming a payload key it
+            owns, and the function that writes that payload.
 
     Returns:
         The failed conditions, as sentences.
@@ -898,34 +902,45 @@ def _self_keyed_violations(source: str, key_constant: str, writer: str) -> list[
         for target in node.targets
         if isinstance(target, ast.Name)
     }
-    if key_constant not in assigned:
-        problems.append(f"{key_constant} is not a module-level string constant")
     functions = [node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
-    writers = [f for f in functions if f.name == writer]
-    keyed = any(
-        isinstance(ret.value, ast.Dict)
-        and any(isinstance(k, ast.Name) and k.id == key_constant for k in ret.value.keys)
-        for f in writers
-        for ret in ast.walk(f)
-        if isinstance(ret, ast.Return) and ret.value is not None
-    )
-    if not keyed:
-        problems.append(f"{writer} does not return a dict keyed by {key_constant}")
+    for key_constant, writer in keys:
+        if key_constant not in assigned:
+            problems.append(f"{key_constant} is not a module-level string constant")
+        keyed = any(
+            isinstance(ret.value, ast.Dict)
+            and any(isinstance(k, ast.Name) and k.id == key_constant for k in ret.value.keys)
+            for f in functions
+            if f.name == writer
+            for ret in ast.walk(f)
+            if isinstance(ret, ast.Return) and ret.value is not None
+        )
+        if not keyed:
+            problems.append(f"{writer} does not return a dict keyed by {key_constant}")
+    owned = {key_constant for key_constant, _writer in keys}
     for function in functions:
         if not _host_payload_reads(function):
             continue
         names = {node.id for node in ast.walk(function) if isinstance(node, ast.Name)}
-        if key_constant not in names:
-            problems.append(f"{function.name} reads host_payload without naming {key_constant}")
+        if not owned & names:
+            problems.append(f"{function.name} reads host_payload without naming any of {sorted(owned)}")
         literal = [
             node.slice.value
             for node in ast.walk(function)
             if isinstance(node, ast.Subscript)
             and isinstance(node.slice, ast.Constant)
             and isinstance(node.slice.value, str)
+        ] + [
+            node.args[0].value
+            for node in ast.walk(function)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
         ]
         if literal:
-            problems.append(f"{function.name} subscripts by string literal(s) {literal}, a key it does not own")
+            problems.append(f"{function.name} reads by string literal(s) {literal}, a key it does not own")
     return problems
 
 
@@ -933,16 +948,18 @@ def test_a_self_keyed_payload_reader_reads_only_the_key_it_writes():
     """Admission to ``_SELF_KEYED_PAYLOAD_READERS`` is a property of the module, checked here.
 
     Both directions on one module: the registered file qualifies, and the same file with one
-    foreign-key read added does not — so the check cannot be satisfied by a register entry alone.
+    foreign-key read added — by subscript or by ``.get`` — does not, so the check cannot be
+    satisfied by a register entry alone.
     """
-    for relative, (key_constant, writer) in _SELF_KEYED_PAYLOAD_READERS.items():
+    for relative, keys in _SELF_KEYED_PAYLOAD_READERS.items():
         source = (_EVAL_ROOT / relative).read_text()
-        assert _self_keyed_violations(source, key_constant, writer) == [], relative
+        assert _self_keyed_violations(source, keys) == [], relative
         assert _host_payload_reads(ast.parse(source)), f"{relative} reads no host_payload — drop it from the register"
-        foreign = source + '\n\ndef _peek(case):\n    return case.host_payload["someone_elses_key"]\n'
-        assert _self_keyed_violations(foreign, key_constant, writer), (
-            f"{relative}: a read of a key the module does not own was admitted"
-        )
+        for reach in ('case.host_payload["someone_elses_key"]', 'case.host_payload.get("someone_elses_key")'):
+            foreign = source + f"\n\ndef _peek(case):\n    return {reach}\n"
+            assert _self_keyed_violations(foreign, keys), (
+                f"{relative}: a read of a key the module does not own was admitted ({reach})"
+            )
 
 
 def test_no_engine_module_reaches_into_the_hosts_opaque_payload():
