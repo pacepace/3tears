@@ -232,6 +232,7 @@ The engine's contracts: the stored shapes, and the vocabulary every other packag
 - **`GoalStateOutcome`** · model · One judge-free fact a candidate's execution established, and whether it held.
 - **`GuardrailCell`** · model · One side of a guardrail check: a cell, and the per-case values the check read.
 - **`GuardrailCheck`** · model · One guardrail, one arm against the control under one rig: held, breached or undecided.
+- **`GuardrailMargin`** · model · How much worse than the control an arm may be on one judged guardrail, and still hold it.
 - **`GuardrailReadings`** · model · Every guardrail, decided for each arm against the control — the pillar kept apart from capability.
 - **`JobStore`** · protocol · The run document's read-modify-write: what the job manager persists a run's status through.
 - **`JudgeConfig`** · model · Versioned judge configuration for one rubric dimension.
@@ -306,6 +307,7 @@ The engine's contracts: the stored shapes, and the vocabulary every other packag
 - **`TimeAxis`** · model · The campaign's runs placed in time — present only when they span two builds or two days.
 - **`TimePosition`** · model · One point on a campaign's time axis — the runs at one build or on one day, and what they measured.
 - **`ToolLike`** · protocol · The three members the cassette layer calls on a synchronous tool it wraps.
+- **`UndeclarableAxisError`** · exception · A declared axis this host will not accept: neither a registered lever nor a recognised open-family member.
 - **`UnknownCandidateKind`** · exception · A template names a kind this host did not wire.
 - **`UnreadableBarName`** · dataclass · A bar name no verdict can be given on, and why — the text an author or a reader is shown.
 - **`ValidationFailedError`** · exception · Validation failed (status 422).
@@ -1417,11 +1419,11 @@ Batteries: run an eval in one call, and drive the engine from a command line.
 - **`build_parser`** · function · The command line's parser.
   <br>`build_parser(prog: str = 'python -m threetears.evals', *, takes_host: bool = True, commands: Sequence[HostCommand] = ()) -> argparse.ArgumentParser`
 - **`callable_host`** · function · The least host there is: the shared core, one measure per scorer, no world, an in-memory store.
-  <br>`callable_host(scorers: Sequence[Scorer] = (), *, levers: Sequence[str] = (), world: World | None = None, arms: bool = False, margins: Mapping[str, float] | None = None, ranges: Mapping[str, tuple[float, float]] | None = None) -> EvalHost`
+  <br>`callable_host(scorers: Sequence[Scorer] = (), *, levers: Sequence[str] = (), world: World | None = None, arms: bool = False, margins: Mapping[str, float] | None = None, ranges: Mapping[str, tuple[float, float]] | None = None, guardrails: Mapping[str, Guardrail] | None = None) -> EvalHost`
 - **`callable_kind_contracts`** · function · The contracts of both callable kinds, declaring `levers` as each run's levels beside its model.
   <br>`callable_kind_contracts(levers: Sequence[str] = ()) -> tuple[KindContract, KindContract]`
 - **`compare`** · async function · Run each candidate over every case `k` times as one arm, test every arm against `control`, and report.
-  <br>`compare(cases: Sequence[Mapping[str, Any]], candidates: Mapping[str, Candidate | ToolUsingCandidate | WorldCandidate] | Mapping[tuple[str, ...], Candidate | ToolUsingCandidate | WorldCandidate], scorers: Sequence[Scorer] = (), *, control: ArmKey, scope_id: str, expected: ExpectedLabel | None = None, judge: Judge | None = None, intent: str | None = None, host: EvalHost | None = None, k: int = 3, name: str | None = None, created_by: str = 'compare', factors: Sequence[str] | None = None, tools: Mapping[str, Tool] | None = None, cassette_mode: CassetteMode = 'off', cassette_corpus_id: str | None = None, world: World | None = None, seed: CaseSeed | None = None, goal_checks: Sequence[str] = (), max_cost_usd: float | None = None, margins: Mapping[str, float] | None = None, ranges: Mapping[str, tuple[float, float]] | None = None) -> Comparison`
+  <br>`compare(cases: Sequence[Mapping[str, Any]], candidates: Mapping[str, Candidate | ToolUsingCandidate | WorldCandidate] | Mapping[tuple[str, ...], Candidate | ToolUsingCandidate | WorldCandidate], scorers: Sequence[Scorer] = (), *, control: ArmKey, scope_id: str, expected: ExpectedLabel | None = None, judge: Judge | None = None, intent: str | None = None, host: EvalHost | None = None, k: int = 3, name: str | None = None, created_by: str = 'compare', factors: Sequence[str] | None = None, tools: Mapping[str, Tool] | None = None, cassette_mode: CassetteMode = 'off', cassette_corpus_id: str | None = None, world: World | None = None, seed: CaseSeed | None = None, goal_checks: Sequence[str] = (), max_cost_usd: float | None = None, margins: Mapping[str, float] | None = None, ranges: Mapping[str, tuple[float, float]] | None = None, guardrails: Mapping[str, Guardrail] | None = None) -> Comparison`
 - **`run_cli`** · function · Parse `argv` and carry out the command, printing to stdout and refusals to stderr.
   <br>`run_cli(argv: Sequence[str] | None = None, *, host_factory: HostFactory | None = None, prog: str = 'python -m threetears.evals', commands: Sequence[HostCommand] = ()) -> int`
 - **`run_eval`** · async function · Run `candidate` on every case `k` times, grade each answer with every scorer and the judge, and summarise.
@@ -1438,6 +1440,7 @@ Batteries: run an eval in one call, and drive the engine from a command line.
 - **`DimensionSummary`** · model · One judged rubric dimension over a run's results.
 - **`EvalSummary`** · model · One run, summarised.
 - **`GoalCheckSummary`** · model · One goal-state check over a run's results.
+- **`Guardrail`** · dataclass · A reading every arm must not get worse on than the control by more than `margin`.
 - **`HostCommand`** · dataclass · A subcommand a host adds beside the engine's own, mounted by `run_cli` under the same program.
 - **`Judge`** · dataclass · A model that grades each answer on a rubric, one call per dimension.
 - **`JudgeGrade`** · model · One rubric dimension's score on one answer, with the judge's reason.
@@ -1463,6 +1466,8 @@ Batteries: run an eval in one call, and drive the engine from a command line.
   <br>`Callable[[Mapping[str, Any]], Mapping[str, Any]]`
 - **`ExpectedLabel`** · type alias · A classifier's expected label for one case: takes the case, returns the label a correct answer gives.
   <br>`Callable[[Mapping[str, Any]], str]`
+- **`GuardrailDirection`** · literal · Which way is better on a guardrail, in the words a campaign's bar declares its own direction in.
+  <br>`'higher_is_better'` | `'lower_is_better'`
 - **`HostFactory`** · type alias · What names the host the commands work in: called once, with no arguments, per invocation.
   <br>`Callable[[], EvalHost | LaunchHost]`
 - **`Scorer`** · type alias · One grade: takes the case and the candidate's answer, returns a number (`True`/`False` count as 1 and 0).
