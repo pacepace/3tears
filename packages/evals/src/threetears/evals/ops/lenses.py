@@ -915,6 +915,8 @@ def history_text(result: HistoryResult) -> str:
         lines.append(result.attribution_disclosure)
     if result.identity_span_disclosure:
         lines.append(result.identity_span_disclosure)
+    if result.contended_latency_disclosure:
+        lines.append(result.contended_latency_disclosure)
     for series in result.series:
         lines.append(f"## {series.model} — subject {series.subject_label or series.subject_id}")
         if series.identity_version_disclosure:

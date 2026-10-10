@@ -53,14 +53,16 @@ the two apart (a clock stop's reason opens with `wall-clock budget`), and `error
 because that list counts faults. A run stopped by its clock under 0.66.0 or earlier stays stored `failed`
 (`Job timed out after Ns`).
 
-**Wall time.** A run executes its cells (case × repeat) one at a time, in a shuffled order; the only
-concurrency inside a run is a cell's judge calls (`judge_concurrency`, 4 by default, 1 on the quick path).
-The arms of one launch run side by side in one concurrency slot, so a comparison takes about as long as its
-slowest arm. Estimate a run's wall time as cases × k × the time one cell takes (the candidate's calls plus
-its judging): 30 cases at k=3 and 6 s a cell is about 9 minutes, whatever the number of arms. Cells are
-serial on purpose: each cell's metered-call count is read as a before/after pair around it, and the record of
-how busy the system was assumes no sibling cell competes, so both would be wrong under concurrent cells.
-No setting changes it.
+**Wall time.** A run executes its cells (case × repeat) in a shuffled order, up to
+`LaunchSettings.max_concurrent_cells` (4 by default) at once, and a cell's judge calls run up to
+`judge_concurrency` at once. The arms of one launch run side by side in one concurrency slot. Estimate a
+run's wall time as cases × k × the time one cell takes, divided by the width: 30 cases at k=3 and 6 s a cell
+is a little over 2 minutes at a width of 4. A launch that declares latency under test (`measure_latency=True`)
+runs its cells one at a time and its arms one after another, with no other run beside them: the same run
+then takes about 9 minutes, times the number of arms. The cost cap and the metered-call ceiling hold at any
+width; the cap can be overshot by at most the work in flight when it is reached (one call per running cell
+for a kind that asks the cap before each call, one cell per running cell otherwise). A host with its own
+pool or queue supplies a `CellExecutor` on `LaunchHost.cell_executor`.
 
 **The out-of-run cap** is `LaunchSettings.max_out_of_run_cost_usd`. It bounds every call the engine makes
 outside a run (below).

@@ -270,6 +270,11 @@ def build_parser(
             'dimension, e.g. \'{"adjudicator_seat": "model:m"}\' (as run_launch\'s apparatus_settings)'
         ),
     )
+    run.add_argument(
+        "--measure-latency",
+        action="store_true",
+        help="latency is under test: run each run's cells one at a time (as run_launch's measure_latency)",
+    )
     command("ls", "List the scope's templates, runs and campaigns.")
     report = command(
         "report", "Print a campaign's report — its analysis, else its evidence alone — without calling a model."
@@ -399,6 +404,7 @@ async def _launch(host: LaunchHost, args: argparse.Namespace) -> int:
         n_variations=args.n_variations,
         variation_model=args.variation_model,
         apparatus_settings=args.apparatus_settings,
+        measure_latency=args.measure_latency,
     )
     try:
         await host.job_manager.wait_for([run.id for run in runs])

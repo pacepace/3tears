@@ -100,9 +100,11 @@ JUDGE_ANSWER_BUDGET_TOKENS = 2048
 #: ``reasoning.max_tokens``, and each provider honours it in its own way.
 #: Anthropic- and Gemini-style models take it as a budget. Effort-only models (OpenAI's
 #: reasoning series) have it mapped to an effort level, which bounds nothing in tokens.
-#: Models that do not reason ignore it, since a router's default routing may ignore
-#: unknown parameters (``require_parameters`` is not set). The cap is therefore the
-#: only hard stop. When a judge still reaches it, :func:`run_judge_llm` reports the cut
+#: Models that do not reason ignore it. A router's default routing may also drop a parameter
+#: its chosen provider does not support, so the judge's settings ask for strict routing
+#: (``ClientRequestSettings.strict_output``), which a host's client builder applies as its
+#: router's ``require_parameters``; a host that cannot apply it leaves the bound advisory. The
+#: cap is therefore the only hard stop the engine can count on. When a judge still reaches it, :func:`run_judge_llm` reports the cut
 #: with its token counts and does not re-buy it.
 #:
 #: **What the bound changes.** Naming a budget turns reasoning ON for a model that
@@ -125,6 +127,8 @@ JUDGE_MAX_TOKENS = JUDGE_REASONING_BUDGET_TOKENS + JUDGE_ANSWER_BUDGET_TOKENS
 JUDGE_REQUEST_SETTINGS = ClientRequestSettings(
     max_tokens=JUDGE_MAX_TOKENS,
     reasoning_max_tokens=JUDGE_REASONING_BUDGET_TOKENS,
+    # The reasoning bound must bind, so only a provider honouring it may answer (#686).
+    strict_output=True,
 )
 
 

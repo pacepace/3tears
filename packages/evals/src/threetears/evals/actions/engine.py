@@ -52,7 +52,9 @@ from threetears.evals.ops import (
     RunsCompared,
     ScoreExport,
     TemplateListing,
+    UndescribableArmsListing,
     analyses_list,
+    analyses_undescribable,
     analysis_archive,
     analysis_delete,
     analysis_estimate,
@@ -117,7 +119,13 @@ Name = Annotated[str, Field(min_length=1, description="The campaign's name, as a
 Behavior = Annotated[str, Field(min_length=1, description="Which aspect of the subject is under test.")]
 Description = Annotated[str, Field(description="A longer description of the campaign.")]
 RunIds = Annotated[list[str], Field(description="The runs to put in the campaign, all in the caller's scope.")]
-GeneratorModel = Annotated[str | None, Field(description="The analysis generator's model; omitted for the host's.")]
+GeneratorModel = Annotated[
+    str | None,
+    Field(
+        description="The analysis generator's model; omitted for the host's. A model outside the host's allowed "
+        "writers is refused before anything is spent."
+    ),
+]
 Format = Annotated[
     Literal["markdown", "json", "html"],
     Field(description="The report's form: markdown (the memo), json (the schema's form), html (script-free)."),
@@ -261,6 +269,10 @@ class RunArchiveParams(EvalBaseModel):
 
     run_id: RunId
     archived: Archived = True
+
+
+class AnalysesUndescribableParams(EvalBaseModel):
+    """``analyses_undescribable`` — the caller's scope is the whole question, so it takes nothing."""
 
 
 class CampaignsListParams(EvalBaseModel):
@@ -544,6 +556,13 @@ async def _analyses_list(host: OpsHost, caller: Caller, params: CampaignParams) 
     return await run_blocking(
         eval_host.blocking_executor, analyses_list, eval_host, params.campaign_id, caller.scope_id
     )
+
+
+async def _analyses_undescribable(
+    host: OpsHost, caller: Caller, params: AnalysesUndescribableParams
+) -> UndescribableArmsListing:
+    eval_host = host.eval_host
+    return await run_blocking(eval_host.blocking_executor, analyses_undescribable, eval_host, caller.scope_id)
 
 
 async def _analysis_generate(host: OpsHost, caller: Caller, params: AnalysisGenerateParams) -> JobsStarted:
@@ -975,6 +994,22 @@ def engine_actions() -> tuple[Action, ...]:
             handler=_analyses_list,
             render=render.render_analyses,
             example={"campaign_id": campaign_id},
+        ),
+        Action(
+            name="analyses_undescribable",
+            summary="List the scope's analyses holding an arm whose levels this build cannot describe.",
+            workflow=ANALYSE,
+            permission="read",
+            params=AnalysesUndescribableParams,
+            result=UndescribableArmsListing,
+            handler=_analyses_undescribable,
+            render=render.render_undescribable_arms,
+            example={},
+            detail=(
+                "Read from each stored analysis's variant index on every call, never stored: each such analysis "
+                "with how many of its arms carry levels_unavailable and why. Most useful after an identity "
+                "version bump, when arms stamped before it can no longer be described."
+            ),
         ),
         Action(
             name="report_read",
