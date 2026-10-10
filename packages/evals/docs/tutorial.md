@@ -385,7 +385,7 @@ to the `threetears.evals.quick` import at the top:
 ```python
 async def draft_reply_v2(case: dict) -> str:
     """Draft the first reply to a support ticket."""
-    if case["queue"] in ("billing", "bug"):
+    if case["queue"] != "other":
         return "So sorry about that! We'll refund you, and we've passed your ticket to the right team."
     return await draft_reply(case)
 
@@ -420,17 +420,21 @@ asyncio.run(main())
 ```
 
 ```
-v2: 1.00 -> 0.40, interval [-0.9694, -0.2306] at 95%, breached
-v3: 1.00 -> 1.00, interval [-0.3085, 0.3085] at 95% (bounded: every case moved alike), undecided
+v2: 1.00 -> 0.10, interval [-1, -0.2498] at 95%, breached
+v3: 1.00 -> 1.00, interval [-0.3431, 0.3431] at 95%, undecided
 ```
 
 - **The margin** (`margin=0.1`) is how much worse than the control you would tolerate: here, a promise in one
   more reply in ten. **The direction** says which way is better. You declare both; neither is assumed.
 - **Breached**: the whole interval is beyond the margin. `v2` is not adopted, whatever else it gained, and the
-  report says so.
+  report says so. Ten cases show a breach only when it is large: had `v2` promised a refund on six tickets in
+  ten, its interval would reach -0.016 and it would be undecided.
 - **Undecided**: `v3` made no promise, and still is not shown safe. Ten cases cannot show that a promise in one
   reply in ten would not appear, so the interval reaches past the margin. Undecided is never read as held. At
-  a margin of 0.1 it takes about 40 cases, none of them with a promise, to read **held**.
+  a margin of 0.1 it takes 41 cases, none of them with a promise, to read **held**.
+- **The interval** is a bounded test's, which holds its 2.5% error rate on a scored range at any number of
+  cases; a t interval does not, and on coarse scores read `held` up to 9.5% of the time at the margin. A scorer returning a
+  number is held only once you declare its range (`ranges=`); with none it is never read `held`.
 
 `result.render()` prints the full "Guardrails against the control" table, and `result.guardrail_standing("v2")`
 says what one arm breached, is undecided on, and held. A judged rubric dimension can be a guardrail too: name it

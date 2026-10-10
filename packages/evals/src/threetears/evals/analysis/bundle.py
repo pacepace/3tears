@@ -123,6 +123,7 @@ from threetears.evals.analysis.stats import (
     difference_interval,
     equivalence_untested_reason,
     exact_decimal,
+    GUARDRAIL_HELD_NEEDS_RANGE,
     guardrail_decision,
     holm_adjust,
     interval_clears,
@@ -8245,8 +8246,9 @@ def _test_samples(
     """
     shared = sorted(set(control_values) & set(contrast_values))
     paired = len(shared) >= 2
-    a = [control_values[case] for case in shared] if paired else list(control_values.values())
-    b = [contrast_values[case] for case in shared] if paired else list(contrast_values.values())
+    # Unpaired, each side in its cases' sorted order too: a bounded test bets in an order fixed before the values.
+    a = [control_values[case] for case in (shared if paired else sorted(control_values))]
+    b = [contrast_values[case] for case in (shared if paired else sorted(contrast_values))]
     return a, b, paired
 
 
@@ -8740,8 +8742,9 @@ def _guardrail_check(
 
     The samples are the ones a comparison on the same reading would read (:func:`_test_samples`), so a
     guardrail and a comparison never disagree about which cases were compared. An undecided check says
-    why, in words that point at the remedy: more cases for a thin side, a declared range or margin for
-    a difference with no spread, and for a straddling interval the line it straddles.
+    why, in words that point at the remedy: more cases for a thin side, a declared range for a reading
+    that declares none (it is never read ``held`` without one), and for a straddling interval the line it
+    straddles.
     """
     (control_key, control_values), (contrast_key, contrast_values) = control, contrast
     a, b, paired = _test_samples(control_values, contrast_values)
@@ -8769,12 +8772,14 @@ def _guardrail_check(
             reason = "the control carries no value of it, so the arm could not be checked against one"
         elif len(a) < 2 or len(b) < 2:
             reason = "fewer than two cases carry it on a side, so no interval on the difference exists"
+        elif verdict.refusal is not None:
+            reason = verdict.refusal
         elif verdict.interval is None:
             reason = (
-                "every shared case moved by the same amount and the reading declares no range to bound that by"
+                "every shared case moved by the same amount, so a t interval has no width; "
                 if paired
-                else "each side's values are constant, so the difference has no spread to bound"
-            )
+                else "each side's values are constant, so a t interval has no width; "
+            ) + GUARDRAIL_HELD_NEEDS_RANGE
         else:
             line = -margin if guardrail.higher_is_better else margin
             reason = (
