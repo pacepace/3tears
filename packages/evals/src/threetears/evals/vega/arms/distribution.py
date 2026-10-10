@@ -2,8 +2,10 @@
 
 A distribution of a quantity already on an axis is a MARGINAL of that axis, so it
 is drawn in the row with the estimate it belongs to rather than in a panel of its
-own. The one exception is a payload whose every group recorded only pre-binned
-counts: nothing places on a value axis there, so the counts are the whole chart.
+own — and a cohort recorded as pre-binned counts whose bins carry numeric edges is
+drawn in that same marginal band, its bins placed by their edges. The one exception
+is a payload whose every group recorded only label-only bins: nothing places on a
+value axis there, so the counts are the whole chart.
 
 **The geometry values this module reads are its own.** ``geometry()`` and
 ``font_weights()`` are imported here from :mod:`threetears.evals.vega.palette`
@@ -81,6 +83,13 @@ _MARGINAL_FLOOR = 8
 #: here.
 _ESTIMATE_LABEL_LIFT = 16
 
+#: What a recorded bin's span is, for the spec's own statement of its spans: a bar from one
+#: value to another is otherwise indistinguishable, to a reader or to the gate, from an interval.
+_BIN_SPAN_STATEMENT = (
+    "A shaded bar spanning two values in a cohort's lower band is one of its recorded bins: its ends are "
+    "the bin's edges, and its height is the bin's count per unit of width."
+)
+
 
 def compile_distribution(intent: ChartIntent, *, font: ChartFont | None = None) -> dict[str, Any]:
     """Draw per-group spreads as one faceted panel over one shared value axis.
@@ -116,10 +125,15 @@ def compile_distribution(intent: ChartIntent, *, font: ChartFont | None = None) 
     categories = _Categories.of("label", ordering, font=font)
     estimates_by_label = {str(row["label"]): row for row in intent.data if "mean" in row}
     samples: dict[str, list[float]] = {label: [] for label in ordering}
+    recorded: dict[str, list[tuple[float, float, float]]] = {label: [] for label in ordering}
     for row in intent.data:
         if "sample" in row:
             samples[str(row["label"])].append(_number(row["sample"]))
-    marginal = any(samples.values())
+        if "bin_low" in row:
+            recorded[str(row["label"])].append(
+                (_number(row["bin_low"]), _number(row["bin_high"]), _number(row["count"]))
+            )
+    marginal = any(samples.values()) or any(recorded.values())
     width, height = categories.plot_size(marginal=marginal)
     # Every facet cell is one row of the same panel, so the row step IS the cell.
     layout = _RowLayout(cell=max(1, height // len(ordering)), marginal=marginal)
@@ -129,10 +143,11 @@ def compile_distribution(intent: ChartIntent, *, font: ChartFont | None = None) 
     # what was measured without a caption having to.
     values = [_number(row[key]) for row in estimates_by_label.values() for key in ("low", "high", "mean")]
     values.extend(value for group in samples.values() for value in group)
+    values.extend(edge for group in recorded.values() for low, high, _ in group for edge in (low, high))
     value_axis = ValueAxis.position("", values, width, framed=True)
 
     bins = _bin_count(samples)
-    rows: list[dict[str, Any]] = _marginal_rows(samples, categories, value_axis, bins)
+    rows: list[dict[str, Any]] = _marginal_rows(samples, recorded, categories, value_axis, bins)
     estimates: list[MarkValue] = []
     for label in ordering:
         estimate = estimates_by_label.get(label)
@@ -186,11 +201,12 @@ def compile_distribution(intent: ChartIntent, *, font: ChartFont | None = None) 
             ),
         },
     }
-    if intent.intervals:
-        # The spec's own statement of what its intervals are and what they span — the
-        # spec gate reads it: a spec that draws a span and says nothing about what it
-        # varies over is refused.
-        spec["description"] = intent.intervals
+    # The spec's own statement of what its intervals are and what they span — the spec
+    # gate reads it: a spec that draws a span and says nothing about what it varies
+    # over is refused. A recorded bin is a span too, and says what it is.
+    statements = [intent.intervals, _BIN_SPAN_STATEMENT if any(recorded.values()) else ""]
+    if any(statements):
+        spec["description"] = " ".join(statement for statement in statements if statement)
     return spec
 
 
@@ -393,6 +409,32 @@ def _every_distribution_layer(axis: ValueAxis, layout: _RowLayout, band: float, 
             "encoding": {"x": axis.encoding(ANCHOR_FIELD), "y": rise},
         },
         {
+            # A recorded bin, placed by the edges its producer stated and drawn in the same
+            # band and ink as a bin computed from samples: both are the cohort's shape.
+            "transform": _of_kind("recorded-bin"),
+            # `y2Offset` as well: with `y2` stated, `yOffset` lifts only the top edge.
+            "mark": {
+                "type": "bar",
+                "opacity": SECONDARY_OPACITY,
+                "yOffset": -layout.floor,
+                "y2Offset": -layout.floor,
+                "tooltip": True,
+            },
+            "encoding": {
+                "x": axis.encoding(_BIN_LOW_FIELD),
+                "x2": {"field": _BIN_HIGH_FIELD},
+                # Both ends on y as well. With x2 alone Vega-Lite reads the bar as a horizontal
+                # range and draws it as a thin strip AT its height instead of rising to it.
+                "y": rise,
+                "y2": {"datum": 0},
+                "tooltip": [
+                    {"field": _BIN_LOW_FIELD, "type": "quantitative", "title": f"{quantity}, from"},
+                    {"field": _BIN_HIGH_FIELD, "type": "quantitative", "title": "to"},
+                    {"field": "count", "type": "quantitative", "title": "observations"},
+                ],
+            },
+        },
+        {
             "transform": _of_kind("rug"),
             # One tick per observation, occupying the same band of the row a binned
             # marginal would, so the two forms of the same statement sit in one place.
@@ -479,7 +521,11 @@ def _span_rows(display: str, low: float, high: float) -> list[dict[str, Any]]:
 
 
 def _marginal_rows(
-    samples: dict[str, list[float]], categories: _Categories, axis: ValueAxis, bins: int
+    samples: dict[str, list[float]],
+    recorded: dict[str, list[tuple[float, float, float]]],
+    categories: _Categories,
+    axis: ValueAxis,
+    bins: int,
 ) -> list[dict[str, Any]]:
     """Every row's marginal: each observation drawn, or a band binned from them.
 
@@ -493,8 +539,16 @@ def _marginal_rows(
     their heights are normalised against the tallest bin ANYWHERE, so a
     five-observation cohort cannot draw as tall as a five-hundred-observation one.
 
+    **A recorded bin's height is its count per unit of width**, and so is every binned
+    height here. A cohort recorded as pre-binned counts states its own edges, which
+    need not be equal, and a wide bin drawn at its raw count would claim the area of
+    every narrow bin it spans. Bins computed from samples share one width, so for them
+    density and count are the same ratio — the normalisation is unchanged where no
+    cohort was recorded binned.
+
     Args:
         samples: Each group's observations, already in the drawn unit, in drawn order.
+        recorded: Each group's recorded bins as ``(low, high, count)``, in the drawn unit.
         categories: The figure's resolved labels, which place each row in its facet.
         axis: The shared value axis, which decides the bins' extent.
         bins: How many bins the figure divides that extent into.
@@ -503,6 +557,7 @@ def _marginal_rows(
         The marginal rows for every group that recorded raw values.
     """
     edges = _bin_edges(axis, bins)
+    width = (axis.high - axis.low) / bins
     rug: list[dict[str, Any]] = []
     binned: list[dict[str, Any]] = []
     for label, values in samples.items():
@@ -519,12 +574,38 @@ def _marginal_rows(
                 KIND_FIELD: "bin",
                 ANCHOR_FIELD: (edges[index] + edges[index + 1]) / 2,
                 "count": count,
+                _DENSITY_FIELD: count / width,
             }
             for index, count in enumerate(counts)
             if count
         )
-    tallest = max((row["count"] for row in binned), default=1)
-    return rug + [row | {RISE_FIELD: row["count"] / tallest * _MARGINAL_RISE} for row in binned]
+    for label, bins_recorded in recorded.items():
+        binned.extend(
+            {
+                DISPLAY_FIELD: categories.display[label],
+                KIND_FIELD: "recorded-bin",
+                _BIN_LOW_FIELD: low,
+                _BIN_HIGH_FIELD: high,
+                "count": count,
+                _DENSITY_FIELD: count / (high - low),
+            }
+            for low, high, count in bins_recorded
+            if count
+        )
+    tallest = max((row[_DENSITY_FIELD] for row in binned), default=1.0) or 1.0
+    return rug + [
+        {key: value for key, value in row.items() if key != _DENSITY_FIELD}
+        | {RISE_FIELD: row[_DENSITY_FIELD] / tallest * _MARGINAL_RISE}
+        for row in binned
+    ]
+
+
+#: The row keys a recorded bin's two edges are drawn from.
+_BIN_LOW_FIELD = "bin_low"
+_BIN_HIGH_FIELD = "bin_high"
+
+#: Working key: a binned row's count per unit of width, before it is normalised into a height.
+_DENSITY_FIELD = "density"
 
 
 def _bin_counts(samples: Sequence[float], axis: ValueAxis, bins: int) -> list[int]:

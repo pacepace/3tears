@@ -1,8 +1,9 @@
 """The ``distribution`` intent — per-group spreads on one shared value axis, or pre-binned counts alone.
 
 A distribution of a quantity already on an axis is a MARGINAL of that axis, so every group's estimate
-and its observations are placed on one ruler. The one exception is a payload whose every group recorded
-only pre-binned counts: nothing places on a value axis there, so the counts are the whole chart.
+and its observations are placed on one ruler — and so are pre-binned counts whose bins state numeric
+edges. The one exception is a payload whose every group recorded only label-only bins: nothing places
+on a value axis there, so the counts are the whole chart.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.viz.intent import ChartAxis, ChartColumn, ChartEncoding, ChartIdentity, ChartIntent
 from threetears.evals.analysis.viz.payloads import DistributionGroup, DistributionPayload
 from threetears.evals.analysis.viz.quantities import (
@@ -36,9 +38,11 @@ def distribution_intent(payload: DistributionPayload) -> ChartIntent:
     axis crops to the data. Shape is drawn from values and never inferred from two endpoints: a group
     reporting only an interval gets the interval and an explicit statement that its shape is unknown.
 
-    **Pre-binned buckets do not reach the axis, and the chart says so.** Their bins are *label strings*,
-    so placing them would mean inventing numeric edges the payload never gave. The counts stay exact in
-    the values table, and the footnote names the cohorts whose recorded shape could not be placed.
+    **Pre-binned buckets reach the axis only by their edges.** A bin that states ``low`` and ``high`` is
+    placed on the shared ruler beside the sampled cohorts, restated with everything else. A bin with only
+    its label is never placed: reading numbers out of a label would invent edges the payload never gave.
+    Those counts stay exact in the values table, and the footnote names the cohorts whose recorded shape
+    could not be placed.
 
     Args:
         payload: The validated per-group distribution payload.
@@ -50,7 +54,7 @@ def distribution_intent(payload: DistributionPayload) -> ChartIntent:
     scale, unit = display_scale(values, payload.unit)
     order = [group.label for group in payload.groups]
     identity = ChartIdentity(field="label", order=order, ordered_by="as the payload lists the groups")
-    if not any(group.ci is not None or group.samples for group in payload.groups):
+    if not any(group.ci is not None or group.samples or _edged(group) for group in payload.groups):
         return _binned_intent(payload, identity, scale, unit)
 
     # The measure names itself ONCE: the unit rides into the heading, and the axis states the same words.
@@ -71,6 +75,15 @@ def distribution_intent(payload: DistributionPayload) -> ChartIntent:
     data.extend(
         {"label": group.label, "sample": value * scale} for group in payload.groups for value in group.samples or []
     )
+    # A cohort's recorded bins, placed by the edges the payload stated and restated like every other value.
+    # Its samples outrank them where it carries both: the observations ARE the shape the bins summarise.
+    data.extend(
+        {"label": group.label, "bin_low": low * scale, "bin_high": high * scale, "count": count}
+        for group in payload.groups
+        if not group.samples
+        for low, high, count in _edges(group)
+    )
+    placed_bins = any(_edged(group) and not group.samples for group in payload.groups)
     intervals = [group.ci for group in payload.groups]
     spans = interval_sources(intervals)
     has_interval = any(group.ci is not None for group in payload.groups)
@@ -87,7 +100,7 @@ def distribution_intent(payload: DistributionPayload) -> ChartIntent:
     if any(group.n is not None for group in payload.groups):
         columns.append(ChartColumn(key="n", header="n"))
     columns.append(ChartColumn(key="shape", header="Shape"))
-    unplaceable = [group.label for group in payload.groups if group.buckets and not group.samples]
+    unplaceable = [group.label for group in payload.groups if group.buckets and not group.samples and not _edged(group)]
     return ChartIntent(
         type="distribution",
         title=title,
@@ -111,14 +124,26 @@ def distribution_intent(payload: DistributionPayload) -> ChartIntent:
                 if any(g.samples for g in payload.groups)
                 else []
             ),
+            *(
+                [
+                    ChartEncoding(field="bin_low", role="position", axis="value"),
+                    ChartEncoding(field="bin_high", role="position", axis="value"),
+                    ChartEncoding(field="count", role="count", axis="count"),
+                ]
+                if placed_bins
+                else []
+            ),
         ],
-        axes=[ChartAxis(name="value", quantity=title, unit=unit, zero_baseline=False)],
+        axes=[
+            ChartAxis(name="value", quantity=title, unit=unit, zero_baseline=False),
+            *([ChartAxis(name="count", quantity=COUNT_TITLE, zero_baseline=True)] if placed_bins else []),
+        ],
         identity=identity,
         direct_labels=True,
         intervals=interval_statement(intervals),
         footnote=_unplaceable_shape_footnote(unplaceable),
         columns=columns,
-        rows=[_distribution_row(group, scale) for group in payload.groups],
+        rows=[_distribution_row(group, scale, unit, payload.unit) for group in payload.groups],
         disclosures=interval_disclosures(intervals),
     )
 
@@ -170,7 +195,7 @@ def _binned_intent(payload: DistributionPayload, identity: ChartIdentity, scale:
         identity=identity,
         direct_labels=True,
         columns=columns,
-        rows=[_distribution_row(group, scale) for group in payload.groups],
+        rows=[_distribution_row(group, scale, unit, payload.unit) for group in payload.groups],
     )
 
 
@@ -194,15 +219,36 @@ def _unplaceable_shape_footnote(labels: Sequence[str]) -> str:
     )
 
 
-def _distribution_row(group: DistributionGroup, scale: float) -> dict[str, Any]:
+def _edged(group: DistributionGroup) -> bool:
+    """Whether a group's recorded bins state numeric edges (the payload holds a group to all or none)."""
+    return bool(group.buckets) and all(bucket.edged for bucket in group.buckets or [])
+
+
+def _edges(group: DistributionGroup) -> list[tuple[float, float, int]]:
+    """A group's edged bins as ``(low, high, count)`` in the payload's unit, low to high; empty for label-only bins."""
+    return sorted(
+        (bucket.low, bucket.high, bucket.count)
+        for bucket in group.buckets or []
+        if bucket.low is not None and bucket.high is not None
+    )
+
+
+def _distribution_row(group: DistributionGroup, scale: float, unit: str, recorded: str | None) -> dict[str, Any]:
     """One group's line in the values table, including what its shape rests on.
 
-    Pre-binned counts are written out here rather than summarised: their bins cannot be drawn on the
-    value axis at all, and this table is the whole of what the reader gets of them.
+    Pre-binned counts are written out here rather than summarised: a label-only bin cannot be drawn on
+    the value axis at all, and this table is the whole of what the reader gets of it.
+
+    **One row, one unit.** A bin with edges is spelled from them, restated with every other value in the
+    row and followed by the unit it is now in. A label-only bin cannot be restated — its label is prose —
+    so where the chart restated the unit, the cell names the unit its labels were recorded in; otherwise
+    a `45–50k` bin would sit beside a `Mean (s)` of 52 with nothing saying they are two rulers.
 
     Args:
         group: One cohort of the distribution.
         scale: The unit restatement factor the chart's values took.
+        unit: The unit the chart's values are stated in, after that restatement.
+        recorded: The payload's own unit, which every recorded value — bin labels included — is in.
 
     Returns:
         The values-table row.
@@ -211,11 +257,16 @@ def _distribution_row(group: DistributionGroup, scale: float) -> dict[str, Any]:
     buckets = group.buckets or []
     if observed:
         shape = f"{observed} samples"
+    elif _edged(group):
+        shape = "; ".join(
+            f"{format_number(low * scale)}–{format_number(high * scale)}: {count}" for low, high, count in _edges(group)
+        )
+        if unit:
+            shape = f"{shape} ({unit})"
     elif buckets:
-        # Bucket ranges are LABEL STRINGS the payload recorded, so a restated row can sit a `45–50k` bin
-        # beside a `Mean (s)` of 52 — known: the ladder cannot restate prose, and the honest fix needs
-        # numeric bin edges the payload does not carry.
         shape = "; ".join(f"{bucket.range}: {bucket.count}" for bucket in buckets)
+        if recorded and unit != recorded:
+            shape = f"{shape} (bins in {recorded})"
     else:
         # Said out loud: a reader shown only a band will supply a bell the data never stated.
         shape = SHAPE_UNKNOWN
@@ -228,6 +279,8 @@ def _distribution_row(group: DistributionGroup, scale: float) -> dict[str, Any]:
 def _group_values(group: DistributionGroup) -> list[float]:
     """Every numeric value a distribution group contributes to the shared domain."""
     values = list(group.samples or [])
+    if not group.samples:
+        values.extend(edge for low, high, _ in _edges(group) for edge in (low, high))
     if group.ci is not None:
         values.extend([group.ci.low, group.ci.high, group.ci.mean])
     return values

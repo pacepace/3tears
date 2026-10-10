@@ -32,7 +32,7 @@ DISTRIBUTION = {
         },
         {
             "label": "deepseek",
-            "buckets": [{"range": "0-1s", "count": 2}, {"range": "1-2s", "count": 7}],
+            "buckets": [{"range": "1000-1500", "count": 2}, {"range": "1500-2000", "count": 7}],
             "ci": {"low": 1400.0, "high": 1900.0, "mean": 1650.0, "variability": "across 5 runs", "level": 0.95},
             "n": 9,
         },
