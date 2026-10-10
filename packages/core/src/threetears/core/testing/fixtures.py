@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Iterator
+from typing import Final
 
 import os
 
@@ -38,6 +39,7 @@ __all__ = [
     "NATS_TEST_SYSTEM_ACCOUNT",
     "NATS_TEST_SYSTEM_PASSWORD",
     "NATS_TEST_SYSTEM_USER",
+    "SEARXNG_FIXTURE_ENGINES",
     "db_container",
     "db_image",
     "nats_container",
@@ -440,6 +442,26 @@ def _outbound_proxy_by_ip() -> str | None:
     return url.replace(parts.hostname, address, 1)
 
 
+#: the SearXNG test container's own engines: each name, and the result URLs it answers every query
+#: with, in rank order. ``fused`` comes back twice from the first engine and once from the second --
+#: positions ``[1, 2, 2]`` from two engines -- and ``single`` once, from one.
+SEARXNG_FIXTURE_ENGINES: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
+    ("threetears fixture a", ("https://fixture.invalid/fused", "https://fixture.invalid/fused")),
+    ("threetears fixture b", ("https://fixture.invalid/single", "https://fixture.invalid/fused")),
+)
+
+
+def _searxng_fixture_file(engine: str) -> str:
+    """the static file a fixture engine reads its results from.
+
+    :param engine: the fixture engine's name
+    :ptype engine: str
+    :return: the file name under the container's ``/static``
+    :rtype: str
+    """
+    return f"{engine.replace(' ', '-')}.json"
+
+
 @pytest.fixture(scope="session")
 def searxng_container() -> Iterator[str]:
     """session-scoped SearXNG testcontainer, yielding its base URL.
@@ -458,13 +480,18 @@ def searxng_container() -> Iterator[str]:
     class of reason -- it is a bot defence, and a test client hammering one
     query looks exactly like the thing it defends against.
 
-    **What this container cannot give you is engines.** SearXNG's own
-    scoring is deterministic; the upstream engines it federates are not.
-    They rate-limit, they vary between calls, and a run that saw two engines
-    agree will not reliably see it again -- which is why a test using this
-    fixture must assert an invariant that holds over whatever came back,
-    never that a particular fusion occurred. See
-    ``packages/search/tests/test_searxng_live_scoring.py``.
+    **The internet's engines are not deterministic, so it carries two of its
+    own.** SearXNG's scoring is deterministic; the upstream engines it
+    federates are not -- they rate-limit, CAPTCHA a test client, and vary
+    between calls. So besides the default engines the instance runs
+    :data:`SEARXNG_FIXTURE_ENGINES`: two ``json_engine`` instances that read
+    fixed result lists the container serves itself (from its own ``/static``),
+    answering every ``general`` query the same way. Between them they always
+    produce a result one engine returned twice and the other once -- three
+    positions from two engines, the fusion a live run only sometimes shows --
+    and a single-engine one. A test can therefore demand that fusion rather
+    than hope for it, and still assert its invariant over the live engines'
+    results too. See ``packages/search/tests/test_searxng_live_scoring.py``.
 
     :yield: the container's base URL, e.g. ``http://localhost:32768``
     :rtype: Iterator[str]
@@ -481,6 +508,25 @@ def searxng_container() -> Iterator[str]:
 
     from testcontainers.core.container import DockerContainer  # noqa: PLC0415
 
+    import json  # noqa: PLC0415
+
+    engines = "".join(
+        f"  - name: {name}\n"
+        "    engine: json_engine\n"
+        f"    shortcut: {name.replace(' ', '')}\n"
+        "    categories: general\n"
+        # the container's own static route, over plain HTTP on its own loopback: no upstream, no
+        # proxy, the same answer every time
+        f"    search_url: http://127.0.0.1:8080/static/{_searxng_fixture_file(name)}?q={{query}}\n"
+        "    enable_http: true\n"
+        "    results_query: results\n"
+        "    url_query: url\n"
+        "    title_query: title\n"
+        "    content_query: content\n"
+        "    timeout: 5.0\n"
+        "    disabled: false\n"
+        for name, _urls in SEARXNG_FIXTURE_ENGINES
+    )
     settings = (
         "use_default_settings: true\n"
         "server:\n"
@@ -491,6 +537,7 @@ def searxng_container() -> Iterator[str]:
         "  formats:\n"
         "    - html\n"
         "    - json\n"
+        "engines:\n" + engines
     )
     with tempfile.TemporaryDirectory() as workdir:
         path = Path(workdir) / "settings.yml"
@@ -500,6 +547,15 @@ def searxng_container() -> Iterator[str]:
             .with_exposed_ports(8080)
             .with_volume_mapping(str(path), "/etc/searxng/settings.yml", "ro")
         )
+        for name, urls in SEARXNG_FIXTURE_ENGINES:
+            served = Path(workdir) / _searxng_fixture_file(name)
+            served.write_text(
+                json.dumps({"results": [{"url": url, "title": url, "content": name} for url in urls]}),
+                encoding="utf-8",
+            )
+            container = container.with_volume_mapping(
+                str(served), f"/usr/local/searxng/searx/static/{_searxng_fixture_file(name)}", "ro"
+            )
         # Behind an egress proxy the container's engines have no route out, and
         # a nested daemon's bridge cannot resolve the proxy's name, so it is
         # handed the proxy by IP -- the same thing metallm's ``dev-up.sh --proxy``
@@ -509,6 +565,9 @@ def searxng_container() -> Iterator[str]:
         if outbound_proxy:
             for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
                 container = container.with_env(name, outbound_proxy)
+            # the fixture engines ask the container itself, which no proxy can reach
+            for name in ("NO_PROXY", "no_proxy"):
+                container = container.with_env(name, "127.0.0.1,localhost")
         with container:
             host = container.get_container_host_ip()
             port = container.get_exposed_port(8080)

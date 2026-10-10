@@ -21,6 +21,16 @@ packages (bumped in lock-step).
   clone), idempotently. A commit-msg hook already there (a git template's, a tool's) is kept as
   `commit-msg.chained` and runs first; CLAUDE.md points at the script instead of a hand-typed hook.
 
+### Tests: SearXNG's scoring is pinned on engines of the test container's own
+
+- **Changed, `searxng_container`** (`threetears.core.testing.fixtures`) also runs two `json_engine`
+  engines that read fixed result lists the container serves itself (`SEARXNG_FIXTURE_ENGINES`): one
+  result comes back twice from one engine and once from the other (positions `[1, 2, 2]`, two
+  engines). `test_searxng_live_scoring.py` demands that result instead of skipping when the
+  internet's engines are throttled or CAPTCHA'd (which, on a test client, they are): the multiplier
+  in SearXNG's `calculate_score` is now checked on every run, and the formula invariant never runs
+  over nothing.
+
 ### Coordination: one lease primitive -- `nats_distributed_lock` runs on `KVLease`
 
 - **Changed, `nats_distributed_lock`** holds its key through `KVLease.hold` (one lease per hold) and
