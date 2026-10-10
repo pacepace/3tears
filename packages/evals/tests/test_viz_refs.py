@@ -424,19 +424,24 @@ def test_a_delta_table_carries_the_resolved_means_and_no_statistic():
     assert (payload["a_label"], payload["b_label"]) == (LABEL["A"], LABEL["B"])
     assert payload["caption"] == "More rounds lifted the pass rate."
     rows = {row["metric"]: row for row in payload["rows"]}
-    for name, reading in (("pass_rate", "measure"), ("total_ms", "measure"), ("reply.grounding", "judged")):
+    # Each row headed as a reader reads it: a core measure by its reader-facing name, a judged dimension marked.
+    for name, reading, heading in (
+        ("pass_rate", "measure", "pass_rate"),
+        ("total_ms", "measure", "Turn time"),
+        ("reply.grounding", "judged", "reply.grounding (judged)"),
+    ):
         a = resolve_reading(s, ref("A"), name, reading)
         b = resolve_reading(s, ref("B"), name, reading)
-        assert (rows[name]["a"], rows[name]["b"]) == (a.mean, b.mean)
-        assert rows[name]["delta"] == pytest.approx(b.mean - a.mean)
-        assert rows[name]["unit"] == a.unit
-        assert (rows[name]["d_z"], rows[name]["p"], rows[name]["significant"], rows[name]["paired"]) == (
+        assert (rows[heading]["a"], rows[heading]["b"]) == (a.mean, b.mean)
+        assert rows[heading]["delta"] == pytest.approx(b.mean - a.mean)
+        assert rows[heading]["unit"] == a.unit
+        assert (rows[heading]["d_z"], rows[heading]["p"], rows[heading]["significant"], rows[heading]["paired"]) == (
             None,
             None,
             None,
             False,
         )
-    assert rows["total_ms"]["unit"] == "ms"
+    assert rows["Turn time"]["unit"] == "ms"
 
 
 def test_a_pair_is_counted_by_its_smaller_arm():
@@ -502,7 +507,7 @@ def test_a_null_result_carries_two_intervals_and_the_authored_mechanism():
 
     assert [group["label"] for group in payload["groups"]] == [LABEL["B"], LABEL["C"]]
     assert all(group["ci"]["level"] == INTERVAL_LEVEL for group in payload["groups"])
-    assert (payload["metric"], payload["unit"]) == ("total_ms", "ms")
+    assert (payload["metric"], payload["unit"]) == ("Turn time", "ms")
     assert payload["mechanism"].startswith("The model swap")
 
 
@@ -525,7 +530,10 @@ def test_a_categorical_breakdown_counts_its_categories():
 def test_a_numeric_breakdown_reads_each_part_and_names_no_whole():
     payload = build(chart("breakdown", [ref("A")], ["llm_ms", "tool_ms"]))
 
-    assert {part["label"]: part["value"] for part in payload["parts"]} == {"llm_ms": 800.0, "tool_ms": 400.0}
+    assert {part["label"]: part["value"] for part in payload["parts"]} == {
+        "Time in model calls": 800.0,
+        "Time in tools": 400.0,
+    }
     assert payload["unit"] == "ms"
     assert "total" not in payload and "measure" not in payload
 
@@ -540,7 +548,7 @@ def test_an_attribution_withholds_the_remainder_of_one_component_of_a_partition(
     asserted that remainder as the honest case.
     """
     partial = build(VALID["attribution"])
-    assert partial["contained_by"] == "total_ms"
+    assert partial["contained_by"] == partial["end_to_end"]["measure"] == "Turn time"
     assert partial["end_to_end"]["delta"] == pytest.approx(1000.0 - 1200.0)
     assert partial["subsystem"]["delta"] == pytest.approx(650.0 - 800.0)
     assert "unattributed_delta" not in partial
@@ -574,6 +582,7 @@ def test_an_attribution_states_the_remainder_of_a_sole_component_a_host_declares
     def descriptor(name: str, scope: str, contained_by: str | None = None) -> MetricDescriptor:
         return MetricDescriptor(
             name=name,
+            reader_name=f"{name} reading",
             data_type="numeric",
             family="mechanical",
             transferability_class="mechanical",
@@ -675,9 +684,12 @@ def test_a_surface_frozen_before_standings_states_no_domination():
 
 
 def test_a_frontiers_axis_titles_are_computed_from_its_measures():
-    """The authored chart carries no label, so each title is the measure's name and, when it has one, its unit."""
+    """The authored chart carries no label, so each title is what a reader calls the measure and, when it has one, its unit.
+
+    ``pass_rate`` is frozen with no reader-facing name and is not an engine measure, so its key is all there is.
+    """
     payload = build(VALID["frontier"])
-    assert (payload["cost_label"], payload["quality_label"]) == ("production_replicating_cost (usd)", "pass_rate")
+    assert (payload["cost_label"], payload["quality_label"]) == ("Production cost (usd)", "pass_rate")
 
     tokens = build(chart("frontier", [], ["pass_rate", "tokens"]), surface(latency_axis=()))
     assert tokens["cost_label"] == "tokens (tokens)"
@@ -712,7 +724,7 @@ def test_a_judged_quality_draws_no_bar():
     )
 
     assert payload["bar"] is None
-    assert payload["quality_label"] == "reply.grounding"
+    assert payload["quality_label"] == "reply.grounding (judged)"
 
 
 def test_two_thresholds_on_the_quality_measure_draw_no_bar():
@@ -736,7 +748,7 @@ def test_a_sweep_ranks_descending_and_reads_its_configuration_off_the_variant_in
     assert payload["dimensions"] == [{"name": "max_rounds", "ordered": True}, {"name": "model", "ordered": False}]
     assert (payload["ranked"], payload["secondary"]) == (
         {"measure": "pass_rate", "unit": None},
-        {"measure": "production_replicating_cost", "unit": "usd"},
+        {"measure": "Production cost", "unit": "usd"},
     )
     # Every configuration is drawn, unconstrained: the authored chart names no limit and no held value.
     assert "omitted" not in payload and "held_fixed" not in payload
@@ -1130,4 +1142,4 @@ def test_a_frontier_refuses_measuring_spend_as_what_an_arm_costs():
 
 def test_measuring_spend_is_labelled_as_such_wherever_it_is_drawn():
     payload = build(chart("distribution", [ref("A"), ref("B")], ["cost_usd"]), _with_measuring_spend())
-    assert payload["x_label"] == "cost_usd, measuring spend"
+    assert payload["x_label"] == "Measuring spend, all roles"

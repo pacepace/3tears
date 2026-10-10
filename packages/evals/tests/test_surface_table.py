@@ -51,6 +51,8 @@ RIG = "a" * 64
 RIG_B = "b" * 64
 COST = "production_replicating_cost"
 LATENCY = "total_ms"
+#: What a reader calls each — the words a column is headed by, where the key is what it is read on.
+COST_HEADING, LATENCY_HEADING, DELIVERED_HEADING = "Production cost", "Turn time", "Items delivered"
 
 
 def level(model: str) -> SweepableValue:
@@ -461,7 +463,7 @@ class TestBarColumns:
             3,
             "",
         )
-        assert bar.header == "delivered_items ≥ 3"
+        assert bar.header == f"{DELIVERED_HEADING} ≥ 3"
 
     def test_a_registered_lower_is_better_bar_states_its_threshold_on_the_columns_ruler(self) -> None:
         surface = two_arm_surface()
@@ -478,7 +480,7 @@ class TestBarColumns:
         table = build_surface_table(analysis(surface))
         bar = next(column for column in table.columns if column.kind == "bar" and column.measure_id == LATENCY)
         # 45000 ms is 45 s, and the cells under it are restated in seconds with it.
-        assert (bar.threshold, bar.unit, bar.header) == (45, "s", f"{LATENCY} ≤ 45 s (registered)")
+        assert (bar.threshold, bar.unit, bar.header) == (45, "s", f"{LATENCY_HEADING} ≤ 45 s (registered)")
         index = table.columns.index(bar)
         served = table.rows[0].values[index]
         assert (served.value, served.sem, served.text) == (41.25, 0.9, "41.25 ± 0.9 (n=6)")
@@ -498,7 +500,7 @@ class TestBarColumns:
             )
         ]
         table = build_surface_table(analysis(surface))
-        assert table.columns[0].header == f"{LATENCY} ≤ 1.5 s"
+        assert table.columns[0].header == f"{LATENCY_HEADING} ≤ 1.5 s"
         assert table.rows[0].values[0].text == "0.9 (n=6)"
 
     @pytest.mark.parametrize(
@@ -594,9 +596,9 @@ class TestCostAndLatencyColumns:
     def test_cost_then_latency_after_the_bars_each_with_its_unit_once(self) -> None:
         table = build_surface_table(analysis(two_arm_surface()))
         assert [(c.kind, c.measure_id, c.axis, c.unit, c.header) for c in table.columns] == [
-            ("bar", "delivered_items", None, "", "delivered_items ≥ 3"),
-            ("merit", COST, "cost", "usd", f"{COST} (usd)"),
-            ("merit", LATENCY, "latency", "s", f"{LATENCY} (s)"),
+            ("bar", "delivered_items", None, "", f"{DELIVERED_HEADING} ≥ 3"),
+            ("merit", COST, "cost", "usd", f"{COST_HEADING} (usd)"),
+            ("merit", LATENCY, "latency", "s", f"{LATENCY_HEADING} (s)"),
         ]
         row = table.rows[0]
         # No sem below n=2 in the fixture's summaries, so no "±" — but the sample is always stated.
@@ -648,7 +650,7 @@ class TestCostAndLatencyColumns:
             c.measures = MeasureCollection(measures=[summary(LATENCY, mean, sem=mean / 10)])
         table = build_surface_table(analysis(surface))
         latency = next(column for column in table.columns if column.measure_id == LATENCY)
-        assert (latency.unit, latency.header) == (unit, f"{LATENCY} ({unit})")
+        assert (latency.unit, latency.header) == (unit, f"{LATENCY_HEADING} ({unit})")
         values = [_value(table, row, LATENCY) for row in table.rows]
         assert sorted(v.text.split(" ± ")[0] for v in values) == shown
         # The spread rides the same ruler as the mean it qualifies.

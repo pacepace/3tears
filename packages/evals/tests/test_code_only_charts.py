@@ -96,14 +96,14 @@ class TestReadingsWithNoChart:
 
     async def test_match_is_not_charted_beside_the_accuracy_derived_from_it(self) -> None:
         titles = _chart_titles(await _compare(right, guess))
-        assert "accuracy" in titles and "match" not in titles
+        assert "Accuracy" in titles and "Label matched" not in titles
 
 
 class TestUnobservedCost:
     async def test_no_arm_reporting_spend_charts_and_tests_no_cost_and_says_so_once(self) -> None:
         comparison = await _compare(right, guess)
-        assert not [title for title in _chart_titles(comparison) if title.startswith("cost_usd")]
-        assert {row["reading"] for row in comparison.contrasts()} == {"accuracy"}
+        assert not [title for title in _chart_titles(comparison) if title.startswith("Measuring spend")]
+        assert {row["reading"] for row in comparison.contrasts()} == {"Accuracy"}
         (said,) = _cost_disclosures(comparison)
         assert "no result reported its spend" in said and "returning an Answer" in said
 
@@ -114,10 +114,10 @@ class TestUnobservedCost:
 
     async def test_reported_spend_is_charted_and_tested_as_the_candidates_spend(self) -> None:
         comparison = await _compare(right_priced, guess_priced)
-        assert [title for title in _chart_titles(comparison) if title.startswith("cost_usd")]
+        assert [title for title in _chart_titles(comparison) if title.startswith("Measuring spend")]
         # Tested as the candidate's spend: cost_usd also sums what a judge spent measuring the arm.
         readings = {row["reading"] for row in comparison.contrasts()}
-        assert "production_replicating_cost" in readings and "cost_usd" not in readings
+        assert "Production cost" in readings and "Measuring spend, all roles" not in readings
         assert _cost_disclosures(comparison) == []
 
     async def test_a_measured_zero_is_a_reading_not_an_unmeasured_cost(self) -> None:

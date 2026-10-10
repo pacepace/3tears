@@ -37,6 +37,7 @@ from packages.evals.tests.factories import make_eval_result
 def _measure(name: str, data_type: str, **extra: object) -> MetricDescriptor:
     return MetricDescriptor(
         name=name,
+        reader_name=f"{name} reading",
         data_type=data_type,  # type: ignore[arg-type]
         family="mechanical",
         transferability_class="mechanical",

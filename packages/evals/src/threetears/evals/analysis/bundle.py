@@ -8432,6 +8432,7 @@ def cell_measure_facts(bundle: AnalysisContextBundle) -> dict[str, MeasureFacts]
     )
     return {
         name: MeasureFacts(
+            reader_name=bundle.measure_catalog[name].reader_name,
             unit=bundle.measure_catalog[name].unit,
             merit_axis=bundle.measure_catalog[name].merit_axis,
             higher_is_better=bundle.measure_catalog[name].higher_is_better,

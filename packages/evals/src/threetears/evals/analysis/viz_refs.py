@@ -56,7 +56,6 @@ from threetears.evals.contracts.metrics import (
     MEASURING_SPEND_MEASURES,
     describe_reported_measure,
     materiality,
-    measure_title,
     remainder_withheld_reason,
 )
 from threetears.evals.contracts.surface import CellFacts, DecisionSurface, TimePosition
@@ -318,7 +317,7 @@ def _delta_table(ref: DeltaTableRef, surface: DecisionSurface, labels: dict[str,
         scale = facts.scale if facts is not None else dimension.scale if dimension is not None else None
         rows.append(
             {
-                "metric": reading_ref.measure_id,
+                "metric": surface.measure_heading(reading_ref.measure_id, reading_ref.reading),
                 "data_type": "numeric",
                 "a": a.mean,
                 "b": b.mean,
@@ -337,7 +336,7 @@ def _delta_table(ref: DeltaTableRef, surface: DecisionSurface, labels: dict[str,
         )
     return {
         "caption": ref.caption,
-        "rows": rows,
+        "rows": _distinctly_headed(rows, [reading_ref.measure_id for reading_ref in ref.measures]),
         "a_label": labels[ref.a_cell],
         "b_label": labels[ref.b_cell],
     }
@@ -353,7 +352,7 @@ def _distribution(ref: DistributionRef, surface: DecisionSurface, labels: dict[s
         "unit": readings[0].unit,
         # The value axis is the reading drawn, named — without it every distribution titles itself
         # "Distribution", and two on one page cannot be told apart.
-        "x_label": f"{ref.measure_id} (judged)" if ref.reading == "judged" else measure_title(ref.measure_id),
+        "x_label": surface.measure_heading(ref.measure_id, ref.reading),
     }
 
 
@@ -364,7 +363,7 @@ def _null_result(ref: NullResultRef, surface: DecisionSurface, labels: dict[str,
         "groups": [
             {"label": labels[reading.cell_ref], "ci": _interval(reading), "n": reading.n} for reading in readings
         ],
-        "metric": ref.measure_id,
+        "metric": surface.measure_heading(ref.measure_id, ref.reading),
         "unit": readings[0].unit,
         "mechanism": ref.mechanism,
     }
@@ -376,7 +375,9 @@ def _breakdown(ref: BreakdownRef, surface: DecisionSurface, labels: dict[str, st
     parts = [resolve_reading(surface, ref.cell, name) for name in ref.part_measure_ids or []]
     return {
         "caption": ref.caption,
-        "parts": [{"label": part.measure_id, "value": part.mean, "n": part.n} for part in parts],
+        "parts": [
+            {"label": surface.measure_heading(part.measure_id), "value": part.mean, "n": part.n} for part in parts
+        ],
         "unit": _shared_unit(parts, "breakdown"),
     }
 
@@ -408,7 +409,7 @@ def _categorical_breakdown(ref: BreakdownRef, measure_id: str, surface: Decision
         "caption": ref.caption,
         "parts": [{"label": category, "value": float(count)} for category, count in summary.categories.items()],
         "unit": "observations",
-        "measure": measure_id,
+        "measure": surface.measure_heading(measure_id),
         "total": float(sum(summary.categories.values())),
         "total_n": summary.n,
     }
@@ -423,7 +424,13 @@ def _attribution(
         a = resolve_reading(surface, ref.a_cell, name)
         b = resolve_reading(surface, ref.b_cell, name)
         readings += [a, b]
-        movements[role] = {"measure": name, "delta": b.mean - a.mean, "a": a.mean, "b": b.mean, "n": min(a.n, b.n)}
+        movements[role] = {
+            "measure": surface.measure_heading(name),
+            "delta": b.mean - a.mean,
+            "a": a.mean,
+            "b": b.mean,
+            "n": min(a.n, b.n),
+        }
     unit = _shared_unit(readings, "attribution")
     # Whether the remainder may be stated is the one rule the bundle's divergence lens also asks —
     # declared containment AND exhaustion — so a chart can never state a remainder the lens withholds.
@@ -435,7 +442,8 @@ def _attribution(
         "end_to_end": movements["end_to_end"],
         "subsystem": movements["subsystem"],
         "unit": unit,
-        "contained_by": contained_by,
+        # Headed as the movements are, so the chart can check the declared whole IS the end-to-end measure drawn.
+        "contained_by": surface.measure_heading(contained_by) if contained_by is not None else None,
         "lever": ref.lever,
         "a_label": labels[ref.a_cell],
         "b_label": labels[ref.b_cell],
@@ -537,8 +545,10 @@ def _frontier(ref: FrontierRef, surface: DecisionSurface, labels: dict[str, str]
         "caption": ref.caption,
         "points": points,
         "bar": _quality_bar(surface, ref.quality),
-        "cost_label": _titled(cost_id, cost_unit),
-        "quality_label": _titled(ref.quality.measure_id, qualities[0].unit),
+        "cost_label": _titled(surface.measure_heading(cost_id), cost_unit),
+        "quality_label": _titled(
+            surface.measure_heading(ref.quality.measure_id, ref.quality.reading), qualities[0].unit
+        ),
     }
 
 
@@ -590,7 +600,7 @@ def _timeseries(ref: TimeseriesRef, surface: DecisionSurface, labels: dict[str, 
     ]
     return {
         "caption": ref.caption,
-        "metric": ref.measure_id,
+        "metric": surface.measure_heading(ref.measure_id, ref.reading),
         "unit": whole[0].unit,
         "basis": axis.basis,
         "release_label": axis.release_label,
@@ -638,9 +648,24 @@ def _quality_bar(surface: DecisionSurface, quality: ReadingRef) -> float | None:
     return next(iter(thresholds)) if len(thresholds) == 1 else None
 
 
-def _titled(name: str, unit: str | None) -> str:
-    """An axis title: the measure, labelled measuring spend where it is one, and its unit."""
-    return f"{measure_title(name)} ({unit})" if unit else measure_title(name)
+def _titled(heading: str, unit: str | None) -> str:
+    """An axis title: the measure as a reader calls it (:meth:`DecisionSurface.measure_heading`), and its unit."""
+    return f"{heading} ({unit})" if unit else heading
+
+
+def _distinctly_headed(rows: list[dict[str, Any]], keys: list[str]) -> list[dict[str, Any]]:
+    """The delta rows, each still headed apart from the others — the key added only where two headings coincide.
+
+    Reader names are distinct within the measures one host declares beside the engine's, but a judged dimension is
+    named by its rubric and a measure the surface describes by construction by its own text, so two rows of one
+    table can still meet on one heading; the chart refuses a table naming one metric twice, and a reader could
+    not tell the rows apart either.
+    """
+    headings = [row["metric"] for row in rows]
+    return [
+        {**row, "metric": f"{row['metric']} [{key}]"} if headings.count(row["metric"]) > 1 else row
+        for row, key in zip(rows, keys, strict=True)
+    ]
 
 
 def _sweep_ranking(
@@ -659,8 +684,14 @@ def _sweep_ranking(
     rows = sorted(unsorted, key=lambda row: -row["ranked_value"])
     return {
         "caption": ref.caption,
-        "ranked": {"measure": ref.ranked.measure_id, "unit": ranked[0].unit},
-        "secondary": {"measure": ref.secondary.measure_id, "unit": secondary[0].unit},
+        "ranked": {
+            "measure": surface.measure_heading(ref.ranked.measure_id, ref.ranked.reading),
+            "unit": ranked[0].unit,
+        },
+        "secondary": {
+            "measure": surface.measure_heading(ref.secondary.measure_id, ref.secondary.reading),
+            "unit": secondary[0].unit,
+        },
         "rows": rows,
         "dimensions": dimensions,
     }

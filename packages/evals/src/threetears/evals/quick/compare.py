@@ -119,6 +119,8 @@ class Comparison:
     factors: tuple[str, ...] = _MODEL_ONLY
     #: The arm each row of the report's contrasts table tests, by its key in :attr:`arms`, row for row.
     _contrast_arms: tuple[ArmKey | None, ...] = field(default=(), init=False, repr=False, compare=False)
+    #: The key of the measure each row of the contrasts table reads, row for row — the table heads it in words.
+    _contrast_measures: tuple[str | None, ...] = field(default=(), init=False, repr=False, compare=False)
     #: The kind every arm ran: the callable kind, or the judged one — whose levers the campaign's axes name.
     _kind: str = field(default=CALLABLE_KIND, init=False, repr=False, compare=False)
 
@@ -162,15 +164,18 @@ class Comparison:
         """The rows of the report's "Contrasts against the control" table, each arm tested against the control.
 
         Args:
-            reading: Only the rows on this reading (``"accuracy"``); ``None`` keeps every row.
+            reading: Only the rows on this reading, by its key (``"accuracy"``) or as the report heads it
+                (``"Accuracy"``); ``None`` keeps every row.
 
         Returns:
             One row per arm and reading, keyed ``arm`` (the arm tested, by its key in :attr:`arms`: the name
-            you gave it, or its tuple of levels), ``question``, ``reading``, ``contrast`` (the arm, as the report
-            names it), ``control`` (the control, as the report names it), ``control_mean`` and ``arm_mean`` (over the cases the test read),
-            ``cases`` (how many, paired or not, and any one side ran that the test left out), ``delta`` (arm
-            minus control), ``interval`` (on the delta, simultaneous over the family), ``hedges_g`` (the
-            standardized effect), ``p_adjusted`` (Holm, over the campaign's family) and ``verdict``; empty when
+            you gave it, or its tuple of levels), ``measure_id`` (the key of the measure read, to cite or filter
+            on), ``question`` (in the words it was asked), ``reading`` (the measure as the report heads it),
+            ``contrast`` (the arm, as the report names it), ``control`` (the control, as the report names it),
+            ``control_mean`` and ``arm_mean`` (over the cases the test read), ``cases`` (how many, paired or not,
+            and any one side ran that the test left out), ``delta`` (arm minus control), ``interval`` (on the
+            delta, simultaneous over the family), ``hedges_g`` (the standardized effect), ``p_adjusted`` (Holm,
+            over the campaign's family) and ``verdict``; empty when
             the report tested nothing.
         """
         rows = [
@@ -180,10 +185,11 @@ class Comparison:
             for row in block.rows
         ]
         arms = self._contrast_arms if len(self._contrast_arms) == len(rows) else (None,) * len(rows)
+        keys = self._contrast_measures if len(self._contrast_measures) == len(rows) else (None,) * len(rows)
         return [
-            {"arm": arm, **row}
-            for row, arm in zip(rows, arms, strict=True)
-            if reading is None or row["reading"] == reading
+            {"arm": arm, "measure_id": key, **row}
+            for row, arm, key in zip(rows, arms, keys, strict=True)
+            if reading is None or reading in (key, row["reading"])
         ]
 
     def against(self, control: ArmKey, *, name: str | None = None, created_by: str = COMPARE_CREATED_BY) -> Comparison:
@@ -365,6 +371,10 @@ def _declare(
         for tested in family.comparisons
     )
     object.__setattr__(comparison, "_contrast_arms", contrast_arms)
+    contrast_measures = tuple(
+        tested.name for family in bundle.multiple_comparisons.families for tested in family.comparisons
+    )
+    object.__setattr__(comparison, "_contrast_measures", contrast_measures)
     object.__setattr__(comparison, "_kind", kind)
     return comparison
 

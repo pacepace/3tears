@@ -41,7 +41,7 @@ async def test_offline_the_saved_bundle_reloads_to_the_fingerprint_both_analyses
 
     assert out.startswith("ANTHROPIC_API_KEY is not set: running OFFLINE")
     # The code's verdict comes once, before either analysis, for a reader to hold each conclusion against.
-    verdict = re.search(r"\nCode's verdict: candidate vs baseline on accuracy: \+0\.33 \(p=[\d.e-]+\): (.+)\n", out)
+    verdict = re.search(r"\nCode's verdict: candidate vs baseline on Accuracy: \+0\.33 \(p=[\d.e-]+\): (.+)\n", out)
     assert verdict is not None and verdict.group(1) == "not separated from the control"
     assert out.index("Code's verdict") < out.index("\n# ")
     saved = tmp_path / "bundle.json"

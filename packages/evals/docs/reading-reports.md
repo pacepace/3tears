@@ -191,6 +191,16 @@ be fingerprinted before generation and two prompts could no longer be compared o
 bundle cannot answer is answered by adding a field to it.
 [`examples/llm_analysis.py`](../examples/llm_analysis.py) does all of it in one file.
 
+## How a measure is named
+
+A measure is headed by its reader-facing name (`MetricDescriptor.reader_name`, frozen on the decision surface as
+`MeasureFacts.reader_name`) in every surface table header, chart title and axis label, every evidence,
+contrast, guardrail and strata row, and the memo. A judged dimension is printed under its rubric name with
+`(judged)` after it. The key is still there to cite: on `SurfaceColumn.measure_id`, on each `EvidenceRow`, and
+as `measure_id` on each row `Comparison.contrasts()` returns (which filters on either the key or the heading).
+An analysis frozen before measures had reader names prints an engine measure by the engine's name, and a host
+measure by its key, since that is all the analysis recorded.
+
 ## How an arm is named
 
 Every block that names an arm — decisions, evidence rows, the arm table, the decision surface, the

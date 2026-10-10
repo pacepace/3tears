@@ -168,6 +168,7 @@ def _with_guardrail_measure(*, margin: float | None) -> HostProfile:
     family = next(d.family for d in TOYHOST_MEASURES if d.name == "field_accuracy")
     destructive = MetricDescriptor(
         name="destructive_calls",
+        reader_name="Destructive calls",
         data_type="numeric",
         family=family,
         transferability_class="mechanical",

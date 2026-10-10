@@ -263,6 +263,19 @@ def _refuse_an_unusable_cap(max_cost_usd: float | None) -> None:
         raise ValueError(f"max_cost_usd= is a spend ceiling in US dollars: a positive number, not {max_cost_usd!r}")
 
 
+def _scorer_reader_name(name: str) -> str:
+    """What a reader calls a scorer's measure: its def's name in words, as a score — ``exact_match`` is "Exact match score".
+
+    Args:
+        name: The scorer's ``__name__``.
+
+    Returns:
+        The reader-facing name its descriptor carries.
+    """
+    words = " ".join(name.replace("_", " ").split())
+    return f"{words[:1].upper()}{words[1:]} score"
+
+
 def scorer_measure(scorer: Scorer) -> MetricDescriptor:
     """The measure one scorer function reports: a quality score, higher is better, over scored results.
 
@@ -277,6 +290,8 @@ def scorer_measure(scorer: Scorer) -> MetricDescriptor:
     doc = inspect.getdoc(scorer)
     return MetricDescriptor(
         name=name,
+        # The def's own name in words, marked a score so it never heads a column alike with an engine measure.
+        reader_name=_scorer_reader_name(name),
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",

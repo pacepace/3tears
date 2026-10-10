@@ -33,7 +33,13 @@ from typing import Literal, NamedTuple
 from pydantic import Field, field_validator, model_validator
 
 from threetears.evals.contracts.analysis_measures import BarAdjudication, MeasureCollection
-from threetears.evals.contracts.metrics import MeasurePopulation, MeasureScale, MeritAxis
+from threetears.evals.contracts.metrics import (
+    METRIC_DESCRIPTORS,
+    MeasurePopulation,
+    MeasureScale,
+    MeritAxis,
+    measure_title,
+)
 from threetears.evals.contracts.base import EvalDocumentModel
 from threetears.evals.contracts.evidence_tiers import JudgedEvidenceTier
 from threetears.evals.contracts.models import DimName, RubricAxis
@@ -80,6 +86,15 @@ class MeasureFacts(EvalDocumentModel):
     against the old description.
     """
 
+    reader_name: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "What a reader calls the measure — what a table header, chart title or axis label prints in place of its "
+            "key. None on a surface frozen before measures had one, and for a measure nothing describes; a surface "
+            "then prints the key."
+        ),
+    )
     unit: str | None = Field(default=None, description="The measure's unit, e.g. 'ms' or 'usd'. None when unitless.")
     merit_axis: MeritAxis | None = Field(
         default=None,
@@ -724,6 +739,31 @@ class DecisionSurface(EvalDocumentModel):
             "frozen before guardrails were decided: nothing was checked then, which is not the same as held."
         ),
     )
+
+    def measure_heading(self, measure_id: str, reading: str = "measure") -> str:
+        """What a reader calls a reading on this surface — the one spelling every header, title and label prints.
+
+        A measure by its frozen reader-facing name (:attr:`MeasureFacts.reader_name`); on a surface frozen before
+        measures had one, an engine core measure by the core's name, whose meaning the key fixes; and only then
+        the key itself, which is all a surface knows of a host measure frozen without one. A measuring-spend
+        measure says it is one (:func:`~threetears.evals.contracts.metrics.measure_title`). A judged dimension is
+        its rubric's own name, marked judged. The key is never lost: every surface carrying a heading carries the
+        key beside it for a reader who needs to cite it.
+
+        Args:
+            measure_id: The measure's key, or a judged dimension's name.
+            reading: ``judged`` for a judged dimension; anything else reads a measure.
+
+        Returns:
+            The heading.
+        """
+        if reading == "judged":
+            return f"{measure_id} (judged)"
+        facts = self.measures.get(measure_id)
+        named = facts.reader_name if facts is not None else None
+        if named is None and (core := METRIC_DESCRIPTORS.get(measure_id)) is not None:
+            named = core.reader_name
+        return measure_title(measure_id, named)
 
 
 __all__ = [

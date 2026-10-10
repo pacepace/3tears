@@ -53,7 +53,7 @@ from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.viz.quantities import display_scale
 from threetears.evals.contracts.analysis_measures import BarAdjudication, BarDecision, BarVerdict, MeasureSummary
 from threetears.evals.contracts.campaign import EvalAnalysis, VariantIndexEntry
-from threetears.evals.contracts.metrics import MeritAxis, measure_title
+from threetears.evals.contracts.metrics import MeritAxis
 from threetears.evals.contracts.base import EvalDocumentModel
 from threetears.evals.contracts.surface import CellFacts, DecisionSurface, all_failed_sentence
 
@@ -153,7 +153,10 @@ class SurfaceColumn(EvalDocumentModel):
             "with its spread and sample."
         )
     )
-    measure_id: str = Field(min_length=1, description="The measure the column is read on.")
+    measure_id: str = Field(
+        min_length=1,
+        description="The key of the measure the column is read on — what a reader cites it by; the header names it.",
+    )
     unit: str = Field(
         default="",
         description=(
@@ -161,7 +164,13 @@ class SurfaceColumn(EvalDocumentModel):
             "declares none — restating an unknown unit would be inventing one."
         ),
     )
-    header: str = Field(min_length=1, description="The column's header text, spelled once for every surface.")
+    header: str = Field(
+        min_length=1,
+        description=(
+            "The column's header text, spelled once for every surface: the measure by what a reader calls it "
+            "(`DecisionSurface.measure_heading`), never its key unless nothing names it."
+        ),
+    )
     direction: Literal["higher_is_better", "lower_is_better"] | None = Field(
         default=None, description="Which way clearing runs. Set on a bar column, None on a merit column."
     )
@@ -518,7 +527,9 @@ def _bar_column(bar: BarAdjudication, surface: DecisionSurface, cells: list[Cell
     threshold = bar.threshold * factor
     sign = "≥" if bar.direction == "higher_is_better" else "≤"
     registered = " (registered)" if bar.source == "registered" else ""
-    header = f"{bar.measure_id} {sign} {f'{format_number(threshold)} {unit}'.rstrip()}{registered}"
+    header = (
+        f"{surface.measure_heading(bar.measure_id)} {sign} {f'{format_number(threshold)} {unit}'.rstrip()}{registered}"
+    )
     column = SurfaceColumn(
         kind="bar",
         measure_id=bar.measure_id,
@@ -563,7 +574,8 @@ def _merit_columns(surface: DecisionSurface, cells: list[CellFacts]) -> list[tup
             factor, unit = display_scale(means, facts.unit)
             # A measuring-spend measure stood here only on a surface frozen before it left the cost axis; it is
             # labelled for what it is, never as what the arm costs.
-            header = f"{measure_title(name)} ({unit})" if unit else measure_title(name)
+            title = surface.measure_heading(name)
+            header = f"{title} ({unit})" if unit else title
             columns.append((SurfaceColumn(kind="merit", measure_id=name, unit=unit, header=header, axis=axis), factor))
     return columns
 

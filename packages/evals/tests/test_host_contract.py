@@ -650,6 +650,7 @@ def test_a_proposal_on_a_measure_the_host_cannot_see_or_cannot_rank_is_refused()
         [
             MetricDescriptor(
                 name="page_index",
+                reader_name="Page index",
                 data_type="numeric",
                 family="mechanical",
                 transferability_class="mechanical",
@@ -1253,6 +1254,7 @@ def test_a_registry_two_profiles_carry_names_neither():
         [
             MetricDescriptor(
                 name="page_index",
+                reader_name="Page index",
                 data_type="numeric",
                 family="mechanical",
                 transferability_class="mechanical",
@@ -1335,6 +1337,7 @@ def test_a_second_host_drops_the_attribution_and_says_so_once(caplog) -> None:
 def _host_measure(name: str) -> MetricDescriptor:
     return MetricDescriptor(
         name=name,
+        reader_name=f"Host {name}",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",

@@ -336,6 +336,7 @@ def _retrieve_profile(population: MeasurePopulation | None) -> HostProfile:
     """The toy profile, with ``chunk_tokens`` acting on a host latency measure declaring ``population``."""
     descriptor = MetricDescriptor(
         name=_RETRIEVE_MS,
+        reader_name="Retrieval time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",

@@ -153,7 +153,7 @@ def build_report(analysis: EvalAnalysis) -> Report:
                 )
             )
 
-    blocks.extend(_guardrail_blocks(surface.guardrails, _cell_namer(surface, analysis.variant_index)))
+    blocks.extend(_guardrail_blocks(surface, surface.guardrails, _cell_namer(surface, analysis.variant_index)))
 
     resolutions: list[FindingResolution | None] = (
         list(analysis.resolutions) if analysis.resolutions else [None] * len(document.findings)
@@ -267,7 +267,7 @@ def _finding_blocks(
         rows: list[dict[str, Cell]] = [
             {
                 "arm": arm(row.cell_ref),
-                "measure": f"{row.measure_id} (judged)" if row.reading == "judged" else row.measure_id,
+                "measure": analysis.decision_surface.measure_heading(row.measure_id, row.reading),
                 "value": row.value,
                 "n": row.n,
                 "spread": row.dispersion,
@@ -375,9 +375,10 @@ def _guardrail_standing(cells: Sequence[str], surface: DecisionSurface, arm: Cal
         standing = guardrails.of_arm(variant)
         said = []
         if standing.breached:
-            said.append(f"breached {', '.join(standing.breached)}")
+            said.append(f"breached {', '.join(surface.measure_heading(name) for name in standing.breached)}")
         if standing.undecided:
-            said.append(f"undecided on {', '.join(standing.undecided)}, so not known to be safe")
+            undecided = ", ".join(surface.measure_heading(name) for name in standing.undecided)
+            said.append(f"undecided on {undecided}, so not known to be safe")
         if said:
             parts.append(f"{arm(cell)}: {'; '.join(said)}")
     return " | ".join(parts) or None
@@ -394,7 +395,9 @@ def _cell_namer(surface: DecisionSurface, variant_index: Sequence[VariantIndexEn
     return name
 
 
-def _guardrail_blocks(guardrails: GuardrailReadings | None, arm: Callable[[str, str], str]) -> list[ReportBlock]:
+def _guardrail_blocks(
+    surface: DecisionSurface, guardrails: GuardrailReadings | None, arm: Callable[[str, str], str]
+) -> list[ReportBlock]:
     """The guardrails section: each guardrail, held, breached or undecided for each arm against the control."""
     if guardrails is None:
         return []
@@ -404,7 +407,7 @@ def _guardrail_blocks(guardrails: GuardrailReadings | None, arm: Callable[[str, 
     elif guardrails.checks:
         rows: list[dict[str, Cell]] = [
             {
-                "guardrail": f"{check.name} (judged)" if check.reading == "judged" else check.name,
+                "guardrail": surface.measure_heading(check.name, check.reading),
                 "arm": arm(check.contrast.variant_key, check.contrast.apparatus_class_id),
                 "control_mean": check.control.mean,
                 "arm_mean": check.contrast.mean,
@@ -790,7 +793,7 @@ def _measure_rows(
 
         row: dict[str, Cell] = {
             "arm": arm,
-            "reading": f"{measure} ({unit})" if unit else measure,
+            "reading": f"{surface.measure_heading(measure)} ({unit})" if unit else surface.measure_heading(measure),
             "all": figure(pooled, cell),
         }
         for name, summaries in per_stratum.items():
@@ -925,7 +928,7 @@ def build_code_only_report(
     variant_index = bundle.variant_index
     blocks: list[ReportBlock] = [DisclosureBlock(section="summary", source="generation", text=NO_ANALYSIS)]
     blocks.extend(_question_blocks(bundle))
-    blocks.extend(_guardrail_blocks(bundle.guardrails, _cell_namer(surface, variant_index)))
+    blocks.extend(_guardrail_blocks(surface, bundle.guardrails, _cell_namer(surface, variant_index)))
     blocks.extend(
         _arm_blocks(
             arm_table_of(
@@ -1070,11 +1073,10 @@ def _comparison_blocks(bundle: AnalysisContextBundle, surface: DecisionSurface) 
     rows: list[dict[str, Cell]] = []
     for family in comparisons.families:
         for comparison in family.comparisons:
-            reading = f"{comparison.name} (judged)" if comparison.reading == "judged" else comparison.name
             rows.append(
                 {
                     "question": family.question_id if family.question_id is not None else "(campaign-wide)",
-                    "reading": reading,
+                    "reading": surface.measure_heading(comparison.name, comparison.reading),
                     "contrast": arm(comparison.contrast.variant_key, comparison.contrast.apparatus_class_id),
                     "control": arm(comparison.control.variant_key, comparison.control.apparatus_class_id),
                     "control_mean": comparison.control.mean,

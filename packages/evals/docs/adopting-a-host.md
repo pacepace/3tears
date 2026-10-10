@@ -49,7 +49,12 @@ receive, an exception you catch, a literal you annotate with — is exported fro
 **Your app is one value, the host.** Build an `EvalHost` (in `threetears.evals.contracts.host`) and
 pass it to every entrypoint. It holds:
 
-- your `HostProfile` — the levers you sweep, the measures you record, your bars and your world;
+- your `HostProfile` — the levers you sweep, the measures you record, your bars and your world. Every measure
+  you declare (`MetricDescriptor`) carries a `reader_name`, the few words a table header, chart title or axis
+  label prints in place of its key ("Output speed", not `candidate_output_tokens_per_s`). `MeasureRegistry`
+  refuses a measure without one, and one whose `reader_name` matches another measure's (yours or the engine's,
+  ignoring case), so the mistake surfaces at startup, not on a chart. The key stays what the store files the
+  number under and what a reader cites;
 - the `EvalStorage` you read and write through;
 - a factory for the completion clients the engine's own judge, simulator and analysis roles call. Every
   completion a client returns is read by `CompletionResult`'s attribute names, and the usage ledger reads its

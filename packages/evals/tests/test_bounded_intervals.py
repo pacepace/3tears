@@ -180,7 +180,7 @@ async def test_a_two_classifier_campaign_report_draws_every_interval_inside_its_
     assert "A rate counted over the repeats of a single case has no interval" in markdown
     figures = re.findall(r"([\d.]+) \[([\d.]+), ([\d.]+)\]", per_label)
     assert figures and all(0.0 <= float(low) <= float(rate) <= float(high) <= 1.0 for rate, low, high in figures)
-    accuracy_chart = markdown.split("**Chart: accuracy**", 1)[1].split("**Per-label", 1)[0]
+    accuracy_chart = markdown.split("**Chart: Accuracy**", 1)[1].split("**Per-label", 1)[0]
     highs = [float(row.split("|")[4]) for row in accuracy_chart.splitlines() if row.startswith("| model=")]
     assert len(highs) == 2
     assert all(high <= 1.0 for high in highs)
