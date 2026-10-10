@@ -143,14 +143,6 @@ quota the host declares, shared across runs.
 
 ## Testing the engine
 
-### No paid analysis-generation lane
-
-Tracked in [#602](https://github.com/pacepace/3tears/issues/602).
-
-The analysis generator is exercised only against stubs, and a prompt, schema or fixture defect looks the
-same until a real model writes an analysis. Fix: an
-opt-in lane that generates one analysis with a real model whenever the generator or its prompt changes.
-
 ### No memory-bound probe
 
 Tracked in [#603](https://github.com/pacepace/3tears/issues/603).
