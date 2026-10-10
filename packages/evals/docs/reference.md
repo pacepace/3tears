@@ -1952,10 +1952,13 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `arm_mechanisms` | `list[ArmMechanismReading]` | `[]` | Each arm's mean of every covariate read as an observed mechanism (today the candidate's reasoning share, `reasoning_ratio`), sorted by arm then covariate. |
 | `arm_served_models` | `list[ArmServedModel]` | `[]` | Which model the provider's responses named as having answered each arm's candidate calls, sorted by arm. |
 | `cell_model_version` | `int` | `11` | Which definition of a cell produced `cells`. |
+| `host_declarations_digest` | `str \| None` | `None` | sha256 of the host's declared sweepables (each one's name, role and blank rule) and world dimension names — the declarations that partition observations into apparatus classes and arms (`host_declarations_digest`). |
 | `cells` | `list[Cell]` | `[]` | Every (variant, apparatus class) that any observation landed in, with how many observations pooled there and over how many cases and repeats per case. |
 | `variant_index` | `list[VariantIndexEntry]` | `[]` | One entry per keyed variant — the variant key and the resolved lever map it was digested from. |
 | `refused_merges` | `list[RefusedMerge]` | `[]` | Same-variant cells that did NOT pool, and which rule kept them apart. |
+| `refused_merges_omitted` | `int` | `0` | Refused pairs beyond the reporting cap, dropped smallest-first (by the observations the two cells hold). Stated so a short list is not read as a complete one. |
 | `next_experiments` | `list[NextExperiment]` | `[]` | What recording one unrecorded apparatus dimension would buy, in units of k. |
+| `next_experiments_omitted` | `int` | `0` | Recordings beyond the reporting cap, dropped least-gain-first (by the observations recording would add). Stated so a short list is not read as a complete one. |
 | `subject_key_instabilities` | `list[SubjectKeyInstability]` | `[]` | Subject keys and labels disagreeing about how many subjects there are — one key under two labels, or one label under two keys. |
 | `measure_catalog` | `dict[str, MetricDescriptor]` | `{}` | What each measure name MEANS — the registry descriptor, carried once per campaign rather than repeated on every run's summary. |
 | `judged_measures` | `list[JudgedMeasure]` | `[]` | Every judged dimension any result was scored on, with its per-cell scores. |
@@ -1964,7 +1967,8 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `time_axis` | `TimeAxis \| None` | `None` | The runs placed in time, when they span two or more builds (the host's release label) or, failing that, two or more days: each position names its runs and carries every cell measured there, computed exactly as `cell_measures` is over that position's runs alone. |
 | `time_axis_withheld` | `str \| None` | `None` | Why there is no time axis — what every run shared — or None when there is one. |
 | `confound_catalog` | `dict[str, str]` | `{}` | What a change in each confound dimension DOES to a measurement, carried once per campaign rather than repeated on every lever that names it. |
-| `prior_insights` | `list[EvalInsight]` | `[]` | Subject-scoped prior insights (newest first). Every insight minted by an ARCHIVED analysis is left out and named in `retracted_insights` instead. |
+| `prior_insights` | `list[EvalInsight]` | `[]` | Subject-scoped prior insights (newest first), one per claim and at most the reporting cap of the newest. |
+| `prior_insights_omitted` | `int` | `0` | Live prior insights the ledger holds that `prior_insights` does not carry: an older insight stating the same claim as a carried one, and every insight beyond the cap, oldest dropped first. |
 | `retracted_insights` | `dict[str, str]` | `{}` | Insight id → the archived analysis that minted it, for every insight the ledger held that is NOT in `prior_insights` because its analysis was archived as shown false. |
 
 <a id="goal-checks"></a>

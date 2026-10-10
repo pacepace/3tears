@@ -185,6 +185,20 @@ saved file under a second prompt compares the two prompts and nothing else; each
 fingerprint it read on `generation.bundle_fingerprint`. The insight-ledger cutoff (`bundle_assembled_at`),
 the generation time and its cost are on that provenance, not in the bundle.
 
+The provenance also records the bundle `schema_version` the generation ran over and the
+`host_declarations_digest`, a digest of the host's declared sweepables and world dimensions computed from its
+registries. Re-assembling a stored analysis's bundle (`inspect_analysis_bundle`) compares fingerprints, and when they
+differ `mismatch_cause` names why: `package_shape` (the bundle schema moved), `host_declarations` (the host added,
+removed or renamed a declaration), `evidence` (neither moved, so the runs, results or insights did), or `cannot_say`
+for an analysis stored before both were recorded.
+
+Prior insights reach the bundle bounded: the newest live insight per claim, at most a fixed number of them, with
+`prior_insights_omitted` counting the rest. `refused_merges` and `next_experiments` are capped the same way, with
+`refused_merges_omitted` and `next_experiments_omitted`. A generation that restates a live insight's claim (same
+words, ignoring case, spacing and a final period) replaces that insight in the ledger rather than adding a second
+one, so regenerating over unchanged evidence leaves the ledger its size. Archiving the analysis that minted an
+insight retracts it; each insight's `invalidation_trigger` states both rules.
+
 The bundle stays closed: the generator has no tools to fetch more context, such as a `bisect_runs` or `pivot`
 drill-down. A generator that fetched its own context would read different inputs on every call, so nothing could
 be fingerprinted before generation and two prompts could no longer be compared on one bundle. A question the

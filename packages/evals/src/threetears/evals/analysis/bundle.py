@@ -336,6 +336,15 @@ WITHHELD_UNKNOWN_POPULATION = "has no observation unit"
 # count dropped is reported rather than silently truncated.
 _MAX_DIVERGENCES = 8
 
+# The same cap, for the three other lists that grow with the campaign or the ledger rather than with what a
+# reader can act on, each with what it dropped counted beside it (see `_capped`). `refused_merges` is
+# quadratic in the cells a variant spans, `next_experiments` grows with variants × unrecorded dimensions, and
+# `prior_insights` grows with every generation over the subject — and all three ride whole into a paid prompt.
+# Starting values, not measured ones: tuning them is separate work.
+_MAX_REFUSED_MERGES = 8
+_MAX_NEXT_EXPERIMENTS = 8
+_MAX_PRIOR_INSIGHTS = 12
+
 # Why another swept lever varying inside a cohort clouds the comparison. Generic on
 # purpose: which lever it is says nothing extra here, because a campaign sweeping it
 # already believes it can move the numbers — that belief is what makes it a lever.
@@ -1958,10 +1967,12 @@ class AnalysisContextBundle(EvalDocumentModel):
     __retired_fields__: ClassVar[dict[str, str | None]] = {"controls_reading": "held_fixed_reading"}
 
     # The bundle's shape version. It reaches `fingerprint()`, so bump it whenever a fingerprinted
-    # field is added, renamed or removed — and whenever a change moves a fingerprinted VALUE over
-    # unchanged evidence: a host dimension joining the apparatus partition, a new ordering, a
+    # field is added, renamed or removed — and whenever a PACKAGE change moves a fingerprinted VALUE
+    # over unchanged evidence: a core dimension joining the apparatus partition, a new ordering, a
     # different rendering of what the writer is shown. Otherwise a re-assembled bundle that only
-    # changed shape reads as evidence that moved, which is the one thing this number separates. An
+    # changed shape reads as evidence that moved, which is the one thing this number separates. A
+    # HOST editing its own declarations is not a reason to bump it, and a host has no way to: that
+    # move is carried by `host_declarations_digest`, derived from the declarations themselves. An
     # A/B set spanning a bump must be read as spanning it. Why each earlier version moved is in
     # this file's history.
     schema_version: int = Field(
@@ -2322,6 +2333,17 @@ class AnalysisContextBundle(EvalDocumentModel):
             "are not comparable on any per-cell number, and a fingerprint alone cannot say so."
         ),
     )
+    host_declarations_digest: str | None = Field(
+        default=None,
+        description=(
+            "sha256 of the host's declared sweepables (each one's name, role and blank rule) and world dimension "
+            "names — the declarations that partition observations into apparatus classes and arms "
+            "(:func:`host_declarations_digest`). Derived from the declarations at assembly, never kept by hand, "
+            "so a host that adds, removes or renames one moves it without bumping anything. Two bundles whose "
+            "fingerprints differ while this and `schema_version` agree did not differ in those declarations. "
+            "None on a bundle frozen before it was recorded, which says nothing about them."
+        ),
+    )
     cells: list[Cell] = Field(
         default_factory=list,
         description=(
@@ -2360,12 +2382,28 @@ class AnalysisContextBundle(EvalDocumentModel):
             "reason, and only one of the three reasons is fixable by recording something."
         ),
     )
+    refused_merges_omitted: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Refused pairs beyond the reporting cap, dropped smallest-first (by the observations the two cells "
+            "hold). Stated so a short list is not read as a complete one."
+        ),
+    )
     next_experiments: list[NextExperiment] = Field(
         default_factory=list,
         description=(
             "What recording one unrecorded apparatus dimension would buy, in units of k. Generated "
             "mechanically — no model is asked — because it is arithmetic over cells that already share "
             "a variant. This is what keeps a conservative merge from being pure refusal."
+        ),
+    )
+    next_experiments_omitted: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Recordings beyond the reporting cap, dropped least-gain-first (by the observations recording would "
+            "add). Stated so a short list is not read as a complete one."
         ),
     )
     subject_key_instabilities: list[SubjectKeyInstability] = Field(
@@ -2452,8 +2490,18 @@ class AnalysisContextBundle(EvalDocumentModel):
     prior_insights: list[EvalInsight] = Field(
         default_factory=list,
         description=(
-            "Subject-scoped prior insights (newest first). Every insight minted by an ARCHIVED analysis is "
-            "left out and named in `retracted_insights` instead."
+            "Subject-scoped prior insights (newest first), one per claim and at most the reporting cap of the "
+            "newest. Every insight minted by an ARCHIVED analysis is left out and named in `retracted_insights` "
+            "instead; what else is left out is counted in `prior_insights_omitted`."
+        ),
+    )
+    prior_insights_omitted: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Live prior insights the ledger holds that `prior_insights` does not carry: an older insight stating "
+            "the same claim as a carried one, and every insight beyond the cap, oldest dropped first. Retracted "
+            "insights are not counted here. Stated so a short list is not read as the whole ledger."
         ),
     )
     retracted_insights: dict[str, str] = Field(
@@ -2530,13 +2578,16 @@ class BundleInspection(EvalDocumentModel):
     all along. So archiving one analysis moves the re-assembly of every analysis that READ its
     insights, and un-archiving it moves them back.
 
-    **What remains has two causes and this surface cannot tell them apart.** The evidence
-    moved — a member archived, a result deleted, an insight the generation read since
-    deleted, or the analysis that minted one archived — or :attr:`AnalysisContextBundle.schema_version` moved and the same evidence now
-    digests differently — a rename is enough. Separating them needs the version the
-    generation ran over, which ``GenerationProvenance`` does not record; until
-    it does, a reader diagnosing a ``False`` reads that field's version history against
-    the analysis's ``generated_at``.
+    **What remains has three causes, and ``mismatch_cause`` names which.** The package's bundle
+    shape moved (:attr:`AnalysisContextBundle.schema_version` differs from the one the generation
+    recorded — a rename is enough), the host's declarations moved
+    (:attr:`AnalysisContextBundle.host_declarations_digest` differs — a host added, removed or
+    renamed a sweepable, which moves the apparatus partition without touching package code), or
+    neither did and the evidence moved — a member archived, a result deleted, an insight the
+    generation read since deleted or superseded, or the analysis that minted one archived. An
+    analysis stored before :class:`~threetears.evals.contracts.campaign.GenerationProvenance`
+    recorded both reads ``cannot_say``: a version that was never written is never read as the
+    same one.
 
     Host-agnostic by construction: campaign, scope, fingerprint and bundle are
     all engine vocabulary, and nothing here branches on what the subject is.
@@ -2562,13 +2613,38 @@ class BundleInspection(EvalDocumentModel):
             "Whether the re-assembled bundle IS the one the addressed analysis was generated over "
             "(fingerprint == recorded_fingerprint). Prior insights are read as of the instant the "
             "analysis's bundle was assembled, so an insight minted afterwards — its own included — does not move this. "
-            "False means the bundle below explains today's inputs and not that generation's — either "
-            "because the evidence moved (a run archived, a result deleted, an insight the generation "
-            "read since deleted, or the analysis that minted one archived — which retracts it) or because the bundle SHAPE moved under unchanged evidence; this "
-            "surface cannot say which, because no stored analysis records the schema version it ran "
-            "over. None when addressed by campaign. Stated rather than "
+            "False means the bundle below explains today's inputs and not that generation's; `mismatch_cause` says "
+            "why. None when addressed by campaign. Stated rather than "
             "hedged in prose because a reader diagnosing a generator defect from its input has to "
             "know whether the input is the one that produced the defect."
+        ),
+    )
+    recorded_bundle_schema_version: int | None = Field(
+        default=None,
+        description=(
+            "The bundle schema version the addressed generation ran over, as its provenance recorded it. None "
+            "when addressed by campaign, or when the analysis was stored before the version was recorded."
+        ),
+    )
+    recorded_host_declarations_digest: str | None = Field(
+        default=None,
+        description=(
+            "The host declarations digest the addressed generation ran over, as its provenance recorded it. None "
+            "when addressed by campaign, or when the analysis was stored before the digest was recorded."
+        ),
+    )
+    mismatch_cause: Literal["package_shape", "host_declarations", "evidence", "cannot_say"] | None = Field(
+        default=None,
+        description=(
+            "Why the re-assembly does not reproduce the generation, set exactly when `reproduces_generation` is "
+            "False. `package_shape`: the bundle `schema_version` differs from the recorded one, so this build "
+            "digests the same evidence differently (when the host declarations differ too, this still wins: a "
+            "package change can move the core declarations the digest covers). `host_declarations`: the version "
+            "agrees and `host_declarations_digest` does not — the host changed which sweepables or world "
+            "dimensions it declares. `evidence`: both agree, so the inputs moved — a run archived, a result "
+            "deleted, an insight the generation read since deleted or superseded, the analysis that minted one "
+            "archived — or a host declaration the digest does not cover (a measure, a bar, prose) changed. "
+            "`cannot_say`: the stored provenance lacks either recorded value, so no cause can be told apart."
         ),
     )
     bundle: AnalysisContextBundle = Field(description="The assembled bundle itself, whole.")
@@ -2580,26 +2656,46 @@ class BundleInspection(EvalDocumentModel):
         *,
         analysis_id: str | None = None,
         recorded_fingerprint: str | None = None,
+        recorded_schema_version: int | None = None,
+        recorded_host_declarations_digest: str | None = None,
     ) -> BundleInspection:
-        """Wrap an assembled bundle, computing its fingerprint and the comparison.
+        """Wrap an assembled bundle, computing its fingerprint, the comparison and, on a mismatch, its cause.
 
         Args:
             bundle: The freshly assembled bundle to project.
             analysis_id: The analysis the caller addressed, when they addressed one.
             recorded_fingerprint: That analysis's stored ``bundle_fingerprint``.
+            recorded_schema_version: That analysis's stored ``bundle_schema_version``; None when it recorded none.
+            recorded_host_declarations_digest: That analysis's stored ``host_declarations_digest``; None when it
+                recorded none.
 
         Returns:
             The inspection payload, with ``reproduces_generation`` set exactly when
-            a recorded fingerprint was supplied to compare against.
+            a recorded fingerprint was supplied to compare against, and ``mismatch_cause``
+            exactly when that comparison is False.
         """
         fingerprint = bundle.fingerprint()
+        reproduces = None if recorded_fingerprint is None else fingerprint == recorded_fingerprint
+        cause: Literal["package_shape", "host_declarations", "evidence", "cannot_say"] | None = None
+        if reproduces is False:
+            if recorded_schema_version is None or recorded_host_declarations_digest is None:
+                cause = "cannot_say"
+            elif recorded_schema_version != bundle.schema_version:
+                cause = "package_shape"
+            elif recorded_host_declarations_digest != bundle.host_declarations_digest:
+                cause = "host_declarations"
+            else:
+                cause = "evidence"
         return cls(
             campaign_id=bundle.campaign_id,
             scope_id=bundle.scope_id,
             fingerprint=fingerprint,
             analysis_id=analysis_id,
             recorded_fingerprint=recorded_fingerprint,
-            reproduces_generation=None if recorded_fingerprint is None else fingerprint == recorded_fingerprint,
+            reproduces_generation=reproduces,
+            recorded_bundle_schema_version=recorded_schema_version,
+            recorded_host_declarations_digest=recorded_host_declarations_digest,
+            mismatch_cause=cause,
             bundle=bundle,
         )
 
@@ -6637,6 +6733,19 @@ def assemble_context_bundle(
     cells, refused_merges, next_experiments = pool_observations(
         observations, {c.apparatus_class_id: c for c in apparatus_classes.values()}
     )
+    # Capped like the divergences, keeping the entries that bear on the most evidence: a refusal by the
+    # observations its two cells hold, a recording by the observations it would add.
+    held = {(cell.variant_key, cell.apparatus_class_id): cell.n_observations for cell in cells}
+    refused_merges, refused_merges_omitted = _capped(
+        refused_merges,
+        _MAX_REFUSED_MERGES,
+        weight=lambda merge: sum(held.get((merge.variant_key, class_id), 0) for class_id in merge.apparatus_class_ids),
+    )
+    next_experiments, next_experiments_omitted = _capped(
+        next_experiments,
+        _MAX_NEXT_EXPERIMENTS,
+        weight=lambda entry: entry.n_observations_if_recorded - entry.n_observations_now,
+    )
 
     # Only the runs that RESOLVED a span contribute, exactly as runs_compare's do: a run
     # that produced nothing cannot say when it was measured, and letting that absence count
@@ -6656,6 +6765,9 @@ def assemble_context_bundle(
         if insights_as_of is None or insight.observed_at < insights_as_of
     ]
     retracted = retracted_insights(ledger, lambda analysis_id: storage.analysis_archived(analysis_id, scope_id))
+    prior_insights, prior_insights_omitted = _prior_insights(
+        [insight for insight in ledger if insight.id not in retracted]
+    )
 
     bundle = AnalysisContextBundle(
         campaign_id=campaign.id,
@@ -6718,14 +6830,18 @@ def assemble_context_bundle(
         cells=cells,
         variant_index=variant_index,
         refused_merges=refused_merges,
+        refused_merges_omitted=refused_merges_omitted,
         next_experiments=next_experiments,
+        next_experiments_omitted=next_experiments_omitted,
+        host_declarations_digest=host_declarations_digest(profile),
         # Read off the projection rather than the campaign, because the campaign states ONE
         # subject and this check exists to catch the case where the observations disagree with
         # that — a rename mid-campaign, or two subjects collided onto one key.
         subject_key_instabilities=subject_key_instabilities(
             (record.subject_id, record.subject_label) for record in projection.records
         ),
-        prior_insights=_sorted_insights([insight for insight in ledger if insight.id not in retracted]),
+        prior_insights=prior_insights,
+        prior_insights_omitted=prior_insights_omitted,
         retracted_insights=retracted,
         # Over the resolved members only, like every other lens: a rating of an archived run's result
         # calibrates a judge the bundle does not otherwise read. Ratings are read per run, in run order,
@@ -8621,6 +8737,146 @@ def retracted_insights(
     return insight_standing(insights, analysis_archived).retracted
 
 
+def insight_restatement_key(statement: str) -> str:
+    """The claim an insight states, as two insights stating it compare — case, spacing and a final period aside.
+
+    The one rule for "these two insights say the same thing", read by the bundle (which carries one insight per
+    claim) and by the ledger write (which replaces a live insight a new one restates rather than adding a
+    duplicate). Deliberately literal: two sentences that mean the same thing in different words are two keys,
+    because deciding they are one claim is a judgement, and a wrong merge here would retire a claim nobody
+    restated.
+
+    Args:
+        statement: An insight's statement.
+
+    Returns:
+        The comparison key.
+    """
+    return " ".join(statement.casefold().split()).rstrip(".").rstrip()
+
+
+def superseding_insights(
+    minted: Sequence[EvalInsight],
+    ledger: Iterable[EvalInsight],
+    analysis_archived: Callable[[str], bool | None],
+) -> list[EvalInsight]:
+    """The insights a generation writes: each one minted, taking the id of the live insight it restates.
+
+    A generation mints one insight per finding that states one, and regenerating over the same evidence
+    states the same claims again. Written as new rows, every regeneration grew the ledger by its whole
+    output, and every one of those rows rode into the next paid prompt. So a minted insight whose claim
+    (:func:`insight_restatement_key`) a LIVE ledger insight of the subject already states is written under
+    that insight's id: the store's upsert replaces the old row with the restatement — its statement,
+    confidence, evidence and minting analysis now the newer ones — and the ledger keeps its size. That is the
+    insight's ``invalidation_trigger``, carried out.
+
+    A RETRACTED insight (its analysis archived, :func:`retracted_insights`) is not live and is never replaced:
+    a new analysis stating a claim an archive withdrew mints it afresh, and archiving that new analysis is
+    what would withdraw it again. Where the ledger already holds several live insights stating one claim —
+    written before this rule — the newest is the one replaced.
+
+    Args:
+        minted: The insights a generation returned, in its order.
+        ledger: The subject's prior insights.
+        analysis_archived: Whether one analysis is archived, ``None`` when it does not resolve.
+
+    Returns:
+        The insights to write, in ``minted`` order, each under its own id or the id of the insight it replaces.
+        A claim the generation stated twice is written once.
+    """
+    prior = list(ledger)
+    retracted = retracted_insights(prior, analysis_archived)
+    live: dict[str, EvalInsight] = {}
+    for insight in _sorted_insights([insight for insight in prior if insight.id not in retracted]):
+        live.setdefault(insight_restatement_key(insight.statement), insight)
+    written: list[EvalInsight] = []
+    seen: set[str] = set()
+    for insight in minted:
+        key = insight_restatement_key(insight.statement)
+        if key in seen:
+            continue
+        seen.add(key)
+        replaced = live.get(key)
+        written.append(insight if replaced is None else insight.model_copy(update={"id": replaced.id}))
+    return written
+
+
+def _prior_insights(live: list[EvalInsight]) -> tuple[list[EvalInsight], int]:
+    """The live insights a bundle carries — the newest per claim, at most the cap — and how many it leaves out.
+
+    Args:
+        live: The subject's insights as of the cutoff, less the retracted ones.
+
+    Returns:
+        ``(carried, omitted)``: newest first, deterministic for the fingerprint.
+    """
+    newest: dict[str, EvalInsight] = {}
+    for insight in _sorted_insights(live):
+        newest.setdefault(insight_restatement_key(insight.statement), insight)
+    carried, _beyond_cap = _capped(list(newest.values()), _MAX_PRIOR_INSIGHTS, weight=None)
+    return carried, len(live) - len(carried)
+
+
+def _capped[T](items: list[T], cap: int, *, weight: Callable[[T], float] | None) -> tuple[list[T], int]:
+    """Keep at most ``cap`` of ``items`` and count the rest, so a capped list is never read as a complete one.
+
+    The one cap the bundle's growing lists share. Deterministic, so the fingerprint stays stable: the kept
+    entries are the ``cap`` heaviest by ``weight`` (earlier entries winning ties), or the first ``cap`` when
+    there is no weight, and they keep their order in ``items``.
+
+    Args:
+        items: The full list, in the order it is reported.
+        cap: How many may be reported.
+        weight: What ranks an entry for keeping, heaviest first; None keeps the leading entries.
+
+    Returns:
+        ``(kept, omitted)``.
+    """
+    if len(items) <= cap:
+        return items, 0
+    if weight is None:
+        return items[:cap], len(items) - cap
+    ranked = sorted(range(len(items)), key=lambda index: (-weight(items[index]), index))
+    kept = sorted(ranked[:cap])
+    return [items[index] for index in kept], len(items) - cap
+
+
+def host_declarations_digest(profile: HostProfile) -> str:
+    """sha256 of the host declarations that partition observations — derived, so no host has a counter to forget.
+
+    A host's apparatus sweepable is a dimension of every observation's apparatus class, and so of the bundle
+    fingerprint, and the same holds for a world dimension; a lever is a coordinate of every arm. A host adding,
+    removing or renaming one moves every fingerprint over unchanged runs, and the package's own versions
+    cannot say so — they are the package's. This digest is computed from the registry the bundle was assembled
+    under, so it moves exactly when those declarations do: each sweepable's name, role and blank rule (whether
+    a blank means "never recorded", which decides whether a level can be compared at all), and each world
+    dimension's name. The core's declarations are in it too, because the registry a host extends carries them;
+    a core change also moves :attr:`AnalysisContextBundle.schema_version`, which is read first.
+
+    What it does not cover: a reader callable's behaviour (code, not a declaration), and the host's measure and
+    bar registries, which describe readings rather than partitioning them.
+
+    Args:
+        profile: The host profile a bundle is assembled under.
+
+    Returns:
+        A 64-character lowercase hex digest.
+    """
+    sweepables = sorted(
+        (declared.name, declared.role, declared.indeterminate_when_blank)
+        for declared in profile.sweepables.declarations
+    )
+    world = sorted(profile.world.names) if profile.world is not None else []
+    return canonical_digest(
+        {
+            "sweepables": [
+                {"name": name, "role": role, "indeterminate_when_blank": blank} for name, role, blank in sweepables
+            ],
+            "world": world,
+        }
+    )
+
+
 def _sorted_insights(insights: list[EvalInsight]) -> list[EvalInsight]:
     """Order insights newest-first with an id tie-break — a stable fingerprint slice.
 
@@ -8670,5 +8926,8 @@ __all__ = [
     "bundle_decision_surface",
     "component_carrier",
     "goal_check_proofs_of",
+    "host_declarations_digest",
+    "insight_restatement_key",
     "measure_movement",
+    "superseding_insights",
 ]

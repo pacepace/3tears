@@ -57,8 +57,11 @@ from threetears.evals.contracts.models import ApparatusProvenance
 #: A stored analysis is a claim about which observations pooled, and that claim is only legible
 #: beside the rule that produced it: two analyses whose cells were computed under different
 #: definitions are not comparable on n, on k, or on any per-cell number. Bump it whenever what a
-#: cell pools or says changes — a dimension joining the apparatus or world coordinate (one moved
-#: through a host declaration counts, though no line here changes), or a renamed count. Why each
+#: cell pools or says changes through the PACKAGE — a core dimension joining the apparatus or world
+#: coordinate, a change to the pooling rule, or a renamed count. A host adding, removing or renaming
+#: one of its own declarations moves the coordinate too, but it is not a reason to bump this and a
+#: host cannot: that move is recorded beside it, as the host declarations digest the bundle and the
+#: generation's provenance carry (``AnalysisContextBundle.host_declarations_digest``). Why each
 #: earlier version moved is in this file's history.
 CELL_MODEL_VERSION: int = 11
 

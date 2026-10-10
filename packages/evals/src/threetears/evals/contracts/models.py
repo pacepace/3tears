@@ -111,7 +111,9 @@ them would drop every stored document to learn counts the old ones never had, an
 were decided by, None on an analysis stored before tiers were decided on the agreement's interval — whose tiers
 were the point estimate against the bar, and are rendered as that, never as the interval rule's claim. And
 ``EvalRun.goal_check_proofs``: whether each goal check was shown, at launch, to beat doing nothing; None on a run
-launched before it, read as unproven.
+launched before it, read as unproven. And ``GenerationProvenance.bundle_schema_version`` and
+``.host_declarations_digest``: the bundle shape and the host's declarations a generation ran over, None on an
+analysis stored before them, read as "cannot say" — never as the current version.
 
 **Within v8, not a bump: fields retired** (``__retired_fields__``, read only by a stored read — see
 :mod:`threetears.evals.contracts.base`). ``LeverCoverage.confidence`` is removed: it was a fixed lookup on the

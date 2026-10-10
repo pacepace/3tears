@@ -163,6 +163,8 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
     # pools with one that did not. A cell whose runs recorded none keeps the id it had (CELL_ID_NEUTRAL), so a
     # stored analysis's cell references still resolve. Each run summary carries its production footing, the
     # inputs it moved off the subject's production configuration beside its production-replicating cost (#571).
+    # The bundle also carries the host declarations digest (#575), and bounds its prior insights, refused merges
+    # and next experiments, each with an omitted count (#614, #572).
     ((47, 11), _CORE_V24 | {"judge_request_settings", "simulator_request_settings", "judge_temperature"}),
 )
 
