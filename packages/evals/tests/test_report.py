@@ -604,7 +604,7 @@ class TestACampaignWithNoAnalysisIsReportedFromItsEvidence:
         drawn_or_disclosed = {chart.intent.title for chart in charts if chart.intent is not None} | {
             block.text for block in report.blocks if isinstance(block, DisclosureBlock) and block.source == "chart"
         }
-        assert any(text.startswith("total_ms") for text in drawn_or_disclosed), drawn_or_disclosed
+        assert any(text.startswith("Turn time") for text in drawn_or_disclosed), drawn_or_disclosed
         titles = [chart.intent.title for chart in charts if chart.intent is not None]
         assert len(set(titles)) == len(titles), titles
 
@@ -669,10 +669,12 @@ def test_a_code_only_report_states_the_contrasts_code_tested_against_the_control
 
     report = campaign_report(host, campaign.id, campaign.scope_id)
     (comparisons,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "comparisons"]
-    assert comparisons.rows and {row["question"] for row in comparisons.rows} == {"q-chunk-width"}
+    # The question in the words it was asked, never its id.
+    asked = next(q.text for q in campaign.declared_design.questions if q.id == "q-chunk-width")
+    assert comparisons.rows and {row["question"] for row in comparisons.rows} == {asked}
     by_reading = {row["reading"]: row["verdict"] for row in comparisons.rows}
-    assert by_reading["field_accuracy"] == "improved on the control"
-    assert by_reading["total_ms"] == "regressed from the control"
+    assert by_reading["Field accuracy"] == "improved on the control"
+    assert by_reading["Turn time"] == "regressed from the control"
     assert any(
         isinstance(block, DisclosureBlock) and block.source == "comparisons" and "Holm" in block.text
         for block in report.blocks

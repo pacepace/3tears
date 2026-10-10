@@ -427,7 +427,7 @@ def test_the_report_and_the_writer_see_an_immaterial_verdict_labelled() -> None:
     bundle = _bundle([], accuracy=_ACCURACY, profile=profile)
     report = build_code_only_report(bundle, measures=profile.measures, assembled_at="2026-10-06T00:00:00Z")
     (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
-    (row,) = [row for row in table.rows if row["reading"] == "field_accuracy"]  # type: ignore[attr-defined]
+    (row,) = [row for row in table.rows if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
 
     assert (
         row["verdict"].startswith("improved")
@@ -515,7 +515,7 @@ def test_the_report_states_each_contrast_s_means_cases_interval_and_effect_size(
     bundle = _bundle([], accuracy=accuracy, contrast_cases=range(9), profile=profile)
     report = build_code_only_report(bundle, measures=profile.measures, assembled_at="2026-10-06T00:00:00Z")
     (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
-    (row,) = [row for row in table.rows if row["reading"] == "field_accuracy"]  # type: ignore[attr-defined]
+    (row,) = [row for row in table.rows if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
 
     assert row["control_mean"] == pytest.approx(0.5)
     assert row["cases"] == "9 paired; 3 of the control's left out, not run by the other side"

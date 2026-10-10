@@ -48,6 +48,7 @@ TOYHOST_EXTRACTION_FAMILY = MeasureFamily(
 TOYHOST_MEASURES: tuple[MetricDescriptor, ...] = (
     MetricDescriptor(
         name="field_accuracy",
+        reader_name="Field accuracy",
         data_type="numeric",
         family=TOYHOST_EXTRACTION_FAMILY.name,
         transferability_class="mechanical",
@@ -61,6 +62,7 @@ TOYHOST_MEASURES: tuple[MetricDescriptor, ...] = (
     ),
     MetricDescriptor(
         name="cost_per_document_usd",
+        reader_name="Cost per document",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -80,6 +82,7 @@ TOYHOST_MEASURES: tuple[MetricDescriptor, ...] = (
     ),
     MetricDescriptor(
         name="p95_extract_ms",
+        reader_name="95th-percentile extraction time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -93,6 +96,7 @@ TOYHOST_MEASURES: tuple[MetricDescriptor, ...] = (
     ),
     MetricDescriptor(
         name="manual_review_rate",
+        reader_name="Manual review rate",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -109,6 +113,7 @@ TOYHOST_MEASURES: tuple[MetricDescriptor, ...] = (
     # without complaint. This fixture makes one unavoidable.
     MetricDescriptor(
         name="fields_stripped",
+        reader_name="Fields stripped",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -125,6 +130,7 @@ TOYHOST_MEASURES: tuple[MetricDescriptor, ...] = (
     # out as a raw count. The host-side twin of the engine's own provider-rate diagnostic.
     MetricDescriptor(
         name=FIELD_COUNT_ERROR,
+        reader_name="Field count error",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",

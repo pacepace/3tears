@@ -550,6 +550,21 @@ class CampaignDesign(EvalDocumentModel):
             )
         return self
 
+    def question_words(self, question_id: str) -> str:
+        """A declared question as a reader reads it: its text, or — for an id this design does not hold — the id.
+
+        A memo resolves a question by id, which is a uuid for a question an operator declared; a reader needs the
+        words that were asked. The id stands in only where nothing here says what it asked, so a reference that
+        no longer resolves stays citable rather than going blank.
+
+        Args:
+            question_id: The id an answer or a comparison family names.
+
+        Returns:
+            The question's text, else the id.
+        """
+        return next((question.text for question in self.questions if question.id == question_id), question_id)
+
     def live_questions(self) -> list[Question]:
         """The questions a future analysis still owes a resolution for.
 

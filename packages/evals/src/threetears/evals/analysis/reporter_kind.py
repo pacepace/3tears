@@ -47,14 +47,20 @@ from threetears.evals.analysis.generator import (
     refuse_an_undescribable_arm_table,
     user_message_digest,
 )
-from threetears.evals.analysis.numbers import format_number
-from threetears.evals.analysis.report.words import CONFIDENCE_WORDS, arm_namer, positions, stands_on_words
+from threetears.evals.analysis.report.serialize_md import markdown_table
+from threetears.evals.analysis.report.words import (
+    CONFIDENCE_WORDS,
+    EVIDENCE_COLUMNS,
+    arm_namer,
+    evidence_rows,
+    positions,
+    stands_on_words,
+)
 from threetears.evals.contracts.authored import NO_CHART
 from threetears.evals.contracts.base import EvalDocumentModel
 from threetears.evals.contracts.campaign import (
     ConfidenceTier,
     EvalAnalysis,
-    EvidenceRow,
     FindingResolution,
 )
 from threetears.evals.contracts.candidate_kind import (
@@ -594,25 +600,9 @@ def _one_line(text: str) -> str:
     return " ".join(text.splitlines())
 
 
-def _reading(measure_id: str, reading: str) -> str:
-    """A measure, marked when it is a judged dimension rather than a measure."""
-    return f"{measure_id} (judged)" if reading == "judged" else measure_id
-
-
 def _confidence(confidence: ConfidenceTier) -> str:
     """A confidence tier in words."""
     return CONFIDENCE_WORDS[confidence]
-
-
-def _evidence_row(row: EvidenceRow, arm: Callable[[str], str]) -> str:
-    """One measurement: where it was read, what, and the number with its basis.
-
-    Located by the arm its cell names.
-    """
-    where = arm(row.cell_ref) if row.cell_ref is not None else "a cell this analysis cannot read"
-    return (
-        f"- {where} — {_reading(row.measure_id, row.reading)}: {format_number(row.value)}, n={row.n}, {row.dispersion}"
-    )
 
 
 def _read_case(test_case: EvalTestCase) -> ReporterCase | str:
@@ -965,7 +955,12 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
         questions = ["## Declared questions", ""]
         for answer in document.questions:
             rests = f" (rests on finding {positions(answer.rests_on)})" if answer.rests_on else ""
-            questions.append(f"- {answer.question_id} — {answer.resolution}: {_one_line(answer.answer)}{rests}")
+            asked = (
+                analysis.design_snapshot.question_words(answer.question_id)
+                if analysis.design_snapshot is not None
+                else answer.question_id
+            )
+            questions.append(f"- {_one_line(asked)} — {answer.resolution}: {_one_line(answer.answer)}{rests}")
         sections.append(questions)
 
     if document.decisions:
@@ -995,7 +990,12 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
             if finding.body.strip():
                 findings += ["", finding.body.strip()]
             if resolution is not None and resolution.evidence:
-                findings += ["", "Evidence:", *(_evidence_row(row, arm) for row in resolution.evidence)]
+                rows = evidence_rows(analysis, resolution.evidence, arm)
+                table = markdown_table(
+                    [header for _, header in EVIDENCE_COLUMNS],
+                    [[row[key] for key, _ in EVIDENCE_COLUMNS] for row in rows],
+                )
+                findings += ["", "Evidence:", "", *table]
             if finding.chart.type != NO_CHART:
                 if resolution is not None and resolution.chart_note:
                     findings += ["", resolution.chart_note]

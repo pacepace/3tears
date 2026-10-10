@@ -136,6 +136,7 @@ __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why th
     "DELIVERED_AXES",
     "MEASURING_SPEND_MEASURES",
     "measure_title",
+    "reader_name_defects",
     "reads_turns",
     "summary_population",
     "Materiality",
@@ -259,20 +260,26 @@ _BLENDED_SPEND = "cost_usd"
 MEASURING_SPEND_MEASURES: frozenset[str] = frozenset({_BLENDED_SPEND, "program_cost"})
 
 
-def measure_title(name: str) -> str:
-    """A measure's name as a chart or column heads it: a measuring-spend measure says it is one.
+def measure_title(name: str, reader_name: str | None = None) -> str:
+    """A measure as a chart or column heads it: by its reader-facing name, and a measuring-spend measure says it is one.
 
-    ``cost_usd`` titled bare beside an arm reads as what the arm costs, and in a judged run it is that plus
-    what the judge cost. So wherever it is shown at all it is labelled measuring spend, apart from the
-    candidate's own.
+    The reader-facing name (:attr:`MetricDescriptor.reader_name`) when the measure has one, and the key only when
+    it has none — a descriptor stored before the field existed, or a name nothing describes. ``cost_usd`` titled
+    bare beside an arm reads as what the arm costs, and in a judged run it is that plus what the judge cost. So
+    wherever it is shown at all it is labelled measuring spend, apart from the candidate's own.
 
     Args:
-        name: The measure's name.
+        name: The measure's key.
+        reader_name: Its reader-facing name, when it has one.
 
     Returns:
-        The name, with ``, measuring spend`` after it for a :data:`MEASURING_SPEND_MEASURES` member.
+        The reader-facing name, else the key, with ``, measuring spend`` after it for a
+        :data:`MEASURING_SPEND_MEASURES` member whose title does not already say so.
     """
-    return f"{name}, measuring spend" if name in MEASURING_SPEND_MEASURES else name
+    title = reader_name or name
+    if name in MEASURING_SPEND_MEASURES and "measuring spend" not in title.casefold():
+        return f"{title}, measuring spend"
+    return title
 
 
 def reads_turns(descriptor: MetricDescriptor) -> bool:
@@ -339,6 +346,17 @@ class MetricDescriptor(EvalBaseModel):
     """What a single measure is, independent of any particular value of it."""
 
     name: str = Field(min_length=1, description="The measure's key as it appears on results and summaries.")
+    reader_name: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "What a reader calls the measure — a few words a table header, a chart title or an axis label prints in "
+            "place of the key ('Output speed', not 'candidate_output_tokens_per_s'). REQUIRED of every measure a "
+            "host registers (`MeasureRegistry` refuses one without it) and supplied by the engine for every core "
+            "measure and every one it describes by construction. None only on a descriptor stored before the field "
+            "existed, and on a name nothing describes; a surface then prints the key, which is all it has."
+        ),
+    )
     data_type: MetricDataType | None = Field(
         default=None,
         description="None when the measure has never been described, so its type is genuinely unknown rather than assumed numeric.",
@@ -583,6 +601,7 @@ def _compare_trio(base: str, label: str, cls: TransferabilityClass) -> tuple[Met
     side = tuple(
         MetricDescriptor(
             name=f"{base}_{suffix}",
+            reader_name=f"{label}, run {run}",
             data_type="numeric",
             family="composite",
             transferability_class=cls,
@@ -595,6 +614,7 @@ def _compare_trio(base: str, label: str, cls: TransferabilityClass) -> tuple[Met
     )
     delta = MetricDescriptor(
         name=f"{base}_delta",
+        reader_name=f"Change in {label[0].lower()}{label[1:]}",
         data_type="numeric",
         family="composite",
         transferability_class=cls,
@@ -617,6 +637,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     # the candidate, and the drain wait is disjoint from the turns by construction.
     _d(
         name="total_ms",
+        reader_name="Turn time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -634,6 +655,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="llm_ms",
+        reader_name="Time in model calls",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -646,6 +668,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="tool_ms",
+        reader_name="Time in tools",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -658,6 +681,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="orchestration_ms",
+        reader_name="Orchestration time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -683,6 +707,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="async_wait_ms",
+        reader_name="Wait on background work",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -700,6 +725,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="judge_ms",
+        reader_name="Judging time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -723,6 +749,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     # MEASURE the candidate, not what the candidate costs.
     _d(
         name="cost_usd",
+        reader_name="Measuring spend, all roles",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -743,6 +770,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="production_replicating_cost",
+        reader_name="Production cost",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -767,6 +795,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="program_cost",
+        reader_name="Program measuring spend",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -783,6 +812,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     # ---- Tokens (raw counts: no better direction) ---------------------------
     _d(
         name="prompt_tokens",
+        reader_name="Input tokens",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -792,6 +822,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="completion_tokens",
+        reader_name="Output tokens",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -801,6 +832,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="reasoning_tokens",
+        reader_name="Reasoning tokens",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -810,6 +842,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="call_count",
+        reader_name="Calls",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -822,6 +855,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="provider_units",
+        reader_name="Provider units",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -841,6 +875,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="context_tokens_in",
+        reader_name="Context carried",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -851,6 +886,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="reasoning_ratio",
+        reader_name="Reasoning share of output",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -861,6 +897,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="candidate_output_tokens_per_s",
+        reader_name="Output speed",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -886,6 +923,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="dropped_tool_calls",
+        reader_name="Dropped tool calls",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -901,6 +939,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="refused_tool_attaches",
+        reader_name="Refused tool attaches",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -917,6 +956,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="truncated_rounds",
+        reader_name="Rounds cut at the output cap",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -935,6 +975,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="turns_ended_by_budget",
+        reader_name="Turns that ran over budget",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -953,6 +994,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     # ---- Conditions (categorical covariates) --------------------------------
     _d(
         name="execution_mode",
+        reader_name="Execution mode",
         data_type="categorical",
         family="mechanical",
         transferability_class="mechanical",
@@ -972,6 +1014,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     # emits is classified) failing in the one place it is most visible.
     _d(
         name="n_results",
+        reader_name="Results",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -981,6 +1024,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="n_total_ms",
+        reader_name="Results with a turn time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -993,6 +1037,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="n_llm_ms",
+        reader_name="Results with a model-call time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1002,6 +1047,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="n_tool_ms",
+        reader_name="Results with a tool time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1011,6 +1057,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="n_cost_usd",
+        reader_name="Priced results",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1024,6 +1071,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="n_prod_cost_usd",
+        reader_name="Results with a production cost",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1038,6 +1086,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="n_test_cases",
+        reader_name="Test cases",
         data_type="numeric",
         family="mechanical",
         transferability_class="scenario_bound",
@@ -1047,6 +1096,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="k",
+        reader_name="Pass^k depth",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1061,6 +1111,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="n_cannot_tell_excluded",
+        reader_name="Iterations the judge could not score",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1074,6 +1125,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="n_cases_at_k",
+        reader_name="Cases scored k times",
         data_type="numeric",
         family="mechanical",
         transferability_class="scenario_bound",
@@ -1087,6 +1139,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="mean_total_ms",
+        reader_name="Mean turn time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1104,6 +1157,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="median_total_ms",
+        reader_name="Median turn time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1122,6 +1176,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="p95_total_ms",
+        reader_name="95th-percentile turn time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1142,6 +1197,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="max_total_ms",
+        reader_name="Slowest turn time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1157,6 +1213,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="mean_llm_ms",
+        reader_name="Mean time in model calls",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1173,6 +1230,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="mean_tool_ms",
+        reader_name="Mean time in tools",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1187,6 +1245,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="total_cost_usd",
+        reader_name="Total measuring spend",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1204,6 +1263,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="mean_cost_usd",
+        reader_name="Mean measuring spend per result",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1220,6 +1280,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="total_prod_cost_usd",
+        reader_name="Total production cost",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1242,6 +1303,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="mean_prod_cost_usd",
+        reader_name="Mean production cost per result",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1260,6 +1322,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="score",
+        reader_name="Judged score",
         data_type="numeric",
         family="rubric",
         transferability_class="judge_mediated",
@@ -1282,6 +1345,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="mean_score",
+        reader_name="Mean judged score",
         data_type="numeric",
         family="rubric",
         transferability_class="judge_mediated",
@@ -1299,6 +1363,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="min_score",
+        reader_name="Lowest judged score",
         data_type="numeric",
         family="rubric",
         transferability_class="judge_mediated",
@@ -1309,6 +1374,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="max_score",
+        reader_name="Highest judged score",
         data_type="numeric",
         family="rubric",
         transferability_class="judge_mediated",
@@ -1319,6 +1385,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="n",
+        reader_name="Judged scores",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1336,6 +1403,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     # a group none of whose results watched for background work carries none of them.
     _d(
         name="async_deliveries",
+        reader_name="Background deliveries",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1351,6 +1419,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="async_deliveries_substituted",
+        reader_name="Substituted deliveries",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1371,6 +1440,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="async_delivery_mean_elapsed_ms",
+        reader_name="Mean delivery time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1382,6 +1452,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="async_delivery_median_elapsed_ms",
+        reader_name="Median delivery time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1396,6 +1467,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="async_delivery_p95_elapsed_ms",
+        reader_name="95th-percentile delivery time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1413,6 +1485,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="async_delivery_elapsed_n",
+        reader_name="Deliveries with a measured time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1426,6 +1499,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     # ---- Significance (stats.py) --------------------------------------------
     _d(
         name="hedges_g",
+        reader_name="Effect size (Hedges' g)",
         data_type="numeric",
         family="composite",
         transferability_class="judge_mediated",
@@ -1442,6 +1516,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="significant",
+        reader_name="Significant at p < 0.05",
         data_type="boolean",
         family="composite",
         transferability_class="judge_mediated",
@@ -1450,6 +1525,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="p",
+        reader_name="p-value",
         data_type="numeric",
         family="composite",
         transferability_class="judge_mediated",
@@ -1460,6 +1536,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="paired",
+        reader_name="Paired test",
         data_type="boolean",
         family="mechanical",
         transferability_class="mechanical",
@@ -1468,6 +1545,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="n_pairs",
+        reader_name="Cases scored in both runs",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1477,6 +1555,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="n_cases",
+        reader_name="Cases with a composite",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1487,6 +1566,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     # ---- Composites ---------------------------------------------------------
     _d(
         name="pass_hat_k",
+        reader_name="Reliability (pass^k)",
         data_type="numeric",
         family="composite",
         transferability_class="scenario_bound",
@@ -1502,6 +1582,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="mean_composite",
+        reader_name="Mean composite quality",
         data_type="numeric",
         family="composite",
         transferability_class="judge_mediated",
@@ -1520,6 +1601,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     # ---- Dual-score axes -------------------------------------------------------
     _d(
         name=TRANSCRIPT_DIM_ID,
+        reader_name="Decision quality",
         data_type="numeric",
         family="dual_axis",
         transferability_class="judge_mediated",
@@ -1534,6 +1616,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name=OUTCOME_DIM_ID,
+        reader_name="Intent satisfaction",
         data_type="numeric",
         family="dual_axis",
         # Judge-produced AND scenario-defined; strictest wins.
@@ -1549,6 +1632,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="mean_transcript_score",
+        reader_name="Mean decision quality",
         data_type="numeric",
         family="dual_axis",
         transferability_class="judge_mediated",
@@ -1566,6 +1650,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="mean_outcome_score",
+        reader_name="Mean intent satisfaction",
         data_type="numeric",
         # Judge-produced AND scenario-defined, as the per-observation axis is; strictest wins.
         family="dual_axis",
@@ -1587,6 +1672,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     # expression would be the violation; seeding the observation and its aggregate is not.
     _d(
         name="goal_state",
+        reader_name="Goal check passed",
         data_type="boolean",
         family="goal_state",
         transferability_class="scenario_bound",
@@ -1600,6 +1686,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="goal_state_pass_rate",
+        reader_name="Goal-check pass rate",
         data_type="numeric",
         family="goal_state",
         transferability_class="scenario_bound",
@@ -1616,6 +1703,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     # ---- Classifier track ---------------------------------------------------
     _d(
         name="accuracy",  # ACCURACY_MEASURE, derived from MATCH_MEASURE — see the pair's definition below
+        reader_name="Accuracy",
         data_type="numeric",
         family="classifier",
         transferability_class="scenario_bound",
@@ -1633,6 +1721,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="precision",
+        reader_name="Precision",
         data_type="numeric",
         family="classifier",
         transferability_class="scenario_bound",
@@ -1644,6 +1733,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="recall",
+        reader_name="Recall",
         data_type="numeric",
         family="classifier",
         transferability_class="scenario_bound",
@@ -1655,6 +1745,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="f1",
+        reader_name="F1",
         data_type="numeric",
         family="classifier",
         transferability_class="scenario_bound",
@@ -1666,6 +1757,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="match",  # MATCH_MEASURE
+        reader_name="Label matched",
         data_type="boolean",
         family="classifier",
         transferability_class="scenario_bound",
@@ -1678,6 +1770,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="confusion_cell",  # CONFUSION_CELL_MEASURE, defined below beside the cell's format
+        reader_name="Confusion-matrix cell",
         data_type="categorical",
         family="classifier",
         transferability_class="scenario_bound",
@@ -1694,6 +1787,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     # carried on ``EvalResult.kind_payload`` and described, if anywhere, in the host's catalogue.
     _d(
         name="status",
+        reader_name="Background work status",
         data_type="categorical",
         family="mechanical",
         transferability_class="mechanical",
@@ -1706,6 +1800,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="acknowledged_turn",
+        reader_name="Turn acknowledged on",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1715,6 +1810,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="delivered_turn",
+        reader_name="Turn delivered on",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1724,6 +1820,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="elapsed_ms",
+        reader_name="Background work time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1734,6 +1831,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="delivered_items",
+        reader_name="Items delivered",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1744,6 +1842,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="substituted",
+        reader_name="Payload substituted",
         data_type="categorical",
         family="mechanical",
         transferability_class="mechanical",
@@ -1759,6 +1858,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     # ---- Run-comparison surface (ResultsCompareArmRow / PerTemplateRow) -
     _d(
         name="count_a",
+        reader_name="Cases in run A",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1768,6 +1868,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="count_b",
+        reader_name="Cases in run B",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -1777,6 +1878,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     _d(
         name="comparison_basis",
+        reader_name="Comparison basis",
         data_type="categorical",
         family="mechanical",
         transferability_class="mechanical",
@@ -1803,6 +1905,44 @@ if len(METRIC_DESCRIPTORS) != len(_SEED):  # pragma: no cover - import-time inva
 #: measure that is neither produced by the engine nor named here is a descriptor that renders and is
 #: never filled, so it fails that test rather than sitting empty in every host's catalogue.
 HOST_PRODUCED_MEASURES: frozenset[str] = frozenset({"match", "confusion_cell"})
+
+
+def reader_name_defects(descriptors: Iterable[MetricDescriptor]) -> list[str]:
+    """Say which descriptors a reader could not tell apart, or would see only by key.
+
+    The one rule over :attr:`MetricDescriptor.reader_name`, applied to the engine's seed at import and to a
+    host's catalogue (with the seed) where it registers: every measure has one, and no two share one, compared
+    without case — two columns headed alike are one column to a reader, and a chart naming both twice refuses
+    to draw.
+
+    Args:
+        descriptors: The descriptors to check, together.
+
+    Returns:
+        Human-readable defects, empty when every descriptor names itself and no two names collide.
+    """
+    listed = list(descriptors)
+    defects = [
+        f"{d.name} has no reader_name — a header, title or axis label would print its key; give it the words a "
+        "reader calls it"
+        for d in listed
+        if d.reader_name is None
+    ]
+    owners: dict[str, list[str]] = {}
+    for d in listed:
+        if d.reader_name is not None:
+            owners.setdefault(d.reader_name.casefold(), []).append(d.name)
+    defects.extend(
+        f"{', '.join(sorted(names))} share the reader_name {next(d.reader_name for d in listed if d.name == names[0])!r} "
+        "— a reader could not tell them apart"
+        for names in owners.values()
+        if len(names) > 1
+    )
+    return defects
+
+
+if _unnamed := reader_name_defects(_SEED):  # pragma: no cover - import-time invariant
+    raise RuntimeError(f"Unsound reader names in the metric seed: {_unnamed}")
 
 
 #: The ENGINE's measure families a code path grades, with no judge between the candidate and the
@@ -2006,6 +2146,8 @@ def describe_rubric_dim(name: str, *, scale: RubricScale) -> MetricDescriptor:
         return seeded
     return MetricDescriptor(
         name=name,
+        # The dimension's name is the operator's own word for it — there is no other to give.
+        reader_name=name,
         data_type="numeric",
         family="rubric",
         transferability_class="judge_mediated",
@@ -2033,6 +2175,7 @@ def describe_goal_state(expression: str) -> MetricDescriptor:
     _require_name(expression)
     return MetricDescriptor(
         name=expression,
+        reader_name=f"Check {expression}",
         data_type="boolean",
         family="goal_state",
         transferability_class="scenario_bound",
@@ -2116,6 +2259,7 @@ def describe_goal_check_rate(expression: str) -> MetricDescriptor:
     """
     return MetricDescriptor(
         name=goal_check_measure(expression),
+        reader_name=f"Pass rate of {expression}",
         data_type="numeric",
         family="goal_state",
         transferability_class="scenario_bound",
@@ -2307,6 +2451,7 @@ def describe_classifier_label(statistic: ClassifierStatistic, label: str) -> Met
     return core.model_copy(
         update={
             "name": classifier_label_measure(statistic, label),
+            "reader_name": f"{core.reader_name} of {label}",
             "description": f"{core.description} For the label {label!r}.",
             "reader_prose": f"the {statistic} of the label {label!r}",
             "merit_axis": "quality",
@@ -2499,6 +2644,7 @@ def describe_phase_timing(key: str) -> MetricDescriptor:
     phase = key.removesuffix("_ms")
     return MetricDescriptor(
         name=key,
+        reader_name=f"Time in the {phase.replace('_', ' ')} phase",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",

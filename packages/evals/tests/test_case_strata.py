@@ -309,12 +309,12 @@ class TestTheReportCarriesStrata:
 
         headers = [column.header for column in table.columns]
         assert headers == ["Arm", "Reading", "All cases", "lookalike", "plain", NO_STRATUM]
-        accuracy = _row(table, "sonnet", "accuracy")
+        accuracy = _row(table, "sonnet", "Accuracy")
         assert accuracy["all"].startswith("0.875 ± ") and accuracy["all"].endswith("(n=16)")
         assert accuracy[_column(table, "lookalike")] == "0.3333 ± 0.3333 (n=3)"
         assert accuracy[_column(table, "plain")] == "1 ± 0 (n=12)"
         # A rate carries its Wilson interval, which a stratum this small makes wide.
-        assert _row(table, "sonnet", "match")[_column(table, "lookalike")] == "0.3333 [0.06149, 0.7923] (n=3)"
+        assert _row(table, "sonnet", "Label matched")[_column(table, "lookalike")] == "0.3333 [0.06149, 0.7923] (n=3)"
 
     def test_the_arms_follow_the_decision_surfaces_row_order_and_the_table_states_it(self) -> None:
         """No control here, so no reference row: the arms alphabetically by name (#645)."""
@@ -331,15 +331,15 @@ class TestTheReportCarriesStrata:
         assert cases["all"] == "16 cases, 16 obs"
         assert cases[_column(table, "lookalike")] == f"3 cases, 3 obs — {TOO_FEW_CASES}"
         assert cases[_column(table, "plain")] == "12 cases, 12 obs"
-        assert table.rows.index(cases) < table.rows.index(_row(table, "sonnet", "accuracy"))
+        assert table.rows.index(cases) < table.rows.index(_row(table, "sonnet", "Accuracy"))
 
     def test_the_confusion_matrix_and_per_label_rows_are_per_stratum(self) -> None:
         table = _strata_table(_code_only(_bundle(*_mixed())))
 
-        matrix = _row(table, "sonnet", "confusion_cell")
+        matrix = _row(table, "sonnet", "Confusion-matrix cell")
         assert matrix[_column(table, "lookalike")] == "NONE → DIRECT: 2; NONE → NONE: 1 (n=3)"
         assert matrix[_column(table, "plain")] == "NONE → NONE: 12 (n=12)"
-        recall = _row(table, "sonnet", classifier_label_measure("recall", "NONE"))
+        recall = _row(table, "sonnet", "Recall of NONE")
         assert recall[_column(table, "lookalike")] == "0.3333 [0.06149, 0.7923] (n=3)"
         assert recall[_column(table, "plain")] == "1 [0.7575, 1] (n=12)"
         assert _row(table, "sonnet", f"{_TONE} (judged)")[_column(table, "lookalike")] == "2 ± 0 (n=3)"

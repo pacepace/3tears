@@ -38,6 +38,7 @@ from packages.evals.tests.test_viz_refs import build, chart, measure_facts, ref,
 def _latency(threshold: float | None) -> MetricDescriptor:
     return MetricDescriptor(
         name="total_ms",
+        reader_name="Turn time",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -178,12 +179,12 @@ def test_a_delta_below_its_threshold_is_labelled_immaterial_on_the_surface() -> 
     payload, compiled = _delta_table(facts)
 
     rows = {row["metric"]: row for row in payload["rows"]}
-    assert (rows["total_ms"]["materiality"], rows["pass_rate"]["materiality"]) == ("immaterial", "material")
+    assert (rows["Turn time"]["materiality"], rows["pass_rate"]["materiality"]) == ("immaterial", "material")
     table = {row["metric"]: row for row in compiled.rows}
-    assert table["total_ms"]["delta"].endswith("(immaterial)")
+    assert table["Turn time"]["delta"].endswith("(immaterial)")
     assert not table["pass_rate"]["delta"].endswith("(immaterial)")
     (disclosure,) = [d for d in compiled.disclosures if "materiality threshold" in d]
-    assert "1 of 2 changes" in disclosure and "total_ms" in disclosure
+    assert "1 of 2 changes" in disclosure and "Turn time" in disclosure
 
 
 def test_a_surface_with_no_thresholds_labels_nothing_immaterial() -> None:

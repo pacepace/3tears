@@ -107,6 +107,7 @@ _TURN_COST = "turn_cost_usd"
 def _host_cost(**update: Any) -> MetricDescriptor:
     fields: dict[str, Any] = dict(
         name=_TURN_COST,
+        reader_name="Turn cost",
         data_type="numeric",
         family="mechanical",
         transferability_class="mechanical",
@@ -279,7 +280,7 @@ def _row(table: TableBlock, model: str, **match: str) -> dict[str, Any]:
 
 
 def _column(table: TableBlock, measure: str) -> str:
-    """The key of the column a measure is shown under — its header leads with the measure's name."""
+    """The key of the column a measure is shown under — its header leads with what a reader calls the measure."""
     return next(column.key for column in table.columns if column.header.startswith(measure))
 
 
@@ -557,7 +558,7 @@ class TestAnArmWhereNoResultTookATurn:
         table = _table(report, "surface")
         refusing, steady = _row(table, _REFUSING), _row(table, _STEADY)
 
-        for measure in ("total_ms", _TURN_COST):
+        for measure in ("Turn time", "Turn cost"):
             assert refusing[_column(table, measure)] == NO_SUCCESSFUL_RESULTS
             assert steady[_column(table, measure)] not in (None, NO_SUCCESSFUL_RESULTS)
         assert "4 failed by the candidate (4 with no turn taken" in str(refusing["replication"])
@@ -579,7 +580,7 @@ class TestAnArmWhereNoResultTookATurn:
 
         report = build_report(loaded)
         table = _table(report, "surface")
-        assert _row(table, _REFUSING)[_column(table, "total_ms")] == NO_SUCCESSFUL_RESULTS
+        assert _row(table, _REFUSING)[_column(table, "Turn time")] == NO_SUCCESSFUL_RESULTS
         assert len(_all_failed_disclosures(report)) == 1
         jsonschema.Draft202012Validator(published_report_schema()).validate(json.loads(report.to_canonical_json()))
 
@@ -658,7 +659,7 @@ class TestAnArmWhereNoResultTookATurn:
         assert (strata["hard"].n_candidate_failed, strata["hard"].n_no_turn) == (2, 2)
 
         table = _table(_code_only(bundle), "strata")
-        latency = _row(table, _FLAKY, reading="total_ms (ms)")
+        latency = _row(table, _FLAKY, reading="Turn time (ms)")
         assert latency[_column(table, "hard")] == NO_SUCCESSFUL_RESULTS
         assert latency[_column(table, "easy")] not in (None, NO_SUCCESSFUL_RESULTS)
 
@@ -780,7 +781,7 @@ class TestAQuickClassifierLandsItsRefusalAsAMiss:
 
     async def test_its_accuracy_contrast_is_tested_not_untested(self) -> None:
         comparison = await self._comparison()
-        (row,) = [row for row in comparison.contrasts() if row["reading"] == "accuracy"]
+        (row,) = [row for row in comparison.contrasts() if row["reading"] == "Accuracy"]
         assert row["p_adjusted"] is not None and row["delta"] == -0.5
         assert not str(row["verdict"]).startswith("untested")
 

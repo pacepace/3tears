@@ -214,6 +214,20 @@ be fingerprinted before generation and two prompts could no longer be compared o
 bundle cannot answer is answered by adding a field to it.
 [`examples/llm_analysis.py`](../examples/llm_analysis.py) does all of it in one file.
 
+## How a measure and a question are named
+
+A measure is headed by its reader-facing name (`MetricDescriptor.reader_name`, frozen on the decision surface as
+`MeasureFacts.reader_name`) in every surface table header, chart title and axis label, every evidence,
+contrast, guardrail and strata row, and the memo. A judged dimension is printed under its rubric name with
+`(judged)` after it. The key is still there to cite: on `SurfaceColumn.measure_id`, on each `EvidenceRow`, and
+as `measure_id` on each row `Comparison.contrasts()` returns (which filters on either the key or the heading).
+An analysis frozen before measures had reader names prints an engine measure by the engine's name, and a host
+measure by its key, since that is all the analysis recorded.
+
+A declared question is printed as the words it was asked, both in the memo and in the contrasts table. Its id
+is printed only where the declaration no longer holds that question. In the memo, each finding's evidence is
+one table (Arm, Measure, Value, n, Spread), laid out like the report's evidence table.
+
 ## How an arm is named
 
 Every block that names an arm — decisions, evidence rows, the arm table, the decision surface, the
@@ -228,6 +242,12 @@ results by stratum, the contrasts, the guardrails and labels tables, and every c
   chart intents.
 - Two arms that would still read alike carry their variant keys' digests (`(arm <digest>)`), so no two
   arms of one report share a name.
+
+- A level the campaign declared a name for (the `display` of a value on its `SweptAxis`, such as "current text"
+  for a prompt) is printed by that name rather than the host's display, which for a long text is a fingerprint
+  (`cognitive_style: 2304 chars · 539ef3`). The name is matched on `(axis_id, content_hash)`; where one level
+  is declared twice the first name wins, and an undeclared level keeps the host's display. Only the display
+  changes, so no variant key moves.
 
 What an arm ran in full is stated once, in the arm table's "Every lever it ran" column
 (`ArmRow.settings`). A stored analysis's own charts keep the names they were drawn with at generation.

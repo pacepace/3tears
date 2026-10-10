@@ -9,14 +9,15 @@ module. Two spellings of one arm on two surfaces would read as two arms.
 from __future__ import annotations
 
 import typing
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, Literal
 
 from threetears.evals.analysis.arms import ArmStatus, arm_label, arm_names
 from threetears.evals.analysis.bundle import ComparisonVerdict
 from threetears.evals.analysis.cells import variant_of_cell_ref
+from threetears.evals.analysis.viz.intent import Cell
 from threetears.evals.analysis.viz_refs import cell_arm_labels
-from threetears.evals.contracts.campaign import ConfidenceTier, EvalAnalysis, EvidenceTier
+from threetears.evals.contracts.campaign import ConfidenceTier, EvalAnalysis, EvidenceRow, EvidenceTier
 from threetears.evals.contracts.surface import GuardrailDecision
 
 
@@ -164,6 +165,47 @@ def arm_namer(analysis: EvalAnalysis) -> Callable[[str], str]:
     return name
 
 
+#: A finding's evidence table, column key → header: one layout for the memo as written and for the report, so the
+#: judge reads the table a reader sees.
+EVIDENCE_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("arm", "Arm"),
+    ("measure", "Measure"),
+    ("value", "Value"),
+    ("n", "n"),
+    ("spread", "Spread"),
+)
+
+
+def evidence_rows(
+    analysis: EvalAnalysis, evidence: Sequence[EvidenceRow], arm: Callable[[str], str]
+) -> list[dict[str, Cell]]:
+    """A finding's evidence as table rows, keyed by :data:`EVIDENCE_COLUMNS` — each reading by what a reader calls it.
+
+    The measure is headed as the decision surface heads it
+    (:meth:`~threetears.evals.contracts.surface.DecisionSurface.measure_heading`), never by its key unless nothing
+    names it; the key stays on the analysis's evidence rows, which every reader of the record can cite.
+
+    Args:
+        analysis: The analysis the evidence was resolved under.
+        evidence: One finding's resolved evidence rows, in the order code resolved them.
+        arm: The analysis's :func:`arm_namer`.
+
+    Returns:
+        One row per evidence row, in order.
+    """
+    surface = analysis.decision_surface
+    return [
+        {
+            "arm": arm(row.cell_ref),
+            "measure": surface.measure_heading(row.measure_id, row.reading),
+            "value": row.value,
+            "n": row.n,
+            "spread": row.dispersion,
+        }
+        for row in evidence
+    ]
+
+
 def positions(numbers: list[int]) -> str:
     """Finding positions as a reader counts them: from one."""
     return ", ".join(str(position + 1) for position in numbers)
@@ -173,7 +215,9 @@ __all__ = [
     "ARM_STATUS_WORDS",
     "COMPARISON_VERDICT_WORDS",
     "CONFIDENCE_WORDS",
+    "EVIDENCE_COLUMNS",
     "EVIDENCE_TIER_WORDS",
+    "evidence_rows",
     "stands_on_words",
     "arm_namer",
     "positions",

@@ -89,7 +89,7 @@ def _chart(block: ChartBlock) -> list[str]:
         lines += ["", _one_line(intent.caption)]
     lines += [
         "",
-        *_rows(
+        *markdown_table(
             [column.header for column in columns],
             [[row.get(column.key) for column in columns] for row in intent.rows],
         ),
@@ -109,7 +109,7 @@ def _table(block: TableBlock) -> list[str]:
     """A table block's rows, or a line saying it has none."""
     if not block.rows:
         return ["_(no rows)_"]
-    lines = _rows(
+    lines = markdown_table(
         [column.header for column in block.columns],
         [[row.get(column.key) for column in block.columns] for row in block.rows],
     )
@@ -118,8 +118,16 @@ def _table(block: TableBlock) -> list[str]:
     return lines
 
 
-def _rows(headers: Sequence[str], rows: Iterable[Sequence[Cell]]) -> list[str]:
-    """A GitHub-flavoured Markdown table."""
+def markdown_table(headers: Sequence[str], rows: Iterable[Sequence[Cell]]) -> list[str]:
+    """A GitHub-flavoured Markdown table: one line per row, each cell on one line with its pipes escaped.
+
+    Args:
+        headers: The column headers.
+        rows: Each row's cells, in header order; a cell renders as :func:`~threetears.evals.analysis.viz.quantities.render_cell` renders it.
+
+    Returns:
+        The table's lines.
+    """
     lines = ["| " + " | ".join(_cell(header) for header in headers) + " |", "|" + "---|" * len(headers)]
     lines += ["| " + " | ".join(_cell(render_cell(value)) for value in row) + " |" for row in rows]
     return lines
@@ -141,5 +149,6 @@ def _one_line(text: str) -> str:
 
 
 __all__ = [
+    "markdown_table",
     "report_markdown",
 ]

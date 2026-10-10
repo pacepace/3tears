@@ -96,6 +96,7 @@ def _directionless(name: str, data_type: str | None, *, diagnostic: bool = False
     return MetricDescriptor.model_validate(
         {
             "name": name,
+            "reader_name": name.replace("_", " ").capitalize(),
             "data_type": data_type,
             "family": TOYHOST_EXTRACTION_FAMILY.name,
             "transferability_class": "mechanical",

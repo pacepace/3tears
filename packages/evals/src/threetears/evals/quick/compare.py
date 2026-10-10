@@ -110,6 +110,8 @@ class Comparison:
         contrast_arms: The arm each row of the report's contrasts table tests, by its key in :attr:`arms`, row for
             row; ``None`` for a row no arm's variant matches. Empty, or of another length than the table, and
             :meth:`contrasts` names no arm on any row rather than guess one.
+        contrast_measures: The key of the measure each row of the contrasts table reads, row for row — the table
+            heads it in words. Empty, or of another length than the table, and :meth:`contrasts` names no key.
         kind: The kind every arm ran — the callable kind, or the judged one — whose levers the campaign's axes name.
     """
 
@@ -122,6 +124,7 @@ class Comparison:
     host: EvalHost
     factors: tuple[str, ...] = _MODEL_ONLY
     contrast_arms: tuple[ArmKey | None, ...] = field(default=(), repr=False, compare=False)
+    contrast_measures: tuple[str | None, ...] = field(default=(), repr=False, compare=False)
     kind: str = field(default=CALLABLE_KIND, repr=False, compare=False)
 
     def results(self, arm: ArmKey) -> list[CaseResult]:
@@ -164,15 +167,18 @@ class Comparison:
         """The rows of the report's "Contrasts against the control" table, each arm tested against the control.
 
         Args:
-            reading: Only the rows on this reading (``"accuracy"``); ``None`` keeps every row.
+            reading: Only the rows on this reading, by its key (``"accuracy"``) or as the report heads it
+                (``"Accuracy"``); ``None`` keeps every row.
 
         Returns:
             One row per arm and reading, keyed ``arm`` (the arm tested, by its key in :attr:`arms`: the name
-            you gave it, or its tuple of levels), ``question``, ``reading``, ``contrast`` (the arm, as the report
-            names it), ``control`` (the control, as the report names it), ``control_mean`` and ``arm_mean`` (over the cases the test read),
-            ``cases`` (how many, paired or not, and any one side ran that the test left out), ``delta`` (arm
-            minus control), ``interval`` (on the delta, simultaneous over the family), ``hedges_g`` (the
-            standardized effect), ``p_adjusted`` (Holm, over the campaign's family) and ``verdict``; empty when
+            you gave it, or its tuple of levels), ``measure_id`` (the key of the measure read, to cite or filter
+            on), ``question`` (in the words it was asked), ``reading`` (the measure as the report heads it),
+            ``contrast`` (the arm, as the report names it), ``control`` (the control, as the report names it),
+            ``control_mean`` and ``arm_mean`` (over the cases the test read), ``cases`` (how many, paired or not,
+            and any one side ran that the test left out), ``delta`` (arm minus control), ``interval`` (on the
+            delta, simultaneous over the family), ``hedges_g`` (the standardized effect), ``p_adjusted`` (Holm,
+            over the campaign's family) and ``verdict``; empty when
             the report tested nothing.
         """
         rows = [
@@ -182,10 +188,11 @@ class Comparison:
             for row in block.rows
         ]
         arms = self.contrast_arms if len(self.contrast_arms) == len(rows) else (None,) * len(rows)
+        keys = self.contrast_measures if len(self.contrast_measures) == len(rows) else (None,) * len(rows)
         return [
-            {"arm": arm, **row}
-            for row, arm in zip(rows, arms, strict=True)
-            if reading is None or row["reading"] == reading
+            {"arm": arm, "measure_id": key, **row}
+            for row, arm, key in zip(rows, arms, keys, strict=True)
+            if reading is None or reading in (key, row["reading"])
         ]
 
     def against(self, control: ArmKey, *, name: str | None = None, created_by: str = COMPARE_CREATED_BY) -> Comparison:
@@ -363,6 +370,9 @@ def _declare(
             arm_of_variant.get(tested.contrast.variant_key)
             for family in bundle.multiple_comparisons.families
             for tested in family.comparisons
+        ),
+        contrast_measures=tuple(
+            tested.name for family in bundle.multiple_comparisons.families for tested in family.comparisons
         ),
         kind=kind,
     )

@@ -66,8 +66,8 @@ async def test_offline_the_example_runs_four_arms_keyed_by_both_factors(
     # The verdict lines, and a pointer to the full report rather than the report itself.
     assert comparison.render() not in out
     assert re.search(
-        rf"What v2 changes against v1, on each model:\n  {old}: v2 vs v1 on accuracy: \+0\.5 \(p=[\d.e-]+\): improved on the control\n"
-        rf"  {new}: v2 vs v1 on accuracy: \+0\.071 \(p=[\d.e-]+\): not separated from the control\n",
+        rf"What v2 changes against v1, on each model:\n  {old}: v2 vs v1 on Accuracy: \+0\.5 \(p=[\d.e-]+\): improved on the control\n"
+        rf"  {new}: v2 vs v1 on Accuracy: \+0\.071 \(p=[\d.e-]+\): not separated from the control\n",
         out,
     )
     assert out.rstrip().endswith("The full report: comparison.render(), or reports.py to write it to files.")

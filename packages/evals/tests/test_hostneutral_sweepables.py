@@ -165,7 +165,9 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
     # stored analysis's cell references still resolve. Each run summary carries its production footing, the
     # inputs it moved off the subject's production configuration beside its production-replicating cost (#571).
     # The bundle also carries the host declarations digest (#575), and bounds its prior insights, refused merges
-    # and next experiments, each with an omitted count (#614, #572).
+    # and next experiments, each with an omitted count (#614, #572). Every measure in the catalog carries a
+    # reader-facing name (#627), and a level the campaign declared a name for is displayed by it in the variant
+    # index (#581); neither moves a key.
     ((47, 11), _CORE_V24 | {"judge_request_settings", "simulator_request_settings", "judge_temperature"}),
 )
 

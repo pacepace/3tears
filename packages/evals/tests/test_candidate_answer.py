@@ -123,7 +123,7 @@ async def test_compare_tests_the_arms_reported_cost_against_the_control() -> Non
     ]
     by_reading = {row["reading"]: row for row in table.rows}
     # The candidate's spend, not cost_usd, which sums a judge's spend too: what it cost to measure the arm.
-    assert "cost_usd" not in by_reading
-    cost = by_reading["production_replicating_cost"]
+    assert "Measuring spend, all roles" not in by_reading
+    cost = by_reading["Production cost"]
     assert cost["contrast"] == "candidate=cheaper" and cost["delta"] < 0
     assert cost["verdict"] == "improved on the control"

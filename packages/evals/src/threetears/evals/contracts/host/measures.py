@@ -96,9 +96,21 @@ class MeasureRegistry(HostAttributed):
 
     def _defects(self) -> list[str]:
         """Name every way the catalogue contradicts what this registry promises."""
-        from threetears.evals.contracts.metrics import ENGINE_FAMILIES, METRIC_DESCRIPTORS, containment_defects
+        from threetears.evals.contracts.metrics import (
+            ENGINE_FAMILIES,
+            METRIC_DESCRIPTORS,
+            containment_defects,
+            reader_name_defects,
+        )
 
         defects: list[str] = self._family_defects()
+        # Every rendered surface heads a measure by what a reader calls it, so a host measure with no reader name
+        # would print its key there — refused here, at startup, rather than discovered on a chart. Checked with the
+        # engine's core alongside, because a host measure called what a core measure is called heads a column a
+        # reader cannot tell from the core's. A core-named measure is refused below on its own account, so it is
+        # left out here rather than reported twice.
+        host = [d for d in self._descriptors if d.name not in METRIC_DESCRIPTORS]
+        defects.extend(reader_name_defects([*host, *METRIC_DESCRIPTORS.values()]))
         # A host measure named like a core one cannot be described as the host's: every resolver
         # consults the core first, so it would read with the core's meaning, direction and range,
         # and its values would pool into the engine's own distribution under that name with `n`

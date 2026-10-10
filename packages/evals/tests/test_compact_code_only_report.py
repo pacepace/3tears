@@ -163,7 +163,7 @@ class TestPerLabelStatisticsAreOneTable:
         report = (await _classifier()).report
         charts = [block for block in report.blocks if isinstance(block, ChartBlock)]
         titles = [chart.intent.title for chart in charts if chart.intent is not None]
-        assert titles == ["accuracy"], "a single reading keeps its distribution chart; per-label ones are the table's"
+        assert titles == ["Accuracy"], "a single reading keeps its distribution chart; per-label ones are the table's"
         assert not [
             block for block in report.blocks if isinstance(block, DisclosureBlock) and "classifier:" in block.text
         ]
