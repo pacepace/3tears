@@ -583,6 +583,7 @@ The host contract — what a consuming product declares, and what the engine nev
 - **`KindContractError`** · exception · A kind's model cannot be read the way the engine promises to read it — raised where it is declared.
 - **`MeasureRegistrationError`** · exception · A measure declaration contradicts what this registry promises.
 - **`MeasureRegistry`** · class · One host's declared measures, validated at construction.
+- **`MemberActsOn`** · dataclass · Name the measure each listed ENTRY of an overlay map is supposed to move — `ActsOn` per member.
 - **`NestedSchema`** · class · One schema written inside another, and where it sits.
 - **`NominalScale`** · model · Unordered categories. Two levels are different, and neither is larger.
 - **`Ordinal`** · dataclass · Mark a `Literal` or `Enum` field as ordered: its levels rank in the order they are declared.

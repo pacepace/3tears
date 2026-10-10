@@ -4971,7 +4971,7 @@ def _mechanism_observations(results: Sequence[EvalResult], *, profile: HostProfi
     Returns:
         ``{name: {result id: (case id, value)}}``; a result that observed nothing of a name is absent under it.
     """
-    names = {declared.acts_on for declared in profile.sweepables.declarations if declared.acts_on is not None}
+    names = {measure for _lever, measure in profile.sweepables.mechanisms}
     names |= set(_OBSERVED_MECHANISMS)
     observed: _MechanismObservations = {}
     for name in sorted(names):
@@ -5136,8 +5136,7 @@ def _raises_observed_mechanism(lever: str, covariate: str, *, profile: HostProfi
     """
     if lever != _CANDIDATE_MODEL_LEVER:
         return False
-    declared = profile.sweepables.get(lever)
-    return declared is None or declared.acts_on != covariate
+    return profile.sweepables.acts_on(lever) != covariate
 
 
 def _observed_mechanism_confounds(
@@ -6433,7 +6432,6 @@ def _coverage_map(
         for record in cohort_records:
             if (level := _lever_value(record, lever, effective_by_run)) is not None:
                 result_ids_by_level.setdefault(level, set()).add(record.result_id)
-        declared_lever = profile.sweepables.get(lever)
         k = _lever_k_floor(lever, cohort_records, k_by_arm, group_of_run, effective_by_run)
         # A declared axis is asked the authoring gate's own question. A campaign stored before that
         # gate, or past it, can still declare an apparatus or label input, and its row is then
@@ -6474,9 +6472,7 @@ def _coverage_map(
                 )
                 + _observed_mechanism_confounds(lever, result_ids_by_level, observations, profile=profile)
                 + _served_model_confounds(chain.from_iterable(result_ids_by_level.values()), served),
-                mechanism=_mechanism_check(
-                    declared_lever.acts_on if declared_lever is not None else None, result_ids_by_level, observations
-                ),
+                mechanism=_mechanism_check(profile.sweepables.acts_on(lever), result_ids_by_level, observations),
             )
         )
     return coverage

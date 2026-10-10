@@ -318,7 +318,8 @@ core ships no charting library.
 A lever that changed nothing and a lever that never took effect read alike in every outcome measure. A
 `Sweepable` lever may name the measure or covariate it is supposed to move — `acts_on="context_tokens_in"` on a
 chunk-width lever, say; a kind's overlay field does the same with `ActsOn(...)` beside `Ordinal()` and
-`Interval(...)`. Each coverage row of the analysis bundle then tests that measure across the lever's levels with
+`Interval(...)`, and an entry of a map field with `MemberActsOn({key: measure})` (an open family's
+`member_acts_on`). Each coverage row of the analysis bundle then tests that measure across the lever's levels with
 the same separation test the contrasts against the control use (per-case means, paired where the levels share
 cases, Holm-corrected across the lever's pairs): `moved` when some pair separates; `inert` when every level was
 observed, every pair could be tested and none separates — no measurable evidence the lever acted on its mechanism;

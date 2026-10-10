@@ -138,7 +138,9 @@ its levers (`<prefix>.<field>`; the kind's name when unset).
 
 An overlay field takes markers beside its type, in `Annotated[...]`: `Ordinal()` ranks a `Literal` or `Enum`
 in declaration order, `Interval(unit=...)` names a number's unit, `ActsOn(measure)` names the measure the knob
-is supposed to move, and `ResolvesInto(lever)` names the host lever the knob is written into.
+is supposed to move, and `ResolvesInto(lever)` names the host lever the knob is written into. A map field's
+entries are distinct knobs, so `ActsOn` is refused there; `MemberActsOn({"max_search_calls": "search_calls"})`
+names the measure per entry instead, and every entry it does not list reads `unchecked`.
 
 `ResolvesInto` is for a knob whose effect your host also records, resolved, as a lever of its own: a
 `reasoning_effort` overlay and an `llm_parameters` lever hashing the model parameters it resolved into, say.
