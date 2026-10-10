@@ -53,6 +53,12 @@ An analysis adds that reading: findings, each with the evidence it rests on and 
 a decision per declared question, with its confidence; which arm won and why; and what to run next. No
 headline, finding, decision or answer to a declared question appears in a code-only report.
 
+**Coverage, joined.** An analysis's report opens What to run next with a `coverage` table: each lever of the
+coverage map, its status, the findings whose `axes` name it (or "no finding") and the next steps whose `lever`
+names it. A `thin` or `unswept` lever no step names reads "no next step names it". A step naming a lever with
+no coverage row is a proposal, not a gap, and says so beside it. The methods count the levers no finding names;
+a measured lever with no finding may simply have had nothing to say, so nothing acts on the count.
+
 `Report.basis` says which a report is; `REPORT_VERSION` is 5.
 
 ## Reading the arm table

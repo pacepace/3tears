@@ -180,15 +180,20 @@ def build_report(analysis: EvalAnalysis) -> Report:
     blocks.extend(_surface_blocks(build_surface_table(analysis)))
     blocks.extend(_strata_blocks(analysis.decision_surface, analysis.variant_index))
 
+    blocks.extend(_coverage_blocks(analysis))
+    coverage_status = {row.name: row.status for row in analysis.coverage.levers}
     for step in document.next:
         facts = [Fact(name="Leverage", value=step.leverage)]
         if step.lever:
-            facts.append(Fact(name="Lever", value=step.lever))
+            # Joined on the stored lever name; a lever with no coverage row is proposed, not a gap, and says so.
+            status = coverage_status.get(step.lever)
+            facts.append(Fact(name="Lever", value=f"{step.lever} ({status or 'no coverage row'})"))
         blocks.append(TextBlock(section="next", role="next_step", body=step.title, facts=facts))
         if step.why.strip():
             blocks.append(TextBlock(section="next", role="next_step_why", body=step.why))
 
     blocks.extend(_method_blocks(analysis))
+    blocks.extend(_unfound_lever_blocks(analysis))
     generation = analysis.generation
     return Report(
         basis="analysis",
@@ -207,6 +212,79 @@ def build_report(analysis: EvalAnalysis) -> Report:
         ),
         blocks=blocks,
     )
+
+
+def _levers_without_finding(analysis: EvalAnalysis) -> list[str]:
+    """The levers in the coverage map that no finding names in its ``axes`` — the map's side of the join (#631).
+
+    Computed from the stored fields on read, never by matching prose: a lever is named when it is, exactly, one
+    of a finding's ``axes``. A measured lever with no finding is not a defect (its arms may not have differed);
+    this is a count of the writer's own output, which a reader sees and nothing acts on.
+
+    Args:
+        analysis: The analysis.
+
+    Returns:
+        The unnamed levers, in coverage order.
+    """
+    named = {axis for finding in analysis.document.findings for axis in finding.axes}
+    return [row.name for row in analysis.coverage.levers if row.name not in named]
+
+
+def _coverage_blocks(analysis: EvalAnalysis) -> list[ReportBlock]:
+    """The coverage map joined to the findings and the next steps, on the stored lever names (#630, #631).
+
+    One row per lever: its status, the findings naming it in their ``axes`` (or "no finding"), and the next
+    steps whose ``lever`` names it. A ``thin`` or ``unswept`` lever no step names says so, rather than leaving
+    the slot empty; a step naming a lever with no coverage row renders under the steps, unattached.
+    """
+    levers = analysis.coverage.levers
+    if not levers:
+        return []
+    findings = analysis.document.findings
+    rows: list[dict[str, Cell]] = []
+    for row in levers:
+        named = [position for position, finding in enumerate(findings) if row.name in finding.axes]
+        steps = [step.title for step in analysis.document.next if step.lever == row.name]
+        gap = row.status in ("thin", "unswept")
+        rows.append(
+            {
+                "lever": row.name,
+                "status": row.status,
+                "findings": positions(named) or "no finding",
+                "next": "; ".join(steps) or ("no next step names it" if gap else None),
+            }
+        )
+    return [
+        TableBlock(
+            section="next",
+            name="coverage",
+            title="Coverage: each lever, the findings naming it, and the next step that would measure it",
+            columns=[
+                TableColumn(key="lever", header="Lever"),
+                TableColumn(key="status", header="Coverage"),
+                TableColumn(key="findings", header="Named by finding"),
+                TableColumn(key="next", header="Next step naming it"),
+            ],
+            rows=rows,
+            order="as the coverage map lists the levers",
+            total_rows=len(rows),
+        )
+    ]
+
+
+def _unfound_lever_blocks(analysis: EvalAnalysis) -> list[ReportBlock]:
+    """The methods count of coverage levers no finding names (#631): said, never acted on."""
+    levers = analysis.coverage.levers
+    if not levers:
+        return []
+    unnamed = _levers_without_finding(analysis)
+    text = (
+        f"{len(unnamed)} of the {len(levers)} lever(s) in the coverage map are named by no finding: {_listed(unnamed)}."
+        if unnamed
+        else f"Every one of the {len(levers)} lever(s) in the coverage map is named by a finding."
+    )
+    return [DisclosureBlock(section="methods", source="surface", text=text)]
 
 
 def _unproven_check_sentence(proof: GoalCheckProofReading) -> str:
