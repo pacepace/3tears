@@ -586,6 +586,7 @@ The host contract — what a consuming product declares, and what the engine nev
 - **`Ordinal`** · dataclass · Mark a `Literal` or `Enum` field as ordered: its levels rank in the order they are declared.
 - **`OrdinalScale`** · model · Ordered but unspaced — `small` / `medium` / `large`.
 - **`PassThreshold`** · dataclass · The 1–5 level a capability criterion must reach for an attempt to pass, for one behavior.
+- **`PooledProductionFooting`** · model · The production footings of the runs a POOLED production-replicating cost was drawn from (#571).
 - **`ProductionFooting`** · model · Which inputs one run held away from the subject's production configuration, read off the host's declarations.
 - **`ProfileRegistrationError`** · exception · Two of a host's registries contradict each other, raised where both are in hand.
 - **`RegistrationError`** · exception · A declaration contradicts what this module promises, raised where it is written.
@@ -986,7 +987,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`freeze_reporter_case`** · function · Freeze a campaign's analysis bundle into a reporter case of `template_id`.
   <br>`freeze_reporter_case(host: EvalHost, *, template_id: str, campaign_id: str, scope_id: str, analysis_id: str | None = None, labels: Sequence[Any] = (), supersedes: Sequence[str] = (), load_template: Callable[[str], EvalTemplate]) -> EvalTestCase`
 - **`frontier`** · function · Rank each subject's variants on quality x cost x latency, cheapest above bar.
-  <br>`frontier(storage: LensStore, scope_id: str, *, list_runs: RunLister, bar: float | str | None = None, subject_id: str | None = None, status: str | None = 'completed') -> dict[str, Any]`
+  <br>`frontier(storage: LensStore, scope_id: str, *, list_runs: RunLister, bar: float | str | None = None, subject_id: str | None = None, status: str | None = 'completed', profile: HostProfile | None = None) -> dict[str, Any]`
 - **`frozen_case_receipt`** · function · Project a stored reporter case onto the receipt a freeze answers with.
   <br>`frozen_case_receipt(test_case: EvalTestCase) -> FrozenReporterCase`
 - **`generate_analysis`** · async function · Generate one campaign's analysis from its context bundle, in one LLM call or two.
@@ -1177,6 +1178,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`ScoreExport`** · model · A projection's rows serialized for analysis elsewhere, with the account a CSV body cannot carry.
 - **`SelfAgreementDimension`** · model · How one judge's repeated scores on one dimension agreed with its first scores of the same evidence.
 - **`SeriesPoint`** · model · One run's aggregate for the measure — the trend's unit, with its denominators.
+- **`ServedModelReading`** · model · Which models answered the candidate calls a contestant, cell or row pooled (#684).
 - **`ShortCell`** · model · A cell holding fewer repetitions than the declaration intended — a short run, stated per cell.
 - **`SimpsonsFlag`** · model · A pooled column ranking that the per-row rankings mostly contradict.
 - **`SoundnessRefusal`** · exception · A finished generator call whose OUTPUT was refused — the repairable half.
@@ -1232,6 +1234,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`Callable[['list[EvalResult]'], Mapping[tuple[str, str], Mapping[str, Any]]]`
 - **`RunLister`** · type alias · Lists a scope's runs: `list_runs(scope_id, *, status=None, include_archived=False)`.
   <br>`Callable[..., 'list[EvalRun]']`
+- **`ServedModelState`** · literal · How many models answered a pooled set of candidate calls, as the provider's responses named them.
+  <br>`'one'` | `'pooled'` | `'unrecorded'`
 - **`SurfaceState`** · literal · Where a table stands. Two states rather than an optional table, because "the surface froze no cell" is a fact with its own sentence, and is not an empty table.
   <br>`'no_cells'` | `'measured'`
 - **`SurfaceVerdict`** · literal · A bar's verdict on one cell, as a word — never a colour alone, and one per `decision`.
@@ -1286,6 +1290,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`= 'analysis_reporter'`
 - **`SCOPED_METRICS_HELP`** · constant (str) · How each scoped metric must be read, in one sentence per metric, for every surface's help text (REST and MCP alike) — rendered from the table rather than written beside it, so no surface can describe a subset.
 - **`SECTION_TITLES`** · constant (dict) · Each section's heading, in reading order — the order every serializer lays the sections out in.
+- **`SERVED_MODEL_UNRECORDED`** · constant (str) · The token a served-model coordinate (`ScoreRecord.served_model`) carries for candidate calls whose response named no model, or that were stored before served models were recorded.
+  <br>`= 'unrecorded'`
 - **`WEIGHTING_EQUAL_PER_SCENARIO`** · constant (str) · Weighting mode: every scenario (case) gets an equal vote in a cell's number, however many observations it has.
   <br>`= 'equal_per_scenario'`
 
@@ -1961,6 +1967,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `apparatus_confounds` | `list[Confound]` | `[]` | Apparatus dimensions that varied across the WHOLE campaign, scanned independently of any lever. |
 | `arm_mechanisms` | `list[ArmMechanismReading]` | `[]` | Each arm's mean of every covariate read as an observed mechanism (today the candidate's reasoning share, `reasoning_ratio`), sorted by arm then covariate. |
 | `arm_served_models` | `list[ArmServedModel]` | `[]` | Which model the provider's responses named as having answered each arm's candidate calls, sorted by arm. |
+| `arm_production_footings` | `dict[str, PooledProductionFooting]` | `{}` | Arm (variant key) -> what each of its runs set away from the subject's production configuration, read off the host's sweepable declarations: `runs` maps run id -> that run's footing (`moved` with levels, `unchecked`, `held`; null for a run nobody could check). |
 | `cell_model_version` | `int` | `11` | Which definition of a cell produced `cells`. |
 | `host_declarations_digest` | `str \| None` | `None` | sha256 of the host's declared sweepables (each one's name, role and blank rule) and world dimension names — the declarations that partition observations into apparatus classes and arms (`host_declarations_digest`). |
 | `cells` | `list[Cell]` | `[]` | Every (variant, apparatus class) that any observation landed in, with how many observations pooled there and over how many cases and repeats per case. |

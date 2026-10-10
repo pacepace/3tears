@@ -62,6 +62,7 @@ from threetears.evals.analysis.reporting import (
     export_projection,
     normalize_bar,
     pooled_composite_basis,
+    pooled_served_models,
     project_score_records,
 )
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, composite_significance, difference_interval
@@ -480,6 +481,7 @@ def frontier(
     bar: float | str | None = None,
     subject_id: str | None = None,
     status: str | None = "completed",
+    profile: HostProfile | None = None,
 ) -> dict[str, Any]:
     """Rank each subject's variants on quality x cost x latency, cheapest above bar.
 
@@ -505,6 +507,10 @@ def frontier(
             are counted as filtered-out rather than dropped silently.
         status: Raw run-status filter, defaulting to ``"completed"`` for the
             same reason as :func:`pivot`. ``"all"`` ranks over every run.
+        profile: The host whose sweepable declarations each point's production-replicating cost is read
+            against (#571): every point and verdict then names what each of its runs set away from the subject's
+            production configuration, read off the WHOLE run. ``None`` leaves that disclosure ``None`` — nobody
+            checked, never "nothing moved".
 
     Returns:
         A JSON-safe :class:`~threetears.evals.analysis.reporting.FrontierResult` dict.
@@ -525,6 +531,10 @@ def frontier(
     # exclusion-accounting reason spelled out in :func:`pivot`.
     all_runs, cohort, archived_run_ids = _corpus_and_cohort(list_runs, scope_id)
     runs = [run for run in cohort if run.status == status] if status else cohort
+    if profile is not None:
+        # A listing elides host payload, and a payload-carried lever read off it would report as the subject's
+        # own setting, so a run whose footing is read is read whole (`run_summary` does the same).
+        runs = [(storage.load_eval_run(run.id, scope_id) or run) if run.elided_payload_paths else run for run in runs]
     results = storage.query_eval_results(scope_id)
     try:
         result = compute_frontier(
@@ -534,6 +544,7 @@ def frontier(
             subject_id=subject,
             known_run_ids={run.id for run in all_runs},
             archived_run_ids=archived_run_ids,
+            profile=profile,
         )
     except FrontierError as e:
         raise ValidationFailedError(str(e)) from e
@@ -1112,7 +1123,8 @@ def compare_two_runs(
         two runs share a template — it is NOT the significance basis.
         ``composite_comparability`` is the withholding disclosure, or
         ``None`` when the composites are comparable.
-        The ``arm`` row carries ``model_{a,b}``, ``k``, ``pass_hat_k_{a,b,delta}``,
+        The ``arm`` row carries ``model_{a,b}``, ``served_models_{a,b}`` (which models the responses named as
+        having answered each run's candidate calls — one, pooled or unrecorded — never the requested id), ``k``, ``pass_hat_k_{a,b,delta}``,
         ``composite_{a,b,delta}``, ``composite_basis_{a,b}`` (what each composite was meaned over, ragged
         when its results carried different dimension sets), ``composite_bases_differ``,
         ``composite_interval`` (at ``interval_level``),
@@ -1209,6 +1221,11 @@ def compare_two_runs(
     )
     n_scored_a = sum(1 for (_m, r, _tc) in per_case_a if r == run_a_id)
     n_scored_b = sum(1 for (_m, r, _tc) in per_case_b if r == run_b_id)
+    # Which models answered each run's candidate calls, as the responses named them (#684): an arm is keyed by
+    # the model its launch asked for, so two runs of one floating alias can be answered by different models and
+    # still read as one model here. Never the requested id standing in for a response that named none.
+    served_a = pooled_served_models(results_a)
+    served_b = pooled_served_models(results_b)
     interval: tuple[float, float] | None = None
     if composites_comparable:
         hedges_g, significant, p_value = composite_significance(sample_a, sample_b, paired=paired)
@@ -1220,6 +1237,10 @@ def compare_two_runs(
     arm: dict[str, Any] = {
         "model_a": model_a,
         "model_b": model_b,
+        # Each run's served models (`ServedModelReading` as a dict: served_models, n_results, n_unrecorded and
+        # state one / pooled / unrecorded); None where the run's candidate made no call.
+        "served_models_a": served_a.model_dump() if served_a is not None else None,
+        "served_models_b": served_b.model_dump() if served_b is not None else None,
         # The depth both pass^k values below are read at.
         "k": common_k,
         "pass_hat_k_a": pass_hat_k_a,

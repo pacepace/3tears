@@ -46,17 +46,6 @@ out of pass^k and the composite but does not disqualify a contestant on one, and
 (`TwoPillarDisclosure`). Fix: a declared margin per judged guardrail, and a frontier rule for the boundary
 pillar.
 
-### An arm's production-replicating cost does not name what its runs moved
-
-Tracked in [#571](https://github.com/pacepace/3tears/issues/571).
-
-A run's production-replicating cost carries its production footing: what the run moved off the subject's
-production configuration, what could not be checked, and that it moved nothing when it did (see
-[cost and budgets](cost-and-budgets.md)). The figures that pool runs by arm do not yet: a decision-surface
-cell's cost, a cost contrast and a frontier point's cost axis. Each reads the same spend over an arm's runs,
-which share the arm's levers, so the arm's footing is its runs' (or a disagreement to disclose). Fix: carry
-the union of the arm's run footings beside each pooled cost, saying where the runs disagree.
-
 ## Judging
 
 ### No check for judge drift across configurations

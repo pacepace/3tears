@@ -15,18 +15,21 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from typing import Any
 
 import pytest
 from pydantic import BaseModel, Field
 
+from threetears.evals.analysis import DisclosureBlock, build_code_only_report
 from threetears.evals.analysis.bundle import AnalysisContextBundle, assemble_context_bundle
 from threetears.evals.analysis.generator import generate_analysis
 from threetears.evals.analysis.reads import run_summary
-from threetears.evals.contracts.host import SHARED_CORE, Sweepable
+from threetears.evals.analysis.reporting import FrontierPoint, compute_frontier
+from threetears.evals.contracts.host import SHARED_CORE, HostProfile, Sweepable
 from threetears.evals.contracts.host.kinds import KindContract
 from threetears.evals.contracts.host.sweepables import RegistrationError
-from threetears.evals.contracts.host.values import ProductionFooting
+from threetears.evals.contracts.host.values import PooledProductionFooting, ProductionFooting
 from threetears.evals.contracts.models import EvalResult, EvalRun, utc_now_iso
 from threetears.evals.quick import Answer, compare
 from packages.evals.tests.factories import as_listed, make_eval_run
@@ -282,3 +285,116 @@ class TestTheScoreRollupRowCarriesIt:
         assert footing["moved"] == {"model": run.candidate_model}
         assert footing["moved_nothing"] is False
         assert f"model={run.candidate_model}" in footing["sentence"]
+
+
+def _toy_frontier(profile: HostProfile | None) -> list[FrontierPoint]:
+    """The toy campaign's two arms ranked on the frontier, read against ``profile``'s declarations."""
+    campaign, storage = toyhost_campaign(profile=toyhost_profile())
+    runs = storage.load_eval_runs(campaign.run_ids, campaign.scope_id)
+    results = [result for run in runs for result in storage.query_eval_results_by_run(run.id, run.scope_id)]
+    (subject,) = compute_frontier(runs, results, bar=0.0, archived_run_ids=None, profile=profile).subjects
+    return subject.points
+
+
+def _with_probe_depth() -> HostProfile:
+    """The toy host with one more lever, which every run carries at 7 and nothing says is production's."""
+    profile = toyhost_profile()
+    probe = Sweepable(
+        name="probe_depth",
+        role="lever",
+        read=lambda _run, _results: 7,
+        reader_prose="probe depth",
+        no_own_coordinate="the toy variant map predates it; every run carries one level of it",
+    )
+    return replace(profile, host_sweepables=profile.host_sweepables.extend([probe]))
+
+
+class TestAPooledCostCarriesEachRunsFooting:
+    """A frontier point's cost axis and an analysis arm's cost pool runs, and carry every run's footing."""
+
+    def test_each_frontier_point_names_what_its_runs_left_unchecked(self) -> None:
+        for point in _toy_frontier(toyhost_profile()):
+            assert point.production_replicating_cost is not None
+            assert point.production_footing is not None
+            footings = list(point.production_footing.runs.values())
+            assert footings and all(f is not None and "chunk_tokens" in f.unchecked for f in footings)
+            assert "chunk_tokens=" in point.production_footing.sentence()
+
+    def test_the_verdict_carries_the_picks_footing(self) -> None:
+        campaign, storage = toyhost_campaign()
+        runs = storage.load_eval_runs(campaign.run_ids, campaign.scope_id)
+        results = [result for run in runs for result in storage.query_eval_results_by_run(run.id, run.scope_id)]
+        (subject,) = compute_frontier(runs, results, bar=0.0, archived_run_ids=None, profile=toyhost_profile()).subjects
+
+        assert subject.verdict is not None
+        (pick,) = [p for p in subject.points if p.variant_key == subject.verdict.variant_key]
+        assert subject.verdict.production_footing == pick.production_footing is not None
+
+    def test_a_frontier_given_no_declarations_says_nobody_checked(self) -> None:
+        assert all(point.production_footing is None for point in _toy_frontier(None))
+
+    def test_each_analysis_arm_names_its_runs_footings_and_the_report_says_so(self) -> None:
+        profile = toyhost_profile()
+        campaign, storage = toyhost_campaign(profile=profile)
+        bundle = assemble_context_bundle(campaign, storage=storage, profile=profile)
+        run_ids = {summary.run_id for summary in bundle.run_summaries}
+
+        assert bundle.arm_production_footings
+        assert {run_id for pooled in bundle.arm_production_footings.values() for run_id in pooled.runs} == run_ids
+        for pooled in bundle.arm_production_footings.values():
+            assert all(f is not None and "chunk_tokens" in f.unchecked for f in pooled.runs.values())
+        disclosures = [
+            block.text
+            for block in build_code_only_report(
+                bundle, measures=profile.measures, assembled_at="2026-10-10T00:00:00+00:00"
+            ).blocks
+            if isinstance(block, DisclosureBlock)
+        ]
+        assert any("production-replicating cost" in text and "chunk_tokens" in text for text in disclosures)
+
+
+class TestALeverAddedToTheToyHostReachesThePooledCost:
+    """The Done-when on the pooled surfaces: a lever newly declared reaches them with no surface edited."""
+
+    def test_the_frontier_names_it_only_once_it_is_declared(self) -> None:
+        before = [p.production_footing for p in _toy_frontier(toyhost_profile())]
+        after = [p.production_footing for p in _toy_frontier(_with_probe_depth())]
+
+        assert all(f is not None and "probe_depth" not in f.sentence() for f in before)
+        for footing in after:
+            assert footing is not None
+            assert all(f is not None and f.unchecked.get("probe_depth") == "7" for f in footing.runs.values())
+            assert "probe_depth=7" in footing.sentence()
+
+    def test_the_analysis_arms_name_it_too(self) -> None:
+        profile = _with_probe_depth()
+        campaign, storage = toyhost_campaign(profile=profile)
+        bundle = assemble_context_bundle(campaign, storage=storage, profile=profile)
+
+        assert bundle.arm_production_footings
+        for pooled in bundle.arm_production_footings.values():
+            assert "probe_depth=7" in pooled.sentence()
+
+
+class TestAPooledFootingThatMovedNothingSaysSo:
+    def test_runs_that_all_moved_nothing_say_so(self) -> None:
+        pooled = PooledProductionFooting(runs={"r1": ProductionFooting(held=["model"]), "r2": ProductionFooting()})
+
+        assert pooled.moved_nothing
+        assert "moved none" in pooled.sentence()
+
+    def test_a_run_nobody_checked_is_never_moved_nothing(self) -> None:
+        pooled = PooledProductionFooting(runs={"r1": ProductionFooting(held=["model"]), "r2": None})
+
+        assert not pooled.moved_nothing
+        assert "nobody checked run(s) r2" in pooled.sentence()
+
+    def test_runs_at_different_footings_are_named_apart(self) -> None:
+        pooled = PooledProductionFooting(
+            runs={"r1": ProductionFooting(held=["model"]), "r2": ProductionFooting(moved={"model": "cheap"})}
+        )
+
+        sentence = pooled.sentence()
+        assert not pooled.moved_nothing
+        assert "2 different production footings" in sentence
+        assert "run(s) r2: this run set model=cheap" in sentence

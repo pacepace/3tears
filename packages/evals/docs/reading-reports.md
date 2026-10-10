@@ -341,6 +341,11 @@ answered by different models. Each candidate usage row records the model the res
 numbers are a mixture) or `unrecorded`. Where one requested id was answered by more than one model across a
 comparison's runs, the comparison names a `served_model:candidate` confound (`undecided` where some response
 named no model). The arm still pools under its key, fixed at launch, so the mixture is disclosed, not split.
+The read lenses outside the bundle use the same reading (`ServedModelReading`): each frontier point and its
+verdict, each history series and each of its points, each pivot cell on a table grouped by `variant_key` or
+`model` (with `served_model_disclosure` on the table), and each side of `compare_two_runs` (`served_models_a`,
+`served_models_b`). `served_model` is also a coordinate: pivot on it to read each model alone, and the export
+carries it as a column. A response that named no model reads `unrecorded`, never the alias.
 
 ## Results by kind of case: strata
 

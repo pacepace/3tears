@@ -224,7 +224,7 @@ class RunsCompared(EvalBaseModel):
         description=(
             "The two-run lens's answer: `comparison_basis` (whether the runs share a template, not the test's basis), "
             "`composite_comparability` (why composites are withheld, across subjects), `comparison.arm` (each "
-            "arm's model, pass^k at one shared depth and mean composite, their deltas, whether the samples were "
+            "arm's model and the models its responses named as having answered it, pass^k at one shared depth and mean composite, their deltas, whether the samples were "
             "paired and over how many cases, Hedges' g, p and the verdict), `comparison.per_template` and each "
             "run's `subject_detail_{a,b}`."
         )
@@ -846,11 +846,16 @@ def pivot_text(table: PivotTable) -> str:
             if table.composite_bases_differ and cell.composite_basis is not None
             else ""
         )
+        served = (
+            f"; answered by {_served(cell.served_models.model_dump())}"
+            if cell.served_models is not None and cell.served_models.state != "one"
+            else ""
+        )
         withheld = f"; withheld: it {cell.withheld}" if cell.withheld else ""
         substituted = f"; {cell.substitution_disclosure}" if cell.substitution_disclosure else ""
         lines.append(
             f"- {cell.row} / {cell.column}: {format_number(cell.value)} ({cell.status}; n={cell.n}, "
-            f"{cell.n_cases} case(s){spread}{unmeasured}){roles}{basis}{versions}{withheld}{substituted}"
+            f"{cell.n_cases} case(s){spread}{unmeasured}){roles}{basis}{versions}{served}{withheld}{substituted}"
             f"{_predicted(cell.predicted, cell.n_unplanned)}"
         )
     if not table.cells:
@@ -876,6 +881,8 @@ def pivot_text(table: PivotTable) -> str:
         lines.append(table.cassette_mode_disclosure)
     if table.identity_pooling_disclosure:
         lines.append(table.identity_pooling_disclosure)
+    if table.served_model_disclosure:
+        lines.append(table.served_model_disclosure)
     if table.unplaced_predicted_models:
         lines.append(f"planned and in no cell here: {', '.join(table.unplaced_predicted_models)}")
     lines += _exclusions(table.exclusions)
@@ -908,6 +915,9 @@ def history_text(result: HistoryResult) -> str:
         lines.append(f"## {series.model} — subject {series.subject_label or series.subject_id}")
         if series.identity_version_disclosure:
             lines.append(series.identity_version_disclosure)
+        mixed = series.served_models is not None and series.served_models.state != "one"
+        if series.served_models is not None and (sentence := series.served_models.disclosure()):
+            lines.append(f"this series {sentence}")
         previous_basis: CompositeBasis | None = None
         for point in series.points:
             flag = point.regression
@@ -929,9 +939,15 @@ def history_text(result: HistoryResult) -> str:
             ):
                 ragged += f"; composite basis changed here, to {_basis_sets(point.composite_basis.model_dump())}"
             previous_basis = point.composite_basis or previous_basis
+            # Which model answered each point, wherever the series does not rest on one throughout.
+            served = (
+                f"; answered by {_served(point.served_models.model_dump())}"
+                if mixed and point.served_models is not None
+                else ""
+            )
             lines.append(
                 f"- {point.created_at} {point.run_id}: {format_number(point.value)} (n={point.n}, "
-                f"{point.n_cases} case(s)){baseline}{epoch}{verdict}{short}{ragged}"
+                f"{point.n_cases} case(s)){baseline}{epoch}{verdict}{short}{ragged}{served}"
             )
     if not result.series:
         lines.append("- no series")
@@ -989,6 +1005,16 @@ def _basis_sets(basis: Mapping[str, Any] | None) -> str:
     return f"{sets} (ragged)" if basis.get("ragged") else sets
 
 
+def _served(reading: Mapping[str, Any] | None) -> str:
+    """A served-model reading as text: the models the responses named, and its state where that is not one."""
+    if not reading:
+        return "no candidate call"
+    models = ", ".join(reading.get("served_models", [])) or "no named model"
+    if reading.get("state") == "unrecorded":
+        return f"{models} ({reading.get('n_unrecorded')} of {reading.get('n_results')} result(s) unrecorded)"
+    return models if reading.get("state") == "one" else f"{models} (pooled)"
+
+
 def runs_compared_text(compared: RunsCompared) -> str:
     """Two runs compared as text: the arms, each reading with its delta and test, then every disclosure."""
     view = compared.comparison
@@ -1019,6 +1045,11 @@ def runs_compared_text(compared: RunsCompared) -> str:
     ):
         if arm.get(key):
             lines.append(f"pass^k of run {run_id} is unmeasured: {arm[key]}")
+    if arm.get("served_models_a") is not None or arm.get("served_models_b") is not None:
+        lines.append(
+            f"served models: run {compared.baseline_run_id} {_served(arm.get('served_models_a'))}; "
+            f"run {compared.candidate_run_id} {_served(arm.get('served_models_b'))}"
+        )
     if view.get("composite_comparability"):
         lines.append(str(view["composite_comparability"]))
     if arm.get("composite_bases_differ"):

@@ -1474,6 +1474,10 @@ def _evidence_disclosures(bundle: AnalysisContextBundle) -> list[ReportBlock]:
                 f"Arm {short_digest(reading.variant_key)} asked for one model and its candidate was answered by "
                 f"{_listed(reading.served_models)}, so its numbers mix those models.",
             )
+    # An arm's production-replicating cost is production's only where its runs moved nothing (#571); a code-only
+    # report has no writer to read each arm's `production_footing`, so it is said here, once for every arm.
+    if (footing := _production_footing_sentence(bundle)) is not None:
+        say("measurement", footing)
     for merge in bundle.refused_merges:
         dimensions = f" on {_listed(merge.dimensions)}" if merge.dimensions else ""
         say(
@@ -1488,6 +1492,36 @@ def _evidence_disclosures(bundle: AnalysisContextBundle) -> list[ReportBlock]:
             "this list, the smallest first.",
         )
     return blocks
+
+
+def _production_footing_sentence(bundle: AnalysisContextBundle) -> str | None:
+    """Say, per arm, what its runs set away from the subject's production configuration (#571).
+
+    Args:
+        bundle: The bundle.
+
+    Returns:
+        One sentence naming each arm's moved and unchecked inputs, or that it moved nothing; ``None`` when the
+        bundle carries no arm footing (one assembled before it was read).
+    """
+    parts: list[str] = []
+    for variant_key, pooled in sorted(bundle.arm_production_footings.items()):
+        footings = list(pooled.runs.values())
+        moved = sorted({f"{name}={level}" for f in footings if f is not None for name, level in f.moved.items()})
+        unchecked = sorted({name for f in footings if f is not None for name in f.unchecked})
+        unread = sum(1 for f in footings if f is None)
+        said = [
+            *([f"set {', '.join(moved)}"] if moved else []),
+            *([f"left unchecked whether {', '.join(unchecked)} is production's"] if unchecked else []),
+            *([f"{unread} run(s) nobody checked"] if unread else []),
+        ]
+        parts.append(f"arm {short_digest(variant_key)} " + ("; ".join(said) or "moved nothing off production"))
+    if not parts:
+        return None
+    return (
+        "A production-replicating cost is what production would spend only where its arm's runs moved nothing off "
+        "the subject's production configuration: " + "; ".join(parts) + "."
+    )
 
 
 __all__ = [
