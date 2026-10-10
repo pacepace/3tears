@@ -103,6 +103,7 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "judge_second_estimate": "read",
         "judge_drift_check": "spend",
         "analyses_list": "read",
+        "analyses_undescribable": "read",
         "report_read": "read",
         "reporter_case_freeze": "write",
         "reporter_cases_list": "read",

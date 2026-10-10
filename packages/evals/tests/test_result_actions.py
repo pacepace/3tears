@@ -35,12 +35,14 @@ from threetears.evals.contracts import (
     GoalStateOutcome,
     JudgedArtifact,
     JudgeEvidence,
+    LatencyMetrics,
     RecordedCall,
     ResultOutcome,
     RoleUsage,
     RubricScore,
     eval_trace_doc_id,
 )
+from threetears.evals.analysis.reporting import decompose_total_ms
 from threetears.evals.contracts.errors import ValidationFailedError
 from threetears.evals.ops import ResultDetail, ResultListing, results_list
 from packages.evals.tests.factories import make_eval_result, make_eval_run
@@ -434,3 +436,64 @@ def test_a_judged_result_lists_its_reserved_axes_beside_its_rubric() -> None:
         line for line in results_list(fixture.host.eval_host, RUN_ID, TOYHOST_SCOPE).results if line.id == "res-judged"
     ]
     assert line.judge_scores == {"conversation.tone": 4, TRANSCRIPT_DIM_ID: 2}
+
+
+# =============================================================================
+# latency (#653)
+# =============================================================================
+
+
+def _timed(fixture: OpsFixture, result_id: str, k: int, latency: LatencyMetrics) -> None:
+    fixture.host.eval_host.storage.save_eval_result(_result(result_id, "tc-c", k, latency=latency))
+
+
+async def test_a_full_latency_block_reads_back_with_its_orchestration_remainder(tools: dict[str, Any]) -> None:
+    fixture = _seeded()
+    _timed(
+        fixture,
+        "res-timed",
+        1,
+        LatencyMetrics(total_ms=1500.0, llm_ms=900.0, tool_ms=350.0, async_wait_ms=0.0, judge_ms=420.0),
+    )
+
+    outcome, detail = await _get(tools["evals"], fixture, "res-timed")
+
+    assert detail.latency_partition.orchestration_ms == 250.0, "decompose_total_ms's remainder, carried as derived"
+    lines = outcome.text.splitlines()
+    assert "latency: total_ms 1500ms, llm_ms 900ms, tool_ms 350ms, async_wait_ms 0ms, judge_ms 420ms" in lines
+    assert "orchestration_ms 250ms (total_ms less llm_ms and tool_ms)" in lines
+
+
+async def test_an_unmeasured_component_reads_absent_and_the_remainder_is_withheld(tools: dict[str, Any]) -> None:
+    fixture = _seeded()
+    _timed(fixture, "res-part-timed", 2, LatencyMetrics(total_ms=1500.0, llm_ms=900.0))
+
+    outcome, detail = await _get(tools["evals"], fixture, "res-part-timed")
+
+    withheld = decompose_total_ms(LatencyMetrics(total_ms=1500.0, llm_ms=900.0)).withheld
+    assert withheld is not None and detail.latency_partition.withheld == withheld
+    lines = outcome.text.splitlines()
+    assert "latency: total_ms 1500ms, llm_ms 900ms, tool_ms absent, async_wait_ms absent, judge_ms absent" in lines
+    assert f"orchestration_ms withheld: {withheld}" in lines
+    assert "tool_ms 0ms" not in outcome.text, "an absent component is never shown as zero"
+
+
+async def test_a_result_with_no_latency_says_so_and_why_nothing_is_partitioned(tools: dict[str, Any]) -> None:
+    outcome, _detail = await _get(tools["evals"], _seeded(), "res-ok")
+
+    assert "latency: none recorded" in outcome.text.splitlines()
+    assert "orchestration_ms withheld: this cell timed nothing" in outcome.text
+
+
+async def test_a_listing_row_carries_total_ms_so_a_slow_cell_is_found_without_opening_it(
+    tools: dict[str, Any],
+) -> None:
+    fixture = _seeded()
+    _timed(fixture, "res-timed", 1, LatencyMetrics(total_ms=1500.0, llm_ms=900.0, tool_ms=350.0))
+
+    outcome = await _call(tools["evals"], fixture, {"action": "results_list", "run_id": RUN_ID})
+
+    listing = ResultListing.model_validate(outcome.structured)
+    by_id = {line.id: line.total_ms for line in listing.results}
+    assert by_id["res-timed"] == 1500.0 and by_id["res-ok"] is None
+    assert "total_ms 1500ms" in outcome.text and "total_ms absent" in outcome.text

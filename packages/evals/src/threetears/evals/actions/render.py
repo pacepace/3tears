@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
+from threetears.evals.analysis.numbers import format_number
 from threetears.evals.contracts import GoalStateOutcome, ResultOutcome, counted_goal_verdicts
 from threetears.evals.contracts.errors import EvalServiceError
 from threetears.evals.ops import (
@@ -52,6 +53,7 @@ from threetears.evals.ops import (
     ScoreExport,
     SecondJudgeRead,
     TemplateListing,
+    UndescribableArmsListing,
     dollars_text,
     estimate_text,
     export_text,
@@ -233,7 +235,11 @@ def _compact(value: Any) -> str:
 
 def _result_line(line: ResultLine) -> str:
     """One result on one line: where it sits, its condition, and its headline measures."""
-    parts = [f"{line.condition.value} ({line.termination})", f"cost {_usd(line.cost_usd)}"]
+    parts = [
+        f"{line.condition.value} ({line.termination})",
+        f"cost {_usd(line.cost_usd)}",
+        f"total_ms {_ms(line.total_ms)}",
+    ]
     if line.goal_checks:
         passed = "not counted" if line.goal_checks_passed is None else f"{line.goal_checks_passed}/{line.goal_checks}"
         parts.append(f"goal checks {passed}")
@@ -295,8 +301,28 @@ def _goal_check_line(outcome: GoalStateOutcome, counted: bool | None, condition:
     return f"goal check {outcome.expression}: {verdict}" + (f" — {outcome.detail}" if outcome.detail else "")
 
 
+def _ms(value: float | None) -> str:
+    return "absent" if value is None else f"{format_number(value)}ms"
+
+
+def _latency_lines(detail: ResultDetail) -> list[str]:
+    """The stored latency block, an absent component shown as absent, then the remainder as the partition read it."""
+    latency = detail.result.latency
+    if latency is None:
+        stored = "latency: none recorded"
+    else:
+        stored = "latency: " + ", ".join(
+            f"{name} {_ms(getattr(latency, name))}"
+            for name in ("total_ms", "llm_ms", "tool_ms", "async_wait_ms", "judge_ms")
+        )
+    partition = detail.latency_partition
+    if partition.withheld is not None:
+        return [stored, f"orchestration_ms withheld: {partition.withheld}"]
+    return [stored, f"orchestration_ms {_ms(partition.orchestration_ms)} (total_ms less llm_ms and tool_ms)"]
+
+
 def _record_lines(detail: ResultDetail) -> list[str]:
-    """The record part: errors, spend and usage rows, checks and scores, then what the kind stored."""
+    """The record part: errors, spend, latency and usage rows, checks and scores, then what the kind stored."""
     result, condition = detail.result, detail.condition
     lines = [
         f"{label}: {error}"
@@ -308,6 +334,7 @@ def _record_lines(detail: ResultDetail) -> list[str]:
         if error
     ]
     lines.append(f"cost {_usd(result.cost_usd)} over {', '.join(result.cost_roles) or 'no role'}")
+    lines += _latency_lines(detail)
     lines.append(f"usage ({len(result.usage)} row(s)):")
     lines += [f"- {_compact(row.model_dump(mode='json', exclude_none=True))}" for row in result.usage]
     counted = counted_goal_verdicts(result)
@@ -430,6 +457,22 @@ def render_analyses(listing: AnalysisListing) -> str:
     """A campaign's analyses."""
     lines = [f"analyses of campaign {listing.campaign_id} ({len(listing.analyses)})"]
     lines += [render_analysis_line(a) for a in listing.analyses]
+    return "\n".join(lines)
+
+
+def render_undescribable_arms(listing: UndescribableArmsListing) -> str:
+    """The scope's analyses holding an arm whose levels this build cannot describe."""
+    lines = [
+        f"analyses in scope {listing.scope_id} holding an arm this build cannot describe: "
+        f"{len(listing.analyses)} of {listing.analyses_read}"
+    ]
+    for line in listing.analyses:
+        why = "; ".join(line.reasons) or "no reason recorded"
+        archived = ", archived" if line.archived else ""
+        lines.append(
+            f"- {line.analysis_id} (campaign {line.campaign_id}{archived}): "
+            f"{line.undescribable_arms} of {line.arms} arm(s) — {why}"
+        )
     return "\n".join(lines)
 
 

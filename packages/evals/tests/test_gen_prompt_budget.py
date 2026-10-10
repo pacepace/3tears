@@ -19,12 +19,19 @@ with no gap or repeat, so a rule cannot hide from the count by being misnumbered
 **A new rule names the one it replaces.** The budget only falls, so a rule added at the ceiling must retire
 or absorb another. The ledger of which rule replaced which, and what each prevents, is the maintainer file
 beside the prompt, ``packages/evals/src/threetears/evals/analysis/GEN_PROMPT_RULES.md``.
+
+**Every rule has a ledger row, and every row a rule (#623).** The rules are read from the prompt as (number,
+heading) pairs, the heading being the rule's opening sentence; the ledger's rows as (``#``, ``Heading``) pairs.
+The two lists must be equal, so a rule added without its reason, a row left for a deleted rule, and a rule
+renumbered or reworded under a row that still describes the old one all fail.
 """
 
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
+import threetears.evals.analysis as analysis_package
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT, PROMPT_CHAR_BUDGET, PROMPT_RULE_BUDGET
 from threetears.evals.analysis.generator import assemble_system_prompt
@@ -34,6 +41,35 @@ _RULES_HEADING = "\nRULES — "
 
 #: A rule's opening line: a number at the start of a line, a full stop and a space.
 _RULE_START = re.compile(r"^(\d+)\. ", re.MULTILINE)
+
+
+#: A rule's number and heading: its opening sentence, up to the first full stop that ends a sentence.
+_RULE_HEADING = re.compile(r"^(\d+)\. (.*?)\.(?=\s|$)", re.MULTILINE)
+
+#: A ledger row's number and heading, its first two cells.
+_LEDGER_ROW = re.compile(r"^\| (\d+) \| ([^|]+?) \|", re.MULTILINE)
+
+#: The rule ledger, beside the prompt.
+_LEDGER = Path(analysis_package.__file__).parent / "GEN_PROMPT_RULES.md"
+
+
+def _prompt_rules(prompt: str) -> list[tuple[int, str]]:
+    """Each rule's number and heading, in prompt order."""
+    rules = prompt.split(_RULES_HEADING, 1)[1]
+    return [(int(number), heading) for number, heading in _RULE_HEADING.findall(rules)]
+
+
+def _ledger_rules(ledger: str) -> list[tuple[int, str]]:
+    """Each ledger row's number and heading, in table order."""
+    return [(int(number), heading) for number, heading in _LEDGER_ROW.findall(ledger)]
+
+
+def _ledger_disagreements(prompt: str, ledger: str) -> list[str]:
+    """What the prompt's rules and the ledger's rows disagree on; empty when every rule has its row."""
+    rules, rows = _prompt_rules(prompt), _ledger_rules(ledger)
+    return [f"rule without a ledger row: {rule}" for rule in rules if rule not in rows] + [
+        f"ledger row for no rule: {row}" for row in rows if row not in rules
+    ]
 
 
 def _rule_numbers(prompt: str) -> list[int]:
@@ -75,3 +111,33 @@ class TestTheRuleCountBites:
         numbers = _rule_numbers(EVAL_ANALYSIS_GEN_DEFAULT)
         extra = "".join(f"\n\n{n}. AN ADDED RULE. Text." for n in range(len(numbers) + 1, PROMPT_RULE_BUDGET + 2))
         assert len(_rule_numbers(EVAL_ANALYSIS_GEN_DEFAULT + extra)) == PROMPT_RULE_BUDGET + 1
+
+
+class TestEveryRuleHasItsLedgerRow:
+    """The ledger names each rule by its number and heading, and the check fails on any drift (#623)."""
+
+    def test_the_ledger_and_the_prompt_list_the_same_rules_in_order(self) -> None:
+        ledger = _LEDGER.read_text(encoding="utf-8")
+        assert _ledger_disagreements(EVAL_ANALYSIS_GEN_DEFAULT, ledger) == []
+        assert _ledger_rules(ledger) == _prompt_rules(EVAL_ANALYSIS_GEN_DEFAULT)
+
+    def test_every_counted_rule_has_a_heading_read(self) -> None:
+        assert [n for n, _ in _prompt_rules(EVAL_ANALYSIS_GEN_DEFAULT)] == _rule_numbers(EVAL_ANALYSIS_GEN_DEFAULT)
+
+    def test_a_rule_added_without_a_row_fails(self) -> None:
+        added = len(_rule_numbers(EVAL_ANALYSIS_GEN_DEFAULT)) + 1
+        prompt = EVAL_ANALYSIS_GEN_DEFAULT + f"\n\n{added}. AN ADDED RULE. Text."
+        assert _ledger_disagreements(prompt, _LEDGER.read_text(encoding="utf-8")) == [
+            f"rule without a ledger row: {(added, 'AN ADDED RULE')}"
+        ]
+
+    def test_a_rule_deleted_with_its_row_left_behind_fails(self) -> None:
+        last = len(_rule_numbers(EVAL_ANALYSIS_GEN_DEFAULT))
+        prompt = EVAL_ANALYSIS_GEN_DEFAULT.split(f"\n\n{last}. ", 1)[0]
+        (disagreement,) = _ledger_disagreements(prompt, _LEDGER.read_text(encoding="utf-8"))
+        assert disagreement.startswith(f"ledger row for no rule: ({last}, ")
+
+    def test_a_rule_reworded_under_its_old_row_fails(self) -> None:
+        (number, heading), *_ = _prompt_rules(EVAL_ANALYSIS_GEN_DEFAULT)
+        prompt = EVAL_ANALYSIS_GEN_DEFAULT.replace(f"{number}. {heading}.", f"{number}. RANK ON SOMETHING ELSE.", 1)
+        assert len(_ledger_disagreements(prompt, _LEDGER.read_text(encoding="utf-8"))) == 2

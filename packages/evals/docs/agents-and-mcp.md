@@ -58,12 +58,14 @@ ones it accepts. `read_only_tools(prefix)` mounts a tool an agent can only read 
 `run_get` says how a run came out; it does not say what one cell did. Two read actions do:
 
 - `results_list` pages one run's results as light rows (ordered by case, then repeat): each row's case,
-  repeat, model, variant, condition (`ok`, `candidate_fail` or `infra_exclude`), cost, goal checks as every
+  repeat, model, variant, condition (`ok`, `candidate_fail` or `infra_exclude`), cost, `total_ms`, goal checks as every
   rate counts them, judge scores and host measures. `condition_filter` narrows to one condition; `total`,
   `next_offset` and `limit` (default 50, at most 200) page it.
 - `result_get` reads one result back as stored, with one `part` of its trace:
   - `record`, the default: the result record with its per-role usage rows and every error field, and its
-    condition with the sentence every surface shows for it. Each goal check is shown as evaluated, and
+    condition with the sentence every surface shows for it. Its latency follows: the five stored components
+    (an unmeasured one reads `absent`, never zero) and the `orchestration_ms` remainder of `total_ms`, or the
+    sentence saying why that split is withheld. Each goal check is shown as evaluated, and
     also as counted when the two differ: a candidate failure counts every check failed, and a harness
     fault counts none. Then come the output documents exactly as the kind stored them, the call ledger
     and the world's end state.

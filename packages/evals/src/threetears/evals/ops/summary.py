@@ -573,19 +573,32 @@ class EvalSummary(BaseModel):
     def render(self) -> str:
         """The summary as a few lines of text for a terminal.
 
+        The results line counts the failures and the rig's exclusions only when there are some, or a judge is in
+        play; the spend-cap line prints only when a cap bounded the run, a judge ran, or the candidate reported
+        spend — a first run of a free function is not handed the vocabulary of a rig it does not have.
+
         Returns:
             The text, without a trailing newline.
         """
+        # A judge is the rig a first run can meet, and the spend it bills is what a cap bounds: with neither in
+        # play, the rig's exclusions and the cap say nothing a newcomer can act on, so they print only when they do.
+        judged = bool(self.judged) or self.judge_calls > 0
+        counts = [f"{self.n_scored} scored"]
+        if self.n_candidate_failed:
+            counts.append(f"{self.n_candidate_failed} failed by the candidate")
+        if self.n_excluded or judged:
+            counts.append(f"{self.n_excluded} excluded")
         lines = [
             f"run {self.run_id} {self.status}: "
             + (self.candidate_model if self.arm is None else f"arm {self.arm} (model {self.candidate_model})")
             + f" over {self.n_cases} case(s) x k={self.k_runs}",
-            f"  {self.n_results} result(s): {self.n_scored} scored, {self.n_candidate_failed} failed by the "
-            f"candidate, {self.n_excluded} excluded",
+            f"  {self.n_results} result(s): {', '.join(counts)}",
         ]
         if self.stopped_because is not None:
             lines.append(f"  stopped: {self.stopped_because}")
-        if (cap := _spend_cap_line(self)) is not None:
+        if (self.max_cost_usd is not None or judged or self.candidate_calls) and (
+            cap := _spend_cap_line(self)
+        ) is not None:
             lines.append(f"  {cap}")
         for measure in self.measures:
             left_out = _left_out(measure)

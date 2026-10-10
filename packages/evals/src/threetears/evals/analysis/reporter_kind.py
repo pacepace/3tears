@@ -871,6 +871,8 @@ class ReporterKind:
                         bundle_assembled_at=case.bundle_assembled_at,
                         prompt_version=self._prompt_version,
                         profile=self._host.profile,
+                        # A reporter run is how a host learns which writers to allow, so it measures any.
+                        measuring_writers=True,
                     )
             except GenerationError as exc:
                 # A refused or truncated generation, or a prompt that does not ask for the memo contract:

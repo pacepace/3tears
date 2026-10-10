@@ -154,7 +154,9 @@ def analysis_gen_request_settings_for(
     The host's client builder applies it to every ``EVAL_ANALYSIS_GEN`` client: a generation from
     ``analysis_generate`` and a reporter run's candidate alike, so the two cannot be asked
     differently. The output cap is DERIVED as reasoning plus answer, so it always sits above the
-    ceiling it wraps.
+    ceiling it wraps. ``strict_output`` is always set: the authored schema goes out as a strict
+    ``response_format``, and a provider that ignores it returns free text the generator refuses
+    after paying for it, then pays for a repair.
 
     Args:
         answer_budget_tokens: Output room for the memo itself.
@@ -166,6 +168,7 @@ def analysis_gen_request_settings_for(
     return ClientRequestSettings(
         max_tokens=reasoning_budget_tokens + answer_budget_tokens,
         reasoning_max_tokens=reasoning_budget_tokens,
+        strict_output=True,
     )
 
 
@@ -308,6 +311,7 @@ async def generate_analysis(
     tally: GenerationTally | None = None,
     admit: CallAdmission | None = None,
     profile: HostProfile,
+    measuring_writers: bool = False,
 ) -> tuple[EvalAnalysis, list[EvalInsight]]:
     """Generate one campaign's analysis from its context bundle, in one LLM call or two.
 
@@ -350,14 +354,19 @@ async def generate_analysis(
             refused. It raises to refuse the call, and the refusal propagates with nothing sent and nothing
             counted for that call. ``None`` admits every call; a caller that prices calls against a cap
             (:func:`~threetears.evals.analysis.service.run_analysis_generation`) passes its budget's.
-        profile: The host whose vocabulary this reads.
+        profile: The host whose vocabulary this reads, and whose allowed writer models
+            (:attr:`~threetears.evals.contracts.host.profile.HostProfile.analysis_writer_models`) ``model`` is
+            checked against before anything is sent.
+        measuring_writers: True only for a reporter run, which measures writer models to learn which belong on
+            that list, so it is not held to it.
 
     Returns:
         The schema-valid :class:`EvalAnalysis` and the list of
         :class:`EvalInsight` objects it minted (each traced back to this analysis).
 
     Raises:
-        GenerationError: The bundle describes no arm at all — nothing is spent, because it is
+        GenerationError: ``model`` is not a writer the host allows, or the bundle describes no arm at all
+            — nothing is spent, because it is
             knowable from what the caller already holds (:func:`refuse_an_undescribable_arm_table`).
             Or the provider cut the call short (an output-cap
             truncation or a content filter). Not repaired — see :class:`SoundnessRefusal` for
@@ -373,6 +382,8 @@ async def generate_analysis(
             documents its own. Every one reads a structured field; none reads prose.
     """
     tally = tally if tally is not None else GenerationTally()
+    if not measuring_writers and (ineligible := profile.analysis_writer_refusal(model)) is not None:
+        raise GenerationError(ineligible)
     refuse_an_undescribable_arm_table(bundle)
     system_prompt, user_message, contract = first_request(bundle, prompt, profile)
     sent_digest = user_message_digest(user_message)

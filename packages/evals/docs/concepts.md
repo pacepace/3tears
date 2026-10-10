@@ -46,20 +46,28 @@ Underneath all of it sits your **host**: the one value through which your app te
 change (levers), what it can see (measures), how to run your code (a kind), and where to store things.
 `run_eval` builds a throwaway host for you, which is why the README's first example needs none.
 
-## The ten terms to learn first
+## Terms to learn first
+
+The one short list: the README links here rather than keeping its own.
 
 | Term | In one line |
 |---|---|
-| [case](#case-test-case) | One concrete input with what a good answer looks like: one ticket and its right queue. |
-| [template](#template) | The blueprint a set of cases belongs to: what is being tested and how it is scored. |
-| [variant](#variant-and-variant-key) | One complete configuration of the thing under test: "prompt v2 on model-x". |
-| [arm](#arm) | One variant as a contestant in a comparison. A run measures exactly one arm. |
+| [case](#case-test-case) | One input and what a good answer looks like: one ticket and its right queue. |
+| [candidate](#candidate) | The code under test, which answers each case. |
+| [scorer](#scorer) | A function that grades an answer with a number, when code can check it. |
+| [measure](#measure) | A number code computes about a result: did it match, how long it took, what it cost. |
+| [judge](#judge) | A model that grades an answer against a rubric, when code cannot. |
+| [judged dimension](#judged-dimension-rubric-dimension) | One written quality of a rubric, which the judge scores. |
+| [k](#k-repeats) | How many times each case is played, because model answers vary. |
 | [run](#run) | One batch of trials: one arm, played over every case, `k` times each. |
 | [result](#result-observation) | One trial: one case, one repeat, with every grade it got. |
-| [measure](#measure) | A number code computes about a result: did it match, how long it took, what it cost. |
-| [judged dimension](#judged-dimension-rubric-dimension) | A quality an LLM judge scores against a written rubric. |
+| [arm](#arm) | One version under test, run over every case. |
+| [control](#control) | The arm every other arm is tested against. |
 | [campaign](#campaign) | The runs you want compared, grouped so they can be analysed together. |
+| [verdict](#verdict) | Separated, not separated or equivalent: what the evidence supports. |
+| [interval and p](#delta-interval-and-adjusted-p) | Where the true difference plausibly lies, and the Holm-adjusted p a verdict is decided on. |
 | [report](#report) | The one document you read: tables, charts, and (if generated) findings in words. |
+| [world](#world) | The state an agent acts on, set for each case and read back after. |
 
 ## Glossary
 
@@ -213,6 +221,15 @@ A **launch** asks for one or more arms of one template; it is always a **launch 
 whose runs are prepared together and started together, or none of them are. A **launcher** is the per-kind
 code your host supplies: it receives a `LaunchRequest` and returns `launch_run(host, request, KindWiring(...))`.
 
+#### Latency under test (`measure_latency`)
+The one declaration that latency is being measured, on a launch (`start_run`, `run_eval`, `compare`, CLI
+`--measure-latency`) and on a campaign's design. Declared, a run executes its cells one at a time and a
+launch's arms one after another, so their latency is read clean; not declared (the default), cells run
+several at once, and any latency recorded is marked read under concurrency (`execution_mode`
+`concurrent`) and left out of every comparison, bar and ranking. A design that asks about latency (a
+bar, a question or a ranking on it) without declaring it is refused. Each run records both
+(`measure_latency`, `cell_concurrency`).
+
 #### k (repeats)
 How many times each case is played in a run (`k_runs`, `run_eval(k=...)`, CLI `--k`; default 3). LLM
 answers vary, so one play per case under-reports that variance. *Example:* 40 tickets, `k=3`, 120 trials.
@@ -323,7 +340,8 @@ on the control), **not separated** (the cases could not tell the arms apart, whi
 difference"), **equivalent** (shown inside a margin the measure declares, and the only verdict that says "good
 enough"), or **untested** (no test could decide). A report from `compare` names, in a line above its contrasts
 table, each measure that declares no margin and so can never read equivalent. A guardrail is decided apart, as `held`, `breached` or `undecided`, and a bar as `cleared`, `missed` or
-`undecided`. See [reading a comparison](reading-reports.md#reading-a-comparison).
+`undecided`. Each is also a typed value a program reads (`Comparison.verdicts()`), which the printed words are
+rendered from. See [reading a comparison](reading-reports.md#reading-a-comparison).
 
 #### Miss
 A result the candidate got wrong: a wrong label, a scorer that gave 0 or less, a failed goal check, a failed

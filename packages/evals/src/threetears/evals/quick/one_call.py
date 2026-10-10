@@ -417,10 +417,9 @@ def refuse_unusable_margins(
     for name, margin in margins.items():
         if name in _CLASSIFIER_NAMES or name in METRIC_DESCRIPTORS:
             raise ValueError(
-                f"a margin on {name!r} cannot be declared: it is an engine core measure, read under the core's own "
-                "description, which declares no margin. To show two arms alike on a classifier's accuracy, grade it "
-                "with a scorer as well (def correct(case, answer) -> bool: return answer == case[...]) and declare "
-                "the margin on that: margins={'correct': 0.05}"
+                f"a margin on {name!r} is not a scorer's: it is an engine core measure, whose descriptor the engine "
+                "owns. A margin on a core rate measure (accuracy) is declared on the runs instead: "
+                "compare(margins={'accuracy': 0.05}) declares it on every arm's run"
             )
         if name not in names:
             raise ValueError(
@@ -1308,12 +1307,42 @@ def _kind_factory(
     return cell_kind
 
 
+#: The scope a quick call with no host of its own stores its runs in when it is named none: the call's store is
+#: in memory and lives only as long as the call, so no other run can share it by accident.
+DEFAULT_QUICK_SCOPE = "quick"
+
+
+def quick_scope(scope_id: str | None, host: EvalHost | None, store: DocumentStore | None = None) -> str:
+    """The scope a quick call stores in: the one named, else :data:`DEFAULT_QUICK_SCOPE` when its store is the call's own.
+
+    Args:
+        scope_id: The scope the caller named, or None.
+        host: The caller's own host, or None for the one the call builds.
+        store: The caller's own store for the host the call builds, or None for an in-memory one.
+
+    Returns:
+        The scope.
+
+    Raises:
+        ValueError: A host or a store of the caller's own and no scope: either outlives the call, so where its runs
+            land is the caller's to say.
+    """
+    if scope_id is not None:
+        return scope_id
+    if host is not None or store is not None:
+        raise ValueError(
+            f"scope_id= is required with a {'host' if host is not None else 'store'} of your own: its store outlives "
+            "this call, and the scope is where its runs and campaigns are found again"
+        )
+    return DEFAULT_QUICK_SCOPE
+
+
 async def run_eval(
     cases: Sequence[Mapping[str, Any]],
     candidate: Candidate | ToolUsingCandidate | WorldCandidate,
     scorers: Sequence[Scorer] = (),
     *,
-    scope_id: str,
+    scope_id: str | None = None,
     expected: ExpectedLabel | None = None,
     judge: Judge | None = None,
     intent: str | None = None,
@@ -1329,6 +1358,7 @@ async def run_eval(
     cassette_mode: CassetteMode = "off",
     cassette_corpus_id: str | None = None,
     max_cost_usd: float | None = None,
+    measure_latency: bool = False,
 ) -> EvalSummary:
     """Run ``candidate`` on every case ``k`` times, grade each answer with every scorer and the judge, and summarise.
 
@@ -1347,7 +1377,10 @@ async def run_eval(
         scorers: The grades. Each is reported as a measure named by its ``__name__``; ``True`` and
             ``False`` count as 1 and 0, and higher is better. None is needed when ``expected`` or
             ``judge`` is given.
-        scope_id: The scope the template, cases and run are stored in. The engine never defaults it.
+        scope_id: The scope the template, cases and run are stored in. With no ``host`` and no ``store``, ``None``
+            stores them in :data:`DEFAULT_QUICK_SCOPE`, inside the in-memory store this call builds and drops; with
+            a host or a store of your own, name it, since that store outlives the call and the scope is where its
+            runs are found again.
         expected: Declares the candidate a classifier: called once per case, it returns the label a
             correct answer gives. Each cell then lands ``match`` (the answer is that label) and
             ``confusion_cell`` (expected, then predicted), and the summary carries the confusion matrix
@@ -1408,6 +1441,10 @@ async def run_eval(
             ``budget_stopped``, keeps what it delivered, and the summary says why (``stopped_because``). A
             candidate that reports no spend is invisible to it, and the summary says so. ``None`` (the default)
             runs uncapped, which the summary states.
+        measure_latency: Declare latency under test: the cases run one at a time, so the time each took is
+            read with nothing else of the run beside it. ``False`` (the default) runs several at once, which is
+            far faster for a slow candidate; any latency recorded is then marked read under concurrency and
+            never compared. Either way the run records which (:func:`~threetears.evals.run.start_run`).
 
     Returns:
         The finished run's summary, read back from the store. It carries every result
@@ -1415,8 +1452,8 @@ async def run_eval(
         so the answers can be read after this call returns whatever store the run used.
 
     Raises:
-        ValueError: No cases, a case that is not a JSON object with string keys, a case ``id`` that is not a
-            non-blank string or an int or that two cases share, a ``max_cost_usd`` that is not a positive
+        ValueError: No ``scope_id`` with a ``host`` or ``store`` of your own, no cases, a case that is not a JSON object with
+            string keys, a case ``id`` that is not a non-blank string or an int or that two cases share, a ``max_cost_usd`` that is not a positive
             number, a synchronous candidate handed tools or a world, no scorer, ``expected``
             or ``judge``, an ``intent`` that is not a non-blank string, a scorer with no name, a repeated one or
             one named after an engine core measure (``match``, ``confusion_cell``, ``accuracy``, ``score``,
@@ -1454,6 +1491,7 @@ async def run_eval(
         cassette_mode=cassette_mode,
         cassette_corpus_id=cassette_corpus_id,
         max_cost_usd=max_cost_usd,
+        measure_latency=measure_latency,
     )
     return summary
 
@@ -1489,7 +1527,7 @@ async def run_arms(
     arms: Sequence[CallableArm],
     scorers: Sequence[Scorer] = (),
     *,
-    scope_id: str,
+    scope_id: str | None = None,
     expected: ExpectedLabel | None = None,
     judge: Judge | None = None,
     intent: str | None = None,
@@ -1503,6 +1541,8 @@ async def run_arms(
     cassette_mode: CassetteMode = "off",
     cassette_corpus_id: str | None = None,
     max_cost_usd: float | None = None,
+    margins: Mapping[str, float] | None = None,
+    measure_latency: bool = False,
 ) -> list[EvalSummary]:
     """Run every arm over every case ``k`` times as ONE launch, and summarise each arm's run, in arm order.
 
@@ -1517,12 +1557,14 @@ async def run_arms(
     Args and Raises as :func:`run_eval`, every argument but the arms the same for every arm — one judge, so
     every arm is judged by the same model, rubric and judge configs, and one ``max_cost_usd``, each arm's
     run's own cap. The arms are distinct — no two at one model and one level of every lever — which the
-    caller holds.
+    caller holds. ``margins`` are run-scoped margins on core rate measures (``{"accuracy": 0.05}``), declared
+    on every arm's run alike (:func:`~threetears.evals.run.start_run`'s ``margins``).
 
     Returns:
         Each arm's finished run's summary, read back from the store, in arm order.
     """
     refuse_a_store_beside_a_host(store, host)
+    scope_id = quick_scope(scope_id, host, store)
     plain_cases = _plain_cases(cases)
     names = _case_names(plain_cases)
     _refuse_an_unusable_cap(max_cost_usd)
@@ -1646,6 +1688,8 @@ async def run_arms(
                 cassette_corpus_id=cassette_corpus_id,
                 max_cost_usd=max_cost_usd,
                 launch_group=group,
+                margins=margins,
+                measure_latency=measure_latency,
             )
         return prepared
 

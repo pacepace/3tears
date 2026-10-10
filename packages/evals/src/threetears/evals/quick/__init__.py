@@ -18,7 +18,7 @@ arm against the control apart from every contrast: held, breached or undecided. 
 in place of calling them. Handed a :class:`World`, each case's starting state and goal-state checks,
 :func:`run_eval` seeds every cell's world, hands the candidate :class:`WorldTools` that act on it, and
 grades the state it leaves (:class:`GoalCheckSummary`).
-:func:`run_cli` is ``python -m threetears.evals``: ``run``, ``ls``, ``report``, ``bundle`` and ``spend`` over
+:func:`run_cli` is ``python -m threetears.evals``: ``run``, ``ls``, ``report``, ``bundle``, ``spend`` and ``gate`` over
 a host named ``module:factory``, or mounted under a product's own CLI with its host factory and any
 subcommands of its own (:class:`HostCommand`).
 
@@ -37,6 +37,7 @@ from threetears.evals.quick.cli import (
     DEFAULT_PROG,
     ENGINE_COMMANDS,
     EXIT_FAILED,
+    EXIT_GATE_FAILED,
     EXIT_OK,
     EXIT_REFUSED,
     EXIT_RUN_DID_NOT_COMPLETE,
@@ -51,6 +52,7 @@ from threetears.evals.quick.one_call import (
     CALLABLE_KIND,
     CALLABLE_KIND_CONTRACT,
     CALLABLE_UNSEATED,
+    DEFAULT_QUICK_SCOPE,
     JUDGED_CALLABLE_KIND,
     JUDGED_CALLABLE_KIND_CONTRACT,
     JUDGED_CALLABLE_UNSEATED,
@@ -84,8 +86,10 @@ __all__ = [
     "CALLABLE_KIND_CONTRACT",
     "CALLABLE_UNSEATED",
     "DEFAULT_PROG",
+    "DEFAULT_QUICK_SCOPE",
     "ENGINE_COMMANDS",
     "EXIT_FAILED",
+    "EXIT_GATE_FAILED",
     "EXIT_OK",
     "EXIT_REFUSED",
     "EXIT_RUN_DID_NOT_COMPLETE",

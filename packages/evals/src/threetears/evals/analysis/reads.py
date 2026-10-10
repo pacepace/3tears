@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import ValidationError
 
+from threetears.evals.analysis.contention import marked_latency_sentence, withheld_latency
 from threetears.evals.analysis.reporting import (
     DEFAULT_WEIGHTING,
     METRIC_COMPOSITE,
@@ -881,6 +882,11 @@ def run_summary(
         (:func:`~threetears.evals.contracts.scoring.compute_async_delivery_summary`): absent together on a
         group none of whose results watched for background work, the durations absent when no real
         delivery measured one, and the 95th percentile absent below 13 durations.
+        ``measure_latency`` and ``cell_concurrency`` are the run's own record of whether its launch declared
+        latency under test and how many of its cells executed at once (None on a run stored before either was
+        recorded, whose cells executed one at a time); ``latency_disclosure`` is the line to render beside the
+        latency keys when any of them was read under concurrency (the results' ``execution_mode``), null
+        otherwise — the figures describe this run as it ran and are never compared with another run's.
         ``completeness`` and ``completeness_disclosure``
         are both null when the run carries no completeness record (it has not
         reached a terminal state), and the disclosure alone is null when the
@@ -968,6 +974,11 @@ def run_summary(
         # WITH the numbers rather than being a detail on the run document.
         "completeness": run.completeness.to_dict() if run.completeness else None,
         "completeness_disclosure": completeness_disclosure(run.completeness),
+        # Whether its launch declared latency under test and how many cells it ran at once (#701), and the
+        # line the latency columns are read under when any of them was read under concurrency.
+        "measure_latency": run.measure_latency,
+        "cell_concurrency": run.cell_concurrency,
+        "latency_disclosure": marked_latency_sentence(len(withheld_latency(results, profile.measures)), len(results)),
         "rows": rows,
         "dimension_rows": dimension_rows,
     }
