@@ -564,7 +564,22 @@ apart as a set. The package's tests hold text to 4.5:1 against the chart surface
 mark) and `context` to 3:1, and slots 1-4 to an OKLab ΔE of at least 6 under simulated protanopia
 and deuteranopia. Several categorical slots fall below 3:1 on the light surface, so a chart never relies on
 colour alone to identify a category: it labels the marks or names the level in the values table. A host's own
-`ChartPalette` is held to the contract's shape only.
+`ChartPalette` built in code is held to the contract's shape only.
+
+To keep your colours in a file instead, write an artifact of the packaged one's shape. That is
+`chart_palette.json` beside `threetears/evals/vega/palette.py`: a `light` and a `dark` block whose keys are
+`ChartPalette`'s roles, plus `series_slots` and `validated_slots`. Then read it with `load_palette`:
+
+```python
+from threetears.evals.vega import load_palette
+
+style = StyleProfile(chart_palette=load_palette(Path("chart_palette.json"), "dark"))
+```
+
+`validated_slots` records how many slots you measured as separating for colourblind readers. The loader
+refuses one below `VALIDATED_SLOTS` (4), because the engine assigns that many slots to series it promises a
+reader can tell apart. It also refuses a `series_slots` other than `SERIES_SLOTS` (8), and any colour that
+is not resolved `#rrggbb`. The measurement itself is yours to make, as it is for a palette built in code.
 
 The packaged face is Liberation Sans (`Liberation Sans, Arial, sans-serif`), embedded by the rasteriser and
 metric-compatible with Arial, with digits of one width. To draw in your own face, measure it with the tool in a

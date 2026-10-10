@@ -2075,6 +2075,8 @@ The Vega-Lite chart renderer — an optional adapter over eval's chart intent.
   <br>`draw_intent(intent: ChartIntent, *, font: ChartFont | None = None) -> CompiledChart`
 - **`load_chart_font`** · function · Read a metrics artifact a host measured for its own face, as the font to declare.
   <br>`load_chart_font(path: Path) -> ChartFont`
+- **`load_palette`** · function · Read a palette artifact a host built for its own colours, as the palette to declare.
+  <br>`load_palette(path: Path, theme: Theme) -> ChartPalette`
 - **`packaged_font`** · function · The face this renderer draws in when its host declares none, with the table measured for it.
   <br>`packaged_font() -> ChartFont`
 - **`packaged_palette`** · function · The palette packaged with this renderer, in one of its two variants.
