@@ -323,6 +323,8 @@ _ARMS = ("control-model", "contrast-one", "contrast-two")
 #: The two readings the seeded campaigns carry: the toy host's own quality measures, one better high and
 #: one better low, so the verdict's direction is exercised both ways.
 _READINGS = {"field_accuracy": True, "fields_stripped": False}
+#: The readings' declared ranges in the toy host: a rate is bounded, a count is not.
+_RANGES: dict[str, tuple[float, float]] = {"field_accuracy": (0.0, 1.0)}
 
 
 def _seeded_campaign(
@@ -424,11 +426,13 @@ class TestTheBundleAppliesTheRule:
                 {"contrast-one": range(7, 13)},
                 ("contrast-one", "unpaired", "improved"),
             ),
-            # No spread: every case moved by one amount, so no t exists and the exact sign-flip p decides —
-            # the mirror reads it through separation_p as the bundle does, never as untested.
-            ("every case moved by one amount", 8, 1, 0.25, None, ("contrast-one", "paired", "improved")),
+            # No spread: every case moved by one amount, so no t exists. On field_accuracy's declared range the
+            # bounded test decides, and eight cases moved 0.25 on a 0-1 rate cannot show a mean moved (#597);
+            # fields_stripped declares no range and is not separated. The mirror reads both as the bundle does.
+            ("every case moved by one amount", 8, 1, 0.25, None, ("contrast-one", "paired", "not_separated")),
+            ("every one of forty cases moved by one amount", 40, 1, 0.25, None, ("contrast-one", "paired", "improved")),
         ],
-        ids=["null-paired", "clear-paired", "partly-shared", "one-shared-unpaired", "no-spread-paired"],
+        ids=["null-paired", "clear-paired", "partly-shared", "one-shared-unpaired", "no-spread-paired", "no-spread-40"],
     )
     def test_each_comparison_is_the_rule(
         self,
@@ -443,7 +447,7 @@ class TestTheBundleAppliesTheRule:
         ``field_accuracy`` — asserted so a seeded campaign that drifted off its branch fails rather than
         passing over the easy case."""
         rng = random.Random(f"bundle-rule-{label}")
-        noise = 0.0 if label == "every case moved by one amount" else 1.0
+        noise = 0.0 if label.startswith("every") else 1.0
         bundle, written = _seeded_campaign(
             rng, n_cases=n_cases, repeats=repeats, shift=shift, cases_of=cases_of, noise=noise
         )
@@ -460,7 +464,8 @@ class TestTheBundleAppliesTheRule:
                     _READINGS[comparison.name],
                 )
                 for comparison in family.comparisons
-            ]
+            ],
+            value_ranges=[_RANGES.get(comparison.name) for comparison in family.comparisons],
         )
         for comparison, rule in zip(family.comparisons, expected, strict=True):
             where = f"{label}: {names[comparison.contrast.variant_key]} on {comparison.name}"

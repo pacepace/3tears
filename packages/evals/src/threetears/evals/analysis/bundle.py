@@ -118,10 +118,10 @@ from threetears.evals.analysis.reporting import (
     served_reading,
 )
 from threetears.evals.analysis.stats import (
-    MIN_PAIRS_FOR_DETERMINISTIC_GAP,
     MULTIPLE_COMPARISON_CORRECTION,
     SIGNIFICANCE_ALPHA,
     LevelDifference,
+    bounded_difference_interval,
     clustered_standard_error,
     composite_significance,
     contrast_samples,
@@ -138,7 +138,7 @@ from threetears.evals.analysis.stats import (
     observed_mean_interval,
     paired_equivalence,
     proportion_interval,
-    separation_p,
+    separation_test,
     small_sample_case_means,
 )
 from threetears.evals.contracts.analysis_measures import BarAdjudication, BarVerdict, MeasureCollection, MeasureSummary
@@ -541,7 +541,8 @@ class MeasureMovement(EvalDocumentModel):
         default=None,
         description=(
             "Standard error of the difference the test read: of the per-case differences when paired, each level's "
-            "SEM of its case means in quadrature when not. None when no test ran."
+            "SEM of its case means in quadrature when not. None when no test ran, and where every case moved by one "
+            "amount (the bounded test on the declared range reads that, and has no standard error)."
         ),
     )
     test: Literal["paired", "unpaired"] | None = Field(
@@ -559,8 +560,18 @@ class MeasureMovement(EvalDocumentModel):
             "improved / regressed = the movement separates from noise at alpha (this movement's own test, not "
             "corrected across the lens). equivalent = shown inside ± the measure's declared materiality threshold by "
             "a paired equivalence test; never read without one. not_separated = the data cannot tell this movement "
-            "from noise, which says nothing about whether the measure moved. untested = too few cases to test."
+            "from noise, which says nothing about whether the measure moved (`not_separated_reason` says why where no "
+            "test ran). untested = too few cases to test."
         )
+    )
+    not_separated_reason: str | None = Field(
+        default=None,
+        description=(
+            "Set when `direction` is not_separated with no test run: every case moved by the same amount on a measure "
+            "that declares no value_range, where no test of the mean can call the move (or a value lies outside the "
+            "declared range). Names the remedy. None otherwise, and on a bundle assembled before 0.66, which read "
+            "such a move by the exact sign-flip test, a test of symmetry rather than of the mean."
+        ),
     )
     materiality: Materiality = Field(
         description=(
@@ -755,9 +766,12 @@ def observed_mechanism_key(covariate: str) -> str:
 #: acts on; ``not_swept`` = it was observed at one level, so there is nothing to compare;
 #: ``levels_unobserved`` = some level observed none of the measure, so no pair of levels separated and
 #: whether it held still at every level cannot be shown; ``too_few_observations`` = every level observed
-#: it, but some pair of levels has too few cases on a side for the separation test to run, or a gap with no
-#: spread over too few cases for an exact test to call it at alpha.
-MechanismUncheckedReason = Literal["not_declared", "not_swept", "levels_unobserved", "too_few_observations"]
+#: it, but some pair of levels has too few cases on a side for the separation test to run;
+#: ``uniform_move_needs_range`` = no pair separated, and some pair shifted every case alike on a measure that
+#: declares no range, where no test of the mean can call the shift (declare ``value_range`` on the measure).
+MechanismUncheckedReason = Literal[
+    "not_declared", "not_swept", "levels_unobserved", "too_few_observations", "uniform_move_needs_range"
+]
 
 
 class MechanismCheck(EvalDocumentModel):
@@ -772,8 +786,8 @@ class MechanismCheck(EvalDocumentModel):
     compared on the measure's per-case means exactly as a family comparison compares a contrast with
     the control (paired over shared cases, else Welch's; Holm-corrected across the lever's pairs), so
     noise does not read as a lever taking effect. A gap with no spread — every case shifted alike — is
-    read by the exact permutation test, so over a handful of cases it is too few to tell, not ``moved``:
-    a 0/1 mechanism under a lever that did nothing shifts two cases alike one time in eight.
+    read by the bounded test on the measure's declared range, and with no range is never ``moved``: no
+    test of the mean can call it, so the check is ``unchecked`` for ``uniform_move_needs_range`` (#597).
 
     **Three states, none of them a default.** ``moved``: some pair of levels separates on the measure.
     ``inert``: every level observed it, every pair could be tested, and none separates — no measurable
@@ -812,8 +826,10 @@ class MechanismCheck(EvalDocumentModel):
         description=(
             "Why the check is unchecked; None otherwise. not_declared = the lever names no mechanism. not_swept = "
             "one level only. levels_unobserved = some level observed none of it. too_few_observations = some pair "
-            "of levels had fewer than two cases on a side, or every case shifted by the same amount over too few "
-            "cases for an exact test to tell that from chance (fewer than six shared cases)."
+            "of levels had fewer than two cases on a side. uniform_move_needs_range = no pair separated, and some "
+            "pair shifted every case by the same amount on a measure that declares no value_range, where no test of "
+            "the mean can call the shift; declare value_range on the measure for the bounded test to read it. A "
+            "bundle assembled before 0.66 read such a shift by the exact sign-flip test and keeps its state."
         ),
     )
 
@@ -2014,9 +2030,9 @@ class FamilyComparison(EvalDocumentModel):
         description=(
             "The interval on `delta` at the family's `interval_level`, from the same test as `p_raw`: simultaneous "
             "over the family, so every interval in it covers its true difference together at least 95% of the time. "
-            "One that excludes zero always comes with a separation; a separation Holm's later steps found can still "
-            "touch zero. None when no test could run, and where the values have no spread (every shared case moved "
-            "by one amount, or each side constant): the exact test that decides those has no interval to invert."
+            "A separation needs it to exclude zero. Where the values have no spread (every shared case moved by one "
+            "amount, or each side constant) it is the bounded test's on the declared range (`basis` `bounded`). "
+            "None when no test ran. A bundle assembled before 0.66 stated none where the values had no spread."
         ),
     )
     hedges_g: float | None = Field(
@@ -2030,10 +2046,19 @@ class FamilyComparison(EvalDocumentModel):
     test: Literal["paired", "unpaired"] | None = Field(
         default=None,
         description=(
-            "`paired` = a paired t-test over the cases both cells ran, or the exact sign-flip test where every one "
-            "moved by the same amount; `unpaired` = Welch's t statistic on Hsu's conservative min(n) − 1 degrees of "
-            "freedom over each cell's per-case values, when they share fewer than two cases, or the exact "
-            "permutation test where each side is constant. None when neither could run."
+            "`paired` = over the cases both cells ran; `unpaired` = over each cell's per-case values, when they share "
+            "fewer than two cases. `basis` says which test. None when no test ran."
+        ),
+    )
+    basis: Literal["t", "bounded", "identical"] | None = Field(
+        default=None,
+        description=(
+            "Which test produced `p_raw`: `t` = a paired t-test, or Welch's t statistic on Hsu's conservative "
+            "min(n) − 1 degrees of freedom when unpaired; `bounded` = the bounded test by betting on the reading's "
+            "declared range, where the values have no spread (every shared case moved by one amount, or each side "
+            "constant), valid for the mean at every n; `identical` = identical values on both sides, p 1. None when "
+            "no test ran, and on a bundle assembled before 0.66, whose no-spread rows read the exact sign-flip test, "
+            "a test of symmetry rather than of the mean, and keep the verdicts they were assembled with."
         ),
     )
     p_raw: float | None = Field(
@@ -2086,13 +2111,22 @@ class FamilyComparison(EvalDocumentModel):
     )
     verdict: ComparisonVerdict = Field(
         description=(
-            "improved or regressed when `p_adjusted` is below the family's alpha, in the direction `delta` moved "
-            "on this reading; else equivalent when `equivalence_p_adjusted` is below it; else not_separated, which "
-            "says nothing about whether the arms differ; untested when no test could run."
+            "improved or regressed when `p_adjusted` is below the family's alpha and `interval` excludes zero, in the "
+            "direction `delta` moved on this reading; else equivalent when `equivalence_p_adjusted` is below it; else "
+            "not_separated, which says nothing about whether the arms differ; untested when no test could run."
         )
     )
     untested_reason: str | None = Field(
         default=None, description="Why no test could run, when `verdict` is untested. None otherwise."
+    )
+    not_separated_reason: str | None = Field(
+        default=None,
+        description=(
+            "Set when `verdict` is not_separated with no test run: every shared case moved by the same amount (or "
+            "each side is constant) on a reading that declares no `value_range`, where no test of the mean can call "
+            "the gap, or a value lies outside the declared range. The sentence names the remedy. None otherwise, and "
+            "on a bundle assembled before 0.66."
+        ),
     )
     materiality: Materiality | None = Field(
         default=None,
@@ -2395,7 +2429,10 @@ class AnalysisContextBundle(EvalDocumentModel):
         ge=0,
         description=(
             "Whole-and-part pairs whose divergence could not be tested: fewer than two cases carrying both measures "
-            "on a side, or a remainder with no spread over too few cases for an exact test. Nothing is known of them."
+            "on a side, or a remainder (whole minus part) that moved by the same amount on every case where the two "
+            "measures do not both declare value_range, so no test of the mean can call it; declare value_range on "
+            "both for the bounded test to read it. Nothing is known of them. A bundle assembled before 0.66 read a "
+            "remainder with no spread by the exact sign-flip test, a test of symmetry rather than of the mean."
         ),
     )
     declared_design: CampaignDesign | None = Field(
@@ -5328,40 +5365,56 @@ def _level_means(
     }
 
 
-def _levels_separate(per_case: Mapping[str, Mapping[str, Fraction]]) -> tuple[bool, bool]:
+class _LevelsSeparate(NamedTuple):
+    """What :func:`_levels_separate` found over every pair of a lever's levels."""
+
+    separated: bool
+    #: Some pair had fewer than two cases on a side, or a spread that vanishes in floating point.
+    untestable: bool
+    #: Some pair shifted every case alike on a measure with no declared range, so no test of the mean ran on it.
+    needs_range: bool
+
+
+def _levels_separate(
+    per_case: Mapping[str, Mapping[str, Fraction]], value_range: tuple[float, float] | None = None
+) -> _LevelsSeparate:
     """Whether any pair of levels separates on per-case values, and whether any pair could not be tested.
 
     The engine's between-level test applied to every pair of levels
     (:func:`~threetears.evals.analysis.stats.level_difference`): paired over the cases both levels ran when
     they share at least two, else Welch's over each level's per-case values, the pairs Holm-corrected as one
     family and read against the same alpha. A gap with no spread at all (every case moved by the same nonzero
-    amount, or two different constants) is read by the exact permutation test, so it separates only over
-    enough cases for that pattern to be rarer than alpha by chance: at two cases a 0/1 mechanism under a lever
-    that did nothing shifts both cases alike one time in eight. Below that it is untestable, as is a pair with
-    fewer than two cases on a side.
+    amount, or two different constants) is read by the bounded test on the measure's declared range, and with
+    none is not tested (the exact sign-flip test it once read asks about symmetry, not the mean — #597).
 
     Args:
         per_case: Level -> its exact per-case means, for every level that observed the measure.
+        value_range: The measure's declared inclusive bounds, or None when it declares none.
 
     Returns:
-        ``(separated, untestable)``.
+        The :class:`_LevelsSeparate`.
     """
     raw: list[float] = []
-    untestable = False
+    untestable = needs_range = False
     levels = sorted(per_case)
     for index, level_a in enumerate(levels):
         for level_b in levels[index + 1 :]:
-            tested = level_difference(per_case[level_a], per_case[level_b])
-            if tested.p_value is None:
+            tested = level_difference(per_case[level_a], per_case[level_b], value_range=value_range)
+            if tested.not_separated_reason is not None:
+                needs_range = True
+            elif tested.p_value is None:
                 untestable = True
             else:
                 raw.append(tested.p_value)
     separated = bool(raw) and min(holm_adjust(raw)) < SIGNIFICANCE_ALPHA
-    return separated, untestable
+    return _LevelsSeparate(separated, untestable, needs_range)
 
 
 def _mechanism_check(
-    measure: str | None, result_ids_by_level: Mapping[str, Collection[str]], observations: _MechanismObservations
+    measure: str | None,
+    result_ids_by_level: Mapping[str, Collection[str]],
+    observations: _MechanismObservations,
+    value_range: tuple[float, float] | None = None,
 ) -> MechanismCheck:
     """Decide whether a swept lever's declared mechanism measurably moved across its levels.
 
@@ -5369,6 +5422,7 @@ def _mechanism_check(
         measure: The lever's ``acts_on``, or None when it declares none.
         result_ids_by_level: The lever's level -> the result ids at that level, over the row's cohort.
         observations: The campaign's mechanism observations.
+        value_range: The mechanism measure's declared inclusive bounds, or None when it declares none.
 
     Returns:
         ``moved`` when some pair of observed levels separates; otherwise ``inert`` when every level observed
@@ -5385,15 +5439,17 @@ def _mechanism_check(
     unobserved = [level for level in sorted(result_ids_by_level) if level not in per_case]
     state: Literal["moved", "inert", "unchecked"]
     reason: MechanismUncheckedReason | None = None
-    separated, untestable = _levels_separate(per_case)
+    found = _levels_separate(per_case, value_range)
     if len(result_ids_by_level) < 2:
         state, reason = "unchecked", "not_swept"
-    elif separated:
+    elif found.separated:
         state = "moved"
     elif unobserved or len(per_case) < 2:
         state, reason = "unchecked", "levels_unobserved"
-    elif untestable:
+    elif found.untestable:
         state, reason = "unchecked", "too_few_observations"
+    elif found.needs_range:
+        state, reason = "unchecked", "uniform_move_needs_range"
     else:
         state = "inert"
     return MechanismCheck(
@@ -5831,7 +5887,22 @@ def measure_movement(
         n_b=tested.n_b,
         direction=direction,
         materiality=materiality(descriptor.materiality_threshold, tested.delta),
+        not_separated_reason=tested.not_separated_reason,
     )
+
+
+def _difference_range(
+    minuend: MetricDescriptor | None, subtrahend: MetricDescriptor | None
+) -> tuple[float, float] | None:
+    """The range one measure minus another can take, from their declared ranges, or None unless both declare one.
+
+    A remainder or a gap between two measures is what the scope lens tests, and a move with no spread is read on a
+    declared range (:func:`~threetears.evals.analysis.stats.separation_test`): ``[low₁ − high₂, high₁ − low₂]``.
+    """
+    if minuend is None or subtrahend is None or minuend.value_range is None or subtrahend.value_range is None:
+        return None
+    (low_1, high_1), (low_2, high_2) = minuend.value_range, subtrahend.value_range
+    return low_1 - high_2, high_1 - low_2
 
 
 def _remainders(whole: Mapping[str, Fraction], part: Mapping[str, Fraction]) -> dict[str, Fraction]:
@@ -6148,7 +6219,9 @@ def _scope_divergences(
                     collections[level_a], collections[level_b], catalog
                 ):
                     tested = level_difference(
-                        _remainders(at_a[e_a.name], at_a[s_a.name]), _remainders(at_b[e_a.name], at_b[s_a.name])
+                        _remainders(at_a[e_a.name], at_a[s_a.name]),
+                        _remainders(at_b[e_a.name], at_b[s_a.name]),
+                        value_range=_difference_range(catalog.get(e_a.name), catalog.get(s_a.name)),
                     )
                     if tested.p_value is None:
                         n_untested += 1
@@ -6869,7 +6942,13 @@ def _coverage_map(
                 + _observed_mechanism_confounds(lever, result_ids_by_level, observations, profile=profile)
                 + _served_model_confounds(chain.from_iterable(result_ids_by_level.values()), served),
                 mechanism=_mechanism_check(
-                    declared_lever.acts_on if declared_lever is not None else None, result_ids_by_level, observations
+                    declared_lever.acts_on if declared_lever is not None else None,
+                    result_ids_by_level,
+                    observations,
+                    # The mechanism measure's declared range, which a shift of every case alike is read on.
+                    describe_measure(declared_lever.acts_on, profile.measures).value_range
+                    if declared_lever is not None and declared_lever.acts_on is not None
+                    else None,
                 ),
             )
         )
@@ -8872,8 +8951,9 @@ def _compare(
     Paired over the cases both cells ran when they share at least two — far more powerful, and the
     design a fixed case set exists for — else the unpaired test over each side's per-case values
     (:func:`~threetears.evals.analysis.stats.composite_significance`), and where the values have no spread
-    the exact permutation p every other surface reads that gap by (:func:`~threetears.evals.analysis.stats.separation_p`),
-    so one concept has one answer. The means, the counts and the delta
+    the bounded test on the declared range every other surface reads that gap by
+    (:func:`~threetears.evals.analysis.stats.separation_test`), so one concept has one answer. With no range
+    such a gap is ``not_separated``, with ``not_separated_reason`` naming the remedy. The means, the counts and the delta
     are all over the cases the test read, and each side says how many of its own it left out, so the
     figures a reader sees are the figures the test saw. A paired comparison on a measure with a declared
     margin also runs the paired equivalence test (TOST) against it.
@@ -8903,11 +8983,12 @@ def _compare(
     """
     (control_key, control_values), (contrast_key, contrast_values) = control, contrast
     a, b, paired = _test_samples(control_values, contrast_values)
-    # The separation p every surface reads a gap by (:func:`separation_p`): the t-test's where the values have
-    # spread, and where they have none — every shared case moved by one amount, or each side constant — the
-    # exact permutation p the frontier, the mechanism and scope reads and the history use, decided on exact
-    # values. So a gap with no spread is separated once the exact test can reach α, as it is everywhere else.
-    p_raw = separation_p(a, b, paired=paired)
+    # The separation test every surface reads a gap by (:func:`separation_test`): the t-test's where the values
+    # have spread, and where they have none — every shared case moved by one amount, or each side constant — the
+    # bounded test on the reading's declared range, decided on exact values. With no range a gap with no spread
+    # is not separated, and says why: the exact sign-flip p tests symmetry, not the mean (#597).
+    separation = separation_test(a, b, paired=paired, value_range=value_range)
+    p_raw = separation.p
     hedges_g, _, _ = composite_significance(a, b, paired=paired)
     no_spread = (
         no_spread_p([exact_decimal(x) for x in a], [exact_decimal(y) for y in b], paired=paired)
@@ -8934,19 +9015,7 @@ def _compare(
             )
         elif len(a) < 2 or len(b) < 2:
             untested_reason = "fewer than two cases carry this reading on a side"
-        elif no_spread is not None and paired:
-            untested_reason = (
-                f"every shared case moved by the same amount, and over {len(a)} shared cases the exact sign-flip "
-                f"test's smallest p is {format_number(no_spread)}, above α={format_number(SIGNIFICANCE_ALPHA)}; "
-                f"it needs {MIN_PAIRS_FOR_DETERMINISTIC_GAP} shared cases"
-            )
-        elif no_spread is not None:
-            untested_reason = (
-                f"each side's values are constant, and over {len(a)} and {len(b)} cases the exact permutation "
-                f"test's smallest p is {format_number(no_spread)}, above α={format_number(SIGNIFICANCE_ALPHA)}; "
-                "it needs more cases on a side"
-            )
-        else:
+        elif separation.refusal is None:
             untested_reason = "the values differ by less than floating point resolves, so no t statistic exists"
     # The equivalence test only where the separation test produced a p, so each equivalence hypothesis has
     # its comparison's separation hypothesis beside it in the family (see holm_adjust's max_true).
@@ -8983,13 +9052,17 @@ def _compare(
         delta=delta,
         hedges_g=hedges_g if p_raw is not None else None,
         test=None if p_raw is None else ("paired" if paired else "unpaired"),
+        basis=separation.basis,
         p_raw=p_raw,
         equivalence_margin=margin,
         margin_source=margin_source if threshold is not None else None,
         equivalence_p_raw=equivalence_p_raw,
         equivalence_untested_reason=equivalence_refused,
-        verdict="untested" if p_raw is None else "not_separated",
+        # A gap with no spread on a reading with no declared range is not separated, with the refusal naming the
+        # remedy; it joins no family, since no test ran to correct.
+        verdict="untested" if untested_reason is not None else "not_separated",
         untested_reason=untested_reason,
+        not_separated_reason=separation.refusal if untested_reason is None else None,
         materiality=None if delta is None else materiality(threshold, delta),
     )
     return _Tested(comparison, p_raw, equivalence_p_raw, (a, b), value_range)
@@ -9053,8 +9126,9 @@ def _corrected_family(question_id: str | None, axes: list[MeritAxis], tested: li
     Bonferroni interval still reaches zero, and a reader must never see a separation beside an interval that
     includes no change. An interval that excludes zero has ``m · p_raw < α``, which Holm always rejects, so the
     rule is Bonferroni's wherever an interval exists: a subset of Holm's rejections, so the family's error stays
-    at α, at the cost of the separations Holm alone would add. Where no t interval exists (every case moved by
-    one amount) the adjusted p decides alone, and no interval is shown to contradict it.
+    at α, at the cost of the separations Holm alone would add. Where every case moved by one amount no t
+    interval exists, and the interval is the bounded test's on the declared range, the test whose p was
+    corrected (#597); with no range that comparison was never tested and is not in the family.
 
     Args:
         question_id: The question the family serves, or None for the campaign-wide family.
@@ -9076,12 +9150,24 @@ def _corrected_family(question_id: str | None, axes: list[MeritAxis], tested: li
             p_adjusted = next(adjusted)
             equivalence_p_adjusted = next(adjusted) if one.equivalence_p_raw is not None else None
             control_sample, contrast_sample = one.samples
-            interval = difference_interval(
-                control_sample,
-                contrast_sample,
-                paired=comparison.test == "paired",
-                confidence=interval_level,
-                value_range=one.value_range,
+            interval = (
+                # No spread: no t interval exists, and on the declared range the bounded test gives one, so a
+                # separation is never shown with no interval beside it (#597), nor identical values without bounds.
+                bounded_difference_interval(
+                    control_sample,
+                    contrast_sample,
+                    paired=comparison.test == "paired",
+                    value_range=one.value_range,
+                    confidence=interval_level,
+                )
+                if comparison.basis in ("bounded", "identical") and one.value_range is not None
+                else difference_interval(
+                    control_sample,
+                    contrast_sample,
+                    paired=comparison.test == "paired",
+                    confidence=interval_level,
+                    value_range=one.value_range,
+                )
             )
             verdict: ComparisonVerdict = "not_separated"
             if p_adjusted < SIGNIFICANCE_ALPHA and comparison.delta and interval_permits_separation(interval):

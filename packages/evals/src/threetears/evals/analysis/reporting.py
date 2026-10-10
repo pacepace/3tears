@@ -55,7 +55,7 @@ from threetears.evals.analysis.stats import (
     guardrail_decision,
     holm_adjust,
     interval_clears,
-    separation_p,
+    separation_test,
 )
 from threetears.evals.contracts.analysis_measures import BarDecision
 from threetears.evals.contracts.base import EvalBaseModel, EvalDocumentModel, VerbatimText
@@ -5137,6 +5137,10 @@ _DOMINATION_AXES: tuple[tuple[Literal["pass_hat_k", "production_replicating_cost
 )
 
 
+#: The domination axes with a known range: a case's pass^k is a rate. Cost and latency have none.
+_AXIS_RANGES: dict[str, tuple[float, float]] = {"pass_hat_k": (0.0, 1.0)}
+
+
 def _case_means(pairs: Iterable[tuple[str, float]]) -> dict[str, Fraction]:
     """The mean value at each case, from ``(case, value)`` pairs, exactly.
 
@@ -5162,7 +5166,7 @@ def _dominance_p(
     its p is the largest of theirs. Requiring every axis is what makes the conjunction a level-α test with
     no correction across axes; correcting across them would only make it stricter than α.
 
-    Each axis is the engine's separation test (:func:`~threetears.evals.analysis.stats.separation_p`):
+    Each axis is the engine's separation test (:func:`~threetears.evals.analysis.stats.separation_test`):
     paired over the test cases both contestants measured where they share at least two, Welch over each
     side's cases otherwise, two-sided, and counting only in ``a``'s favour — so on one axis a false call
     of "better" happens at most α/2 of the time.
@@ -5198,7 +5202,12 @@ def _dominance_p(
     for axis, higher_is_better in measured:
         if getattr(a, axis) is None:
             return None
-        p = _axis_p(getattr(a_cases, axis), getattr(b_cases, axis), higher_is_better=higher_is_better)
+        p = _axis_p(
+            getattr(a_cases, axis),
+            getattr(b_cases, axis),
+            higher_is_better=higher_is_better,
+            value_range=_AXIS_RANGES.get(axis),
+        )
         if p is None:
             return None
         largest = max(largest, p)
@@ -5206,24 +5215,35 @@ def _dominance_p(
 
 
 def _axis_p(
-    a_values: Mapping[str, Fraction], b_values: Mapping[str, Fraction], *, higher_is_better: bool
+    a_values: Mapping[str, Fraction],
+    b_values: Mapping[str, Fraction],
+    *,
+    higher_is_better: bool,
+    value_range: tuple[float, float] | None = None,
 ) -> float | None:
     """The p of the test that ``a`` is better than ``b`` on one axis, counting only in ``a``'s favour.
 
-    The engine's separation test (:func:`~threetears.evals.analysis.stats.separation_p`): paired over the
+    The engine's separation test (:func:`~threetears.evals.analysis.stats.separation_test`): paired over the
     test cases both sides measured where they share at least two, Welch over each side's cases otherwise,
     two-sided. Read in one direction: where the tested means do not favour ``a`` the p is 1.0, so a false
     call of "better" happens at most α/2 of the time. The one axis test both :func:`_dominance_p` and the
     verdict's cost comparison (:func:`_cost_ties`) read.
 
+    Where every case moved by one amount no t exists, and the bounded test on the axis's range reads it: pass^k
+    per case lies in [0, 1]. Cost and latency declare no range, so no test of the mean can show such a move,
+    and the axis reads 1.0, not separated in ``a``'s favour (the exact sign-flip test it once read asks about
+    symmetry, not the mean — #597).
+
     Args:
         a_values: ``a``'s per-case values on the axis.
         b_values: ``b``'s.
         higher_is_better: Which way is better on the axis.
+        value_range: The axis's inclusive bounds, or None where it has none.
 
     Returns:
-        The p, or ``None`` where no test can decide: fewer than two cases on a side, or no spread over too few
-        cases for the exact test to reach α (:func:`~threetears.evals.analysis.stats.separation_p`).
+        The p — 1.0 where the means do not favour ``a``, or where there is no spread on an axis with no range —
+        or ``None`` where no test can decide: fewer than two cases on a side, or a spread that vanishes in floating
+        point (:func:`~threetears.evals.analysis.stats.separation_test`).
     """
     if len(a_values) < 2 or len(b_values) < 2:
         return None
@@ -5231,7 +5251,12 @@ def _axis_p(
     paired = len(shared) >= 2
     a_side = [a_values[case] for case in shared] if paired else list(a_values.values())
     b_side = [b_values[case] for case in shared] if paired else list(b_values.values())
-    p = separation_p(a_side, b_side, paired=paired)
+    tested = separation_test(a_side, b_side, paired=paired, value_range=value_range)
+    if tested.refusal is not None:
+        # No spread on an axis with no range: no test of the mean can show `a` better there, so the claim on this
+        # axis is not shown — p 1, which holds α trivially — rather than left untested (#597).
+        return 1.0
+    p = tested.p
     if p is None:
         return None
     gap = sum(a_side, Fraction(0)) / len(a_side) - sum(b_side, Fraction(0)) / len(b_side)
@@ -5961,10 +5986,12 @@ class RegressionFlag(EvalBaseModel):
     exceeds_threshold: bool | None = None
     #: Hedges' g_z of the paired move — bias-corrected, so not comparable with a Cohen's d.
     hedges_g: float | None = None
-    #: The p ``significant`` was thresholded against — the paired t's, or the exact
-    #: sign-flip p where every case moved by one amount — and ``None`` on an
-    #: ``untested`` step. Carried for the same reason ``hedges_g`` is: a verdict
-    #: whose statistic is absent cannot be checked.
+    #: The p ``significant`` was thresholded against — the paired t's, or where every case
+    #: moved by one amount the bounded test's on the measure's declared range — and ``None``
+    #: on an ``untested`` step and where ``not_separated_reason`` says no test ran. Carried
+    #: for the same reason ``hedges_g`` is: a verdict whose statistic is absent cannot be
+    #: checked. A flag computed before 0.66 carried the exact sign-flip p there, a test of
+    #: symmetry rather than of the mean, and its ``test`` says so.
     p: float | None = None
     #: The TOST p an ``equivalent`` label was thresholded against — the larger of the
     #: two one-sided p's, each the bounded test's on the measure's declared range — or
@@ -5979,6 +6006,11 @@ class RegressionFlag(EvalBaseModel):
     #: range (:data:`~threetears.evals.analysis.stats.EQUIVALENCE_NEEDS_RANGE`, which names the
     #: remedy), so no step on it can read ``equivalent``. ``None`` otherwise.
     equivalence_untested_reason: str | None = None
+    #: Why the step reads ``not_separated`` with no test run: every case moved by the same
+    #: amount on a measure that declares no range
+    #: (:data:`~threetears.evals.analysis.stats.UNIFORM_MOVE_NEEDS_RANGE`, which names the
+    #: remedy), or a value lies outside it. ``None`` otherwise.
+    not_separated_reason: str | None = None
     n_pairs: int = 0
     crosses_epoch: bool = False
     crosses_cassette_mode: bool = False
@@ -6510,6 +6542,7 @@ def compute_history(
                     equivalence_p=verdict.equivalence_p,
                     equivalence_margin=verdict.equivalence_margin,
                     equivalence_untested_reason=verdict.equivalence_untested_reason,
+                    not_separated_reason=verdict.not_separated_reason,
                     n_pairs=verdict.n_pairs,
                     crosses_epoch=boundary,
                     crosses_cassette_mode=crosses_cassette,

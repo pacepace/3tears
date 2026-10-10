@@ -31,12 +31,14 @@ from statistics import NormalDist
 
 from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
+    bounded_difference_interval,
     difference_interval,
     exact_decimal,
     holm_adjust,
     interval_permits_separation,
     paired_equivalence,
     separation_p,
+    separation_test,
 )
 from threetears.evals.contracts.metrics import confusion_cell
 
@@ -386,8 +388,8 @@ def family_verdicts(
     Each comparison is ``(control per-case values, contrast per-case values, higher_is_better)``. It is
     tested paired over the cases both sides ran when they share at least two, else unpaired over each
     side's values, its p :func:`~threetears.evals.analysis.stats.separation_p`'s — the t-test's where the
-    values have spread, the exact permutation p where they have none, None where no test can decide — as the
-    bundle's is. A paired comparison with a declared margin (``margins``, aligned with ``comparisons``) also
+    values have spread, the bounded test's on the reading's declared range (``value_ranges``) where they have
+    none, None where no test can decide or the reading declares no range — as the bundle's is. A paired comparison with a declared margin (``margins``, aligned with ``comparisons``) also
     runs the paired TOST against it, on the reading's declared range where ``value_ranges`` gives one
     (:func:`~threetears.evals.analysis.stats.paired_equivalence`). Every separation p and TOST p is
     Holm-adjusted together, the multiplier capped at the separation count
@@ -405,32 +407,43 @@ def family_verdicts(
     Returns:
         One verdict per comparison, in order.
     """
-    tested: list[tuple[float | None, float | None, float | None, list[float], list[float], bool]] = []
+    tested: list[
+        tuple[float | None, float | None, float | None, list[float], list[float], bool, tuple[float, float] | None]
+    ] = []
     for index, (control, contrast, _) in enumerate(comparisons):
         shared = sorted(set(control) & set(contrast))
         paired = len(shared) >= 2
         a = [control[case] for case in shared] if paired else list(control.values())
         b = [contrast[case] for case in shared] if paired else list(contrast.values())
         delta = sum(b) / len(b) - sum(a) / len(a) if a and b else None
-        p_raw = separation_p(a, b, paired=paired)
-        margin = margins[index] if margins is not None else None
         value_range = value_ranges[index] if value_ranges is not None else None
+        p_raw = separation_p(a, b, paired=paired, value_range=value_range)
+        margin = margins[index] if margins is not None else None
         equivalence_p = None
         if paired and margin and p_raw is not None:
             diffs = [exact_decimal(y) - exact_decimal(x) for x, y in zip(a, b)]
             equivalence_p = paired_equivalence(diffs, margin, value_range=value_range)[1]
-        tested.append((p_raw, equivalence_p, delta, a, b, paired))
+        tested.append((p_raw, equivalence_p, delta, a, b, paired, value_range))
     m = sum(1 for p_raw, *_ in tested if p_raw is not None)
     raw = [p for p_raw, equivalence_p, *_ in tested for p in (p_raw, equivalence_p) if p is not None]
     adjusted = iter(holm_adjust(raw, max_true=m) if raw else [])
     verdicts = []
-    for (p_raw, equivalence_p, delta, a, b, paired), (_, _, higher_is_better) in zip(tested, comparisons, strict=True):
+    for (p_raw, equivalence_p, delta, a, b, paired, value_range), (_, _, higher_is_better) in zip(
+        tested, comparisons, strict=True
+    ):
+        separation = separation_test(a, b, paired=paired, value_range=value_range)
         if p_raw is None:
-            verdicts.append(FamilyVerdict(None, None, "untested"))
+            # No spread on a reading with no range is not separated (no test of the mean ran); else untested.
+            verdicts.append(FamilyVerdict(None, None, "not_separated" if separation.refusal else "untested"))
             continue
         p_adjusted = next(adjusted)
         equivalence_adjusted = next(adjusted) if equivalence_p is not None else None
-        interval = difference_interval(a, b, paired=paired, confidence=1.0 - SIGNIFICANCE_ALPHA / m)
+        level = 1.0 - SIGNIFICANCE_ALPHA / m
+        if separation.basis in ("bounded", "identical") and value_range is not None:
+            # No spread, decided exactly: the bounded test's own interval stands beside its p.
+            interval = bounded_difference_interval(a, b, paired=paired, value_range=value_range, confidence=level)
+        else:
+            interval = difference_interval(a, b, paired=paired, confidence=level)
         verdict = "not_separated"
         if p_adjusted < SIGNIFICANCE_ALPHA and delta and interval_permits_separation(interval):
             verdict = "improved" if (delta > 0) == higher_is_better else "regressed"

@@ -131,8 +131,8 @@ the control on each reading, under one rig.
 |---|---|---|
 | improved / regressed | adjusted p < 0.05, in that direction | act on it, unless the row says *immaterial* (below the measure's margin) |
 | equivalent | the paired difference is shown inside ± the measure's margin by TOST, corrected in the same family | treat the arms as interchangeable on this reading |
-| not separated | the cases could not tell the arms apart | add cases, or declare a margin; never read it as a tie |
-| untested | no test could decide: fewer than two cases on a side, or a gap with no spread (every shared case moved by exactly the same amount, or each side constant) over too few cases for the exact test to reach 0.05; the row says why | fix what it names (usually too few cases) |
+| not separated | the cases could not tell the arms apart, or every shared case moved by exactly the same amount on a measure with no declared range, which no test of the mean can call (the row says so) | add cases, declare a margin, or declare `value_range`; never read it as a tie |
+| untested | no test could decide: fewer than two cases on a side; the row says why | fix what it names (usually too few cases) |
 
 Latency read while other cells or runs executed beside it is never in this table: the bundle withholds it
 before anything reads it, a latency row whose arm has no other latency reads `untested` and says why, and
@@ -156,8 +156,8 @@ the campaign declares the same one, and its verdict says "declared on the runs".
 measure that declares its range (`value_range`), as every pass rate and 1–5 score does, each one-sided test
 is a bounded test by betting, which holds 5% for any distribution of differences on that range at any number
 of cases. Coarse scores need that: a regression that fails one case in ten leaves twelve agreeing cases 28%
-of the time, and a t-test, or the exact sign-flip reading of a difference with no spread it replaced,
-called such samples equivalent up to three times in four. The price is that equivalence on a small margin
+of the time, and a t-test, or the exact sign-flip reading of a difference with no spread that the engine
+once used, called such samples equivalent up to three times in four. The price is that equivalence on a small margin
 takes many cases, whatever the test. Arms that give the same answer on every case and repeat show a pass rate
 within 0.25 from 12 shared cases and within 0.1 from 33, and a 1–5 score within 0.5 from 26, when it is the
 only reading the family tests (no valid test could do it in fewer than 11, 29 and 23). Each further reading
@@ -240,13 +240,13 @@ unit of analysis: a case's repeats are averaged first, because they are not inde
 | Interval on a rate (accuracy, precision, recall, any 0/1 measure) | Wilson, on the effective sample size the clustering of repeats leaves, with t on `n_cases − 1` df. F1 has none. |
 | Mean composite | The mean of each result's capability dimensions put on 0–1, per case first. Every pooled composite (run summary, compare, pivot cell, frontier point, history point, a lever's dispersion) names the dimension sets it was meaned over, and a pool whose results carried different sets is marked *ragged*: its mean averages different questions. |
 | pass^k | An attempt passes when every goal-state check passed and every capability criterion reached the behavior's pass threshold (3 of 5 unless declared; recorded as `rubric_threshold`, printed as `pass^k (k=3, criterion >= 4 of 5)`). An attempt with no goal-state check and no judge, such as a classifier scored only against its expected label, has nothing to pass: it is left out and counted (`n_no_criterion_excluded`), and an arm with none measurable has no pass^k (`pass_hat_k_unmeasured_reason`), never 0. Unbiased C(c, k) / C(n, k) per case, averaged over the cases with n ≥ k, pooled across the runs of one cell; its interval is Clopper–Pearson on an effective size. |
-| A contrast against the control | Paired t-test on per-case means over the shared cases (two or more), else Welch's t on Hsu's `min(n_a, n_b) − 1` df; a gap with no spread is read by the exact permutation test, as for scope divergence, with no interval and no g. Effect size Hedges' g (g_z when paired). Holm correction within each family; interval Bonferroni at 1 − α/m, clipped to the differences the measure's declared range allows (± its width). |
+| A contrast against the control | Paired t-test on per-case means over the shared cases (two or more), else Welch's t on Hsu's `min(n_a, n_b) − 1` df; a gap with no spread (every shared case moved by one amount, or each side constant) is read by the bounded test by betting on the measure's declared range, with its own interval and no g, and with no range is not separated and says why: the exact sign-flip test asks whether a move is symmetric, not whether the mean moved. An analysis assembled before 0.66 read that gap by the sign-flip test and keeps its verdicts. Effect size Hedges' g (g_z when paired). Holm correction within each family; interval Bonferroni at 1 − α/m, clipped to the differences the measure's declared range allows (± its width). |
 | `equivalent` | Paired TOST against the measure's `materiality_threshold`, in the same Holm family, capped at the number of compared rows (Shaffer); each one-sided test is the bounded test by betting (Waudby-Smith & Ramdas) on the measure's declared range, which holds α for any distribution on the range at any n; a measure with no declared range is not tested for equivalence. |
 | A bar | Three-valued: the cell's interval against the threshold less the margin (cleared, missed, undecided). A seeded threshold is the incumbent's mean moved √2 − 1 of its half-width toward the permissive end. |
 | A guardrail | Non-inferiority: the 95% interval on arm − control against zero change less the margin. On a declared range the interval is the bounded test by betting (each end a one-sided 2.5% bound; paired on the differences, unpaired each arm's mean at 1.25% and the gap between them); with no declared range it is the comparison's t interval, which can read `breached` but never `held`. |
-| Scope divergence, mechanism checks | The difference tested directly, paired or Welch as for a contrast; a gap with no spread is read by an exact permutation test, which can reach 0.05 only from six shared cases, or unshared where 2 / C(n_a + n_b, n_a) ≤ 0.05 (four a side, or three against five). |
-| Frontier | Dominance by the contrasts' test, Holm across the subject's pairs; latency ranked on the mean; p95 median-unbiased (Hyndman–Fan type 8) from 13 observations; cost band a lognormal prediction band. |
-| Run history | Paired test per adjacent pair of runs, uncorrected; `equivalent` by the same bounded TOST against the threshold, on the measure's declared range (with none, untested, and each step's flag says why). |
+| Scope divergence, mechanism checks | The difference tested directly, paired or Welch as for a contrast; a gap with no spread is read by the bounded test on the measure's declared range (a remainder's range from the whole's and the part's), and with none is never called: a mechanism reads `uniform_move_needs_range`, a divergence is counted untested. |
+| Frontier | Dominance by the contrasts' test, Holm across the subject's pairs (a gap of one amount on cost or latency, which declare no range, is never shown); latency ranked on the mean; p95 median-unbiased (Hyndman–Fan type 8) from 13 observations; cost band a lognormal prediction band. |
+| Run history | Paired test per adjacent pair of runs, uncorrected (every case moved by one amount: the bounded test on the declared range, or `not_separated` with the reason); `equivalent` by the same bounded TOST against the threshold, on the measure's declared range (with none, untested, and each step's flag says why). |
 | Detectable difference (a launch estimate) | The smallest true difference the paired t-test on `n` cases finds with 80% power at α/m (Holm's first step over the `m` comparisons planned), by the noncentral t. The variance is measured on earlier runs of the template: repeat noise, plus how far two arms disagree about a case (or one arm's case spread, twice, where no earlier pair shares cases). Assumes near-normal per-case differences and one real difference in the family. |
 | Judge agreement and evidence tiers | Cohen's κ, quadratic-weighted on 1–5; tiers decided on a score interval for κ (one-sided 95% lower bound to award, 97.5% upper bound to deny). |
 
@@ -365,12 +365,12 @@ chunk-width lever, say; a kind's overlay field does the same with `ActsOn(...)` 
 the same separation test the contrasts against the control use (per-case means, paired where the levels share
 cases, Holm-corrected across the lever's pairs): `moved` when some pair separates; `inert` when every level was
 observed, every pair could be tested and none separates — no measurable evidence the lever acted on its mechanism;
-otherwise `unchecked` with the reason (`not_declared`, `not_swept`, `levels_unobserved`, `too_few_observations`).
-Each level's mean and its number of cases sit beside the state. Every case shifting by the same amount is read
-by an exact test, so it reads `moved` only from six shared cases (where the levels share none, once
-2 / C(n_a + n_b, n_a) ≤ 0.05: four a side, or three against five); below
-that it is `too_few_observations`, since a 0/1 measure under a lever that did nothing shifts two cases alike one
-time in eight.
+otherwise `unchecked` with the reason (`not_declared`, `not_swept`, `levels_unobserved`, `too_few_observations`,
+`uniform_move_needs_range`). Each level's mean and its number of cases sit beside the state. Every case shifting by
+the same amount has no spread for a t-test, and the exact sign-flip test asks whether a shift is symmetric about
+zero, not whether the mean moved. So such a shift is read by the bounded test on the measure's declared
+`value_range`, and on a measure with no range it reads `uniform_move_needs_range`, never `moved`. An analysis
+assembled before 0.66 read it by the sign-flip test and keeps the state it was assembled with.
 
 The profile accepts only a numeric measure that each result carries as a single value: a covariate, a measure
 your kind reports per result, or one of the result's own fields. It refuses anything else where you declare it,

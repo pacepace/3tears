@@ -37,7 +37,7 @@ from threetears.evals.analysis.agreement import JudgeKey
 from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
     bounded_difference_interval,
-    bounded_mean_p,
+    bounded_separation_p,
     difference_interval,
     no_spread_p,
     separation_p,
@@ -140,7 +140,7 @@ def _paired_test(
       scale's span, which never moves zero in or out).
     - **Where every case moved by one amount** no t exists, and the bounded test by betting reads both
       (:func:`~threetears.evals.analysis.stats.bounded_difference_interval`, and
-      :func:`~threetears.evals.analysis.stats.bounded_mean_p` on each side at the same tail): valid for the mean at
+      :func:`~threetears.evals.analysis.stats.bounded_separation_p` with its stakes at the same tail): valid for the mean at
       every n on the scale's range. The exact sign-flip p this once read here is a test of symmetry, not of the
       mean: twenty cases each up one point arise about one time in ninety from a judge whose mean did not move (up one
       point four times in five, down four the fifth), where the sign flip states one in half a million. The
@@ -163,14 +163,10 @@ def _paired_test(
         if interval is not None and p is not None:
             return interval, p
     bounded = bounded_difference_interval(a, b, paired=True, value_range=scale, confidence=level)
-    if bounded is None:
+    p = bounded_separation_p(a, b, paired=True, value_range=scale, alpha=1.0 - level)
+    if bounded is None or p is None:
         return None
-    width = scale[1] - scale[0]
-    tail = (1.0 - level) / 2.0
-    diffs = [y - x for x, y in zip(a, b)]
-    upward = bounded_mean_p(diffs, 0.0, (-width, width), alpha=tail)
-    downward = bounded_mean_p([-d for d in diffs], 0.0, (-width, width), alpha=tail)
-    return bounded, min(1.0, 2.0 * min(upward, downward))
+    return bounded, p
 
 
 def judge_drift(results: Iterable[EvalResult], *, pass_id: str | None = None) -> JudgeDrift:

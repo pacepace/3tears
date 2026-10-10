@@ -216,13 +216,16 @@ def _observed(confounds: Sequence[Confound]) -> list[Confound]:
 class TestALeverIsCheckedAgainstTheMechanismItDeclares:
     """#577: a lever whose declared mechanism did not measurably move gives no evidence it took effect."""
 
-    def test_the_declared_campaign_moved_its_mechanism(self) -> None:
+    def test_the_declared_campaign_s_uniform_shift_needs_a_range_to_be_called(self) -> None:
+        """The toy host's context shifts by one amount on every document, and a token count declares no range: no
+        test of the mean can call that, so the check says so and names the remedy, never ``moved`` (#597)."""
         mechanism = _row(toyhost_bundle(), "chunk_tokens").mechanism
         assert mechanism == MechanismCheck(
-            state="moved",
+            state="unchecked",
             measure=_CONTEXT,
             level_means={"256": 2400.0, "1024": 7600.0},
             level_n={"256": 12, "1024": 12},
+            reason="uniform_move_needs_range",
         )
 
     def test_identical_constants_are_the_degenerate_inert(self) -> None:
@@ -262,23 +265,23 @@ class TestALeverIsCheckedAgainstTheMechanismItDeclares:
         assert mechanism.state == "inert"
 
     def test_clearly_separated_levels_are_moved(self) -> None:
+        # Wider chunks carry more on every document, by an amount that varies with the document: spread to test.
         mechanism = _row(
-            _chunk_sweep(_per_document(_CONTEXT, 3000.0, 40.0), _per_document(_CONTEXT, 9000.0, 40.0)), "chunk_tokens"
+            _chunk_sweep(_per_document(_CONTEXT, 3000.0, 40.0), _per_document(_CONTEXT, 9000.0, 95.0)), "chunk_tokens"
         ).mechanism
         assert mechanism.state == "moved"
         assert mechanism.level_n == {"256": 12, "1024": 12}
 
-    def test_a_constant_gap_with_no_spread_is_moved(self) -> None:
+    def test_a_constant_gap_with_no_spread_and_no_range_is_never_moved(self) -> None:
         mechanism = _row(
             _chunk_sweep(_constant({_CONTEXT: 3000}), _constant({_CONTEXT: 3001})), "chunk_tokens"
         ).mechanism
-        assert mechanism.state == "moved"
+        assert (mechanism.state, mechanism.reason) == ("unchecked", "uniform_move_needs_range")
 
-    @pytest.mark.parametrize(("n_cases", "reading"), [(5, ("unchecked", "too_few_observations")), (6, ("moved", None))])
-    def test_a_constant_gap_is_moved_only_over_enough_cases_for_an_exact_test(
-        self, n_cases: int, reading: tuple[str, str | None]
-    ) -> None:
-        """Every case shifted alike has exact p 2^(1-n): under α from six cases, too few to tell below that."""
+    @pytest.mark.parametrize("n_cases", [5, 6, 12])
+    def test_a_uniform_shift_with_no_range_is_unchecked_at_any_n(self, n_cases: int) -> None:
+        """Every case shifted alike: the exact sign-flip test called six cases ``moved``, but it tests symmetry, not
+        the mean, and a token count declares no range for the bounded test to read (#597)."""
         documents = TOYHOST_DOCUMENTS[:n_cases]
         bundle = _bundle(
             [
@@ -287,7 +290,32 @@ class TestALeverIsCheckedAgainstTheMechanismItDeclares:
             ]
         )
         mechanism = _row(bundle, "chunk_tokens").mechanism
-        assert (mechanism.state, mechanism.reason) == reading
+        assert (mechanism.state, mechanism.reason) == ("unchecked", "uniform_move_needs_range")
+
+    @pytest.mark.parametrize(("n_cases", "state"), [(4, "inert"), (12, "moved")])
+    def test_a_uniform_shift_on_a_declared_range_is_read_by_the_bounded_test(self, n_cases: int, state: str) -> None:
+        """On a declared range the bounded test reads a shift of one amount: four documents moved +0.75 on a 0-1 rate
+        cannot show the mean moved, twelve can (#597). The same shift with no range is never called."""
+        documents = TOYHOST_DOCUMENTS[:n_cases]
+
+        def hit_rate(shift: float) -> Callable[[EvalResult], EvalResult]:
+            def alter(result: EvalResult) -> EvalResult:
+                index = TOYHOST_DOCUMENTS.index(result.test_case_id)
+                return result.model_copy(
+                    # Rounded so each value is the decimal it reads as: the shift is exactly one amount.
+                    update={"host_measures": {**result.host_measures, _HIT_RATE: round(0.1 + 0.01 * index + shift, 6)}}
+                )
+
+            return alter
+
+        arms = [
+            _Arm(_chunk_batch(256), alter=hit_rate(0.0), documents=documents),
+            _Arm(_chunk_batch(1024), alter=hit_rate(0.75), documents=documents),
+        ]
+        mechanism = _row(_bundle(arms, profile=_hit_rate_profile((0.0, 1.0))), "chunk_tokens").mechanism
+        assert (mechanism.state, mechanism.measure) == (state, _HIT_RATE)
+        unranged = _row(_bundle(arms, profile=_hit_rate_profile(None)), "chunk_tokens").mechanism
+        assert (unranged.state, unranged.reason) == ("unchecked", "uniform_move_needs_range")
 
     def test_one_case_a_level_is_too_few_to_test(self) -> None:
         bundle = _bundle(
@@ -358,6 +386,34 @@ def _retrieve_profile(population: MeasurePopulation | None) -> HostProfile:
     )
 
 
+#: A host rate the chunk width acts on in :func:`_hit_rate_profile`.
+_HIT_RATE = "retrieval_hit_rate"
+
+
+def _hit_rate_profile(value_range: tuple[float, float] | None) -> HostProfile:
+    """The toy profile, with ``chunk_tokens`` acting on a host rate that declares ``value_range``."""
+    descriptor = MetricDescriptor(
+        name=_HIT_RATE,
+        reader_name="Retrieval hit rate",
+        data_type="numeric",
+        family="mechanical",
+        transferability_class="mechanical",
+        attribution_scope="subsystem",
+        description="Share of the document's fields the retriever surfaced.",
+        higher_is_better=True,
+        value_range=value_range,
+    )
+    declarations = tuple(
+        replace(declared, acts_on=_HIT_RATE) if declared.name == "chunk_tokens" else declared
+        for declared in TOYHOST_SWEEPABLES
+    )
+    return replace(
+        toyhost_profile(),
+        host_sweepables=SHARED_CORE.extend(declarations, roles=TOYHOST_ROLES),
+        measures=MeasureRegistry([*TOYHOST_MEASURES, descriptor], families=(TOYHOST_EXTRACTION_FAMILY,)),
+    )
+
+
 def _retrieved(*, refuse: tuple[str, ...] = ()) -> Callable[[EvalResult], EvalResult]:
     """Each observation's retrieve time: 1 s for a turn taken, 50 ms for a call refused on a ``refuse`` document."""
 
@@ -406,7 +462,7 @@ class TestAKindOverlayLeverDeclaresItsMechanismToo:
         bundle = _bundle(
             [
                 _Arm(_page_batch(5), _per_document(_CONTEXT, 2000.0, 40.0)),
-                _Arm(_page_batch(20), _per_document(_CONTEXT, 8000.0, 40.0)),
+                _Arm(_page_batch(20), _per_document(_CONTEXT, 8000.0, 95.0)),
             ]
         )
         mechanism = _row(bundle, _PAGE_LIMIT).mechanism

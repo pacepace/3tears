@@ -72,6 +72,7 @@ from threetears.evals.analysis.reporting import (
     project_score_records,
     serialize_export,
 )
+from threetears.evals.analysis.stats import UNIFORM_MOVE_NEEDS_RANGE, bounded_separation_p
 from threetears.evals.contracts.host import freeze
 from threetears.evals.ops import pivot_text
 from threetears.evals.contracts.host.values import SweepableValue
@@ -4702,14 +4703,29 @@ def _point_by_model(subject_frontier, model):
     return matches[0]
 
 
-def _fr_cases(run, n, **kwargs):
+def _fr_cases(run, n, *, spread=False, **kwargs):
     """``n`` results of one contestant, one per test case ``tc1``..``tc<n>``, each built by :func:`_fr_result`.
 
     The frontier decides domination and its bar by test over cases, so a fixture that is to show either
-    needs the cases for a test to show it: two for a pass^k interval, six for a constant gap on every case
-    to separate two contestants at α (the sign-flip p is ``2^(1 - n)``), more for a bar near 1.
+    needs the cases for a test to show it: two for a pass^k interval, more for a bar near 1. A gap of one
+    amount on every case is read by the bounded test on pass^k's [0, 1] (eight pass-against-fail cases give
+    p ≈ 0.012), and is never shown on cost or latency, which declare no range (#597). ``spread`` scales
+    each case's cost and latency by ``1 + 0.02 · (index mod 3)``, so a gap between two contestants varies by
+    case and a t-test reads it.
     """
-    return [_fr_result(run, test_case_id=f"tc{index}", **kwargs) for index in range(1, n + 1)]
+
+    def scaled(index):
+        if not spread:
+            return kwargs
+        factor = 1.0 + 0.02 * (index % 3)
+        varied = dict(kwargs)
+        if kwargs.get("roles"):
+            varied["roles"] = {role: cost * factor for role, cost in kwargs["roles"].items()}
+        if kwargs.get("total_ms") is not None:
+            varied["total_ms"] = kwargs["total_ms"] * factor
+        return varied
+
+    return [_fr_result(run, test_case_id=f"tc{index}", **scaled(index)) for index in range(1, n + 1)]
 
 
 class TestHistoryLatencyExcludesTheHarnesssOwnCells:
@@ -5144,7 +5160,14 @@ class TestBothLensesGateOnTheIdentityVersion:
             # every axis its twin measured — it passes six cases its twin fails, at a fifth of the
             # cost — so it dominates its superseded twin.
             *_fr_cases(
-                run, 6, model="sonnet", variant_key="vk-1", passes=False, roles={"candidate": 0.5}, identity_version=1
+                run,
+                6,
+                model="sonnet",
+                variant_key="vk-1",
+                passes=False,
+                roles={"candidate": 0.5},
+                identity_version=1,
+                spread=True,
             ),
             *_fr_cases(
                 run, 6, model="sonnet", variant_key="vk-1", roles={"candidate": 0.1}, identity_version=IDENTITY_VERSION
@@ -5661,17 +5684,26 @@ class TestFrontierDomination:
     def _corpus(self):
         """Three contestants over eight cases — enough for a constant gap to separate after Holm over three pairs.
 
-        - cheap: passes every case, $0.25, 50 ms.
-        - pricey: fails every case, $1.00, 100 ms — shown worse than cheap on all three axes.
+        - cheap: passes every case, about $0.25, 50 ms (each varying a little by case).
+        - pricey: fails every case, about $1.00, 100 ms — shown worse than cheap on all three axes.
         - fast: passes half, $0.10, 20 ms — cheaper and faster than cheap, worse on pass^k: no domination
           either way. Better than pricey on every axis too, but its pass^k edge (half the cases) is not
           shown once the family is adjusted.
         """
         run = _fr_run()
         results = [
-            *_fr_cases(run, 8, model="cheap", variant_key="vk-cheap", roles={"candidate": 0.25}, total_ms=50),
             *_fr_cases(
-                run, 8, model="pricey", variant_key="vk-pricey", passes=False, roles={"candidate": 1.0}, total_ms=100
+                run, 8, model="cheap", variant_key="vk-cheap", roles={"candidate": 0.25}, total_ms=50, spread=True
+            ),
+            *_fr_cases(
+                run,
+                8,
+                model="pricey",
+                variant_key="vk-pricey",
+                passes=False,
+                roles={"candidate": 1.0},
+                total_ms=100,
+                spread=True,
             ),
             *(
                 _fr_result(
@@ -5698,8 +5730,11 @@ class TestFrontierDomination:
         # The row's own identity, not its model: a dominator names the variant a reader
         # would move TO, which is what the frontier exists to answer.
         assert [(d.model, d.variant_key) for d in pricey.dominated_by] == [("cheap", "vk-cheap")]
-        # And the statistic it was shown at: eight constant gaps give a sign-flip p of 2^-7, times three pairs.
-        assert pricey.dominated_by[0].p_value == pytest.approx(3 * 2.0**-7)
+        # And the statistic it was shown at: the weakest axis, pass^k's eight pass-against-fail cases read by the
+        # bounded test on [0, 1] (#597), times three pairs.
+        pass_p = bounded_separation_p([0.0] * 8, [1.0] * 8, paired=True, value_range=(0.0, 1.0))
+        assert pass_p is not None
+        assert pricey.dominated_by[0].p_value == pytest.approx(3 * pass_p)
 
     def test_non_dominated_points_are_not_flagged(self):
         run, results = self._corpus()
@@ -5730,12 +5765,10 @@ class TestFrontierDomination:
         assert _point_by_model(pf, "pricey").dominated is False
         assert _point_by_model(pf, "pricey").dominance == "not_separated"
 
-    def test_a_gap_no_exact_test_can_decide_is_untested_not_not_separated(self):
-        """Three cases, every axis moved by one amount: the sign-flip p is 0.25 whatever the data.
-
-        No test could decide, so the point is untested — level_difference's word for the same pattern — and
-        not ``not_separated``, which says a test asked and could not tell.
-        """
+    def test_a_gap_of_one_amount_on_cost_and_latency_is_never_a_domination(self):
+        """Three cases, every axis moved by one amount. Cost and latency declare no range, so no test of the mean
+        can show either gap (the sign-flip p this read tests symmetry, not the mean — #597), and pass^k's bounded
+        test cannot show three cases. Not separated, as the rule reads a move it refuses to call."""
         run = _fr_run()
         results = [
             *_fr_cases(run, 3, model="cheap", variant_key="vk-cheap", roles={"candidate": 0.25}, total_ms=50),
@@ -5746,8 +5779,8 @@ class TestFrontierDomination:
 
         pf = compute_frontier([run], results, archived_run_ids=None).subjects[0]
 
-        assert _point_by_model(pf, "pricey").dominance == "untested"
-        assert _point_by_model(pf, "cheap").dominance == "untested"
+        assert _point_by_model(pf, "pricey").dominance == "not_separated"
+        assert _point_by_model(pf, "cheap").dominance == "not_separated"
 
     def test_a_point_with_one_case_is_untested(self):
         """One case gives no test, so the point is neither dominated nor shown clear of it."""
@@ -5783,11 +5816,25 @@ class TestFrontierDomination:
         run = _fr_run()
         results = [
             # Cheap and slow-ish.
-            *_fr_cases(run, 8, model="flash-x", variant_key="vk-a", roles={"candidate": 0.0021}, total_ms=92),
-            # Dear and fast — neither dominates the other, and both are shown better than `vk-c` on every axis.
-            *_fr_cases(run, 8, model="flash-x", variant_key="vk-b", roles={"candidate": 0.024}, total_ms=48),
             *_fr_cases(
-                run, 8, model="flash-x", variant_key="vk-c", passes=False, roles={"candidate": 0.030}, total_ms=100
+                run, 8, model="flash-x", variant_key="vk-a", roles={"candidate": 0.0021}, total_ms=92, spread=True
+            ),
+            # Dear and fast — neither dominates the other, and both are shown better than `vk-c` on every axis.
+            *_fr_cases(
+                run, 8, model="flash-x", variant_key="vk-b", roles={"candidate": 0.024}, total_ms=48, spread=True
+            ),
+            *(
+                # Varied the other way round, so its gap to each of the two above varies by case.
+                _fr_result(
+                    run,
+                    model="flash-x",
+                    variant_key="vk-c",
+                    test_case_id=f"tc{index}",
+                    passes=False,
+                    roles={"candidate": 0.030 * (1.0 + 0.03 * (index % 2))},
+                    total_ms=100 * (1.0 + 0.03 * (index % 2)),
+                )
+                for index in range(1, 9)
             ),
         ]
 
@@ -5957,7 +6004,7 @@ class TestFrontierBar:
         # Twenty cases each: an all-pass interval clears 0.8 from twenty (at twelve it reaches only 0.70).
         run = _fr_run()
         results = [
-            *_fr_cases(run, 20, model="a", variant_key="vk-a", roles={"candidate": 0.50}, passes=True),
+            *_fr_cases(run, 20, model="a", variant_key="vk-a", roles={"candidate": 0.50}, passes=True, spread=True),
             *_fr_cases(run, 20, model="b", variant_key="vk-b", roles={"candidate": 0.30}, passes=True),
             *_fr_cases(run, 20, model="c", variant_key="vk-c", roles={"candidate": 0.10}, passes=False),
         ]
@@ -5989,7 +6036,7 @@ class TestFrontierBar:
         assert pf.verdict.model == "b"
         assert pf.verdict.production_replicating_cost == pytest.approx(0.30)
         assert pf.verdict.pass_hat_k_ci_low is not None and pf.verdict.pass_hat_k_ci_low >= 0.8
-        # b is $0.20 cheaper on every one of the twenty cases: shown cheaper (sign-flip p 2^-19), so named.
+        # b is cheaper on every one of the twenty cases, by an amount that varies: shown cheaper, so named.
         assert (pf.verdict.cost_decision, pf.verdict.tied_with) == ("shown_cheapest", [])
 
     def test_a_pick_not_shown_cheaper_names_the_set_it_is_among(self):
@@ -6015,13 +6062,13 @@ class TestFrontierBar:
         assert tie.p_value is not None and tie.p_value >= 0.05
         assert tie.production_replicating_cost == pytest.approx(0.4005)
 
-    def test_a_constant_cost_shift_too_short_for_an_exact_test_is_untested(self):
-        """Five cases, each $0.50 dearer for b: the exact sign-flip p is 2^-4, which cannot reach α.
+    def test_a_constant_cost_shift_is_never_shown_cheaper(self):
+        """Five cases, each $0.50 dearer for b: cost declares no range, so no test of the mean can show it (#597).
 
         The costs are written ``i/10`` and ``i/10 + 0.5``, so their float differences carry residue. Read over
         floats, a t-test took that residue for a tiny, perfectly consistent spread and named a the cheapest at
-        p ≈ 1e-80. Read exactly, no test can decide here, which is untested — the word level_difference uses
-        for the same values — never a p read as shown or as not separated.
+        p ≈ 1e-80. Read exactly there is no spread, and with no range the rule refuses the claim: not shown
+        cheaper, with p 1 — never a residue's p, and never the sign flip's.
         """
         run = _fr_run()
         a_costs = [i / 10 for i in range(1, 6)]
@@ -6041,9 +6088,9 @@ class TestFrontierBar:
         verdict = compute_frontier([run], results, bar=0.3, archived_run_ids=None).subjects[0].verdict
 
         assert verdict is not None and verdict.model == "a"
-        assert verdict.cost_decision == "untested"
+        assert verdict.cost_decision == "not_separated"
         (tie,) = verdict.tied_with
-        assert tie.p_value is None
+        assert tie.p_value == 1.0
 
     def test_the_only_cleared_contestant_is_named_alone(self):
         run, results = self._corpus()
@@ -6579,7 +6626,9 @@ class TestHistoryWithholdsAttributionOnAScenarioBoundAxis:
     """
 
     def _declining(self, metric, **scores):
-        cases = ["c1", "c2", "c3", "c4", "c5", "c6"]
+        # Ten cases: every case moves by one amount, read by the bounded test on the 1-5 range (#597), which shows a
+        # three-point move from ten cases and not from six.
+        cases = [f"c{index}" for index in range(1, 11)]
         run_a, res_a = _hist_run(cases=cases, created_at="2026-07-01T00:00:00Z", **{k: v[0] for k, v in scores.items()})
         run_b, res_b = _hist_run(cases=cases, created_at="2026-07-02T00:00:00Z", **{k: v[1] for k, v in scores.items()})
         return compute_history(
@@ -6815,7 +6864,8 @@ class TestHistory:
         assert points[1].epoch_boundary is False
 
     def test_a_significant_decline_within_an_epoch_is_flagged_regressed(self):
-        cases = ["c1", "c2", "c3", "c4", "c5", "c6"]
+        # Every case moves by one amount, read by the bounded test on the composite's range (#597): ten cases show it.
+        cases = [f"c{index}" for index in range(1, 11)]
         run_a, res_a = _hist_run(cases=cases, score=5, created_at="2026-07-01T00:00:00Z")
         run_b, res_b = _hist_run(cases=cases, score=2, created_at="2026-07-02T00:00:00Z")
 
@@ -6843,6 +6893,10 @@ class TestHistory:
         cases = ["c1", "c2", "c3", "c4", "c5", "c6"]
         run_a, res_a = _hist_run(cases=cases, cost=0.100, created_at="2026-07-01T00:00:00Z")
         run_b, res_b = _hist_run(cases=cases, cost=0.101, created_at="2026-07-02T00:00:00Z")
+        # A rise of about +0.001 that varies a little by case: a t-test reads it. One amount on every case would
+        # not be called at all, since cost declares no range (#597).
+        for index, result in enumerate(res_b):
+            result.cost_usd = 0.101 + (0.00001 if index % 2 else -0.00001)
 
         out = compute_history(
             [run_a, run_b],
@@ -6855,7 +6909,7 @@ class TestHistory:
 
         flag = out.series[0].points[1].regression
         assert flag is not None
-        assert flag.significant is True  # a deterministic +0.001 move is consistent
+        assert flag.significant is True  # a consistent +0.001 move
         assert flag.exceeds_threshold is False
         assert flag.label == "below_threshold"
         assert out.equivalence_margin is None
@@ -6863,6 +6917,30 @@ class TestHistory:
         from threetears.evals.analysis.stats import PAIRED_TEST_NAME
 
         assert flag.test == PAIRED_TEST_NAME
+
+    def test_a_uniform_move_on_a_measure_with_no_range_is_not_separated_and_says_why(self):
+        """Every case $0.05 dearer: cost declares no range, so no test of the mean can call it, at any n (#597).
+
+        The sign-flip reading called this ``regressed`` from six cases; it tests symmetry, not the mean. The flag
+        reads not separated, states no p, and names the remedy.
+        """
+        cases = [f"c{index}" for index in range(1, 21)]
+        run_a, res_a = _hist_run(cases=cases, cost=0.10, created_at="2026-07-01T00:00:00Z")
+        run_b, res_b = _hist_run(cases=cases, cost=0.15, created_at="2026-07-02T00:00:00Z")
+
+        out = compute_history(
+            [run_a, run_b],
+            res_a + res_b,
+            metric=METRIC_COST_USD,
+            min_absolute_change=0.01,
+            profile=_JUDGED_HOST,
+            archived_run_ids=None,
+        )
+
+        flag = out.series[0].points[1].regression
+        assert flag is not None
+        assert (flag.label, flag.significant, flag.p) == ("not_separated", False, None)
+        assert flag.not_separated_reason == UNIFORM_MOVE_NEEDS_RANGE
 
     def test_flags_carry_their_test_and_thresholds(self):
         run_a, res_a = _hist_run(cases=["c1", "c2"], score=5, created_at="2026-07-01T00:00:00Z")

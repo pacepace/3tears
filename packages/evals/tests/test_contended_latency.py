@@ -34,7 +34,9 @@ from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
 CONTROL = "control-model"
 CONTRAST = "contrast-model"
-#: Per-arm turn times: the contrast is 600 ms faster on every case, a separation no correction removes.
+#: Per-arm turn times: the contrast is about 600 ms faster on every case, a separation no correction removes. The
+#: gap varies by a few ms between cases: latency declares no range, so a gap of one amount on every case is never
+#: called separated (#597), and this file is about concurrency, not that.
 _BASE_MS = {CONTROL: 1000.0, CONTRAST: 400.0}
 _CASES = 12
 _PROFILE = toyhost_profile()
@@ -49,7 +51,9 @@ def _results(run: EvalRun, model: str, mode: str, *, offset_ms: float = 0.0) -> 
             model=model,
             test_case_id=f"tc-{case:02d}",
             goal_state_outcomes=[],
-            latency=LatencyMetrics(total_ms=_BASE_MS[model] + offset_ms + 10.0 * case),
+            latency=LatencyMetrics(
+                total_ms=_BASE_MS[model] + offset_ms + 10.0 * case + (7.0 * (case % 3) if model == CONTRAST else 0.0)
+            ),
             covariates={"execution_mode": mode},
         )
         for case in range(_CASES)

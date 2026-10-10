@@ -121,10 +121,11 @@ forbidden in capitals and done anyway), so each rule below is computed into the 
 
   *Evidence:* agent with tools, reasoning-effort sweep, setting confirmed sent, 0 reasoning tokens in every arm, 2026-09, single campaign.
 - **Significance has three states:** separated, `not_separated`, and `untested`: no test could decide
-  (fewer than two cases a side, a gap with zero spread over too few cases for the exact sign-flip test to
-  reach α, or an arm that took no turn). The frontier's dominance and cheapest-pick read the same three, and
-  so does the history's step-to-step change flag. Zero spread is decided on each value's written decimal, so a
-  float residue never passes for a spread.
+  (fewer than two cases a side, or an arm that took no turn). The frontier's dominance and cheapest-pick read
+  the same three, and so does the history's step-to-step change flag. A gap with zero spread (every case moved
+  by one amount) is read by the bounded test on the measure's declared range; with no range it is
+  `not_separated` and says to declare one, since the exact sign-flip test tests symmetry, not the mean. Zero
+  spread is decided on each value's written decimal, so a float residue never passes for a spread.
   Collapsing the last two retires a lever nobody tested. A fourth, `equivalent`, is a claim of its own: an equivalence test against a declared margin.
 - **Subtract a part from a whole only under declared containment** (`MetricDescriptor.contained_by`) and
   when the declared parts exhaust it. One remainder of about 95 seconds described no wall-clock at all,
