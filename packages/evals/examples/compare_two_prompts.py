@@ -129,7 +129,6 @@ async def main() -> Comparison:
         expected=lambda case: case["queue"],  # a classifier eval: accuracy and a confusion matrix per arm
         control="baseline",  # the arm every other arm is tested against
         name="ticket triage: baseline vs candidate prompt" + ("" if online() else " (offline)"),  # titles the report
-        scope_id="compare-two-prompts",
         k=2,  # repeats per case: a model's answer can change between calls
     )
 

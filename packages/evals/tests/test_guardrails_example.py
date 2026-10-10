@@ -53,11 +53,12 @@ async def test_offline_the_arm_that_gained_and_breached_is_never_the_one_to_ship
 
 def test_only_a_held_guardrail_with_a_gain_is_a_candidate_to_ship() -> None:
     module = _load()
-    for verdict in ("improved on the control", "not separated from the control", "regressed from the control"):
-        assert module.what_to_do(verdict, "breached") == "do not ship it, whatever it gained."
-        assert "not known to be safe" in module.what_to_do(verdict, "undecided")
-    assert module.what_to_do("improved on the control", "held") == "a candidate to ship."
-    assert "keep the current prompt" in module.what_to_do("not separated from the control", "held")
+    for outcome in ("improved", "not_separated", "regressed"):  # typed outcomes, never the printed words
+        assert module.what_to_do(outcome, "breached") == "do not ship it, whatever it gained."
+        assert "not known to be safe" in module.what_to_do(outcome, "undecided")
+    assert module.what_to_do("improved", "held") == "a candidate to ship."
+    assert "keep the current prompt" in module.what_to_do("not_separated", "held")
+    assert "keep the current prompt" in module.what_to_do("improved on the control", "held"), "words are no outcome"
 
 
 def _fake_sdk(monkeypatch: pytest.MonkeyPatch, anthropic: ModuleType) -> list[dict[str, Any]]:

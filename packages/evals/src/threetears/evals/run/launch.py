@@ -44,6 +44,7 @@ from threetears.evals.contracts.host.world import WorldPlacement
 from threetears.evals.contracts.arguments import normalize_blank
 from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
 from threetears.evals.contracts.host.sweepables import CORE_SWEEPABLES
+from threetears.evals.contracts.metrics import run_margin_refusal
 from threetears.evals.contracts.identity import derive_context_identity, variant_levers_of_run
 from threetears.evals.contracts.models import (
     DEFAULT_JUDGE_TEMPERATURE,
@@ -812,6 +813,9 @@ class LaunchRequest:
             (:func:`~threetears.evals.contracts.models.refused_goal_checks`). ``template`` already leaves them
             out (:func:`~threetears.evals.run.runner.template_as_graded`), so every launcher and every cell
             grades the rest, and the run records these (``EvalRun.refused_goal_checks``).
+        margins: The margins the launch declared on core rate measures, already checked
+            (:func:`~threetears.evals.contracts.metrics.run_margin_refusal`), which the run records
+            (``EvalRun.declared_margins``); empty when it declared none.
     """
 
     template: EvalTemplate
@@ -838,6 +842,7 @@ class LaunchRequest:
     launch_group: LaunchGroup
     settings: LaunchSettings
     refused_goal_checks: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
+    margins: Mapping[str, float] = field(default_factory=lambda: MappingProxyType({}))
     measure_latency: bool = False
 
     def overlays_as(self, model: type[_Validated]) -> _Validated:
@@ -1467,6 +1472,7 @@ async def start_run(
     scope_id: str,
     launch_group: LaunchGroup | None = None,
     admission: AdmissionTicket | None = None,
+    margins: Mapping[str, float] | None = None,
     measure_latency: bool = False,
 ) -> list[EvalRun]:
     """Refuse what no kind can run, admit the launch, and dispatch each arm to its kind's launcher.
@@ -1522,6 +1528,11 @@ async def start_run(
         admission: A reservation the caller already holds, of which this launch takes its runs'
             share instead of asking for room of its own. Ignored with ``launch_group``, whose
             caller's admission covers it. When omitted, a launch that owns its group is admitted here.
+        margins: Margins on core rate measures (``{"accuracy": 0.05}``), the most two arms may differ on one and
+            still be alike, declared before any result exists. A core measure's descriptor declares none, so
+            this is how a comparison of these runs can read ``equivalent`` on it. Every run records them
+            (``EvalRun.declared_margins``), outside its measurement context; the analysis reads one only when
+            every run of the campaign declares it alike.
         measure_latency: Declare latency under test. Each run then executes its cells one at a time, and the
             launch's runs execute one at a time with nothing else beside them, so the latency they record is
             read clean. ``False`` (the default) runs each run's cells up to the host's
@@ -1558,7 +1569,8 @@ async def start_run(
             kind with no launcher, a launch argument that kind cannot honour, an overlay the kind's
             model refuses (named by field), an apparatus setting the kind does not honour, an arm
             predicted above its cap or unpriceable under an inherited one, a plan the kind refuses to make,
-            or any refusal the kind's launcher makes.
+            a margin on a measure that is not a core rate measure or that is not between 0 and 1, or any
+            refusal the kind's launcher makes.
     """
     # The host's settings, read ONCE for the whole launch: every refusal below and every arm's tail
     # reads this snapshot, so a hot reload part-way cannot refuse, after its generation was paid for, a
@@ -1584,8 +1596,21 @@ async def start_run(
         scope_id=scope_id,
         launch_group=launch_group,
         admission=admission,
+        margins=margins,
         measure_latency=measure_latency,
     )
+
+
+def _refused_margins_or(margins: Mapping[str, float] | None) -> dict[str, float]:
+    """The launch's run-scoped margins, refusing one no run may declare, before anything is prepared.
+
+    Raises:
+        ValidationFailedError: A margin on a measure that is not a core rate measure, or not between 0 and 1.
+    """
+    declared = dict(margins or {})
+    if refusals := [refusal for name, margin in declared.items() if (refusal := run_margin_refusal(name, margin))]:
+        raise ValidationFailedError("; ".join(refusals))
+    return {name: float(margin) for name, margin in sorted(declared.items())}
 
 
 def _refuse_raised_ceilings(
@@ -1708,6 +1733,7 @@ async def _start_run(
     launch_group: LaunchGroup | None,
     admission: AdmissionTicket | None,
     priced: _PricedArms | None = None,
+    margins: Mapping[str, float] | None = None,
     measure_latency: bool = False,
 ) -> list[EvalRun]:
     """:func:`start_run` under a settings snapshot its caller read — the launch's own, or a battery's.
@@ -1731,6 +1757,7 @@ async def _start_run(
         cassette_mode=cassette_mode,
         cassette_corpus_id=cassette_corpus_id,
     )
+    declared_margins = MappingProxyType(_refused_margins_or(margins))
     dispatch = partial(
         _dispatch,
         host,
@@ -1778,6 +1805,8 @@ async def _start_run(
             max_metered_calls=max_metered_calls,
             measure_latency=measure_latency,
         )
+        if declared_margins:
+            requests = [replace(request, margins=declared_margins) for request in requests]
         # Every arm priced before the first launcher runs, whether it generates or not: a launcher is what
         # pays for the generation the arms share and what builds an arm's clients, so pricing an arm after
         # it would refuse a launch already billed. Priced exactly once — here, or by the battery's
@@ -2901,6 +2930,7 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                 overlays=freeze(request.overlays),
                 kind_spec=freeze(request.kind_spec),
                 apparatus_settings=dict(request.apparatus_settings),
+                declared_margins=dict(request.margins),
                 # The world and the tool bound the template states, frozen as this run launched them:
                 # the template is editable, and the runner hands the candidate the template's seed.
                 resolved_world_seed=dict(template.world_seed.namespaces),

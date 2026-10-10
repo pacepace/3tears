@@ -165,6 +165,10 @@ stored run's level is unchanged; a judge stamp carrying True reads as a differen
 each judged guardrail (a boundary rubric dimension) is held to. A campaign, or an analysis's design snapshot,
 stored before it carries none and reads as declaring none: its judged guardrails are held at zero change, exactly
 as they were decided then, so no stored decision moves.
+
+**Within v8, not a bump**: ``EvalRun.declared_margins`` joined as an OPTIONAL field (#698) — the margins a launch
+declared on core rate measures (accuracy). A run stored before it carries none and reads as declaring none, so no
+comparison over it reads a margin it never declared.
 """
 
 
@@ -2602,6 +2606,19 @@ class EvalRun(EvalDocumentModel):
             "argument the kind declares it honours (``LaunchableKind.apparatus_settings``). Hashed into the "
             "measurement context: two runs whose rig was set up differently are not repetitions of one "
             "condition. Empty when the launch set none, which is a level."
+        ),
+    )
+    declared_margins: dict[str, float] = Field(
+        default_factory=dict,
+        description=(
+            "Margins the launch declared on core rate measures (``accuracy``), by measure, in the measure's units: "
+            "the most two arms may differ on it and still be alike. A core measure's descriptor is the engine's and "
+            "declares no margin, so a run-scoped one is how a comparison of runs can read `equivalent` on it; the "
+            "analysis reads it only when every member run of the campaign declares the same margin, and each "
+            "contrast tested against it names it (``FamilyComparison.margin_source`` `run`). Declared at launch, "
+            "before any result, so it is chosen before the data is seen. Not part of the measurement context: a "
+            "margin changes how a difference is read, not what was measured. Empty when the launch declared none, "
+            "and on every run stored before run-scoped margins existed, which then read as declaring none."
         ),
     )
     resolved_world_seed: dict[str, Any] = Field(

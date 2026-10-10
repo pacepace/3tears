@@ -124,6 +124,8 @@ The engine's contracts: the stored shapes, and the vocabulary every other packag
   <br>`resolve_result_usage(result: EvalResult) -> ResolvedUsage`
 - **`resolve_variant_identity`** · function · Return the variant identity a reader should show for `run`'s observations.
   <br>`resolve_variant_identity(*, run: EvalRun, profile: HostProfile) -> DerivedVariantIdentity`
+- **`run_margin_refusal`** · function · Why a launch cannot declare `margin` on core measure `name` for its runs, or None when it can.
+  <br>`run_margin_refusal(name: str, margin: object) -> str | None`
 - **`save_document`** · function · Upsert `document` through `repo`, raising on any failure.
   <br>`save_document(repo: DocumentStore, document: dict[str, Any], *, if_match: str | None = None) -> None`
 - **`separation_criterion`** · function · The separation criterion over `n` first-score/repeat pairs covering `results` results, at `agreement`.
@@ -513,6 +515,7 @@ The engine's contracts: the stored shapes, and the vocabulary every other packag
   <br>`= 'round_done'`
 - **`RUBRIC_FAMILY`** · constant (str) · A judge's score on an authored rubric dimension.
   <br>`= 'rubric'`
+- **`RUN_MARGIN_MEASURES`** · constant (frozenset) · The core rate measures a run may declare a margin on (`EvalRun.declared_margins`, `run_margin_refusal`): numeric, on 0 to 1, with a better end and a merit axis (so a comparison tests them), no guardrail, and no margin of their own.
 - **`SCALES`** · constant (mappingproxy) · The scales, by name.
 - **`SEPARATION_MIN_AGREEMENT`** · constant (float) · The least agreement a judge must reach with its own repeated scores (the same statistic as calibration) to earn `separation`. Owner ruling, 2026-10-06.
   <br>`= 0.8`
@@ -818,7 +821,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`stamp_witnessed_judge`** · function · A witnessed run that names the template its cells are judged against, the judge apparatus that scores them, and the ceiling it is held to.
   <br>`stamp_witnessed_judge(host: EvalHost, run: EvalRun, template: EvalTemplate, *, judge_model: str, judged_artifact: JudgedArtifact, selection: dict[str, str] | None = None, configured_max_cost_usd: float, enforcement_enabled: bool, max_cost_usd: float | None = None) -> EvalRun`
 - **`start_run`** · async function · Refuse what no kind can run, admit the launch, and dispatch each arm to its kind's launcher.
-  <br>`start_run(host: LaunchHost, *, template_id: str, subject_id: str, models: list[str], k_runs: int = 3, n_variations: int = 0, variation_model: str | None = None, judge_model: str | None = None, judge_config_ids: dict[str, str] | None = None, simulator_model: str | None = None, cassette_mode: str | None = 'off', cassette_corpus_id: str | None = None, overlays: Mapping[str, Any] | None = None, apparatus_settings: Mapping[str, Any] | None = None, max_cost_usd: float | None = None, max_metered_calls: int | None = None, scope_id: str, launch_group: LaunchGroup | None = None, admission: AdmissionTicket | None = None, measure_latency: bool = False) -> list[EvalRun]`
+  <br>`start_run(host: LaunchHost, *, template_id: str, subject_id: str, models: list[str], k_runs: int = 3, n_variations: int = 0, variation_model: str | None = None, judge_model: str | None = None, judge_config_ids: dict[str, str] | None = None, simulator_model: str | None = None, cassette_mode: str | None = 'off', cassette_corpus_id: str | None = None, overlays: Mapping[str, Any] | None = None, apparatus_settings: Mapping[str, Any] | None = None, max_cost_usd: float | None = None, max_metered_calls: int | None = None, scope_id: str, launch_group: LaunchGroup | None = None, admission: AdmissionTicket | None = None, margins: Mapping[str, float] | None = None, measure_latency: bool = False) -> list[EvalRun]`
 - **`start_universal_battery`** · async function · Launch the operator-curated boundary battery against one subject.
   <br>`start_universal_battery(host: LaunchHost, subject_id: str, *, scope_id: str, models: list[str], k_runs: int = 3, n_variations: int = 0, variation_model: str | None = None, judge_model: str | None = None, simulator_model: str | None = None, cassette_mode: str | None = 'off', apparatus_settings: Mapping[str, Any] | None = None, max_cost_usd: float | None = None, preflight: BatteryPreflight, measure_latency: bool = False) -> list[str]`
 - **`sweep_abandoned_runs`** · function · Cancel runs this process cannot own, left non-terminal by a previous one.
@@ -961,6 +964,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`build_report(analysis: EvalAnalysis) -> Report`
 - **`campaign_report`** · function · The campaign's report — THE answer to "what is this campaign's report", for every caller.
   <br>`campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Report`
+- **`campaign_verdicts`** · function · Every verdict code reaches on the campaign's evidence as it stands now, typed — what a CI gate reads.
+  <br>`campaign_verdicts(host: EvalHost, campaign_id: str, scope_id: str) -> list[Verdict]`
 - **`cell_label`** · function · Name one cell — an arm under one rig — from the index and the multi-rig population.
   <br>`cell_label(variant_key: str, apparatus_class_id: str, *, index: Mapping[str, VariantIndexEntry], multi_rig: frozenset[str]) -> str`
 - **`compare_two_runs`** · function · Diff two runs into the side-by-side compare view.
@@ -999,6 +1004,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`frontier(storage: LensStore, scope_id: str, *, list_runs: RunLister, bar: float | str | None = None, subject_id: str | None = None, status: str | None = 'completed', profile: HostProfile | None = None) -> dict[str, Any]`
 - **`frozen_case_receipt`** · function · Project a stored reporter case onto the receipt a freeze answers with.
   <br>`frozen_case_receipt(test_case: EvalTestCase) -> FrozenReporterCase`
+- **`gate_verdicts`** · function · Gate a report's typed verdicts: fail on the outcomes named, and never pass one the evidence left undecided.
+  <br>`gate_verdicts(verdicts: Sequence[Verdict], *, fail_on: Iterable[str] = ('regressed', 'breached', 'undecided-guardrail'), readings: Iterable[str] | None = None) -> GateResult`
 - **`generate_analysis`** · async function · Generate one campaign's analysis from its context bundle, in one LLM call or two.
   <br>`generate_analysis(bundle: AnalysisContextBundle, *, prompt: str, model: str, client: CompletionGenerator, prompt_id: str, bundle_assembled_at: str, prompt_version: str | None = None, tally: GenerationTally | None = None, admit: CallAdmission | None = None, profile: HostProfile, measuring_writers: bool = False) -> tuple[EvalAnalysis, list[EvalInsight]]`
 - **`generation_ceiling_s`** · function · The wall-clock ceiling of one `generate_analysis`, derived from the ceilings it wraps.
@@ -1043,6 +1050,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`multi_rig_variants(cells: Iterable[CellFacts]) -> frozenset[str]`
 - **`orphaned_runs`** · function · Report the scope's runs that no campaign holds, with their spend.
   <br>`orphaned_runs(storage: LensStore, scope_id: str, *, list_runs: RunLister) -> dict[str, Any]`
+- **`parse_fail_on`** · function · A comma-separated `--fail-on` list as tokens, refusing one that is no token.
+  <br>`parse_fail_on(text: str) -> tuple[GateToken, ...]`
 - **`pivot`** · function · Aggregate a scope's observations over any two coordinates.
   <br>`pivot(storage: LensStore, scope_id: str, *, list_runs: RunLister, row_factor: str, column_factor: str, metric: str | None = None, weighting: str | None = None, subject_id: str | None = None, status: str | None = 'completed', predicted_cost: CostEstimate | Sequence[PlannedCost] | Mapping[str, Any] | None = None, profile: HostProfile) -> PivotTable`
 - **`prepare_analysis_generation`** · async function · Check and build everything a generation needs before it spends anything, its first call priced and admitted.
@@ -1091,6 +1100,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`update_campaign(storage: CampaignStore, campaign_id: str, scope_id: str, updates: dict[str, Any], *, updated_by: str, profile: HostProfile) -> EvalCampaign`
 - **`variant_key_of_run`** · function · Which variant a run's observations carried — the authoring side of the control.
   <br>`variant_key_of_run(results: Sequence[EvalResult]) -> str | None`
+- **`verdict_token`** · function · The gate token a verdict counts under, or None for a decided outcome no gate fails on.
+  <br>`verdict_token(verdict: Verdict) -> GateToken | None`
 
 **Classes**
 
@@ -1138,6 +1149,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`FrontierResult`** · model · The verdict surface across every subject, plus its disclosures.
 - **`FrontierVerdict`** · model · The cheapest variant clearing the operator's bar for one subject — or, where the data cannot pick one, the set it is among.
 - **`FrozenReporterCase`** · model · What a reporter-case freeze stored — the receipt every surface renders.
+- **`GateResult`** · dataclass · What a gate read and what it came to.
 - **`GenerationError`** · exception · The generator's output could not be turned into a valid analysis.
 - **`GenerationTally`** · model · What one generation has sent, spent and been refused so far — kept by the CALLER.
 - **`GoalCheckProofReading`** · model · Whether one goal check the campaign's runs graded was shown to beat doing nothing.
@@ -1207,17 +1219,22 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`TwoPillarDisclosure`** · model · Why the verdict rests on one quality pillar, stated on every answer.
 - **`UnpairedRating`** · model · A rating with no judge score to set it against, and why.
 - **`UnrepeatedScore`** · model · A repeated score with no pair to read, and why.
+- **`Verdict`** · model · One verdict the report states, typed: what a program reads instead of the words printed from it.
 - **`VerdictOrder`** · model · The order verdicts are read in, as the campaign declared it — never as the writer would choose.
 
 **Types**
 
 - **`ArmStatus`** · literal · Where an arm stands, according to this analysis.
   <br>`'winner'` | `'contradicted'` | `'ruled_out'` | `'replaced_incumbent'` | `'unresolved'`
+- **`BarOutcome`** · literal · What a bar's reading on one cell came to (`BarVerdict.decision`).
+  <br>`'cleared'` | `'missed'` | `'undecided'` | `'no_interval'` | `'no_data'`
 - **`CallAdmission`** · type alias · Asked before each generator call is counted or sent, with `(system, user, response_format)`; raises to refuse that call.
   <br>`Callable[[str, str, 'dict[str, Any] | None'], None]`
 - **`ChangeLabel`** · literal · What a change between two paired samples reads as — see `ChangeVerdict`.
   <br>`'improved'` | `'regressed'` | `'equivalent'` | `'below_threshold'` | `'not_separated'` | `'untested'`
 - **`ComparisonVerdict`** · literal · What one comparison in a family came to, read off its ADJUSTED p's.
+  <br>`'improved'` | `'regressed'` | `'equivalent'` | `'not_separated'` | `'untested'`
+- **`ContrastOutcome`** · literal · What a contrast's test came to (`FamilyComparison.verdict`).
   <br>`'improved'` | `'regressed'` | `'equivalent'` | `'not_separated'` | `'untested'`
 - **`CriterionDrift`** · literal · How a label's criterion compares with the template's today — see `LabelReading.criterion_drift`.
   <br>`'unchanged'` | `'changed'` | `'no_live_criterion'`
@@ -1229,6 +1246,12 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`'shown_cheapest'` | `'not_separated'` | `'untested'` | `'only_cleared'`
 - **`FrontierDominance`** · literal · Whether the frontier lens shows a contestant dominated: `dominated` — another is shown better on every axis it measured; `not_separated` — tested against at least one other and no domination shown, which says nothing about whether one exists; `untested` — nothing could be tested against it.
   <br>`'dominated'` | `'not_separated'` | `'untested'`
+- **`GateOutcome`** · literal · What a gate came to: `failed` (a verdict named in `fail_on`), `undecided` (none failed, and some verdict was not decided, or there was none), `passed` (every verdict decided, none failing).
+  <br>`'passed'` | `'failed'` | `'undecided'`
+- **`GateToken`** · literal · An outcome a gate can fail on; see the module docstring.
+  <br>`'regressed'` | `'not-separated'` | `'untested'` | `'breached'` | `'undecided-guardrail'` | `'missed'` | `'undecided-bar'`
+- **`GuardrailOutcome`** · literal · What a guardrail came to for one arm against the control (`GuardrailCheck.decision`).
+  <br>`'held'` | `'breached'` | `'undecided'`
 - **`LabelDirection`** · literal · Where a person reading a memo places it on a rubric dimension, low to high.
   <br>`'low'` | `'low_mid'` | `'mid'` | `'mid_high'` | `'high'`
 - **`MechanismUncheckedReason`** · literal · Why a swept lever's mechanism could not be checked: `not_declared` = the lever names no measure it acts on; `not_swept` = it was observed at one level, so there is nothing to compare; `levels_unobserved` = some level observed none of the measure, so no pair of levels separated and whether it held still at every level cannot be shown; `too_few_observations` = every level observed it, but some pair of levels has too few cases on a side for the separation test to run, or a gap with no spread over too few cases for an exact test to call it at alpha.
@@ -1255,6 +1278,10 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`'result_unresolved'` | `'dimension_unscored'` | `'scale_changed'` | `'rated_by_an_agent'`
 - **`UnrepeatedReason`** · literal · Why a repeated score has no pair to be read in.
   <br>`'repeat_failed'` | `'judge_changed'` | `'config_changed'` | `'temperature_changed'`
+- **`VerdictKind`** · literal · Which reading a `Verdict` is: a contrast tested against the control, a bar read on one cell, or a guardrail checked for one arm against the control.
+  <br>`'contrast'` | `'bar'` | `'guardrail'`
+- **`VerdictReason`** · literal · Why a verdict came out as it did, as a code a program branches on (`reason_detail` says it in words where there is more to say).
+  <br>`'separated'` | `'inside_margin'` | `'no_margin'` | `'margin_untested'` | `'not_inside_margin'` | `'untestable'` | `'interval_clears'` | `'interval_misses'` | `'interval_straddles'` | `'too_few_observations'` | `'no_observations'` | `'within_margin'` | `'beyond_margin'` | `'no_interval'`
 - **`WriterMessageCheck`** · literal · Whether a case's frozen writer message is the one its recorded memo's generator was sent — see `writer_message_check`.
   <br>`'verified'` | `'differs'`
 
@@ -1276,10 +1303,12 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`= 'usage-history'`
 - **`DECLARED_INPUT_ORIGIN`** · constant (str) · The one origin value that means *this launch said so*.
   <br>`= 'chosen'`
+- **`DEFAULT_FAIL_ON`** · constant (tuple) · What a gate fails on when the caller names nothing: a regression, a breached guardrail, and a guardrail not shown held.
 - **`DEFAULT_WEIGHTING`** · constant (str) · The weighting a pivot uses when none is named: equal per scenario.
   <br>`= 'equal_per_scenario'`
 - **`EQUIVALENCE_TEST_NAME`** · constant (str) · The equivalence test the change classifier runs beside the paired test, named for the same reason: an `equivalent` label names the statistics it rests on.
 - **`EVAL_ANALYSIS_GEN_DEFAULT`** · constant (str) · The analysis generator's default system prompt.
+- **`GATE_TOKENS`** · constant (tuple) · Every token, in the order the module docstring lists them.
 - **`HISTORY_METRICS`** · constant (frozenset) · The measures `history` can series; any other is refused rather than answered with an empty series.
 - **`LABEL_BANDS`** · constant (dict) · The 1-5 judge scores each label direction agrees with, inclusive.
 - **`METRIC_COMPOSITE`** · constant (str) · The observation-level measure holding a result's composite quality score.
@@ -1294,7 +1323,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`PAIRED_TEST_NAME`** · constant (str) · The paired test the change classifier discloses, so a regression flag names the statistics it rests on rather than presenting a bare verdict.
 - **`PROJECTED_METRICS`** · constant (frozenset) · Every measure `project_score_records` can emit.
 - **`REPORT_VERSION`** · constant (int) · The report shape's version.
-  <br>`= 5`
+  <br>`= 6`
 - **`REPORTER_KIND`** · constant (str) · The `candidate_kind` a reporter template declares.
   <br>`= 'analysis_reporter'`
 - **`SCOPED_METRICS_HELP`** · constant (str) · How each scoped metric must be read, in one sentence per metric, for every surface's help text (REST and MCP alike) — rendered from the table rather than written beside it, so no surface can describe a subset.
@@ -1436,11 +1465,11 @@ Batteries: run an eval in one call, and drive the engine from a command line.
 - **`callable_kind_contracts`** · function · The contracts of both callable kinds, declaring `levers` as each run's levels beside its model.
   <br>`callable_kind_contracts(levers: Sequence[str] = ()) -> tuple[KindContract, KindContract]`
 - **`compare`** · async function · Run each candidate over every case `k` times as one arm, test every arm against `control`, and report.
-  <br>`compare(cases: Sequence[Mapping[str, Any]], candidates: Mapping[str, Candidate | ToolUsingCandidate | WorldCandidate] | Mapping[tuple[str, ...], Candidate | ToolUsingCandidate | WorldCandidate], scorers: Sequence[Scorer] = (), *, control: ArmKey, scope_id: str, expected: ExpectedLabel | None = None, judge: Judge | None = None, intent: str | None = None, host: EvalHost | None = None, store: DocumentStore | None = None, k: int = 3, name: str | None = None, created_by: str = 'compare', factors: Sequence[str] | None = None, tools: Mapping[str, Tool] | None = None, cassette_mode: CassetteMode = 'off', cassette_corpus_id: str | None = None, world: World | None = None, seed: CaseSeed | None = None, goal_checks: Sequence[str] = (), max_cost_usd: float | None = None, margins: Mapping[str, float] | None = None, ranges: Mapping[str, tuple[float, float]] | None = None, guardrails: Mapping[str, Guardrail] | None = None, measure_latency: bool = False) -> Comparison`
+  <br>`compare(cases: Sequence[Mapping[str, Any]], candidates: Mapping[str, Candidate | ToolUsingCandidate | WorldCandidate] | Mapping[tuple[str, ...], Candidate | ToolUsingCandidate | WorldCandidate], scorers: Sequence[Scorer] = (), *, control: ArmKey, scope_id: str | None = None, expected: ExpectedLabel | None = None, judge: Judge | None = None, intent: str | None = None, host: EvalHost | None = None, store: DocumentStore | None = None, k: int = 3, name: str | None = None, created_by: str = 'compare', factors: Sequence[str] | None = None, tools: Mapping[str, Tool] | None = None, cassette_mode: CassetteMode = 'off', cassette_corpus_id: str | None = None, world: World | None = None, seed: CaseSeed | None = None, goal_checks: Sequence[str] = (), max_cost_usd: float | None = None, margins: Mapping[str, float] | None = None, ranges: Mapping[str, tuple[float, float]] | None = None, guardrails: Mapping[str, Guardrail] | None = None, measure_latency: bool = False) -> Comparison`
 - **`run_cli`** · function · Parse `argv` and carry out the command, printing to stdout and refusals to stderr.
   <br>`run_cli(argv: Sequence[str] | None = None, *, host_factory: HostFactory | None = None, prog: str = 'python -m threetears.evals', commands: Sequence[HostCommand] = ()) -> int`
 - **`run_eval`** · async function · Run `candidate` on every case `k` times, grade each answer with every scorer and the judge, and summarise.
-  <br>`run_eval(cases: Sequence[Mapping[str, Any]], candidate: Candidate | ToolUsingCandidate | WorldCandidate, scorers: Sequence[Scorer] = (), *, scope_id: str, expected: ExpectedLabel | None = None, judge: Judge | None = None, intent: str | None = None, world: World | None = None, seed: CaseSeed | None = None, goal_checks: Sequence[str] = (), host: EvalHost | None = None, store: DocumentStore | None = None, k: int = 3, model: str | None = None, levers: Mapping[str, str] | None = None, tools: Mapping[str, Tool] | None = None, cassette_mode: CassetteMode = 'off', cassette_corpus_id: str | None = None, max_cost_usd: float | None = None, measure_latency: bool = False) -> EvalSummary`
+  <br>`run_eval(cases: Sequence[Mapping[str, Any]], candidate: Candidate | ToolUsingCandidate | WorldCandidate, scorers: Sequence[Scorer] = (), *, scope_id: str | None = None, expected: ExpectedLabel | None = None, judge: Judge | None = None, intent: str | None = None, world: World | None = None, seed: CaseSeed | None = None, goal_checks: Sequence[str] = (), host: EvalHost | None = None, store: DocumentStore | None = None, k: int = 3, model: str | None = None, levers: Mapping[str, str] | None = None, tools: Mapping[str, Tool] | None = None, cassette_mode: CassetteMode = 'off', cassette_corpus_id: str | None = None, max_cost_usd: float | None = None, measure_latency: bool = False) -> EvalSummary`
 - **`summarize_run`** · function · Summarise one stored run and its results.
   <br>`summarize_run(host: EvalHost, run_id: str, scope_id: str, *, case_names: Mapping[str, str] | None = None) -> EvalSummary`
 
@@ -1502,9 +1531,13 @@ Batteries: run an eval in one call, and drive the engine from a command line.
 - **`CALLABLE_UNSEATED`** · constant (frozenset) · What a `run_eval` run never has as a level of its rig, whatever host it runs in, so a callable-kind contract may seat none of it: the engine's judge and simulator (by role or by any pinned dimension) — the callable kind is unjudged and simulates nobody — and the spend ceiling, which is off unless a call caps it (`max_cost_usd=`) and is then a condition stated beside the run: a run it stopped says so by its status, and two runs under different caps measured the same candidate the same way until one stopped.
 - **`DEFAULT_PROG`** · constant (str) · The program name the command line prints when it is run as `python -m threetears.evals`.
   <br>`= 'python -m threetears.evals'`
+- **`DEFAULT_QUICK_SCOPE`** · constant (str) · The scope a quick call with no host of its own stores its runs in when it is named none: the call's store is in memory and lives only as long as the call, so no other run can share it by accident.
+  <br>`= 'quick'`
 - **`ENGINE_COMMANDS`** · constant (tuple) · The commands the engine itself carries; a host command may take none of these names.
 - **`EXIT_FAILED`** · constant (int) · Exit code: the command failed on an error nothing anticipated — a host factory, a launcher or a handler raising, or the engine's own fault.
   <br>`= 3`
+- **`EXIT_GATE_FAILED`** · constant (int) · Exit code: `gate` read a verdict its `--fail-on` names.
+  <br>`= 4`
 - **`EXIT_OK`** · constant (int) · Exit code: every run completed, or the command read what it was asked for.
   <br>`= 0`
 - **`EXIT_REFUSED`** · constant (int) · Exit code: the command was refused before it could do anything.
@@ -1851,12 +1884,13 @@ One analysis, as a document every surface renders. See the module docstring for 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `report_version` | `Literal[5]` | `5` | This shape's version. |
+| `report_version` | `Literal[6]` | `6` | This shape's version. |
 | `basis` | `ReportBasis` | required | `analysis` when the report renders a generated analysis; `code_only` when no analysis exists and the report is the campaign's evidence as code computed it — no headline, no findings, no author's words. |
 | `headline` | `ModelProse` | required | The author's headline, as written; empty when the author wrote none, and on a code-only report. |
 | `finding_count` | `int` | required | How many findings the document holds — the range every position is in. |
 | `source` | `ReportSource` | required | What this is a report of. |
 | `blocks` | `list[ReportBlock]` | required | The report, in reading order. |
+| `verdicts` | `list[Verdict]` | `[]` | Every verdict the report states, typed — the source each printed verdict is rendered from: the guardrails (for each arm against the control), then each bar on each cell, then the contrasts against the control, each group in its table's row order. |
 
 Its `source`, and each kind of block in `blocks`:
 
@@ -1985,6 +2019,8 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `goal_check_proofs` | `list[GoalCheckProofReading]` | `[]` | Per goal check the member runs graded: whether it was shown, at launch, to tell its outcomes apart (`proven`), or not (`unproven`: no control, or a proof recorded under an earlier rule (`stale`); `refuted`: a control it does not beat, or a check the grammar refused at launch (`refused`)). |
 | `multiple_comparisons` | `MultipleComparisons` | `MultipleComparisons(families=[], withheld=None)` | Each contrast tested against the control on every reading a live question asks about, per rig, with Holm correction inside each question's family: the family's size, each comparison's adjusted p and the verdict read off it. |
 | `guardrails` | `GuardrailReadings` | `GuardrailReadings(measures=[], dimensions=[], checks=[], withheld=None, unstamped_dimensions=[])` | The guardrails — boundary judged dimensions and measures declared `guardrail`, what the candidate must not get worse on — each decided for every arm against the control on its own 95% interval: `held` (shown no worse than its margin), `breached` (shown worse) or `undecided`. |
+| `run_margins` | `dict[str, float]` | `{}` | Margins on core rate measures (`accuracy`) that every member run declared alike at launch (`EvalRun.declared_margins`), by measure. |
+| `run_margins_withheld` | `str \| None` | `None` | Why a margin some member runs declared on a core rate measure is read on none of its comparisons: the runs do not all declare it, or declare different ones, and a contrast between two arms read against a margin only one of them chose would be read against a margin nobody chose for the pair. |
 | `reading_scope` | `ReadingScope` | `ReadingScope(questions_declared=False, exploratory_measures=[], exploratory_dimensions=[], disclosure=None)` | Which readings no declared question asked about: exploratory, reportable as leads and never as confirmed answers. |
 | `verdict_order` | `VerdictOrder` | `VerdictOrder(merit_priority=[], tiers=[], unranked_bar_measure_ids=[], questions=[])` | The order verdicts are read in, as declared: the bars on each axis of `merit_priority`, strongest first, the bars on no ranked axis, and for each live question the bars on the axes it names. |
 | `measurement_windows` | `list[MeasurementWindow]` | `[]` | Each resolved member run's wall-clock measurement span, derived from that run's own scored_at stamps. |
@@ -2330,7 +2366,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 
 A product mounting the commands under its own CLI (`run_cli(host_factory=...)`) drops `--host`. Every command takes `--scope`.
 
-Exit codes, in full: 0 done; 1 a launched run did not complete; 2 refused; 3 failed with an unanticipated error.
+Exit codes, in full: 0 done; 1 a launched run did not complete; 2 refused; 3 failed with an unanticipated error; 4 the gate failed.
 
 Each command's options, as its `--help` prints them:
 
@@ -2449,6 +2485,31 @@ options:
                         only this purpose's calls
   --launch-group ID     only one launch's case generation
   --template ID         only calls made for this template
+```
+
+### `gate`
+
+```text
+usage: python -m threetears.evals gate [-h] --host MODULE:FACTORY --scope SCOPE
+                                       [--fail-on OUTCOMES] [--reading MEASURE]
+                                       campaign
+
+Exit 4 when the campaign's verdicts include an outcome --fail-on names — the CI gate. No model is
+called.
+
+positional arguments:
+  campaign              the campaign, by id
+
+options:
+  -h, --help            show this help message and exit
+  --host MODULE:FACTORY
+                        the host to work in
+  --scope SCOPE         the scope to read and write in
+  --fail-on OUTCOMES    comma-separated outcomes that fail the gate, of regressed, not-separated,
+                        untested, breached, undecided-guardrail, missed, undecided-bar (default
+                        regressed,breached,undecided-guardrail)
+  --reading MEASURE     gate only this reading, by key or as the report heads it; repeat for more
+                        (default: every reading)
 ```
 
 <a id="measures"></a>
