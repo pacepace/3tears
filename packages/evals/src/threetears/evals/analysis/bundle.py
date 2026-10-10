@@ -119,6 +119,7 @@ from threetears.evals.analysis.stats import (
     LevelDifference,
     clustered_standard_error,
     composite_significance,
+    contrast_samples,
     difference_interval,
     equivalence_untested_reason,
     exact_decimal,
@@ -7191,6 +7192,14 @@ def assemble_context_bundle(
             archived_run_ids=None,
             rubric_threshold=profile.bars.pass_threshold(campaign.behavior),
             profile=profile,
+            # The boundary pillar: each contestant's guardrail dimensions held against the campaign's control arm,
+            # at the margins it declares, by the rule the bundle's guardrails are decided by (#613).
+            control_variant_key=design.control_arm.variant_key if design.control_arm is not None else None,
+            guardrail_margins=(
+                {entry.dimension: entry.margin for entry in campaign.declared_design.guardrail_margins}
+                if campaign.declared_design is not None
+                else None
+            ),
         ),
         frontier_bar_withheld=frontier_bar_withheld,
         telemetry=_telemetry_rollup(runs, results, budget, profile=profile),
@@ -8206,13 +8215,10 @@ def _test_samples(
     of a contrast, a comparison's and a guardrail's alike.
 
     Returns:
-        ``(control sample, contrast sample, paired)``, the two aligned by case when paired.
+        ``(control sample, contrast sample, paired)``, the two aligned by case when paired
+        (:func:`~threetears.evals.analysis.stats.contrast_samples`, the rule the frontier's boundary pillar reads too).
     """
-    shared = sorted(set(control_values) & set(contrast_values))
-    paired = len(shared) >= 2
-    a = [control_values[case] for case in shared] if paired else list(control_values.values())
-    b = [contrast_values[case] for case in shared] if paired else list(contrast_values.values())
-    return a, b, paired
+    return contrast_samples(control_values, contrast_values)
 
 
 class _Tested(NamedTuple):
@@ -9225,6 +9231,12 @@ def bundle_decision_surface(bundle: AnalysisContextBundle) -> DecisionSurface:
         dimensions=cell_dimension_facts(bundle),
         time_axis=bundle.time_axis,
         frontier_dominance=_frontier_dominance(bundle.frontier),
+        frontier_disqualified={
+            point.variant_key: list(point.disqualified_by)
+            for subject in bundle.frontier.subjects
+            for point in subject.points
+            if point.disqualified_by
+        },
         rubric_threshold=bundle.frontier.rubric_threshold,
         guardrails=bundle.guardrails,
     )

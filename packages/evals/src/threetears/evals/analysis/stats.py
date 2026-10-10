@@ -1129,6 +1129,29 @@ def no_spread_p(a: Sequence[Fraction], b: Sequence[Fraction], *, paired: bool) -
     return 1.0 if a[0] == b[0] else _constant_split_p(len(a), len(b))
 
 
+def contrast_samples(
+    control_values: Mapping[str, float], contrast_values: Mapping[str, float]
+) -> tuple[list[float], list[float], bool]:
+    """The two samples a contrast against a control reads, from each side's per-case values, and whether they pair.
+
+    Paired over the cases both sides ran when they share at least two — far more powerful, and the design a fixed
+    case set exists for — else each side's per-case values, unpaired. The one choice every reading of a contrast
+    makes: a comparison's, a guardrail's in the bundle, and the frontier's boundary pillar.
+
+    Args:
+        control_values: The control's value per case.
+        contrast_values: The contrast's value per case.
+
+    Returns:
+        ``(control sample, contrast sample, paired)``, the two aligned by case when paired.
+    """
+    shared = sorted(set(control_values) & set(contrast_values))
+    paired = len(shared) >= 2
+    a = [control_values[case] for case in shared] if paired else list(control_values.values())
+    b = [contrast_values[case] for case in shared] if paired else list(contrast_values.values())
+    return a, b, paired
+
+
 class GuardrailVerdict(NamedTuple):
     """What :func:`guardrail_decision` came to: the decision, the interval it read, and how that interval was formed."""
 
@@ -1895,6 +1918,7 @@ __all__ = [
     "clustered_standard_error",
     "cohen_kappa",
     "composite_significance",
+    "contrast_samples",
     "difference_interval",
     "equivalence_untested_reason",
     "exact_decimal",

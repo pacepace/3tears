@@ -281,7 +281,7 @@ from threetears.evals.analysis.reporting import (
     ServedModelState,
     SimpsonsFlag,
     SubjectFrontier,
-    TwoPillarDisclosure,
+    FrontierBoundaryCheck,
 )
 from threetears.evals.analysis.service import AnalysisStore
 from threetears.evals.analysis.surface_table import (
@@ -467,7 +467,7 @@ __all__ = [
     "SurfaceVerdict",
     "TelemetryRollup",
     "TokenRollup",
-    "TwoPillarDisclosure",
+    "FrontierBoundaryCheck",
     "UnpairedRating",
     "UnrepeatedReason",
     "UnrepeatedScore",

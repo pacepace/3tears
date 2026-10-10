@@ -733,6 +733,15 @@ class DecisionSurface(EvalDocumentModel):
             "surface frozen before standings were carried; a chart drawn from one states no domination."
         ),
     )
+    frontier_disqualified: dict[str, list[DimName]] | None = Field(
+        default=None,
+        description=(
+            "The arms the frontier lens disqualified on its boundary pillar, keyed by variant, each with the boundary "
+            "(guardrail) dimensions it breached against the control — copied from the lens, so a frontier chart draws "
+            "the cross the table names. An arm absent was not disqualified. None on a surface frozen before "
+            "disqualifications were carried (schema v8, #613): a chart drawn from one marks none, as it did then."
+        ),
+    )
     rubric_threshold: int = Field(
         default=3,
         description=(

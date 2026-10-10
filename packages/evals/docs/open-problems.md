@@ -36,15 +36,6 @@ comparison separates them"). State that aliasing with an interaction (C = A⊕B)
 
 *Evidence:* agent with tools, 22 runs, 1 campaign, 2026-07, single campaign.
 
-### The frontier does not read guardrails
-
-Tracked in [#613](https://github.com/pacepace/3tears/issues/613).
-
-The frontier, which ranks contestants against an absolute bar with no control, leaves boundary dimensions
-out of pass^k and the composite but does not disqualify a contestant on one, and says so
-(`TwoPillarDisclosure`). Fix: a frontier rule for the boundary pillar. (A judged guardrail's margin is now
-declared on its campaign, `CampaignDesign.guardrail_margins`, [#697](https://github.com/pacepace/3tears/issues/697).)
-
 ### Equivalence needs a declared range (accepted limit)
 
 Decided in [#695](https://github.com/pacepace/3tears/issues/695): a measure that declares a margin and no

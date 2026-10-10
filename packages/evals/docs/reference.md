@@ -999,7 +999,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`freeze_reporter_case`** · function · Freeze a campaign's analysis bundle into a reporter case of `template_id`.
   <br>`freeze_reporter_case(host: EvalHost, *, template_id: str, campaign_id: str, scope_id: str, analysis_id: str | None = None, labels: Sequence[Any] = (), supersedes: Sequence[str] = (), load_template: Callable[[str], EvalTemplate]) -> EvalTestCase`
 - **`frontier`** · function · Rank each subject's variants on quality x cost x latency, cheapest above bar.
-  <br>`frontier(storage: LensStore, scope_id: str, *, list_runs: RunLister, bar: float | str | None = None, subject_id: str | None = None, status: str | None = 'completed', profile: HostProfile | None = None) -> dict[str, Any]`
+  <br>`frontier(storage: LensStore, scope_id: str, *, list_runs: RunLister, bar: float | str | None = None, subject_id: str | None = None, status: str | None = 'completed', profile: HostProfile | None = None, control_variant_key: str | None = None) -> dict[str, Any]`
 - **`frozen_case_receipt`** · function · Project a stored reporter case onto the receipt a freeze answers with.
   <br>`frozen_case_receipt(test_case: EvalTestCase) -> FrozenReporterCase`
 - **`generate_analysis`** · async function · Generate one campaign's analysis from its context bundle, in one LLM call or two.
@@ -1139,6 +1139,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`DisclosureBlock`** · model · Something code must tell the reader that no author wrote — one idea.
 - **`Fact`** · model · A labelled fact code states beside an author's words — a confidence, a disposition, a tier.
 - **`FamilyComparison`** · model · One contrast against the control on one reading, tested and corrected within its family.
+- **`FrontierBoundaryCheck`** · model · One boundary (guardrail) dimension of one contestant, held against the control the frontier was given.
 - **`FrontierCostTie`** · model · A contestant that cleared the bar with a cost, which the verdict's pick was NOT shown cheaper than.
 - **`FrontierDominator`** · model · One contestant shown to beat another point on every axis it measured, named as a ROW is named.
 - **`FrontierPoint`** · model · One contestant's position on quality x cost x latency, within a subject.
@@ -1218,7 +1219,6 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`TelemetryRollup`** · model · Campaign-wide descriptive telemetry — the trustworthy-signal layer.
 - **`TextBlock`** · model · What the analysis's author wrote, exactly as written, with the facts code states beside it.
 - **`TokenRollup`** · model · Summed token usage across results — visible cost of generation (§Visible Costs).
-- **`TwoPillarDisclosure`** · model · Why the verdict rests on one quality pillar, stated on every answer.
 - **`UnpairedRating`** · model · A rating with no judge score to set it against, and why.
 - **`UnpairedSecondScore`** · model · A second judge's score with no pair to read, and why.
 - **`UnrepeatedScore`** · model · A repeated score with no pair to read, and why.

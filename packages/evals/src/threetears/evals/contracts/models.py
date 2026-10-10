@@ -155,6 +155,11 @@ as they were decided then, so no stored decision moves.
 scores of the result's stored evidence (:class:`SecondJudging`), each beside the first score it pairs with. A result
 stored before it carries none and reads as "no second judge was asked", which is what it means: no agreement and no
 drift is read from it, never a zero.
+
+**Within v8, not a bump**: ``DecisionSurface.frontier_disqualified`` joined as an OPTIONAL field (#613) — the arms the
+frontier disqualified on its boundary pillar, each with the guardrail dimensions it breached. A surface frozen before
+it carries None and reads as "not recorded": its frontier chart marks no arm disqualified, as it did when frozen,
+because the frontier then disqualified none.
 """
 
 
