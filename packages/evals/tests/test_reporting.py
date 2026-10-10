@@ -17,6 +17,7 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.evals.analysis import reporting
+from threetears.evals.analysis.lenses import aggregation, history
 from threetears.evals.analysis.reporting import (
     METRIC_COMPOSITE,
     METRIC_COST_USD,
@@ -119,7 +120,7 @@ def _catalog_names_of(row_name):
     surfaces apply, and the seeded registry is what ``list_metrics`` publishes.
     """
     return sorted(
-        name for name in METRIC_DESCRIPTORS if name != row_name and reporting.resolve_measure_name(name) == row_name
+        name for name in METRIC_DESCRIPTORS if name != row_name and aggregation.resolve_measure_name(name) == row_name
     )
 
 
@@ -1665,9 +1666,9 @@ class TestComparisonSets:
         why the bucketing must be structurally safe before the next bump makes it
         reachable, and why a test cannot reach it any other way today.
         """
-        from threetears.evals.analysis import reporting
+        from threetears.evals.analysis.lenses import comparison_sets
 
-        real = reporting.resolve_context_identity
+        real = comparison_sets.resolve_context_identity
         targets = set(unresolved_run_ids)
 
         def _resolve(run, profile):
@@ -1677,7 +1678,7 @@ class TestComparisonSets:
             components = identity.context_components.model_copy(update={"case_basis": None})
             return identity.model_copy(update={"context_components": components})
 
-        monkeypatch.setattr(reporting, "resolve_context_identity", _resolve)
+        monkeypatch.setattr(comparison_sets, "resolve_context_identity", _resolve)
 
     def test_unresolved_case_bases_never_merge_into_one_bucket(self, monkeypatch):
         """Two unknowns are not a match, and must not be reported as one.
@@ -4641,7 +4642,7 @@ class TestComparisonSetsScope:
         """
         run = self._run("present")
 
-        with caplog.at_level(logging.INFO, logger="threetears.evals.analysis.reporting"):
+        with caplog.at_level(logging.INFO, logger="threetears.evals.analysis.lenses.comparison_sets"):
             result = compute_comparison_sets([run], scope_run_ids=["present", "gone-a", "gone-b"], profile=_JUDGED_HOST)
 
         assert result.comparison_sets[0].run_ids == ["present"]
@@ -6755,7 +6756,7 @@ class TestHistoryWithholdsAttributionOnAScenarioBoundAxis:
             created_at="2026-07-01T00:00:00Z",
         )
 
-        for row_name in sorted(reporting.HISTORY_METRICS):
+        for row_name in sorted(history.HISTORY_METRICS):
             out = compute_history([run], results, metric=row_name, profile=_JUDGED_HOST, archived_run_ids=None)
             expected = out.measure.transferability_class == "scenario_bound"
             assert (out.attribution_disclosure is not None) is expected, (
@@ -7207,7 +7208,7 @@ class TestTheCatalogNameIsTheNameTheSurfacesAccept:
     back "unknown history metric ... expected one of composite, cost_usd, total_ms".
     An operator who read the catalog and used what it said got a validation error,
     and the name that worked appeared in no catalog. The two vocabularies are
-    reconciled by ACCEPTING the catalog name (`reporting.resolve_measure_name`),
+    reconciled by ACCEPTING the catalog name (`aggregation.resolve_measure_name`),
     never by renaming the row constants — a row is one observation and `composite`
     is its honest name, which is why `export_results` still emits it in the metric
     column.
@@ -7233,7 +7234,7 @@ class TestTheCatalogNameIsTheNameTheSurfacesAccept:
             created_at="2026-07-01T00:00:00Z",
         )
 
-        for row_name in sorted(reporting.HISTORY_METRICS):
+        for row_name in sorted(history.HISTORY_METRICS):
             catalog_name = _catalog_name_of(row_name)
             assert describe_measure(catalog_name, _JUDGED_HOST.measures).family is not None, (
                 f"{catalog_name!r} is offered as the catalog name of {row_name!r} but the registry does not "
@@ -7274,19 +7275,19 @@ class TestTheCatalogNameIsTheNameTheSurfacesAccept:
 
     def test_the_alias_table_is_one_table_read_both_ways(self):
         """Derived, not written twice — a pair added to one direction only cannot exist."""
-        accepted = sorted(reporting.PROJECTED_METRICS | reporting.HISTORY_METRICS)
+        accepted = sorted(reporting.PROJECTED_METRICS | history.HISTORY_METRICS)
         catalog = {observation: _catalog_name_of(observation) for observation in accepted}
 
         assert len(set(catalog.values())) == len(catalog), (
             "two row measures publish the same catalog name, so the inverse silently drops one"
         )
         for observation, aggregate in catalog.items():
-            assert reporting.resolve_measure_name(aggregate) == observation
+            assert aggregation.resolve_measure_name(aggregate) == observation
 
     def test_a_name_outside_the_alias_table_is_passed_through_to_be_refused(self):
         """The alias must not become a guesser: an unknown name reaches its own refusal."""
-        assert reporting.resolve_measure_name("compsite") == "compsite"
-        assert reporting.resolve_measure_name(METRIC_COMPOSITE) == METRIC_COMPOSITE
+        assert aggregation.resolve_measure_name("compsite") == "compsite"
+        assert aggregation.resolve_measure_name(METRIC_COMPOSITE) == METRIC_COMPOSITE
 
     def test_a_catalogued_measure_this_surface_cannot_series_is_still_refused(self):
         """Accepting catalog names does not mean accepting the whole catalog.
@@ -7308,7 +7309,7 @@ class TestTheCatalogNameIsTheNameTheSurfacesAccept:
             compute_history([run], results, metric="compsite", profile=_JUDGED_HOST, archived_run_ids=None)
 
         message = str(excinfo.value)
-        for row_name in reporting.HISTORY_METRICS:
+        for row_name in history.HISTORY_METRICS:
             assert row_name in message
             assert _catalog_name_of(row_name) in message
 

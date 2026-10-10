@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from threetears.evals.analysis import numbers, references, reporting, surface_table
+from threetears.evals.analysis import numbers, references, reporting, significance, surface_table
 from threetears.evals.analysis.numbers import ABSENT, WHOLE_FROM, format_number, format_signed
 from threetears.evals.analysis.viz import quantities
 from threetears.evals.schema.models import LatencyMetrics
@@ -241,8 +241,8 @@ class TestTheWidenedModulesRenderByTheRule:
 
     def test_a_large_effect_size_is_written_whole(self):
         assert f"{12345.6:.4g}" == "1.235e+04"
-        cell = reporting.format_significance(significant=True, paired=True, p=3e-7, effect=12345.6, n=4)
-        assert cell == f"{reporting.SIGNIFICANT_LABEL} (p={format_number(3e-7)}, d_z=12346, n=4)"
+        cell = significance.format_significance(significant=True, paired=True, p=3e-7, effect=12345.6, n=4)
+        assert cell == f"{significance.SIGNIFICANT_LABEL} (p={format_number(3e-7)}, d_z=12346, n=4)"
 
     def test_a_p_value_that_is_not_a_number_reads_as_absent(self):
         """The one input where ``.4g`` and the rule part on a p-value: ``.4g`` prints ``nan``.
@@ -251,7 +251,7 @@ class TestTheWidenedModulesRenderByTheRule:
         only render a p routed off the rule can be seen from.
         """
         assert f"{math.nan:.4g}" == "nan"
-        cell = reporting.format_significance(significant=False, paired=True, p=math.nan, effect=0.5, n=4)
+        cell = significance.format_significance(significant=False, paired=True, p=math.nan, effect=0.5, n=4)
         assert f"p={ABSENT}, " in cell
 
     def test_a_large_partition_overrun_is_written_whole(self):
