@@ -55,8 +55,8 @@ design notes
 rolling upgrade contract
 ------------------------
 
-Releases up to 0.66 wrote a lock entry's value as the holder's raw token -- 32 lowercase hex
-characters, nothing else. From this release the value is the :class:`KVLease` JSON envelope
+Releases before 0.66.0 wrote a lock entry's value as the holder's raw token -- 32 lowercase hex
+characters, nothing else. From 0.66.0 the value is the :class:`KVLease` JSON envelope
 (``{"holder": ..., "expires_at": ..., "acquired_at": ...}``). During a deploy an old replica and a new
 one contend for the same key in the same bucket, and neither may ever take the other's held lock
 for a free one:

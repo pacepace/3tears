@@ -253,10 +253,12 @@ class LeaseHandle:
     :ivar released: flag set once :meth:`release` runs to completion,
         making subsequent :meth:`release` calls a no-op
     :ivar in_flight_value: the value of this handle's write that has been sent and not yet
-        answered, or ``None``. A write cancelled after the server applied it leaves the handle a
-        revision behind its own entry; the release recognises that entry by this exact value --
-        which no other write, by this holder or another, produces -- and deletes it rather than
-        leave it to hold everyone off for its TTL
+        answered, or ``None``. A write the server applied whose answer never came (cancelled, timed
+        out, a transport error) leaves the handle a revision behind its own entry; the next refresh
+        and the release recognise that entry by this exact value -- which no other write, by this
+        holder or another, produces -- and renew from it or delete it, rather than call a healthy
+        lease taken or leave its entry to hold everyone off for a TTL. Kept until a later write of
+        this handle's is answered
     """
 
     def __init__(
@@ -307,7 +309,9 @@ class LeaseHandle:
         :ptype ttl_seconds: int | None
         :param adopt_own_revision: when the entry is still this holder's at a revision the handle has
             not seen (one of its own writes landed and its reply did not), renew from that revision
-            rather than call the lease lost
+            rather than call the lease lost. Without it a handle still renews from an entry that is
+            exactly the write it sent and never heard back about (:attr:`in_flight_value`); this
+            widens that to any entry carrying its holder, for a holder id no other handle shares
         :ptype adopt_own_revision: bool
         :return: None
         :rtype: None
@@ -669,10 +673,13 @@ class HeldLease:
         renewal, self._renewal = self._renewal, None
         try:
             if renewal is not None:
-                done, _pending = await asyncio.wait([renewal], timeout=self._release_wait)
-                if not done:
+                try:
+                    await asyncio.wait([renewal], timeout=self._release_wait)
+                finally:
+                    # also when this release is itself cancelled while it waits: a renewal left
+                    # running could write the entry (or, retaking, create it) after the delete below
                     renewal.cancel()
-                    await asyncio.wait([renewal])
+                await asyncio.wait([renewal])
         finally:
             # even when the releasing task is cancelled meanwhile (an owner stopping): an entry left
             # behind holds everyone else off for its whole TTL
@@ -1216,9 +1223,13 @@ class KVLease:
                 f"found {'an entry it cannot read' if envelope is None else repr(envelope.holder)}",
                 reason=LeaseLossReason.TAKEN,
             )
-        if adopt_own_revision and observed != handle.revision:
-            # still this holder's entry: one of its own writes landed while its reply was lost
+        unanswered = handle.in_flight_value
+        if observed != handle.revision and (adopt_own_revision or value == unanswered):
+            # still this holder's entry: one of its own writes landed while its reply was lost. A
+            # handle told to adopt takes any entry of its holder's; every handle takes the entry that
+            # is exactly the write it sent and never heard back about, which nobody else can have made
             handle.revision = observed
+            unanswered = None
         effective_ttl = ttl_seconds if ttl_seconds is not None else handle.ttl_seconds
         now = datetime.now(UTC)
         date_expires = now + timedelta(seconds=effective_ttl)
@@ -1230,10 +1241,27 @@ class KVLease:
         new_revision = await bucket.update(
             key=handle.key, value=payload, revision=handle.revision, ttl=self._entry_ttl(effective_ttl)
         )
-        handle.in_flight_value = None
+        if new_revision is None and unanswered is not None:
+            # the swap was refused, so this payload was never written -- but the earlier write that
+            # went unanswered may have landed between the read above and the swap. If the entry is
+            # exactly that write, it is this handle's own: renew from it, once.
+            handle.in_flight_value = unanswered
+            landed = await bucket.get_entry(key=handle.key)
+            if landed is not None and landed[0] == unanswered:
+                handle.revision = landed[1]
+                handle.in_flight_value = payload
+                new_revision = await bucket.update(
+                    key=handle.key, value=payload, revision=handle.revision, ttl=self._entry_ttl(effective_ttl)
+                )
+                if new_revision is None:
+                    handle.in_flight_value = None
+        elif new_revision is None:
+            handle.in_flight_value = None
         if new_revision is None:
-            # only another holder's write moves the entry on between the read and the swap
+            # only another holder's write moves the entry on between the read and the swap. A write
+            # of this handle's still unanswered stays recorded, for the release to recognise.
             raise LeaseLost(f"lease {handle.key!r} revision advanced during refresh", reason=LeaseLossReason.TAKEN)
+        handle.in_flight_value = None
         handle.revision = new_revision
         handle.ttl_seconds = effective_ttl
 

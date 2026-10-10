@@ -50,8 +50,8 @@ packages (bumped in lock-step).
   Every caller uses the 60-second default.
 - **Changed, the lock needs the `3tears` core distribution at call time** (it imports `KVLease`
   inside the call, since core depends on `3tears-nats`). Every caller installs core already.
-- **Upgrade contract (rolling; any order, and rollback):** releases up to 0.66 store a lock entry's
-  value as the holder's raw `token_hex(16)`; from this release it is the `KVLease` envelope. A new
+- **Upgrade contract (rolling; any order, and rollback):** releases before 0.66.0 store a lock entry's
+  value as the holder's raw `token_hex(16)`; from 0.66.0 it is the `KVLease` envelope. A new
   replica treats an old entry as another holder's -- `LockHeld` on acquire, `TAKEN` on renewal,
   never written or deleted -- including an all-digit token, which parses as a JSON number. An old
   replica treats a new entry as held: its acquire is create-if-absent (fails on any existing key),
@@ -78,7 +78,16 @@ packages (bumped in lock-step).
   shutdown (the scheduler's, a tool pod's SIGTERM) by a lease TTL whenever the broker stopped
   answering. Past it the renewal is cancelled; the entry is deleted only when it is this holder's at
   the revision it recorded or is exactly that renewal's write, and otherwise left to lapse by its TTL
-  (logged).
+  (logged). A release cancelled while it waits cancels that renewal too, so it cannot write (or, for
+  a lease that retakes, re-create) the entry after the delete.
+- **Fixed, a renewal the server applied but never answered no longer costs a healthy lease.** The
+  handle was left a revision behind its own entry, the next renewal's swap was refused, and the
+  lease was reported `TAKEN` though nobody took it -- cancelling a lock's body and leaving the entry
+  for a TTL. Every handle now renews from (and its release deletes) the entry that is exactly the
+  write it sent and never heard back about (`LeaseHandle.in_flight_value`, kept until a later write
+  is answered); another holder's entry is still a lost lease. Holds that do not `retake` gain this
+  without gaining retake-by-create: the lock, the snapshot rebuild claim, a coalesced run, the
+  scrape session claim.
 
 ### NATS: a public composer for a KV bucket's stream name
 

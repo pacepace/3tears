@@ -200,7 +200,7 @@ async def test_a_holder_whose_key_changed_hands_stops_and_leaves_the_successor_a
 # rolling upgrade, on a real broker: old raw-token entries and lease envelopes in one bucket
 # ---------------------------------------------------------------------------
 
-#: what releases up to 0.66 stored as a lock's value: the holder's ``secrets.token_hex(16)``. An
+#: what releases before 0.66.0 stored as a lock's value: the holder's ``secrets.token_hex(16)``. An
 #: all-digit token is the one a JSON parser accepts (as a number), so it is the sharper case.
 _OLD_TOKEN = b"12345678901234567890123456789012"
 

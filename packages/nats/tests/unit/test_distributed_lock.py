@@ -1058,7 +1058,7 @@ _OLD_RELEASE_TOKENS = (
 
 # parity-exempt: a frozen copy of the pre-KVLease lock's three KV operations, the OTHER side of a rolling upgrade; not a fake of any production surface
 class _OldReleaseLock:
-    """the lock as releases up to 0.66 ran it, reduced to what it did to the key.
+    """the lock as releases before 0.66.0 ran it, reduced to what it did to the key.
 
     Acquire was ``create`` (put-if-absent) of the holder's raw token; renewal read the entry and
     swapped it only while it still carried that token; release deleted it only while it still did.
@@ -1154,3 +1154,50 @@ class TestARollingUpgradeNeverFreesAHeldLock:
 
         # released by the new replica, the key is free for the old one
         assert await old.acquire()
+
+
+# parity-exempt: KeyValue subset whose renewal write lands and then fails once, as a lost acknowledgement does
+class _AppliedThenLostKv(_FakeKv):
+    """A KV whose first renewal ``update`` is applied by the "server" and then raises: the answer was lost."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.lost_answers = 1
+        self.applied_unanswered: list[int] = []
+
+    async def update(self, key: str, value: bytes, revision: int) -> int:
+        new_revision = await super().update(key, value, revision)
+        if self.lost_answers:
+            self.lost_answers -= 1
+            self.applied_unanswered.append(new_revision)
+            raise TimeoutError("the acknowledgement never arrived")
+        return new_revision
+
+
+class TestARenewalAppliedButNeverAnsweredKeepsTheLock:
+    """The broker applied the renewal; only its acknowledgement was lost. Nobody took the lock."""
+
+    @pytest.mark.asyncio
+    async def test_the_lock_stays_held_and_the_next_renewal_succeeds(self) -> None:
+        fake_kv = _AppliedThenLostKv()
+        client = _FakeClient(fake_kv)
+        body_finished = False
+
+        async with nats_distributed_lock(
+            client,  # type: ignore[arg-type]
+            "sweep",
+            heartbeat=timedelta(seconds=0.01),
+            ttl=timedelta(seconds=1),
+        ) as hold:
+            await _wait_until(lambda: bool(fake_kv.applied_unanswered), what="a renewal to land unanswered")
+            unanswered = fake_kv.applied_unanswered[0]
+            await _wait_until(
+                lambda: fake_kv.store["sweep"][1] > unanswered or hold.lost.is_set(),
+                what="the next renewal to succeed, or the lock to be reported lost",
+            )
+            hold.raise_if_lost()
+            body_finished = True
+
+        assert body_finished, "a renewal whose answer was lost cancelled a body whose lock nobody took"
+        assert not hold.lost.is_set()
+        assert "sweep" not in fake_kv.store, "the release left the lock's entry for its TTL"

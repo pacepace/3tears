@@ -474,3 +474,55 @@ class TestLeaseLostSaysWhy:
 
     def test_a_lease_lost_raised_without_a_reason_still_constructs(self) -> None:
         assert LeaseLost("gone").reason is None
+
+
+class TestAWriteAppliedButNeverAnswered:
+    """the server applied a refresh whose answer never arrived: the handle is one revision behind its own entry."""
+
+    async def _unanswered_refresh(self) -> tuple[LeaseHandle, FakeKvBucket]:
+        lease, client = await _make_lease()
+        handle = await lease.acquire("lock/a", ttl_seconds=30)
+        bucket = await _bucket_for(client, "test_leases")
+        real_update = bucket.update
+
+        async def applied_then_lost(**kwargs: Any) -> int | None:
+            await real_update(**kwargs)
+            bucket.update = real_update  # type: ignore[method-assign]
+            raise TimeoutError("the answer never came")
+
+        bucket.update = applied_then_lost  # type: ignore[method-assign]
+        with pytest.raises(TimeoutError):
+            await handle.refresh()
+        return handle, bucket
+
+    async def test_the_next_refresh_renews_from_its_own_write(self) -> None:
+        handle, bucket = await self._unanswered_refresh()
+        await handle.refresh()
+        entry = await bucket.get_entry(key="lock/a")
+        assert entry is not None and entry[1] == handle.revision
+
+    async def test_a_refresh_refused_for_another_reason_keeps_the_record_for_the_release(self) -> None:
+        """a later refresh that fails must not forget the unanswered write: the release still needs it."""
+        handle, bucket = await self._unanswered_refresh()
+        real_get_entry = bucket.get_entry
+
+        async def unreachable(**kwargs: Any) -> tuple[bytes, int] | None:
+            raise ConnectionError("kv is unreachable")
+
+        bucket.get_entry = unreachable  # type: ignore[method-assign]
+        with pytest.raises(ConnectionError):
+            await handle.refresh()
+        bucket.get_entry = real_get_entry  # type: ignore[method-assign]
+        await handle.release()
+        assert await bucket.get(key="lock/a") is None
+
+    async def test_another_holders_entry_is_still_a_lost_lease(self) -> None:
+        handle, bucket = await self._unanswered_refresh()
+        entry = await bucket.get_entry(key="lock/a")
+        assert entry is not None
+        stolen = entry[0].replace(b"pod-alpha", b"pod-thief")
+        assert await bucket.update(key="lock/a", value=stolen, revision=entry[1]) is not None
+        with pytest.raises(LeaseLost):
+            await handle.refresh()
+        await handle.release()
+        assert await bucket.get(key="lock/a") == stolen

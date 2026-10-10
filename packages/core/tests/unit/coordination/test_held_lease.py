@@ -838,3 +838,106 @@ async def test_a_slow_renewal_interval_still_waits_no_longer_than_one_kv_operati
 
 def test_the_release_bound_is_one_kv_operations_own_ceiling() -> None:
     assert RENEWAL_ANSWER_WAIT_SECONDS == KvTimings().op_timeout_seconds
+
+
+# ---------------------------------------------------------------------------
+# a renewal the server applied and never answered, mid-hold
+# ---------------------------------------------------------------------------
+
+
+def _applied_then(bucket: FakeKvBucket, outcome: BaseException, *, times: int = 1) -> list[int]:
+    """make ``bucket.update`` apply the write and THEN fail, ``times`` times; returns the applied revisions."""
+    real_update = bucket.update
+    applied: list[int] = []
+
+    async def update(**kwargs: Any) -> int | None:
+        revision = await real_update(**kwargs)
+        if revision is not None and len(applied) < times:
+            applied.append(revision)
+            raise outcome
+        return revision
+
+    bucket.update = update  # type: ignore[method-assign]
+    return applied
+
+
+@_in_virtual_time
+async def test_a_renewal_applied_but_never_answered_does_not_cost_a_healthy_lease() -> None:
+    """The write landed; only its answer was lost. The handle is a revision behind its own entry, and
+    a swap at the revision it recorded would be refused -- which read as "taken" though nobody took
+    it, cancelling the holder's work and stranding the entry for a TTL."""
+    client = FakeNatsClient()
+    held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW)
+    bucket = await _bucket(client)
+    applied = _applied_then(bucket, TimeoutError("the answer never came"))
+    try:
+        await asyncio.sleep(_RENEW.total_seconds() * 6)
+        assert applied, "the renewal under test never ran"
+        assert held.held, f"a healthy lease was reported lost ({held.lost_reason})"
+        entry = await bucket.get_entry(key="job")
+        assert entry is not None and entry[1] > applied[0], "renewal did not resume after the unanswered one"
+    finally:
+        await held.release()
+    assert await bucket.get_entry(key="job") is None, "the release left the entry behind"
+
+
+@_in_virtual_time
+async def test_an_unanswered_renewal_then_a_release_still_frees_the_entry() -> None:
+    client = FakeNatsClient()
+    held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW)
+    bucket = await _bucket(client)
+    applied = _applied_then(bucket, ConnectionError("reset"), times=1000)
+    await asyncio.sleep(_RENEW.total_seconds() * 3)
+    assert applied
+    await held.release()
+    assert await bucket.get_entry(key="job") is None, "an entry of the holder's own was left for a TTL"
+
+
+@_in_virtual_time
+async def test_an_unanswered_renewal_never_excuses_another_holders_entry() -> None:
+    """Recognising its own write must not widen into taking any entry: a takeover is still a loss."""
+    client = FakeNatsClient()
+    held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW)
+    bucket = await _bucket(client)
+    applied = _applied_then(bucket, TimeoutError("the answer never came"))
+    try:
+        await asyncio.sleep(_RENEW.total_seconds() * 1.5)
+        assert applied
+        await _take_over(client, "job")
+        await asyncio.wait_for(held.until_lost(), timeout=5)
+        assert held.lost_reason is LeaseLossReason.TAKEN
+    finally:
+        await held.release()
+    surviving = await bucket.get_entry(key="job")
+    assert surviving is not None and b"pod-b" in surviving[0]
+
+
+@_in_virtual_time
+async def test_a_release_cancelled_while_it_waits_stops_the_renewal_it_was_waiting_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A renewal left running after a cancelled release finds its entry deleted and, for a lease that
+    retakes, creates it again -- an entry nobody holds, kept for a whole TTL."""
+    client = FakeNatsClient()
+    held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW, retake=True)
+    bucket = await _bucket(client)
+    real_get_entry = bucket.get_entry
+    reading = asyncio.Event()
+    slow_reads = 1
+
+    async def first_read_is_slow(**kwargs: Any) -> tuple[bytes, int] | None:
+        nonlocal slow_reads
+        if slow_reads:
+            slow_reads -= 1
+            reading.set()
+            await asyncio.sleep(0.5)
+        return await real_get_entry(**kwargs)
+
+    monkeypatch.setattr(bucket, "get_entry", first_read_is_slow)
+    await asyncio.wait_for(reading.wait(), timeout=5)
+    releasing = asyncio.create_task(held.release())
+    await asyncio.sleep(0.01)  # the release is waiting on the renewal in flight
+    releasing.cancel()
+    await asyncio.wait([releasing])
+    await asyncio.sleep(1.0)  # past the moment the renewal's read would have returned
+    assert await real_get_entry(key="job") is None, "a renewal outlived its cancelled release and retook the entry"
