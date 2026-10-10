@@ -43,11 +43,12 @@ from __future__ import annotations
 import math
 
 from collections import Counter
-from collections.abc import Collection, Mapping
+from collections.abc import Mapping
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, JsonValue
 
+from threetears.evals.analysis.agreement import InterJudgeDimension, inter_judge_agreement
 from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics, confusion_matrix, label_statistics
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.surface_table import NO_SUCCESSFUL_RESULTS
@@ -224,6 +225,9 @@ class DimensionSummary(BaseModel):
         minimum: The lowest score; ``None`` when none does.
         maximum: The highest score; ``None`` when none does.
         cannot_tell: How many results the judge answered it could not score on it — not failures, and in no mean.
+        second_judges: How far each second judge asked about this run agreed with its judge on this dimension
+            (:func:`~threetears.evals.analysis.inter_judge_agreement`): n, exact agreement and kappa, beside the score
+            it qualifies. Empty when no second judge was asked — agreement between judges is then unmeasured.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -235,6 +239,7 @@ class DimensionSummary(BaseModel):
     minimum: float | None
     maximum: float | None
     cannot_tell: int
+    second_judges: list[InterJudgeDimension] = []
 
 
 #: How one result came out, as :func:`~threetears.evals.contracts.classify_result` classifies it: graded normally,
@@ -266,6 +271,14 @@ class JudgeGrade(BaseModel):
     reasoning: str
 
 
+def _misses(value: float, higher_is_better: bool | None) -> bool:
+    """Whether a scorer's value is a miss for its direction: 0 or less where higher is better, above 0 where lower
+    is, and never where the measure declares no direction."""
+    if higher_is_better is None:
+        return False
+    return value <= 0 if higher_is_better else value > 0
+
+
 class CaseResult(BaseModel):
     """One case's answer on one repeat, every grade it got, and why it failed or was excluded.
 
@@ -289,9 +302,11 @@ class CaseResult(BaseModel):
         goal_checks: Each goal-state check, by its expression, and whether the end state passed it.
         errors: Why the result failed or was excluded, as the run recorded it; empty for a scored result.
         missed_because: Why the result is a miss, one line per reason; empty when it is not one. A miss is a
-            result the candidate failed, a classifier answer that is not the expected label, a scorer that gave
-            0 or less (``False`` counts as 0) — or more than 0, for a guardrail declared lower-is-better — a goal check the end state failed, or a pass/fail dimension the
-            judge failed. An excluded result is never a miss: it says nothing about the candidate.
+            result the candidate failed, a classifier answer that is not the expected label, a scorer on the
+            wrong side of 0 for its direction — 0 or less where higher is better (``False`` counts as 0), more
+            than 0 where lower is better, and never for a measure that declares no direction — a goal check the end
+            state failed, or a pass/fail dimension the judge failed. An excluded result is never a miss: it says
+            nothing about the candidate.
         cost_usd: What the result spent, as reported and priced; ``None`` when any of it went unpriced.
     """
 
@@ -325,7 +340,7 @@ class CaseResult(BaseModel):
         given: JsonValue,
         expected: str | None,
         answer: JsonValue,
-        breached_above_zero: Collection[str] = (),
+        higher_is_better: Mapping[str, bool | None] | None = None,
     ) -> CaseResult:
         """One stored result, read as a case result.
 
@@ -335,8 +350,10 @@ class CaseResult(BaseModel):
             given: The case, as given.
             expected: A classifier's expected label, or ``None``.
             answer: The candidate's answer, as its kind stored it.
-            breached_above_zero: The measures that count something the candidate must not do — a guardrail
-                declared lower-is-better, such as ``leaked`` — so a value above 0 is the miss and 0 is not.
+            higher_is_better: Each measure's declared direction, by name. Lower-is-better (``leaked``, a count
+                of errors) misses above 0 and not at 0, guardrail or not; a measure that declares no direction
+                misses never, since "worse" needs one; a measure not named reads as higher-is-better, a scorer's
+                default.
 
         Returns:
             The case result, its miss reasons decided by the rule :attr:`missed_because` states.
@@ -370,7 +387,7 @@ class CaseResult(BaseModel):
                 for name, value in result.host_measures.items()
                 if name not in (MATCH_MEASURE, CONFUSION_CELL_MEASURE)
                 and not isinstance(value, str)
-                and (float(value) > 0 if name in breached_above_zero else float(value) <= 0)
+                and _misses(float(value), (higher_is_better or {}).get(name, True))
             )
             missed.extend(f"goal check {check} failed" for check, passed in goal_checks.items() if not passed)
             missed.extend(
@@ -466,6 +483,9 @@ class EvalSummary(BaseModel):
             (:func:`~threetears.evals.quick.run_eval`: ``"from <candidate>'s docstring"`` or a generic
             default); ``None`` for an intent stated outright, and for a summary read back from the store,
             which keeps the intent but not its source.
+        second_judge_calls: How many calls second judges asked about this run made, as the out-of-run ledger records
+            them under purpose ``second_judge``. Measurement cost: never in :attr:`judge_calls` or the candidate's.
+        second_judge_cost_usd: What those calls cost; ``None`` when any went unpriced, and when none was made.
         judge_calls: How many judge calls the results' ``judge`` usage rows count.
         judge_cost_usd: What those calls cost, as their client priced them; ``None`` when any went
             unpriced, and for a run no judge was called in.
@@ -514,6 +534,8 @@ class EvalSummary(BaseModel):
     judged: list[DimensionSummary] = []
     judge_calls: int = 0
     judge_cost_usd: float | None = None
+    second_judge_calls: int = 0
+    second_judge_cost_usd: float | None = None
     candidate_calls: int = 0
     candidate_cost_usd: float | None = None
     goal_checks: list[GoalCheckSummary] = []
@@ -548,7 +570,7 @@ class EvalSummary(BaseModel):
         """The results the candidate missed, each saying why (:attr:`CaseResult.missed_because`).
 
         A miss is a result the candidate failed, a classifier answer that is not the expected label, a scorer
-        that gave 0 or less (``False`` counts as 0) — more than 0 on a lower-is-better guardrail — a goal check
+        on the wrong side of 0 for its direction (:attr:`CaseResult.missed_because`), a goal check
         the end state failed, or a pass/fail dimension the judge failed. An excluded result is not a miss — it says nothing about the candidate —
         so read :meth:`results` for those; the summary's :attr:`n_excluded` counts them.
 
@@ -563,19 +585,32 @@ class EvalSummary(BaseModel):
     def render(self) -> str:
         """The summary as a few lines of text for a terminal.
 
+        The results line counts the failures and the rig's exclusions only when there are some, or a judge is in
+        play; the spend-cap line prints only when a cap bounded the run, a judge ran, or the candidate reported
+        spend — a first run of a free function is not handed the vocabulary of a rig it does not have.
+
         Returns:
             The text, without a trailing newline.
         """
+        # A judge is the rig a first run can meet, and the spend it bills is what a cap bounds: with neither in
+        # play, the rig's exclusions and the cap say nothing a newcomer can act on, so they print only when they do.
+        judged = bool(self.judged) or self.judge_calls > 0
+        counts = [f"{self.n_scored} scored"]
+        if self.n_candidate_failed:
+            counts.append(f"{self.n_candidate_failed} failed by the candidate")
+        if self.n_excluded or judged:
+            counts.append(f"{self.n_excluded} excluded")
         lines = [
             f"run {self.run_id} {self.status}: "
             + (self.candidate_model if self.arm is None else f"arm {self.arm} (model {self.candidate_model})")
             + f" over {self.n_cases} case(s) x k={self.k_runs}",
-            f"  {self.n_results} result(s): {self.n_scored} scored, {self.n_candidate_failed} failed by the "
-            f"candidate, {self.n_excluded} excluded",
+            f"  {self.n_results} result(s): {', '.join(counts)}",
         ]
         if self.stopped_because is not None:
             lines.append(f"  stopped: {self.stopped_because}")
-        if (cap := _spend_cap_line(self)) is not None:
+        if (self.max_cost_usd is not None or judged or self.candidate_calls) and (
+            cap := _spend_cap_line(self)
+        ) is not None:
             lines.append(f"  {cap}")
         for measure in self.measures:
             left_out = _left_out(measure)
@@ -817,6 +852,11 @@ def summarize_run(
     if run.judge_model is not None and run.template_id is not None:
         template = host.storage.load_template(run.template_id, scope_id)
     candidate_rows = [row for result in results for row in result.usage if row.role == "candidate"]
+    # A second judge's spend is the out-of-run ledger's, stamped with the run — never a result's usage row.
+    second_rows = [
+        row for row in host.storage.query_out_of_run_spend(scope_id, purpose="second_judge") if row.run_id == run.id
+    ]
+    second_costs = [row.cost_usd for row in second_rows]
     return EvalSummary(
         run_id=run.id,
         scope_id=scope_id,
@@ -835,6 +875,12 @@ def summarize_run(
         judged=_judged_dimensions(results),
         judge_calls=sum(row.call_count or 0 for row in judge_rows),
         judge_cost_usd=blended_cost(judge_rows, _JUDGE_ROLE) if judge_rows else None,
+        second_judge_calls=len(second_rows),
+        second_judge_cost_usd=(
+            math.fsum(cost for cost in second_costs if cost is not None)
+            if second_rows and None not in second_costs
+            else None
+        ),
         candidate_calls=sum(row.call_count or 0 for row in candidate_rows),
         candidate_cost_usd=blended_cost(candidate_rows, _CANDIDATE_ROLE) if candidate_rows else None,
         goal_checks=_goal_checks(results, run),
@@ -867,6 +913,7 @@ def _judged_dimensions(results: list[EvalResult]) -> list[DimensionSummary]:
         for dim in result.judge_cannot_tell:
             scores.setdefault(dim, [])
             cannot_tell[dim] += 1
+    agreement = inter_judge_agreement(results)
     return [
         DimensionSummary(
             name=name,
@@ -876,6 +923,7 @@ def _judged_dimensions(results: list[EvalResult]) -> list[DimensionSummary]:
             minimum=min(values) if values else None,
             maximum=max(values) if values else None,
             cannot_tell=cannot_tell[name],
+            second_judges=[row for row in agreement.dimensions if row.rubric_dim == name],
         )
         for name, values in scores.items()
     ]

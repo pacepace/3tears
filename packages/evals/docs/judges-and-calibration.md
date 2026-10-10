@@ -208,6 +208,39 @@ Under a cap, a client that cannot price its calls (`price_ceiling` returns `None
 does) is refused before anything is spent. A "can't tell" on repeat counts as a disagreement. Separation counts
 distinct results, so 120 means, for example, 40 cases at `k=3`, each repeated once.
 
+## Step 9: a second judge, for agreement between judges and for drift
+
+A second judge — another model, prompt or temperature — scores the same stored evidence, and each answer is
+recorded beside the first score without changing it. Ask it about a seeded share of the results to see how far
+another judge agrees, or about all of them after a judge change to see how far the scores moved:
+
+```python
+from threetears.evals.analysis import inter_judge_agreement, judge_drift
+from threetears.evals.contracts import SecondJudge
+
+report = await ask_second_judge(
+    judging_host, summary.run_id, summary.scope_id,
+    judge=SecondJudge(model="other-judge-model"), out_of_run_cap_usd=None, sample_fraction=0.5, seed=1,
+)
+results = list_results(host.storage, summary.run_id, summary.scope_id)
+agreement = inter_judge_agreement(results, pass_id=report.pass_id)
+drift = judge_drift(results, pass_id=report.pass_id)
+```
+
+`ask_second_judge` comes from `threetears.evals.run`. The actions are `judge_second`, `judge_second_estimate` and
+`judge_drift_check`, which re-scores every result. Agreement is n, exact agreement, and kappa, quadratic-weighted
+on 1–5 and unweighted on pass/fail, computed as agreement with people is. A kappa with nothing to measure is
+reported as undefined, with the reason, never as 0. `run_get` shows each second judge beside the dimension it
+scored.
+
+Drift is read per dimension over cases: the movement, its interval, and `separated`, `not separated` or
+`untested`, Holm-adjusted across the dimensions. It shows that the scores moved, never which judge is right. A
+campaign whose runs were judged differently names the change in the bundle's `judge_change`, and links any drift
+reading that re-scored one side under the other side's judge.
+
+Calls are priced against the out-of-run cap before the first is sent. They are ledgered under purpose
+`second_judge` and never added to the candidate's cost.
+
 **Comparing two candidates on judged quality:** see `compare`'s `judge=`.
 
 ## What to read next

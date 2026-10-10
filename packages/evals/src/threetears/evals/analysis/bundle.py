@@ -58,6 +58,9 @@ from threetears.evals.analysis.agreement import (
     judge_evidence_tiers,
     judge_key,
     judge_self_agreement,
+    InterJudgeAgreement,
+    InterJudgeDimension,
+    inter_judge_agreement,
     tier_for_judges,
 )
 from threetears.evals.contracts.evidence_tiers import (
@@ -68,7 +71,13 @@ from threetears.evals.contracts.evidence_tiers import (
     JudgedEvidenceTier,
     JudgeEvidenceTier,
 )
+from threetears.evals.analysis.judge_drift import JudgeDrift, judge_drift
 from threetears.evals.analysis.arms import arm_names, surface_order
+from threetears.evals.analysis.contention import (
+    contended_latency_sentence,
+    withheld_latency,
+    withhold_contended_latency,
+)
 from threetears.evals.analysis.cells import (
     CELL_MODEL_VERSION,
     ApparatusClass,
@@ -115,9 +124,11 @@ from threetears.evals.analysis.stats import (
     LevelDifference,
     clustered_standard_error,
     composite_significance,
+    contrast_samples,
     difference_interval,
     equivalence_untested_reason,
     exact_decimal,
+    GUARDRAIL_HELD_NEEDS_RANGE,
     guardrail_decision,
     holm_adjust,
     interval_clears,
@@ -127,6 +138,7 @@ from threetears.evals.analysis.stats import (
     paired_equivalence,
     proportion_interval,
     separation_p,
+    small_sample_case_means,
 )
 from threetears.evals.contracts.analysis_measures import BarAdjudication, BarVerdict, MeasureCollection, MeasureSummary
 from threetears.evals.contracts.campaign import (
@@ -173,6 +185,7 @@ from threetears.evals.contracts.metrics import (
     goal_check_measure,
     Materiality,
     is_code_graded,
+    is_latency_measure,
     materiality,
     partition_components,
     remainder_withheld_reason,
@@ -227,7 +240,7 @@ from threetears.evals.contracts.usage_capture import (
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.contracts.host.measures import MeasureRegistry
     from threetears.evals.contracts.campaign import EvalCampaign
-    from threetears.evals.contracts.models import EvalCaseStratum, EvalRun
+    from threetears.evals.contracts.models import EvalCaseStratum, EvalRun, SecondJudge
 
 
 class CampaignReadStore(Protocol):
@@ -1292,6 +1305,14 @@ class JudgedArm(EvalDocumentModel):
             "mean: a judge reading a broken transcript is not measuring the candidate."
         ),
     )
+    case_means: list[float] | None = Field(
+        default=None,
+        description=(
+            "Each test case's mean over its observations, ascending, recorded only below 5 cases (the chart band "
+            "floor): a chart draws these as points rather than an interval band there. None at 5 cases or more, "
+            "and on a summary stored before it, which reads as not recorded."
+        ),
+    )
     n_cannot_tell: int = Field(
         default=0,
         ge=0,
@@ -1358,6 +1379,64 @@ class JudgedMeasure(EvalDocumentModel):
     arms: list[JudgedArm] = Field(
         default_factory=list,
         description="One entry per cell carrying a score on this dimension, ordered by (variant_key, apparatus_class_id).",
+    )
+    second_judges: list[InterJudgeDimension] = Field(
+        default_factory=list,
+        description=(
+            "How far each second judge asked about the member runs agreed with their judge on this dimension — n, exact "
+            "agreement, kappa and its bounds (`inter_judge_agreement`), beside the scores it qualifies. Empty when no "
+            "second judge was asked: agreement between judges is then unmeasured, not perfect."
+        ),
+    )
+
+
+class JudgeIdentityLevel(EvalDocumentModel):
+    """One judge the member runs were scored by, as each run recorded it at launch, and the runs and arms under it."""
+
+    judge_model: str = Field(
+        min_length=1, description="The run's judge pin: the model every unconfigured dim was sent to."
+    )
+    judge_config_ids: dict[str, str] = Field(
+        default_factory=dict,
+        description="dim -> the versioned JudgeConfig the run pinned; absent = the built-in prompt.",
+    )
+    judge_temperature: float | None = Field(
+        default=None, description="The temperature unconfigured dims were requested at; None = not recorded."
+    )
+    run_ids: list[str] = Field(min_length=1, description="The member runs judged this way, sorted.")
+    variant_keys: list[str] = Field(default_factory=list, description="The arms those runs measured, sorted.")
+
+
+class JudgeDriftLink(EvalDocumentModel):
+    """A drift reading that spans a judge change: evidence of one side re-scored by the other side's judge."""
+
+    from_level: int = Field(ge=0, description="The index in `levels` whose runs' evidence was re-scored.")
+    to_level: int = Field(ge=0, description="The index in `levels` whose judge re-scored it.")
+    run_ids: list[str] = Field(min_length=1, description="The runs whose stored evidence was re-scored, sorted.")
+    pass_ids: list[str] = Field(min_length=1, description="The second-judge passes read, sorted.")
+    drift: JudgeDrift = Field(description="How far each dimension moved between the two judges on the same evidence.")
+
+
+class JudgeChange(EvalDocumentModel):
+    """Whether the member runs were judged by more than one judge, which, and the drift readings that span the change."""
+
+    levels: list[JudgeIdentityLevel] = Field(
+        default_factory=list,
+        description=(
+            "Each judge the judged member runs recorded, ordered by model, configs and temperature. More than one is a "
+            "judge change: a judged difference between arms on different levels may be the judge, not the subject."
+        ),
+    )
+    drift_links: list[JudgeDriftLink] = Field(
+        default_factory=list,
+        description=(
+            "Drift readings among the member runs that re-scored one level's evidence under another level's judge. "
+            "Empty when none exists — then nothing measured how far the judge change alone moves the scores."
+        ),
+    )
+    sentence: str | None = Field(
+        default=None,
+        description="The sentence to quote about the change; None when every judged member run had one judge.",
     )
 
 
@@ -1970,9 +2049,18 @@ class FamilyComparison(EvalDocumentModel):
     equivalence_margin: float | None = Field(
         default=None,
         description=(
-            "The measure's declared margin (`materiality_threshold`) the equivalence test ran against, in its unit. "
-            "None when it declares none, for a judged dimension, and for an unpaired test: then no equivalence test "
-            "ran and the verdict cannot be `equivalent`."
+            "The measure's margin the equivalence test ran against, in its unit: its declared `materiality_threshold`, "
+            "or the margin its runs declared (`margin_source` says which). None when it has none, for a judged "
+            "dimension, and for an unpaired test: then no equivalence test ran and the verdict cannot be `equivalent`."
+        ),
+    )
+    margin_source: Literal["measure", "run"] | None = Field(
+        default=None,
+        description=(
+            "Where the measure's margin came from: `measure` = its descriptor's `materiality_threshold`, declared "
+            "by the host; `run` = a margin every member run declared at launch on a core rate measure "
+            "(`run_margins`). It is the margin `materiality` reads, and `equivalence_margin` when an equivalence "
+            "test ran. None when the measure has no margin, and on a judged dimension."
         ),
     )
     equivalence_p_raw: float | None = Field(
@@ -2008,8 +2096,8 @@ class FamilyComparison(EvalDocumentModel):
     materiality: Materiality | None = Field(
         default=None,
         description=(
-            "`delta` read against the host's declared materiality threshold for this measure: `immaterial` when it "
-            "is smaller than the threshold — too small to act on, whatever `verdict` says about its separation — "
+            "`delta` read against the measure's margin (`margin_source`: its declared materiality threshold, or its "
+            "runs' declared margin): `immaterial` when it is smaller than the margin — too small to act on, whatever `verdict` says about its separation — "
             "and `material` otherwise, including when no threshold is declared (a judged dimension declares none). "
             "No finding names a winner on an immaterial delta. None when `delta` is None."
         ),
@@ -2411,6 +2499,25 @@ class AnalysisContextBundle(EvalDocumentModel):
             "or latency to read. None when every cell delivered a result."
         ),
     )
+    latency_contended_cells: list[CellCoordinate] = Field(
+        default_factory=list,
+        description=(
+            "Every cell holding a result whose latency was read while other cells or runs executed beside it "
+            "(`execution_mode` `concurrent`: its launch did not declare latency under test, or another run "
+            "executed beside it), ordered by (variant_key, apparatus_class_id). That latency is left out of every "
+            "reading in this bundle — the cell measures, the contrasts and their Holm family, the bars, the "
+            "frontier's latency axis, the mechanism and scope lenses — so a cell's latency, where it has one, is "
+            "read only from its results measured serially. Every other measure of those results stands."
+        ),
+    )
+    latency_contended: str | None = Field(
+        default=None,
+        description=(
+            "The sentence to quote about `latency_contended_cells` — that latency read under concurrency is not "
+            "compared, and how much was left out. None when every latency the campaign holds was read serially, "
+            "or it holds none."
+        ),
+    )
     held_fixed_reading: HeldFixedReading = Field(
         default_factory=HeldFixedReading,
         description=(
@@ -2457,6 +2564,33 @@ class AnalysisContextBundle(EvalDocumentModel):
             "finding citing one stands on it."
         ),
     )
+    inter_judge_agreement: InterJudgeAgreement = Field(
+        default_factory=InterJudgeAgreement,
+        description=(
+            "How a second judge's scores of the member runs' stored evidence agreed with their judge's, per judged "
+            "dimension, first judge and second judge: n, distinct results, exact agreement, and kappa "
+            "(quadratic-weighted on 1-5, unweighted on pass/fail) with its confidence bounds — read exactly as "
+            "`judge_agreement` is. An undefined kappa says why, never 0. Empty when no second judge was asked. Each "
+            "judged dimension's rows are also on its `judged_measures` entry."
+        ),
+    )
+    judge_drift: JudgeDrift = Field(
+        default_factory=JudgeDrift,
+        description=(
+            "How far each judged dimension's scores moved when a second judge re-scored the member runs' stored "
+            "evidence: the movement over cases, its interval, and separated / not separated / untested, Holm-adjusted "
+            "over the dimensions. It detects movement between two judges, never which judge is right."
+        ),
+    )
+    judge_change: JudgeChange = Field(
+        default_factory=JudgeChange,
+        description=(
+            "Each judge the judged member runs were scored by (model pin, configs, temperature), the runs and arms "
+            "under each, and the drift readings that span a change. When there is more than one, quote `sentence`: a "
+            "judged difference between arms judged differently may be the judge's, and where `drift_links` is empty "
+            "nothing measured how much."
+        ),
+    )
     goal_check_proofs: list[GoalCheckProofReading] = Field(
         default_factory=list,
         description=(
@@ -2484,6 +2618,26 @@ class AnalysisContextBundle(EvalDocumentModel):
             "comparison family and composite, so a capability gain cannot pay for a guardrail loss. An arm with a "
             "breached guardrail is not adopted; an undecided one is never safe, and is stated wherever the arm is "
             "recommended."
+        ),
+    )
+    run_margins: dict[str, float] = Field(
+        default_factory=dict,
+        description=(
+            "Margins on core rate measures (`accuracy`) that every member run declared alike at launch "
+            "(`EvalRun.declared_margins`), by measure. A core descriptor declares no margin, so this is the one "
+            "margin such a measure has here: each comparison on it runs its equivalence test against it, and names "
+            "it (`equivalence_margin`, `margin_source` `run`). Read by the contrasts against the control only: a bar "
+            "on the measure and the history's movements read its descriptor, which declares none. Empty when no run "
+            "declared one."
+        ),
+    )
+    run_margins_withheld: str | None = Field(
+        default=None,
+        description=(
+            "Why a margin some member runs declared on a core rate measure is read on none of its comparisons: the "
+            "runs do not all declare it, or declare different ones, and a contrast between two arms read against a "
+            "margin only one of them chose would be read against a margin nobody chose for the pair. None when no "
+            "run margin was withheld."
         ),
     )
     reading_scope: ReadingScope = Field(
@@ -3371,8 +3525,9 @@ def _scalar_leaves(model: BaseModel) -> Iterator[tuple[str, float | str]]:
 #: and walking it would pool that as a second cost observation of the cell, beside the prose
 #: of its timestamp, prior error and model reported as measurements the registry lost. A repeat
 #: of the judge's scores is a measurement of the JUDGE, read by ``judge_self_agreement``; walking
-#: it would pool a repeat's score as a second observation of the candidate's cell.
-RECORD_CARRIERS: frozenset[str] = frozenset({"judge_rescores", "judge_repeats"})
+#: it would pool a repeat's score as a second observation of the candidate's cell. A second judge's scores are the
+#: same: a measurement of the judges, read by ``inter_judge_agreement`` and ``judge_drift``.
+RECORD_CARRIERS: frozenset[str] = frozenset({"judge_rescores", "judge_repeats", "judge_seconds"})
 
 
 def _carrier_leaves(result: EvalResult, *, profile: HostProfile) -> Iterator[tuple[str, float | str, bool, str, str]]:
@@ -4143,6 +4298,7 @@ def _measure_summary(
             "n_true": n_true,
             "ci_low": None if interval is None else interval[0],
             "ci_high": None if interval is None else interval[1],
+            "case_means": small_sample_case_means([1.0 if value is True else 0.0 for value in values], cases),
         }
     elif descriptor.data_type == "categorical":
         counts: dict[str, int] = {}
@@ -4180,6 +4336,8 @@ def _measure_summary(
             # `stats.observed_mean_interval`, so `accuracy` and the `match` it is derived from agree.
             "ci_low": None if interval is None else interval[0],
             "ci_high": None if interval is None else interval[1],
+            # Below the band floor a chart draws the cases rather than the interval, so it needs them.
+            "case_means": small_sample_case_means(observed, cases),
         }
     return MeasureSummary(
         name=descriptor.name,
@@ -7349,6 +7507,18 @@ def assemble_context_bundle(
         results_by_run[run.id] = sorted(run_results, key=lambda r: r.id)
     # Before anything reads them: a classifier's failure is a miss in every rate, not absent from them all.
     results_by_run = _failures_as_misses(results_by_run)
+    # Before anything reads them either: latency read under concurrency is left out of every lens, never
+    # compared as if it were clean (#701). Which results lost it is kept for the one line that says so.
+    contended_ids = {
+        result.id
+        for result in withheld_latency(
+            (result for run_results in results_by_run.values() for result in run_results), profile.measures
+        )
+    }
+    results_by_run = {
+        run_id: withhold_contended_latency(run_results, profile.measures)
+        for run_id, run_results in results_by_run.items()
+    }
     results = [result for run in runs for result in results_by_run[run.id]]
 
     # ``archived_run_ids=None`` is true here, not a default: archived members were removed
@@ -7495,6 +7665,14 @@ def assemble_context_bundle(
             archived_run_ids=None,
             rubric_threshold=profile.bars.pass_threshold(campaign.behavior),
             profile=profile,
+            # The boundary pillar: each contestant's guardrail dimensions held against the campaign's control arm,
+            # at the margins it declares, by the rule the bundle's guardrails are decided by (#613).
+            control_variant_key=design.control_arm.variant_key if design.control_arm is not None else None,
+            guardrail_margins=(
+                {entry.dimension: entry.margin for entry in campaign.declared_design.guardrail_margins}
+                if campaign.declared_design is not None
+                else None
+            ),
         ),
         frontier_bar_withheld=frontier_bar_withheld,
         telemetry=_telemetry_rollup(runs, results, budget, profile=profile),
@@ -7570,6 +7748,9 @@ def assemble_context_bundle(
     bundle.judge_evidence_tiers = judge_evidence_tiers(
         bundle.judge_agreement, bundle.judge_self_agreement, _judged_keys(results)
     )
+    bundle.inter_judge_agreement = inter_judge_agreement(results)
+    bundle.judge_drift = judge_drift(results)
+    bundle.judge_change = _judge_change(runs, results_by_run)
     bundle.goal_check_proofs = goal_check_proofs_of(runs, results)
     # Judged quality and the bars, per cell. Both read the cell algebra's own grouping, so every
     # per-arm number here describes observations the bundle already calls one arm, and neither
@@ -7577,9 +7758,23 @@ def assemble_context_bundle(
     # carried here so that staying off it is not read as never having been measured.
     results_by_cell = _results_by_cell(cells, results)
     bundle.cost_unmeasured_cells, bundle.cost_unmeasured = _cost_unmeasured(results_by_cell)
-    bundle.judged_measures = _judged_measures(
-        projection.records, results_by_cell, campaign.declared_design, tiers=bundle.judge_evidence_tiers
+    bundle.latency_contended_cells, bundle.latency_contended = _latency_contended(
+        results_by_cell,
+        contended_ids,
+        declared=campaign.declared_design is not None and campaign.declared_design.measure_latency,
     )
+    bundle.judged_measures = [
+        measure.model_copy(
+            update={
+                "second_judges": [
+                    row for row in bundle.inter_judge_agreement.dimensions if row.rubric_dim == measure.name
+                ]
+            }
+        )
+        for measure in _judged_measures(
+            projection.records, results_by_cell, campaign.declared_design, tiers=bundle.judge_evidence_tiers
+        )
+    ]
     bundle.bar_adjudications = _bar_adjudications(
         campaign.behavior,
         campaign.declared_design,
@@ -7636,6 +7831,7 @@ def assemble_context_bundle(
         names=names,
     )
     bundle.measure_catalog = _measure_catalog(bundle, profile=profile)
+    bundle.run_margins, bundle.run_margins_withheld = _run_margins(runs)
     # After the catalog, which says each measure's better direction and axis: a family is the readings a
     # question's axes name, and a reading with no better end has no verdict to correct.
     bundle.multiple_comparisons, bundle.guardrails = _multiple_comparisons(
@@ -7648,6 +7844,10 @@ def assemble_context_bundle(
         observations=mechanisms,
         served=served,
         profile=profile,
+        run_margins=bundle.run_margins,
+        contended={
+            key for key, members in results_by_cell.items() if any(result.id in contended_ids for result in members)
+        },
     )
     bundle.reading_scope = _reading_scope(campaign.declared_design, bundle.measure_catalog, bundle.judged_measures)
     # Divergences pair measures by unit, which only the catalog knows, so they are derived
@@ -7670,6 +7870,39 @@ def assemble_context_bundle(
     # lens reported, and a reader would take that as a claim the campaign made.
     bundle.confound_catalog = _confound_catalog(bundle, profile=profile)
     return bundle
+
+
+def _run_margins(runs: Sequence[EvalRun]) -> tuple[dict[str, float], str | None]:
+    """The margins every member run declared alike on a core rate measure, and why any other was withheld.
+
+    A margin decides what `equivalent` means for a pair of arms, so it is read only when every run of the
+    campaign declared the same one on the measure — then whichever two arms a contrast sets side by side chose
+    it alike. A margin some runs declared and others did not, or that runs declared differently, is read on
+    none, and one sentence says so, naming the measures.
+
+    Args:
+        runs: The resolved member runs.
+
+    Returns:
+        ``(margins, withheld)``: the agreed margins by measure, in name order, and the sentence naming the
+        measures whose declared margins disagree, or None.
+    """
+    declared = sorted({name for run in runs for name in run.declared_margins})
+    agreed: dict[str, float] = {}
+    disagreed: list[str] = []
+    for name in declared:
+        margins = {run.declared_margins.get(name) for run in runs}
+        if len(margins) == 1 and None not in margins:
+            agreed[name] = margins.pop()  # type: ignore[assignment]  # the one value, and it is not None
+        else:
+            disagreed.append(name)
+    if not disagreed:
+        return agreed, None
+    return agreed, (
+        f"The member runs do not all declare one margin on {', '.join(disagreed)}, so no margin is read on "
+        f"{'it' if len(disagreed) == 1 else 'them'}: no comparison on {'it' if len(disagreed) == 1 else 'them'} "
+        "can read equivalent. Relaunch every arm with the same margin to read one."
+    )
 
 
 def _measure_catalog(bundle: AnalysisContextBundle, *, profile: HostProfile) -> dict[str, MetricDescriptor]:
@@ -7866,6 +8099,7 @@ def _judged_measures(
                     n_cannot_tell=len(cannot_tell),
                     mean=sum(values) / len(values) if values else None,
                     sem=clustered_standard_error(values, value_cases) if values else None,
+                    case_means=small_sample_case_means(values, value_cases),
                     evidence_tier=tier_for_judges(tiers, served),
                 )
             )
@@ -8287,6 +8521,34 @@ def _cost_unmeasured(results_by_cell: dict[_CellKey, list[EvalResult]]) -> tuple
     return unmeasured, f"{sentence} {_HOW_TO_REPORT_SPEND}"
 
 
+def _latency_contended(
+    results_by_cell: dict[_CellKey, list[EvalResult]], contended_ids: Collection[str], *, declared: bool = False
+) -> tuple[list[CellCoordinate], str | None]:
+    """Name every cell whose latency read under concurrency was left out, with the one sentence that says so.
+
+    Args:
+        results_by_cell: Each cell's results, from :func:`_results_by_cell`.
+        contended_ids: The results whose latency :func:`~threetears.evals.analysis.contention.withhold_contended_latency`
+            removed before anything read them.
+        declared: The campaign's design declares latency under test, so a run read under concurrency is one it
+            cannot read its question from — said, with the remedy, rather than left to a reader to infer.
+
+    Returns:
+        The cells in coordinate order, and the sentence — None when nothing was left out.
+    """
+    cells: list[CellCoordinate] = []
+    withheld = 0
+    total = 0
+    for (variant_key, apparatus_class_id), members in sorted(results_by_cell.items()):
+        total += len(members)
+        here = sum(1 for result in members if result.id in contended_ids)
+        if here:
+            withheld += here
+            cells.append(CellCoordinate(variant_key=variant_key, apparatus_class_id=apparatus_class_id))
+    where = "" if len(cells) == len(results_by_cell) else f" in {len(cells)} of {len(results_by_cell)} cells"
+    return cells, contended_latency_sentence(withheld, total, where=where, declared=declared)
+
+
 def _all_failed(cells: list[CellFacts]) -> tuple[list[CellCoordinate], str | None]:
     """Name every cell where no counted result took a turn, with the one sentence that says so.
 
@@ -8570,13 +8832,10 @@ def _test_samples(
     of a contrast, a comparison's and a guardrail's alike.
 
     Returns:
-        ``(control sample, contrast sample, paired)``, the two aligned by case when paired.
+        ``(control sample, contrast sample, paired)``, the two aligned by case when paired
+        (:func:`~threetears.evals.analysis.stats.contrast_samples`, the rule the frontier's boundary pillar reads too).
     """
-    shared = sorted(set(control_values) & set(contrast_values))
-    paired = len(shared) >= 2
-    a = [control_values[case] for case in shared] if paired else list(control_values.values())
-    b = [contrast_values[case] for case in shared] if paired else list(contrast_values.values())
-    return a, b, paired
+    return contrast_samples(control_values, contrast_values)
 
 
 class _Tested(NamedTuple):
@@ -8597,8 +8856,10 @@ def _compare(
     contrast: tuple[_CellKey, dict[str, float]],
     *,
     threshold: float | None,
+    margin_source: Literal["measure", "run"] | None = None,
     value_range: tuple[float, float] | None = None,
     no_turn: tuple[str, ...] = (),
+    contended: tuple[str, ...] = (),
 ) -> _Tested:
     """Test one contrast against the control on one reading, before correction.
 
@@ -8619,11 +8880,15 @@ def _compare(
         threshold: The measure's declared materiality threshold, which labels the delta through the one
             predicate every surface uses (:func:`~threetears.evals.contracts.metrics.materiality`) and is the
             equivalence test's margin; None for a measure that declared none and for a judged dimension.
+        margin_source: Where ``threshold`` came from (:func:`_margin_of`), which the comparison records.
         value_range: The reading's declared inclusive bounds, which the equivalence test reads so its error
             rate holds on coarse values at every n (:func:`~threetears.evals.analysis.stats.paired_equivalence`),
             and which bound the interval on the delta; None where it declares none.
         no_turn: Which sides (``"control"``, ``"arm"``) have no turn to read a turn's time or spend over —
             every result there failed with no turn taken — so an untested comparison says that, the reason,
+            rather than that too few cases carried the reading.
+        contended: Which sides of a reading of elapsed time held latency read under concurrency, which the
+            bundle withheld (:mod:`~threetears.evals.analysis.contention`) — so an untested comparison says that,
             rather than that too few cases carried the reading.
 
     Returns:
@@ -8655,6 +8920,11 @@ def _compare(
             untested_reason = (
                 f"every result of the {' and the '.join(no_turn)} failed with no turn taken, so there is no "
                 "turn's time or spend to compare"
+            )
+        elif contended:
+            untested_reason = (
+                f"the {' and the '.join(contended)}'s latency was read while other cells or runs executed beside it, "
+                "so it is withheld and not compared (`latency_contended`)"
             )
         elif len(a) < 2 or len(b) < 2:
             untested_reason = "fewer than two cases carry this reading on a side"
@@ -8709,6 +8979,7 @@ def _compare(
         test=None if p_raw is None else ("paired" if paired else "unpaired"),
         p_raw=p_raw,
         equivalence_margin=margin,
+        margin_source=margin_source if threshold is not None else None,
         equivalence_p_raw=equivalence_p_raw,
         equivalence_untested_reason=equivalence_refused,
         verdict="untested" if p_raw is None else "not_separated",
@@ -8716,6 +8987,24 @@ def _compare(
         materiality=None if delta is None else materiality(threshold, delta),
     )
     return _Tested(comparison, p_raw, equivalence_p_raw, (a, b), value_range)
+
+
+def _margin_of(
+    reading: tuple[ReadingKind, str], catalog: Mapping[str, MetricDescriptor], run_margins: Mapping[str, float]
+) -> tuple[float | None, Literal["measure", "run"] | None]:
+    """A reading's margin and where it came from: the descriptor's threshold, else its runs' declared margin.
+
+    A core rate measure's descriptor declares none (:data:`~threetears.evals.contracts.metrics.RUN_MARGIN_MEASURES`),
+    so the two never both exist for one measure. A judged dimension has neither.
+    """
+    if reading[0] != "measure":
+        return None, None
+    declared = catalog[reading[1]].materiality_threshold
+    if declared is not None:
+        return declared, "measure"
+    if (margin := run_margins.get(reading[1])) is not None:
+        return margin, "run"
+    return None, None
 
 
 def _family_disclosure(
@@ -8820,6 +9109,8 @@ def _multiple_comparisons(
     observations: _MechanismObservations,
     served: _ServedModels,
     profile: HostProfile,
+    run_margins: Mapping[str, float] | None = None,
+    contended: Collection[_CellKey] = frozenset(),
 ) -> tuple[MultipleComparisons, GuardrailReadings]:
     """Test each contrast against the control, per live question — or campaign-wide — and decide every guardrail.
 
@@ -8842,6 +9133,10 @@ def _multiple_comparisons(
         observations: The campaign's mechanism observations, read for each contrast between two models.
         served: Which model answered each result's candidate calls, read for every contrast.
         profile: The host whose vocabulary this reads.
+        run_margins: The margins every member run declared alike on a core rate measure (:func:`_run_margins`),
+            read as that measure's margin, since its descriptor declares none.
+        contended: The cells holding latency read under concurrency, which the bundle withheld — named as the
+            reason a comparison or a guardrail on elapsed time could not be read, where it could not.
 
     Returns:
         One family per live question, in declaration order; one campaign-wide family over every reading when
@@ -8898,12 +9193,14 @@ def _multiple_comparisons(
                 contrast_values = values[contrast_key].get(reading, {})
                 if not control_values and not contrast_values:
                     continue
+                threshold, margin_source = _margin_of(reading, catalog, run_margins or {})
                 one = _compare(
                     reading,
                     readings[reading],
                     (control_key, control_values),
                     (contrast_key, contrast_values),
-                    threshold=catalog[reading[1]].materiality_threshold if reading[0] == "measure" else None,
+                    threshold=threshold,
+                    margin_source=margin_source,
                     value_range=(
                         catalog[reading[1]].value_range if reading[0] == "measure" else judged_ranges.get(reading[1])
                     ),
@@ -8914,6 +9211,7 @@ def _multiple_comparisons(
                         and summary_population(catalog[reading[1]], "scored") == "delivered"
                         and _took_no_turn(results_by_cell[key])
                     ),
+                    contended=_contended_sides(reading, (control_key, contrast_key), catalog, contended),
                 )
                 confounds = pair_confounds[(control_key, contrast_key)]
                 tested.append(
@@ -8926,6 +9224,7 @@ def _multiple_comparisons(
             guardrail_readings[reading],
             (control_key, values[control_key].get(reading, {})),
             (contrast_key, values[contrast_key].get(reading, {})),
+            contended=_contended_sides(reading, (control_key, contrast_key), catalog, contended),
         )
         for reading in sorted(guardrail_readings)
         for control_key, contrast_key in sorted(pairs, key=lambda pair: (pair[0][1], pair[1][0]))
@@ -9002,18 +9301,36 @@ def _guardrail_readings(
     return readings
 
 
+def _contended_sides(
+    reading: tuple[ReadingKind, str],
+    pair: tuple[_CellKey, _CellKey],
+    catalog: Mapping[str, MetricDescriptor],
+    contended: Collection[_CellKey],
+) -> tuple[str, ...]:
+    """Which sides of a comparison on ``reading`` held latency read under concurrency: ``control``, ``arm``, both, none.
+
+    Only a reading of elapsed time can have lost anything to the withholding, so any other reading names none.
+    """
+    if reading[0] != "measure" or reading[1] not in catalog or not is_latency_measure(catalog[reading[1]]):
+        return ()
+    return tuple(side for side, key in zip(("control", "arm"), pair, strict=True) if key in contended)
+
+
 def _guardrail_check(
     reading: tuple[ReadingKind, str],
     guardrail: _Guardrail,
     control: tuple[_CellKey, dict[str, float]],
     contrast: tuple[_CellKey, dict[str, float]],
+    *,
+    contended: tuple[str, ...] = (),
 ) -> GuardrailCheck:
     """Decide one guardrail for one arm against the control under one rig (:func:`~threetears.evals.analysis.stats.guardrail_decision`).
 
     The samples are the ones a comparison on the same reading would read (:func:`_test_samples`), so a
     guardrail and a comparison never disagree about which cases were compared. An undecided check says
-    why, in words that point at the remedy: more cases for a thin side, a declared range or margin for
-    a difference with no spread, and for a straddling interval the line it straddles.
+    why, in words that point at the remedy: more cases for a thin side, a declared range for a reading
+    that declares none (it is never read ``held`` without one), and for a straddling interval the line it
+    straddles.
     """
     (control_key, control_values), (contrast_key, contrast_values) = control, contrast
     a, b, paired = _test_samples(control_values, contrast_values)
@@ -9030,18 +9347,25 @@ def _guardrail_check(
     margin = guardrail.margin or 0.0
     reason = None
     if verdict.decision == "undecided":
-        if not b:
+        if contended and (len(a) < 2 or len(b) < 2):
+            reason = (
+                f"the {' and the '.join(contended)}'s latency was read while other cells or runs executed beside it, "
+                "so it is withheld and the guardrail could not be checked on it (`latency_contended`)"
+            )
+        elif not b:
             reason = "the arm carries no value of it, so it was not checked against the control"
         elif not a:
             reason = "the control carries no value of it, so the arm could not be checked against one"
         elif len(a) < 2 or len(b) < 2:
             reason = "fewer than two cases carry it on a side, so no interval on the difference exists"
+        elif verdict.refusal is not None:
+            reason = verdict.refusal
         elif verdict.interval is None:
             reason = (
-                "every shared case moved by the same amount and the reading declares no range to bound that by"
+                "every shared case moved by the same amount, so a t interval has no width; "
                 if paired
-                else "each side's values are constant, so the difference has no spread to bound"
-            )
+                else "each side's values are constant, so a t interval has no width; "
+            ) + GUARDRAIL_HELD_NEEDS_RANGE
         else:
             line = -margin if guardrail.higher_is_better else margin
             reason = (
@@ -9088,6 +9412,103 @@ def _guardrails_of(
     )
 
 
+#: What a judge change across the member runs means for a judged comparison, quoted when there is one.
+_JUDGE_CHANGE_SENTENCE = (
+    "The judged member runs were scored by {n} different judges (model, prompts or temperature), so a judged "
+    "difference between arms judged differently may be the judge's rather than the subject's."
+)
+_JUDGE_CHANGE_DRIFT = (
+    " A drift reading re-scored one side's evidence under the other side's judge ({links}); read its movement before "
+    "attributing a judged difference to the subject."
+)
+_JUDGE_CHANGE_NO_DRIFT = (
+    " Nothing measured how far the judge change alone moves the scores: re-score one side's stored evidence under "
+    "the other side's judge (judge_drift_check) to read it."
+)
+
+
+def _judge_identity(run: EvalRun) -> tuple[str, tuple[tuple[str, str], ...], float | None] | None:
+    """A judged run's judge as it recorded it at launch — pin, configs, temperature — or None for an unjudged run."""
+    if run.judge_model is None:
+        return None
+    return run.judge_model, tuple(sorted((run.judge_config_ids or {}).items())), run.judge_temperature
+
+
+def _names_level(
+    judge: SecondJudge,
+    level: tuple[str, tuple[tuple[str, str], ...], float | None],
+    own: tuple[str, tuple[tuple[str, str], ...], float | None],
+) -> bool:
+    """Whether a second judge is the judge ``level`` names, asked of a run judged as ``own``.
+
+    The model must be the level's pin; the prompts are the run's own when the second judge named none; and its
+    temperature, when it named none, is what each prompt asks for — the run's own sampling.
+    """
+    configs = own[1] if judge.config_ids is None else tuple(sorted(judge.config_ids.items()))
+    temperature = own[2] if judge.temperature is None else judge.temperature
+    return judge.model == level[0] and configs == level[1] and temperature == level[2]
+
+
+def _judge_change(runs: Sequence[EvalRun], results_by_run: Mapping[str, Sequence[EvalResult]]) -> JudgeChange:
+    """Each judge the judged member runs recorded, and every drift reading among them that spans two of them."""
+    by_level: dict[tuple[str, tuple[tuple[str, str], ...], float | None], list[EvalRun]] = {}
+    for run in runs:
+        if (identity := _judge_identity(run)) is not None:
+            by_level.setdefault(identity, []).append(run)
+    ordered = sorted(by_level, key=lambda level: (level[0], level[1], "" if level[2] is None else str(level[2])))
+    levels = [
+        JudgeIdentityLevel(
+            judge_model=level[0],
+            judge_config_ids=dict(level[1]),
+            judge_temperature=level[2],
+            run_ids=sorted(run.id for run in by_level[level]),
+            variant_keys=sorted(
+                {key for run in by_level[level] if (key := variant_key_of_run(results_by_run.get(run.id, [])))}
+            ),
+        )
+        for level in ordered
+    ]
+    if len(levels) < 2:
+        return JudgeChange(levels=levels)
+    links = []
+    for source_index, source in enumerate(ordered):
+        for target_index, target in enumerate(ordered):
+            if source_index == target_index:
+                continue
+            spanning = [
+                (run, judging.pass_id)
+                for run in by_level[source]
+                for result in results_by_run.get(run.id, [])
+                for judging in result.judge_seconds
+                if _names_level(judging.judge, target, source)
+            ]
+            if not spanning:
+                continue
+            pass_ids = sorted({pass_id for _, pass_id in spanning})
+            run_ids = sorted({run.id for run, _ in spanning})
+            read = [
+                result.model_copy(update={"judge_seconds": [j for j in result.judge_seconds if j.pass_id in pass_ids]})
+                for run_id in run_ids
+                for result in results_by_run.get(run_id, [])
+            ]
+            links.append(
+                JudgeDriftLink(
+                    from_level=source_index,
+                    to_level=target_index,
+                    run_ids=run_ids,
+                    pass_ids=pass_ids,
+                    drift=judge_drift(read),
+                )
+            )
+    sentence = _JUDGE_CHANGE_SENTENCE.format(n=len(levels))
+    if links:
+        named = ", ".join(f"level {link.from_level} under level {link.to_level}'s judge" for link in links)
+        sentence += _JUDGE_CHANGE_DRIFT.format(links=named)
+    else:
+        sentence += _JUDGE_CHANGE_NO_DRIFT
+    return JudgeChange(levels=levels, drift_links=links, sentence=sentence)
+
+
 def _judged_by_cell(judged_measures: list[JudgedMeasure]) -> dict[_CellKey, list[JudgedReading]]:
     """The judged measures transposed — each cell's readings, one per dimension it was scored on.
 
@@ -9108,6 +9529,7 @@ def _judged_by_cell(judged_measures: list[JudgedMeasure]) -> dict[_CellKey, list
                     sem=arm.sem,
                     n=arm.n,
                     n_independent=arm.n_independent,
+                    case_means=arm.case_means,
                     n_infra_excluded=arm.n_infra_excluded,
                     n_cannot_tell=arm.n_cannot_tell,
                     evidence_tier=arm.evidence_tier,
@@ -9492,6 +9914,12 @@ def bundle_decision_surface(bundle: AnalysisContextBundle) -> DecisionSurface:
         dimensions=cell_dimension_facts(bundle),
         time_axis=bundle.time_axis,
         frontier_dominance=_frontier_dominance(bundle.frontier),
+        frontier_disqualified={
+            point.variant_key: list(point.disqualified_by)
+            for subject in bundle.frontier.subjects
+            for point in subject.points
+            if point.disqualified_by
+        },
         rubric_threshold=bundle.frontier.rubric_threshold,
         guardrails=bundle.guardrails,
     )

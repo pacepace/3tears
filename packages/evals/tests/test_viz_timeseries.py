@@ -63,7 +63,7 @@ _NAMESPACE = uuid.UUID("0b8e6a52-41d7-4f0e-9c3a-7d25e1f4a9b6")
 DAY_ONE, DAY_TWO = "2026-03-14T09:30:00+00:00", "2026-03-15T09:30:00+00:00"
 
 #: The base wall-clock per arm, before each position's drift.
-_TOTAL_MS = {TOYHOST_NARROW: 900.0, TOYHOST_WIDE: 1400.0}
+_TOTAL_MS = {TOYHOST_NARROW: 900.0, 512: 1100.0, TOYHOST_WIDE: 1400.0}
 
 
 def _release_profile() -> HostProfile:
@@ -460,6 +460,38 @@ class TestTheBuilder:
             }
         ]
 
+    def test_a_position_below_the_band_floor_is_a_stated_gap(self) -> None:
+        """A point is drawn as an interval band, so a position over fewer than 5 cases has none (#677)."""
+        bundle = _two_days()
+        surface = _surface(bundle)
+        second = surface.time_axis.positions[1]
+        first_cell = second.cells[0]
+        thin = first_cell.model_copy(
+            update={
+                "measures": first_cell.measures.model_copy(
+                    update={
+                        "measures": [
+                            m.model_copy(update={"n_independent": 3}) if m.name == "total_ms" else m
+                            for m in first_cell.measures.measures
+                        ]
+                    }
+                )
+            }
+        )
+        thinned = surface.time_axis.model_copy(
+            update={
+                "positions": [
+                    surface.time_axis.positions[0],
+                    second.model_copy(update={"cells": [thin, *second.cells[1:]]}),
+                ]
+            }
+        )
+        payload = _build(bundle, _chart([]), surface.model_copy(update={"time_axis": thinned}))
+
+        assert {"position": "2026-03-15", "reason": "3 cases there, fewer than the 5 an interval is drawn from"} in [
+            {key: gap[key] for key in ("position", "reason")} for gap in payload["gaps"]
+        ]
+
     def test_no_cell_with_two_points_is_refused(self) -> None:
         bundle = _two_days()
         surface = _surface(bundle)
@@ -790,3 +822,41 @@ class TestTheMenuOffersTimeOnlyWhereThereIsTime:
         message = json.loads(build_user_message(_two_days()).split("\n", 1)[1])
         cells = message["time_axis"]["positions"][0]["cells"]
         assert all("cell" in cell and "variant_key" not in cell for cell in cells)
+
+
+# =============================================================================
+# Per-case values below the band floor (#677)
+# =============================================================================
+
+
+def _few_cases(cases: int) -> Any:
+    """The toy campaign at one position, each run's results cut to its first ``cases`` test cases."""
+    host = toyhost_profile()
+    campaign, _ = toyhost_campaign(profile=host)
+    runs, results = _batches([(DAY_ONE, None)], profile=host)
+    kept = sorted({result.test_case_id for rows in results.values() for result in rows})[:cases]
+    trimmed = {run_id: [r for r in rows if r.test_case_id in kept] for run_id, rows in results.items()}
+    scoped = campaign.model_copy(update={"run_ids": [run.id for run in runs]})
+    return assemble_context_bundle(scoped, storage=ToyhostStorage(runs, trimmed), profile=host)
+
+
+class TestASmallCellRecordsItsCases:
+    """Below 5 cases a chart draws the cases, so the bundle carries them; at 5 or more it does not."""
+
+    def test_three_cases_carry_three_case_means(self) -> None:
+        bundle = _few_cases(3)
+        for cell in bundle.cell_measures:
+            numeric = next(m for m in cell.measures.measures if m.name == "total_ms")
+            assert numeric.n_independent == 3
+            assert numeric.case_means is not None and len(numeric.case_means) == 3
+            assert numeric.case_means == sorted(numeric.case_means)
+            for judged in cell.judged:
+                assert judged.n_independent == 3
+                assert judged.case_means is not None and len(judged.case_means) == 3
+        assert all(arm.case_means is not None for measure in bundle.judged_measures for arm in measure.arms)
+
+    def test_five_cases_carry_none(self) -> None:
+        bundle = _few_cases(5)
+        for cell in bundle.cell_measures:
+            assert all(m.case_means is None for m in cell.measures.measures)
+            assert all(j.case_means is None for j in cell.judged)

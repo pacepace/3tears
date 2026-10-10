@@ -1,0 +1,51 @@
+name: Evals paid lane
+
+# One analysis written by a real model over the toy host's bundle
+# (packages/evals/tests/test_paid_analysis_generation.py, #602). It spends money, so it runs only when
+# what it guards changes -- the generator, its writer prompt, the authored response schema, or the
+# toy-host fixture -- and only after someone approves the `evals-paid` environment, which holds
+# ANTHROPIC_API_KEY. Configure that environment with required reviewers; without the gate the job
+# would spend on every matching push.
+#
+# Not a required check: a paths filter on a required context would block PRs that never start it.
+
+on:
+  pull_request:
+    branches: [develop, main]
+    paths:
+      - packages/evals/src/threetears/evals/analysis/generator.py
+      - packages/evals/src/threetears/evals/analysis/gen_prompt.py
+      - packages/evals/src/threetears/evals/contracts/authored.py
+      - packages/evals/tests/fixtures/toyhost/**
+      - packages/evals/tests/test_paid_analysis_generation.py
+      - .github/workflows/evals-paid.yml
+
+jobs:
+  paid:
+    runs-on: ubuntu-latest
+    environment: evals-paid
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install 3.14
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Generate one analysis with a real model
+        env:
+          THREETEARS_EVALS_PAID: "1"
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        # The test skips without a key, which is right on a dev box and wrong here: a skip would read as a
+        # pass. So a missing secret fails the job before the suite runs.
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "the evals-paid environment holds no ANTHROPIC_API_KEY, so the lane cannot run" >&2
+            exit 1
+          fi
+          ./scripts/test.sh evals -m paid -rs

@@ -51,10 +51,13 @@ from threetears.evals.ops import (
     RunListing,
     RunsCompared,
     ScoreExport,
+    SecondJudgeRead,
     TemplateListing,
     bar_proposals_text,
+    UndescribableArmsListing,
     dollars_text,
     estimate_text,
+    format_number,
     export_text,
     history_text,
     out_of_run_spend_text,
@@ -64,6 +67,7 @@ from threetears.evals.ops import (
 
 if TYPE_CHECKING:
     from threetears.evals.actions.catalogue import Action, MountedTool
+    from threetears.evals.run import SecondJudgeEstimate
 
 
 # --- help --------------------------------------------------------------------------------------------
@@ -233,7 +237,11 @@ def _compact(value: Any) -> str:
 
 def _result_line(line: ResultLine) -> str:
     """One result on one line: where it sits, its condition, and its headline measures."""
-    parts = [f"{line.condition.value} ({line.termination})", f"cost {_usd(line.cost_usd)}"]
+    parts = [
+        f"{line.condition.value} ({line.termination})",
+        f"cost {_usd(line.cost_usd)}",
+        f"total_ms {_ms(line.total_ms)}",
+    ]
     if line.goal_checks:
         passed = "not counted" if line.goal_checks_passed is None else f"{line.goal_checks_passed}/{line.goal_checks}"
         parts.append(f"goal checks {passed}")
@@ -295,8 +303,28 @@ def _goal_check_line(outcome: GoalStateOutcome, counted: bool | None, condition:
     return f"goal check {outcome.expression}: {verdict}" + (f" — {outcome.detail}" if outcome.detail else "")
 
 
+def _ms(value: float | None) -> str:
+    return "absent" if value is None else f"{format_number(value)}ms"
+
+
+def _latency_lines(detail: ResultDetail) -> list[str]:
+    """The stored latency block, an absent component shown as absent, then the remainder as the partition read it."""
+    latency = detail.result.latency
+    if latency is None:
+        stored = "latency: none recorded"
+    else:
+        stored = "latency: " + ", ".join(
+            f"{name} {_ms(getattr(latency, name))}"
+            for name in ("total_ms", "llm_ms", "tool_ms", "async_wait_ms", "judge_ms")
+        )
+    partition = detail.latency_partition
+    if partition.withheld is not None:
+        return [stored, f"orchestration_ms withheld: {partition.withheld}"]
+    return [stored, f"orchestration_ms {_ms(partition.orchestration_ms)} (total_ms less llm_ms and tool_ms)"]
+
+
 def _record_lines(detail: ResultDetail) -> list[str]:
-    """The record part: errors, spend and usage rows, checks and scores, then what the kind stored."""
+    """The record part: errors, spend, latency and usage rows, checks and scores, then what the kind stored."""
     result, condition = detail.result, detail.condition
     lines = [
         f"{label}: {error}"
@@ -308,6 +336,7 @@ def _record_lines(detail: ResultDetail) -> list[str]:
         if error
     ]
     lines.append(f"cost {_usd(result.cost_usd)} over {', '.join(result.cost_roles) or 'no role'}")
+    lines += _latency_lines(detail)
     lines.append(f"usage ({len(result.usage)} row(s)):")
     lines += [f"- {_compact(row.model_dump(mode='json', exclude_none=True))}" for row in result.usage]
     counted = counted_goal_verdicts(result)
@@ -433,6 +462,22 @@ def render_analyses(listing: AnalysisListing) -> str:
     return "\n".join(lines)
 
 
+def render_undescribable_arms(listing: UndescribableArmsListing) -> str:
+    """The scope's analyses holding an arm whose levels this build cannot describe."""
+    lines = [
+        f"analyses in scope {listing.scope_id} holding an arm this build cannot describe: "
+        f"{len(listing.analyses)} of {listing.analyses_read}"
+    ]
+    for line in listing.analyses:
+        why = "; ".join(line.reasons) or "no reason recorded"
+        archived = ", archived" if line.archived else ""
+        lines.append(
+            f"- {line.analysis_id} (campaign {line.campaign_id}{archived}): "
+            f"{line.undescribable_arms} of {line.arms} arm(s) — {why}"
+        )
+    return "\n".join(lines)
+
+
 def render_analysis_estimate(estimate: AnalysisGenerationEstimate) -> str:
     """A generation's price before it starts: its first call's ceiling against the cap, and whether it would start."""
     ceiling = (
@@ -555,6 +600,55 @@ def render_result_rated(rated: ResultRated) -> str:
     return (
         f"rated {rated.rubric_dim} of result {rated.result_id} at {rated.score} as {rated.rater} "
         f"({rated.rater_kind}; kept beside people's ratings, never read as one)"
+    )
+
+
+def _bounds(interval: tuple[float, float] | None) -> str:
+    """An interval as ``[low, high]``, or a word saying there is none."""
+    return "no interval" if interval is None else f"[{interval[0]:.3g}, {interval[1]:.3g}]"
+
+
+def render_second_judge(read: SecondJudgeRead) -> str:
+    """A second judge's pass: what it asked and spent apart from the candidate, then agreement and drift per dim."""
+    report = read.report
+    cost = _usd(report.cost_usd) if report.cost_usd is not None else "unpriced"
+    lines = [
+        f"second judge {report.judge.model} on run {report.run_id} (pass {report.pass_id}): asked about "
+        f"{len(report.judged)} of {report.eligible} judgeable result(s) (fraction {report.sample_fraction:g}, seed "
+        f"{report.sample_seed}); {report.scores_paired} score(s) paired, {report.scores_unanswered} unanswered; "
+        f"{report.calls_made} call(s), {cost} — measurement cost, ledgered under second_judge, never the candidate's",
+    ]
+    if report.stopped:
+        lines.append(f"stopped: {report.stopped}")
+    lines += [f"skipped {skip.result_id}: {skip.reason}" for skip in report.skipped]
+    lines += [f"unwritten {result_id}: paid for, record not stored" for result_id in report.unwritten]
+    lines.append("agreement between the judges")
+    for row in read.agreement.dimensions:
+        kappa = (
+            f"kappa ({row.kappa_weighting}) {row.kappa:.3g}, bounds {_bounds(row.agreement_interval)}"
+            if row.kappa is not None
+            else f"kappa {row.kappa_undefined}"
+        )
+        lines.append(f"- {row.rubric_dim}: n={row.n}, exact agreement {row.exact_agreement:.0%}, {kappa}")
+    lines.append(read.drift.disclosure)
+    for drift in read.drift.dimensions:
+        delta = "n/a" if drift.delta is None else f"{drift.delta:+.3g}"
+        lines.append(
+            f"- {drift.rubric_dim}: {drift.verdict}, movement {delta} over {drift.n_cases} case(s), "
+            f"{_bounds(drift.interval)}"
+        )
+    return "\n".join(lines)
+
+
+def render_second_judge_estimate(estimate: SecondJudgeEstimate) -> str:
+    """A second judge's price before it starts, against the cap, and whether it would start."""
+    ceiling = _usd(estimate.ceiling_usd) if estimate.ceiling_usd is not None else "unpriceable"
+    cap = _usd(estimate.cap_usd) if estimate.cap_usd is not None else "none enforced"
+    verdict = "would start" if estimate.would_start else f"would be refused: {estimate.refusal}"
+    return (
+        f"estimate: second judge {estimate.judge.model} on run {estimate.run_id} — {len(estimate.sampled)} of "
+        f"{estimate.eligible} judgeable result(s), {estimate.dims} dim(s), at most {estimate.max_calls} call(s) priced "
+        f"at up to {ceiling}; out-of-run cap {cap}; {verdict}."
     )
 
 

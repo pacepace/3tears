@@ -83,6 +83,10 @@ class ResolvedReading(BaseModel):
     dispersion: str
     #: A judged reading's evidence tier, as the surface froze it for the cell's judges; None for a measure.
     judged_tier: JudgedEvidenceTier | None
+    #: Each case's mean, ascending, where the cell has fewer cases than a chart draws a band from
+    #: (:data:`~threetears.evals.analysis.stats.SMALL_N_BAND_FLOOR`); None at or above it, or where the surface
+    #: was stored before the values were recorded.
+    case_means: list[float] | None = None
 
 
 class ReadingRef(EvalBaseModel):
@@ -291,6 +295,7 @@ def _resolve_measure(surface: DecisionSurface, cell: CellFacts, ref: str, measur
         unit=facts.unit,
         higher_is_better=summary.higher_is_better,
         merit_axis=facts.merit_axis,
+        case_means=summary.case_means,
         dispersion=(
             # F1 is a function of one confusion matrix: there is no spread to estimate at any n, so "unestimable at
             # n=…" would imply more data could supply one.
@@ -349,6 +354,7 @@ def _resolve_judged(surface: DecisionSurface, cell: CellFacts, ref: str, dimensi
         merit_axis="quality",
         dispersion=_dispersion(judged.sem, ci_low, ci_high, judged.n, judged.n_independent or None),
         judged_tier=judged.evidence_tier,
+        case_means=judged.case_means,
     )
 
 

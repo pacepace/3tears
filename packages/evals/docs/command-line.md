@@ -18,6 +18,7 @@ python -m threetears.evals ls     --host myapp.evals:build_host --scope dev
 python -m threetears.evals report CAMPAIGN --host myapp.evals:build_host --scope dev [--format markdown|html|json] [--out PATH]
 python -m threetears.evals bundle CAMPAIGN --host myapp.evals:build_host --scope dev
 python -m threetears.evals spend  --host myapp.evals:build_host --scope dev [--purpose P] [--launch-group ID] [--template ID]
+python -m threetears.evals gate   CAMPAIGN --host myapp.evals:build_host --scope dev [--fail-on OUTCOMES] [--reading MEASURE ...]
 ```
 
 ### `run`
@@ -50,6 +51,26 @@ fingerprint; the bundle itself is the wrapper's `bundle` field. Neither command 
 `spend` prints what the engine spent outside any run in the scope — case generations, rubric proposals,
 analysis generations and judge repeats (`--purpose variation|proposer|analysis|judge`) — narrowed by its flags.
 
+### `gate`
+
+`gate` is the CI gate. It reads the campaign's typed verdicts as code reaches them on its evidence now (never an
+analysis's words), prints the outcome and every verdict that failed or was not decided, and exits `4` when an
+outcome `--fail-on` names occurred:
+
+| Outcome | Fails on |
+|---|---|
+| `regressed` | a contrast shown worse than the control |
+| `not-separated`, `untested` | a contrast the evidence could not decide |
+| `breached` | a guardrail shown worse than the control by more than its margin |
+| `undecided-guardrail` | a guardrail neither shown held nor breached |
+| `missed`, `undecided-bar` | a bar a cell is shown to miss, or not shown to clear or miss |
+
+The default is `--fail-on regressed,breached,undecided-guardrail`: a regression and a breach must not ship, and a
+guardrail not shown held is not known to be safe. A verdict left undecided that `--fail-on` does not name exits
+`0`, and the gate prints it as undecided, never as passed. To require every arm be shown improved or equivalent,
+add `not-separated,untested`. `--reading` gates only the readings it names. A campaign with no verdict at all
+(no control, no bar, no guardrail) is refused. In code, `Comparison.gate()` and `gate_verdicts()` do the same.
+
 ## Exit codes
 
 | Code | Name | Meaning |
@@ -58,6 +79,7 @@ analysis generations and judge repeats (`--purpose variation|proposer|analysis|j
 | `1` | `EXIT_RUN_DID_NOT_COMPLETE` | a launched run did not complete |
 | `2` | `EXIT_REFUSED` | refused: a host that cannot be loaded, a template that is not there, a launch the engine refuses, a malformed command line |
 | `3` | `EXIT_FAILED` | failed on an error nothing anticipated — a host factory, launcher or host command raising — with its traceback on stderr |
+| `4` | `EXIT_GATE_FAILED` | `gate` read an outcome `--fail-on` names |
 
 The names are in `threetears.evals.quick`.
 

@@ -38,13 +38,18 @@ effect on the second model — is read against a second control over the same ru
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
 from threetears.evals.analysis import (
+    DEFAULT_FAIL_ON,
     AnalysisContextBundle,
     DisclosureBlock,
+    GateResult,
+    Verdict,
+    VerdictKind,
+    gate_verdicts,
     Report,
     ReportSection,
     TableBlock,
@@ -68,7 +73,7 @@ from threetears.evals.contracts import (
     utc_now_iso,
 )
 from threetears.evals.contracts.host import CANDIDATE_MODEL_LEVER, EvalHost
-from threetears.evals.contracts.metrics import METRIC_DESCRIPTORS
+from threetears.evals.contracts.metrics import METRIC_DESCRIPTORS, RUN_MARGIN_MEASURES, run_margin_refusal
 from threetears.evals.ops.summary import CaseResult, EvalSummary, self_judging_text
 from threetears.evals.quick.guardrails import Guardrail
 from threetears.evals.quick.judged import Judge
@@ -84,6 +89,7 @@ from threetears.evals.quick.one_call import (
     CallableArm,
     run_arms,
     callable_host,
+    quick_scope,
     refuse_a_store_beside_a_host,
     refuse_unusable_guardrails,
 )
@@ -200,8 +206,9 @@ class Comparison:
             ``control_mean`` and ``arm_mean`` (over the cases the test read), ``cases`` (how many, paired or not,
             and any one side ran that the test left out), ``delta`` (arm minus control), ``interval`` (on the
             delta, simultaneous over the family), ``hedges_g`` (the standardized effect), ``p_adjusted`` (Holm,
-            over the campaign's family) and ``verdict``; empty when
-            the report tested nothing.
+            over the campaign's family), ``verdict`` (in words, printed from ``outcome``) and ``outcome`` (the
+            typed verdict: ``improved``, ``regressed``, ``equivalent``, ``not_separated`` or ``untested``, which
+            code branches on); empty when the report tested nothing.
         """
         rows = [
             row
@@ -209,13 +216,54 @@ class Comparison:
             if isinstance(block, TableBlock) and block.name == "comparisons"
             for row in block.rows
         ]
+        typed = [verdict for verdict in self.report.verdicts if verdict.kind == "contrast"]
         arms = self.contrast_arms if len(self.contrast_arms) == len(rows) else (None,) * len(rows)
         keys = self.contrast_measures if len(self.contrast_measures) == len(rows) else (None,) * len(rows)
+        outcomes = [verdict.outcome for verdict in typed] if len(typed) == len(rows) else [None] * len(rows)
         return [
-            {"arm": arm, "measure_id": key, **row}
-            for row, arm, key in zip(rows, arms, keys, strict=True)
+            {"arm": arm, "measure_id": key, **row, "outcome": outcome}
+            for row, arm, key, outcome in zip(rows, arms, keys, outcomes, strict=True)
             if reading is None or reading in (key, row["reading"])
         ]
+
+    def verdicts(self, reading: str | None = None, *, kind: VerdictKind | None = None) -> list[Verdict]:
+        """The report's typed verdicts: every contrast against the control, guardrail and bar, as code reads them.
+
+        The source of truth for every verdict the report prints, which is rendered from these: branch on
+        :attr:`~threetears.evals.analysis.Verdict.outcome`, never on the words.
+
+        Args:
+            reading: Only the verdicts on this reading, by its key (``"accuracy"``) or as the report heads it
+                (``"Accuracy"``); ``None`` keeps every one.
+            kind: Only ``"contrast"``, ``"guardrail"`` or ``"bar"`` verdicts; ``None`` keeps every kind.
+
+        Returns:
+            The verdicts, guardrails first, then bars, then contrasts, each in its table's row order.
+        """
+        return [
+            verdict
+            for verdict in self.report.verdicts
+            if (reading is None or reading in (verdict.name, verdict.heading))
+            and (kind is None or verdict.kind == kind)
+        ]
+
+    def gate(self, fail_on: Iterable[str] = DEFAULT_FAIL_ON, *, readings: Iterable[str] | None = None) -> GateResult:
+        """Gate a build on this comparison's verdicts, as ``python -m threetears.evals gate`` does on a campaign.
+
+        Args:
+            fail_on: The outcomes that fail it (:data:`~threetears.evals.analysis.GATE_TOKENS`). The default,
+                :data:`~threetears.evals.analysis.DEFAULT_FAIL_ON`, fails on a regressed contrast, a breached
+                guardrail and an undecided guardrail.
+            readings: Only the verdicts on these readings, by key or heading; ``None`` gates every verdict.
+
+        Returns:
+            The gate's result: ``failed`` when a named outcome occurred, ``passed`` only when every verdict was
+            decided and none failed, ``undecided`` otherwise — never a pass.
+
+        Raises:
+            ValueError: A ``fail_on`` name that is no outcome, or a reading no verdict is on.
+        """
+        return gate_verdicts(self.report.verdicts, fail_on=fail_on, readings=readings)
 
     def guardrails(self, arm: ArmKey | None = None) -> list[dict[str, Any]]:
         """The rows of the report's "Guardrails against the control" table: each guardrail, for each arm.
@@ -320,6 +368,7 @@ class Comparison:
             repetitions=repetitions,
             created_by=created_by,
             guardrail_margins=design.guardrail_margins if design is not None else (),
+            measure_latency=design.measure_latency if design is not None else False,
         )
 
 
@@ -397,6 +446,7 @@ def _declare(
     repetitions: int | None,
     created_by: str,
     guardrail_margins: Sequence[GuardrailMargin] = (),
+    measure_latency: bool = False,
 ) -> Comparison:
     """File the arms' runs as one campaign, one axis per factor, designate ``control``, and read its report.
 
@@ -424,6 +474,8 @@ def _declare(
     design: dict[str, Any] = {"axes": axes, "held_fixed": {"stimulus": "controlled", "apparatus": "commissioned"}}
     if repetitions is not None:
         design["intended_repetitions"] = repetitions
+    if measure_latency:
+        design["measure_latency"] = True
     if guardrail_margins:
         design["guardrail_margins"] = [entry.model_dump() for entry in guardrail_margins]
     filed: dict[str, Any] = {
@@ -553,28 +605,44 @@ def _with_no_margin_disclosed(report: Report, bundle: AnalysisContextBundle) -> 
         tested.name
         for family in bundle.multiple_comparisons.families
         for tested in family.comparisons
-        if tested.name in catalog and catalog[tested.name].materiality_threshold is None
+        if tested.name in catalog and tested.reading == "measure" and tested.margin_source is None
     )
     if not names:
         return report
-    # The scorers among them with no range: a margin on one is refused unless its range comes with it.
-    unranged = [name for name in names if name not in METRIC_DESCRIPTORS]
-    headings = ", ".join(catalog[name].reader_name or name for name in names)
+    # Each kind of measure takes its margin a different way, or none at all, so each group gets its own advice.
+    scorers = [name for name in names if name not in METRIC_DESCRIPTORS]
+    rates = [name for name in names if name in RUN_MARGIN_MEASURES]
+    fixed = [name for name in names if name in METRIC_DESCRIPTORS and name not in RUN_MARGIN_MEASURES]
+
+    def heading(group: list[str]) -> str:
+        return ", ".join(catalog[name].reader_name or name for name in group)
+
+    advice = []
+    if scorers:
+        advice.append(
+            f"Declare a margin on {heading(scorers)} by the scorer's name with compare(margins={{{scorers[0]!r}: ...}})"
+            + (
+                "; a scorer that returns a number, not a bool, takes its range beside it, with ranges=."
+                if any(catalog[name].family == "mechanical" and catalog[name].value_range is None for name in scorers)
+                else "."
+            )
+        )
+    if rates:
+        advice.append(
+            f"Declare a margin on {heading(rates)} with compare(margins={{{rates[0]!r}: ...}}), which records it on "
+            "every arm's run."
+        )
+    if fixed:
+        advice.append(
+            f"No comparison can declare one on {heading(fixed)}: the engine owns "
+            f"{'its' if len(fixed) == 1 else 'their'} description, and only accuracy takes a margin of the runs'."
+        )
     disclosure = DisclosureBlock(
         section="surface",
         source="comparisons",
-        text=f"No margin is declared on {headings}, so no contrast on {'it' if len(names) == 1 else 'them'} can read "
-        "equivalent, and not separated never means the arms are alike. "
-        + (
-            "Accuracy takes no margin: grade with a scorer too, and declare one on it with compare(margins=...)."
-            if ACCURACY_MEASURE in names
-            else "Declare a scorer's margin with compare(margins=...)."
-        )
-        + (
-            " A scorer that returns a number, not a bool, takes its range beside its margin, with ranges=."
-            if any(catalog[name].family == "mechanical" and catalog[name].value_range is None for name in unranged)
-            else ""
-        ),
+        text=f"No margin is declared on {heading(list(names))}, so no contrast on "
+        f"{'it' if len(names) == 1 else 'them'} can read equivalent, and not separated never means the arms are "
+        "alike. " + " ".join(advice),
     )
     blocks = list(report.blocks)
     at = next(
@@ -614,6 +682,32 @@ def _with_self_judging_disclosed(
     return report.model_copy(update={"blocks": [*blocks[:at], *disclosures, *blocks[at:]]})
 
 
+def _split_margins(
+    margins: Mapping[str, float] | None, *, classifies: bool
+) -> tuple[dict[str, float], dict[str, float]]:
+    """``margins=`` split into the runs' (core rate measures, accuracy) and the scorers', refusing what neither takes.
+
+    Raises:
+        ValueError: A margin on a core measure that takes no run margin, one that is not between 0 and 1, or a
+            margin on accuracy for arms that are not classifiers (no ``expected=``), which measure no accuracy.
+    """
+    run_margins: dict[str, float] = {}
+    scorer_margins: dict[str, float] = {}
+    for name, margin in (margins or {}).items():
+        if name not in METRIC_DESCRIPTORS:
+            scorer_margins[name] = margin
+            continue
+        if (refusal := run_margin_refusal(name, margin)) is not None:
+            raise ValueError(f"margins= {refusal}")
+        if name == ACCURACY_MEASURE and not classifies:
+            raise ValueError(
+                "margins= names 'accuracy', which only a classifier's arms measure: pass expected= to grade each "
+                "answer against its label, or declare the margin on a scorer's name"
+            )
+        run_margins[name] = margin
+    return run_margins, scorer_margins
+
+
 async def compare(
     cases: Sequence[Mapping[str, Any]],
     candidates: Mapping[str, Candidate | ToolUsingCandidate | WorldCandidate]
@@ -621,7 +715,7 @@ async def compare(
     scorers: Sequence[Scorer] = (),
     *,
     control: ArmKey,
-    scope_id: str,
+    scope_id: str | None = None,
     expected: ExpectedLabel | None = None,
     judge: Judge | None = None,
     intent: str | None = None,
@@ -641,6 +735,7 @@ async def compare(
     margins: Mapping[str, float] | None = None,
     ranges: Mapping[str, tuple[float, float]] | None = None,
     guardrails: Mapping[str, Guardrail] | None = None,
+    measure_latency: bool = False,
 ) -> Comparison:
     """Run each candidate over every case ``k`` times as one arm, test every arm against ``control``, and report.
 
@@ -659,7 +754,9 @@ async def compare(
             level is stated on the run as that factor's lever (``callable.<factor>=<level>``).
         scorers: The grades, as :func:`~threetears.evals.quick.run_eval` takes them.
         control: The arm every other arm is tested against, by its key.
-        scope_id: The scope every run and the campaign are stored in.
+        scope_id: The scope every run and the campaign are stored in; with no ``host`` and no ``store``, ``None``
+            stores them in :data:`~threetears.evals.quick.one_call.DEFAULT_QUICK_SCOPE`, in the in-memory store the
+            call builds. A host or a store of your own needs one.
         expected: Declares every candidate a classifier, as :func:`~threetears.evals.quick.run_eval` takes it.
         judge: A model grading every arm's answers on one rubric, as :func:`~threetears.evals.quick.run_eval`
             takes it. ONE judge for every arm — its model, rubric and judge configs — so no difference between
@@ -700,13 +797,15 @@ async def compare(
             equal share, as :func:`~threetears.evals.quick.run_eval` caps one. An arm that reaches its share stops
             ``budget_stopped``, and its contrasts read only the cases it finished, the left-out ones disclosed.
             ``None`` (the default) runs every arm uncapped, which each arm's summary states.
-        margins: A margin declared on a scorer's measure, by the scorer's name (``{"correct": 0.05}``): the
-            most the arms may differ on it and still be alike. A contrast on it then reads ``equivalent`` when an
-            equivalence test shows the difference inside it, the only verdict that says two arms are alike — the
-            way "the cheaper model is good enough" is shown. ``None`` declares none and no margin is ever assumed,
-            so no contrast can read ``equivalent``, which the report says in one line. A classifier's accuracy is a
-            core measure and takes none: grade it with a scorer too, and declare the margin on that. With a
-            ``host`` of your own, declare them on it instead (``callable_host(margins=...)``). A margin
+        margins: A margin by measure (``{"accuracy": 0.05}``, ``{"correct": 0.05}``): the most the arms may
+            differ on it and still be alike. A contrast on it then reads ``equivalent`` when an equivalence test
+            shows the difference inside it, the only verdict that says two arms are alike — the way "the cheaper
+            model is good enough" is shown. ``None`` declares none and no margin is ever assumed, so no contrast
+            can read ``equivalent``, which the report says in one line. On a classifier's ``accuracy`` (with
+            ``expected=``) the margin is declared on every arm's run at launch (``EvalRun.declared_margins``), since
+            the engine owns accuracy's descriptor, and the contrast names it as the runs'; it works with any
+            ``host``. On a scorer's measure, by the scorer's name, it is declared on the host compare builds; with
+            a ``host`` of your own, declare those on it instead (``callable_host(margins=...)``). A margin
             on a scorer that does not return a ``bool`` needs its range in ``ranges``: with no range no
             equivalence test holds its error rate, so it is refused rather than never tested.
         ranges: The lowest and highest score a scorer returning a number can give, by the scorer's name
@@ -722,21 +821,26 @@ async def compare(
             boundary axis, and its margin is declared on the campaign. ``None`` declares none, and nothing is a
             guardrail but a dimension the judge's rubric already puts on the boundary axis. With a ``host`` of your
             own, declare a measure ``guardrail`` on it instead.
+        measure_latency: Declare latency under test, as :func:`~threetears.evals.quick.run_eval` takes it: every
+            arm runs its cases one at a time and the arms run one after another. ``False`` (the default) runs
+            each arm's cases several at once and the arms side by side.
 
     Returns:
         The comparison: every arm's summary, the campaign's id and its report.
 
     Raises:
-        ValueError: Fewer than two candidates, a blank arm name, an arm key that is not a level of each
-            factor, factors without ``model`` or with an unusable or repeated name, a ``control`` that names
-            no arm, a ``max_cost_usd`` that is not a positive number, a margin that names no scorer, is not a
-            positive number, is on a scorer with no range or comes with a ``host``, a range that is unusable or
+        ValueError: No ``scope_id`` with a ``host`` or ``store`` of your own, fewer than two candidates, a blank arm name, an
+            arm key that is not a level of each factor, factors without ``model`` or with an unusable or repeated name, a ``control`` that names
+            no arm, a ``max_cost_usd`` that is not a positive number, a margin that names no scorer and no core rate
+            measure, is not a positive number (below 1 on accuracy), is on accuracy with no ``expected=``, is on a
+            scorer with no range, or is on a scorer and comes with a ``host``, a range that is unusable or
             comes with a ``host``, a guardrail that is not a ``Guardrail``, names neither a scorer nor a rubric
             dimension, sits on a scorer given a margin too or comes with a ``host``, a ``store`` with a ``host``, or anything
             :func:`~threetears.evals.quick.run_eval` refuses.
         ValidationFailedError: The launch refused, or the host refuses the campaign's declaration.
     """
     refuse_a_store_beside_a_host(store, host)
+    scope_id = quick_scope(scope_id, host, store)
     named = _factors(factors)
     if factors is None and (host is None or host.profile.host_sweepables.get(ARM_LEVER) is not None):
         # The arms' names are not models: each is stated as the arm lever's level, every arm at one model.
@@ -747,10 +851,14 @@ async def compare(
         isinstance(max_cost_usd, bool) or not isinstance(max_cost_usd, int | float) or not max_cost_usd > 0
     ):
         raise ValueError(f"max_cost_usd= is a spend ceiling in US dollars: a positive number, not {max_cost_usd!r}")
-    if margins and host is not None:
+    # A margin on a core rate measure (accuracy) is the runs', declared on every arm's run at launch; any other is
+    # a scorer's, declared on the measure of the host compare builds.
+    run_margins, scorer_margins = _split_margins(margins, classifies=expected is not None)
+    if scorer_margins and host is not None:
         raise ValueError(
-            "margins= declares margins on the host compare builds; a host of your own declares them on its measures "
-            "(callable_host(margins=...), or MetricDescriptor.materiality_threshold), so pass one or the other"
+            "margins= declares a scorer's margin on the host compare builds; a host of your own declares them on its "
+            "measures (callable_host(margins=...), or MetricDescriptor.materiality_threshold), so pass one or the "
+            "other. A margin on accuracy is declared on the runs, and works with any host"
         )
     if ranges and host is not None:
         raise ValueError(
@@ -764,7 +872,7 @@ async def compare(
             "guardrail on it (MetricDescriptor(guardrail=True), its materiality_threshold the margin), so pass one or "
             "the other"
         )
-    refuse_unusable_guardrails(scorers, guardrails, margins=margins, ranges=ranges, judge=judge)
+    refuse_unusable_guardrails(scorers, guardrails, margins=scorer_margins, ranges=ranges, judge=judge)
     scorer_names = {getattr(scorer, "__name__", None) for scorer in scorers}
     judged_guardrails = {
         judge.dim_name(name): guardrail
@@ -787,7 +895,7 @@ async def compare(
             levers=levers,
             world=world,
             arms=named == _NAMED_ARMS,
-            margins=margins,
+            margins=scorer_margins,
             ranges=ranges,
             store=store,
             guardrails={name: guardrail for name, guardrail in guardrails.items() if name in scorer_names},
@@ -816,10 +924,12 @@ async def compare(
         tools=tools,
         cassette_mode=cassette_mode,
         cassette_corpus_id=cassette_corpus_id,
+        measure_latency=measure_latency,
         world=world,
         seed=seed,
         goal_checks=goal_checks,
         max_cost_usd=None if max_cost_usd is None else max_cost_usd / len(arms_given),
+        margins=run_margins or None,
     )
     arms: dict[ArmKey, EvalSummary] = dict(zip(arms_given, summaries, strict=True))
     if name is None:
@@ -842,6 +952,7 @@ async def compare(
             GuardrailMargin(dimension=dimension, margin=guardrail.margin)
             for dimension, guardrail in judged_guardrails.items()
         ],
+        measure_latency=measure_latency,
     )
 
 

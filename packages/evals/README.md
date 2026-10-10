@@ -49,7 +49,7 @@ It also holds a set of measurement rules, each explained on its page:
    pip install "3tears-evals[fastmcp]"   # adds the FastMCP transport, for driving evals from an agent
    ```
 
-2. **Run the first example.** It grades a small sentiment classifier on five cases, offline and free:
+2. **Run the first example.** It grades a small sentiment classifier on six cases, offline and free:
 
    ```bash
    uv run python packages/evals/examples/rung_zero.py
@@ -76,7 +76,7 @@ It also holds a set of measurement rules, each explained on its page:
 
 
    async def main() -> None:
-       summary = await run_eval(CASES, classify, expected=lambda case: case["expected"], scope_id="dev", k=2)
+       summary = await run_eval(CASES, classify, expected=lambda case: case["expected"], k=2)
        print(summary.render())
        for miss in summary.misses():
            print(miss.case, miss.missed_because)
@@ -90,25 +90,12 @@ one starting path. It covers reading misses, comparing two versions, reading the
 To run the examples against Claude, see
 [the examples](https://github.com/pacepace/3tears/blob/develop/packages/evals/examples/README.md).
 
-## Twelve words to know
+## Words to know
 
-Each links to its entry in [Concepts](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/concepts.md),
-the glossary of record.
-
-| Term | In one line |
-|---|---|
-| [case](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/concepts.md#case-test-case) | One input and what a good answer looks like. |
-| [candidate](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/concepts.md#candidate) | The code under test, which answers each case. |
-| [scorer](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/concepts.md#scorer) | A function that grades an answer with a number, when code can check it. |
-| [judge](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/concepts.md#judge) | A model that grades an answer against a rubric, when code cannot. |
-| [rubric](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/concepts.md#judged-dimension-rubric-dimension) | The written qualities a judge scores, one dimension each. |
-| [k](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/concepts.md#k-repeats) | How many times each case is played, because model answers vary. |
-| [arm](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/concepts.md#arm) | One version under test, run over every case. |
-| [control](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/concepts.md#control) | The arm every other arm is tested against. |
-| [verdict](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/concepts.md#verdict) | Separated, not separated or equivalent: what the evidence supports. |
-| [interval](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/concepts.md#delta-interval-and-adjusted-p) | Where the true value or difference plausibly lies. |
-| [p](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/concepts.md#delta-interval-and-adjusted-p) | The Holm-adjusted p-value a verdict is decided on. |
-| [world](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/concepts.md#world) | The state an agent acts on, set for each case and read back after. |
+Sixteen terms carry a first eval: case, candidate, scorer, measure, judge, judged dimension, k, run, result, arm,
+control, campaign, verdict, interval and p, report, world. Each is one line in
+[Terms to learn first](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/concepts.md#terms-to-learn-first),
+in Concepts, the glossary of record.
 
 ## Docs
 
@@ -148,7 +135,8 @@ the glossary of record.
 | World contract | `WorldRegistry`; quick path: `World`, `Dimension`, `WorldTool`, `seed=`, `goal_checks=` | [Evaluating a tool-using agent](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/evaluating-agents.md), [The world model](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/world-model.md) | [`world.py`](https://github.com/pacepace/3tears/blob/develop/packages/evals/examples/world.py) |
 | World conformance kit | `check_world_conformance` (`threetears.evals.contracts.host`) | [Step 5](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/evaluating-agents.md#step-5-run-the-conformance-kit-against-your-world) | |
 | Guardrails, decided apart from capability | quick path: `compare(guardrails={name: Guardrail(margin=..., direction=...)})`, `Comparison.guardrails()`; on a host: `MetricDescriptor(guardrail=True)`, `RubricDim(axis="boundary")`; held / breached / undecided | [Reading the guardrails](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/reading-reports.md#reading-the-guardrails), [Judges and calibration](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/judges-and-calibration.md#step-3-guardrails-are-not-capabilities) | [`guardrails.py`](https://github.com/pacepace/3tears/blob/develop/packages/evals/examples/guardrails.py) |
-| Equivalence, the only verdict that says "good enough" | A margin per scorer: `compare(margins={"correct": 0.05})`; a scorer returning a number, not a bool, needs its range too (`ranges={"rating": (1, 5)}`). Accuracy takes none, so grade with a scorer too. On a host: `MetricDescriptor.materiality_threshold` and `value_range` (with no range it is never tested) | [Reading a comparison](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/reading-reports.md#reading-a-comparison) | [`compare_two_models.py`](https://github.com/pacepace/3tears/blob/develop/packages/evals/examples/compare_two_models.py) |
+| Equivalence, the only verdict that says "good enough" | A margin by measure: `compare(margins={"accuracy": 0.05})` (recorded on the runs) or a scorer's, `margins={"correct": 0.05}`; a scorer returning a number, not a bool, needs its range too (`ranges={"rating": (1, 5)}`). On a host: `MetricDescriptor.materiality_threshold` and `value_range` (with no range it is never tested) | [Reading a comparison](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/reading-reports.md#reading-a-comparison) | [`compare_two_models.py`](https://github.com/pacepace/3tears/blob/develop/packages/evals/examples/compare_two_models.py) |
+| Typed verdicts and a CI gate | `Comparison.verdicts()`, `Comparison.gate()`, `python -m threetears.evals gate --fail-on regressed,breached` | [The command line](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/command-line.md#gate) | [`reports.py`](https://github.com/pacepace/3tears/blob/develop/packages/evals/examples/reports.py) |
 | Cassettes | `tools=`, `cassette_mode="capture"` / `"replay"`, `cassette_corpus_id=` | [Adopting the engine](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/adopting-a-host.md#cassettes-recording-and-replaying-tools) | [`cassettes.py`](https://github.com/pacepace/3tears/blob/develop/packages/evals/examples/cassettes.py) |
 | Grids of factors | `compare(..., factors=...)`, `Comparison.against` | [Choosing a campaign design](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/choosing-a-design.md#start-from-the-question) | [`prompt_x_model.py`](https://github.com/pacepace/3tears/blob/develop/packages/evals/examples/prompt_x_model.py) |
 | Campaigns and declared designs | `create_campaign`, `set_campaign_control`, `declared_design` | [Choosing a campaign design](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/choosing-a-design.md#declare-the-design-and-its-control) | [`compare_two_prompts.py`](https://github.com/pacepace/3tears/blob/develop/packages/evals/examples/compare_two_prompts.py) |

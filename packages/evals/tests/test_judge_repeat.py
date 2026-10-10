@@ -23,7 +23,7 @@ Mutations that turn this file red (each made in a scratch copy, the file restore
 - ``repeat_judge_scores``: dropping the up-front admission loop (every call is then refused as unadmitted);
 - ``_prepare``: planning one attempt per dim instead of ``JUDGE_CALL_ATTEMPTS`` (the retry test's second
   call is refused as unadmitted);
-- ``_BudgetedJudgeClient.generate``: calling the host's client directly (no ledger rows);
+- ``BudgetedJudgeClient.generate``: calling the host's client directly (no ledger rows);
 - ``_record``: writing the repeat's scores over the result's (the scores-untouched assertion); returning on
   a conflict instead of re-reading (the conflict test's repeat is not stored); re-sending the copy read first
   with a fresh etag (the other writer's repeat is lost); reading the result outside the guard (the report never

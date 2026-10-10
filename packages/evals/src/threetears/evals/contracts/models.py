@@ -141,10 +141,25 @@ the one requested.
 its unconfigured dimensions were requested at the provider's default, which is not today's 0, so such a run's
 roles component is not composable, its scores' judge reads unknown, and nothing pools it with a run judged at 0.
 
+**Within v8, not a bump**: ``EvalRun.measure_latency`` and ``EvalRun.cell_concurrency`` joined as OPTIONAL fields
+(#701) — whether the launch declared latency under test, and how many of the run's cells executed at once. A run
+stored before them carries None in both: its cells executed one at a time (the runner of that build had no other
+way), so its ``cell_concurrency`` reads as 1, and whether it declared latency reads as not recorded — never as
+declared. Whether another RUN executed beside it is what its results' ``execution_mode`` says, as it always was.
+``CampaignDesign.measure_latency`` joined the same way, defaulting to False: a campaign (or an analysis's design
+snapshot) stored before it reads as not declaring latency under test, which is what it declared — a stored
+design asking about latency still loads, and is refused only when it is declared again.
+
 ``JudgeConfigTombstone`` joined the same way, for a judge config's slot; a config deleted before it is written
 back at the next seed. ``EvalRun`` gained ``goal_check_proof_rules`` (None on a run stored before it, read as rules
 1, so its ``proven`` checks read unproven) and ``refused_goal_checks`` (None, not recorded), and ``EvalResult``
 gained ``judge_cannot_tell_boundary`` (empty, its can't-tells read as capability) — all optional within v8.
+
+**Within v8, not a bump**: ``ClientRequestSettings.strict_output`` joined as a defaulted field (#686) — whether a
+role's requests were to be routed only to providers honouring every parameter sent. A stamp stored before it
+carries none and reads False, "no such requirement was stated", which is what the engine sent then. Its apparatus
+level (``judge_request_settings`` / ``simulator_request_settings``) leaves the flag out while it is False, so a
+stored run's level is unchanged; a judge stamp carrying True reads as a different level from one stored before.
 
 **Within v8, not a bump**: ``CampaignDesign.guardrail_margins`` joined as an OPTIONAL field (#697) — the margin
 each judged guardrail (a boundary rubric dimension) is held to. A campaign, or an analysis's design snapshot,
@@ -155,6 +170,25 @@ as they were decided then, so no stored decision moves.
 fields (#654) — which combinations of the declared levels a design meant to run. A campaign, or an analysis's
 design snapshot, stored before them carries None and an empty list, and reads as declaring nothing about
 combinations: no cell is read as skipped by design or as missing, exactly as before.
+
+**Within v8, not a bump**: ``EvalResult.judge_seconds`` joined as an OPTIONAL field (#646, #597) — a second judge's
+scores of the result's stored evidence (:class:`SecondJudging`), each beside the first score it pairs with. A result
+stored before it carries none and reads as "no second judge was asked", which is what it means: no agreement and no
+drift is read from it, never a zero.
+
+**Within v8, not a bump**: ``DecisionSurface.frontier_disqualified`` joined as an OPTIONAL field (#613) — the arms the
+frontier disqualified on its boundary pillar, each with the guardrail dimensions it breached. A surface frozen before
+it carries None and reads as "not recorded": its frontier chart marks no arm disqualified, as it did when frozen,
+because the frontier then disqualified none.
+
+**Within v8, not a bump**: ``EvalRun.declared_margins`` joined as an OPTIONAL field (#698) — the margins a launch
+declared on core rate measures (accuracy). A run stored before it carries none and reads as declaring none, so no
+comparison over it reads a margin it never declared.
+
+**Within v8, not a bump**: ``MeasureSummary.case_means`` and ``JudgedReading.case_means`` joined as OPTIONAL fields
+(#677) — each case's mean, recorded only below 5 cases, where a chart draws the cases as points instead of an
+interval band. An analysis stored before them carries None and reads as not recorded: its small cells draw no band
+and no points, and the chart is refused with that reason rather than drawn from the interval.
 """
 
 
@@ -2309,6 +2343,16 @@ class ClientRequestSettings(EvalDocumentModel):
         ),
     )
 
+    strict_output: bool = Field(
+        default=False,
+        description=(
+            "Whether every request of this role must be routed only to a provider that honours every parameter "
+            "sent (an OpenRouter-style `provider.require_parameters`), so a strict `response_format` or a reasoning "
+            "bound is enforced rather than silently dropped. The host's client builder applies it. False = no such "
+            "requirement was stated, which is also how a stamp stored before this field reads: none was."
+        ),
+    )
+
     @model_validator(mode="after")
     def _one_way_to_ask_for_reasoning(self) -> Self:
         """Refuse a settings value that asks for reasoning both by a token budget and by an effort level.
@@ -2584,6 +2628,19 @@ class EvalRun(EvalDocumentModel):
             "condition. Empty when the launch set none, which is a level."
         ),
     )
+    declared_margins: dict[str, float] = Field(
+        default_factory=dict,
+        description=(
+            "Margins the launch declared on core rate measures (``accuracy``), by measure, in the measure's units: "
+            "the most two arms may differ on it and still be alike. A core measure's descriptor is the engine's and "
+            "declares no margin, so a run-scoped one is how a comparison of runs can read `equivalent` on it; the "
+            "analysis reads it only when every member run of the campaign declares the same margin, and each "
+            "contrast tested against it names it (``FamilyComparison.margin_source`` `run`). Declared at launch, "
+            "before any result, so it is chosen before the data is seen. Not part of the measurement context: a "
+            "margin changes how a difference is read, not what was measured. Empty when the launch declared none, "
+            "and on every run stored before run-scoped margins existed, which then read as declaring none."
+        ),
+    )
     resolved_world_seed: dict[str, Any] = Field(
         default_factory=dict,
         description=(
@@ -2691,6 +2748,27 @@ class EvalRun(EvalDocumentModel):
             "'replay'. A capture run writes the corpus its own id names, so two runs capturing at once never "
             "write into each other's, and a replay binds to one whole recording rather than to whatever the "
             "latest capture of each case happened to leave."
+        ),
+    )
+    measure_latency: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the launch declared latency under test (`start_run(measure_latency=True)`). True: the run "
+            "executed its cells one at a time, with no other run executing beside it, so the latency it recorded "
+            "is read clean. False: it was not under test, and the run executed its cells concurrently "
+            "(`cell_concurrency`). None: launched before 3tears-evals recorded the declaration (or recorded by a "
+            "writer that is no launch) — such a run executed its cells one at a time, and whether it ran beside "
+            "another run is what its results' `execution_mode` says."
+        ),
+    )
+    cell_concurrency: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "How many of the run's cells executed at once: 1 is serial. Above 1, every result stamps "
+            "`execution_mode` `concurrent` and its latency is kept out of every comparison, bar and ranking. "
+            "None: a run stored before the width was recorded, whose cells executed one at a time — read as 1, "
+            "never as unknown, because the runner of that build could not run them otherwise."
         ),
     )
 
@@ -3969,6 +4047,125 @@ class JudgeRepeat(EvalDocumentModel):
         return scores
 
 
+class SecondJudge(EvalDocumentModel):
+    """A judge other than the one a run was scored by: a model, the prompt per dimension, and a temperature.
+
+    The three things a judge's identity is made of (:class:`~threetears.evals.analysis.JudgeKey`), named for a
+    second opinion on stored evidence (:func:`~threetears.evals.run.ask_second_judge`). Every dimension is sent to
+    ``model``, whatever model a prompt's config names: the second judge is the one named here.
+    """
+
+    model: str = Field(min_length=1, description="The model every dimension is sent to.")
+    config_ids: dict[DimName, str] | None = Field(
+        default=None,
+        description=(
+            "dim -> the versioned JudgeConfig whose prompt asks for that dimension. None = the prompts the run "
+            "recorded, so only the model (and the temperature, when set) differ. A dimension absent from a map "
+            "given here is asked with the built-in prompt."
+        ),
+    )
+    temperature: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=2.0,
+        description=(
+            "The temperature every call is requested at. None = what each dimension's prompt asks for (its "
+            "config's temperature, else the default every unconfigured dimension is judged at). Each score "
+            "records what was actually sent."
+        ),
+    )
+
+
+class SecondJudgeScore(EvalDocumentModel):
+    """One dimension's stored judge score beside a second judge's answer to the same question.
+
+    The pair inter-judge agreement and judge drift are read from. Both halves are carried here, as a
+    :class:`RepeatedScore` carries its pair, so a re-judge that later rewrites the result's score does not split it.
+    """
+
+    dim: DimName = Field(min_length=1, description="The dimension asked.")
+    scale: RubricScale = Field(description="The scale the first score was on, and the second judge was asked on.")
+    first_score: int = Field(description="The score the result held on the dimension when the second judge was asked.")
+    first_served_model: str | None = Field(
+        description="The model that served the first score, as its response named it; None when it named none."
+    )
+    first_judge_config_id: str | None = Field(
+        description="The versioned JudgeConfig that asked for the first score; None = the built-in prompt."
+    )
+    first_judge_temperature: JudgeTemperature | None = Field(
+        default=None, description="The temperature the first score was sent at; None when it recorded none."
+    )
+    second: RubricScore | None = Field(
+        default=None, description="The second judge's score, when it scored the dimension."
+    )
+    error: str | None = Field(default=None, description="Why the second judge's call failed, when it did.")
+    cannot_tell: ModelProse | None = Field(
+        default=None, description="The second judge's reason, when it answered it could not score the dimension."
+    )
+
+    @model_validator(mode="after")
+    def _one_answer_on_the_scale(self) -> Self:
+        """Refuse a pair with no second answer or two, a first score off its scale, or a second on another dim or scale.
+
+        Raises:
+            ValueError: Not exactly one of ``second``, ``error`` and ``cannot_tell`` is set, ``first_score`` is
+                off ``scale``, or ``second`` scores another dimension or scale.
+        """
+        answers = [name for name in ("second", "error", "cannot_tell") if getattr(self, name) is not None]
+        if len(answers) != 1:
+            raise ValueError(
+                f"a second judge's score carries exactly one of second, error and cannot_tell; got {answers}"
+            )
+        low, high = SCALES[self.scale].scores
+        if not low <= self.first_score <= high:
+            raise ValueError(f"first_score {self.first_score} is off the {self.scale} scale [{low}, {high}]")
+        if self.second is not None and (self.second.dim != self.dim or self.second.scale != self.scale):
+            raise ValueError(
+                f"the second judge scored {self.second.dim!r} on {self.second.scale!r}, not {self.dim!r} on {self.scale!r}"
+            )
+        return self
+
+
+class SecondJudging(EvalDocumentModel):
+    """A second judge's scores of one result's stored evidence, recorded beside the scores the run's judge gave.
+
+    A measurement of the JUDGE — how far a second judge agrees with the first (inter-judge agreement), or how far
+    a changed judge moves the scores (drift) — never a change to the result: the scores every lens reads stay the
+    ones the cell was judged with, and this entry is the only place the second judge's answers live.
+
+    **Its spend is not here, and never on the result's ``cost_usd``.** Each call is priced before it is made and
+    written to the out-of-run ledger under purpose ``second_judge``, stamped with the run — measurement cost on its
+    own line.
+    """
+
+    judged_at: str = Field(default_factory=utc_now_iso)
+    pass_id: str = Field(
+        min_length=1,
+        description="The operation that asked: every result one pass sampled carries the same id, and its own sample.",
+    )
+    judge: SecondJudge = Field(description="The second judge, as the operation named it.")
+    sample_fraction: float = Field(
+        gt=0.0, le=1.0, description="The share of the run's judgeable results the pass sampled."
+    )
+    sample_seed: int = Field(description="The seed the sample was drawn with, so it can be drawn again.")
+    scores: list[SecondJudgeScore] = Field(
+        min_length=1, description="One entry per dimension asked, in dimension order."
+    )
+    judge_config_ids: dict[DimName, str] = Field(
+        default_factory=dict,
+        description="dim -> the versioned JudgeConfig that asked the second judge. Absent = the built-in prompt.",
+    )
+
+    @field_validator("scores")
+    @classmethod
+    def _each_dim_once(cls, scores: list[SecondJudgeScore]) -> list[SecondJudgeScore]:
+        """Refuse a pass asking one dimension twice of one result."""
+        dims = [score.dim for score in scores]
+        if repeated := sorted({dim for dim in dims if dims.count(dim) > 1}):
+            raise ValueError(f"a second judge asks each dimension once; repeated: {repeated}")
+        return scores
+
+
 class EvalResult(EvalDocumentModel):
     """One test case x one model x one k-iteration.
 
@@ -4103,6 +4300,10 @@ class EvalResult(EvalDocumentModel):
     # Repeats of this result's judge scores, oldest first — see :class:`JudgeRepeat`. A measurement
     # of the judge, never a change to the scores above. Empty for a result nobody repeated.
     judge_repeats: list[JudgeRepeat] = Field(default_factory=list)
+
+    # A second judge's scores of this result's evidence, oldest first — see :class:`SecondJudging`. A measurement of
+    # the judge, never a change to the scores above. Empty for a result no second judge was asked about.
+    judge_seconds: list[SecondJudging] = Field(default_factory=list)
 
     # Cost. The blended spend over ``cost_roles``, derived from ``usage`` by
     # :func:`threetears.evals.contracts.usage_capture.blended_cost` at every exit of a cell.
@@ -4643,6 +4844,9 @@ __all__ = [
     "JudgeConfigTombstone",
     "RubricProposal",
     "RepeatedScore",
+    "SecondJudge",
+    "SecondJudgeScore",
+    "SecondJudging",
     "RubricScore",
     "RunCompleteness",
     "SchemaVersion",

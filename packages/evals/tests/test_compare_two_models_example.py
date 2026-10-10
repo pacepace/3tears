@@ -9,10 +9,11 @@ name. Live, the SDK is faked, so no test calls the API; model ids are read off t
 from __future__ import annotations
 
 from types import ModuleType, SimpleNamespace
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 
+from threetears.evals.analysis import ContrastOutcome
 from threetears.evals.quick import Comparison
 from packages.evals.tests.example_loader import load_example
 
@@ -37,19 +38,21 @@ async def test_offline_the_stand_ins_name_no_model_and_not_separated_is_no_reaso
         assert summary.status == "completed" and (summary.n_cases, summary.k_runs, summary.n_scored) == (12, 2, 24)
         assert summary.candidate_calls == 24 and summary.candidate_cost_usd is not None
     assert comparison.arms[cheaper].candidate_cost_usd < comparison.arms[current].candidate_cost_usd  # type: ignore[operator]
-    # The margin is declared on the scorer, so equivalence could be tested; it is never assumed.
-    assert comparison.host.profile.measures.get("correct").materiality_threshold == module.MARGIN
+    # The margin is declared on accuracy, on both runs, so equivalence could be tested; no duplicate scorer is needed.
+    assert "correct" not in comparison.host.profile.measures.names
+    (verdict,) = comparison.verdicts("accuracy")
+    assert (verdict.outcome, verdict.margin, verdict.margin_source) == ("not_separated", module.MARGIN, "run")
 
-    (accuracy,) = comparison.contrasts("correct")
+    (accuracy,) = comparison.contrasts("accuracy")
     assert accuracy["arm"] == cheaper and accuracy["delta"] == pytest.approx(-1 / 6)
-    assert accuracy["interval"] is not None and accuracy["verdict"].startswith("not separated")
+    assert accuracy["interval"] is not None and accuracy["outcome"] == "not_separated"
     (spend,) = comparison.contrasts("production_replicating_cost")
-    assert spend["verdict"] == "improved on the control"
+    assert spend["outcome"] == "improved" and spend["verdict"] == "improved on the control"
 
     out = capsys.readouterr().out
     assert out.startswith("ANTHROPIC_API_KEY is not set: running OFFLINE")
     assert "claude" not in out.lower() and "haiku" not in out.lower(), "a stand-in's output reads as a model's"
-    assert f"{cheaper} vs {current} on Correct score: 1 -> 0.833, delta -0.167, interval [" in out
+    assert f"{cheaper} vs {current} on Accuracy: 1 -> 0.833, delta -0.167, interval [" in out
     assert "\nOn accuracy, not separated: these cases could not tell the models apart" in out
     assert "Keep the current model" in out
     assert f"    {current} said phishing, phishing; {cheaper} said legit, legit\n" in out
@@ -57,10 +60,10 @@ async def test_offline_the_stand_ins_name_no_model_and_not_separated_is_no_reaso
 
 def test_each_verdict_has_its_decision_and_only_improved_or_equivalent_switch() -> None:
     module = _load()
-    assert set(module.WHAT_TO_DO) == {"improved", "equivalent", "regressed", "not separated", "untested"}
+    assert set(module.WHAT_TO_DO) == set(get_args(ContrastOutcome)), "one decision per typed contrast outcome"
     assert "good enough" in module.WHAT_TO_DO["equivalent"]
-    assert "does not show the cheaper one is good enough" in module.WHAT_TO_DO["not separated"]
-    assert "switch," not in module.WHAT_TO_DO["not separated"]
+    assert "does not show the cheaper one is good enough" in module.WHAT_TO_DO["not_separated"]
+    assert "switch," not in module.WHAT_TO_DO["not_separated"]
 
 
 def _fake_sdk(monkeypatch: pytest.MonkeyPatch, anthropic: ModuleType, labels: dict[str, str]) -> list[dict[str, Any]]:
@@ -107,6 +110,6 @@ async def test_live_two_models_alike_on_twelve_emails_are_still_not_shown_good_e
     for model, summary in comparison.arms.items():
         input_rate, output_rate = live.PRICES[model]
         assert summary.candidate_cost_usd == pytest.approx(24 * (120 * input_rate + 40 * output_rate) / 1e6)
-    (accuracy,) = comparison.contrasts("correct")
-    assert accuracy["delta"] == 0 and accuracy["verdict"].startswith("not separated")
+    (accuracy,) = comparison.contrasts("accuracy")
+    assert accuracy["delta"] == 0 and accuracy["outcome"] == "not_separated"
     assert "\nOn accuracy, not separated" in capsys.readouterr().out

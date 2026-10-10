@@ -27,6 +27,7 @@ from typing import Any, Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from threetears.evals.analysis.reporting import NULL_LEVEL
 from threetears.evals.contracts.host.style import SERIES_SLOTS, VALIDATED_SLOTS
 from threetears.evals.contracts.prose import ModelProse
 from threetears.evals.contracts.metrics import Materiality, MeasureScale
@@ -998,6 +999,14 @@ class FrontierPayload(_VizPayload):
 #: hues rather than as a ramp.
 ABSENT_LEVEL = "—"
 
+#: The levels a numeric lever may carry that are not points on its scale: the absence
+#: sentinel, and :data:`~threetears.evals.analysis.reporting.NULL_LEVEL`, the level a lever
+#: overlaid to ``null`` resolves to (#574). Neither parses as a number, so either one would
+#: flip a genuinely numeric knob (``null / 6 / 12``) to categorical and draw every level as
+#: a hue. Both are set apart before orderedness is inferred; the absence draws in the
+#: neutral and ``null`` as its own marked cell (#694).
+OFF_SCALE_LEVELS: frozenset[str] = frozenset({ABSENT_LEVEL, NULL_LEVEL})
+
 
 class ResolvedDimension(NamedTuple):
     """A swept lever, and the single settled answer about how its levels draw.
@@ -1041,9 +1050,12 @@ def infer_ordered(levels: Iterable[str]) -> bool:
         levels: Every level the dimension takes, the absence sentinel included.
 
     Returns:
-        Whether every level that is actually a level parses as a number.
+        Whether every level that is actually a level parses as a number. The off-scale
+        levels (:data:`OFF_SCALE_LEVELS`) are set apart first, so a ``null`` beside numeric
+        levels leaves the knob ordered, while a lever whose only stated levels are
+        ``null`` (or words) has no order to draw.
     """
-    stated = [level for level in levels if level != ABSENT_LEVEL]
+    stated = [level for level in levels if level not in OFF_SCALE_LEVELS]
     if not stated:
         # Every configuration left this lever alone, so there is no order to have.
         return False
@@ -1658,6 +1670,7 @@ __all__ = [
     "SERIES_SLOTS",
     "VALIDATED_SLOTS",
     "ABSENT_LEVEL",
+    "OFF_SCALE_LEVELS",
     "PAYLOAD_MODELS",
     "AttributionMovement",
     "AttributionPayload",

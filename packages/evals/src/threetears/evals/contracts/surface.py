@@ -60,6 +60,14 @@ class JudgedReading(EvalDocumentModel):
     )
     n: int = Field(ge=0, description="Scores contributing to the mean — one per scored, non-faulted observation.")
     n_independent: int = Field(ge=0, description="Distinct test cases behind those scores.")
+    case_means: list[float] | None = Field(
+        default=None,
+        description=(
+            "Each test case's mean over its observations, ascending, recorded only below 5 cases (the chart band "
+            "floor): a chart draws these as points rather than an interval band there. None at 5 cases or more, "
+            "and on a summary stored before it, which reads as not recorded."
+        ),
+    )
     n_infra_excluded: int = Field(
         default=0, ge=0, description="Scores on observations the harness faulted, left out of n and the mean."
     )
@@ -548,8 +556,8 @@ FrontierDominance = Literal["dominated", "not_separated", "untested"]
 #: What a guardrail came to for one arm against the control, read off the interval on the difference against
 #: the guardrail's margin (:func:`~threetears.evals.analysis.stats.interval_clears`, three-valued). ``held``: the
 #: arm is shown no worse than the control by more than the margin. ``breached``: shown worse by more than it.
-#: ``undecided``: the interval straddles the line, or no interval exists — neither held nor breached, and never
-#: read as safe.
+#: ``undecided``: the interval straddles the line, no interval exists, or the reading declares no range (``held`` is
+#: then never read: no test of a mean holds its error rate without one) — neither held nor breached, never read as safe.
 GuardrailDecision = Literal["held", "breached", "undecided"]
 
 
@@ -569,7 +577,9 @@ class GuardrailCheck(EvalDocumentModel):
     the host declared ``guardrail``. It is never optimized and never traded: it joins no comparison family
     and no composite, so a capability gain cannot pay for it. Each is decided on its own interval, at
     95% two-sided (so each one-sided claim errs at most 2.5% of the time), not corrected across
-    guardrails: more guardrails make a false ``breached`` likelier, which errs toward caution.
+    guardrails: more guardrails make a false ``breached`` likelier, which errs toward caution. On a
+    declared range the interval is the bounded test's, which holds that rate at every n on coarse values;
+    with no declared range ``held`` is never read, since no test holds its rate there.
     """
 
     reading: Literal["measure", "judged"] = Field(description="Whether `name` is a measure or a judged dimension.")
@@ -591,15 +601,18 @@ class GuardrailCheck(EvalDocumentModel):
         default=None,
         description=(
             "The 95% interval on `delta` the decision read. None when no interval exists (fewer than two cases a "
-            "side, or a difference with no spread on a reading with no declared range)."
+            "side, a value outside the declared range, or a difference with no spread on a reading with no "
+            "declared range)."
         ),
     )
     interval_basis: Literal["t", "bounded"] | None = Field(
         default=None,
         description=(
-            "`t`: the interval the comparison test inverts. `bounded`: every paired case moved by the same amount, "
-            "so a t interval has no width; the interval is the one a bounded reading allows — at most a share "
-            "1 − 0.025^(1/n) of unseen cases could move otherwise, each by at most the scale. None with no interval."
+            "`bounded`: the reading declares a range, and each end is a one-sided 2.5% bound from the bounded test "
+            "by betting (Waudby-Smith & Ramdas), valid at every n for any values on the range — on the paired "
+            "differences, or unpaired each arm's mean at half the rate. `t`: the reading declares no range, and the "
+            "interval is the one the comparison test inverts; it can show a breach, never a hold. None with no "
+            "interval."
         ),
     )
     margin: float = Field(
@@ -613,8 +626,10 @@ class GuardrailCheck(EvalDocumentModel):
     margin_declared: bool = Field(description="Whether `margin` was declared, rather than 0 for want of one.")
     decision: GuardrailDecision = Field(
         description=(
-            "`held` = the interval lies wholly on the good side of −margin (no worse than the margin); `breached` = "
-            "wholly beyond it (worse by more than the margin); `undecided` = it straddles the line or does not exist."
+            "`held` = a `bounded` interval lies wholly on the good side of −margin (no worse than the margin); "
+            "`breached` = the interval lies wholly beyond it (worse by more than the margin); `undecided` = it "
+            "straddles the line, does not exist, or is a `t` interval on the good side: with no declared range a "
+            "hold is never claimed, and `undecided_reason` names the remedy."
         )
     )
     undecided_reason: str | None = Field(
@@ -731,6 +746,15 @@ class DecisionSurface(EvalDocumentModel):
             "a frontier chart and the frontier table cannot disagree. An arm the lens placed as more than one "
             "contestant (two identity versions, or two subjects) is absent: it has no one standing. None on a "
             "surface frozen before standings were carried; a chart drawn from one states no domination."
+        ),
+    )
+    frontier_disqualified: dict[str, list[DimName]] | None = Field(
+        default=None,
+        description=(
+            "The arms the frontier lens disqualified on its boundary pillar, keyed by variant, each with the boundary "
+            "(guardrail) dimensions it breached against the control — copied from the lens, so a frontier chart draws "
+            "the cross the table names. An arm absent was not disqualified. None on a surface frozen before "
+            "disqualifications were carried (schema v8, #613): a chart drawn from one marks none, as it did then."
         ),
     )
     rubric_threshold: int = Field(

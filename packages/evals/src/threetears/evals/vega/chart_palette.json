@@ -1,5 +1,5 @@
 {
-  "$comment": "Packaged data: the brand-neutral default chart palette, as resolved sRGB hex for the light and dark themes. A host that wants its own colours declares a ChartPalette on its style profile; this file is only what a renderer draws in when none is declared. Hex, because the server-side chart renderer rasterises through resvg and cannot parse oklch(). The hues and steps are a published validated default categorical palette, used unchanged; only the slot ORDER is chosen here, so that slots 1-4 separate as a set (see `validated_slots$comment`). The roles under `light` and `dark` are the ChartPalette contract's own (`series`, `sequential`, `background`, `ink`, `muted`, `grid`, `rule`, `context`, `on_fill`) plus `highlight`. Changing any colour means re-running the checks pinned in tests/test_vega_render.py::TestPaletteArtifact, not editing one value.",
+  "$comment": "Packaged data: the brand-neutral default chart palette, as resolved sRGB hex for the light and dark themes. A host that wants its own colours declares a ChartPalette on its style profile; this file is only what a renderer draws in when none is declared. Hex, because the server-side chart renderer rasterises through resvg and cannot parse oklch(). The hues and steps are a published validated default categorical palette, used unchanged; only the slot ORDER is chosen here, so that slots 1-4 separate as a set (see `validated_slots$comment`). The roles under `light` and `dark` are the ChartPalette contract's own (`series`, `sequential`, `background`, `ink`, `muted`, `grid`, `rule`, `context`, `on_fill`). Changing any colour means re-running the checks pinned in tests/test_vega_render.py::TestPaletteArtifact, not editing one value.",
   "font_size": {
     "title": 18,
     "label": 14,
@@ -56,7 +56,6 @@
       "#4a3aa7",
       "#e34948"
     ],
-    "highlight": "#184f95",
     "context": "#898781",
     "sequential": [
       "#86b6ef",
@@ -83,7 +82,6 @@
       "#9085e9",
       "#e66767"
     ],
-    "highlight": "#6da7ec",
     "context": "#898781",
     "sequential": [
       "#b7d3f6",

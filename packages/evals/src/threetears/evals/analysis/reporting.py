@@ -36,22 +36,29 @@ import math
 from collections.abc import Collection, Hashable, Iterable, Mapping, Sequence
 from datetime import datetime
 from fractions import Fraction
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple, get_args
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple, get_args
 
 from pydantic import Field, model_validator
 
+from threetears.evals.analysis.contention import (
+    contended_latency_sentence,
+    withheld_latency,
+    withhold_contended_latency,
+)
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
     ChangeLabel,
     case_rate_interval,
+    contrast_samples,
     exact_decimal,
+    guardrail_decision,
     holm_adjust,
     interval_clears,
     separation_p,
 )
 from threetears.evals.contracts.analysis_measures import BarDecision
-from threetears.evals.contracts.base import EvalBaseModel, VerbatimText
+from threetears.evals.contracts.base import EvalBaseModel, EvalDocumentModel, VerbatimText
 from threetears.evals.contracts.hashing import canonical_digest, canonical_json
 from threetears.evals.contracts.host.profile import HostProfile
 from threetears.evals.contracts.host.values import PooledProductionFooting, ProductionFooting
@@ -67,7 +74,7 @@ from threetears.evals.contracts.models import (
     RubricScale,
     utc_now_iso,
 )
-from threetears.evals.contracts.surface import FrontierDominance
+from threetears.evals.contracts.surface import FrontierDominance, GuardrailDecision
 from threetears.evals.contracts.result_condition import (
     JUDGE_CANNOT_TELL_OUTCOME,
     ResultOutcome,
@@ -76,6 +83,7 @@ from threetears.evals.contracts.result_condition import (
     counted_rubric_scores,
     counted_score,
     delivered_a_turn,
+    harness_faulted,
     trial_exclusion,
 )
 from threetears.evals.contracts.scoring import (
@@ -4211,27 +4219,27 @@ def normalize_bar(value: float | str | None) -> float | None:
     return float(value)
 
 
-class TwoPillarDisclosure(EvalBaseModel):
-    """Why the verdict rests on one quality pillar, stated on every answer.
+class FrontierBoundaryCheck(EvalBaseModel):
+    """One boundary (guardrail) dimension of one contestant, held against the control the frontier was given.
 
-    The verdict definition requires clearing the bar on BOTH a capability axis
-    and a boundary/robustness axis, so a cheap model that is brittle
-    off-distribution is disqualified rather than crowned cheapest. A scored rubric
-    dim now carries its axis (``RubricScore.axis``), and the frontier's pass^k and
-    composite read capability dims only, so a boundary dim no longer moves them
-    either way. The boundary pillar is decided as guardrails — each arm against a
-    control, in the analysis bundle — and the frontier, which ranks contestants
-    against an absolute bar with no control, does not yet disqualify on it. So it is
-    still descoped WITH disclosure: an operator must never mistake "nothing was
-    disqualified" for "nothing was checked".
+    Decided by the one guardrail rule (:func:`~threetears.evals.analysis.stats.guardrail_decision`) the bundle's
+    guardrails are decided by, over the samples every contrast reads
+    (:func:`~threetears.evals.analysis.stats.contrast_samples`): ``held`` when the contestant is shown no worse than
+    the control by more than the dimension's declared margin, ``breached`` when it is shown worse, ``undecided``
+    otherwise.
     """
 
-    boundary_pillar_available: bool = False
-    verdict_rests_on: str = "capability pillar (pass^k over capability criteria) alone"
-    reason: str = (
-        "boundary dimensions are left out of pass^k and the composite and decided as guardrails against a "
-        "control in the analysis bundle; the frontier does not disqualify a contestant on one"
-    )
+    dimension: str
+    decision: GuardrailDecision
+    #: The interval on ``mean(contestant) − mean(control)`` the decision read; None when none exists.
+    interval: tuple[float, float] | None = None
+    #: The margin it was held to — the campaign's declared one for the dimension — or None (held at zero change).
+    margin: float | None = None
+    paired: bool = False
+    n_cases_control: int = 0
+    n_cases: int = 0
+    #: Why it is undecided, when it is; None otherwise.
+    undecided_reason: str | None = None
 
 
 def _template_span_entries(templates_by_run: Mapping[str, str | None]) -> list[str]:
@@ -4450,6 +4458,12 @@ class FrontierPoint(EvalBaseModel):
     #: interval straddles the bar — neither a pass nor a failure), ``no_interval`` (fewer than two cases, not
     #: read) or ``no_data``. ``None`` when no bar was supplied.
     bar_decision: BarDecision | None = None
+    #: Each boundary dimension of the subject, held against the control (:class:`FrontierBoundaryCheck`). Empty for
+    #: the control itself, when the subject scores no boundary dimension, and when no control was given — then
+    #: :attr:`SubjectFrontier.boundary_pillar` says the pillar was not checked.
+    boundary_checks: list[FrontierBoundaryCheck] = []
+    #: The boundary dimensions this contestant breached: it is disqualified, named by them, and never the pick.
+    disqualified_by: list[str] = []
     mean_composite: float | None = None
     composite_sem: float | None = None
     n_composite_cases: int = 0
@@ -4647,6 +4661,10 @@ class FrontierVerdict(EvalBaseModel):
     #: The rivals the pick was not shown cheaper than, ordered by point cost. Empty when ``cost_decision``
     #: is ``shown_cheapest`` or ``only_cleared``.
     tied_with: list[FrontierCostTie] = []
+    #: The subject's boundary dimensions the pick was NOT held against a control on, because the frontier was given
+    #: no control: the verdict then rests on the capability pillar alone, and says so here. Empty when every
+    #: boundary dimension was checked, or the subject scores none.
+    boundary_unchecked: list[str] = []
 
 
 class SubjectFrontier(EvalBaseModel):
@@ -4672,19 +4690,39 @@ class SubjectFrontier(EvalBaseModel):
     n_cleared_bar: int = 0
     #: Points whose pass^k interval straddles the bar: neither cleared nor missed.
     n_undecided_bar: int = 0
+    #: The boundary (guardrail) dimensions any of the subject's results was scored on, sorted.
+    boundary_dimensions: list[str] = []
+    #: Points disqualified on a boundary dimension (:attr:`FrontierPoint.disqualified_by`).
+    n_disqualified: int = 0
+    #: Points not shown to hold every boundary dimension and not shown to breach one: never the pick, never
+    #: disqualified.
+    n_boundary_undecided: int = 0
+    #: How the boundary pillar was read, as a sentence: checked against which control, or not checked and why.
+    #: None when the subject scores no boundary dimension.
+    boundary_pillar: str | None = None
 
 
-class FrontierResult(EvalBaseModel):
+class FrontierResult(EvalDocumentModel):
     """The verdict surface across every subject, plus its disclosures.
 
     ``bar`` is echoed back so the answer names the threshold its verdicts were
-    made against (the bar is the caller's, never invented). ``two_pillar``
-    states the descoped boundary pillar on every answer. ``exclusions`` and the
+    made against (the bar is the caller's, never invented). ``control_variant_key``
+    names the control every contestant's boundary dimensions were held against; each
+    subject says how its boundary pillar was read. ``exclusions`` and the
     ``n_*`` counts keep an all-excluded corpus from rendering as an empty one,
     exactly as :class:`PivotTable` does.
+
+    ``two_pillar`` (``TwoPillarDisclosure``, the statement that the boundary pillar was descoped) is retired: the
+    pillar is decided (#613). A frozen bundle carrying it reads with it discarded — what it said is no longer true
+    of any answer this build gives.
     """
 
+    __retired_fields__: ClassVar[dict[str, str | None]] = {"two_pillar": None}
+
     bar: float | None = None
+    #: The control the boundary pillar held every contestant against — the campaign's control arm on the bundle's
+    #: frontier, the caller's choice on the scope's. None when none was given: no boundary dimension was checked.
+    control_variant_key: str | None = None
     #: The 1–5 level a capability criterion had to reach for an attempt to pass, in every pass^k here
     #: (#642): the behavior's declared threshold
     #: (:meth:`~threetears.evals.contracts.host.BarRegistry.pass_threshold`) where the caller had one, else 3.
@@ -4692,7 +4730,6 @@ class FrontierResult(EvalBaseModel):
     #: computed at then.
     rubric_threshold: int = 3
     subjects: list[SubjectFrontier] = []
-    two_pillar: TwoPillarDisclosure = TwoPillarDisclosure()
     n_results: int = 0
     n_filtered_out: int = 0
     exclusions: ProjectionExclusions = ProjectionExclusions()
@@ -4712,6 +4749,10 @@ class FrontierResult(EvalBaseModel):
     #: points, so an answer whose points were all filtered out still says what
     #: it spanned.
     identity_span_disclosure: str | None = None
+    #: That latency read under concurrency was left out of the latency axis — and so of every
+    #: dominance test and "fastest" — and how much; ``None`` when every latency ranked was read
+    #: serially (:mod:`~threetears.evals.analysis.contention`).
+    contended_latency_disclosure: str | None = None
 
 
 #: What both lenses group on. The predicate version is IN the key rather than a filter
@@ -5311,6 +5352,97 @@ def _bar_decision(point: FrontierPoint, bar: float) -> BarDecision:
     return "undecided" if cleared is None else "cleared" if cleared else "missed"
 
 
+def _boundary_values(results: Sequence[EvalResult]) -> dict[str, dict[str, float]]:
+    """One contestant's per-case mean on each boundary dimension it was scored on — results the harness spoiled left out."""
+    scores: dict[str, dict[str, list[int]]] = {}
+    for result in results:
+        if harness_faulted(result):
+            continue
+        for score in result.rubric_scores:
+            if score.axis == "boundary":
+                scores.setdefault(score.dim, {}).setdefault(result.test_case_id, []).append(score.score)
+    return {dim: {case: sum(v) / len(v) for case, v in cases.items()} for dim, cases in scores.items()}
+
+
+def _boundary_scales(results: Iterable[EvalResult]) -> dict[str, RubricScale]:
+    """The scale each boundary dimension was scored on."""
+    return {score.dim: score.scale for result in results for score in result.rubric_scores if score.axis == "boundary"}
+
+
+def _boundary_eligible(point: FrontierPoint, control_variant_key: str | None) -> bool:
+    """Whether a point may be the pick on the boundary pillar: the control, unchecked, or every dimension held."""
+    if control_variant_key is None or point.variant_key == control_variant_key:
+        return True
+    return not point.disqualified_by and all(check.decision == "held" for check in point.boundary_checks)
+
+
+def _decide_boundary_pillar(
+    points: Sequence[FrontierPoint],
+    members: Sequence[Sequence[EvalResult]],
+    control_variant_key: str | None,
+    margins: Mapping[str, float],
+) -> tuple[list[str], str | None]:
+    """Hold every contestant's boundary dimensions against the control, in place, and say how the pillar was read.
+
+    Returns:
+        The subject's boundary dimensions, sorted, and the sentence for :attr:`SubjectFrontier.boundary_pillar`.
+    """
+    scales = _boundary_scales(result for group in members for result in group)
+    dimensions = sorted(scales)
+    if not dimensions:
+        return [], None
+    named = ", ".join(dimensions)
+    if control_variant_key is None:
+        return dimensions, (
+            f"not checked: no control was named, so no contestant was held against one on {named}; a verdict here "
+            "rests on the capability pillar alone"
+        )
+    control = [index for index, point in enumerate(points) if point.variant_key == control_variant_key]
+    if not control:
+        return dimensions, (
+            f"not checked: the control {control_variant_key} has no point in this subject, so no contestant was held "
+            f"against it on {named}"
+        )
+    reference = _boundary_values(members[control[0]])
+    for index, point in enumerate(points):
+        if index in control:
+            continue
+        values = _boundary_values(members[index])
+        checks = []
+        for dim in dimensions:
+            low, high = SCALES[scales[dim]].scores
+            a, b, paired = contrast_samples(reference.get(dim, {}), values.get(dim, {}))
+            margin = margins.get(dim)
+            verdict = guardrail_decision(
+                a, b, paired=paired, margin=margin, higher_is_better=True, value_range=(float(low), float(high))
+            )
+            reason = None
+            if verdict.decision == "undecided":
+                reason = verdict.refusal or (
+                    "a side carries fewer than two cases scored on it"
+                    if len(a) < 2 or len(b) < 2
+                    else "no interval on the difference exists"
+                    if verdict.interval is None
+                    else "the interval on the difference reaches both sides of "
+                    + (f"the declared margin {format_number(margin)}" if margin else "zero change (no margin declared)")
+                )
+            checks.append(
+                FrontierBoundaryCheck(
+                    dimension=dim,
+                    decision=verdict.decision,
+                    interval=verdict.interval,
+                    margin=margin,
+                    paired=paired,
+                    n_cases_control=len(a),
+                    n_cases=len(b),
+                    undecided_reason=reason,
+                )
+            )
+        point.boundary_checks = checks
+        point.disqualified_by = [check.dimension for check in checks if check.decision == "breached"]
+    return dimensions, f"checked: every contestant held against the control {control_variant_key} on {named}"
+
+
 def compute_frontier(
     runs: list[EvalRun],
     results: list[EvalResult],
@@ -5321,6 +5453,8 @@ def compute_frontier(
     known_run_ids: set[str] | None = None,
     archived_run_ids: set[str] | None,
     profile: HostProfile | None = None,
+    control_variant_key: str | None = None,
+    guardrail_margins: Mapping[str, float] | None = None,
 ) -> FrontierResult:
     """Rank each subject's variants on quality x cost x latency and pick the cheapest above bar.
 
@@ -5364,8 +5498,16 @@ def compute_frontier(
     **Domination is decided by test, never read off point estimates** (:func:`_dominance_p`): a point is
     flagged dominated only when another is shown better on every axis it measured, the subject's pairs
     Holm-adjusted together, and otherwise reads ``not_separated`` or ``untested``. pass^k and the composite read
-    capability dims only; boundary-pillar disqualification is descoped with disclosure — see
-    :class:`TwoPillarDisclosure`.
+    capability dims only.
+
+    **The boundary pillar.** A boundary (guardrail) rubric dimension is held per contestant against
+    ``control_variant_key`` by the guardrail rule the bundle decides guardrails by
+    (:class:`FrontierBoundaryCheck`), at the dimension's margin in ``guardrail_margins``. A contestant that
+    breaches one is disqualified, named by the dimensions it breached (:attr:`FrontierPoint.disqualified_by`),
+    and is never the pick; one not shown to hold every one is never the pick either. The pick must clear the bar
+    on both pillars. With no control there is nothing to hold a contestant against: no boundary dimension is
+    checked, :attr:`SubjectFrontier.boundary_pillar` says so, and a verdict names the dimensions it was not
+    checked on (:attr:`FrontierVerdict.boundary_unchecked`).
 
     The two skips :func:`project_score_records` makes — a result whose run is
     absent, and one whose run captured no subject — are mirrored here and returned
@@ -5405,6 +5547,10 @@ def compute_frontier(
             and verdict names what each of its runs set away from the subject's production configuration
             (:attr:`FrontierPoint.production_footing`, #571). Read off the runs as given, so a run handed with its
             host payload elided reads as unchecked. ``None`` leaves that field ``None`` — nobody checked.
+        control_variant_key: The variant every contestant's boundary dimensions are held against — the campaign's
+            control arm. ``None`` checks none, and says so.
+        guardrail_margins: The margin each boundary dimension is held to, by dimension name
+            (``CampaignDesign.guardrail_margins``); a dimension absent is held at zero change.
 
     Returns:
         A :class:`FrontierResult` — one :class:`SubjectFrontier` per subject,
@@ -5417,6 +5563,12 @@ def compute_frontier(
     """
     if bar is not None and not (0.0 <= bar <= 1.0):
         raise FrontierError(f"bar {bar!r} is outside the pass^k range [0, 1] — pass^k is a probability")
+
+    # Latency read under concurrency is never ranked: removed before any point is built, so the latency
+    # axis, every dominance test and every "fastest" read only latency taken serially (#701).
+    measures = profile.measures if profile is not None else None
+    contended = {result.id for result in withheld_latency(results, measures)}
+    results = withhold_contended_latency(results, measures)
 
     placed, exclusions = place_results(
         runs, results, known_run_ids, source="frontier", archived_run_ids=archived_run_ids
@@ -5495,16 +5647,19 @@ def compute_frontier(
         groups = by_subject[resolved]
         subject_k = k_by_subject[resolved]
         built = [
-            _frontier_point(
+            (
+                *_frontier_point(
+                    groups[key],
+                    contestant=key,
+                    k=subject_k,
+                    cell_of_run=cell_of_run,
+                    rubric_threshold=rubric_threshold,
+                    cassette_modes_by_run=cassette_modes_by_run,
+                    templates_by_run=templates_by_run,
+                    degraded_by_run=degraded_by_run,
+                    footing_by_run=footing_by_run,
+                ),
                 groups[key],
-                contestant=key,
-                k=subject_k,
-                cell_of_run=cell_of_run,
-                rubric_threshold=rubric_threshold,
-                cassette_modes_by_run=cassette_modes_by_run,
-                templates_by_run=templates_by_run,
-                degraded_by_run=degraded_by_run,
-                footing_by_run=footing_by_run,
             )
             for key in sorted(groups, key=lambda k: (str(k), ""))
         ]
@@ -5512,10 +5667,13 @@ def compute_frontier(
         # reachable: two points can share a model and a key and differ only in predicate.
         # Sort stability alone would have made that order deterministic but arbitrary —
         # and the two rows sit adjacent, which is where an unexplained order reads as noise.
-        built.sort(key=lambda pair: (pair[0].model, pair[0].variant_key, pair[0].variant_identity_version))
-        points = [point for point, _ in built]
-        point_cases = [cases for _, cases in built]
+        built.sort(key=lambda entry: (entry[0].model, entry[0].variant_key, entry[0].variant_identity_version))
+        points = [point for point, _, _ in built]
+        point_cases = [cases for _, cases, _ in built]
         _decide_dominance(points, point_cases)
+        boundary_dimensions, boundary_pillar = _decide_boundary_pillar(
+            points, [members for _, _, members in built], control_variant_key, guardrail_margins or {}
+        )
 
         verdict: FrontierVerdict | None = None
         n_cleared_bar = 0
@@ -5529,6 +5687,8 @@ def compute_frontier(
             cleared = [p for p in points if p.bar_decision == "cleared"]
             n_cleared_bar = len(cleared)
             n_undecided_bar = sum(1 for p in points if p.bar_decision == "undecided")
+            # Both pillars: the bar cleared on pass^k, and every boundary dimension shown held against the control
+            # (or no control to hold it against, which the verdict names). The control is the reference.
             # The cleared, priced points by point cost. The lowest is the pick, and it is named THE cheapest
             # only when it is shown cheaper than each of the rest (`_cost_ties`); otherwise the verdict names
             # it beside every rival it could not be shown cheaper than.
@@ -5537,6 +5697,7 @@ def compute_frontier(
                     index
                     for index, p in enumerate(points)
                     if p.bar_decision == "cleared"
+                    and _boundary_eligible(p, control_variant_key)
                     and p.production_replicating_cost is not None
                     and p.pass_hat_k is not None
                 ),
@@ -5577,6 +5738,7 @@ def compute_frontier(
                     variant_identity_version=pick.variant_identity_version,
                     cost_decision=cost_decision,
                     tied_with=tied_with,
+                    boundary_unchecked=boundary_dimensions if control_variant_key is None else [],
                 )
 
         subjects.append(
@@ -5588,6 +5750,14 @@ def compute_frontier(
                 verdict=verdict,
                 n_cleared_bar=n_cleared_bar,
                 n_undecided_bar=n_undecided_bar,
+                boundary_dimensions=boundary_dimensions,
+                n_disqualified=sum(1 for p in points if p.disqualified_by),
+                n_boundary_undecided=sum(
+                    1
+                    for p in points
+                    if not p.disqualified_by and any(check.decision == "undecided" for check in p.boundary_checks)
+                ),
+                boundary_pillar=boundary_pillar,
             )
         )
 
@@ -5595,6 +5765,7 @@ def compute_frontier(
 
     return FrontierResult(
         bar=bar,
+        control_variant_key=control_variant_key,
         rubric_threshold=rubric_threshold,
         subjects=subjects,
         n_results=n_considered,
@@ -5604,6 +5775,9 @@ def compute_frontier(
         n_degraded_observations=n_degraded_observations,
         identity_version_span=identity_versions,
         identity_span_disclosure=_identity_span_disclosure(identity_versions),
+        contended_latency_disclosure=contended_latency_sentence(
+            sum(1 for result in considered if result.id in contended), len(considered)
+        ),
     )
 
 
@@ -5961,6 +6135,10 @@ class HistoryResult(EvalBaseModel):
     #: read alone still declares its posture. Derived before any series is assembled, so
     #: an answer with no series at all still carries it.
     attribution_disclosure: str | None = None
+    #: That latency read under concurrency was left out of a latency series — no step of it reads a
+    #: contended latency — and how much; ``None`` for any other measure, and when every latency in the
+    #: series was read serially (:mod:`~threetears.evals.analysis.contention`).
+    contended_latency_disclosure: str | None = None
 
 
 def _history_value_of(metric: str) -> Callable[[EvalResult], float | None]:
@@ -6210,6 +6388,14 @@ def compute_history(
     margin = descriptor.materiality_threshold
     flag_test = PAIRED_TEST_NAME if margin is None else f"{PAIRED_TEST_NAME}; {EQUIVALENCE_TEST_NAME}"
 
+    # A latency series never steps across a contended reading: latency read under concurrency is removed
+    # before any point is built, so a regression flag compares only latency taken serially (#701).
+    contended = (
+        {result.id for result in withheld_latency(results, profile.measures)} if metric == METRIC_TOTAL_MS else set()
+    )
+    if contended:
+        results = withhold_contended_latency(results, profile.measures)
+
     placed, exclusions = place_results(
         runs, results, known_run_ids, source="history", archived_run_ids=archived_run_ids
     )
@@ -6397,6 +6583,9 @@ def compute_history(
         identity_version_span=identity_versions,
         identity_span_disclosure=_identity_span_disclosure(identity_versions),
         attribution_disclosure=_attribution_disclosure(descriptor),
+        contended_latency_disclosure=contended_latency_sentence(
+            sum(1 for result in considered if result.id in contended), len(considered)
+        ),
     )
 
 
@@ -7592,7 +7781,7 @@ __all__ = [
     "SeriesPoint",
     "SimpsonsFlag",
     "SubjectFrontier",
-    "TwoPillarDisclosure",
+    "FrontierBoundaryCheck",
     "WindowGap",
     "WindowPairs",
     "cassette_mode_disclosure",

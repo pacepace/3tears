@@ -52,8 +52,11 @@ from threetears.evals.ops import (
     RunListing,
     RunsCompared,
     ScoreExport,
+    SecondJudgeRead,
     TemplateListing,
+    UndescribableArmsListing,
     analyses_list,
+    analyses_undescribable,
     analysis_archive,
     analysis_delete,
     analysis_estimate,
@@ -64,6 +67,9 @@ from threetears.evals.ops import (
     campaigns_list,
     job_cancel,
     job_poll,
+    judge_drift_check,
+    judge_second,
+    judge_second_estimate,
     launch_estimate,
     report_read,
     reporter_case_archive,
@@ -84,7 +90,8 @@ from threetears.evals.ops import (
     scope_pivot,
     templates_list,
 )
-from threetears.evals.run import run_blocking
+from threetears.evals.contracts.models import SecondJudge
+from threetears.evals.run import SecondJudgeEstimate, run_blocking
 
 # --- the parameters, each declared once ---------------------------------------------------------------
 
@@ -119,7 +126,13 @@ Name = Annotated[str, Field(min_length=1, description="The campaign's name, as a
 Behavior = Annotated[str, Field(min_length=1, description="Which aspect of the subject is under test.")]
 Description = Annotated[str, Field(description="A longer description of the campaign.")]
 RunIds = Annotated[list[str], Field(description="The runs to put in the campaign, all in the caller's scope.")]
-GeneratorModel = Annotated[str | None, Field(description="The analysis generator's model; omitted for the host's.")]
+GeneratorModel = Annotated[
+    str | None,
+    Field(
+        description="The analysis generator's model; omitted for the host's. A model outside the host's allowed "
+        "writers is refused before anything is spent."
+    ),
+]
 Format = Annotated[
     Literal["markdown", "json", "html"],
     Field(description="The report's form: markdown (the memo), json (the schema's form), html (script-free)."),
@@ -263,6 +276,10 @@ class RunArchiveParams(EvalBaseModel):
 
     run_id: RunId
     archived: Archived = True
+
+
+class AnalysesUndescribableParams(EvalBaseModel):
+    """``analyses_undescribable`` — the caller's scope is the whole question, so it takes nothing."""
 
 
 class CampaignsListParams(EvalBaseModel):
@@ -425,6 +442,59 @@ class ResultRateParams(EvalBaseModel):
     rating_reason: Annotated[str, Field(min_length=1, description="Why that score, in the rater's own words.")]
 
 
+SecondJudgeModel = Annotated[
+    str, Field(min_length=1, description="The model the second judge sends every judged dimension to.")
+]
+SecondJudgeConfigIds = Annotated[
+    dict[str, str] | None,
+    Field(
+        description="dim -> the versioned judge config whose prompt asks the second judge for that dim; omitted for "
+        "the prompts the run recorded. A dim absent from a map given is asked with the built-in prompt."
+    ),
+]
+SecondJudgeTemperature = Annotated[
+    float | None,
+    Field(
+        ge=0.0,
+        le=2.0,
+        description="The temperature every second-judge call is requested at; omitted for what each prompt asks.",
+    ),
+]
+ResultIds = Annotated[
+    list[str] | None, Field(description="The run's results to draw from; omitted for every result of the run.")
+]
+
+
+class JudgeDriftParams(EvalBaseModel):
+    """``judge_drift_check``."""
+
+    run_id: RunId
+    second_judge_model: SecondJudgeModel
+    second_judge_config_ids: SecondJudgeConfigIds = None
+    second_judge_temperature: SecondJudgeTemperature = None
+    result_ids: ResultIds = None
+
+    def judge(self) -> SecondJudge:
+        """The second judge these parameters name."""
+        return SecondJudge(
+            model=self.second_judge_model,
+            config_ids=self.second_judge_config_ids,
+            temperature=self.second_judge_temperature,
+        )
+
+
+class JudgeSecondParams(JudgeDriftParams):
+    """``judge_second`` and ``judge_second_estimate``."""
+
+    sample_fraction: Annotated[
+        float,
+        Field(gt=0.0, le=1.0, description="The share of the run's judged results the second judge is asked about."),
+    ] = 1.0
+    sample_seed: Annotated[
+        int, Field(description="The seed the share is drawn with; the same seed draws the same results.")
+    ] = 0
+
+
 class RunDeleteParams(EvalBaseModel):
     """``run_delete``."""
 
@@ -546,6 +616,13 @@ async def _analyses_list(host: OpsHost, caller: Caller, params: CampaignParams) 
     return await run_blocking(
         eval_host.blocking_executor, analyses_list, eval_host, params.campaign_id, caller.scope_id
     )
+
+
+async def _analyses_undescribable(
+    host: OpsHost, caller: Caller, params: AnalysesUndescribableParams
+) -> UndescribableArmsListing:
+    eval_host = host.eval_host
+    return await run_blocking(eval_host.blocking_executor, analyses_undescribable, eval_host, caller.scope_id)
 
 
 async def _analysis_generate(host: OpsHost, caller: Caller, params: AnalysisGenerateParams) -> JobsStarted:
@@ -714,6 +791,36 @@ async def _result_rate(host: OpsHost, caller: Caller, params: ResultRateParams) 
         eval_host,
         params.result_id,
         caller.scope_id,
+    )
+
+
+async def _judge_second(host: OpsHost, caller: Caller, params: JudgeSecondParams) -> SecondJudgeRead:
+    return await judge_second(
+        host,
+        params.run_id,
+        caller.scope_id,
+        judge=params.judge(),
+        sample_fraction=params.sample_fraction,
+        seed=params.sample_seed,
+        result_ids=params.result_ids,
+    )
+
+
+async def _judge_second_estimate(host: OpsHost, caller: Caller, params: JudgeSecondParams) -> SecondJudgeEstimate:
+    return await judge_second_estimate(
+        host,
+        params.run_id,
+        caller.scope_id,
+        judge=params.judge(),
+        sample_fraction=params.sample_fraction,
+        seed=params.sample_seed,
+        result_ids=params.result_ids,
+    )
+
+
+async def _judge_drift_check(host: OpsHost, caller: Caller, params: JudgeDriftParams) -> SecondJudgeRead:
+    return await judge_drift_check(
+        host, params.run_id, caller.scope_id, judge=params.judge(), result_ids=params.result_ids
     )
 
 
@@ -975,6 +1082,54 @@ def engine_actions() -> tuple[Action, ...]:
             ),
         ),
         Action(
+            name="judge_second",
+            summary="Ask a second judge to score a seeded share of a finished run's judged results; read agreement.",
+            workflow=ANALYSE,
+            permission="spend",
+            params=JudgeSecondParams,
+            result=SecondJudgeRead,
+            handler=_judge_second,
+            render=render.render_second_judge,
+            example={"run_id": run_id, "second_judge_model": "judge/other", "sample_fraction": 0.5},
+            detail=(
+                "The evidence each result's judge read, sent to the second judge: the run's scores are never changed, "
+                "and each second score is recorded beside the first it pairs with. Every call is priced and admitted "
+                "against the host's out-of-run cap before the first is sent, and ledgered under purpose second_judge "
+                "— measurement cost, never the candidate's. Returns per-dimension n, exact agreement and kappa "
+                "(quadratic on 1-5, unweighted on pass/fail; undefined says why), and the drift between the judges. "
+                "judge_second_estimate prices it first without spending."
+            ),
+        ),
+        Action(
+            name="judge_second_estimate",
+            summary="Price a second judge's pass over a run against the host's out-of-run cap, without spending.",
+            workflow=ANALYSE,
+            permission="read",
+            params=JudgeSecondParams,
+            result=SecondJudgeEstimate,
+            handler=_judge_second_estimate,
+            render=render.render_second_judge_estimate,
+            example={"run_id": run_id, "second_judge_model": "judge/other", "sample_fraction": 0.5},
+            detail="The pass's own collection, sample and admission, so would_start is judge_second's answer.",
+        ),
+        Action(
+            name="judge_drift_check",
+            summary="Re-score every judged result of a run under a changed judge; read how far each dimension moved.",
+            workflow=ANALYSE,
+            permission="spend",
+            params=JudgeDriftParams,
+            result=SecondJudgeRead,
+            handler=_judge_drift_check,
+            render=render.render_second_judge,
+            example={"run_id": run_id, "second_judge_model": "judge/new"},
+            detail=(
+                "judge_second over the whole set. The run's judge, as it recorded it, is the first configuration; "
+                "the second names the changed one. Each dimension's movement is read over cases with an interval, "
+                "Holm-adjusted over the dimensions: separated, not separated or untested. It detects movement "
+                "between the judges, never which is right. The stored scores are never changed."
+            ),
+        ),
+        Action(
             name="analyses_list",
             summary="List a campaign's stored analyses.",
             workflow=ANALYSE,
@@ -984,6 +1139,22 @@ def engine_actions() -> tuple[Action, ...]:
             handler=_analyses_list,
             render=render.render_analyses,
             example={"campaign_id": campaign_id},
+        ),
+        Action(
+            name="analyses_undescribable",
+            summary="List the scope's analyses holding an arm whose levels this build cannot describe.",
+            workflow=ANALYSE,
+            permission="read",
+            params=AnalysesUndescribableParams,
+            result=UndescribableArmsListing,
+            handler=_analyses_undescribable,
+            render=render.render_undescribable_arms,
+            example={},
+            detail=(
+                "Read from each stored analysis's variant index on every call, never stored: each such analysis "
+                "with how many of its arms carry levels_unavailable and why. Most useful after an identity "
+                "version bump, when arms stamped before it can no longer be described."
+            ),
         ),
         Action(
             name="report_read",

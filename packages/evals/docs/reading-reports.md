@@ -11,7 +11,9 @@ Every campaign is read through one document, the **report**: blocks in reading o
 author wrote, with a role), `table`, `chart` and `disclosure` (what code must add), each linked to the findings it
 belongs to or rests on. With an **analysis** (a model reading the campaign's numbers and writing findings), the
 report carries those findings beside the evidence; without one it is a **code-only report**, every table and
-chart code can build and a line saying no analysis was generated. Either way every number comes from code, and a
+chart code can build and a line saying no analysis was generated. Either way the decision surface's charts lead its
+table, and a finding's evidence that compares arms is drawn ahead of its table unless the author's own chart drew:
+the chart is the reading form, the table the audit form. Either way every number comes from code, and a
 model never decides how much a judged score can be trusted. [`examples/reports.py`](../examples/reports.py) writes
 one to files, offline. `analysis_report(storage, analysis_id, scope_id)` returns a generated analysis's `Report`:
 
@@ -38,10 +40,10 @@ which the published schema and the model both refuse. It holds:
 - the arm table: each arm and every lever it ran, with no status column (every arm is unresolved, since
   nothing decided) and no finding column (there are no findings);
 - the guardrails, each decided for each arm against the control ([below](#reading-the-guardrails));
-- the decision surface;
+- the decision surface, led by a distribution chart per judged dimension and per measure with a better end,
+  drawn across the arms, except a label's statistics (they are in the labels table), `match` where `accuracy` is
+  charted, a cost no result reported, and a reading only one arm drew (nothing to compare);
 - the contrasts the evidence tested against the control;
-- a distribution chart per judged dimension and per measure with a better end, except a label's statistics
-  (they are in the labels table), `match` where `accuracy` is charted, and a cost no result reported;
 - for a classifier, one `labels` table of each label's precision, recall and F1, a row per label and arm:
   precision and recall with their 95% Wilson intervals over the cases, F1 with none (it has none by construction), and
   every figure with the n it is counted over;
@@ -131,11 +133,25 @@ the control on each reading, under one rig.
 | not separated | the cases could not tell the arms apart | add cases, or declare a margin; never read it as a tie |
 | untested | no test could decide: fewer than two cases on a side, or a gap with no spread (every shared case moved by exactly the same amount, or each side constant) over too few cases for the exact test to reach 0.05; the row says why | fix what it names (usually too few cases) |
 
-A report from `compare` prints one line above this table when a tested measure declares no margin: "No margin
-is declared on …, so no contrast on it can read equivalent", with how to declare one (`compare(margins=...)`;
-accuracy takes none, so grade with a scorer too).
+Latency read while other cells or runs executed beside it is never in this table: the bundle withholds it
+before anything reads it, a latency row whose arm has no other latency reads `untested` and says why, and
+one line (`latency_contended`) names the arms. Launch with `measure_latency=True` to read latency clean.
 
-`equivalent` needs a declared margin (`MetricDescriptor.materiality_threshold`) and a paired test. On a
+A report from `compare` prints one line above this table when a tested measure declares no margin: "No margin
+is declared on …, so no contrast on it can read equivalent", with how to declare one for each kind of measure:
+a scorer's by its name (`compare(margins={"correct": 0.05})`), accuracy's the same way
+(`compare(margins={"accuracy": 0.05})`), and for an engine measure such as cost, that none can be declared.
+
+Every verdict here is also a typed value (`report.verdicts`, `Comparison.verdicts()`, the `outcome` key of
+`Comparison.contrasts()`): its outcome, a reason code, the margin it read and where that came from
+(`margin_source`: `measure`, `run` or, for a judged guardrail, `campaign`), its materiality, and whether it is a
+guardrail. The printed verdict is rendered from it, so code branches on the outcome, never on the words. The
+same values drive the CI gate ([The command line](command-line.md#gate)).
+
+`equivalent` needs a margin and a paired test. A host declares a measure's margin
+(`MetricDescriptor.materiality_threshold`); accuracy, whose description the engine owns, takes one declared on
+the runs at launch (`compare(margins={"accuracy": ...})`, `start_run(margins=...)`), read only when every run of
+the campaign declares the same one, and its verdict says "declared on the runs". On a
 measure that declares its range (`value_range`), as every pass rate and 1–5 score does, each one-sided test
 is a bounded test by betting, which holds 5% for any distribution of differences on that range at any number
 of cases. Coarse scores need that: a regression that fails one case in ten leaves twelve agreeing cases 28%
@@ -172,17 +188,34 @@ cannot hide a loss here.
 
 | Decision | Means | Do |
 |---|---|---|
-| held | the whole interval is on the good side of the margin | nothing; the arm did not get worse by more than you tolerate |
+| held | the whole interval is on the good side of the margin, and the reading declares its range | nothing; the arm did not get worse by more than you tolerate |
 | breached | the whole interval is beyond the margin | do not adopt the arm, whatever it gained; the analysis writer is refused if it tries |
-| undecided | the interval straddles the line, or no interval exists; the row says why | do not read it as safe. An arm can still be adopted, and the decision then carries a `Guardrails` fact naming it. To decide it, add cases or declare a margin |
+| undecided | the interval straddles the line, no interval exists, or the reading declares no range; the row says why | do not read it as safe. An arm can still be adopted, and the decision then carries a `Guardrails` fact naming it. To decide it, add cases, declare a margin, or declare the reading's range |
 
 The margin is the measure's `materiality_threshold`, and a judged dimension's is the one its campaign declares
 (`CampaignDesign.guardrail_margins`). A guardrail with no margin declared is held at zero change: `held` then
-needs the arm shown no worse at all, which a few cases rarely show. When every case
-moved by the same amount (both arms pass every case, or every case flipped), a t interval has no width; the
-row then reads `bounded` and uses the widest difference the scale allows for the cases that could still
-move. An `undecided` guardrail does not block adoption because at a few cases and no margin almost every
+needs the arm shown no worse at all, which a few cases rarely show.
+
+**`held` is a claim of safety, so it is read only off a test that holds its error rate.** On a declared range
+(`value_range` on a measure, `ranges=` beside a quick scorer; a pass/fail and a judged scale have one already)
+the interval is the bounded test by betting (Waudby-Smith & Ramdas), each end a one-sided 2.5% bound that holds
+for any values on the range at any number of cases. The t interval it replaced read `held` up to 9.5% of the time
+at the margin on coarse, skewed scores (a rare four-point drop on 1-5, pass/fail flips), against 2.5%. The price
+is the truth about coarse data: a perfect record shows a pass/fail guardrail within 0.1 of the control only from
+41 cases, and within 0.05 from 83, since fewer agreeing cases cannot rule out a rare drop. The bounded test
+bets in a fixed pseudo-random order, so the order cases were listed in cannot steer it. **With no declared range a
+guardrail is never `held`**: no test of a mean holds its rate there (an unbounded value can hide a rare large
+move), so the row reads `undecided` and says to declare the range. It can still read `breached`, off the t interval,
+which blocks an arm rather than clearing one; that claim's rate is not guaranteed on skewed values
+([open problems](open-problems.md#a-guardrail-is-held-only-on-a-declared-range-accepted-limit)). The interval
+column marks such a row `(t: no declared range)`. An `undecided` guardrail does not block adoption because at a few cases and no margin almost every
 guardrail is undecided, and a rule that blocked them all would block every adoption.
+
+**On the frontier.** The frontier holds each contestant's judged guardrails against the campaign's control by the
+same rule. A contestant that breaches one is disqualified, and its row names the dimension (`disqualified_by`).
+One that does not hold every guardrail is never the frontier's pick. With no control there is nothing to hold a
+contestant against: the subject's `boundary_pillar` says the pillar was not checked, and a verdict lists the
+dimensions it was not checked on (`boundary_unchecked`).
 
 ## Readings no question asked about: exploratory
 
@@ -209,7 +242,7 @@ unit of analysis: a case's repeats are averaged first, because they are not inde
 | A contrast against the control | Paired t-test on per-case means over the shared cases (two or more), else Welch's t on Hsu's `min(n_a, n_b) − 1` df; a gap with no spread is read by the exact permutation test, as for scope divergence, with no interval and no g. Effect size Hedges' g (g_z when paired). Holm correction within each family; interval Bonferroni at 1 − α/m, clipped to the differences the measure's declared range allows (± its width). |
 | `equivalent` | Paired TOST against the measure's `materiality_threshold`, in the same Holm family, capped at the number of compared rows (Shaffer); each one-sided test is the bounded test by betting (Waudby-Smith & Ramdas) on the measure's declared range, which holds α for any distribution on the range at any n; a measure with no declared range is not tested for equivalence. |
 | A bar | Three-valued: the cell's interval against the threshold less the margin (cleared, missed, undecided). A seeded threshold is the incumbent's mean moved √2 − 1 of its half-width toward the permissive end. |
-| A guardrail | Non-inferiority: the 95% interval on arm − control against zero change less the margin. |
+| A guardrail | Non-inferiority: the 95% interval on arm − control against zero change less the margin. On a declared range the interval is the bounded test by betting (each end a one-sided 2.5% bound; paired on the differences, unpaired each arm's mean at 1.25% and the gap between them); with no declared range it is the comparison's t interval, which can read `breached` but never `held`. |
 | Scope divergence, mechanism checks | The difference tested directly, paired or Welch as for a contrast; a gap with no spread is read by an exact permutation test, which can reach 0.05 only from six shared cases, or unshared where 2 / C(n_a + n_b, n_a) ≤ 0.05 (four a side, or three against five). |
 | Frontier | Dominance by the contrasts' test, Holm across the subject's pairs; latency ranked on the mean; p95 median-unbiased (Hyndman–Fan type 8) from 13 observations; cost band a lognormal prediction band. |
 | Run history | Paired test per adjacent pair of runs, uncorrected; `equivalent` by the same bounded TOST against the threshold, on the measure's declared range (with none, untested, and each step's flag says why). |
@@ -309,7 +342,9 @@ A chart block carries the chart's **intent** (`ChartIntent`, from `threetears.ev
 a charting library's spec: its type from eval's eight, the rows it draws, what each field encodes
 (identity, length, position, interval with what it varies over, level, class, ordinal, count, label), its axes with
 their units and zero baselines, its order, the colour *slots* it uses and what it must disclose — plus its
-values as drawn, which the HTML shows as a table.
+values as drawn, which the HTML shows as a table. An interval is drawn as a band only over 5 or more cases
+(`SMALL_N_BAND_FLOOR`): below that a distribution draws each case's value as a point and says why, a timeseries
+leaves a stated gap, and a null result is refused. The interval itself still appears in the tables.
 
 How a chart looks is the host's: a renderer reads the intent and the host's palette —
 `StyleProfile.chart_palette`, a renderer-neutral `ChartPalette` (the eight numbered series slots, slots
@@ -512,7 +547,7 @@ imports the adapter.
 The packaged palette is a brand-neutral default with a light and a dark variant (`packaged_palette("light")`,
 `packaged_palette("dark")`), a published categorical palette ordered so the four validated slots can be told
 apart as a set. The package's tests hold text to 4.5:1 against the chart surface, slot 1 (every single-series
-mark), `highlight` and `context` to 3:1, and slots 1-4 to an OKLab ΔE of at least 6 under simulated protanopia
+mark) and `context` to 3:1, and slots 1-4 to an OKLab ΔE of at least 6 under simulated protanopia
 and deuteranopia. Several categorical slots fall below 3:1 on the light surface, so a chart never relies on
 colour alone to identify a category: it labels the marks or names the level in the values table. A host's own
 `ChartPalette` is held to the contract's shape only.

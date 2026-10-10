@@ -532,9 +532,12 @@ class CandidateKind(Protocol):
     asked for every cell of the run and may hand back the same instance each time — so it
     must carry no state from one
     ``prepare``/``invoke`` pair to the next; a cell's own state belongs on the instance
-    ``prepare`` returns. Cells within a run execute serially, so a kind need not be
-    concurrency-safe against itself; two runs in one process are two callers and two
-    instances.
+    ``prepare`` returns. **Cells within a run may execute at once** — a run whose launch did not
+    declare latency under test runs up to ``LaunchSettings.max_concurrent_cells`` of them, each in
+    its own task — so one instance may be driving several cells at the same moment, and any
+    collaborator it shares across cells (a client, a pool) must be safe to call from several at
+    once. A host whose collaborators are not sets ``max_concurrent_cells=1``, which runs every
+    run's cells one at a time. Two runs in one process are two callers and two instances.
     """
 
     judged_artifact: JudgedArtifact
