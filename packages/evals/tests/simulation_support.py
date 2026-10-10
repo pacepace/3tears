@@ -31,11 +31,11 @@ from statistics import NormalDist
 
 from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
-    composite_significance,
     difference_interval,
     exact_decimal,
     holm_adjust,
     paired_equivalence,
+    separation_p,
 )
 from threetears.evals.contracts.metrics import confusion_cell
 
@@ -384,9 +384,10 @@ def family_verdicts(
 
     Each comparison is ``(control per-case values, contrast per-case values, higher_is_better)``. It is
     tested paired over the cases both sides ran when they share at least two, else unpaired over each
-    side's values (:func:`~threetears.evals.analysis.stats.composite_significance`). A paired comparison with
-    a declared margin (``margins``, aligned with ``comparisons``) also runs the paired TOST against it, on
-    the reading's declared range where ``value_ranges`` gives one
+    side's values, its p :func:`~threetears.evals.analysis.stats.separation_p`'s — the t-test's where the
+    values have spread, the exact permutation p where they have none, None where no test can decide — as the
+    bundle's is. A paired comparison with a declared margin (``margins``, aligned with ``comparisons``) also
+    runs the paired TOST against it, on the reading's declared range where ``value_ranges`` gives one
     (:func:`~threetears.evals.analysis.stats.paired_equivalence`). Every separation p and TOST p is
     Holm-adjusted together, the multiplier capped at the separation count
     (:func:`~threetears.evals.analysis.stats.holm_adjust`); a comparison separates when its adjusted p is
@@ -408,7 +409,7 @@ def family_verdicts(
         a = [control[case] for case in shared] if paired else list(control.values())
         b = [contrast[case] for case in shared] if paired else list(contrast.values())
         delta = sum(b) / len(b) - sum(a) / len(a) if a and b else None
-        p_raw = composite_significance(a, b, paired=paired).p_value
+        p_raw = separation_p(a, b, paired=paired)
         margin = margins[index] if margins is not None else None
         value_range = value_ranges[index] if value_ranges is not None else None
         equivalence_p = None

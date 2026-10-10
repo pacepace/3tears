@@ -242,11 +242,19 @@ _READINGS = {"field_accuracy": True, "fields_stripped": False}
 
 
 def _seeded_campaign(
-    rng: random.Random, *, n_cases: int, repeats: int, shift: float, cases_of: dict[str, Sequence[int]] | None = None
+    rng: random.Random,
+    *,
+    n_cases: int,
+    repeats: int,
+    shift: float,
+    cases_of: dict[str, Sequence[int]] | None = None,
+    noise: float = 1.0,
 ) -> tuple[AnalysisContextBundle, dict[tuple[str, str], dict[str, float]]]:
     """Assemble a three-arm campaign with seeded readings, and return each arm's per-case means too.
 
-    ``contrast-one`` is shifted by ``shift`` on ``field_accuracy``; nothing else moves. ``cases_of`` names
+    ``contrast-one`` is shifted by ``shift`` on ``field_accuracy``; nothing else moves. ``noise`` scales each
+    observation's own noise around its case's level: at 0 every arm reads its case's level exactly, so a shift
+    moves every case by one amount and the comparison has no spread. ``cases_of`` names
     which case indices an arm ran (default: the first ``n_cases``; up to ``n_cases + 4``), so a contrast can
     share some or only one of the control's cases and take the paired or the unpaired branch.
 
@@ -263,9 +271,9 @@ def _seeded_campaign(
         for index in (cases_of or {}).get(model, range(n_cases)):
             case = f"tc-{index:02d}"
             for repeat in range(1, repeats + 1):
-                accuracy = 0.6 + case_levels[index][0] + rng.gauss(0.0, 0.05)
+                accuracy = 0.6 + case_levels[index][0] + noise * rng.gauss(0.0, 0.05)
                 accuracy = min(1.0, max(0.0, accuracy + (shift if model == "contrast-one" else 0.0)))
-                stripped = 5.0 + case_levels[index][1] + rng.gauss(0.0, 0.5)
+                stripped = 5.0 + case_levels[index][1] + noise * rng.gauss(0.0, 0.5)
                 values = {"field_accuracy": round(accuracy, 6), "fields_stripped": round(stripped, 6)}
                 for reading, value in values.items():
                     written.setdefault((model, reading), {}).setdefault(case, 0.0)
@@ -332,8 +340,11 @@ class TestTheBundleAppliesTheRule:
                 {"contrast-one": range(7, 13)},
                 ("contrast-one", "unpaired", "improved"),
             ),
+            # No spread: every case moved by one amount, so no t exists and the exact sign-flip p decides —
+            # the mirror reads it through separation_p as the bundle does, never as untested.
+            ("every case moved by one amount", 8, 1, 0.25, None, ("contrast-one", "paired", "improved")),
         ],
-        ids=["null-paired", "clear-paired", "partly-shared", "one-shared-unpaired"],
+        ids=["null-paired", "clear-paired", "partly-shared", "one-shared-unpaired", "no-spread-paired"],
     )
     def test_each_comparison_is_the_rule(
         self,
@@ -348,7 +359,10 @@ class TestTheBundleAppliesTheRule:
         ``field_accuracy`` — asserted so a seeded campaign that drifted off its branch fails rather than
         passing over the easy case."""
         rng = random.Random(f"bundle-rule-{label}")
-        bundle, written = _seeded_campaign(rng, n_cases=n_cases, repeats=repeats, shift=shift, cases_of=cases_of)
+        noise = 0.0 if label == "every case moved by one amount" else 1.0
+        bundle, written = _seeded_campaign(
+            rng, n_cases=n_cases, repeats=repeats, shift=shift, cases_of=cases_of, noise=noise
+        )
         family = _family(bundle)
         names = {fixture_variant_key(model): model for model in _ARMS}
         assert {comparison.name for comparison in family.comparisons} == set(_READINGS), (
