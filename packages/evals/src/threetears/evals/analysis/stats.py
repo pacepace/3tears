@@ -94,7 +94,8 @@ UNPAIRED_TEST_NAME = (
 #: The equivalence test the change classifier runs beside the paired test, named for
 #: the same reason: an `equivalent` label names the statistics it rests on.
 EQUIVALENCE_TEST_NAME = (
-    f"two one-sided paired t-tests (TOST) against ± the measure's declared margin, α={SIGNIFICANCE_ALPHA}"
+    "two one-sided paired t-tests (TOST) against ± the measure's declared margin (the exact one-sided sign-flip "
+    f"tests where every difference is one amount), α={SIGNIFICANCE_ALPHA}"
 )
 
 
@@ -1238,36 +1239,59 @@ class ChangeVerdict(NamedTuple):
     #: measure's declared materiality threshold. ``None`` when none was declared, and
     #: then no equivalence test ran and no label claims one.
     equivalence_margin: float | None = None
-    #: The TOST p: the larger of the two one-sided p's, thresholded at α. ``None``
-    #: wherever no equivalence t-test was evaluated — no margin, fewer than two
-    #: pairs, or a zero-spread difference whose reading is reasoned rather than tested.
+    #: The TOST p: the larger of the two one-sided p's, thresholded at α — each a t-test's,
+    #: or where every paired difference is one amount the exact one-sided sign-flip p
+    #: (:func:`paired_equivalence`). ``None`` wherever no equivalence test could decide — no
+    #: margin, fewer than two pairs, or a constant difference over too few pairs for the
+    #: exact p to reach α.
     equivalence_p: float | None = None
 
 
-def paired_equivalence(diffs: list[float], margin: float | None) -> tuple[bool | None, float | None]:
+def paired_equivalence(diffs: Sequence[float | Fraction], margin: float | None) -> tuple[bool | None, float | None]:
     """The paired TOST against ``± margin``: whether the mean difference is shown inside it, and its p.
 
-    Two one-sided t-tests on the paired differences, each at :data:`SIGNIFICANCE_ALPHA`: H0 ``δ ≤ −margin``
+    Two one-sided tests on the paired differences, each at :data:`SIGNIFICANCE_ALPHA`: H0 ``δ ≤ −margin``
     and H0 ``δ ≥ margin``. Equivalence is claimed only when both reject — the larger of the two p's
-    below α. A zero-spread difference has no t; it is read under the same pair floor the deterministic
-    gap is (:data:`MIN_PAIRS_FOR_DETERMINISTIC_GAP`), for the same reason: a perfectly consistent
-    pattern over fewer pairs is a coincidence of a coarse scale, not a finding.
+    below α. Where the differences have spread, each is a one-sided t-test.
+
+    **Where every difference is one amount there is no t, and the exact test decides** — the reading
+    :func:`no_spread_p` gives :func:`separation_p` and :func:`level_difference`, one-sided. Shifted by the
+    margin, every difference sits on one side of zero, and of the ``2 ** n`` equally likely sign flips only
+    the observed one is that extreme in the tested direction, so each one-sided p is ``2 ** −n`` (half the
+    two-sided :func:`_sign_flip_p`) when the shifted amount is on the rejecting side, and 1 when it is not.
+    A constant difference strictly inside the margin therefore has the TOST p ``2 ** −n``, and one on or
+    beyond it has p 1. Where that p cannot reach α (fewer than five pairs at α = 0.05) no test can decide,
+    and the answer is untested, never a p — as :func:`separation_p` answers below its floor. Decided on
+    exact values (:func:`exact_decimal`), so pass the differences of exact values: a float residue must not
+    pass for a spread, nor a spread for a constant.
 
     Args:
-        diffs: The paired differences, current minus baseline.
+        diffs: The paired differences, current minus baseline — exact (:class:`~fractions.Fraction`)
+            where the caller read its samples exactly.
         margin: The declared margin, or None.
 
     Returns:
-        ``(equivalent, p)``. ``equivalent`` is None when no test could run (no positive margin, fewer
-        than two pairs); ``p`` is None wherever no t was evaluated.
+        ``(equivalent, p)``. Both None when no test could decide: no positive margin, fewer than two
+        pairs, a constant difference over too few pairs for the exact p to reach α, or a spread that
+        vanishes in floating point.
     """
     n = len(diffs)
     if margin is None or margin <= 0.0 or n < 2:
         return None, None
-    mean = sum(diffs) / n
-    sd = _sample_std(diffs)
+    exact = [exact_decimal(d) for d in diffs]
+    if no_spread_p([Fraction(0)] * n, exact, paired=True) is not None:
+        # Every difference is one amount, so each shifted test is all-one-sign: the one-sided sign-flip p.
+        bound = exact_decimal(margin)
+        shift_above_lower, shift_below_upper = exact[0] + bound, bound - exact[0]
+        p = max(_sign_flip_p(n) / 2.0 if shift > 0 else 1.0 for shift in (shift_above_lower, shift_below_upper))
+        if p != 1.0 and p > SIGNIFICANCE_ALPHA:
+            return None, None
+        return p < SIGNIFICANCE_ALPHA, p
+    values = [float(d) for d in exact]
+    mean = sum(values) / n
+    sd = _sample_std(values)
     if sd == 0.0:
-        return n >= MIN_PAIRS_FOR_DETERMINISTIC_GAP and abs(mean) < margin, None
+        return None, None
     se = sd / math.sqrt(n)
     df = float(n - 1)
     p_above_lower = _student_t_upper_tail((mean + margin) / se, df)
@@ -1376,8 +1400,6 @@ def paired_change(
     active_gates = [gate for gate in (absolute_gate, relative_gate) if gate is not None]
     exceeds = any(active_gates) if active_gates else True
 
-    # Float differences of exact ones: a constant exact difference is one float, so its spread is exactly 0.
-    diffs = [float(y - x) for x, y in zip(a, b)]
     hedges_g: float | None
     significant: bool | None
     p_value: float | None
@@ -1401,7 +1423,7 @@ def paired_change(
         # would say the data was asked and could not tell). Composite values live on a coarse lattice,
         # so "every case moved by exactly the same amount" is an ordinary coincidence at small n.
         hedges_g, significant, p_value = None, None, None
-    equivalent, equivalence_p = paired_equivalence(diffs, equivalence_margin)
+    equivalent, equivalence_p = paired_equivalence([y - x for x, y in zip(a, b)], equivalence_margin)
 
     def verdict(label: ChangeLabel) -> ChangeVerdict:
         return ChangeVerdict(
@@ -1527,8 +1549,8 @@ def level_difference[Case: Hashable](
     exact = no_spread_p(a, b, paired=paired)
     if exact is not None:
         if paired:
-            # Decided on the exact differences, so the float the equivalence test reads has no residue either.
-            equivalent, equivalence_p = paired_equivalence([float(diffs[0])] * len(diffs), equivalence_margin)
+            # Decided on the exact differences, so the equivalence test reads no residue either.
+            equivalent, equivalence_p = paired_equivalence(diffs, equivalence_margin)
         else:
             equivalent, equivalence_p = None, None
         if exact == 1.0:
@@ -1545,7 +1567,7 @@ def level_difference[Case: Hashable](
             )
         return LevelDifference(test, n_a, n_b, mean_a, mean_b, delta, 0.0, exact, True, None, None, None)
     if paired:
-        equivalent, equivalence_p = paired_equivalence([float(d) for d in diffs], equivalence_margin)
+        equivalent, equivalence_p = paired_equivalence(diffs, equivalence_margin)
     # The spread is exactly nonzero, so the shared statistic exists; its float residue is all that could
     # still vanish, and then no t is quoted.
     statistic = _t_statistic([float(x) for x in a], [float(y) for y in b], paired=paired)

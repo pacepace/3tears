@@ -7701,7 +7701,9 @@ def _compare(
     # The equivalence test only where the separation test produced a p, so each equivalence hypothesis has
     # its comparison's separation hypothesis beside it in the family (see holm_adjust's max_true).
     margin = threshold if paired and threshold and p_raw is not None else None
-    _, equivalence_p_raw = paired_equivalence([y - x for x, y in zip(a, b)], margin)
+    # The differences of exact values, so a constant shift reaches the exact one-sided test rather than either
+    # vanishing from the family (no t, no p) or carrying a float residue a t-test reads as a tiny spread.
+    _, equivalence_p_raw = paired_equivalence([exact_decimal(y) - exact_decimal(x) for x, y in zip(a, b)], margin)
     delta = None if mean_a is None or mean_b is None else mean_b - mean_a
     comparison = FamilyComparison(
         reading=reading[0],
