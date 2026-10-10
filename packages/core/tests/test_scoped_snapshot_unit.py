@@ -1727,6 +1727,71 @@ async def test_a_stage_whose_claim_was_lost_moves_no_pointer() -> None:
     await snapshot.stop()
 
 
+_NV_ROWS = {"results": [{"county": "c9", "state": "NV", "votes": 4}]}
+
+
+def _indexed(pointers: _Pointers) -> set[str]:
+    return set(json.loads(pointers.entries["enr.index"][0])["scopes"])
+
+
+async def test_a_claim_lost_just_before_a_later_scopes_move_skips_it_and_keeps_the_scope_already_moved() -> None:
+    """two stages: the second's claim is lost while its chunks are checked, after the first moved."""
+    snapshot, pointers, store, l3 = _snapshot(claim_ttl=timedelta(seconds=1))
+    await _started(snapshot, pointers)
+    before = pointers.entries["enr.s.TX"][0]
+    nevada = await snapshot.stage("NV", 2, _NV_ROWS)
+    texas = await snapshot.stage("TX", 2, _TX_ROWS)
+    assert texas.claim is not None
+    l3.epochs.update({"NV": 2, "TX": 2})
+    real_info = store.info
+    taken: list[str] = []
+
+    async def info_while_texas_claim_is_taken(name: str) -> Any:
+        if name.startswith("enr/TX/") and not taken:
+            assert texas.claim is not None
+            taken.append(name)
+            _another_writer_took(pointers, texas.claim.key)
+            await _until(texas.claim.lost.is_set, what="the second stage's claim lost", timeout=3)
+        return await real_info(name)
+
+    store.info = info_while_texas_claim_is_taken  # type: ignore[method-assign]
+
+    moved, skipped = await snapshot.publish_staged([nevada, texas], carry_at={"NV": 0, "TX": 1})
+
+    assert taken, "the second stage's chunks were never checked"
+    assert (moved, skipped) == (["NV"], ["TX"]), "a claim lost before the move was raised, not skipped"
+    assert "NV" in _indexed(pointers), "a scope whose pointer moved is not in the index"
+    assert pointers.entries["enr.s.TX"][0] == before, "a pointer moved after its write claim was lost"
+    await snapshot.stop()
+
+
+async def test_a_publish_that_raises_after_one_scope_moved_still_indexes_it_and_lets_every_claim_go() -> None:
+    snapshot, pointers, store, l3 = _retiring_snapshot()
+    await _started(snapshot, pointers)
+    nevada = await snapshot.stage("NV", 2, _NV_ROWS)
+    texas = await snapshot.stage("TX", 2, _TX_ROWS)
+    l3.epochs.update({"NV": 2, "TX": 2})
+    real_update = pointers.update
+
+    async def texas_pointer_unreachable(*, key: str, value: bytes, revision: int, ttl: timedelta | None = None) -> Any:
+        if key == "enr.s.TX":
+            raise ConnectionError("no route to NATS")
+        return await real_update(key=key, value=value, revision=revision, ttl=ttl)
+
+    pointers.update = texas_pointer_unreachable  # type: ignore[method-assign]
+
+    with pytest.raises(ConnectionError):
+        await snapshot.publish_staged([nevada, texas], carry_at={"NV": 0, "TX": 1})
+
+    assert "enr.s.NV" in pointers.entries, "the first scope's pointer did not move"
+    assert "NV" in _indexed(pointers), "a scope whose pointer moved before the raise is not in the index"
+    assert _write_claims(pointers) == [], "a publish that raised left claims renewing"
+    texas_chunks = set(texas.objects.values())
+    assert texas_chunks <= set(store.retired), "the stage that never moved was not retired"
+    assert not set(nevada.objects.values()) & set(store.retired), "a chunk the moved scope serves was retired"
+    await snapshot.stop()
+
+
 async def test_a_publish_whose_claim_is_lost_mid_write_moves_no_pointer() -> None:
     snapshot, pointers, store, _ = _snapshot(claim_ttl=timedelta(seconds=1))
     await _started(snapshot, pointers)

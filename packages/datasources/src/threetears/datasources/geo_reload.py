@@ -83,12 +83,11 @@ read, and the next successful report deletes them.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from datetime import timedelta
 from typing import TYPE_CHECKING, Annotated, Final
 from uuid import UUID, uuid7
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_serializer
-from threetears.nats.errors import RequestError
+from threetears.nats.hub_requests import ask_hub
 from threetears.nats.subjects import Subjects
 from threetears.observe import get_logger
 
@@ -324,36 +323,19 @@ async def report_geo_layers_reloaded(
         # the hub would refuse the same body, so it is refused here with the hub's code
         raise GeoReloadRefusedError("INVALID_REQUEST", f"geography reload report is not valid: {exc}") from exc
     correlation_id = request.correlation_id
-    try:
-        raw = await nats_client.request_raw(
-            subject=Subjects.hub_geo_layers_reloaded(),
-            payload=request.model_dump_json().encode("utf-8"),
-            timeout=timedelta(seconds=timeout_seconds),
-        )
-    except RequestError as exc:
-        raise GeoReloadUnavailableError(
-            f"geography reload report failed (correlation_id={correlation_id}): {exc}"
-        ) from exc
-    try:
-        reply = GeoLayersReloadedReply.model_validate_json(raw)
-    except ValidationError as exc:
-        raise GeoReloadUnavailableError(
-            f"geography reload reply did not decode (correlation_id={correlation_id}): {exc}"
-        ) from exc
-    # a refusal with no correlation id is this request's: a body the hub could not decode had none to echo
-    if reply.correlation_id != correlation_id and (reply.success or reply.correlation_id is not None):
-        raise GeoReloadUnavailableError(
-            f"geography reload reply carried correlation_id={reply.correlation_id}, not {correlation_id}"
-        )
-    if not reply.success and reply.error_code in _RETRYABLE_ERROR_CODES:
-        raise GeoReloadUnavailableError(
-            f"geography reload failed hub-side (correlation_id={correlation_id}): "
-            f"{reply.error_code}: {reply.error_message or 'no details'}"
-        )
-    if not reply.success:
-        raise GeoReloadRefusedError(
-            reply.error_code or "UNKNOWN", reply.error_message or "no details", versions=reply.versions
-        )
+    reply = await ask_hub(
+        nats_client,
+        subject=Subjects.hub_geo_layers_reloaded(),
+        request=request,
+        reply_type=GeoLayersReloadedReply,
+        what="geography reload report",
+        timeout_seconds=timeout_seconds,
+        unavailable=GeoReloadUnavailableError,
+        refused=lambda refusal: GeoReloadRefusedError(
+            refusal.error_code or "UNKNOWN", refusal.error_message or "no details", versions=refusal.versions
+        ),
+        retryable=_RETRYABLE_ERROR_CODES,
+    )
     versions = reply.versions or {}
     previous = reply.previous_versions or {}
     if any(versions.get(name) != generation for name, generation in request.generations.items()):

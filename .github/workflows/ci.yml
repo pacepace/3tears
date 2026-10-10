@@ -29,6 +29,17 @@ jobs:
         with:
           fetch-depth: 0
 
+      # CLAUDE.md: "No agent attribution. Anywhere. Ever." Coding agents end every commit with a
+      # Co-Authored-By trailer by default, so the rule is broken by omission, not by choice, and
+      # prose alone did not hold it. Every commit the PR adds is read; a commit already on the base
+      # is never examined (landed history stays landed), and the commits that landed with a trailer
+      # before this step existed are exempt by hash in scripts/attribution-exemptions.txt. Runs for
+      # a documentation-only PR too: its commits carry trailers as readily as any other.
+      # tests/enforcement/test_no_agent_attribution.py fails if this step goes away.
+      - name: Refuse agent attribution in the PR's commits
+        if: github.event_name == 'pull_request'
+        run: ./scripts/check-attribution.sh '${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}'
+
       # A documentation-only PR runs no suite. The skip is decided HERE, inside
       # the job, rather than by a `paths-ignore:` on the trigger -- and that is
       # not a style preference.

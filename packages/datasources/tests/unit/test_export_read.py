@@ -313,11 +313,38 @@ class TestTheExportIsTheOneAskedFor:
 
 class TestDeleteAfterLoad:
     @pytest.mark.asyncio
-    async def test_a_refused_export_is_left_for_an_operator(self) -> None:
+    async def test_a_refused_export_is_deleted_and_its_refusal_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        """delete after load, no timer (Pace's ruling): a refusal keeps no copy of the rows either."""
         client = _Client([_print(3, "a"), _print(3, "b")], exported=3)
-        with pytest.raises(IncompleteExportError):
+        with caplog.at_level("WARNING"), pytest.raises(IncompleteExportError, match="changed while"):
             await _part(client, _Store(_export([_ROWS])))
-        assert "delete" not in [kind for kind, _ in client.calls]
+        assert client.calls[-1] == ("delete", "enr/r1/VA"), "a refused export was left in the bucket"
+        proofs = [getattr(r, "extra_data", {}).get("proof", "") for r in caplog.records if r.levelname == "WARNING"]
+        assert any("changed while" in proof for proof in proofs), "the refusal was not logged with its proof"
+
+    @pytest.mark.asyncio
+    async def test_an_answer_at_another_destination_still_deletes_the_one_asked_for(self) -> None:
+        other = DatasourceExportResult(
+            row_count=3, bucket=_BUCKET, object_prefix="exports/enr/r0/VA/", manifest_path="exports/enr/r0/VA/manifest"
+        )
+        client = _Client([_print(3), _print(3)], exported=3, answer=other)
+        with pytest.raises(IncompleteExportError, match="not the destination"):
+            await _part(client, _Store(_export([_ROWS])))
+        assert client.calls[-1] == ("delete", "enr/r1/VA")
+
+    @pytest.mark.asyncio
+    async def test_files_that_fail_their_count_are_deleted(self) -> None:
+        client = _Client([_print(3), _print(3)], exported=3)
+        with pytest.raises(IncompleteExportError, match="files hold 2 rows"):
+            await _part(client, _Store(_export([_ROWS[:2]], counts=False)))
+        assert client.calls[-1] == ("delete", "enr/r1/VA")
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_wins_over_a_delete_that_also_fails(self, caplog: pytest.LogCaptureFixture) -> None:
+        client = _Client([_print(3, "a"), _print(3, "b")], exported=3, delete_fails=True)
+        with caplog.at_level("ERROR"), pytest.raises(IncompleteExportError):
+            await _part(client, _Store(_export([_ROWS])))
+        assert "could not be deleted" in caplog.text
 
     @pytest.mark.asyncio
     async def test_a_proven_export_that_cannot_be_deleted_is_raised_not_left_silently(self) -> None:

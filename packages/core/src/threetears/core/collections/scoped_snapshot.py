@@ -2197,6 +2197,11 @@ class ScopedSnapshot:
         it from L3 because its L3 epoch is now ahead of its pointer. Every replica applies the moved
         scopes from its pointer watch, this one included.
 
+        A stage whose write claim is lost, checked before the scope is completed and again the moment
+        before its pointer moves, is skipped and left to the catch-up. Every way out, a raise part way
+        through included, indexes the scopes whose pointers already moved, lets every claim go and
+        retires what the moved scopes no longer serve, so no moved scope is left out of the index.
+
         :param staged: the scopes :meth:`stage` wrote
         :ptype staged: Sequence[StagedScope]
         :param carry_at: scope -> its epoch before the write (0 for a scope it never had)
@@ -2211,65 +2216,71 @@ class ScopedSnapshot:
         moved: list[str] = []
         skipped: list[str] = []
         superseded: list[str] = []
+        finished = False
         try:
-            for scope in staged:
-                if scope.claim is not None and not scope.claim.held:
-                    # what it staged may already be gone to a sweep: never written to, never pointed at
-                    log.error(
-                        "scoped snapshot %s: the write claim of scope %r at epoch %d was lost; its pointer is not "
-                        "moved, and the catch-up republishes it from L3",
+            try:
+                for scope in staged:
+                    if self._claim_lost(scope):
+                        skipped.append(scope.scope)
+                        continue
+                    completed = await self._completed(scope, int(carry_at.get(scope.scope, 0)), whole=whole)
+                    if completed is None:
+                        skipped.append(scope.scope)
+                        continue
+                    pointer, observed = completed
+                    if not await self._exist(pointer.objects.values()):
+                        # never a pointer onto a missing chunk: the scope is left to the catch-up, which
+                        # republishes it from L3 (it stages it again)
+                        log.error(
+                            "scoped snapshot %s: a chunk staged for scope %r at epoch %d is gone; its pointer is "
+                            "not moved, and the catch-up republishes it from L3",
+                            self._name,
+                            scope.scope,
+                            scope.epoch,
+                        )
+                        skipped.append(scope.scope)
+                        continue
+                    # the claim may have lapsed during the round trips above: checked again, the moment
+                    # before the move, and a lost one skipped like any other
+                    if self._claim_lost(scope):
+                        skipped.append(scope.scope)
+                        continue
+                    if observed is _ANY_ENTRY:
+                        held = await self._move_pointer(pointer)
+                        (moved if held == pointer else superseded).append(scope.scope)
+                    elif await self._move_exactly(pointer, observed):
+                        moved.append(scope.scope)
+                    else:
+                        # what it carried, or filled empty, was judged against an entry that has moved since
+                        skipped.append(scope.scope)
+                finished = True
+                if superseded:
+                    log.info(
+                        "scoped snapshot %s: %d staged scopes were already at a later epoch; nothing moved for them",
                         self._name,
-                        scope.scope,
-                        scope.epoch,
+                        len(superseded),
+                        extra={"extra_data": {"scopes": superseded}},
                     )
-                    skipped.append(scope.scope)
-                    continue
-                completed = await self._completed(scope, int(carry_at.get(scope.scope, 0)), whole=whole)
-                if completed is None:
-                    skipped.append(scope.scope)
-                    continue
-                pointer, observed = completed
-                if not await self._exist(pointer.objects.values()):
-                    # never a pointer onto a missing chunk: the scope is left to the catch-up, which
-                    # republishes it from L3 (it stages it again)
-                    log.error(
-                        "scoped snapshot %s: a chunk staged for scope %r at epoch %d is gone; its pointer is not "
-                        "moved, and the catch-up republishes it from L3",
-                        self._name,
-                        scope.scope,
-                        scope.epoch,
-                    )
-                    skipped.append(scope.scope)
-                    continue
-                _still_held(scope.claim, f"moving scope {scope.scope!r}'s pointer to epoch {scope.epoch}")
-                if observed is _ANY_ENTRY:
-                    held = await self._move_pointer(pointer)
-                    (moved if held == pointer else superseded).append(scope.scope)
-                elif await self._move_exactly(pointer, observed):
-                    moved.append(scope.scope)
-                else:
-                    # what it carried, or filled empty, was judged against an entry that has moved since
-                    skipped.append(scope.scope)
-            if superseded:
-                log.info(
-                    "scoped snapshot %s: %d staged scopes were already at a later epoch; nothing moved for them",
-                    self._name,
-                    len(superseded),
-                    extra={"extra_data": {"scopes": superseded}},
-                )
-            if moved:
-                await self._update_index(add=moved, whole=whole and not skipped)
+            finally:
+                # every way out, raised or returned: a scope whose pointer moved is indexed, so the
+                # replicas serve it (an index is whole only from a write of everything that finished
+                # with nothing skipped)
+                if moved:
+                    await self._update_index(add=moved, whole=whole and finished and not skipped)
         finally:
             # the stages are named by their pointers now, or will never be by this call: the claims are
-            # let go on every way out, and a skipped or superseded stage serves nothing and goes by the rule
+            # let go on every way out, and a skipped or superseded stage serves nothing and goes by the
+            # rule (which judges the pointers as KV holds them, so a stage whose move landed unseen is
+            # spared); the scopes that moved retire their older epochs
             for scope in staged:
                 if scope.claim is not None:
                     await scope.claim.release()
-        unserved = [name for scope in staged if scope.scope not in moved for name in scope.objects.values()]
-        await self._sweeper.retire_names_if_unserved(unserved, what="stages left unpublished")
-        for scope in staged:
-            if scope.scope in moved:
-                await self._sweeper.retire_older(scope.scope, scope.epoch)
+            unserved = [name for scope in staged if scope.scope not in moved for name in scope.objects.values()]
+            await self._sweeper.retire_names_if_unserved(unserved, what="stages left unpublished")
+            for scope in staged:
+                if scope.scope in moved:
+                    await self._sweeper.retire_older(scope.scope, scope.epoch)
+            self._changed.set()
         if skipped:
             log.warning(
                 "scoped snapshot %s: %d staged scopes left for the catch-up from L3",
@@ -2277,8 +2288,27 @@ class ScopedSnapshot:
                 len(skipped),
                 extra={"extra_data": {"scopes": skipped}},
             )
-        self._changed.set()
         return moved, skipped
+
+    def _claim_lost(self, scope: StagedScope) -> bool:
+        """whether a stage's write claim is lost, logged when it is: its pointer must not move.
+
+        :param scope: the stage
+        :ptype scope: StagedScope
+        :return: True when the claim was lost
+        :rtype: bool
+        """
+        if scope.claim is None or scope.claim.held:
+            return False
+        # what it staged may already be gone to a sweep: never written to, never pointed at
+        log.error(
+            "scoped snapshot %s: the write claim of scope %r at epoch %d was lost; its pointer is not "
+            "moved, and the catch-up republishes it from L3",
+            self._name,
+            scope.scope,
+            scope.epoch,
+        )
+        return True
 
     async def _completed(
         self, staged: StagedScope, carry_at: int, *, whole: bool

@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Repository: agent attribution in a commit fails CI
+
+- **Added, `scripts/check-attribution.sh`**, run by CI's `check` job on every pull request over the
+  commits it adds: a `Co-Authored-By` naming an agent, an Anthropic noreply address, a "Generated
+  with" footer or a `Claude-Session` trailer fails the PR (CLAUDE.md, "No agent attribution").
+  `--message <file>` checks one message, for a commit-msg hook. Commits already on the base are
+  never examined. Six commits on `feature/reports` landed with such trailers before the check
+  existed (f6d43aa0 and 5440a306 with `Co-Authored-By`; 4d575851, f114794c, d5897cd7 and a491ab0a
+  with `Claude-Session`). They are not rewritten, which would take a force-push of a shared branch;
+  `scripts/attribution-exemptions.txt` exempts them by full hash.
+
 ### Coordination: a lease on a bucket it was handed, whose key lapses with its holder; snapshot write claims held on it
 
 - **Added, `KVLease(None, bucket=...)`**: a lease over a bucket already bound (one another owner
@@ -32,6 +43,11 @@ packages (bumped in lock-step).
   The rebuild claim is a `KVLease` hold too, never taken back once lost; a rebuild that lost it says
   so and skips the store sweep. No per-process claim table and no renewal loop of the snapshot's
   own remain in the module.
+- **Fixed, `publish_staged` part way**: a stage whose claim is lost just before its pointer moves (after
+  its chunks were checked) is skipped and left to the catch-up, as one lost earlier is, not raised. A
+  publish that raises part way (a move that kept failing, a transport error) still indexes the scopes
+  whose pointers already moved, so a new scope's pointer is never left unserved, and still retires
+  the unmoved stages and the moved scopes' older epochs.
 
 ### Datasources: a relation read by parts in bulk, through one export or pages read side by side
 
@@ -43,6 +59,12 @@ per part, one round trip after another; the round trips, not the bytes, were the
   `DatasourceQueryClient.relation_fingerprint_groups`), each equal to the fingerprint of that value's
   rows alone. `Driver.relation_fingerprint_groups` (Redshift, Postgres; others refuse with
   `DriverFingerprintGroupsUnsupportedError`, answered `FINGERPRINT_GROUPS_UNSUPPORTED`).
+- **Added, `threetears.core.fingerprint.fingerprint_sql`** (and `postgres_fingerprint_sql(group_by=)`):
+  one statement builder, whole or grouped, around an engine's per-row number. Postgres and Redshift
+  each name only that number, and both their single and grouped fingerprints are built by it, so a
+  group's digest is the whole statement's for its rows by construction (a grouped statement is the
+  whole one with the group column added, nothing else changed). Redshift's single and grouped
+  fingerprints share one body, its boolean-column answer kept and forgotten in one place.
 - **Added, a partitioned export**: `DatasourceExportRequest.partition_by` has the warehouse write one
   directory of files per value (`UNLOAD ... PARTITION BY (column) INCLUDE`), still one statement,
   one destination, one manifest. `threetears.datasources.partitioned_export.export_partitions` reads
@@ -52,6 +74,10 @@ per part, one round trip after another; the round trips, not the bytes, were the
 - **Added, `partitioned_read.read_partitions`**: the rail's counterpart. One statement answers every
   page start of a batch of parts; the pages are read side by side under the datasource's cap; each
   batch is fingerprinted again in one ask before its parts are handed back.
+- **Added, `query_client.keyset_condition`**: the one nested-OR keyset builder, per-column comparison
+  and first placeholder number given. `read_all`'s next page (its filters numbered first, the keyset
+  after them, with no renumbering pass) and `read_partitions`' page bounds both build from it, so a
+  rule about the shape (the `$N` placeholder style among them) reaches every page read at once.
 - **Wire, both orders**: `group_by`, `where_in` and `partition_by` are left off a request that does not
   ask for them, so an older hub sees what it knows; one that is asked for them refuses
   (`MALFORMED_REQUEST`), and a caller asks part by part instead.
@@ -230,8 +256,12 @@ export configured.
   the hub to delete every version under its destination (`DatasourceExportDeleteRequest`, the
   `export_delete` ask, `DatasourceQueryClient.delete_export`); the hub deletes with a delete-only
   grant (`ExportConfig.cleanup_access_key_ref`/`cleanup_secret_key_ref`, or its own role), so the
-  reader's keys stay read-only. A delete that fails raises `ExportNotDeletedError`; a refused export
-  is left for an operator. No timer and no lifecycle rule.
+  reader's keys stay read-only. A refused export is deleted too, as `export_partitions` deletes one:
+  every way out of `export_part` after the hub answered (proven, refused, or failed) deletes it, and a
+  refusal is logged at WARNING with its proof and counts so an operator can tell why without the
+  files. A delete that fails raises `ExportNotDeletedError` when nothing else is raised; under a
+  refusal or another error, that error wins and the failed delete is logged at ERROR. No timer and no
+  lifecycle rule.
 - **Added, `S3ObjectStore.delete_versions(prefix)`**: every version and delete marker under a
   non-empty prefix, by version id, raising any S3 refused.
 - **Added, `Driver.export_config`**, and one frozen `ExportResult` (with `ExportLocation`) that
@@ -320,6 +350,15 @@ subjects and `AclCache`'s TTL stay until the contract stage.
   wildcard or an empty token). Every tool pod may publish the request and the hub subscribes it; no
   KV or stream grant changes. A hub older than the request does not answer, and the pod keeps the
   markers.
+- **Added, `threetears.nats.hub_requests.ask_hub`**: one pod -> hub ask on a forwarded-token subject
+  (send, decode, match the reply to its request, classify a refusal as retryable or final), used by
+  the object store, collection keys, geography reload and audit anonymization clients, which keep
+  only their models, subjects and what their own success carries. One correlation rule for all: a
+  reply answers a request when it carries the request's id, or is a refusal carrying none.
+- **Fixed, `purge_pod_collection_keys`**: a success reply with no correlation id is no longer taken as
+  this request's (it is `CollectionKeysRequestUnavailableError`, as the other clients already
+  answered). The hub's purge responder echoes the id on every reply it builds from a decoded request,
+  so no hub that answers the request is refused by the stricter check.
 - **Added, `BaseCollection.caches_in_l1`**: `False` declares a collection that takes no L1 backend,
   whatever the registry offers.
 

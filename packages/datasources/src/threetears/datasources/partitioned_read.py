@@ -39,6 +39,7 @@ from threetears.datasources.query_client import (
     DatasourceQueryError,
     IncompleteReadError,
     RelationFingerprintResult,
+    keyset_condition,
     read_all,
 )
 
@@ -195,8 +196,7 @@ _MAX_BOUNDARIES: Final = 990
 def _bound(key: Sequence[str], values: Sequence[Any], *, below: bool, first: int) -> tuple[str, list[Any]]:
     """the condition keeping keys at or above ``values`` (``below`` False) or strictly below them.
 
-    Nested OR, not a row constructor, as :func:`~threetears.datasources.query_client.read_all`'s
-    keyset predicate is, for every engine the platform admits.
+    The one keyset builder :func:`~threetears.datasources.query_client.read_all` pages with too.
 
     :param key: the key's columns, TRUSTED identifiers
     :ptype key: Sequence[str]
@@ -206,20 +206,13 @@ def _bound(key: Sequence[str], values: Sequence[Any], *, below: bool, first: int
     :ptype below: bool
     :param first: the first placeholder's number
     :ptype first: int
-    :return: the condition and its parameters
+    :return: the condition, parenthesised, and its parameters
     :rtype: tuple[str, list[Any]]
     """
-    clauses: list[str] = []
-    params: list[Any] = []
-    for index, column in enumerate(key):
-        last = index == len(key) - 1
-        operator = "<" if below else (">=" if last else ">")
-        terms = [f"{earlier} = ${first + len(params) + offset}" for offset, earlier in enumerate(key[:index])]
-        params.extend(values[:index])
-        terms.append(f"{column} {operator} ${first + len(params)}")
-        params.append(values[index])
-        clauses.append(f"({' AND '.join(terms)})")
-    return f"({' OR '.join(clauses)})", params
+    condition, params = keyset_condition(
+        key, values, earlier="<" if below else ">", last="<" if below else ">=", first=first
+    )
+    return f"({condition})", params
 
 
 async def _boundaries(

@@ -1,0 +1,9 @@
+# Commits that landed with an agent attribution trailer before scripts/check-attribution.sh existed.
+# Rewording them would need a force-push of a shared branch, which CLAUDE.md forbids ("Already-landed
+# attribution stays landed"), so they are exempt by full hash. Never add a commit made after the check.
+f6d43aa043a8dbcc992cdb9d7791e495cdf1a592 feature/reports: Co-Authored-By trailer
+5440a3062c95039772cef9d6aafbb5ea889ac898 feature/reports: Co-Authored-By and Claude-Session trailers
+4d575851dedf044f018d2f427902144387dadec1 feature/reports: Claude-Session trailer
+f114794cd049a20405f97adec2fbdf62183624f8 feature/reports: Claude-Session trailer
+d5897cd7106719cc74c009689a62a27fb4f08e93 feature/reports: Claude-Session trailer
+a491ab0a7644483efca1aae17e936123dfdd66af feature/reports: Claude-Session trailer

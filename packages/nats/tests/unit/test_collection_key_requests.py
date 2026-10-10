@@ -34,9 +34,12 @@ class _JetStream:
 class _Hub:
     """answers a purge request the way a hub does, or not at all."""
 
-    def __init__(self, reply: CollectionKeysPurgeReply | None = None, error: Exception | None = None) -> None:
+    def __init__(
+        self, reply: CollectionKeysPurgeReply | None = None, error: Exception | None = None, *, echo: bool = True
+    ) -> None:
         self.reply = reply
         self.error = error
+        self.echo = echo
         self.asked: list[CollectionKeysPurgeRequest] = []
         self.subjects: list[str] = []
 
@@ -48,7 +51,7 @@ class _Hub:
         if self.error is not None:
             raise self.error
         assert self.reply is not None
-        reply = self.reply.model_copy(update={"correlation_id": request.correlation_id})
+        reply = self.reply.model_copy(update={"correlation_id": request.correlation_id}) if self.echo else self.reply
         return reply.model_dump_json().encode()
 
 
@@ -96,6 +99,28 @@ class TestThePodsAsk:
     async def test_a_refusal_is_a_refusal(self) -> None:
         hub = _Hub(CollectionKeysPurgeReply(success=False, error_code="IDENTITY_REFUSED", error_message="who?"))
         with pytest.raises(CollectionKeysRequestRefusedError, match="IDENTITY_REFUSED"):
+            await purge_pod_collection_keys(hub, identity_token="tok", keys=["t.a_1"])  # type: ignore[arg-type]
+
+    async def test_a_success_with_no_correlation_id_is_not_taken_as_this_requests(self) -> None:
+        """the one correlation rule every hub ask keeps: only a refusal may come back without the id."""
+        hub = _Hub(CollectionKeysPurgeReply(success=True, purged=2), echo=False)
+        with pytest.raises(CollectionKeysRequestUnavailableError, match="correlation_id=None"):
+            await purge_pod_collection_keys(hub, identity_token="tok", keys=["t.a_1"])  # type: ignore[arg-type]
+
+    async def test_a_success_under_another_requests_id_is_not_this_ones(self) -> None:
+        hub = _Hub(CollectionKeysPurgeReply(success=True, purged=2, correlation_id=uuid4()), echo=False)
+        with pytest.raises(CollectionKeysRequestUnavailableError, match="correlation_id"):
+            await purge_pod_collection_keys(hub, identity_token="tok", keys=["t.a_1"])  # type: ignore[arg-type]
+
+    async def test_a_refusal_with_no_correlation_id_is_this_requests(self) -> None:
+        """a hub that could not decode the body had no id to echo; its refusal is final, not a stray."""
+        hub = _Hub(CollectionKeysPurgeReply(success=False, error_code="INVALID_REQUEST", error_message="?"), echo=False)
+        with pytest.raises(CollectionKeysRequestRefusedError, match="INVALID_REQUEST"):
+            await purge_pod_collection_keys(hub, identity_token="tok", keys=["t.a_1"])  # type: ignore[arg-type]
+
+    async def test_a_hub_side_failure_is_unavailable_not_refused(self) -> None:
+        hub = _Hub(CollectionKeysPurgeReply(success=False, error_code="PURGE_FAILED", error_message="js down"))
+        with pytest.raises(CollectionKeysRequestUnavailableError, match="PURGE_FAILED"):
             await purge_pod_collection_keys(hub, identity_token="tok", keys=["t.a_1"])  # type: ignore[arg-type]
 
     async def test_the_token_never_shows_outside_the_wire(self) -> None:

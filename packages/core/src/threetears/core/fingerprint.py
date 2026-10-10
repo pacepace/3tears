@@ -12,8 +12,10 @@ separator), never as an empty string, so a key that went NULL is not one that we
 :func:`relation_key_expression` is that rule in SQL, and every engine the platform admits
 spells ``CAST``, ``CHR`` and ``||`` the same way. :func:`key_fingerprint` is the same rule in
 Python, for keys already read. Turning a hash into a summable number has no portable SQL
-spelling, so each engine's digest SQL lives with its driver; :func:`postgres_fingerprint_sql`
-is Postgres' (and the L3 tier's).
+spelling, so each engine names its own per-row number and :func:`fingerprint_sql` builds the one
+statement around it, whole or grouped; :func:`postgres_fingerprint_sql` is Postgres' (and the L3
+tier's). A grouped statement is the whole one with the group column added and nothing else
+changed, so each group's digest is the one the whole statement answers for its rows.
 
 **Comparable within one rendering only.** For text keys the Postgres digest and the Python
 digest are the same number. A non-text key renders as its engine casts it (Postgres writes a
@@ -30,6 +32,7 @@ from typing import Any, Final
 
 __all__ = [
     "KeyFingerprint",
+    "fingerprint_sql",
     "key_fingerprint",
     "postgres_fingerprint_sql",
     "relation_key_expression",
@@ -43,6 +46,9 @@ _COLUMN_SEPARATOR: Final = chr(31)
 
 #: how many leading hex digits of each row's MD5 the digest sums
 _HASH_HEX_DIGITS: Final = 8
+
+#: Postgres' per-row number: the leading hex digits of the key's MD5, cast through ``bit(32)``
+_POSTGRES_ROW_NUMBER: Final = f"('x' || SUBSTR(MD5(k), 1, {_HASH_HEX_DIGITS}))::bit(32)::bigint"
 
 
 @dataclass(frozen=True)
@@ -85,8 +91,53 @@ def relation_key_expression(key: Sequence[str], *, boolean_columns: Collection[s
     return " || CHR(31) || ".join(rendered)
 
 
-def postgres_fingerprint_sql(relation: str, key: Sequence[str], filters: str = "") -> str:
-    """one Postgres statement counting ``relation`` and digesting its keys.
+def fingerprint_sql(
+    relation: str,
+    key: Sequence[str],
+    filters: str = "",
+    *,
+    row_number: str,
+    group_by: str | None = None,
+    boolean_columns: Collection[str] = (),
+) -> str:
+    """one statement counting ``relation`` and digesting its keys, whole or per value of ``group_by``.
+
+    The engine supplies only ``row_number``: its SQL turning one row's key text, ``k``, into a
+    summable number (each engine spells the hash-to-number step its own way). Everything else --
+    the key rendering, the sum, the empty-relation ``0`` -- is this one statement, so a grouped
+    digest and a whole one cannot drift apart: grouped, the statement gains ``g`` (the group's
+    value) in its select lists and ``GROUP BY g``, and nothing else changes.
+
+    :param relation: the relation, a TRUSTED identifier (quoted by the caller where it must be)
+    :ptype relation: str
+    :param key: the key's columns, TRUSTED identifiers
+    :ptype key: Sequence[str]
+    :param filters: a `` WHERE ...`` fragment naming the rows to fingerprint; every row when empty
+    :ptype filters: str
+    :param row_number: the engine's per-row number over ``k``; it must not wrap when summed
+    :ptype row_number: str
+    :param group_by: the column whose values are the groups, a TRUSTED identifier; the whole
+        relation, answering one row, when None
+    :ptype group_by: str | None
+    :param boolean_columns: which key columns are booleans (see :func:`relation_key_expression`)
+    :ptype boolean_columns: Collection[str]
+    :return: the statement, answering ``row_count`` and ``digest`` (after ``g`` when grouped)
+    :rtype: str
+    :raises ValueError: when ``key`` is empty
+    """
+    group, grouped, grouping = ("g, ", f"{group_by} AS g, ", " GROUP BY g") if group_by else ("", "", "")
+    return (
+        f"SELECT {group}COUNT(*) AS row_count, "  # noqa: S608 - relation, key and group_by are trusted identifiers
+        f"COALESCE(SUM({row_number}), 0) AS digest "
+        f"FROM (SELECT {grouped}{relation_key_expression(key, boolean_columns=boolean_columns)} AS k "
+        f"FROM {relation}{filters}) AS fingerprint_source{grouping}"
+    )
+
+
+def postgres_fingerprint_sql(
+    relation: str, key: Sequence[str], filters: str = "", *, group_by: str | None = None
+) -> str:
+    """one Postgres statement counting ``relation`` and digesting its keys, whole or grouped.
 
     Postgres turns a hash into a summable number by casting its leading hex digits through
     ``bit(32)``. ``SUM`` over ``bigint`` widens to ``numeric``, so a large relation cannot wrap,
@@ -98,15 +149,13 @@ def postgres_fingerprint_sql(relation: str, key: Sequence[str], filters: str = "
     :ptype key: Sequence[str]
     :param filters: a `` WHERE ...`` fragment naming the rows to fingerprint; every row when empty
     :ptype filters: str
-    :return: the statement, answering ``row_count`` and ``digest``
+    :param group_by: the column whose values are the groups (see :func:`fingerprint_sql`)
+    :ptype group_by: str | None
+    :return: the statement, answering ``row_count`` and ``digest`` (after ``g`` when grouped)
     :rtype: str
     :raises ValueError: when ``key`` is empty
     """
-    return (
-        "SELECT COUNT(*) AS row_count, "  # noqa: S608 - relation and key are trusted identifiers
-        "COALESCE(SUM(('x' || SUBSTR(MD5(k), 1, 8))::bit(32)::bigint), 0) AS digest "
-        f"FROM (SELECT {relation_key_expression(key)} AS k FROM {relation}{filters}) AS fingerprint_source"
-    )
+    return fingerprint_sql(relation, key, filters, row_number=_POSTGRES_ROW_NUMBER, group_by=group_by)
 
 
 def key_fingerprint(keys: Iterable[Sequence[Any]]) -> KeyFingerprint:
