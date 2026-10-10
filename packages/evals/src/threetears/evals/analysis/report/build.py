@@ -22,11 +22,11 @@ from threetears.evals.analysis.agreement import tier_sentence
 from threetears.evals.contracts.models import CHECK_REFUSED_UNDER_CURRENT_GRAMMAR
 from threetears.evals.analysis.arms import ArmTable, arm_names, arm_table, arm_table_of, short_digest, surface_order
 from threetears.evals.analysis.bundle import (
-    NO_QUESTION_EXPLORATORY,
     AnalysisContextBundle,
     FamilyComparison,
     GoalCheckProofReading,
     bundle_decision_surface,
+    exploratory_disclosure,
 )
 from threetears.evals.analysis.cells import cell_ref, variant_of_cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
@@ -112,9 +112,10 @@ def build_report(analysis: EvalAnalysis) -> Report:
     blocks: list[ReportBlock] = []
     if document.summary.strip():
         blocks.append(TextBlock(section="summary", role="summary", body=document.summary))
-    if not questions:
-        # Said once, at the top, rather than on every finding: a label on every row is one readers skip.
-        blocks.append(DisclosureBlock(section="summary", source="scope", text=NO_QUESTION_EXPLORATORY))
+    if (exploratory := exploratory_disclosure(analysis.design_snapshot)) is not None:
+        # Said once, at the top, rather than on every finding: a label on every row is one readers skip. A
+        # campaign that declared no design (`design_snapshot` None) is exploratory, and says so as such.
+        blocks.append(DisclosureBlock(section="summary", source="scope", text=exploratory))
 
     blocks.extend(
         TextBlock(
@@ -976,9 +977,10 @@ def build_code_only_report(
 def _question_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:
     """The declared questions, each standing unanswered, and which readings none of them asked about.
 
-    With no live question the whole campaign is exploratory, and that is said once, here, rather than on
-    every reading; with questions, the readings outside them are named, so a pattern in one is read as a
-    lead and not as an answer.
+    With no live question the whole campaign is exploratory — with no design at all, an exploratory
+    campaign — and that is said once, here, rather than on every reading: the first block after the
+    code-only report's one-line opening, which stays one line. With questions, the readings outside them
+    are named, so a pattern in one is read as a lead and not as an answer.
     """
     design = bundle.declared_design
     scope = bundle.reading_scope

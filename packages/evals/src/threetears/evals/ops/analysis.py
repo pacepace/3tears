@@ -65,8 +65,8 @@ DECLARED_DESIGN_DESCRIPTION = (
     "({stimulus: controlled|uncontrolled, stimulus_reason (required when uncontrolled), apparatus: "
     "commissioned|witnessed}), and optionally questions ([{id, text, merit_axes?}]), bars ([{measure_id, threshold, "
     "direction}], no looser than the registered ones), merit_priority and intended_repetitions. Validated and gated "
-    "as every campaign declaration is; omitted, the campaign is undeclared and its analysis infers the design from "
-    "the runs. Its control is named by control_from_run_id."
+    "as every campaign declaration is. Optional: omitted, the campaign is exploratory — its report and analysis "
+    "say once that its readings confirm nothing, and its design is inferred from the runs. Its control is named by control_from_run_id."
 )
 
 #: What the control run is, said once for the operation and the action.
@@ -80,7 +80,8 @@ CONTROL_RUN_DESCRIPTION = (
 class CampaignDefinition(EvalBaseModel):
     """What creating a campaign names: what it is called, its subject and behaviour, its runs, and what it set out to learn.
 
-    The declared design is optional: a campaign created without one is undeclared, a state every reader handles.
+    The declared design is optional: a campaign created without one is exploratory, which its report and analysis
+    say once at the top, and its analysis reads a design inferred from the runs, never one presented as declared.
     """
 
     name: str

@@ -234,9 +234,11 @@ class EvalCampaign(EvalDocumentModel):
             "with no observations is `unswept` AND NAMED, where an inferred design can only report "
             "what happened to run.\n\n"
             "**Nullable, and that is a real state:** a campaign may legitimately never declare one. "
-            "Such a campaign gets a realized design only, the memo says so in one line, and the "
-            "axis-completeness validator degrades from a gate to a warning — exploratory campaigns "
-            "that declared nothing are still analysable."
+            "Such a campaign is EXPLORATORY — derived from this field being null, never stored as a "
+            "flag of its own: its report and its analysis bundle say once, at the top, that no design "
+            "was declared so its readings confirm nothing; its design is the one inferred from the runs, "
+            "never presented as declared; and the axis-completeness validator degrades from a gate to a "
+            "warning. Declare one when a question is settled before the runs; explore when it is not."
         ),
     )
     archived: bool = Field(default=False)

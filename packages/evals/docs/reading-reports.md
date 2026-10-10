@@ -170,8 +170,10 @@ A campaign's declared questions say what it set out to learn. A reading on no ax
 **exploratory**: worth reporting as a lead for the next campaign, never as a confirmed answer. Where
 questions are declared, the bundle lists those readings (`reading_scope`), the code-only report names them
 under the questions, and a finding resting only on them carries a `Scope` fact. Where none are declared,
-every finding is exploratory, and the report says so once near the top rather than on every row. A
-guardrail is never exploratory.
+every finding is exploratory, and the report says so once at the top rather than on every row. A campaign
+that declared no design at all is an exploratory campaign, and that sentence says so: its readings confirm
+nothing, and the design its comparisons read was inferred from the runs, not declared
+([when to declare one](choosing-a-design.md)). A guardrail is never exploratory.
 
 ## Methods
 
