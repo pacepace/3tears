@@ -145,12 +145,12 @@ from threetears.evals.analysis.reporting import (
     SCOPED_METRICS_HELP,
     SERVED_MODEL_UNRECORDED,
     WEIGHTING_EQUAL_PER_SCENARIO,
-    completeness_disclosure,
     difference_was_declared_at_launch,
     format_significance,
     metric_help,
     significance_disclosure,
 )
+from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.analysis.gate import (
     DEFAULT_FAIL_ON,
     GATE_TOKENS,

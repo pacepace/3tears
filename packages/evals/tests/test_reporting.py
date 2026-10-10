@@ -31,7 +31,6 @@ from threetears.evals.analysis.reporting import (
     CELL_MEASURED,
     CELL_UNMEASURED,
     CELL_WITHHELD,
-    DEGRADED_RUN_CLAUSE,
     METRIC_COMPOSITE,
     METRIC_COST_USD,
     METRIC_GOAL_STATE,
@@ -55,7 +54,6 @@ from threetears.evals.analysis.reporting import (
     ScoreProjection,
     ScoreRecord,
     cassette_mode_disclosure,
-    completeness_disclosure,
     compute_comparison_sets,
     compute_estimate_cost,
     compute_frontier,
@@ -72,6 +70,7 @@ from threetears.evals.analysis.reporting import (
     project_score_records,
     serialize_export,
 )
+from threetears.evals.analysis.completeness import DEGRADED_RUN_CLAUSE, completeness_disclosure
 from threetears.evals.analysis.stats import UNIFORM_MOVE_NEEDS_RANGE, bounded_separation_p
 from threetears.evals.kernel.host import freeze
 from threetears.evals.ops import pivot_text

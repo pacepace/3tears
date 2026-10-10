@@ -52,7 +52,6 @@ from threetears.evals.analysis.reporting import (
     PivotError,
     PivotTable,
     ScoreExport,
-    completeness_disclosure,
     compute_comparison_sets,
     compute_frontier,
     compute_history,
@@ -66,6 +65,7 @@ from threetears.evals.analysis.reporting import (
     pooled_served_models,
     project_score_records,
 )
+from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, composite_significance, difference_interval
 from threetears.evals.kernel.arguments import normalize_blank
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError

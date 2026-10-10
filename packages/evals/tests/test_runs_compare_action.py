@@ -17,7 +17,7 @@ import pytest
 
 from threetears.evals.actions import Caller, MountedTool, eval_catalogue, standard_tools
 from threetears.evals.analysis.reads import compare_two_runs
-from threetears.evals.analysis.reporting import completeness_disclosure
+from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.kernel.errors import NotFoundError
 from threetears.evals.schema.models import RubricScore, RunCompleteness
 from threetears.evals.ops import RunsCompared, runs_compare, runs_compared_text
