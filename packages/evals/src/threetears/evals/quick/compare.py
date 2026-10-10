@@ -479,6 +479,7 @@ async def compare(
     max_cost_usd: float | None = None,
     margins: Mapping[str, float] | None = None,
     ranges: Mapping[str, tuple[float, float]] | None = None,
+    measure_latency: bool = False,
 ) -> Comparison:
     """Run each candidate over every case ``k`` times as one arm, test every arm against ``control``, and report.
 
@@ -547,6 +548,9 @@ async def compare(
             (``{"rating": (1, 5)}``). Its intervals stay inside it, a margin on it can be tested, and a score
             outside it excludes the cell, naming the scorer. A scorer annotated ``-> bool`` is a pass/fail on 0
             to 1 already. With a ``host`` of your own, declare ``value_range`` on its measures instead.
+        measure_latency: Declare latency under test, as :func:`~threetears.evals.quick.run_eval` takes it: every
+            arm runs its cases one at a time and the arms run one after another. ``False`` (the default) runs
+            each arm's cases several at once and the arms side by side.
 
     Returns:
         The comparison: every arm's summary, the campaign's id and its report.
@@ -609,6 +613,7 @@ async def compare(
         tools=tools,
         cassette_mode=cassette_mode,
         cassette_corpus_id=cassette_corpus_id,
+        measure_latency=measure_latency,
         world=world,
         seed=seed,
         goal_checks=goal_checks,

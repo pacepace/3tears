@@ -1181,6 +1181,7 @@ async def run_eval(
     cassette_mode: CassetteMode = "off",
     cassette_corpus_id: str | None = None,
     max_cost_usd: float | None = None,
+    measure_latency: bool = False,
 ) -> EvalSummary:
     """Run ``candidate`` on every case ``k`` times, grade each answer with every scorer and the judge, and summarise.
 
@@ -1255,6 +1256,10 @@ async def run_eval(
             ``budget_stopped``, keeps what it delivered, and the summary says why (``stopped_because``). A
             candidate that reports no spend is invisible to it, and the summary says so. ``None`` (the default)
             runs uncapped, which the summary states.
+        measure_latency: Declare latency under test: the cases run one at a time, so the time each took is
+            read with nothing else of the run beside it. ``False`` (the default) runs several at once, which is
+            far faster for a slow candidate; any latency recorded is then marked read under concurrency and
+            never compared. Either way the run records which (:func:`~threetears.evals.run.start_run`).
 
     Returns:
         The finished run's summary, read back from the store. It carries every result
@@ -1300,6 +1305,7 @@ async def run_eval(
         cassette_mode=cassette_mode,
         cassette_corpus_id=cassette_corpus_id,
         max_cost_usd=max_cost_usd,
+        measure_latency=measure_latency,
     )
     return summary
 
@@ -1348,6 +1354,7 @@ async def run_arms(
     cassette_mode: CassetteMode = "off",
     cassette_corpus_id: str | None = None,
     max_cost_usd: float | None = None,
+    measure_latency: bool = False,
 ) -> list[EvalSummary]:
     """Run every arm over every case ``k`` times as ONE launch, and summarise each arm's run, in arm order.
 
@@ -1490,6 +1497,7 @@ async def run_arms(
                 cassette_corpus_id=cassette_corpus_id,
                 max_cost_usd=max_cost_usd,
                 launch_group=group,
+                measure_latency=measure_latency,
             )
         return prepared
 

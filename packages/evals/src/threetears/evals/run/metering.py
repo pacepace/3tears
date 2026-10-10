@@ -37,6 +37,9 @@ double-count what the delivery already reported and state a volume nobody measur
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -78,10 +81,12 @@ class MeteredCallTally:
     def delta_from(self, baseline: MeteredCallTally) -> MeteredCallTally:
         """Return what accumulated since ``baseline`` was taken.
 
-        Cells inside a run execute serially, so a before/after pair of run-level
-        tallies is exactly one cell's contribution. Subtracting rather than
-        draining keeps the run total intact for the run-level disclosure — a drain
-        would leave the ledger unable to say what the whole run did.
+        A before/after pair of run-level tallies is exactly one cell's contribution only while nothing
+        else of the run calls between the two — a run executing its cells serially. A run executing them
+        concurrently attributes each call to its cell as it is admitted instead
+        (:meth:`MeteredCallLedger.cell`), which :func:`~threetears.evals.run.runner.metered_cell_tally`
+        prefers. Subtracting rather than draining keeps the run total intact for the run-level disclosure
+        — a drain would leave the ledger unable to say what the whole run did.
 
         Args:
             baseline: A tally taken from the same ledger at an earlier moment.
@@ -133,10 +138,64 @@ class MeteredCallTally:
         )
 
 
+def _folded(spends: dict[tuple[str, str | None], ExternalSpend], spend: ExternalSpend | None) -> None:
+    """Fold one call's reported consumption into per-``(provider, unit)`` totals, in place.
+
+    Accumulates per ``(provider, unit)`` rather than into one running number, because two providers'
+    weighted units are not one quantity. A report with no provider contributes nothing here — the call
+    still happened and is counted by the caller, but nothing can be attributed.
+
+    Args:
+        spends: The totals to fold into.
+        spend: The calling tool's consumption report for one call, or ``None``.
+    """
+    if spend is None or spend.provider is None:
+        return
+    key = (spend.provider, spend.provider_unit)
+    prior = spends.get(key)
+    spends[key] = ExternalSpend(
+        provider=spend.provider,
+        calls=(prior.calls if prior else 0) + spend.calls,
+        provider_units=sum_optional_tokens(prior.provider_units if prior else None, spend.provider_units),
+        provider_unit=spend.provider_unit,
+    )
+
+
+class CellMeter:
+    """One cell's own slice of its run's metered calls, counted as each call is admitted or refused.
+
+    Opened by :meth:`MeteredCallLedger.cell` around one cell. Every call the ledger decides while the
+    meter is open IN THAT CELL'S CONTEXT lands here as well as in the run's totals — the context is the
+    cell's task and every task it starts, so a cell running beside others is credited only its own calls.
+    Units follow the run tally's rule: a provider that publishes none contributes calls and no units.
+    """
+
+    def __init__(self) -> None:
+        """Start the cell at nothing metered."""
+        self._calls = 0
+        self._refused = 0
+        self._spends: dict[tuple[str, str | None], ExternalSpend] = {}
+
+    def tally(self) -> MeteredCallTally:
+        """What this cell has metered so far."""
+        return MeteredCallTally(calls=self._calls, spends=tuple(self._spends.values()), refused=self._refused)
+
+    def admitted(self, spend: ExternalSpend | None) -> None:
+        """Count one call the run's ceiling let through, with what it consumed."""
+        self._calls += 1
+        _folded(self._spends, spend)
+
+    def refused(self) -> None:
+        """Count one call the run's ceiling turned away."""
+        self._refused += 1
+
+
 class MeteredCallLedger:
     """In-memory per-run ceiling on metered third-party calls.
 
-    One instance per eval run, shared by every cell (cells are serial) and read at
+    One instance per eval run, shared by every cell — serial or concurrent: :meth:`admit` never yields to
+    the event loop, so the check and the count are one step and no two cells can both take the last
+    call under the ceiling. Each cell's own slice is counted as calls are decided (:meth:`cell`). Read at
     the host's action dispatcher through the subject it was handed to. Pure arithmetic: no provider
     call, no database I/O, nothing that can fail open.
 
@@ -291,6 +350,29 @@ class MeteredCallLedger:
         """Snapshot what this run has metered so far."""
         return MeteredCallTally(calls=self._calls, spends=tuple(self._spends.values()), refused=self._refused)
 
+    @contextmanager
+    def cell(self) -> Iterator[CellMeter]:
+        """Meter one cell's own calls for as long as the block runs, in this context.
+
+        The runner opens one around every cell it runs. A call this ledger decides inside the block —
+        from the cell's task or any task the cell starts — is credited to the cell as well as to the run,
+        so a cell's slice is exact whether or not other cells of the run are calling at the same time.
+
+        Yields:
+            The cell's meter.
+        """
+        meter = CellMeter()
+        token = _OPEN_CELL.set((self, meter))
+        try:
+            yield meter
+        finally:
+            _OPEN_CELL.reset(token)
+
+    def open_cell(self) -> CellMeter | None:
+        """The meter of the cell this context is running, for this ledger, or ``None`` outside one."""
+        current = _OPEN_CELL.get()
+        return current[1] if current is not None and current[0] is self else None
+
     def admit(self, *, tool: str, action: str, spend: ExternalSpend | None) -> bool:
         """Decide whether one metered call may proceed, recording it either way.
 
@@ -312,8 +394,11 @@ class MeteredCallLedger:
             True when the call may proceed (and has been counted), False when the
             ceiling refuses it (and the refusal has been counted).
         """
+        meter = self.open_cell()
         if self._ceiling is not None and self._calls >= self._ceiling:
             self._refused += 1
+            if meter is not None:
+                meter.refused()
             if self._none_declared:
                 log.error(
                     "Eval run %s made a metered call at %s.%s, and its host declares no metered tools — the call is "
@@ -336,6 +421,8 @@ class MeteredCallLedger:
             return False
         self._calls += 1
         self._record_spend(spend)
+        if meter is not None:
+            meter.admitted(spend)
         return True
 
     def _record_spend(self, spend: ExternalSpend | None) -> None:
@@ -365,16 +452,7 @@ class MeteredCallLedger:
         Args:
             spend: The calling tool's consumption report for one call, or ``None``.
         """
-        if spend is None or spend.provider is None:
-            return
-        key = (spend.provider, spend.provider_unit)
-        prior = self._spends.get(key)
-        self._spends[key] = ExternalSpend(
-            provider=spend.provider,
-            calls=(prior.calls if prior else 0) + spend.calls,
-            provider_units=sum_optional_tokens(prior.provider_units if prior else None, spend.provider_units),
-            provider_unit=spend.provider_unit,
-        )
+        _folded(self._spends, spend)
 
     def refusal_message(self, *, tool: str, action: str) -> str:
         """The refusal the candidate reads when the ceiling turns a call away.
@@ -404,7 +482,15 @@ class MeteredCallLedger:
         )
 
 
+#: The cell whose calls are being metered in this context, and the ledger it meters for — so a meter opened
+#: for one run's ledger never counts a call another ledger decided.
+_OPEN_CELL: ContextVar[tuple[MeteredCallLedger, CellMeter] | None] = ContextVar(
+    "threetears_evals_metered_cell", default=None
+)
+
+
 __all__ = [
+    "CellMeter",
     "MeteredCallLedger",
     "MeteredCallTally",
 ]

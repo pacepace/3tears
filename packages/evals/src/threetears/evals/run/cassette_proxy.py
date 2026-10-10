@@ -51,9 +51,11 @@ One corpus per capture run, one session per case
 ------------------------------------------------
 
 A corpus is the capture run's own, named by its id, so two runs capturing at once — a launch over
-several models starts one concurrent run per model — never write into each other's. Within a run
-cells are serial, and wiring a capture cell first clears whatever the corpus already holds for the
-case, so the corpus holds exactly one session per case: the last cell of that case to run. Capture
+several models starts one concurrent run per model — never write into each other's. Within a run,
+wiring a capture cell first clears whatever the corpus already holds for the case, so the corpus holds
+exactly one session per case: the last cell of that case to run. Cells of one case never capture at
+once, even in a run executing its cells concurrently (:func:`~threetears.evals.run.runner.execute_run`
+gives them turns in the run's order), so which cell is last is fixed by the run's id. Capture
 at ``k=1`` for a corpus whose every case is the session you meant.
 """
 

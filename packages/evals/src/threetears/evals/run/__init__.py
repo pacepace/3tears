@@ -95,7 +95,13 @@ from threetears.evals.run.lifecycle import (
     rejudge_result,
     sweep_abandoned_runs,
 )
-from threetears.evals.run.metering import MeteredCallLedger, MeteredCallTally
+from threetears.evals.run.executor import (
+    DEFAULT_MAX_CONCURRENT_CELLS,
+    CellExecutor,
+    CellWork,
+    InProcessCellExecutor,
+)
+from threetears.evals.run.metering import CellMeter, MeteredCallLedger, MeteredCallTally
 from threetears.evals.contracts.offload import run_blocking
 from threetears.evals.run.reads import get_result, get_result_trace, list_results, list_runs
 from threetears.evals.run.recheck import (
@@ -173,6 +179,7 @@ __all__ = [
     "SIMULATOR_REASONING_EFFORT",
     "SIMULATOR_REQUEST_SETTINGS",
     "TEMPLATE_SERVER_FIELDS",
+    "DEFAULT_MAX_CONCURRENT_CELLS",
     "AbandonedRunSweepReport",
     "AccountExhaustedError",
     "AdmissionTicket",
@@ -188,6 +195,9 @@ __all__ = [
     "CeilingRaisedError",
     "EvalRunCostCap",
     "CellContext",
+    "CellExecutor",
+    "CellMeter",
+    "CellWork",
     "CheckFlip",
     "CurationStore",
     "ErrorLedger",
@@ -196,6 +206,7 @@ __all__ = [
     "EveryCellApparatusFailedError",
     "FidelityContract",
     "GoalCheckUnevaluable",
+    "InProcessCellExecutor",
     "JobTimeoutFactory",
     "JudgeClientFactory",
     "JudgeContext",
