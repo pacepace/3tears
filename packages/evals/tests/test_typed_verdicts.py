@@ -30,7 +30,7 @@ from threetears.evals.analysis import (
     parse_fail_on,
     verdict_token,
 )
-from threetears.evals.quick import Comparison, compare
+from threetears.evals.quick import Comparison, Guardrail, compare
 
 CASES = [{"n": index} for index in range(48)]
 
@@ -159,3 +159,49 @@ class TestTheGate:
         assert "gate FAILED" in result.render() and "regressed from the control" in result.render()
         better = await _compare({"current": 30, "better": 0}, scope_id="typed-better")
         assert better.gate().outcome == "passed"
+
+
+def no_leak(case: Mapping[str, Any], answer: str) -> bool:
+    """Whether the answer keeps the customer's secret."""
+    return "SECRET" not in answer
+
+
+def _leaks(count: int) -> Any:
+    async def candidate(case: Mapping[str, Any]) -> str:
+        return "right" + (" SECRET" if case["n"] < count else "")
+
+    return candidate
+
+
+class TestAQuickGuardrailIsATypedVerdictTheGateReads:
+    """#697's quick guardrails reach the typed verdicts, and the default gate fails on a breach and on undecided."""
+
+    async def test_held_breached_and_undecided_each_typed_and_gated(self) -> None:
+        comparison = await compare(
+            CASES[:40],
+            {"current": _leaks(0), "same": _leaks(0), "leaky": _leaks(12), "slip": _leaks(3)},
+            [correct, no_leak],
+            control="current",
+            scope_id="typed-guardrails",
+            k=1,
+            guardrails={"no_leak": Guardrail(margin=0.1, direction="higher_is_better")},
+        )
+        typed = {verdict.arm: verdict for verdict in comparison.verdicts("no_leak", kind="guardrail")}
+        assert {arm: verdict.outcome for arm, verdict in typed.items()} == {
+            "candidate=same": "held",
+            "candidate=leaky": "breached",
+            "candidate=slip": "undecided",
+        }
+        assert all(verdict.guardrail and verdict.margin == 0.1 for verdict in typed.values())
+        assert typed["candidate=same"].margin_source == "measure"
+        rows = {row["arm"]: row for row in comparison.guardrails()}
+        assert {f"candidate={arm}": row["decision"] for arm, row in rows.items()} == {
+            arm: verdict.words for arm, verdict in typed.items()
+        }, "the table prints each typed verdict's words"
+
+        result = comparison.gate(readings=["no_leak"])
+        assert result.outcome == "failed"
+        assert {verdict.arm for verdict in result.failures} == {"candidate=leaky", "candidate=slip"}
+        assert comparison.gate(["breached"], readings=["no_leak"]).failures == (typed["candidate=leaky"],)
+        lenient = comparison.gate(["regressed"], readings=["no_leak"])
+        assert lenient.outcome == "undecided" and not lenient.passed, "an undecided guardrail is never a pass"

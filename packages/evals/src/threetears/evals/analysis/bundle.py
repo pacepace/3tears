@@ -8470,7 +8470,7 @@ def _multiple_comparisons(
         the campaign declares no live question; or none, with the reason, when no control resolved. Beside
         them, every guardrail decided for each arm against the control.
     """
-    guardrail_readings = _guardrail_readings(catalog, judged_measures)
+    guardrail_readings = _guardrail_readings(catalog, judged_measures, declared)
     unstamped = _unstamped_dimensions(result for members in results_by_cell.values() for result in members)
     if realized.control_arm is None:
         return MultipleComparisons(withheld=_NO_CONTROL_TO_COMPARE_AGAINST), _guardrails_of(
@@ -8595,19 +8595,22 @@ class _Guardrail(NamedTuple):
     """What a guardrail check needs to know about its reading."""
 
     higher_is_better: bool
-    #: The declared margin, or None when the reading declares none (every judged dimension).
+    #: The declared margin — a measure's ``materiality_threshold``, a judged dimension's from the campaign's
+    #: ``guardrail_margins`` — or None when none is declared.
     margin: float | None
     value_range: tuple[float, float] | None
 
 
 def _guardrail_readings(
-    catalog: dict[str, MetricDescriptor], judged_measures: list[JudgedMeasure]
+    catalog: dict[str, MetricDescriptor], judged_measures: list[JudgedMeasure], declared: CampaignDesign | None
 ) -> dict[tuple[ReadingKind, str], _Guardrail]:
     """Every guardrail reading the bundle carries: the measures declared one and the boundary judged dimensions.
 
     A measure's margin is its declared ``materiality_threshold``, the one margin a measure has; a judged
-    dimension declares none, so it is held at zero change.
+    dimension's is the one the campaign declares for it (``CampaignDesign.guardrail_margins``), and with none
+    it is held at zero change.
     """
+    judged_margins = {entry.dimension: entry.margin for entry in declared.guardrail_margins} if declared else {}
     readings: dict[tuple[ReadingKind, str], _Guardrail] = {
         ("measure", name): _Guardrail(
             descriptor.higher_is_better, descriptor.materiality_threshold, descriptor.value_range
@@ -8617,7 +8620,9 @@ def _guardrail_readings(
     }
     for measure in judged_measures:
         if measure.axis == "boundary":
-            readings[("judged", measure.name)] = _Guardrail(measure.higher_is_better, None, measure.value_range)
+            readings[("judged", measure.name)] = _Guardrail(
+                measure.higher_is_better, judged_margins.get(measure.name), measure.value_range
+            )
     return readings
 
 

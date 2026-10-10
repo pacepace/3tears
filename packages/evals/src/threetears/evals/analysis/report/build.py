@@ -321,8 +321,8 @@ EXPLORATORY_FINDING = (
 _GUARDRAILS_DISCLOSURE = (
     "A guardrail is what an arm must not get worse on. Each is decided on its own 95% interval on the difference "
     "from the control: held when the whole interval lies on the good side of the margin, breached when it lies "
-    "wholly beyond it, undecided otherwise. A measure's margin is its declared materiality threshold; a judged "
-    "dimension declares none and is held at zero change. Guardrails join no comparison and no composite, so no "
+    "wholly beyond it, undecided otherwise. A measure's margin is its declared materiality threshold, a judged "
+    "dimension's the one its campaign declares; with none, a guardrail is held at zero change. Guardrails join no comparison and no composite, so no "
     "gain elsewhere offsets one; an arm with a breached guardrail is not adopted, and an undecided guardrail is "
     "not known to be safe."
 )
@@ -431,7 +431,9 @@ def guardrail_verdicts(
                 interval=check.interval,
                 interval_level=INTERVAL_LEVEL if check.interval is not None else None,
                 margin=check.margin,
-                margin_source="measure" if check.margin_declared else None,
+                margin_source=(
+                    None if not check.margin_declared else "campaign" if check.reading == "judged" else "measure"
+                ),
                 guardrail=True,
                 words=GUARDRAIL_DECISION_WORDS[check.decision]
                 + (f" ({check.undecided_reason})" if check.undecided_reason else ""),

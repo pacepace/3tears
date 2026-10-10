@@ -1381,7 +1381,8 @@
             {
               "enum": [
                 "measure",
-                "run"
+                "run",
+                "campaign"
               ],
               "type": "string"
             },
@@ -1390,7 +1391,7 @@
             }
           ],
           "default": null,
-          "description": "Where the margin came from: `measure` = the measure's declared materiality threshold; `run` = a margin every run declared at launch on a core rate measure. None when no margin was declared.",
+          "description": "Where the margin came from: `measure` = the measure's declared materiality threshold; `run` = a margin every run declared at launch on a core rate measure; `campaign` = a judged guardrail's margin its campaign declares (`guardrail_margins`). None when no margin was declared.",
           "title": "Margin Source"
         },
         "materiality": {

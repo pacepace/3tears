@@ -51,6 +51,7 @@ from threetears.evals.contracts.covariates import (
 from threetears.evals.contracts.declaration import (
     BarName,
     CampaignDesign,
+    UndeclarableAxisError,
     UnreadableBarName,
     refuse_an_undeclarable_design,
     resolve_bar_name,
@@ -305,6 +306,7 @@ from threetears.evals.contracts.declaration import (
     BarNameRefusal,
     BarOverride,
     ControlDeclaration,
+    GuardrailMargin,
     Question,
     SweptAxis,
 )
@@ -541,6 +543,7 @@ __all__ = [
     "GuardrailCell",
     "GuardrailCheck",
     "GuardrailDecision",
+    "GuardrailMargin",
     "GuardrailReadings",
     "JudgingState",
     "LatencyMetrics",
@@ -647,6 +650,7 @@ __all__ = [
     "ToolLike",
     "ToolWrap",
     "TransferabilityClass",
+    "UndeclarableAxisError",
     "UnknownCandidateKind",
     "UnreadableBarName",
     "UsageRole",

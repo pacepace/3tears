@@ -145,6 +145,15 @@ roles component is not composable, its scores' judge reads unknown, and nothing 
 back at the next seed. ``EvalRun`` gained ``goal_check_proof_rules`` (None on a run stored before it, read as rules
 1, so its ``proven`` checks read unproven) and ``refused_goal_checks`` (None, not recorded), and ``EvalResult``
 gained ``judge_cannot_tell_boundary`` (empty, its can't-tells read as capability) — all optional within v8.
+
+**Within v8, not a bump**: ``CampaignDesign.guardrail_margins`` joined as an OPTIONAL field (#697) — the margin
+each judged guardrail (a boundary rubric dimension) is held to. A campaign, or an analysis's design snapshot,
+stored before it carries none and reads as declaring none: its judged guardrails are held at zero change, exactly
+as they were decided then, so no stored decision moves.
+
+**Within v8, not a bump**: ``EvalRun.declared_margins`` joined as an OPTIONAL field (#698) — the margins a launch
+declared on core rate measures (accuracy). A run stored before it carries none and reads as declaring none, so no
+comparison over it reads a margin it never declared.
 """
 
 

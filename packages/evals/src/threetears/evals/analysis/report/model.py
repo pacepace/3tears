@@ -236,11 +236,12 @@ class Verdict(EvalBaseModel):
             "guardrail's tolerated worsening (0 when none is declared). None when the reading has none."
         ),
     )
-    margin_source: Literal["measure", "run"] | None = Field(
+    margin_source: Literal["measure", "run", "campaign"] | None = Field(
         default=None,
         description=(
             "Where the margin came from: `measure` = the measure's declared materiality threshold; `run` = a margin "
-            "every run declared at launch on a core rate measure. None when no margin was declared."
+            "every run declared at launch on a core rate measure; `campaign` = a judged guardrail's margin its "
+            "campaign declares (`guardrail_margins`). None when no margin was declared."
         ),
     )
     materiality: Literal["material", "immaterial"] | None = Field(
