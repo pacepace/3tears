@@ -114,7 +114,7 @@ the control on each reading, under one rig.
 | improved / regressed | adjusted p < 0.05, in that direction | act on it, unless the row says *immaterial* (below the measure's margin) |
 | equivalent | the paired difference is shown inside ± the measure's margin by TOST, corrected in the same family | treat the arms as interchangeable on this reading |
 | not separated | the cases could not tell the arms apart | add cases, or declare a margin; never read it as a tie |
-| untested | no test could decide: fewer than two cases on a side, or every shared case moved by exactly the same amount, which leaves no spread to test; the row says why | fix what it names (usually too few cases) |
+| untested | no test could decide: fewer than two cases on a side, or a gap with no spread (every shared case moved by exactly the same amount, or each side constant) over too few cases for the exact test to reach 0.05; the row says why | fix what it names (usually too few cases) |
 
 `equivalent` needs a declared margin (`MetricDescriptor.materiality_threshold`) and a paired test. Its p
 is corrected in the same Holm family as the separations, with the multiplier capped at the number of
@@ -165,11 +165,11 @@ unit of analysis: a case's repeats are averaged first, because they are not inde
 | Interval on a mean | t on `n_cases − 1` degrees of freedom with a cluster-robust standard error over cases (Miller 2024), clipped to the measure's scale. One case gives no interval. |
 | Interval on a rate (accuracy, precision, recall, any 0/1 measure) | Wilson, on the effective sample size the clustering of repeats leaves, with t on `n_cases − 1` df. F1 has none. |
 | pass^k | Unbiased C(c, k) / C(n, k) per case, averaged over the cases with n ≥ k, pooled across the runs of one cell; its interval is Clopper–Pearson on an effective size. |
-| A contrast against the control | Paired t-test on per-case means over the shared cases (two or more), else Welch's t on Hsu's `min(n_a, n_b) − 1` df. Effect size Hedges' g (g_z when paired). Holm correction within each family; interval Bonferroni at 1 − α/m. |
+| A contrast against the control | Paired t-test on per-case means over the shared cases (two or more), else Welch's t on Hsu's `min(n_a, n_b) − 1` df; a gap with no spread is read by the exact permutation test, as for scope divergence, with no interval and no g. Effect size Hedges' g (g_z when paired). Holm correction within each family; interval Bonferroni at 1 − α/m. |
 | `equivalent` | Paired TOST against the measure's `materiality_threshold`, in the same Holm family, capped at the number of compared rows (Shaffer). |
 | A bar | Three-valued: the cell's interval against the threshold less the margin (cleared, missed, undecided). A seeded threshold is the incumbent's mean moved √2 − 1 of its half-width toward the permissive end. |
 | A guardrail | Non-inferiority: the 95% interval on arm − control against zero change less the margin. |
-| Scope divergence, mechanism checks | The difference tested directly, paired or Welch as for a contrast; a gap with no spread is read by an exact permutation test, which can reach 0.05 only from six shared cases (four a side unshared). |
+| Scope divergence, mechanism checks | The difference tested directly, paired or Welch as for a contrast; a gap with no spread is read by an exact permutation test, which can reach 0.05 only from six shared cases, or unshared where 2 / C(n_a + n_b, n_a) ≤ 0.05 (four a side, or three against five). |
 | Frontier | Dominance by the contrasts' test, Holm across the subject's pairs; latency ranked on the mean; p95 median-unbiased (Hyndman–Fan type 8) from 13 observations; cost band a lognormal prediction band. |
 | Run history | Paired test per adjacent pair of runs, uncorrected; `equivalent` by TOST against the threshold. |
 | Judge agreement and evidence tiers | Cohen's κ, quadratic-weighted on 1–5; tiers decided on a score interval for κ (one-sided 95% lower bound to award, 97.5% upper bound to deny). |
@@ -255,7 +255,8 @@ cases, Holm-corrected across the lever's pairs): `moved` when some pair separate
 observed, every pair could be tested and none separates — no measurable evidence the lever acted on its mechanism;
 otherwise `unchecked` with the reason (`not_declared`, `not_swept`, `levels_unobserved`, `too_few_observations`).
 Each level's mean and its number of cases sit beside the state. Every case shifting by the same amount is read
-by an exact test, so it reads `moved` only from six shared cases (four a side where the levels share none); below
+by an exact test, so it reads `moved` only from six shared cases (where the levels share none, once
+2 / C(n_a + n_b, n_a) ≤ 0.05: four a side, or three against five); below
 that it is `too_few_observations`, since a 0/1 measure under a lever that did nothing shifts two cases alike one
 time in eight.
 

@@ -104,6 +104,7 @@ from threetears.evals.analysis.reporting import (
     project_score_records,
 )
 from threetears.evals.analysis.stats import (
+    MIN_PAIRS_FOR_DETERMINISTIC_GAP,
     MULTIPLE_COMPARISON_CORRECTION,
     SIGNIFICANCE_ALPHA,
     LevelDifference,
@@ -115,9 +116,11 @@ from threetears.evals.analysis.stats import (
     holm_adjust,
     interval_clears,
     level_difference,
+    no_spread_p,
     observed_mean_interval,
     paired_equivalence,
     proportion_interval,
+    separation_p,
 )
 from threetears.evals.contracts.analysis_measures import BarAdjudication, BarVerdict, MeasureCollection, MeasureSummary
 from threetears.evals.contracts.campaign import (
@@ -1708,23 +1711,25 @@ class FamilyComparison(EvalDocumentModel):
             "The interval on `delta` at the family's `interval_level`, from the same test as `p_raw`: simultaneous "
             "over the family, so every interval in it covers its true difference together at least 95% of the time. "
             "One that excludes zero always comes with a separation; a separation Holm's later steps found can still "
-            "touch zero. None when no test could run."
+            "touch zero. None when no test could run, and where the values have no spread (every shared case moved "
+            "by one amount, or each side constant): the exact test that decides those has no interval to invert."
         ),
     )
     hedges_g: float | None = Field(
         default=None,
         description=(
             "The standardized effect, Hedges' g (bias-corrected Cohen's d): over the SD of the per-case differences "
-            "when paired, the pooled SD when not. None when no test ran, and at two paired cases, where no unbiased "
-            "estimate exists."
+            "when paired, the pooled SD when not. None when no test ran, at two paired cases, where no unbiased "
+            "estimate exists, and where the values have no spread, where no finite effect size exists."
         ),
     )
     test: Literal["paired", "unpaired"] | None = Field(
         default=None,
         description=(
-            "`paired` = a paired t-test over the cases both cells ran; `unpaired` = Welch's t statistic on Hsu's "
-            "conservative min(n) − 1 degrees of freedom over each cell's per-case values, when they share fewer "
-            "than two cases. None when neither could run."
+            "`paired` = a paired t-test over the cases both cells ran, or the exact sign-flip test where every one "
+            "moved by the same amount; `unpaired` = Welch's t statistic on Hsu's conservative min(n) − 1 degrees of "
+            "freedom over each cell's per-case values, when they share fewer than two cases, or the exact "
+            "permutation test where each side is constant. None when neither could run."
         ),
     )
     p_raw: float | None = Field(
@@ -7628,7 +7633,9 @@ def _compare(
 
     Paired over the cases both cells ran when they share at least two — far more powerful, and the
     design a fixed case set exists for — else the unpaired test over each side's per-case values
-    (:func:`~threetears.evals.analysis.stats.composite_significance`). The means, the counts and the delta
+    (:func:`~threetears.evals.analysis.stats.composite_significance`), and where the values have no spread
+    the exact permutation p every other surface reads that gap by (:func:`~threetears.evals.analysis.stats.separation_p`),
+    so one concept has one answer. The means, the counts and the delta
     are all over the cases the test read, and each side says how many of its own it left out, so the
     figures a reader sees are the figures the test saw. A paired comparison on a measure with a declared
     margin also runs the paired equivalence test (TOST) against it.
@@ -7651,13 +7658,25 @@ def _compare(
     """
     (control_key, control_values), (contrast_key, contrast_values) = control, contrast
     a, b, paired = _test_samples(control_values, contrast_values)
-    hedges_g, significant, p_raw = composite_significance(a, b, paired=paired)
+    # The separation p every surface reads a gap by (:func:`separation_p`): the t-test's where the values have
+    # spread, and where they have none — every shared case moved by one amount, or each side constant — the
+    # exact permutation p the frontier, the mechanism and scope reads and the history use, decided on exact
+    # values. So a gap with no spread is separated once the exact test can reach α, as it is everywhere else.
+    p_raw = separation_p(a, b, paired=paired)
+    hedges_g, _, _ = composite_significance(a, b, paired=paired)
+    no_spread = (
+        no_spread_p([exact_decimal(x) for x in a], [exact_decimal(y) for y in b], paired=paired)
+        if len(a) >= 2 and len(b) >= 2
+        else None
+    )
+    if no_spread is not None:
+        # No spread, decided exactly: no finite effect size, whatever a float residue lets the t statistic say.
+        hedges_g = None
     mean_a = sum(a) / len(a) if a else None
     mean_b = sum(b) / len(b) if b else None
     untested_reason = None
-    if significant is None:
-        # Named from the branch that refused, since the two causes have different remedies: more cases
-        # for the first, while the second is a gap so regular that no t statistic exists to measure it.
+    if p_raw is None:
+        # Named from the branch that refused, since the causes have different remedies.
         if no_turn:
             untested_reason = (
                 f"every result of the {' and the '.join(no_turn)} failed with no turn taken, so there is no "
@@ -7665,10 +7684,20 @@ def _compare(
             )
         elif len(a) < 2 or len(b) < 2:
             untested_reason = "fewer than two cases carry this reading on a side"
-        elif paired:
-            untested_reason = "every shared case moved by the same amount, so the differences have no spread to test"
+        elif no_spread is not None and paired:
+            untested_reason = (
+                f"every shared case moved by the same amount, and over {len(a)} shared cases the exact sign-flip "
+                f"test's smallest p is {format_number(no_spread)}, above α={format_number(SIGNIFICANCE_ALPHA)}; "
+                f"it needs {MIN_PAIRS_FOR_DETERMINISTIC_GAP} shared cases"
+            )
+        elif no_spread is not None:
+            untested_reason = (
+                f"each side's values are constant, and over {len(a)} and {len(b)} cases the exact permutation "
+                f"test's smallest p is {format_number(no_spread)}, above α={format_number(SIGNIFICANCE_ALPHA)}; "
+                "it needs more cases on a side"
+            )
         else:
-            untested_reason = "each side's values are constant, so there is no spread to test"
+            untested_reason = "the values differ by less than floating point resolves, so no t statistic exists"
     # The equivalence test only where the separation test produced a p, so each equivalence hypothesis has
     # its comparison's separation hypothesis beside it in the family (see holm_adjust's max_true).
     margin = threshold if paired and threshold and p_raw is not None else None
@@ -7693,12 +7722,12 @@ def _compare(
             n_left_out=len(contrast_values) - len(b),
         ),
         delta=delta,
-        hedges_g=hedges_g if significant is not None else None,
-        test=None if significant is None else ("paired" if paired else "unpaired"),
+        hedges_g=hedges_g if p_raw is not None else None,
+        test=None if p_raw is None else ("paired" if paired else "unpaired"),
         p_raw=p_raw,
         equivalence_margin=margin,
         equivalence_p_raw=equivalence_p_raw,
-        verdict="untested" if significant is None else "not_separated",
+        verdict="untested" if p_raw is None else "not_separated",
         untested_reason=untested_reason,
         materiality=None if delta is None else materiality(threshold, delta),
     )

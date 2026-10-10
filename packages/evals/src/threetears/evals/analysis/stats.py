@@ -72,7 +72,7 @@ def _min_pairs_for_sign_flip(alpha: float) -> int:
 #: Pair-count floor for claiming significance from a zero-variance difference.
 #: Derived from the alpha above, not chosen: below it, no exact test of a perfectly
 #: consistent move could reject at that alpha, so the claim would outrun the data.
-_MIN_PAIRS_FOR_DETERMINISTIC_GAP = _min_pairs_for_sign_flip(SIGNIFICANCE_ALPHA)
+MIN_PAIRS_FOR_DETERMINISTIC_GAP = _min_pairs_for_sign_flip(SIGNIFICANCE_ALPHA)
 
 #: The paired test the change classifier discloses, so a regression flag names the
 #: statistics it rests on rather than presenting a bare verdict.
@@ -1052,7 +1052,7 @@ def exact_decimal(value: float | Fraction) -> Fraction:
     return value if isinstance(value, Fraction) else Fraction(repr(float(value)))
 
 
-def _no_spread_p(a: Sequence[Fraction], b: Sequence[Fraction], *, paired: bool) -> float | None:
+def no_spread_p(a: Sequence[Fraction], b: Sequence[Fraction], *, paired: bool) -> float | None:
     """The exact permutation p where two exact samples have no spread to test, else ``None``.
 
     Paired, every difference one amount: ``2 ** (1 - n)`` (:func:`_sign_flip_p`), or 1 when that amount is
@@ -1176,7 +1176,7 @@ def separation_p(
     b = [exact_decimal(y) for y in sample_b]
     if len(a) < 2 or len(b) < 2 or (paired and len(a) != len(b)):
         return None
-    exact = _no_spread_p(a, b, paired=paired)
+    exact = no_spread_p(a, b, paired=paired)
     if exact is not None:
         return exact if exact == 1.0 or exact <= SIGNIFICANCE_ALPHA else None
     # The spread is exactly nonzero, so the t statistic exists unless its float residue vanishes.
@@ -1250,7 +1250,7 @@ def paired_equivalence(diffs: list[float], margin: float | None) -> tuple[bool |
     Two one-sided t-tests on the paired differences, each at :data:`SIGNIFICANCE_ALPHA`: H0 ``δ ≤ −margin``
     and H0 ``δ ≥ margin``. Equivalence is claimed only when both reject — the larger of the two p's
     below α. A zero-spread difference has no t; it is read under the same pair floor the deterministic
-    gap is (:data:`_MIN_PAIRS_FOR_DETERMINISTIC_GAP`), for the same reason: a perfectly consistent
+    gap is (:data:`MIN_PAIRS_FOR_DETERMINISTIC_GAP`), for the same reason: a perfectly consistent
     pattern over fewer pairs is a coincidence of a coarse scale, not a finding.
 
     Args:
@@ -1267,7 +1267,7 @@ def paired_equivalence(diffs: list[float], margin: float | None) -> tuple[bool |
     mean = sum(diffs) / n
     sd = _sample_std(diffs)
     if sd == 0.0:
-        return n >= _MIN_PAIRS_FOR_DETERMINISTIC_GAP and abs(mean) < margin, None
+        return n >= MIN_PAIRS_FOR_DETERMINISTIC_GAP and abs(mean) < margin, None
     se = sd / math.sqrt(n)
     df = float(n - 1)
     p_above_lower = _student_t_upper_tail((mean + margin) / se, df)
@@ -1381,7 +1381,7 @@ def paired_change(
     hedges_g: float | None
     significant: bool | None
     p_value: float | None
-    exact = _no_spread_p(a, b, paired=True) if n_pairs >= 2 else None
+    exact = no_spread_p(a, b, paired=True) if n_pairs >= 2 else None
     if exact is None:
         hedges_g, significant, p_value = composite_significance(
             [float(x) for x in a], [float(y) for y in b], paired=True
@@ -1524,7 +1524,7 @@ def level_difference[Case: Hashable](
     equivalent: bool | None = None
     equivalence_p: float | None = None
     diffs = [y - x for x, y in zip(a, b)] if paired else []
-    exact = _no_spread_p(a, b, paired=paired)
+    exact = no_spread_p(a, b, paired=paired)
     if exact is not None:
         if paired:
             # Decided on the exact differences, so the float the equivalence test reads has no residue either.
@@ -1716,6 +1716,7 @@ __all__ = [
     "EQUIVALENCE_TEST_NAME",
     "GuardrailVerdict",
     "INTERVAL_LEVEL",
+    "MIN_PAIRS_FOR_DETERMINISTIC_GAP",
     "MULTIPLE_COMPARISON_CORRECTION",
     "PAIRED_TEST_NAME",
     "SIGNIFICANCE_ALPHA",
@@ -1741,6 +1742,7 @@ __all__ = [
     "level_difference",
     "lognormal_sum_prediction_band",
     "mean_interval",
+    "no_spread_p",
     "observed_mean_interval",
     "paired_change",
     "paired_equivalence",

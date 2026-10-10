@@ -12,11 +12,13 @@ Mutations that turn this file red (each run against a saved copy and restored fr
   over each comparison alone (``holm_adjust([p])``); dropping the control-variant filter on pairs.
 - ``build_user_message``: removing the ``p_raw`` deletion.
 - ``_compare``: disabling the paired no-spread branch, so a deterministic gap is named as a
-  shortage of cases.
+  shortage of cases; reading the gap by the t-test's refusal instead of ``separation_p``, so a constant
+  shift over twelve cases reads untested.
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import replace
 
@@ -28,8 +30,9 @@ from threetears.evals.analysis import (
     ComparisonFamily,
     assemble_context_bundle,
 )
+from threetears.evals.analysis.bundle import _compare
 from threetears.evals.analysis.generator import build_user_message
-from threetears.evals.analysis.stats import composite_significance, holm_adjust
+from threetears.evals.analysis.stats import composite_significance, holm_adjust, separation_p
 from threetears.evals.contracts import EvalCampaign, EvalResult, Question, RubricScore
 from threetears.evals.contracts.models import LatencyMetrics
 from threetears.evals.contracts.host import HostProfile, MeasureRegistry
@@ -238,11 +241,13 @@ class TestVerdicts:
         assert decline.verdict == "regressed"
 
     def test_an_untested_comparison_says_which_refusal_it_hit(self) -> None:
-        # Every case moved by exactly +1: the paired differences have no spread, so no t exists.
-        gap = _family(_bundle([(1,) * 12]))
+        # Every one of five cases moved by exactly +1: the exact sign-flip p is 2^-4 at best, above α.
+        gap = _family(_bundle([(1,) * 5], cases=5))
         (moved,) = gap.comparisons
-        assert (moved.verdict, moved.p_raw, moved.test) == ("untested", None, None)
-        assert moved.untested_reason is not None and "same amount" in moved.untested_reason
+        assert (moved.verdict, moved.p_raw, moved.test, moved.hedges_g) == ("untested", None, None, None)
+        assert moved.untested_reason is not None
+        assert "same amount" in moved.untested_reason and "0.0625" in moved.untested_reason
+        assert "needs 6 shared cases" in moved.untested_reason
         assert gap.family_size == 0 and gap.n_untested == 1
 
         # One case: too few on a side for any test.
@@ -250,6 +255,52 @@ class TestVerdicts:
         (single,) = thin.comparisons
         assert single.verdict == "untested"
         assert single.untested_reason is not None and "fewer than two" in single.untested_reason
+
+    @pytest.mark.parametrize("cases", [6, 12])
+    def test_a_constant_shift_is_separated_by_the_exact_sign_flip_p(self, cases: int) -> None:
+        """Every shared case moved by +1: the frontier, the mechanism reads and history call that separated, so here too."""
+        family = _family(_bundle([(1,) * cases], cases=cases))
+        (moved,) = family.comparisons
+        assert (moved.test, moved.p_raw) == ("paired", 2.0 ** (1 - cases))
+        assert moved.p_raw == separation_p([3.0] * cases, [4.0] * cases, paired=True)
+        assert moved.verdict == "improved" and family.family_size == 1
+        assert moved.hedges_g is None, "no spread, so no finite effect size"
+        assert moved.interval is None, "the exact test has no interval to invert"
+
+    def test_identical_values_are_tested_and_not_separated(self) -> None:
+        (same,) = _family(_bundle([(0,) * 12])).comparisons
+        assert (same.verdict, same.test, same.p_raw, same.hedges_g) == ("not_separated", "paired", 1.0, None)
+
+    @pytest.mark.parametrize(("n_control", "n_contrast"), [(4, 4), (3, 5)])
+    def test_two_constant_sides_unpaired_are_tested_by_the_exact_permutation_p(
+        self, n_control: int, n_contrast: int
+    ) -> None:
+        tested = _compare(
+            ("measure", "m"),
+            True,
+            (("control", "rig"), {f"a{i}": 0.1 for i in range(n_control)}),
+            (("contrast", "rig"), {f"b{i}": 0.6 for i in range(n_contrast)}),
+            threshold=None,
+        )
+        comparison = tested.comparison
+        assert comparison.test == "unpaired"
+        assert comparison.p_raw == pytest.approx(2 / math.comb(n_control + n_contrast, n_control))
+        assert comparison.p_raw is not None and comparison.p_raw < 0.05
+        assert comparison.hedges_g is None and comparison.untested_reason is None
+
+    def test_two_constant_sides_too_few_for_the_exact_p_read_untested_and_say_why(self) -> None:
+        tested = _compare(
+            ("measure", "m"),
+            True,
+            (("control", "rig"), {f"a{i}": 0.1 for i in range(3)}),
+            (("contrast", "rig"), {f"b{i}": 0.6 for i in range(4)}),
+            threshold=None,
+        )
+        comparison = tested.comparison
+        assert (comparison.verdict, comparison.test, comparison.p_raw, tested.p_raw) == ("untested", None, None, None)
+        assert comparison.untested_reason is not None
+        assert "each side's values are constant" in comparison.untested_reason
+        assert "3 and 4 cases" in comparison.untested_reason and "0.05714" in comparison.untested_reason
 
     def test_comparisons_are_against_the_control_only(self) -> None:
         family = _family(_bundle([CLEAR]))
