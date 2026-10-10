@@ -34,7 +34,7 @@ from threetears.evals.analysis import (
     MechanismCheck,
     assemble_context_bundle,
 )
-from threetears.evals.analysis.bundle import REASONING_SHARE_DIVERGENCE, observed_mechanism_key
+from threetears.evals.analysis.bundle.assemble import REASONING_SHARE_DIVERGENCE, observed_mechanism_key
 from threetears.evals.kernel import (
     REASONING_RATIO_KEY,
     CampaignDesign,

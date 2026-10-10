@@ -13,7 +13,7 @@ from collections.abc import Callable, Sequence
 from typing import Any, Literal
 
 from threetears.evals.analysis.arms import ArmStatus, arm_label, arm_names
-from threetears.evals.analysis.bundle import ComparisonVerdict
+from threetears.evals.analysis.bundle.assemble import ComparisonVerdict
 from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.viz.intent import Cell
 from threetears.evals.analysis.viz_refs import cell_arm_labels

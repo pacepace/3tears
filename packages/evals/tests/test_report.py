@@ -742,7 +742,7 @@ class TestTheComparativeTablesCompileToCharts:
         from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
         from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
         from packages.evals.tests.test_viz_timeseries import DAY_ONE, timeseries_batches
-        from threetears.evals.analysis.bundle import assemble_context_bundle
+        from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
         from threetears.evals.analysis.report.build import build_code_only_report
 
         host = toyhost_profile()

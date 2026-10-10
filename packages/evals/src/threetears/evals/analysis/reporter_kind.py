@@ -38,7 +38,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from threetears.evals.analysis.bundle import AnalysisContextBundle
+from threetears.evals.analysis.bundle.assemble import AnalysisContextBundle
 from threetears.evals.analysis.errors import GenerationError
 from threetears.evals.analysis.generator import (
     build_user_message,

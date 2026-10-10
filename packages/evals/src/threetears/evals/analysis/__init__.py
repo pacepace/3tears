@@ -63,7 +63,7 @@ from threetears.evals.analysis.agreement import (
 from threetears.evals.analysis.judge_drift import DriftVerdict, JudgeDrift, JudgeDriftDimension, judge_drift
 from threetears.evals.analysis.arms import ArmTable, cell_label, multi_rig_variants, short_digest
 from threetears.evals.analysis.bar_proposals import BaselineBarProposals, propose_bars
-from threetears.evals.analysis.bundle import (
+from threetears.evals.analysis.bundle.assemble import (
     AnalysisContextBundle,
     JudgeChange,
     JudgeDriftLink,
@@ -218,7 +218,7 @@ from threetears.evals.analysis.service import (
 from threetears.evals.analysis.stats import EQUIVALENCE_TEST_NAME, PAIRED_TEST_NAME, ChangeLabel
 from threetears.evals.analysis.surface_table import SurfaceTable
 from threetears.evals.analysis.arms import ArmLevel, ArmMeasurement, ArmRow, ArmStatus
-from threetears.evals.analysis.bundle import (
+from threetears.evals.analysis.bundle.assemble import (
     AliasedFactors,
     ArmMechanismReading,
     ArmServedModel,

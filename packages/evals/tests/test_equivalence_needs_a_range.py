@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from threetears.evals.analysis.bundle import AnalysisContextBundle, FamilyComparison
+from threetears.evals.analysis.bundle.assemble import AnalysisContextBundle, FamilyComparison
 from threetears.evals.analysis.report import build_code_only_report
 from threetears.evals.analysis.report.model import DisclosureBlock
 from threetears.evals.analysis.reporting import METRIC_COST_USD, HistoryResult, RegressionFlag, compute_history

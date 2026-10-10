@@ -11,7 +11,7 @@ nothing here lists it. The two assertions below are the ones the matrix cannot m
 **Closure.** No member may import a module under ``threetears.evals`` outside the package. The
 matrix judges an edge only once its target is placed, so an import of a module still at the
 ``threetears.evals`` root passes it; this walk refuses that edge too. A member reaching
-``threetears/evals/analysis/bundle.py`` names nothing foreign and is clean by every import canary,
+``threetears/evals/analysis/bundle/assemble.py`` names nothing foreign and is clean by every import canary,
 and it is still a module that arrives broken wherever the set is consumed alone.
 
 **Installability.** Every member imports in an interpreter whose importable world is the standard
@@ -207,12 +207,12 @@ def test_the_closure_assertion_names_the_pair_that_breaks_it():
 
     Built from the real package and the real walk with exactly one edge injected, so what is
     exercised is the assertion as it runs, not a model of it. The intruder is
-    ``analysis/bundle.py`` on purpose: a pipeline module that belongs to a different package, and
+    ``analysis/bundle/assemble.py`` on purpose: a pipeline module that belongs to a different package, and
     its absence from the package is asserted here rather than assumed, since an intruder that had
     quietly become a member would make this test vacuous.
     """
     offender = "threetears/evals/schema/models.py"
-    intruder = "threetears/evals/analysis/bundle.py"
+    intruder = "threetears/evals/analysis/bundle/assemble.py"
     members = _members(("schema",))
     assert offender in members, "the injected edge has to start from a real member"
     assert intruder not in members, f"{intruder} is now a member, so it can no longer stand in for a non-member"

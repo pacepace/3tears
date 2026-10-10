@@ -29,7 +29,7 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis import stats
-from threetears.evals.analysis.bundle import assemble_context_bundle, cell_dimension_facts, insight_standing
+from threetears.evals.analysis.bundle.assemble import assemble_context_bundle, cell_dimension_facts, insight_standing
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal
 from threetears.evals.analysis.generator import (

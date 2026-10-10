@@ -12,7 +12,7 @@ from dataclasses import replace
 import pytest
 
 from threetears.evals.analysis import assemble_context_bundle
-from threetears.evals.analysis.bundle import bundle_decision_surface
+from threetears.evals.analysis.bundle.assemble import bundle_decision_surface
 from threetears.evals.kernel import EvalCampaign
 from threetears.evals.schema import RubricScore
 from threetears.evals.kernel.host import DEFAULT_PASS_THRESHOLD, BarRegistry, PassThreshold, pass_threshold_label

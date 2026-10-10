@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis.bundle import AnalysisContextBundle
+from threetears.evals.analysis.bundle.assemble import AnalysisContextBundle
 from threetears.evals.analysis.cells import CELL_MODEL_VERSION
 from threetears.evals.schema.subject import SubjectSnapshot
 from threetears.evals.kernel.host.sweepables import CORE_SWEEPABLES, JUDGE_INPUTS, SHARED_CORE, SIMULATOR_INPUTS

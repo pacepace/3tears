@@ -13,7 +13,7 @@ import json
 from typing import Any
 
 from threetears.evals.analysis import prepare_analysis_generation, run_analysis_generation
-from threetears.evals.analysis.bundle import assemble_context_bundle, superseding_insights
+from threetears.evals.analysis.bundle.assemble import assemble_context_bundle, superseding_insights
 from threetears.evals.analysis.generator import build_user_message
 from threetears.evals.kernel.campaign import EvalCampaign, EvalInsight
 from threetears.evals.kernel.host import EvalHost

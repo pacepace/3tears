@@ -41,7 +41,7 @@ from threetears.evals.analysis import (
     report_markdown,
 )
 from threetears.evals.analysis.arms import short_digest
-from threetears.evals.analysis.bundle import bundle_decision_surface
+from threetears.evals.analysis.bundle.assemble import bundle_decision_surface
 from threetears.evals.analysis.report.build import NO_STRATUM, TOO_FEW_CASES
 from threetears.evals.analysis.surface_table import SURFACE_ORDER_NO_CONTROL
 from threetears.evals.kernel import (
