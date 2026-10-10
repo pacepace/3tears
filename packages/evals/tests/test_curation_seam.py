@@ -204,6 +204,27 @@ def test_a_failed_result_delete_leaves_the_run_document_alone():
     storage.delete_eval_run.assert_not_called()
 
 
+def test_a_refused_result_delete_names_its_cause_and_leaves_the_run_alone():
+    """#650: a result kept because its trace survived is a failed cascade, not a clean one."""
+    storage = _storage_double()
+    kept, gone = MagicMock(), MagicMock()
+    kept.id, gone.id = "res-kept", "res-gone"
+    storage.query_eval_results_by_run.return_value = [kept, gone]
+
+    def _delete(result_id: str, scope_id: str) -> bool:
+        if result_id == "res-kept":
+            raise StorageError("result 'res-kept' left intact: its trace 'res-kept:trace' could not be deleted")
+        return True
+
+    storage.delete_eval_result.side_effect = _delete
+
+    with pytest.raises(StorageError, match=r"1 of 2 result\(s\).*res-kept.*trace 'res-kept:trace'"):
+        curation.delete_run(storage, _run(), SCOPE, confirm="doomed")
+
+    assert storage.delete_eval_result.call_count == 2
+    storage.delete_eval_run.assert_not_called()
+
+
 def test_delete_insight_loads_its_own_target_and_raises_when_absent():
     """The one delete with no service read helper in front of it, so the
     not-found check lives here rather than at the call site.
