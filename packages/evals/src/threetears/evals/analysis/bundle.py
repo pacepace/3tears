@@ -1490,6 +1490,15 @@ class LeverCoverageInput(EvalDocumentModel):
             "moved."
         ),
     )
+    cannot_be_an_arm: str | None = Field(
+        default=None,
+        description=(
+            "Set only on a DECLARED axis the host cannot vary on purpose — an apparatus or label input, or a name "
+            "it never registered: the host's own reason, with its remedy. Such an input never enters the variant "
+            "key, so every run resolves to one arm on it and this row is unswept BY CONSTRUCTION, whatever the "
+            "runs did — a design that cannot be met, never a sweep that did not happen. Null on every other row."
+        ),
+    )
     mechanism: MechanismCheck = Field(
         description=(
             "Whether the measure this lever declares it acts on separated across its levels, over this row's "
@@ -1956,7 +1965,7 @@ class AnalysisContextBundle(EvalDocumentModel):
     # A/B set spanning a bump must be read as spanning it. Why each earlier version moved is in
     # this file's history.
     schema_version: int = Field(
-        default=48, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=49, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -6101,6 +6110,11 @@ def _coverage_map(
                 result_ids_by_level.setdefault(level, set()).add(record.result_id)
         declared_lever = profile.sweepables.get(lever)
         k = _lever_k_floor(lever, cohort_records, k_by_arm, group_of_run, effective_by_run)
+        # A declared axis is asked the authoring gate's own question. A campaign stored before that
+        # gate, or past it, can still declare an apparatus or label input, and its row is then
+        # `unswept` for a reason no run could change — said here, in the host's words, so the memo
+        # can state the cause rather than report a sweep that never happened (#675).
+        controllable = profile.controllable(lever) if lever in declared else None
         if cells <= 1:
             status: Literal["measured", "thin", "unswept"] = "unswept"
         elif k < _MEASURED_K_FLOOR or n_distinct_results < 2 * cells:
@@ -6122,6 +6136,9 @@ def _coverage_map(
                 # draw. Sizing it would label that row 'campaign' and tell the generator, two
                 # paragraphs after "compare each cell to the control", that no contrast exists.
                 cohort_scope="control_referenced" if _is_control_referenced(lever, design) else "campaign",
+                cannot_be_an_arm=(
+                    controllable.reason if controllable is not None and controllable.state != "covered" else None
+                ),
                 confounded_by=_uncontrolled_dimensions(
                     lever, sorted(cohort), lever_levels, apparatus_levels, folds=folds, profile=profile
                 )

@@ -1444,6 +1444,14 @@ def _evidence_disclosures(bundle: AnalysisContextBundle) -> list[ReportBlock]:
     for dimension in unverified:
         reason = bundle.confound_catalog[dimension]
         say("comparisons", reason[:1].upper() + reason[1:] + ".")
+    # A declared axis on an input the host cannot vary is unswept by construction; without its cause the
+    # row reads as a sweep that did not happen.
+    for row in bundle.coverage:
+        if row.cannot_be_an_arm:
+            say(
+                "comparisons",
+                f"Declared axis {row.name} reads unswept whatever the runs did: {row.cannot_be_an_arm.rstrip('.')}.",
+            )
     # An arm keyed by a floating alias can pool numbers from more than one model; a code-only report has no
     # writer to read `arm_served_models`, so the mixture is said here, once per arm.
     for reading in bundle.arm_served_models:
