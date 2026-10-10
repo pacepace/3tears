@@ -431,8 +431,10 @@ def test_the_report_and_the_writer_see_an_immaterial_verdict_labelled() -> None:
 
     assert (
         row["verdict"].startswith("improved")
-        and "immaterial: the observed delta is below the host's materiality threshold" in row["verdict"]
+        and "immaterial: the observed delta is inside the margin of ±0.05 on Field accuracy, which does not show"
+        in row["verdict"]
     )
+    assert "materiality threshold" not in row["verdict"], "the reader's words: the margin they declared"
     assert '"materiality":"immaterial"' in build_user_message(bundle).replace(" ", "")
 
 

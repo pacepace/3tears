@@ -292,7 +292,7 @@ asyncio.run(main())
 ```
 
 ```
-v1-login: delta +0.10, interval [-0.1262, 0.3262] at 95%, not separated from the control — immaterial: the observed delta is below the host's materiality threshold, which does not show the true difference is that small
+v1-login: delta +0.10, interval [-0.1262, 0.3262] at 95%, not separated from the control — immaterial: the observed delta is inside the margin of ±0.25 on Correct score, which does not show the true difference is that small
 ```
 
 Still not separated, and not equivalent either: ten cases cannot show a pass rate within 0.25, even when the
