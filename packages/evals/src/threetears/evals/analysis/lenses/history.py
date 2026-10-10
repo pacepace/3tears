@@ -30,11 +30,6 @@ from threetears.evals.kernel.scoring import (
 from threetears.observe import get_logger
 from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.analysis.reporting import (
-    _AGGREGATE_OF_OBSERVATION,
-    _describe_aggregate,
-    _effective_formula,
-    _METRIC_GLOSS,
-    _metric_vocabulary,
     METRIC_COMPOSITE,
     METRIC_COST_USD,
     METRIC_OUTCOME,
@@ -48,9 +43,16 @@ from threetears.evals.analysis.reporting import (
     pooled_served_models,
     PROJECTED_METRICS,
     ProjectionExclusions,
-    resolve_measure_name,
     SCOPED_METRICS,
     ServedModelReading,
+)
+from threetears.evals.analysis.lenses.aggregation import (
+    _AGGREGATE_OF_OBSERVATION,
+    _describe_aggregate,
+    _effective_formula,
+    _METRIC_GLOSS,
+    _metric_vocabulary,
+    resolve_measure_name,
     WEIGHTING_EQUAL_PER_SCENARIO,
 )
 from threetears.evals.analysis.lenses.contestants import (

@@ -17,12 +17,7 @@ from threetears.evals.kernel.metrics import MetricDescriptor
 from threetears.evals.schema.models import SCALES
 from threetears.evals.kernel.scoring import CompositeBasis
 from threetears.evals.analysis.reporting import (
-    _aggregate,
-    _describe_aggregate,
-    _effective_formula,
-    _metric_vocabulary,
     cassette_mode_disclosure,
-    DEFAULT_WEIGHTING,
     METRIC_COMPOSITE,
     METRIC_COST_USD,
     pooled_composite_basis,
@@ -30,11 +25,18 @@ from threetears.evals.analysis.reporting import (
     pooled_served_models,
     PROJECTED_METRICS,
     ProjectionExclusions,
-    resolve_measure_name,
     SCOPED_METRICS,
     ScoreRecord,
     ServedModelReading,
     SUBSTITUTING_CASSETTE_MODE,
+)
+from threetears.evals.analysis.lenses.aggregation import (
+    _aggregate,
+    _describe_aggregate,
+    _effective_formula,
+    _metric_vocabulary,
+    DEFAULT_WEIGHTING,
+    resolve_measure_name,
     WEIGHTINGS,
 )
 from threetears.evals.analysis.lenses.cost_estimate import CostEstimate, PlannedCost, PredictedValue

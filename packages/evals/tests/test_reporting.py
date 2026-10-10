@@ -27,8 +27,6 @@ from threetears.evals.analysis.reporting import (
     METRIC_TOTAL_MS,
     METRIC_TRANSCRIPT,
     PARTITION_TOLERANCE_MS,
-    WEIGHTING_EQUAL_PER_SCENARIO,
-    WEIGHTING_SAMPLE_WEIGHTED,
     WITHHELD_PARTS_EXCEED_WHOLE,
     WITHHELD_UNMEASURED_COMPONENT,
     LatencyPartition,
@@ -40,6 +38,7 @@ from threetears.evals.analysis.reporting import (
     place_results,
     project_score_records,
 )
+from threetears.evals.analysis.lenses.aggregation import WEIGHTING_EQUAL_PER_SCENARIO, WEIGHTING_SAMPLE_WEIGHTED
 from threetears.evals.analysis.lenses.comparison_sets import (
     BADGE_CASE_SET_DIFFERS,
     BADGE_CASE_SET_UNRESOLVED,

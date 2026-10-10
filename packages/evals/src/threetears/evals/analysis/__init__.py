@@ -129,7 +129,6 @@ from threetears.evals.analysis.reporter_kind import (
     reporter_cell_timeout_s,
 )
 from threetears.evals.analysis.reporting import (
-    DEFAULT_WEIGHTING,
     METRIC_COMPOSITE,
     METRIC_OUTCOME,
     METRIC_SCORE,
@@ -137,9 +136,8 @@ from threetears.evals.analysis.reporting import (
     PROJECTED_METRICS,
     SCOPED_METRICS_HELP,
     SERVED_MODEL_UNRECORDED,
-    WEIGHTING_EQUAL_PER_SCENARIO,
-    metric_help,
 )
+from threetears.evals.analysis.lenses.aggregation import DEFAULT_WEIGHTING, WEIGHTING_EQUAL_PER_SCENARIO, metric_help
 from threetears.evals.analysis.lenses.comparison_sets import DECLARED_INPUT_ORIGIN, difference_was_declared_at_launch
 from threetears.evals.analysis.lenses.cost_estimate import COST_ESTIMATE_MIN_BASIS, COST_PREDICTION_METHOD
 from threetears.evals.analysis.lenses.pivot import CELL_MEASURED, CELL_NOT_RUN, CELL_WITHHELD
