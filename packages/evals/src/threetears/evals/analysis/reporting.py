@@ -134,13 +134,12 @@ METRIC_COST_USD = "cost_usd"
 # 2. `row_factor='rubric_dim', column_factor='model'` answers "compare these runs
 #    by dimension" in ONE table. A metric per dim needs N pivots and shows the
 #    dims nowhere side by side.
-# 3. A dotted name already means *open coordinate* here — `_axis_value` routes
-#    any dotted axis to `factors`. Dim names are moving to a dotted
-#    `<context>.<dim>` form so a dimension carries the context it was scored
-#    against, and putting those in the metric namespace would give one syntax two
-#    meanings. Stated as the direction it is: no dotted dim name exists in the
-#    tree today, and this reason holds the shape open for one rather than
-#    describing one.
+# 3. Dim names are moving to a dotted `<context>.<dim>` form so a dimension
+#    carries the context it was scored against, and a host's levers are often
+#    dotted too (`<kind>.<field>`). The pivot routes neither by shape (#664), but
+#    a reader would: a dotted name in the metric namespace reads as a lever.
+#    Stated as the direction it is: no dotted dim name exists in the tree today,
+#    and this reason holds the shape open for one rather than describing one.
 #: The observation-level measure holding one judged rubric dimension's score: one row per dimension.
 METRIC_SCORE = "score"
 
@@ -177,7 +176,7 @@ METRIC_GOAL_STATE = "goal_state"
 #: Every measure `project_score_records` can emit. Unlike the factor set, this one
 #: is genuinely CLOSED — the projection is the only producer of score records, so
 #: a name outside it can only be a typo. That distinction is why an unknown metric
-#: is refused while an unknown dotted axis is not: a mistyped axis names a key a
+#: is refused while a registered lever no run set is not: such an axis names a key a
 #: run might not have set, but a mistyped metric names nothing that exists, and
 #: answering it with an empty grid is indistinguishable from an empty scope.
 #: A metric added to the projection adds itself here, in the same edit.
@@ -1010,7 +1009,7 @@ class ScoreRecord(EvalBaseModel):
 
     # Which rubric dimension this row measures — a coordinate like `model` or
     # `test_case_id`, so it can go on either axis or into a filter with no new
-    # machinery, and `_require_coordinate_name` accepts it statically.
+    # machinery, and `_reads_a_lever` reads it as the declared field it is.
     #
     # Populated only on `score` rows, and `None` there too when the result
     # carried no dims at all. A composite or cost row leaves it `None` because it
@@ -3268,35 +3267,47 @@ class PivotTable(EvalBaseModel):
     unplaced_predicted_models: list[str] = []
 
 
-def _require_coordinate_name(factor: str) -> None:
-    """Reject a coordinate name that no score record could ever carry.
+def _reads_a_lever(factor: str, *, records: Sequence[ScoreRecord], profile: HostProfile) -> bool:
+    """Decide where an axis or filter name is read: off the run's levers, or off a declared field.
 
-    Used for both axes and filter keys — they are the same namespace, and a
-    filter on a coordinate that does not exist empties the table as convincingly
-    as a real result does.
+    **The registry decides, and the name's shape decides nothing** (#664). This once routed on
+    ``"." in factor`` — dotted read ``factors``, undotted had to be a ``ScoreRecord`` field — on the
+    assumption that a host's levers are dotted. They are not: ``factors`` holds every lever
+    :func:`_run_factors` resolves, under the name the host gave it, so a plain ``chunk_tokens`` reached
+    the rows and was refused at the pivot while a campaign could declare it as an axis.
 
-    Checked before any row is touched, because :func:`_axis_value` is only
-    reached once there are rows to group — so on an empty selection (a scope
-    with no observations of this measure, or a filter matching nothing) a typo'd
-    axis would return an empty grid instead of a refusal, which is exactly the
-    "indistinguishable from an empty scope" answer the refusals exist to
-    prevent. Only the *static* half is decidable here; a dotted name stays legal
-    by design, since the open set is not knowable without data and a run may
-    simply not have set that key.
+    A name is a **lever** when the host's registry admits it as one
+    (:meth:`~threetears.evals.contracts.host.sweepables.SweepableRegistry.refuse_as_axis`: a fixed lever,
+    or a member some open family's membership test claims — the same decision a campaign's declared axis
+    goes through), or when some row carries it in ``factors``, which only the registry's own resolution
+    writes. The second half covers a family that declares no membership test: its members are knowable
+    only from the runs that carried them. A lever no run set still pivots, as a table of ``"—"``, because
+    "nobody set this" is an answer; a name neither half admits is a typo.
+
+    **One name, two meanings, is refused rather than resolved by branch order.** A host lever that takes
+    a declared coordinate's name (``template_id``, ``scope_id``, …) would be read off whichever branch
+    ran first, so it is refused, naming the rename. Refused here rather than at registration because
+    the registry lives in ``contracts`` and the coordinate set is this module's record — ``contracts``
+    does not import ``analysis``. The one exception is the engine's own candidate-model lever: the
+    projection writes it into the ``model`` coordinate and keeps it out of ``factors`` (see
+    :func:`_run_factors`), so the two names are one quantity and the field is read.
 
     Args:
-        factor: A declared coordinate name, or a dotted open-coordinate name.
+        factor: An axis or filter key a caller sent.
+        records: The rows the pivot reads, for the members a family names only at run time.
+        profile: The host whose registry decides.
+
+    Returns:
+        True to read ``factors[factor]``, False to read the declared field.
 
     Raises:
-        PivotError: An undotted name the model does not declare, or the open-map
-            container itself.
+        PivotError: The open-coordinate or host-measure map itself, a name that is both a lever and a
+            declared coordinate, or a name that is neither — the last naming the host's actual levers.
     """
-    if "." in factor:
-        return
     if factor == "factors":
         # The map is the container for open coordinates, never one itself —
         # stringifying it would collapse every run into one dict-shaped bucket.
-        raise PivotError("'factors' is the open-coordinate map, not a coordinate — pivot on one of its dotted keys")
+        raise PivotError("'factors' is the open-coordinate map, not a coordinate — pivot on one of the levers it holds")
     if factor == "host_measures":
         # Same defect, and one step further from being an axis: these are the host's own
         # MEASUREMENTS of a cell, so grouping by one would partition the corpus by its own
@@ -3306,26 +3317,38 @@ def _require_coordinate_name(factor: str) -> None:
             "'host_measures' is the host's own grade of a cell, not a coordinate — read it from the export, "
             "where each measure is its own column"
         )
+    if factor == CANDIDATE_MODEL_LEVER:
+        return False
     # Checked against the declared fields, not `hasattr`: every model also
     # exposes methods, so `hasattr` would accept `model_dump` as an axis and
     # bucket the whole corpus under one stringified bound method.
-    if factor not in ScoreRecord.model_fields:
+    declared = factor in ScoreRecord.model_fields
+    registry = profile.sweepables
+    lever = registry.refuse_as_axis(factor) is None or any(factor in record.factors for record in records)
+    if declared and lever:
         raise PivotError(
-            f"unknown factor {factor!r} — score records carry no such coordinate "
-            "(a host's levers are dotted, e.g. a kind's overlay '<kind>.<field>')"
+            f"factor {factor!r} is both a declared score-record coordinate and a lever this host registers — "
+            "the pivot will not pick one by rule of thumb; rename the lever"
         )
+    if lever:
+        return True
+    if declared:
+        return False
+    raise PivotError(
+        f"unknown factor {factor!r} — score records carry no such coordinate and this host registers no such "
+        f"lever. {registry.axis_remedy}; or a declared coordinate (model, template_id, test_case_id, ...)"
+    )
 
 
-def _axis_value(record: ScoreRecord, factor: str) -> str:
+def _axis_value(record: ScoreRecord, factor: str, *, lever: bool) -> str:
     """Read one factor off a row, as the string an axis is keyed on.
 
     Two coordinate spaces, resolved in one place. A **declared** field
-    (``model``, ``template_id``, …) is read by name; a **dotted** name falls
-    through to the open ``factors`` map, which carries every lever the host's
-    registry resolves for the run — a kind's overlays (``gm.difficulty``) among them —
-    at their resolved levels. Neither is checked against a list of permitted axes: a
-    new lever must become pivotable with no edit here, which is the whole point of
-    keeping the factor set open.
+    (``model``, ``template_id``, …) is read by name; a **lever** is read off the
+    open ``factors`` map, which carries every lever the host's registry resolves
+    for the run — a kind's overlays (``gm.difficulty``) among them — at their
+    resolved levels. Which space a name belongs to is decided once per pivot by
+    :func:`_reads_a_lever`, from the host's registry, never from the name's shape.
 
     An absent value becomes a visible ``"—"`` level rather than being dropped,
     so a corpus where half the runs carry no override for a key shows that as a
@@ -3335,17 +3358,13 @@ def _axis_value(record: ScoreRecord, factor: str) -> str:
 
     Args:
         record: The row to read.
-        factor: A declared coordinate name, or a dotted open-coordinate name.
+        factor: A declared coordinate name or a lever name.
+        lever: What :func:`_reads_a_lever` decided for ``factor``.
 
     Returns:
         The coordinate's value as a string.
-
-    Names are validated by :func:`_require_coordinate_name` before any row is read, so
-    this is pure resolution. A *dotted* name never fails: it names a key some run
-    may simply not have set, and refusing it would make "nobody overrode this"
-    indistinguishable from a typo — the honest answer is a table of "—".
     """
-    if "." in factor:
+    if lever:
         return record.factors.get(factor) or "—"
     value = getattr(record, factor)
     return "—" if value is None or value == "" else str(value)
@@ -3764,8 +3783,8 @@ def compute_pivot(
         the short runs its numbers were pooled from and the pooling disclosures above.
 
     Raises:
-        PivotError: Unknown weighting or metric, an undotted axis or filter the
-            rows do not declare, a cross-subject pooling, or a predicted cost handed
+        PivotError: Unknown weighting or metric, an axis or filter that is neither a
+            declared coordinate nor a lever of this host (or is both), a cross-subject pooling, or a predicted cost handed
             to a pivot of another metric or one with no model axis. Every one
             is refused here rather than at an adapter, so both surfaces refuse
             identically instead of one of them answering an empty grid.
@@ -3805,8 +3824,12 @@ def compute_pivot(
                 refusal += f"; {metric!r} is a {scope_noun}, not a measure — aggregate {scoped_metric!r} with '{scope_field}' on an axis"
                 break
         raise PivotError(refusal)
-    for name in (row_factor, column_factor, *(filters or {})):
-        _require_coordinate_name(name)
+    # Decided before any row is grouped: grouping runs only once there are rows, so over an empty
+    # selection a typo'd axis would otherwise answer an empty grid instead of a refusal.
+    reads_lever = {
+        name: _reads_a_lever(name, records=records, profile=profile)
+        for name in (row_factor, column_factor, *(filters or {}))
+    }
     predictions = _planned_cost_per_observation(predicted_cost, metric, (row_factor, column_factor))
 
     measure = _describe_aggregate(metric, profile=profile)
@@ -3814,7 +3837,7 @@ def compute_pivot(
     of_metric = [r for r in records if r.metric == metric]
     selected = of_metric
     for factor, wanted in (filters or {}).items():
-        selected = [r for r in selected if _axis_value(r, factor) == wanted]
+        selected = [r for r in selected if _axis_value(r, factor, lever=reads_lever[factor]) == wanted]
     # A per-dimension score's catalogue range spans every scale, since the catalogue cannot know
     # which dimensions a table holds. The table can: when every row was judged on one scale, its
     # measure carries that scale's range, so a 1-5 table does not claim a floor of 0.
@@ -3840,7 +3863,13 @@ def compute_pivot(
 
     grouped: dict[tuple[str, str], list[ScoreRecord]] = {}
     for record in selected:
-        grouped.setdefault((_axis_value(record, row_factor), _axis_value(record, column_factor)), []).append(record)
+        grouped.setdefault(
+            (
+                _axis_value(record, row_factor, lever=reads_lever[row_factor]),
+                _axis_value(record, column_factor, lever=reads_lever[column_factor]),
+            ),
+            [],
+        ).append(record)
 
     # A mean of 1-5 levels and 1/0 pass/fail answers is neither a level nor a pass rate, so a cell
     # pooling both is refused before it is computed, like the subject pooling above.
@@ -3967,7 +3996,11 @@ def compute_pivot(
     # A cost column whose observations the cells' own rule would withhold has no pooled figure either.
     pooled: dict[str, float] = {}
     for column in columns:
-        in_column = [r for r in selected if _axis_value(r, column_factor) == column and r.value is not None]
+        in_column = [
+            r
+            for r in selected
+            if _axis_value(r, column_factor, lever=reads_lever[column_factor]) == column and r.value is not None
+        ]
         if metric == METRIC_COST_USD and _cost_withheld(in_column) is not None:
             continue
         by_case: dict[str, list[float]] = {}
@@ -6813,8 +6846,8 @@ _EXPORT_OPEN_MAPS = ("factors", "host_measures")
 # Prefix on every flattened host-measure column. Present so a grade cannot be mistaken for
 # a lever in a spreadsheet, and so a host measure whose name collides with a declared
 # coordinate cannot emit a duplicate header. A COLON rather than a dot, deliberately: a
-# dotted column name is the open-COORDINATE syntax `_axis_value` routes to `factors`, so a
-# dotted grade column would read as a pivotable axis and answer with a table of "—".
+# host's levers are often dotted (`<kind>.<field>`), so a dotted grade column would read
+# as a lever in a spreadsheet beside the lever columns `factors` flattens to.
 _HOST_MEASURE_COLUMN_PREFIX = "host_measure:"
 
 # The declared ScoreRecord columns for a CSV export, derived from the model so a

@@ -2290,7 +2290,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `recorded_analysis_id` | `string` or `null` | A stored analysis of the campaign whose memo the case pins as the one it got, as analyses_list names it; omitted freezes the bundle alone, which only a generating candidate can run. |
 | `reporter_case_id` | `string` | A reporter case's id, as reporter_case_freeze or reporter_cases_list returns it. |
 | `result_id` | `string` | A result's id, as results_list names it. |
-| `row_factor` | `string` | The coordinate the rows are: a declared one (model, template_id, ...) or a dotted lever. |
+| `row_factor` | `string` | The coordinate the rows are: a declared one (model, template_id, ...) or a lever the host registers. |
 | `rubric_dim` | `string` | The judged dimension rated, spelled as the result's score spells it. |
 | `run_id` | `string` | A run's id, as runs_list or a launch's job names it. |
 | `run_ids` | array of `string` | The runs to put in the campaign, all in the caller's scope. |
