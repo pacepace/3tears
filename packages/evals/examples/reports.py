@@ -74,7 +74,7 @@ async def main(out_dir: Path = Path("eval-report")) -> dict[tuple[str, str], str
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # The verdicts as data: one row per arm and reading (accuracy, cost_usd), each a dict keyed by column.
-    verdicts = {(row["contrast"], row["reading"]): row["verdict"] for row in comparison.contrasts()}
+    verdicts = {(row["arm"], row["reading"]): row["verdict"] for row in comparison.contrasts()}
     for (arm, reading), verdict in verdicts.items():
         print(f"{arm} on {reading}: {verdict}")
 

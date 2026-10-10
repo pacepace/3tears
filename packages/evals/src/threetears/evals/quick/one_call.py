@@ -94,11 +94,16 @@ from threetears.evals.contracts.host import (
     HostProfile,
     KindContract,
     MeasureRegistry,
+    NominalScale,
     SubjectSnapshot,
+    Sweepable,
+    SweepableRegistry,
+    SweepableValue,
     WorldPlacement,
     WorldRegistry,
     default_cell_timeout,
 )
+from threetears.evals.contracts.host.sweepables import CORE_ROLES, CORE_SWEEPABLES
 from threetears.evals.ops.summary import CaseResult, EvalSummary, summarize_run
 from threetears.evals.run import (
     CellContext,
@@ -158,6 +163,18 @@ JUDGED_CALLABLE_KIND = "callable-judged"
 
 #: The host :func:`callable_host` builds, by the id the engine prints in its logs and errors.
 CALLABLE_HOST_ID = "run_eval"
+
+#: The lever a single-factor :func:`~threetears.evals.quick.compare` names its arms on, declared by
+#: ``callable_host(arms=True)``: each arm's run states its name as its level, so the report calls the arm
+#: ``candidate=<name>`` rather than calling the name a model.
+ARM_LEVER = "candidate"
+
+#: The candidate model every arm of a single-factor :func:`~threetears.evals.quick.compare` shares when its arms
+#: are named on :data:`ARM_LEVER`: the arms' names are not models, and a lever every arm shares splits none of them.
+SHARED_ARM_MODEL = "callable"
+
+#: Where a named arm's run carries its name, on its ``host_payload``, for the host's lever reader.
+_ARM_PAYLOAD_KEY = "arm"
 
 #: Where a case rides on its stored test case: verbatim, for the candidate to be handed back.
 _CASE_KEY = "case"
@@ -299,8 +316,29 @@ def callable_kind_contracts(levers: Sequence[str] = ()) -> tuple[KindContract, K
     )
 
 
+def _arm_of_run(run: EvalRun) -> str:
+    """The arm a run is, by name: what its launch stated, else its candidate model's label."""
+    named = (run.host_payload or {}).get(_ARM_PAYLOAD_KEY)
+    return named if isinstance(named, str) and named else run.candidate_model
+
+
+def _arm_levels(run: EvalRun) -> dict[str, SweepableValue]:
+    """A run's level of :data:`ARM_LEVER`, the host's one lever of its own, keyed into its variant."""
+    arm = _arm_of_run(run)
+    return {ARM_LEVER: SweepableValue.of(arm, display=arm, scale=NominalScale())}
+
+
+#: The arm lever as ``callable_host(arms=True)`` declares it.
+_ARM_SWEEPABLE = Sweepable(
+    name=ARM_LEVER,
+    role="lever",
+    read=lambda run, _results: _arm_of_run(run),
+    reader_prose="the arm of a comparison the run is, by the name the comparison gave it",
+)
+
+
 def callable_host(
-    scorers: Sequence[Scorer] = (), *, levers: Sequence[str] = (), world: World | None = None
+    scorers: Sequence[Scorer] = (), *, levers: Sequence[str] = (), world: World | None = None, arms: bool = False
 ) -> EvalHost:
     """The least host there is: the shared core, one measure per scorer, no world, an in-memory store.
 
@@ -316,6 +354,9 @@ def callable_host(
             (:func:`callable_kind_contracts`), each handed to :func:`run_eval` as ``levers=``.
         world: The world a world run seeds (:class:`~threetears.evals.quick.world.World`), declared on the
             profile; ``None`` declares none.
+        arms: Declare :data:`ARM_LEVER`, the lever a single-factor :func:`~threetears.evals.quick.compare`
+            names its arms on, so its report reads ``candidate=<name>``; what ``compare`` builds when handed no
+            host. A run that states no arm (a ``run_eval`` in this host) is at its candidate model's label.
 
     Returns:
         The host.
@@ -328,7 +369,9 @@ def callable_host(
     return EvalHost(
         profile=HostProfile(
             host_id=CALLABLE_HOST_ID,
-            host_sweepables=SHARED_CORE,
+            host_sweepables=SweepableRegistry((*CORE_SWEEPABLES, _ARM_SWEEPABLE), roles=CORE_ROLES)
+            if arms
+            else SHARED_CORE,
             measures=MeasureRegistry(scorer_measure(scorer) for scorer in scorers),
             kinds=callable_kind_contracts(levers),
             world=None if world is None else world.registry,
@@ -336,6 +379,7 @@ def callable_host(
             # way the candidate's calls are held to: an enum-closed one may be compared, a free string may not.
             action_parameters=None if world is None else world.action_parameters,
             tool_actions=None if world is None else world.tool_actions,
+            variant_levers=_arm_levels if arms else None,
         ),
         storage=EvalStorage(InMemoryDocumentStore()),
         failure_describer=withhold_failure_detail,
@@ -786,11 +830,14 @@ class CallableArm:
         candidate: The candidate under test.
         model: The arm's label, stored as its run's candidate model; ``None`` takes the candidate's ``__name__``.
         levers: The arm's level of every other lever, by name, or ``None`` for none.
+        arm: The arm's name, stated on its run as its level of :data:`ARM_LEVER` (and as its subject), for a
+            host that declares that lever (``callable_host(arms=True)``); ``None`` names no arm.
     """
 
     candidate: Candidate | ToolUsingCandidate | WorldCandidate
     model: str | None = None
     levers: Mapping[str, str] | None = None
+    arm: str | None = None
 
 
 @dataclass(frozen=True)
@@ -800,6 +847,12 @@ class _WiredArm:
     model: str
     levers: dict[str, Any]
     kind_factory: KindFactory
+    arm: str | None = None
+
+    @property
+    def subject(self) -> str:
+        """The run's subject: the arm's name when it has one, else its model."""
+        return self.arm if self.arm is not None else self.model
 
 
 def _launch_host(
@@ -838,7 +891,7 @@ def _launch_host(
     def arm_of(request: LaunchRequest) -> _WiredArm:
         levels = {} if request.overlays is None else request.overlays.model_dump(mode="json")
         for arm in arms:
-            if arm.model == request.candidate_model and arm.levers == levels:
+            if arm.model == request.candidate_model and arm.levers == levels and arm.subject == request.subject_id:
                 return arm
         raise ValueError(f"no arm of this launch runs model {request.candidate_model!r} at levers {levels!r}")
 
@@ -852,11 +905,17 @@ def _launch_host(
                 judge.model,
                 judged_artifact=JudgedArtifact.DOCUMENT,
             )
-        subject = SubjectSnapshot(subject_id=arm.model, subject_label=arm.model, state={})
+        subject = SubjectSnapshot(subject_id=arm.subject, subject_label=arm.subject, state={})
         return await launch_run(
             launch_host,
             request,
-            KindWiring(kind_factory=arm.kind_factory, subject=subject, test_cases=cases, judge=run_judge),
+            KindWiring(
+                kind_factory=arm.kind_factory,
+                subject=subject,
+                test_cases=cases,
+                judge=run_judge,
+                payload={} if arm.arm is None else {_ARM_PAYLOAD_KEY: arm.arm},
+            ),
         )
 
     # The judge pin is the one launch argument a judged kind honours: run_eval names its judge's model. A
@@ -1222,6 +1281,7 @@ async def run_arms(
             kind_factory=_kind_factory(
                 arm.candidate, scorers, classifies=labels is not None, judge=judge, world=world, tools=tools
             ),
+            arm=arm.arm,
         )
         for arm, model in zip(arms, models, strict=True)
     ]
@@ -1239,7 +1299,7 @@ async def run_arms(
             prepared += await start_run(
                 launch_host,
                 template_id=template_id,
-                subject_id=model,
+                subject_id=model if arm.arm is None else arm.arm,
                 models=[model],
                 k_runs=k,
                 scope_id=scope_id,
@@ -1280,7 +1340,10 @@ async def run_arms(
         else None
     )
     # The store keeps the intent but not where it came from; a judged run's summary carries both.
-    return [_with_baseline(summary, idle, len(test_cases), intent_source) for summary in summaries]
+    return [
+        _with_baseline(summary, idle, len(test_cases), intent_source).model_copy(update={"arm": arm.arm})
+        for summary, arm in zip(summaries, arms, strict=True)
+    ]
 
 
 def _with_case_results(
@@ -1342,6 +1405,7 @@ def _with_baseline(
 
 
 __all__ = [
+    "ARM_LEVER",
     "CALLABLE_HOST_ID",
     "CALLABLE_KIND",
     "CALLABLE_KIND_CONTRACT",
@@ -1349,6 +1413,7 @@ __all__ = [
     "JUDGED_CALLABLE_KIND",
     "JUDGED_CALLABLE_KIND_CONTRACT",
     "JUDGED_CALLABLE_UNSEATED",
+    "SHARED_ARM_MODEL",
     "UNUSABLE_ANSWER",
     "CallableKind",
     "Candidate",

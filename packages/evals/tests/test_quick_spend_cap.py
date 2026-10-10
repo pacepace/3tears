@@ -54,7 +54,7 @@ async def test_a_cap_stops_the_run_between_cases_once_its_spend_passes_it_and_th
     assert summary.stopped_because is not None and "$0.6000 spent against a $0.5000 cap" in summary.stopped_because
     rendered = summary.render()
     assert "budget_stopped" in rendered and "stopped: eval run cost cap exceeded" in rendered
-    assert "spend cap: $0.500 for this run\n" in rendered + "\n"
+    assert "spend cap: $0.50 for this run\n" in rendered + "\n"
     assert len(summary.results()) == 2
 
 

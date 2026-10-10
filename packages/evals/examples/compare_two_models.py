@@ -129,6 +129,7 @@ async def main() -> Comparison:
     comparison = await compare(
         CASES,
         {CONTROL: make(CONTROL), CHEAPER: make(CHEAPER)},  # each arm is named by its model id
+        factors=("model",),  # the arms ARE models, so each name is its run's model (the report reads model=<name>)
         expected=lambda case: case["label"],
         # The control is the arm every other arm is tested against.
         control=CONTROL,
@@ -145,7 +146,7 @@ async def main() -> Comparison:
     # accurate — only "equivalent", shown inside a declared margin, says that — so it is the case for switching
     # only once enough hard cases make the interval on the difference narrow enough to live with.
     for row in comparison.contrasts():
-        arm, control = (row[key].removeprefix("model=") for key in ("contrast", "control"))
+        arm, control = row["arm"], comparison.control  # each arm by the key you gave it
         p = "" if row["p_adjusted"] is None else f" (p={row['p_adjusted']:.2g})"  # none when nothing varied
         print(f"{arm} vs {control} on {row['reading']}: {row['delta']:+.2g}{p}: {row['verdict']}")
     print("\nThe full report: comparison.render(), or reports.py to write it to files.")
