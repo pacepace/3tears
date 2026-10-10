@@ -1,9 +1,9 @@
 # Tutorial: your first eval, end to end
 
 **For** anyone new to 3tears-evals, or new to evals. **Answers:** how to write cases, run them, read what went
-wrong, compare two versions, read the verdict, grade with an LLM judge, and keep your runs. It runs offline and costs nothing:
-small scripted stand-ins play the model. Every term is defined where it first appears,
-and [Concepts](concepts.md) is the glossary.
+wrong, compare two versions, read the verdict, grade with an LLM judge, hold a line no version may cross, and keep
+your runs. It runs offline and costs nothing: small scripted stand-ins play the model. Every term is defined where
+it first appears, and [Concepts](concepts.md) is the glossary.
 
 The running example is a support-ticket router. It reads a ticket and picks one queue: `billing`, `bug`,
 `account` or `other`.
@@ -374,7 +374,71 @@ hours: answer.acknowledges 2, because stand-in: looks for an apology
 A judge's scores are only as good as the judge. Use a different model from the candidate's, and check it
 against people's ratings before you lean on it: [Judges and calibration](judges-and-calibration.md).
 
-## 7. Keep your runs
+## 7. Hold a guardrail
+
+Some things a reply must never do, however much better it gets elsewhere: here, promise a refund, which only
+the billing team may grant. A **guardrail** is a reading no arm may get worse on. It is kept out of the contrasts,
+so a gain there cannot pay for a loss here, and each arm is decided against the control on it alone.
+
+Add two new drafts, a scorer for the rule, and declare the scorer a guardrail with `Guardrail`. Add `Guardrail`
+to the `threetears.evals.quick` import at the top:
+
+```python
+async def draft_reply_v2(case: dict) -> str:
+    """Draft the first reply to a support ticket."""
+    if case["queue"] in ("billing", "bug"):
+        return "So sorry about that! We'll refund you, and we've passed your ticket to the right team."
+    return await draft_reply(case)
+
+
+async def draft_reply_v3(case: dict) -> str:
+    """Draft the first reply to a support ticket."""
+    if case["queue"] in ("billing", "bug"):
+        return "So sorry about that! We've passed your ticket to the right team, who will be in touch today."
+    return await draft_reply(case)
+
+
+def promises_nothing(case: dict, reply: str) -> bool:
+    """The reply makes no promise of a refund, which only the billing team may make."""
+    return "refund" not in reply.lower()
+
+
+async def main() -> None:
+    result = await compare(
+        CASES,
+        {"v1": draft_reply, "v2": draft_reply_v2, "v3": draft_reply_v3},
+        [promises_nothing],
+        guardrails={"promises_nothing": Guardrail(margin=0.1, direction="higher_is_better")},
+        control="v1",
+        scope_id="tutorial",
+        k=2,
+    )
+    for row in result.guardrails():
+        print(f"{row['arm']}: {row['control_mean']:.2f} -> {row['arm_mean']:.2f}, interval {row['interval']}, "
+              f"{row['outcome']}")
+
+
+asyncio.run(main())
+```
+
+```
+v2: 1.00 -> 0.40, interval [-0.9694, -0.2306] at 95%, breached
+v3: 1.00 -> 1.00, interval [-0.3085, 0.3085] at 95% (bounded: every case moved alike), undecided
+```
+
+- **The margin** (`margin=0.1`) is how much worse than the control you would tolerate: here, a promise in one
+  more reply in ten. **The direction** says which way is better. You declare both; neither is assumed.
+- **Breached**: the whole interval is beyond the margin. `v2` is not adopted, whatever else it gained, and the
+  report says so.
+- **Undecided**: `v3` made no promise, and still is not shown safe. Ten cases cannot show that a promise in one
+  reply in ten would not appear, so the interval reaches past the margin. Undecided is never read as held. At
+  a margin of 0.1 it takes about 40 cases, none of them with a promise, to read **held**.
+
+`result.render()` prints the full "Guardrails against the control" table, and `result.guardrail_standing("v2")`
+says what one arm breached, is undecided on, and held. A judged rubric dimension can be a guardrail too: name it
+in `guardrails=`. [Reading the guardrails](reading-reports.md#reading-the-guardrails) has the details.
+
+## 8. Keep your runs
 
 Every run so far was stored in memory and gone when the script ended. To keep runs, pass a store. One keyword
 does it: `store=` on `run_eval` or `compare`. `SqliteDocumentStore` keeps every run in one SQLite file, using
@@ -402,22 +466,23 @@ asyncio.run(main())
 Run the file twice. The second run reads the first run's results from the file, because they are stored there:
 
 ```
-2026-10-10T04:43:44.189878+00:00 route_v2: correct 1.00 over 20 result(s)
-2026-10-10T04:43:51.940478+00:00 route_v2: correct 1.00 over 20 result(s)
+2026-10-10T04:51:01.286666+00:00 route_v2: correct 1.00 over 20 result(s)
+2026-10-10T04:51:05.050664+00:00 route_v2: correct 1.00 over 20 result(s)
 ```
 
 - **`callable_host([correct], store=store)`** is the host `run_eval` built for the run. Any later program reads
   the runs through it: the same scorers, over a store opened on the same file.
-- **`compare(..., store=store)`** keeps the arms and their campaign the same way, and `margins=` and `ranges=`
-  work exactly as in step 5.
+- **`compare(..., store=store)`** keeps the arms and their campaign the same way, and `margins=`, `ranges=` and
+  `guardrails=` work exactly as in steps 5 and 7.
 - **A stored run is read by a release that stores the same format.** A release that changes the format refuses
   older runs rather than misreading them: delete the file and run again.
 
-## 8. Where next
+## 9. Where next
 
 | To | Read | Example |
 |---|---|---|
 | run against a real model | [Running the examples](../examples/README.md#running-them) | [`llm_judge.py`](../examples/llm_judge.py) |
+| hold a guardrail across a real change, to held | [Reading the guardrails](reading-reports.md#reading-the-guardrails) | [`guardrails.py`](../examples/guardrails.py) |
 | weigh accuracy against cost | [Cost and budgets](cost-and-budgets.md) | [`compare_two_models.py`](../examples/compare_two_models.py) |
 | vary several things at once, such as prompt and model | [Choosing a campaign design](choosing-a-design.md) | [`prompt_x_model.py`](../examples/prompt_x_model.py) |
 | evaluate an agent by what it does, not what it says | [Evaluating a tool-using agent](evaluating-agents.md) | [`world.py`](../examples/world.py) |

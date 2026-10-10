@@ -125,7 +125,7 @@ def test_the_tutorial_s_keep_your_runs_step_runs_as_written(tmp_path: Path) -> N
     blocks = re.findall(r"```python\n(.*?)```", page, re.S)
     script = "\n\n".join(block.replace("asyncio.run(main())", "") for block in blocks) + "\nasyncio.run(main())\n"
     (tmp_path / "triage.py").write_text(script, encoding="utf-8")
-    step = page[page.index("## 7. Keep your runs") : page.index("## 8. Where next")]
+    step = page[page.index("## 8. Keep your runs") : page.index("## 9. Where next")]
     # The printed lines, each a run's timestamp and what it read; a timestamp is when the reader ran it.
     printed = re.findall(r"^\d{4}-\d\d-\d\dT\S+ (.*)$", step, re.M)
 

@@ -54,6 +54,7 @@ in a comparison, where the arms disagree (`comparison.results(arm)`). Read them 
 | 6 | [`world.py`](world.py) | Does the model turn the light on when the room is dark? | `world=`, `seed=`, `goal_checks=`: grade what the model did to a world |
 | 7 | [`reports.py`](reports.py) | How do I turn a finished campaign into files people read? | `report_markdown`, `report_html`, Vega-Lite charts |
 | 8 | [`llm_analysis.py`](llm_analysis.py) | Can a model write the analysis from a frozen copy of the evidence? | `generate_analysis` over a fingerprinted bundle |
+| 9 | [`guardrails.py`](guardrails.py) | The new prompt answers more questions. Does it still keep the customer's card private? | `guardrails=`: a guardrail with its margin, held / breached / undecided per arm, apart from the contrasts |
 
 The [tutorial](../docs/tutorial.md) walks the same capabilities in the same order.
 
@@ -63,8 +64,6 @@ These are documented in the guides:
 
 - Judge reliability and evidence tiers, and results by kind of case (strata):
   [Reading reports](../docs/reading-reports.md).
-- Guardrails, what a candidate must never do, decided held, breached or undecided apart from capability:
-  [Reading the guardrails](../docs/reading-reports.md#reading-the-guardrails).
 - Declaring a campaign's design (axes, question, bar), and when exploring without one is the right call:
   [Choosing a design](../docs/choosing-a-design.md).
 - Budgets and spend caps: [Cost and budgets](../docs/cost-and-budgets.md).

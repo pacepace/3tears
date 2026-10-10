@@ -3,7 +3,7 @@
 **For** the developer wiring 3tears-evals into an app for real: your own storage, your own launch path, runs
 you can compare over weeks. **Answers:** what you write (a host, a store, a kind, a launcher) and what the engine
 does with each. If you only want to grade a function, and keep its runs in a file, `run_eval` (as in the
-[tutorial](tutorial.md#7-keep-your-runs)) builds all of this for you. Read
+[tutorial](tutorial.md#8-keep-your-runs)) builds all of this for you. Read
 [Concepts](concepts.md) first: this guide uses its terms (host, kind, lever, apparatus, scope, cell)
 without stopping to define them.
 
