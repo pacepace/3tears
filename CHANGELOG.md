@@ -6,6 +6,29 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: `contracts` splits into `schema` and `kernel` (breaking)
+
+`threetears.evals.contracts` held the stored shapes and the ports beside all of the engine's behaviour (#702).
+It is gone, with no compatibility shim, because 0.66.0 is the package's first release.
+
+- **`threetears.evals.schema`**: the stored documents, the shapes embedded in them, and the ports a host
+  implements (`DocumentStore`, `CompletionClient`, `TraceSink`), with the goal-check grammar. It imports only
+  pydantic and `threetears.observe`.
+- **`threetears.evals.kernel`**: identity, scoring, metrics, the goal-check evaluator, the world session, usage
+  capture, `EvalStorage`, the campaign and analysis documents, and the candidate kind.
+- **`threetears.evals.kernel.host`**: the host contract, formerly `contracts.host`. `SweepableValue`,
+  `SubjectSnapshot`, `ExternalSpend`, `TraceSink`, `CellIdentity` and `CellTrace` are stored or port shapes and
+  moved to `schema`.
+- Each public name is exported from the root that holds its defining module. `threetears.evals.PUBLIC_ROOTS`
+  lists the roots.
+- `EvalTemplate.resolve_preconditions(world)` is `resolve_preconditions(template, world)` in `kernel.host`.
+  `WorldPlacement` and `EVAL_DOC_TYPES` are in `schema`.
+- **`quick` no longer reaches `ops`.** The run summary (`EvalSummary`, `summarize_run`), `ReportFormat` and
+  `serialize_report`, the out-of-run spend lens and `frontier_text` move into `analysis`. `ops` still exports what
+  it did. The summary's `MeasureSummary` is renamed `RunMeasureSummary`, so it no longer shares a name with the
+  bundle's `MeasureSummary`.
+- No stored document names a Python module, so nothing stored changes.
+
 ### 3tears-evals: the public surface claims nothing it does not do (breaking)
 
 Fields and names fixed before the first public release of the schema and API.

@@ -11,11 +11,11 @@ kind lives.** A kind is implemented by whoever owns its subject — a host's in 
 adapter, the reporter kind in analysis — and reaches the runner as a factory, so this
 module imports nothing host-side and travels with the engine.
 
-**Which engine package it travels in is a separate question, and the answer is contracts,
+**Which engine package it travels in is a separate question, and the answer is the kernel,
 by elimination.** The extraction is four packages, and a kind is implemented on both sides of
 the run/analysis line: a host's kinds in its adapter, and the reporter kind in analysis. A
 Protocol living in run would give analysis an edge into run, which the package matrix forbids;
-contracts is the one package every implementer may import (a judgement call, recorded here).
+the kernel is the one package every implementer may import beside the schema (a judgement call, recorded here).
 The cost is that the lingua franca UIs and
 exporters bind to carries an interface only a runner drives, which is why this module holds
 the declaration and nothing that executes it.

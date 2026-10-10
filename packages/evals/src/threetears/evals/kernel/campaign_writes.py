@@ -15,10 +15,10 @@ carry the mechanism a port could use instead (``DocumentStore.get_with_etag`` pa
 ``if_match`` of :func:`~threetears.evals.kernel.storage.save_document`, which a host's run writes can use),
 but the campaign port does not expose it.
 
-It lives in contracts because the writers live in two packages that may not import each other: the
+It lives in the kernel because the writers live in two packages that may not import each other: the
 campaign family (:mod:`threetears.evals.analysis.campaigns` — amend, attach, detach, designate a
 control) and the run-delete cascade (:mod:`threetears.evals.run.curation`), which detaches a destroyed
-run from every campaign holding it. One lock has to be reachable from both, and contracts is the
+run from every campaign holding it. One lock has to be reachable from both, and the kernel is the
 only package both rows of the dependency matrix admit.
 
 ``tests/test_campaign_write_serialization.py`` derives the writers from the code — every

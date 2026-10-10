@@ -31,7 +31,7 @@ its id: one document per call, never rewritten.
 What a case generation's calls ARE is here too (:func:`plan_variation_calls`): the generation that
 makes them (:mod:`threetears.evals.gen`) and the battery that prices every template's generation before
 it launches any (:mod:`threetears.evals.run`) both read one plan, and the package matrix lets both reach
-contracts and neither reach the other — so a battery cannot price a call its launch would not make.
+the kernel and neither reach the other — so a battery cannot price a call its launch would not make.
 """
 
 from __future__ import annotations

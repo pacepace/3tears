@@ -133,7 +133,7 @@ def schema_nodes_at(schema: Mapping[str, Any], segments: tuple[str, ...]) -> tup
     every branch that describes it.
 
     The positions are :func:`~threetears.evals.schema.schema_nesting.nested_schemas`'s, the ones every schema
-    walker in the contracts reads, so this cannot stop short of a position the honoured-subset audit or the
+    walker in the engine reads, so this cannot stop short of a position the honoured-subset audit or the
     registry's self-contradiction check descends into.
 
     Args:

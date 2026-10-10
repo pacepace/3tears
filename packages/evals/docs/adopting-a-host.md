@@ -52,6 +52,9 @@ Import only from a public root (`threetears.evals.PUBLIC_ROOTS` lists them, incl
 `threetears.evals.kernel.host`, `threetears.evals.analysis.viz` and `threetears.evals.vega`), and only the names
 its `__all__` declares; never from a module below one. Every engine type a public signature hands you — a protocol you implement, a value you
 receive, an exception you catch, a literal you annotate with — is exported from one of those roots.
+The stored documents and the ports you implement (`DocumentStore`, `CompletionClient`, `TraceSink`) are in
+`threetears.evals.schema`; the behaviour over them (identity, scoring, `EvalStorage`, the candidate kind) is in
+`threetears.evals.kernel`, with the host contract under `threetears.evals.kernel.host`.
 
 ## The host
 

@@ -8,9 +8,9 @@ that: it hands each cell's :meth:`~threetears.evals.kernel.candidate_kind.Candid
 and what it is handed. The engine half that records and replays is
 :mod:`threetears.evals.run.cassette_proxy`.
 
-It lives in contracts for the reason :class:`~threetears.evals.kernel.candidate_kind.CellSpanWindow`
+It lives in the kernel for the reason :class:`~threetears.evals.kernel.candidate_kind.CellSpanWindow`
 does: ``prepare`` is declared here, a kind is implemented on both sides of the run/analysis line, and
-contracts is the one package every implementer may import.
+the kernel is the one package every implementer may import.
 
 Two seams, because ``act()`` is not where every tool answers
 ------------------------------------------------------------

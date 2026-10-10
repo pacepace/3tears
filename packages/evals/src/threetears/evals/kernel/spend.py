@@ -1,7 +1,7 @@
 """What eval prices a reported external spend at.
 
 The eval half of the metering seam. :class:`~threetears.evals.schema.external_spend.ExternalSpend` is the
-report — shared with the host's tools, which is why it lives on the contracts leaf — and
+report — shared with the host's tools, which is why it lives in the schema — and
 this module holds what only eval does with it: apply an operator-declared rate, and name
 where the resulting figure came from. A tool never prices, so nothing here is shared.
 """

@@ -29,11 +29,9 @@ from typing import TYPE_CHECKING
 
 from threetears.evals.kernel.host.attribution import HostAttributed
 
-# The metric vocabulary is read for annotations here and called once, inside a method. At module
-# level it would close a cycle as soon as this package's root is imported eagerly: the root loads
-# this module, ``contracts.metrics`` loads ``contracts.models``, and ``contracts.models`` itself
-# imports leaves of this package, so whichever of the two a process reaches first would find the
-# other half-initialised.
+# The metric vocabulary is read for annotations here and called once, inside a method, so the import
+# stays deferred. At module level it closed a cycle while the stored models imported leaves of this
+# package (``metrics`` loads ``models``); since the schema split they import none.
 if TYPE_CHECKING:
     from threetears.evals.kernel.metrics import MeasureFamily, MeritAxis, MetricDescriptor
 

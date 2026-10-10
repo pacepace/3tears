@@ -5,7 +5,7 @@ It turns a campaign's runs into a generated, stored analysis. Of the engine it i
 stored shapes it writes into — the
 :class:`~threetears.evals.kernel.campaign.EvalCampaign` hub and the
 :class:`~threetears.evals.kernel.campaign.EvalAnalysis` /
-:class:`~threetears.evals.kernel.campaign.EvalInsight` documents — live in the contracts package,
+:class:`~threetears.evals.kernel.campaign.EvalInsight` documents — live in the kernel,
 not here. The pipeline:
 
 - ``reporting``, ``stats`` and ``numbers`` — the query-time projection of runs + results into

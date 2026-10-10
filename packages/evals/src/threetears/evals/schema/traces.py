@@ -45,7 +45,7 @@ This module imports no host module at all, and — like
 :mod:`~threetears.evals.kernel.host.apparatus` — that is load-bearing rather than incidental: a host
 implements this against its own tracing, acquiring nothing of the engine's internals, and
 the engine reaches its tracing through this and nothing else. Two gates hold it, and only
-together: the tree walk over ``contracts/host/`` catches an import of any package
+together: the tree walk over ``kernel/host/`` and this module catches an import of any package
 outside ``threetears.evals`` that the host layer may not reach, and a per-leaf assertion beside it catches the one that
 walk permits — a ``threetears.evals.*`` import, which is how the buckets below would have been
 "tightened" by reaching for the engine's own latency model.

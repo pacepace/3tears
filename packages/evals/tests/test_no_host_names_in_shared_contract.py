@@ -180,9 +180,9 @@ EVAL_ROOT = _REPO_ROOT / "threetears" / "evals"
 _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # `python -m threetears.evals`: hands over to the command line in `quick`, a whole shared tree.
     "__main__.py",
-    # The stored analysis shapes, which are contracts rather than analysis (the stored campaign,
+    # The stored analysis shapes, which are kernel rather than analysis (the stored campaign,
     # analysis and insight models, the campaign declaration, the decision surface, the authored
-    # document shape, and the analysis measures). `contracts/` is split, so each is listed.
+    # document shape, and the analysis measures). `kernel/` is split, so each is listed.
     "kernel/campaign.py",
     "kernel/declaration.py",
     "kernel/surface.py",
@@ -235,7 +235,7 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # The write-seam refusal of an undeclared authoring field, and the lock every writer of an
     # existing campaign holds. Each is shared by two packages that may not import each other —
     # authoring in run and in analysis, campaign writes in analysis and run's delete cascade — so
-    # each lives in contracts, and a host noun here would reach both sides at once.
+    # each lives in the kernel, and a host noun here would reach both sides at once.
     "kernel/authoring_fields.py",
     "kernel/campaign_writes.py",
     # The run-status filter's vocabulary, its two defaults and its refusal: read by the run listing
@@ -258,7 +258,7 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "schema/completion.py",
     "run/fidelity.py",
     # The criteria judge. It left the host-coupled set when its last host reach went: the JSON
-    # parser it calls now lives in contracts, and it logs under its own module name rather than the
+    # parser it calls now lives in the kernel, and it logs under its own module name rather than the
     # host's cost-logger family. Scanned so the next host reach is a red build, not a quiet one.
     "run/judge.py",
     # The external-spend vocabulary. It is the one place a provider name could most plausibly be
@@ -408,7 +408,7 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # validates: the launch names no overlay of any host's, so a host noun arriving
     # here would be one host's knob written into every host's launch signature.
     "run/launch.py",
-    # The engine's storage, placed in contracts and importing nothing of the host. Moved off
+    # The engine's storage, placed in the kernel and importing nothing of the host. Moved off
     # _HOST_COUPLED_MODULES when the rubric-dim catalog's subject-tag filter left with the
     # template's kind spec: what a template states for its kind is the kind's
     # model's to validate, so a host noun arriving here would be one host's taxonomy written into
@@ -457,12 +457,12 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
 #: host-coupled module with a shared type inside it.
 _SHARED_CONTRACT_TYPES: dict[str, tuple[str, ...]] = {}
 
-#: Whole trees under ``threetears/evals/`` that are shared contract. ``contracts/host`` is the registry
+#: Whole trees under ``threetears/evals/`` that are shared contract. ``kernel/host`` is the registry
 #: package: it ships the classification and the algebra, never the inputs, so a host noun
 #: appearing there is the exact failure this canary exists for.
 #:
-#: ``contracts/prompts`` is the vocabulary the eval seed prompts are declared in (``seed.py``,
-#: which is contracts: the declaration type is shared, the corpus is not; a host's list of its
+#: ``kernel/prompts`` is the vocabulary the eval seed prompts are declared in (``seed.py``,
+#: which is kernel: the declaration type is shared, the corpus is not; a host's list of its
 #: seeds is its own). What is scanned in the prompt trees is the DECLARATION
 #: — the section names, the formatter and data keys, the registry types, and the path each seed is
 #: found at — because those are the vocabulary a second host inherits. The prompt BODIES are prose and escape by the token-shape rule, which is the
@@ -473,8 +473,8 @@ _SHARED_CONTRACT_TYPES: dict[str, tuple[str, ...]] = {}
 #: ``gen/prompts`` is the two proposers' seed prompts, which belong to the gen package and are
 #: scanned on exactly the terms above. It is a nested tree because its parent
 #: ``gen`` is not classifiable whole yet: see :func:`test_every_eval_module_is_classified_one_way_or_the_other`.
-#: ``contracts/host`` and ``contracts/prompts`` are nested for the same reason: ``contracts`` still
-#: holds modules on :data:`_HOST_COUPLED_MODULES` (every ``contracts/`` entry there).
+#: ``kernel/host`` and ``kernel/prompts`` are nested for the same reason: ``kernel`` and ``schema`` are
+#: classified module by module (every ``kernel/`` and ``schema/`` entry above).
 #:
 #: ``storage`` and ``testing`` are whole trees from birth: the adapters the engine ships behind the
 #: store port (the in-memory reference store) and the conformance kits any host runs against its own

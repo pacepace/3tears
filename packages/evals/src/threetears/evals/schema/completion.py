@@ -338,9 +338,9 @@ class SimulatorLLM(Protocol):
 
     The variation generator types against :class:`VariationLLM`, this port with the model it calls.
 
-    Declared in contracts rather than beside the simulator because two packages call it: the run
+    Declared in the schema rather than beside the simulator because two packages call it: the run
     package's simulator and the gen package's variation generator. The dependency matrix lets gen
-    reach contracts and never run, so a port both sides type against has to live here.
+    reach the schema and never run, so a port both sides type against has to live here.
     """
 
     async def generate(

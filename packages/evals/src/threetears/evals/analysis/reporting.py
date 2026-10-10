@@ -3302,7 +3302,7 @@ def _reads_a_lever(factor: str, *, records: Sequence[ScoreRecord], profile: Host
     **One name, two meanings, is refused rather than resolved by branch order.** A host lever that takes
     a declared coordinate's name (``template_id``, ``scope_id``, …) would be read off whichever branch
     ran first, so it is refused, naming the rename. Refused here rather than at registration because
-    the registry lives in ``contracts`` and the coordinate set is this module's record — ``contracts``
+    the registry lives in ``kernel.host`` and the coordinate set is this module's record — the kernel
     does not import ``analysis``. The one exception is the engine's own candidate-model lever: the
     projection writes it into the ``model`` coordinate and keeps it out of ``factors`` (see
     :func:`_run_factors`), so the two names are one quantity and the field is read.

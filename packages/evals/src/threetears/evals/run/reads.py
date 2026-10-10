@@ -37,7 +37,7 @@ def _listing_status_filter(status: str | None) -> EvalRunStatus | None:
 
     What is duplicated between the two is four lines of ``try``/``except``; what
     is not duplicated is everything that would drift — the accepted vocabulary
-    and the refusal message both live once, in contracts, and both of these
+    and the refusal message both live once, in the kernel, and both of these
     resolve through it. Collapsing the pair behind a keyword argument was the
     alternative and is worse: it makes the comparison default reachable by
     omission from a listing surface, which is precisely the mirror image of the

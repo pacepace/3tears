@@ -120,7 +120,7 @@ def _footing_level(value: Any) -> str:
     """Render one input's level for a production-footing disclosure: a scalar as itself, else canonical JSON.
 
     The rendering :func:`~threetears.evals.analysis.reporting.lever_level` gives a cohort, restated here
-    because the contracts layer cannot import the analysis layer; ``None`` (nothing recorded) renders as
+    because the kernel cannot import the analysis layer; ``None`` (nothing recorded) renders as
     ``unrecorded``.
     """
     if value is None:

@@ -1219,7 +1219,7 @@ def refuse_an_undeclarable_design(
         )
     if unreadable:
         # The author's own declared value, echoed as written: a refusal quotes its input rather than
-        # restating it under the reader-facing number rule, which lives outside the contracts set.
+        # restating it under the reader-facing number rule, which lives outside the kernel.
         named = "; ".join(
             f"the bar at {o.threshold!r} names '{o.measure_id}': {reading.reason}" for o, reading in unreadable
         )

@@ -20,7 +20,7 @@ no clock and no host in reach.
 
 They live here rather than beside the run loop that produces their inputs, and the reason is
 structural rather than tidiness: they are the contract a result is READ through, by the run
-package and the analysis package alike, and the matrix lets analysis import contracts and not
+package and the analysis package alike, and the matrix lets analysis import the kernel and not
 run. Nothing in them names a host's subject, surface or model, so every package
 that needs a composite reaches them without reaching the code that drives a candidate.
 

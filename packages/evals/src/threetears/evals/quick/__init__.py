@@ -28,8 +28,8 @@ the function that computes it (a :class:`Measure`, whose ``descriptor`` the host
 :func:`callable_kind_contracts`, and a :class:`World`'s ``registry`` and ``bindings(state)`` are its world's
 declaration and handles. Each is an ordinary contract object, mixed freely with ones the host writes by hand.
 
-This package composes the others and is composed by nothing: it may import ``contracts``, ``run``,
-``analysis`` and ``storage``, and no package of the engine imports it.
+This package composes the others and is composed by nothing: it may import ``schema``, ``kernel``,
+``run``, ``analysis`` and ``storage``, and no package of the engine imports it.
 
 **This module is the package's public root.** A host imports from here and from no module below it,
 and only the names in ``__all__``.

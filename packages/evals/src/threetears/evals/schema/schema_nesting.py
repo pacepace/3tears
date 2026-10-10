@@ -1,4 +1,4 @@
-"""Where one JSON Schema can hold another — the one answer every schema walker in the contracts reads.
+"""Where one JSON Schema can hold another — the one answer every schema walker in the engine reads.
 
 Several readers walk a schema tree: the honoured-subset audit (``world_schema.honoured_kind``), the
 registry's self-contradiction check (``world._schema_defects``) and the prose gate's path addressing
@@ -7,8 +7,8 @@ disagreed — one descended into ``items`` alone, another stopped at ``anyOf`` �
 written at a position one walker skipped was invisible to it. A keyword the honoured subset gains next
 (``oneOf``, ``prefixItems``) is added here, once, and every walker sees it.
 
-A leaf module, because both halves of the contracts reach it: ``prose`` sits beneath the host package that
-``world_schema`` lives in, and importing upward from it would be a cycle.
+A leaf module, because both the schema and the kernel reach it: ``prose`` is in the schema, which imports
+nothing of the kernel that ``world_schema`` lives in.
 """
 
 from __future__ import annotations

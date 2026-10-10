@@ -8,7 +8,7 @@ host that takes it names it on its :class:`~threetears.evals.kernel.host.eval_ho
 than inheriting it, so the choice is visible where the host is built.
 
 Here, beside the host contract, because :class:`~threetears.evals.kernel.host.eval_host.EvalHost`
-carries the factory and the contracts package imports nothing of the run package. The exception lives
+carries the factory and the kernel imports nothing of the run package. The exception lives
 with the factory because the default raises it and the run loop catches exactly it.
 """
 

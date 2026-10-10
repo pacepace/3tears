@@ -22,7 +22,7 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 - ``actions.engine``: ``CaseCount`` without ``ge=1``; ``RunStatusFilter`` as a plain ``str``;
   ``ExportFormat`` as a plain ``str``; a handler dropping ``subject_filter``, ``run_status`` or
   ``predicted_cost`` on the way to its operation.
-- ``contracts.base``: ``ScoreExport.body`` or ``ReportDocument.body`` as a plain ``str`` (the stance strips
+- ``schema.base``: ``ScoreExport.body`` or ``ReportDocument.body`` as a plain ``str`` (the stance strips
   the trailing terminator).
 - ``ops.lenses``: the exclusion line left out of a pivot's text.
 """

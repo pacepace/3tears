@@ -1,4 +1,4 @@
-"""Every schema walker in the contracts agrees on where one schema can sit inside another.
+"""Every schema walker in the engine agrees on where one schema can sit inside another.
 
 Four readers walk a world or parameter schema: the honoured-subset audit (``honoured_kind``), the registry's
 self-contradiction check, the prose gate over world paths and the call-parameter gate over recorded calls.

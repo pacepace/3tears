@@ -21,7 +21,7 @@ descriptive telemetry (per-measure distributions and category counts, token sums
 that ``reporting`` does not provide and the golden analysis ranks
 on, plus a structural per-lever coverage map. The allowed-dependency matrix
 (``tests/test_package_matrix.py``) holds the ``threetears.evals.analysis`` package to
-``contracts`` and itself — the run package's runner, simulator and judge included — and every module
+``schema``, ``kernel`` and itself — the run package's runner, simulator and judge included — and every module
 of the engine is placed in a package, so no edge escapes it.
 
 **Determinism.** Given the same runs + results + insights, the bundle — and thus

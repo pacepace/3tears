@@ -349,7 +349,7 @@ class TestTheLeverSpreadIsSpelledByTheNumberRule:
 class TestARefusedBarIsQuotedAsDeclared:
     """``kernel/declaration.py``: the refusal echoes the author's value.
 
-    The threshold is spelled with ``repr``, which keeps the contracts set closed, rather than with
+    The threshold is spelled with ``repr``, which keeps the kernel closed, rather than with
     ``:g`` or the reader-facing number rule. A value ``:g`` rounds and the number rule separates is
     what tells the three apart.
     """
