@@ -82,6 +82,13 @@ from threetears.evals.analysis.judge_kind_readings import (
     UnreadJudgeTrial,
     judge_kind_readings,
 )
+from threetears.evals.analysis.judge_profiles import (
+    JudgeProfileDrafts,
+    SkippedJudgeProfile,
+    judge_profiles_of,
+    judged_criteria,
+    tiers_with_judge_profiles,
+)
 from threetears.evals.analysis.arms import ArmTable, cell_label, multi_rig_variants, short_digest
 from threetears.evals.analysis.bar_proposals import BaselineBarProposals, propose_bars
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
@@ -612,6 +619,11 @@ __all__ = [
     "inter_judge_agreement",
     "judge_drift",
     "judge_kind_readings",
+    "judge_profiles_of",
+    "judged_criteria",
+    "tiers_with_judge_profiles",
+    "JudgeProfileDrafts",
+    "SkippedJudgeProfile",
     "judge_phase_ceiling_s",
     "list_analyses",
     "list_analysis_attempts",

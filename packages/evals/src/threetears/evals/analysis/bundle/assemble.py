@@ -51,6 +51,7 @@ from threetears.evals.analysis.agreement import (
     person_scores_by_result,
 )
 from threetears.evals.analysis.judge_drift import judge_drift
+from threetears.evals.analysis.judge_profiles import judged_criteria, tiers_with_judge_profiles
 from threetears.evals.analysis.arms import arm_names
 from threetears.evals.analysis.contention import (
     withheld_latency,
@@ -143,18 +144,20 @@ from threetears.evals.analysis.bundle.surface import _measure_catalog
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.kernel.campaign import EvalCampaign
-    from threetears.evals.schema.models import EvalCaseStratum, EvalRun
+    from threetears.evals.kernel.judge_profiles import EvalJudgeProfile
+    from threetears.evals.schema.models import EvalCaseStratum, EvalRun, EvalTemplate
 
 
 class CampaignReadStore(Protocol):
-    """The six reads assembling a campaign's context bundle needs.
+    """The eight reads assembling a campaign's context bundle needs.
 
     Cut to what :func:`assemble_context_bundle` calls rather than to what a
     storage layer offers: the bundle reads member runs (in one batch, without the
     payload paths the host declares a listing may leave out), each run's results, the
     stratum each of their cases declares, the
-    people's calibration ratings of those results, the
-    subject's prior insights, and — for an insight that names one — whether the
+    people's calibration ratings of those results, the templates the runs were judged
+    against and the scope's stored judge profiles (for the tier of a judge whose own
+    evidence decides none), the subject's prior insights, and — for an insight that names one — whether the
     analysis that minted it is archived, and writes nothing at all. That flag is read
     because archiving an analysis RETRACTS what it minted (:func:`retracted_insights`),
     and it is a fact about the analysis, not the insight. Only the flag is asked for, so
@@ -210,6 +213,19 @@ class CampaignReadStore(Protocol):
 
     def analysis_archived(self, analysis_id: str, scope_id: str, /) -> bool | None:
         """Whether one stored analysis is archived, or ``None`` when it no longer resolves in the scope."""
+        ...
+
+    def load_template(self, template_id: str, scope_id: str, /) -> EvalTemplate | None:
+        """One template within a scope, or ``None`` when it does not resolve there.
+
+        Read for one thing: the wording of each criterion the campaign's judges were asked, which a stored judge
+        profile is keyed by (#628). A template edited after a run read another wording, and the run's judges'
+        criterion then reads as unknown.
+        """
+        ...
+
+    def query_judge_profiles(self, scope_id: str, /) -> list[EvalJudgeProfile]:
+        """Every stored judge profile in a scope — unpaged, since a judge's profile is looked up among them (#628)."""
         ...
 
 
@@ -557,8 +573,18 @@ def assemble_context_bundle(
     # The judge's reliability, before anything judged is summarised: every judged reading carries the
     # tier these two agreements decide for the judges that served it.
     bundle.judge_self_agreement = judge_self_agreement(results)
-    bundle.judge_evidence_tiers = judge_evidence_tiers(
-        bundle.judge_agreement, bundle.judge_self_agreement, _judged_keys(results)
+    # A judge the campaign's own evidence leaves undetermined reads its tier from the stored profile of that very
+    # judge and criterion, when the profile decides one (#628); the entry names the profile, so the tier is never
+    # presented as the campaign's own, and the profile's identity is in the fingerprint's pre-image with it.
+    templates = {
+        template_id: template
+        for template_id in sorted({run.template_id for run in runs if run.template_id})
+        if (template := storage.load_template(template_id, scope_id)) is not None
+    }
+    bundle.judge_evidence_tiers = tiers_with_judge_profiles(
+        judge_evidence_tiers(bundle.judge_agreement, bundle.judge_self_agreement, _judged_keys(results)),
+        storage.query_judge_profiles(scope_id),
+        judged_criteria(runs, results_by_run, templates),
     )
     bundle.inter_judge_agreement = inter_judge_agreement(results)
     bundle.judge_drift = judge_drift(results)

@@ -1090,7 +1090,8 @@ def tier_sentence(tier: JudgeEvidenceTier) -> str:
 
     Returns:
         The sentence, naming the judge (its config, when one asked, and its temperature), the tier and each criterion's
-        agreement, pairs and results against its bar.
+        agreement, pairs and results against its bar — and, for a tier read from a stored judge profile, the profile,
+        when and on which cases it was measured, and what the campaign's own evidence read.
     """
     judge = tier.judge_model or "an unnamed judge"
     if tier.judge_config_id is not None:
@@ -1103,9 +1104,22 @@ def tier_sentence(tier: JudgeEvidenceTier) -> str:
         if temperature == MODEL_DEFAULT_TEMPERATURE
         else f", temperature {format_number(temperature)}"
     )
-    return (
+    measured = (
         f"{tier.rubric_dim} ({judge}): {tier.tier} — agreement with people "
         f"{_criterion_words(tier.calibration)}; with its own repeats {_criterion_words(tier.separation)}."
+    )
+    profile = tier.from_profile
+    if profile is None:
+        return measured
+    # Never silently: a tier read from a stored profile says so, with when and on what it was measured, and what
+    # the campaign's own evidence read (#628).
+    return (
+        f"{tier.rubric_dim} ({judge}): {tier.tier}, read from the judge's stored profile {profile.profile_id}, "
+        f"measured at {profile.measured_at} on {format_number(profile.cases)} frozen cases (case set "
+        f"{profile.case_set_fingerprint[:12]}, runs {', '.join(profile.run_ids)}) — agreement with the labels "
+        f"{_criterion_words(tier.calibration)}; with its own repeats {_criterion_words(tier.separation)}. This "
+        f"campaign's own evidence decided no tier: agreement with people {_criterion_words(profile.own_calibration)}; "
+        f"with its own repeats {_criterion_words(profile.own_separation)}."
     )
 
 
