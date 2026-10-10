@@ -63,7 +63,9 @@ from threetears.evals.analysis.bundle import (
     GoalCheckProofReading,
     InsightStanding,
     assemble_context_bundle,
+    component_carrier,
     insight_standing,
+    measure_movement,
     variant_key_of_run,
 )
 from threetears.evals.analysis.campaigns import (
@@ -454,6 +456,7 @@ __all__ = [
     "cell_label",
     "compare_two_runs",
     "comparison_sets",
+    "component_carrier",
     "completeness_disclosure",  # debt: retires when the English moves to one renderer
     "create_campaign",
     "declarable_axes",
@@ -486,6 +489,7 @@ __all__ = [
     "list_analysis_attempts",
     "list_campaigns",
     "list_insights",
+    "measure_movement",
     "metric_help",  # debt: retires when the English moves to one renderer
     "multi_rig_variants",
     "orphaned_runs",

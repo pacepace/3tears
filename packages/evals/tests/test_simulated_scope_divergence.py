@@ -265,7 +265,7 @@ class TestTheCarrierIsNamedOnlyWhenShown:
     def _named_share(seed: str, llm_shift: float, tool_shift: float) -> tuple[float, int, dict[str, int]]:
         from fractions import Fraction
 
-        from threetears.evals.analysis.bundle import _carrier, _movement
+        from threetears.evals.analysis import component_carrier, measure_movement
         from threetears.evals.contracts.metrics import describe_measure
 
         registry = toyhost_profile().measures
@@ -286,11 +286,11 @@ class TestTheCarrierIsNamedOnlyWhenShown:
                 }
                 levels.append({"llm_ms": llm, "tool_ms": tool, "total_ms": {c: llm[c] + tool[c] for c in llm}})
             at_a, at_b = levels
-            whole = _movement(describe_measure("total_ms", registry), at_a["total_ms"], at_b["total_ms"])
-            parts = [_movement(describe_measure(n, registry), at_a[n], at_b[n]) for n in ("llm_ms", "tool_ms")]
+            whole = measure_movement(describe_measure("total_ms", registry), at_a["total_ms"], at_b["total_ms"])
+            parts = [measure_movement(describe_measure(n, registry), at_a[n], at_b[n]) for n in ("llm_ms", "tool_ms")]
             if whole.direction in ("improved", "regressed"):
                 moved += 1
-                carrier = _carrier(whole, parts, at_a, at_b)
+                carrier = component_carrier(whole, parts, at_a, at_b)
                 if carrier is not None:
                     named[carrier.name] = named.get(carrier.name, 0) + 1
         return sum(named.values()) / TestTheCarrierIsNamedOnlyWhenShown.REPLICATES, moved, named

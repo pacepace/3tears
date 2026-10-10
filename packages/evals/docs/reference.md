@@ -947,6 +947,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`comparison_sets(storage: LensStore, scope_id: str, *, list_runs: RunLister, status: str | None = 'completed', full_windows: bool = False, campaign_id: str | None = None, run_ids: list[str] | None = None, profile: HostProfile) -> dict[str, Any]`
 - **`completeness_disclosure`** · function · The one sentence a surface must show about a run that came up short.
   <br>`completeness_disclosure(completeness: RunCompleteness | None) -> str | None`
+- **`component_carrier`** · function · The component SHOWN to carry the whole's movement, or None where the data cannot name one.
+  <br>`component_carrier(whole: MeasureMovement, components: Sequence[MeasureMovement], level_a: Mapping[str, Mapping[str, Fraction]], level_b: Mapping[str, Mapping[str, Fraction]]) -> MeasureMovement | None`
 - **`create_campaign`** · function · Create and persist a campaign from an authoring definition.
   <br>`create_campaign(storage: CampaignStore, definition: dict[str, Any], *, scope_id: str, created_by: str, profile: HostProfile, control_from_run_id: str | None = None) -> EvalCampaign`
 - **`declarable_axes`** · function · The axes a campaign may declare on this host, read off the registry the gate decides with.
@@ -1011,6 +1013,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`list_campaigns(storage: CampaignStore, scope_id: str, *, subject_id: str | None = None, behavior: str | None = None, archived: bool | None = None) -> list[EvalCampaign]`
 - **`list_insights`** · function · List insights in a storage scope, newest observation first.
   <br>`list_insights(storage: AnalysisStore, scope_id: str, *, subject_id: str | None = None, scope: str | None = None, source_campaign_id: str | None = None) -> list[EvalInsight]`
+- **`measure_movement`** · function · Test one measure's movement between two levels against its own noise, and read it against what matters.
+  <br>`measure_movement(descriptor: MetricDescriptor, at_a: Mapping[str, Fraction], at_b: Mapping[str, Fraction]) -> MeasureMovement`
 - **`metric_help`** · function · Render the metrics a surface accepts, each glossed and beside its catalog name, for its help text.
   <br>`metric_help(accepted: frozenset[str]) -> str`
 - **`multi_rig_variants`** · function · The variants measured under more than one rig among `cells`.

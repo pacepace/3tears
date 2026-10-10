@@ -5229,10 +5229,13 @@ def _per_case_measures(pooled: Mapping[str, _PooledMeasure]) -> _PerCaseMeasures
     return per_case
 
 
-def _movement(
+def measure_movement(
     descriptor: MetricDescriptor, at_a: Mapping[str, Fraction], at_b: Mapping[str, Fraction]
 ) -> MeasureMovement:
     """Test one measure's movement between two levels against its own noise, and read it against what matters.
+
+    Public as the one reading the scope-divergence lens grades a whole, a part and each component by, so
+    :func:`component_carrier` can be handed movements read the way the lens reads them.
 
     Args:
         descriptor: The measure's descriptor — its name, scope, better direction, and the materiality
@@ -5402,26 +5405,30 @@ def _carried_by(
         profile: The host whose vocabulary this reads.
 
     Returns:
-        ``(components, carried_by, carried_share)``, the carrier decided by :func:`_carrier`.
+        ``(components, carried_by, carried_share)``, the carrier decided by :func:`component_carrier`.
     """
     components = [
-        _movement(catalog[name], level_a[name], level_b[name])
+        measure_movement(catalog[name], level_a[name], level_b[name])
         for name in partition_components(whole.name, catalog, measures=profile.measures)
         if level_a.get(name) and level_b.get(name)
     ]
-    carrier = _carrier(whole, components, level_a, level_b)
+    carrier = component_carrier(whole, components, level_a, level_b)
     if carrier is None:
         return components, None, None
     return components, carrier.name, carrier.delta / whole.delta
 
 
-def _carrier(
+def component_carrier(
     whole: MeasureMovement,
     components: Sequence[MeasureMovement],
-    level_a: _PerCaseMeasures,
-    level_b: _PerCaseMeasures,
+    level_a: Mapping[str, Mapping[str, Fraction]],
+    level_b: Mapping[str, Mapping[str, Fraction]],
 ) -> MeasureMovement | None:
     """The component SHOWN to carry the whole's movement, or None where the data cannot name one.
+
+    Public so the rule the scope-divergence lens names a ``carried_by`` component by can be read, and tested for its
+    false-naming rate, on per-case values directly: the lens itself calls exactly this, over movements read by
+    :func:`measure_movement`.
 
     The candidate is the component whose delta, in the whole's direction, is largest. It is named only
     when two things are shown, each by the engine's between-level test
@@ -5584,8 +5591,8 @@ def _scope_divergences(
                     if tested.p_value is None:
                         n_untested += 1
                         continue
-                    whole = _movement(catalog[e_a.name], at_a[e_a.name], at_b[e_a.name])
-                    part = _movement(catalog[s_a.name], at_a[s_a.name], at_b[s_a.name])
+                    whole = measure_movement(catalog[e_a.name], at_a[e_a.name], at_b[e_a.name])
+                    part = measure_movement(catalog[s_a.name], at_a[s_a.name], at_b[s_a.name])
                     withheld = _unsound_subtraction(
                         whole=e_a,
                         part=s_a,
@@ -8644,5 +8651,7 @@ __all__ = [
     "TokenRollup",
     "assemble_context_bundle",
     "bundle_decision_surface",
+    "component_carrier",
     "goal_check_proofs_of",
+    "measure_movement",
 ]

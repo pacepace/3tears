@@ -11,7 +11,7 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 - ``_multiple_comparisons``: reading the verdict off ``p_raw`` instead of ``p_adjusted``; correcting
   over each comparison alone (``holm_adjust([p])``); dropping the control-variant filter on pairs.
 - ``build_user_message``: removing the ``p_raw`` deletion.
-- ``_compare``: disabling the paired no-spread branch, so a deterministic gap is named as a
+- ``_compare`` (through the bundle): disabling the paired no-spread branch, so a deterministic gap is named as a
   shortage of cases; reading the gap by the t-test's refusal instead of ``separation_p``, so a constant
   shift over twelve cases reads untested.
 """
@@ -30,7 +30,6 @@ from threetears.evals.analysis import (
     ComparisonFamily,
     assemble_context_bundle,
 )
-from threetears.evals.analysis.bundle import _compare
 from threetears.evals.analysis.generator import build_user_message
 from threetears.evals.analysis.stats import composite_significance, holm_adjust, separation_p
 from threetears.evals.contracts import EvalCampaign, EvalResult, Question, RubricScore
@@ -71,6 +70,7 @@ def _bundle(
     profile: HostProfile | None = None,
     rigs: Sequence[str] = ("",),
     contrast_cases: Sequence[int] | None = None,
+    unpaired: int | None = None,
     apparatus: bool = False,
 ) -> AnalysisContextBundle:
     """A control and one contrast, scored on one judged dimension per entry of ``differences``, on each of ``rigs``.
@@ -78,7 +78,9 @@ def _bundle(
     The control scores 3 on every dimension of every case; the contrast scores ``3 + difference``.
     Results carry no goal check and no cost, so the judged dimensions are the whole family — unless
     ``matched`` gives each side's per-case classifier verdicts, landed as ``match``, or ``accuracy`` each side's
-    per-case ``field_accuracy``. ``contrast_cases`` names the cases the contrast ran (default: all of them).
+    per-case ``field_accuracy``. ``contrast_cases`` names the cases the contrast ran (default: all of them);
+    ``unpaired`` instead gives the contrast that many cases of its own, none shared with the control, so the
+    comparison is unpaired.
     ``apparatus`` gives every result a judge phase and a blended spend that differ sharply between the arms —
     the rig's own readings, which no family may test.
     """
@@ -96,7 +98,7 @@ def _bundle(
                 eval_run_id=run.id,
                 scope_id=run.scope_id,
                 model=model,
-                test_case_id=f"tc-{case:02d}",
+                test_case_id=f"tc-u{case:02d}" if unpaired is not None and model == CONTRAST else f"tc-{case:02d}",
                 goal_state_outcomes=[],
                 cost_usd=(0.5 if model == CONTRAST else 0.1) + 0.01 * case if apparatus else None,
                 latency=(
@@ -116,7 +118,7 @@ def _bundle(
                     for dim, diffs in zip(dims, differences, strict=True)
                 ],
             )
-            for case in range(cases)
+            for case in range(cases if unpaired is None or model == CONTROL else unpaired)
             if model == CONTROL or contrast_cases is None or case in contrast_cases
         ]
     declaration = minimal_declaration(control=fixture_variant_key(control) if control else None)
@@ -275,29 +277,24 @@ class TestVerdicts:
     def test_two_constant_sides_unpaired_are_tested_by_the_exact_permutation_p(
         self, n_control: int, n_contrast: int
     ) -> None:
-        tested = _compare(
-            ("measure", "m"),
-            True,
-            (("control", "rig"), {f"a{i}": 0.1 for i in range(n_control)}),
-            (("contrast", "rig"), {f"b{i}": 0.6 for i in range(n_contrast)}),
-            threshold=None,
-        )
-        comparison = tested.comparison
+        (comparison,) = _family(
+            _bundle([(1,) * max(n_control, n_contrast)], cases=n_control, unpaired=n_contrast)
+        ).comparisons
         assert comparison.test == "unpaired"
         assert comparison.p_raw == pytest.approx(2 / math.comb(n_control + n_contrast, n_control))
         assert comparison.p_raw is not None and comparison.p_raw < 0.05
         assert comparison.hedges_g is None and comparison.untested_reason is None
 
     def test_two_constant_sides_too_few_for_the_exact_p_read_untested_and_say_why(self) -> None:
-        tested = _compare(
-            ("measure", "m"),
-            True,
-            (("control", "rig"), {f"a{i}": 0.1 for i in range(3)}),
-            (("contrast", "rig"), {f"b{i}": 0.6 for i in range(4)}),
-            threshold=None,
+        family = _family(_bundle([(1,) * 4], cases=3, unpaired=4))
+        (comparison,) = family.comparisons
+        assert (comparison.verdict, comparison.test, comparison.p_raw, comparison.p_adjusted) == (
+            "untested",
+            None,
+            None,
+            None,
         )
-        comparison = tested.comparison
-        assert (comparison.verdict, comparison.test, comparison.p_raw, tested.p_raw) == ("untested", None, None, None)
+        assert family.n_untested == 1, "an untested comparison is counted as untested, not corrected over"
         assert comparison.untested_reason is not None
         assert "each side's values are constant" in comparison.untested_reason
         assert "3 and 4 cases" in comparison.untested_reason and "0.05714" in comparison.untested_reason
