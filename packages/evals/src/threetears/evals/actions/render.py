@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import ValidationError
 
 from threetears.evals.contracts import GoalStateOutcome, ResultOutcome, counted_goal_verdicts
+from threetears.evals.analysis.service import describe_insight_id_filters
 from threetears.evals.contracts.errors import EvalServiceError
 from threetears.evals.ops import (
     AnalysisDeleted,
@@ -34,6 +35,10 @@ from threetears.evals.ops import (
     EvalSummary,
     FrozenReporterCase,
     HistoryResult,
+    InsightDeleted,
+    InsightDetail,
+    InsightLine,
+    InsightListing,
     JobsStarted,
     JobStatus,
     OutOfRunSpendReport,
@@ -557,6 +562,52 @@ def render_run_deleted(deleted: RunDeleted) -> str:
     return f"deleted run {deleted.run_id}, its {deleted.results_deleted} result(s); detached from campaigns: {detached}"
 
 
+def _insight_line(insight: InsightLine) -> str:
+    standing = "" if insight.standing == "live" else f", {insight.standing}"
+    return (
+        f"- {insight.id}: {insight.statement} ({insight.confidence}{standing}; subject {insight.subject_id}, "
+        f"campaign {insight.source_campaign_id or '-'}, analysis {insight.source_analysis_id or '-'})"
+    )
+
+
+def render_insights(listing: InsightListing) -> str:
+    """The scope's insights, saying what narrowed the read — an empty filtered read names what it searched."""
+    named = describe_insight_id_filters(listing.subject_id, listing.source_campaign_id)
+    narrowed = f" ({named})" if named else ""
+    if not listing.insights:
+        return f"no insights{narrowed}"
+    lines = [f"insights{narrowed} ({len(listing.insights)})"]
+    lines += [_insight_line(insight) for insight in listing.insights]
+    return "\n".join(lines)
+
+
+def render_insight(detail: InsightDetail) -> str:
+    """One insight in full."""
+    insight = detail.insight
+    runs = ", ".join(insight.evidence_run_ids) or "none"
+    results = ", ".join(insight.evidence_result_ids) or "none"
+    models = ", ".join(f"{role}={model}" for role, model in sorted(insight.model_versions.items())) or "none"
+    lines = [
+        f"insight {insight.id} ({detail.standing}, {insight.confidence})",
+        f"statement: {insight.statement}",
+        f"subject: {insight.subject_id} ({insight.subject_kind or 'no kind'})",
+        f"scope: {insight.scope or '-'}",
+        f"evidence runs: {runs}",
+        f"evidence results: {results}",
+        f"model versions: {models}",
+        f"observed at: {insight.observed_at}",
+        f"minted by: analysis {insight.source_analysis_id or '-'} of campaign {insight.source_campaign_id or '-'}",
+        f"retired when: {insight.invalidation_trigger or '-'}",
+    ]
+    return "\n".join(lines)
+
+
+def render_insight_deleted(deleted: InsightDeleted) -> str:
+    """What deleting an insight removed."""
+    campaign = deleted.source_campaign_id or "no campaign"
+    return f"deleted insight {deleted.insight_id} (minted from {campaign}); no later analysis reads it"
+
+
 def render_analysis_deleted(deleted: AnalysisDeleted) -> str:
     """What deleting an analysis removed."""
     return f"deleted analysis {deleted.analysis_id} of campaign {deleted.campaign_id}; the insights it minted remain"
@@ -585,6 +636,9 @@ __all__ = [
     "render_help_index",
     "render_help_page",
     "render_history",
+    "render_insight",
+    "render_insight_deleted",
+    "render_insights",
     "render_job_status",
     "render_jobs_started",
     "render_pivot",

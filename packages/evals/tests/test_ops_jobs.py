@@ -342,6 +342,72 @@ async def test_an_analysis_is_archived_and_restored_through_the_action_its_delet
         analysis_archive(fixture.host.eval_host, "no-such-analysis", TOYHOST_SCOPE, archived=True)
 
 
+async def test_an_agent_lists_reads_and_deletes_the_insights_an_analysis_minted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#651: holding only the standard tools, an agent reaches the insight ledger end to end."""
+    import packages.evals.tests.ops_support as support
+
+    memo = support.memo_payload
+
+    def durable_memo(bundle: Any) -> dict[str, Any]:
+        payload = memo(bundle)
+        payload["findings"][0]["durable"] = "the wide chunk is slower per document than the narrow one"
+        return payload
+
+    monkeypatch.setattr(support, "memo_payload", durable_memo)
+    fixture = ops_fixture()
+    tools = {tool.name: tool for tool in eval_catalogue().mount_all(standard_tools())}
+    evals, admin = tools["evals"], tools["evals_admin"]
+    started = await evals.call(
+        {"action": "analysis_generate", "campaign_id": fixture.campaign.id}, host=fixture.host, caller=CALLER
+    )
+    assert not started.is_error and started.structured is not None
+    (job,) = started.structured["jobs"]
+    analysis_id = (await settled(fixture.host, job["job_id"])).analysis_id
+    assert analysis_id is not None
+
+    listed = await evals.call(
+        {"action": "insights_list", "campaign_filter": fixture.campaign.id}, host=fixture.host, caller=CALLER
+    )
+    assert not listed.is_error and listed.structured is not None
+    (line,) = listed.structured["insights"]
+    assert line["source_analysis_id"] == analysis_id and line["standing"] == "live"
+    assert line["statement"] in listed.text
+
+    elsewhere = await evals.call(
+        {"action": "insights_list", "campaign_filter": "no-such-campaign"}, host=fixture.host, caller=CALLER
+    )
+    assert not elsewhere.is_error and elsewhere.structured is not None and elsewhere.structured["insights"] == []
+    assert "source_campaign_id='no-such-campaign'" in elsewhere.text, "an empty filtered read names what it searched"
+
+    read = await evals.call({"action": "insight_get", "insight_id": line["id"]}, host=fixture.host, caller=CALLER)
+    assert not read.is_error and read.structured is not None
+    stored = fixture.host.eval_host.storage.load_insight(line["id"], TOYHOST_SCOPE)
+    assert stored is not None and read.structured["insight"] == stored.model_dump(mode="json")
+    assert f"analysis {analysis_id}" in read.text
+
+    assert analysis_archive(fixture.host.eval_host, analysis_id, TOYHOST_SCOPE, archived=True).archived
+    retracted = await evals.call({"action": "insight_get", "insight_id": line["id"]}, host=fixture.host, caller=CALLER)
+    assert retracted.structured is not None and retracted.structured["standing"] == "retracted"
+
+    assert evals.action("insight_delete") is None, "a destructive action is only on the admin tool"
+    refused = await admin.call(
+        {"action": "insight_delete", "insight_id": line["id"], "confirm": "wrong"}, host=fixture.host, caller=CALLER
+    )
+    assert refused.is_error and fixture.host.eval_host.storage.load_insight(line["id"], TOYHOST_SCOPE) is not None
+    deleted = await admin.call(
+        {"action": "insight_delete", "insight_id": line["id"], "confirm": line["id"]}, host=fixture.host, caller=CALLER
+    )
+    assert not deleted.is_error and deleted.structured == {
+        "insight_id": line["id"],
+        "source_campaign_id": fixture.campaign.id,
+    }
+    assert fixture.host.eval_host.storage.load_insight(line["id"], TOYHOST_SCOPE) is None
+    gone = await evals.call({"action": "insight_get", "insight_id": line["id"]}, host=fixture.host, caller=CALLER)
+    assert gone.is_error
+
+
 async def test_an_agent_rates_through_the_action_and_its_rating_is_never_a_persons() -> None:
     """``result_rate`` fixes ``rater_kind`` to agent: the judge's agreement with people lists it, never pools it."""
     fixture = ops_fixture()

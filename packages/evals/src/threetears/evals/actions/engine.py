@@ -33,6 +33,9 @@ from threetears.evals.ops import (
     EvalSummary,
     FrozenReporterCase,
     HistoryResult,
+    InsightDeleted,
+    InsightDetail,
+    InsightListing,
     JobsStarted,
     JobStatus,
     LaunchArguments,
@@ -60,6 +63,9 @@ from threetears.evals.ops import (
     campaign_archive,
     campaign_create,
     campaigns_list,
+    insight_delete,
+    insight_get,
+    insights_list,
     job_cancel,
     job_poll,
     launch_estimate,
@@ -94,6 +100,7 @@ SubjectId = Annotated[str, LaunchArguments.model_fields["subject_id"]]
 ResultId = Annotated[str, Field(min_length=1, description="A result's id, as results_list names it.")]
 CampaignId = Annotated[str, Field(min_length=1, description="A campaign's id, as campaigns_list names it.")]
 AnalysisId = Annotated[str, Field(min_length=1, description="A stored analysis's id, as analyses_list names it.")]
+InsightId = Annotated[str, Field(min_length=1, description="An insight's id, as insights_list names it.")]
 JobId = Annotated[
     str, Field(min_length=1, description="A job's id, exactly as the action that started it returned it.")
 ]
@@ -140,7 +147,13 @@ Metric = Annotated[str | None, Field(description="The measure to read; omitted r
 Weighting = Annotated[
     str | None, Field(description="How a cell averages its observations; omitted takes equal per scenario.")
 ]
-SubjectFilter = Annotated[str | None, Field(description="Read only this subject's runs; omitted reads every subject.")]
+SubjectFilter = Annotated[
+    str | None, Field(description="Read only this subject's runs or insights; omitted reads every subject.")
+]
+CampaignFilter = Annotated[
+    str | None,
+    Field(description="List only the insights this campaign's analyses minted, by id; omitted lists every campaign's."),
+]
 RunStatusFilter = Annotated[
     EvalRunStatus | Literal["all"],
     Field(
@@ -437,6 +450,26 @@ class AnalysisDeleteParams(EvalBaseModel):
     confirm: Confirm
 
 
+class InsightsListParams(EvalBaseModel):
+    """``insights_list``."""
+
+    subject_filter: SubjectFilter = None
+    campaign_filter: CampaignFilter = None
+
+
+class InsightParams(EvalBaseModel):
+    """``insight_get``."""
+
+    insight_id: InsightId
+
+
+class InsightDeleteParams(EvalBaseModel):
+    """``insight_delete``."""
+
+    insight_id: InsightId
+    confirm: Confirm
+
+
 # --- the handlers ------------------------------------------------------------------------------------
 
 
@@ -717,6 +750,32 @@ async def _run_delete(host: OpsHost, caller: Caller, params: RunDeleteParams) ->
     )
 
 
+async def _insights_list(host: OpsHost, caller: Caller, params: InsightsListParams) -> InsightListing:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor,
+        partial(insights_list, subject_id=params.subject_filter, source_campaign_id=params.campaign_filter),
+        eval_host,
+        caller.scope_id,
+    )
+
+
+async def _insight_get(host: OpsHost, caller: Caller, params: InsightParams) -> InsightDetail:
+    eval_host = host.eval_host
+    return await run_blocking(eval_host.blocking_executor, insight_get, eval_host, params.insight_id, caller.scope_id)
+
+
+async def _insight_delete(host: OpsHost, caller: Caller, params: InsightDeleteParams) -> InsightDeleted:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor,
+        partial(insight_delete, confirm=params.confirm),
+        eval_host,
+        params.insight_id,
+        caller.scope_id,
+    )
+
+
 async def _analysis_delete(host: OpsHost, caller: Caller, params: AnalysisDeleteParams) -> AnalysisDeleted:
     eval_host = host.eval_host
     return await run_blocking(
@@ -745,6 +804,7 @@ def engine_actions() -> tuple[Action, ...]:
         The actions.
     """
     run_id, campaign_id, analysis_id = "0193a1b2-run", "0193a1b2-campaign", "0193a1b2-analysis"
+    insight_id = "0193a1b2-insight"
     reporter_template_id, reporter_case_id = "tmpl-reporter", "0193a1b2-reporter-case"
     return (
         Action(
@@ -975,6 +1035,33 @@ def engine_actions() -> tuple[Action, ...]:
             handler=_analyses_list,
             render=render.render_analyses,
             example={"campaign_id": campaign_id},
+        ),
+        Action(
+            name="insights_list",
+            summary="List the scope's insights — the durable claims analyses minted — newest first.",
+            workflow=ANALYSE,
+            permission="read",
+            params=InsightsListParams,
+            result=InsightListing,
+            handler=_insights_list,
+            render=render.render_insights,
+            example={"campaign_filter": campaign_id},
+            detail=(
+                "Each insight with where it stands: live (fed to every later analysis of its subject as prior "
+                "context), retracted (the analysis that minted it is archived) or orphaned (that analysis was "
+                "deleted). Both filters match ids exactly; one that matches nothing lists nothing."
+            ),
+        ),
+        Action(
+            name="insight_get",
+            summary="Read one insight in full: its statement, evidence runs, provenance and standing.",
+            workflow=ANALYSE,
+            permission="read",
+            params=InsightParams,
+            result=InsightDetail,
+            handler=_insight_get,
+            render=render.render_insight,
+            example={"insight_id": insight_id},
         ),
         Action(
             name="report_read",
@@ -1210,6 +1297,22 @@ def engine_actions() -> tuple[Action, ...]:
             handler=_analysis_delete,
             render=render.render_analysis_deleted,
             example={"analysis_id": analysis_id, "confirm": analysis_id},
+        ),
+        Action(
+            name="insight_delete",
+            summary="Destroy one insight, so no later analysis reads it as prior context. Unrecoverable.",
+            workflow=CURATE,
+            permission="destructive",
+            params=InsightDeleteParams,
+            result=InsightDeleted,
+            handler=_insight_delete,
+            render=render.render_insight_deleted,
+            example={"insight_id": insight_id, "confirm": insight_id},
+            detail=(
+                "An insight has no archive: a wrong one keeps steering every later analysis of its subject until it "
+                "is gone, so deleting it is the intended answer. To withdraw everything one analysis minted, "
+                "archive the analysis instead (analysis_archive), which retracts its insights reversibly."
+            ),
         ),
     )
 
