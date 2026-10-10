@@ -67,6 +67,13 @@ from threetears.evals.analysis.agreement import (
     tier_sentence,
 )
 from threetears.evals.analysis.judge_drift import DriftVerdict, JudgeDrift, JudgeDriftDimension, judge_drift
+from threetears.evals.analysis.judge_kind_readings import (
+    JudgeKindReading,
+    JudgeKindReadings,
+    JudgeParseValidity,
+    UnreadJudgeTrial,
+    judge_kind_readings,
+)
 from threetears.evals.analysis.arms import ArmTable, cell_label, multi_rig_variants, short_digest
 from threetears.evals.analysis.bar_proposals import BaselineBarProposals, propose_bars
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
@@ -460,6 +467,9 @@ __all__ = [
     "InsightStanding",
     "JudgeAgreement",
     "JudgeKey",
+    "JudgeKindReading",
+    "JudgeKindReadings",
+    "JudgeParseValidity",
     "JudgeSelfAgreement",
     "InterJudgeAgreement",
     "InterJudgeDimension",
@@ -540,6 +550,7 @@ __all__ = [
     "TokenRollup",
     "FrontierBoundaryCheck",
     "UnpairedRating",
+    "UnreadJudgeTrial",
     "UnrepeatedReason",
     "UnrepeatedScore",
     "UnpairedReason",
@@ -586,6 +597,7 @@ __all__ = [
     "person_scores_by_result",
     "inter_judge_agreement",
     "judge_drift",
+    "judge_kind_readings",
     "judge_phase_ceiling_s",
     "list_analyses",
     "list_analysis_attempts",

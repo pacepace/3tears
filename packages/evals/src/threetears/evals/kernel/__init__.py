@@ -155,6 +155,23 @@ from threetears.evals.kernel.identity import (
     DerivedVariantIdentity,
     LeverCoordinateError,
 )
+from threetears.evals.kernel.judge_cases import (
+    JUDGE_CASE_KEY,
+    JUDGE_KIND,
+    JUDGE_KIND_CONTRACT,
+    JUDGE_KIND_MEASURES,
+    JUDGE_KIND_ROLE,
+    JUDGE_LABEL_AGREEMENT_MEASURE,
+    JUDGE_PARSE_VALID_MEASURE,
+    JudgeCase,
+    JudgeCaseLabel,
+    JudgeCaseSource,
+    JudgeKindOverlays,
+    JudgeTrial,
+    JudgeTrialOutcome,
+    judge_case_of,
+    judge_trial_of,
+)
 from threetears.evals.kernel.metrics import (
     ACCURACY_MEASURE,
     CLASSIFIER_FAMILY,
@@ -271,6 +288,21 @@ from threetears.evals.kernel.usage_capture import (
 from threetears.evals.kernel.world_session import WorldSession, WorldSessionError
 
 __all__ = [
+    "JUDGE_CASE_KEY",
+    "JUDGE_KIND",
+    "JUDGE_KIND_CONTRACT",
+    "JUDGE_KIND_MEASURES",
+    "JUDGE_KIND_ROLE",
+    "JUDGE_LABEL_AGREEMENT_MEASURE",
+    "JUDGE_PARSE_VALID_MEASURE",
+    "JudgeCase",
+    "JudgeCaseLabel",
+    "JudgeCaseSource",
+    "JudgeKindOverlays",
+    "JudgeTrial",
+    "JudgeTrialOutcome",
+    "judge_case_of",
+    "judge_trial_of",
     "CONFIDENCE_TIERS",
     "IDENTITY_VERSION",
     "INCOMPLETE_STOP_REASONS",

@@ -347,6 +347,80 @@ out-of-run cap before the first is sent: the cap the command names with `--max-c
 loud), or the host's own for the action. Calls are ledgered under purpose `judge` and stamped with the run
 (`python -m threetears.evals spend --purpose judge`). The comparison reports its case count, calls and cost.
 
+## Evaluating a judge as a subject
+
+Steps 6 to 10 measure a judge inside the campaign it scored. To compare judges directly (another model, another
+prompt, another temperature), make the judge the subject of a campaign of its own. This is the **judge kind**
+(`candidate_kind="judge"`):
+
+- **The candidate is a judge configuration:** a model, the prompt per criterion and the temperature, the three
+  things `JudgeKey` keys a judge by. The model is the arm's candidate model. The prompt per criterion
+  (`config_ids`, versioned `JudgeConfig` ids) and the temperature are the arm's overlays (`JudgeKindOverlays`), so
+  two arms that differ in their judge are two variants the campaign tells apart.
+- **A case is frozen from a stored result:** one judged output and one criterion. It holds the evidence the
+  result's judge read, the criterion as its template worded it, and the person ratings given on that result as
+  its labels.
+- **A trial replays the stored output and calls only the judge.** It asks the criterion through the engine's own
+  judge service, so the judge reads the same evidence block the first judge read. Only the judge differs. No
+  candidate is re-run.
+- **The grade is code.** Each trial lands `judge_parse_valid` and, on a scored trial of a labelled case,
+  `judge_label_agreement` on its `host_measures`. The whole answer goes on its `kind_payload`.
+
+Freeze cases from a judged run into a judge template, and mint the case set a launch targets:
+
+```python
+from threetears.evals.kernel import JUDGE_KIND
+from threetears.evals.run import freeze_judge_cases
+from threetears.evals.schema import EvalTemplate
+
+judge_template = EvalTemplate(
+    scope_id=summary.scope_id, name="grounded judge", candidate_kind=JUDGE_KIND,
+    intent="Score whether an answer is grounded in the store policy, as a person would.",
+)
+host.storage.save_template(judge_template)
+frozen = freeze_judge_cases(
+    host.storage, template=judge_template, run_ids=[summary.run_id], scope_id=summary.scope_id,
+    dims=["answer.grounded"], case_set="grounded-judge",
+)
+```
+
+Each case is rebuilt under the same check a re-judge uses (`reproducible_judge_inputs`). A result is skipped, with
+the reason, if its run did not record its judging or its template was edited since. Freezing the same output,
+criterion and labels again returns the stored case. A re-freeze after a label changed mints a new case, and the
+new case-set version lists only the new one. The action is `judge_cases_freeze`.
+
+Run one arm per judge. Through a launch, a host registers `launchable_judge_kind` for `JUDGE_KIND` and declares
+`JUDGE_KIND_CONTRACT` (and `JUDGE_KIND_MEASURES`) on its profile. Then each arm is a `run_launch` of the judge
+template, with the judge's model and its `config_ids` and `temperature` overlays. A host driving the runner
+directly builds each arm's kind with `judge_kind(...)`. Read the campaign out per judge and criterion:
+
+```python
+from threetears.evals.analysis import judge_kind_readings
+
+readings = judge_kind_readings(results)  # every result of the campaign's runs
+for reading in readings.readings:
+    print(reading.key, reading.cases, reading.parse_validity.rate,
+          reading.label_agreement and reading.label_agreement.kappa,
+          reading.self_agreement and reading.self_agreement.kappa)
+```
+
+| Measure | Read from |
+|---|---|
+| agreement with the labels | each case's first scored trial against its labels, by `judge_agreement` (Step 6) |
+| self-agreement | each case's later trials against its first, by `judge_self_agreement` (Step 8); run at `k_runs >= 2` |
+| parse validity | the share of replies that kept the protocol (a score on the scale, or "can't tell") |
+
+Both agreements count distinct **cases**, so the tier floors of Step 7 apply to them unchanged. A case repeated k
+times counts once. Each reading names the cases it was measured on (`case_set_fingerprint`) and the criterion
+wording (`criterion_digest`).
+
+**Spend.** Every trial's spend is recorded on its result under the `judge` role. A judge campaign has no
+`candidate` role in its spend. It is in-run spend under the run's cost cap, not the out-of-run ledger a judge
+repeat or a second judge writes to.
+
+A stored profile per judge and criterion, which other campaigns' evidence tiers read, is not built yet
+([#628](https://github.com/pacepace/3tears/issues/628)).
+
 ## What to read next
 
 - [Evidence tiers](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers): the bounds, the

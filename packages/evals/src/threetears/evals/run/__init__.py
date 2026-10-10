@@ -138,6 +138,17 @@ from threetears.evals.run.judge_second import (
     ask_second_judge,
 )
 from threetears.evals.run.rejudge import reproducible_judge_inputs
+from threetears.evals.run.judge_kind import (
+    FrozenJudgeCase,
+    JudgeCaseFreezeReport,
+    JudgeCaseSkip,
+    JudgeKind,
+    PreparedJudge,
+    freeze_judge_cases,
+    judge_case_labels,
+    judge_kind,
+    launchable_judge_kind,
+)
 from threetears.evals.run.runner import (
     CellContext,
     ErrorLedger,
@@ -227,9 +238,14 @@ __all__ = [
     "InProcessCellExecutor",
     "JobTimeoutFactory",
     "RunEndHook",
+    "FrozenJudgeCase",
+    "JudgeCaseFreezeReport",
+    "JudgeCaseSkip",
     "JudgeClientFactory",
     "JudgeContext",
     "JudgeInputStore",
+    "JudgeKind",
+    "PreparedJudge",
     "JudgeOutcome",
     "JudgeRequest",
     "JudgeService",
@@ -268,6 +284,10 @@ __all__ = [
     "WorkFn",
     "assert_preconditions",
     "build_judge_context",
+    "freeze_judge_cases",
+    "judge_case_labels",
+    "judge_kind",
+    "launchable_judge_kind",
     "build_judge_service",
     "callers_missing_the_constructor",
     "cancel_run",

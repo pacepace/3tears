@@ -78,7 +78,12 @@ from threetears.evals.ops import (
 
 if TYPE_CHECKING:
     from threetears.evals.actions.catalogue import Action, MountedTool
-    from threetears.evals.run import JudgeTemperatureComparison, JudgeTemperatureEstimate, SecondJudgeEstimate
+    from threetears.evals.run import (
+        JudgeCaseFreezeReport,
+        JudgeTemperatureComparison,
+        JudgeTemperatureEstimate,
+        SecondJudgeEstimate,
+    )
 
 
 # --- help --------------------------------------------------------------------------------------------
@@ -525,6 +530,25 @@ def render_bar_proposals(proposals: BarProposals) -> str:
 def render_report(document: ReportDocument) -> str:
     """The report itself, in the form asked for — which already says whether it is an analysis or code-only."""
     return document.body
+
+
+def render_judge_case_freeze(report: JudgeCaseFreezeReport) -> str:
+    """A judge case freeze's receipt: each case, the set listing them, and every result it skipped."""
+    created = sum(1 for case in report.cases if case.created)
+    lines = [
+        f"{len(report.cases)} judge case(s) of template {report.template_id} ({created} new, "
+        f"{len(report.cases) - created} already stored)"
+        + (f"; case set {report.case_set.label}" if report.case_set is not None else ""),
+    ]
+    lines += [
+        f"- {case.test_case_id}: {case.dim} on result {case.source_result_id} (run {case.source_run_id}), "
+        f"{case.labels} label(s)"
+        for case in report.cases
+    ]
+    if report.skipped:
+        lines.append(f"skipped ({len(report.skipped)})")
+        lines += [f"- {skip.result_id}: {skip.reason}" for skip in report.skipped]
+    return "\n".join(lines)
 
 
 def render_reporter_case(case: FrozenReporterCase) -> str:
