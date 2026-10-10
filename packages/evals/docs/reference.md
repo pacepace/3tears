@@ -1164,6 +1164,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`LabelCriterion`** · model · The rubric criterion a label was written against, frozen as text when its case was frozen.
 - **`LabelReading`** · model · One reader's verdict on a dimension, beside what the judge scored there.
 - **`LabelStatistics`** · model · One label's counts in a confusion matrix, and the precision, recall and F1 they give.
+- **`LatencyPartition`** · model · One result's `total_ms` split into its named parts and a named remainder.
 - **`LensStore`** · protocol · The storage reads the lenses make — results by scope and by run, campaigns, and one whole run.
 - **`LeverCoverageInput`** · model · Structural coverage of one lever, as the bundle computes it.
 - **`MeasurementWindow`** · model · The wall-clock span a run's cells were actually measured over — DERIVED.
